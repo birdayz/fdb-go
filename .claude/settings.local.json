@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:apple.github.io)",
+      "WebFetch(domain:foundationdb.github.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go mod init:*)",
+      "Bash(go get:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl:*)",
+      "Bash(ls:*)",
+      "Bash(buf generate:*)",
+      "Bash(mv:*)",
+      "Bash(find:*)",
+      "Bash(rmdir:*)",
+      "Bash(tree:*)",
+      "Bash(buf ls-files:*)",
+      "Bash(rm:*)",
+      "Bash(go build:*)",
+      "Bash(go mod:*)",
+      "Bash(go run:*)",
+      "Bash(yay -S:*)",
+      "Bash(grep:*)",
+      "Bash(fdbcli:*)",
+      "Bash(go list:*)",
+      "Bash(/tmp:*)",
+      "Bash(cp:*)",
+      "Bash(gradle:*)",
+      "Bash(go test:*)",
+      "Bash(./gradlew:*)"
+    ],
+    "deny": []
+  }
+}
