@@ -47,8 +47,7 @@ func main() {
 			SetContext(ctx).
 			SetMetaDataProvider(recordMetaData).
 			SetSubspace(keyspace).
-			CreateOrOpen().
-			Open()
+			CreateOrOpen()
 
 		if err != nil {
 			return nil, fmt.Errorf("failed to open store: %w", err)
@@ -67,6 +66,7 @@ func main() {
 				Color: gen.Color_RED.Enum(),
 			},
 		}
+
 
 		fmt.Printf("Saving order: %v\n", order)
 		savedRecord, err := store.SaveRecord(order)

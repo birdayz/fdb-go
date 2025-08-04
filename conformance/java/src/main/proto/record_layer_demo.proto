@@ -1,8 +1,8 @@
 syntax = "proto2";
 
-package com.birdayz.conformance;
+package com.apple.foundationdb.record;
 
-option java_outer_classname = "RecordLayerDemoProto";
+option go_package = "github.com/birdayz/fdb-record-layer-go/gen";
 
 import "record_metadata_options.proto";
 

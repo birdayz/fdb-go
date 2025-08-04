@@ -127,8 +127,7 @@ func writeTestDataWithGo(recordDB *recordlayer.FDBDatabase, metaData *recordlaye
 			SetContext(ctx).
 			SetMetaDataProvider(metaData).
 			SetSubspace(keyspace).
-			CreateOrOpen().
-			Open()
+			CreateOrOpen()
 		if err != nil {
 			return nil, err
 		}
@@ -156,8 +155,7 @@ func readTestDataWithGo(recordDB *recordlayer.FDBDatabase, metaData *recordlayer
 			SetContext(ctx).
 			SetMetaDataProvider(metaData).
 			SetSubspace(keyspace).
-			CreateOrOpen().
-			Open()
+			CreateOrOpen()
 		if err != nil {
 			return nil, err
 		}
@@ -174,9 +172,9 @@ func readTestDataWithGo(recordDB *recordlayer.FDBDatabase, metaData *recordlayer
 		}
 
 		// Extract the actual deserialized Order from the stored record
-		order, ok := storedRecord.ProtoMessage.(*gen.Order)
+		order, ok := storedRecord.Record.(*gen.Order)
 		if !ok {
-			return nil, fmt.Errorf("expected *gen.Order, got %T", storedRecord.ProtoMessage)
+			return nil, fmt.Errorf("expected *gen.Order, got %T", storedRecord.Record)
 		}
 
 		return order, nil

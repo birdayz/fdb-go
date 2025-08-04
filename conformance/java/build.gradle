@@ -19,6 +19,15 @@ application {
     mainClass = 'com.birdayz.conformance.ConformanceTest'
 }
 
+// Task to run continuation conformance test
+task runConformance(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'ContinuationConformanceTest'
+    if (project.hasProperty('args')) {
+        args = project.property('args').split(' ')
+    }
+}
+
 sourceSets {
     main {
         java {

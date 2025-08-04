@@ -20,36 +20,21 @@ func NewFDBDatabase(db fdb.Database) *FDBDatabase {
 
 // Run executes a function within a transaction with automatic retry handling.
 // This matches the Java Record Layer pattern.
-func (fdb *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
-	// TODO: Implement retry logic
-	// For now, just execute once
-	tx, err := fdb.db.CreateTransaction()
-	if err != nil {
-		return nil, err
-	}
+func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
+	// Use FDB's built-in transactional function with retry logic
+	return d.db.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		recordCtx := &FDBRecordContext{
+			tx:  tx,
+			ctx: ctx,
+		}
 
-	recordCtx := &FDBRecordContext{
-		tx:  tx,
-		ctx: ctx,
-	}
-
-	result, err := fn(recordCtx)
-	if err != nil {
-		tx.Cancel()
-		return nil, err
-	}
-
-	err = tx.Commit().Get()
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+		return fn(recordCtx)
+	})
 }
 
 // Database returns the underlying FDB database
-func (fdb *FDBDatabase) Database() fdb.Database {
-	return fdb.db
+func (d *FDBDatabase) Database() fdb.Database {
+	return d.db
 }
 
 // FDBRecordContext represents a transactional context for record operations.

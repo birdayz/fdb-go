@@ -11,6 +11,11 @@ import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.Message;
 
+import com.apple.foundationdb.record.RecordLayerDemo;
+import com.apple.foundationdb.record.RecordLayerDemo.Order;
+import com.apple.foundationdb.record.RecordLayerDemo.Flower;
+import com.apple.foundationdb.record.RecordLayerDemo.Color;
+
 /**
  * Java conformance test for FoundationDB Record Layer.
  * This class can read data written by the Go implementation and write data for Go to read.
@@ -47,7 +52,7 @@ public class ConformanceTest {
         System.out.println("=== JAVA READ DEBUG ===");
         // Create metadata - must match Go implementation exactly
         RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
-                .setRecords(RecordLayerDemoProto.getDescriptor());
+                .setRecords(RecordLayerDemo.getDescriptor());
         
         metaDataBuilder.getRecordType("Order")
                 .setPrimaryKey(Key.Expressions.field("order_id"));
@@ -79,7 +84,7 @@ public class ConformanceTest {
         }
         
         // Parse the protobuf record
-        RecordLayerDemoProto.Order order = RecordLayerDemoProto.Order.newBuilder()
+        RecordLayerDemo.Order order = RecordLayerDemo.Order.newBuilder()
                 .mergeFrom(storedRecord.getRecord())
                 .build();
         
@@ -87,7 +92,7 @@ public class ConformanceTest {
         if (order.getOrderId() == 1001 && 
             order.getPrice() == 25 && 
             order.getFlower().getType().equals("Rose") &&
-            order.getFlower().getColor() == RecordLayerDemoProto.Color.RED) {
+            order.getFlower().getColor() == RecordLayerDemo.Color.RED) {
             
             System.out.println("SUCCESS: Found order " + order.getOrderId() + 
                              " with price " + order.getPrice() + 
@@ -101,7 +106,7 @@ public class ConformanceTest {
     private static void writeData() {
         // Create metadata - must match Go implementation exactly
         RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
-                .setRecords(RecordLayerDemoProto.getDescriptor());
+                .setRecords(RecordLayerDemo.getDescriptor());
         
         metaDataBuilder.getRecordType("Order")
                 .setPrimaryKey(Key.Expressions.field("order_id"));
@@ -120,12 +125,12 @@ public class ConformanceTest {
                     .createOrOpen();
             
             // Create test order - Go will try to read this (order ID 2002)
-            RecordLayerDemoProto.Order order = RecordLayerDemoProto.Order.newBuilder()
+            RecordLayerDemo.Order order = RecordLayerDemo.Order.newBuilder()
                     .setOrderId(2002)
                     .setPrice(50)
-                    .setFlower(RecordLayerDemoProto.Flower.newBuilder()
+                    .setFlower(RecordLayerDemo.Flower.newBuilder()
                             .setType("Tulip")
-                            .setColor(RecordLayerDemoProto.Color.BLUE))
+                            .setColor(RecordLayerDemo.Color.BLUE))
                     .build();
             
             recordStore.saveRecord(order);
