@@ -18,12 +18,22 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Install Just
         uses: extractions/setup-just@v2
 
       - name: Install FoundationDB Client
         run: just install-fdb
+
+      - name: Cache golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/golangci-lint
+            $(go env GOPATH)/bin/golangci-lint
+          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('.github/workflows/ci.yml') }}
 
       - name: Install golangci-lint
         run: |
@@ -43,15 +53,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Install Just
         uses: extractions/setup-just@v2
 
       - name: Install FoundationDB Client
         run: just install-fdb
-
-      - name: Install dependencies
-        run: go mod download
 
       - name: Run unit tests
         run: just test-unit
@@ -73,6 +82,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -86,11 +97,14 @@ jobs:
       - name: Install FoundationDB Client
         run: just install-fdb
 
+      - name: Cache Ginkgo
+        uses: actions/cache@v4
+        with:
+          path: $(go env GOPATH)/bin/ginkgo
+          key: ${{ runner.os }}-ginkgo-${{ hashFiles('go.sum') }}
+
       - name: Install Ginkgo
         run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
-
-      - name: Install dependencies
-        run: go mod download
 
       - name: Run conformance tests
         run: just test-conformance
@@ -108,6 +122,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache: true
+          cache-dependency-path: go.sum
 
       - name: Install Just
         uses: extractions/setup-just@v2
