@@ -1,0 +1,65 @@
+package helpers
+
+import (
+	"fmt"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+)
+
+// OrderBuilder provides a fluent interface for building test Order records
+type OrderBuilder struct {
+	order *gen.Order
+}
+
+// NewOrder creates a new OrderBuilder with the given order ID
+func NewOrder(orderID int64) *OrderBuilder {
+	return &OrderBuilder{
+		order: &gen.Order{OrderId: &orderID},
+	}
+}
+
+// WithPrice sets the price for the order
+func (b *OrderBuilder) WithPrice(price int32) *OrderBuilder {
+	b.order.Price = &price
+	return b
+}
+
+// WithFlower sets the flower type and color for the order
+func (b *OrderBuilder) WithFlower(flowerType string, color gen.Color) *OrderBuilder {
+	b.order.Flower = &gen.Flower{
+		Type:  &flowerType,
+		Color: &color,
+	}
+	return b
+}
+
+// Build returns the constructed Order
+func (b *OrderBuilder) Build() *gen.Order {
+	return b.order
+}
+
+// StandardOrder creates a standard test order with predictable values based on the ID
+// Price = ID * 10
+// Flower = "Rose_{ID}" with RED color
+func StandardOrder(id int64) *gen.Order {
+	price := int32(id * 10)
+	flowerType := fmt.Sprintf("Rose_%d", id)
+	return NewOrder(id).
+		WithPrice(price).
+		WithFlower(flowerType, gen.Color_RED).
+		Build()
+}
+
+// StandardOrders creates a slice of standard test orders with sequential IDs
+func StandardOrders(startID, count int64) []*gen.Order {
+	orders := make([]*gen.Order, count)
+	for i := int64(0); i < count; i++ {
+		orders[i] = StandardOrder(startID + i)
+	}
+	return orders
+}
+
+// MinimalOrder creates an order with only the order ID set (minimal valid record)
+func MinimalOrder(id int64) *gen.Order {
+	return &gen.Order{OrderId: &id}
+}

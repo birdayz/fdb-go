@@ -1,0 +1,234 @@
+package foundationdb
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/testcontainers/testcontainers-go"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"google.golang.org/protobuf/proto"
+)
+
+func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("testcontainer_conformance"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// Test socat proxy setup
+	t.Logf("Testing FoundationDB with socat proxy...")
+
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
+	recordDB := recordlayer.NewFDBDatabase(db)
+
+	// Setup metadata
+	fileDesc := gen.File_record_layer_demo_proto
+	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
+	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	recordMetaData := metaDataBuilder.Build()
+
+	// Create test subspace
+	keyspace := subspace.FromBytes(tuple.Tuple{"testcontainer_conformance"}.Pack())
+
+	// Write test data
+	err = writeTestDataWithGoContainer(recordDB, recordMetaData, keyspace)
+	if err != nil {
+		t.Fatalf("Failed to write test data: %v", err)
+	}
+
+	// Read test data back
+	orderData, err := readTestDataWithGoContainer(recordDB, recordMetaData, keyspace, 3003)
+	if err != nil {
+		t.Fatalf("Failed to read test data: %v", err)
+	}
+
+	// Verify the data
+	if orderData.OrderId == nil || *orderData.OrderId != 3003 {
+		t.Fatalf("Expected order ID 3003, got %v", orderData.OrderId)
+	}
+	if orderData.Price == nil || *orderData.Price != 75 {
+		t.Fatalf("Expected price 75, got %v", orderData.Price)
+	}
+	if orderData.Flower == nil || orderData.Flower.Type == nil || *orderData.Flower.Type != "Sunflower" {
+		t.Fatalf("Expected flower type 'Sunflower', got %v", orderData.Flower)
+	}
+
+	t.Logf("Testcontainer conformance test passed! Go write/read cycle successful: order_id=%d, price=%d, flower=%s",
+		*orderData.OrderId, *orderData.Price, *orderData.Flower.Type)
+}
+
+func TestMultipleContainersIsolation(t *testing.T) {
+	ctx := context.Background()
+
+	// Start two separate FoundationDB containers
+	container1, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("test_db_1"),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start first container: %v", err)
+	}
+	defer container1.Terminate(ctx)
+
+	container2, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("test_db_2"),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start second container: %v", err)
+	}
+	defer container2.Terminate(ctx)
+
+	// Verify containers are isolated
+	connStr1, err := container1.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection string 1: %v", err)
+	}
+
+	connStr2, err := container2.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection string 2: %v", err)
+	}
+
+	if connStr1 == connStr2 {
+		t.Fatalf("Expected different connection strings, got same: %s", connStr1)
+	}
+
+	// Verify different database names
+	if container1.Database() == container2.Database() {
+		t.Fatalf("Expected different database names")
+	}
+
+	t.Logf("Container isolation test passed: %s != %s", connStr1, connStr2)
+}
+
+func writeTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, keyspace subspace.Subspace) error {
+	_, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(ctx).
+			SetMetaDataProvider(metaData).
+			SetSubspace(keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		// Create test order with different data than the system FDB tests
+		order := &gen.Order{
+			OrderId: proto.Int64(3003),
+			Price:   proto.Int32(75),
+			Flower: &gen.Flower{
+				Type:  proto.String("Sunflower"),
+				Color: gen.Color_YELLOW.Enum(),
+			},
+		}
+
+		_, err = store.SaveRecord(order)
+		return nil, err
+	})
+
+	return err
+}
+
+func readTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, keyspace subspace.Subspace, orderID int64) (*gen.Order, error) {
+	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(ctx).
+			SetMetaDataProvider(metaData).
+			SetSubspace(keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		// Try to load the record we just wrote
+		primaryKey := tuple.Tuple{orderID}
+		storedRecord, err := store.LoadRecord(primaryKey)
+		if err != nil {
+			return nil, err
+		}
+
+		if storedRecord == nil {
+			return nil, nil
+		}
+
+		// Extract the actual deserialized Order from the stored record
+		order, ok := storedRecord.Record.(*gen.Order)
+		if !ok {
+			return nil, fmt.Errorf("expected *gen.Order, got %T", storedRecord.Record)
+		}
+
+		return order, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if result == nil {
+		return nil, nil
+	}
+
+	return result.(*gen.Order), nil
+}
+
+func TestFoundationDBContainerConfiguration(t *testing.T) {
+	ctx := context.Background()
+
+	// Test with custom configuration
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("custom_test_db"),
+		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithMemory("2GB"),
+		testcontainers.WithEnv(map[string]string{
+			"CUSTOM_ENV": "test_value",
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start container with custom config: %v", err)
+	}
+	defer container.Terminate(ctx)
+
+	// Verify configuration
+	if container.Database() != "custom_test_db" {
+		t.Fatalf("Expected database 'custom_test_db', got: %s", container.Database())
+	}
+	if container.APIVersion() != 720 {
+		t.Fatalf("Expected API version 720, got: %d", container.APIVersion())
+	}
+
+	// Verify connection works
+	connStr, err := container.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get connection string: %v", err)
+	}
+
+	if !strings.Contains(connStr, ":") {
+		t.Fatalf("Expected connection string to contain port, got: %s", connStr)
+	}
+
+	t.Logf("Configuration test passed with connection: %s", connStr)
+}

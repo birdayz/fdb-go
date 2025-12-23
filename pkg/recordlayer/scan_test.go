@@ -4,17 +4,38 @@ import (
 	"context"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestBasicScan(t *testing.T) {
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(630)
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("basic_scan_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	db := fdb.MustOpenDefault()
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	fdbDB := NewFDBDatabase(db)
 
 	// Create metadata
@@ -22,11 +43,11 @@ func TestBasicScan(t *testing.T) {
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	metaData := builder.Build()
 
-	_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
-			SetContext(ctx).
+			SetContext(rtx).
 			SetMetaDataProvider(metaData).
-			SetSubspace(subspace.Sub("scan_test")).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"scan_test"}.Pack())).
 			CreateOrOpen()
 		if err != nil {
 			return nil, err

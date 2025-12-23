@@ -194,6 +194,236 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	return false, nil
 }
 
+// RecordExists checks if a record exists with the given primary key.
+// This is more efficient than LoadRecord when you only need to check existence.
+//
+// The isolationLevel parameter controls whether to use snapshot or serializable isolation:
+// - IsolationLevelSnapshot: Uses snapshot reads (non-conflicting, sees consistent view at transaction start)
+// - IsolationLevelSerializable: Uses serializable reads (participates in conflict detection)
+//
+// Java equivalent: FDBRecordStore.recordExistsAsync(Tuple primaryKey, IsolationLevel isolationLevel)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1209
+//
+// Returns:
+//   - bool: true if a record exists with the given primary key
+//   - error: any error that occurred during the check
+func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel IsolationLevel) (bool, error) {
+	recordsSubspace := store.subspace.Sub(RecordKey)
+
+	// Try each record type - like LoadRecord, we check all possible record type indices
+	for _, recordType := range store.metaData.RecordTypes() {
+		recordTypeIndex := recordType.GetRecordTypeIndex()
+		keyTuple := append(primaryKey, recordTypeIndex)
+		recordKey := recordsSubspace.Pack(keyTuple)
+
+		// Check if the key exists using appropriate isolation level
+		// Java: ReadTransaction tr = isolationLevel.isSnapshot() ? ensureContextActive().snapshot() : ensureContextActive()
+		var value []byte
+		if isolationLevel.IsSnapshot() {
+			// Use snapshot read (non-conflicting)
+			value = store.context.Transaction().Snapshot().Get(recordKey).MustGet()
+		} else {
+			// Use normal read (participates in conflict detection)
+			value = store.context.Transaction().Get(recordKey).MustGet()
+		}
+
+		// TODO: Support split records (large records >100KB) like Java's SplitHelper.keyExists()
+		if value != nil {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// SaveRecordWithOptions saves a protobuf record with existence checking.
+// This is the full-featured save method that supports all RecordExistenceCheck modes.
+//
+// Java equivalent: FDBRecordStore.saveRecordAsync(Message rec, RecordExistenceCheck existenceCheck, FDBRecordVersion version, VersionstampSaveBehavior behavior)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:496
+//
+// Parameters:
+//   - record: The protobuf message to save
+//   - existenceCheck: Validation to perform (NONE, ERROR_IF_EXISTS, etc.)
+//
+// Returns:
+//   - *FDBStoredRecord: The saved record with metadata
+//   - error: ErrRecordAlreadyExists, ErrRecordDoesNotExist, or ErrRecordTypeChanged based on existenceCheck
+//
+// Note: Version and versionstamp support will be added in Phase 2
+func (store *FDBRecordStore) SaveRecordWithOptions(
+	record proto.Message,
+	existenceCheck RecordExistenceCheck,
+) (*FDBStoredRecord[proto.Message], error) {
+	// Extract the primary key from the record
+	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
+	recordType := store.metaData.GetRecordType(recordTypeName)
+	if recordType == nil {
+		return nil, fmt.Errorf("unknown record type: %s", recordTypeName)
+	}
+
+	if recordType.PrimaryKey == nil {
+		return nil, fmt.Errorf("no primary key defined for record type: %s", recordTypeName)
+	}
+
+	// Extract primary key values using the key expression
+	keyValues, err := recordType.PrimaryKey.Evaluate(record)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract primary key: %w", err)
+	}
+
+	// Create primary key tuple
+	primaryKey := make(tuple.Tuple, len(keyValues))
+	for i, v := range keyValues {
+		primaryKey[i] = v
+	}
+
+	// Perform existence checks
+	if existenceCheck != RecordExistenceCheckNone {
+		existingRecord, err := store.LoadRecord(primaryKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check record existence: %w", err)
+		}
+
+		// ERROR_IF_EXISTS: Fail if record already exists
+		if existenceCheck.ErrorIfExists() && existingRecord != nil {
+			return nil, &RecordAlreadyExistsError{
+				Message:    "record already exists",
+				PrimaryKey: primaryKey,
+			}
+		}
+
+		// ERROR_IF_NOT_EXISTS: Fail if record doesn't exist
+		if existenceCheck.ErrorIfNotExists() && existingRecord == nil {
+			return nil, &RecordDoesNotExistError{
+				Message:    "record does not exist",
+				PrimaryKey: primaryKey,
+			}
+		}
+
+		// ERROR_IF_RECORD_TYPE_CHANGED: Fail if existing record has different type
+		if existenceCheck.ErrorIfTypeChanged() && existingRecord != nil {
+			existingTypeName := string(existingRecord.Record.ProtoReflect().Descriptor().Name())
+			if existingTypeName != recordTypeName {
+				return nil, &RecordTypeChangedError{
+					Message:      "record type changed",
+					PrimaryKey:   primaryKey,
+					ActualType:   existingTypeName,
+					ExpectedType: recordTypeName,
+				}
+			}
+		}
+	}
+
+	// Like Java Record Layer, ALWAYS include record type index in the key
+	// This ensures no collisions between different record types
+	recordTypeIndex := recordType.GetRecordTypeIndex()
+	keyTuple := append(primaryKey, recordTypeIndex)
+
+	// Wrap the record in a UnionDescriptor like Java Record Layer does
+	// This ensures compatibility with Java's serialization format
+	unionRecord, err := store.wrapInUnion(record, recordType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
+	}
+
+	// Serialize the union message
+	data, err := proto.Marshal(unionRecord)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal union record: %w", err)
+	}
+
+	// Construct the key for the record using the RECORD_KEY subspace
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordKey := recordsSubspace.Pack(keyTuple)
+
+	// Store the record in FDB
+	store.context.Transaction().Set(recordKey, data)
+
+	// TODO: Update secondary indexes (Phase 5)
+	// TODO: Update record counts (Phase 3)
+	// TODO: Store version if versionstamp support is enabled (Phase 2)
+
+	// Return the stored record
+	return &FDBStoredRecord[proto.Message]{
+		PrimaryKey:   primaryKey,
+		RecordType:   recordType,
+		Record:       record,
+		ValueSize:    len(data),
+		KeySize:      len(recordKey),
+		Split:        false,
+	}, nil
+}
+
+// InsertRecord saves a record and throws an error if it already exists.
+// This is equivalent to SaveRecordWithOptions(record, RecordExistenceCheckErrorIfExists).
+//
+// Java equivalent: FDBRecordStore.insertRecordAsync(Message rec)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreBase.java:629
+//
+// Returns:
+//   - *FDBStoredRecord: The saved record with metadata
+//   - error: ErrRecordAlreadyExists if a record with the same primary key already exists
+func (store *FDBRecordStore) InsertRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
+	return store.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfExists)
+}
+
+// UpdateRecord saves a record and throws an error if it does not already exist or if its type has changed.
+// This is equivalent to SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExistsOrTypeChanged).
+//
+// Java equivalent: FDBRecordStore.updateRecordAsync(Message rec)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreBase.java:649
+//
+// Returns:
+//   - *FDBStoredRecord: The saved record with metadata
+//   - error: ErrRecordDoesNotExist if no record exists with this primary key
+//   - error: ErrRecordTypeChanged if an existing record has a different type
+func (store *FDBRecordStore) UpdateRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
+	return store.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+}
+
+// AddRecordReadConflict adds a read conflict range for the given primary key.
+// This ensures that if another transaction modifies this record before this transaction commits,
+// this transaction will fail with a conflict error.
+//
+// Java equivalent: FDBRecordStore.addRecordReadConflict(Tuple primaryKey)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1222
+func (store *FDBRecordStore) AddRecordReadConflict(primaryKey tuple.Tuple) {
+	recordRange := store.getRangeForRecord(primaryKey)
+	store.context.Transaction().AddReadConflictRange(recordRange)
+}
+
+// AddRecordWriteConflict adds a write conflict range for the given primary key.
+// This ensures that if another transaction reads this record before this transaction commits,
+// that transaction will fail with a conflict error.
+//
+// Java equivalent: FDBRecordStore.addRecordWriteConflict(Tuple primaryKey)
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1228
+func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
+	recordRange := store.getRangeForRecord(primaryKey)
+	store.context.Transaction().AddWriteConflictRange(recordRange)
+}
+
+// getRangeForRecord calculates the key range that covers all possible record type variants
+// for the given primary key. This matches Java's TupleRange.allOf(primaryKey).toRange(recordsSubspace())
+//
+// Java equivalent: TupleRange.allOf(primaryKey).toRange(recordsSubspace())
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371
+//
+// The range includes all keys that begin with the primary key tuple.
+// For RANGE_INCLUSIVE endpoints, Java appends 0xFF byte to the packed high key (not as a tuple element).
+func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.KeyRange {
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	// Pack the primary key tuple once
+	packedKey := recordsSubspace.Pack(primaryKey)
+	// Low key: exactly the packed primary key (RANGE_INCLUSIVE - no change)
+	lowKey := packedKey
+	// High key: packed primary key + 0xFF byte (RANGE_INCLUSIVE - append 0xFF byte)
+	// This creates a prefix range covering all keys that start with primaryKey
+	highKey := append(packedKey, 0xFF)
+	return fdb.KeyRange{Begin: fdb.Key(lowKey), End: fdb.Key(highKey)}
+}
+
 // Context returns the record context this store is using
 func (store *FDBRecordStore) Context() *FDBRecordContext {
 	return store.context
@@ -643,6 +873,53 @@ func (ts *TypedFDBRecordStore[T]) SaveRecord(record T) (*FDBStoredRecord[T], err
 func (ts *TypedFDBRecordStore[T]) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
 	// Delegate to the base store for the actual deletion logic
 	return ts.baseStore.DeleteRecord(primaryKey)
+}
+
+// RecordExists checks if a record exists with the given primary key
+func (ts *TypedFDBRecordStore[T]) RecordExists(primaryKey tuple.Tuple, isolationLevel IsolationLevel) (bool, error) {
+	return ts.baseStore.RecordExists(primaryKey, isolationLevel)
+}
+
+// SaveRecordWithOptions saves a typed record with existence checking
+func (ts *TypedFDBRecordStore[T]) SaveRecordWithOptions(
+	record T,
+	existenceCheck RecordExistenceCheck,
+) (*FDBStoredRecord[T], error) {
+	// Use base store to save with options
+	storedRecord, err := ts.baseStore.SaveRecordWithOptions(record, existenceCheck)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FDBStoredRecord[T]{
+		PrimaryKey: storedRecord.PrimaryKey,
+		RecordType: storedRecord.RecordType,
+		Record:     record, // Return the original typed record
+		KeyCount:   storedRecord.KeyCount,
+		KeySize:    storedRecord.KeySize,
+		ValueSize:  storedRecord.ValueSize,
+		Split:      storedRecord.Split,
+	}, nil
+}
+
+// InsertRecord saves a typed record and throws an error if it already exists
+func (ts *TypedFDBRecordStore[T]) InsertRecord(record T) (*FDBStoredRecord[T], error) {
+	return ts.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfExists)
+}
+
+// UpdateRecord saves a typed record and throws an error if it does not already exist or if its type has changed
+func (ts *TypedFDBRecordStore[T]) UpdateRecord(record T) (*FDBStoredRecord[T], error) {
+	return ts.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+}
+
+// AddRecordReadConflict adds a read conflict range for the given primary key
+func (ts *TypedFDBRecordStore[T]) AddRecordReadConflict(primaryKey tuple.Tuple) {
+	ts.baseStore.AddRecordReadConflict(primaryKey)
+}
+
+// AddRecordWriteConflict adds a write conflict range for the given primary key
+func (ts *TypedFDBRecordStore[T]) AddRecordWriteConflict(primaryKey tuple.Tuple) {
+	ts.baseStore.AddRecordWriteConflict(primaryKey)
 }
 
 // Context returns the record context this store is using

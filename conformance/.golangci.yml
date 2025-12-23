@@ -1,0 +1,48 @@
+version: "2"
+
+linters-settings:
+  errcheck:
+    check-blank: true
+  godot:
+    scope: declarations
+    capital: false
+  revive:
+    rules:
+      - name: dot-imports
+        disabled: true  # Ginkgo/Gomega best practice is to use dot imports
+      - name: package-comments
+        disabled: true  # Not critical for test packages
+  protogetter:
+    # Allow direct field access in tests - it's more readable
+    replace-first-arg-in-append: false
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  disable:
+    - protogetter  # Disable for tests - direct field access is more readable
+    - mnd  # Magic numbers are fine in tests
+    - perfsprint  # Performance in tests is not critical
+    - nilnil  # Returning nil, nil can be valid
+    - unparam  # Unused parameters are OK in tests
+    - gosec  # Security issues less critical in test code
+    - nestif  # Complex nesting is sometimes needed in tests
+    - intrange  # Not important
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - goconst
+        - dupl
+        - funlen
+        - gocyclo

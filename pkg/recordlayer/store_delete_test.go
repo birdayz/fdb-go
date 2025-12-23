@@ -4,20 +4,38 @@ import (
 	"context"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"google.golang.org/protobuf/proto"
-
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestDeleteRecord(t *testing.T) {
-	// Initialize FDB for testing (check if already initialized)
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(720)
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("delete_record_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	db := fdb.MustOpenDefault()
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	recordDB := NewFDBDatabase(db)
 
 	// Create metadata
@@ -26,16 +44,13 @@ func TestDeleteRecord(t *testing.T) {
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	recordMetaData := metaDataBuilder.Build()
 
-	// Create subspace for test
-	keyspace := subspace.FromBytes([]byte("delete_test"))
-
 	// Test the delete functionality
-	result, err := recordDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+	result, err := recordDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		// Create store
 		store, err := NewStoreBuilder().
-			SetContext(ctx).
+			SetContext(rtx).
 			SetMetaDataProvider(recordMetaData).
-			SetSubspace(keyspace).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"delete_test"}.Pack())).
 			CreateOrOpen()
 		if err != nil {
 			return nil, err

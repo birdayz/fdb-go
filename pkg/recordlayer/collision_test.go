@@ -4,18 +4,39 @@ import (
 	"context"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"google.golang.org/protobuf/proto"
 )
 
 // TestPrimaryKeyCollision tests that records can collide when not using record type prefix
 func TestPrimaryKeyCollision(t *testing.T) {
-	// Initialize FDB
-	fdb.MustAPIVersion(630)
-	db := fdb.MustOpenDefault()
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("collision_primary_key_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	fdbDB := NewFDBDatabase(db)
 
 	// Create metadata with collision-prone primary keys (no record type prefix)
@@ -28,11 +49,11 @@ func TestPrimaryKeyCollision(t *testing.T) {
 	
 	metaData := builder.Build()
 
-	_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
-			SetContext(ctx).
+			SetContext(rtx).
 			SetMetaDataProvider(metaData).
-			SetSubspace(subspace.Sub("collision_test")).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"collision_test"}.Pack())).
 			CreateOrOpen()
 		if err != nil {
 			return nil, err
@@ -81,9 +102,30 @@ func TestPrimaryKeyCollision(t *testing.T) {
 
 // TestPrimaryKeyNoCollision tests that records don't collide (record type always included)
 func TestPrimaryKeyNoCollision(t *testing.T) {
-	// Initialize FDB
-	fdb.MustAPIVersion(630)
-	db := fdb.MustOpenDefault()
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("no_collision_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	fdbDB := NewFDBDatabase(db)
 
 	// Create metadata - record type index is always included automatically (like Java)
@@ -94,11 +136,11 @@ func TestPrimaryKeyNoCollision(t *testing.T) {
 	
 	metaData := builder.Build()
 
-	_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
-			SetContext(ctx).
+			SetContext(rtx).
 			SetMetaDataProvider(metaData).
-			SetSubspace(subspace.Sub("no_collision_test")).
+			SetSubspace(subspace.FromBytes(tuple.Tuple{"no_collision_test"}.Pack())).
 			CreateOrOpen()
 		if err != nil {
 			return nil, err
@@ -147,9 +189,30 @@ func TestPrimaryKeyNoCollision(t *testing.T) {
 
 // TestJavaCompatibilityBothModes verifies wire format matches Java in both modes
 func TestJavaCompatibilityBothModes(t *testing.T) {
-	// Initialize FDB
-	fdb.MustAPIVersion(630)
-	db := fdb.MustOpenDefault()
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("java_compatibility_both_modes_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	fdbDB := NewFDBDatabase(db)
 
 	testCases := []struct {
@@ -179,11 +242,11 @@ func TestJavaCompatibilityBothModes(t *testing.T) {
 			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKeyExpr)
 			metaData := builder.Build()
 
-			_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+			_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 				store, err := NewStoreBuilder().
-					SetContext(ctx).
+					SetContext(rtx).
 					SetMetaDataProvider(metaData).
-					SetSubspace(subspace.Sub("java_compat_test", tc.name)).
+					SetSubspace(subspace.FromBytes(tuple.Tuple{"java_compat_test_" + tc.name}.Pack())).
 					CreateOrOpen()
 				if err != nil {
 					return nil, err

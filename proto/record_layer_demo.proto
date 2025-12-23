@@ -12,6 +12,12 @@ message Order {
     optional int32 price = 3;
 }
 
+message Customer {
+    optional int64 customer_id = 1;
+    optional string name = 2;
+    optional string email = 3;
+}
+
 message Flower {
     optional string type = 1;
     optional Color color = 2;
@@ -27,4 +33,5 @@ enum Color {
 message UnionDescriptor {
     option (com.apple.foundationdb.record.record).usage = UNION;
     optional Order _Order = 1;
+    optional Customer _Customer = 2;
 }

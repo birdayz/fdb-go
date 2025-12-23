@@ -44,6 +44,15 @@ type FDBRecordContext struct {
 	ctx context.Context
 }
 
+// NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
+// This is primarily used for testing scenarios where direct transaction control is needed.
+func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
+	return &FDBRecordContext{
+		tx:  tx,
+		ctx: context.Background(),
+	}
+}
+
 // Transaction returns the underlying FDB transaction
 func (rc *FDBRecordContext) Transaction() fdb.Transaction {
 	return rc.tx

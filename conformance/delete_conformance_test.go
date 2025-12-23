@@ -1,113 +1,187 @@
-package conformance
+package conformance_test
 
 import (
 	"context"
-	"os"
-	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"google.golang.org/protobuf/proto"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
+	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
-func TestDeleteRecordConformance(t *testing.T) {
-	// Skip if FDB is not available
-	if os.Getenv("SKIP_FDB_TESTS") != "" {
-		t.Skip("Skipping FDB conformance tests (SKIP_FDB_TESTS set)")
-	}
+var _ = Describe("Delete Conformance", func() {
+	var (
+		ctx   context.Context
+		env   *helpers.TestEnvironment
+		store *helpers.ConformanceStore
+	)
 
-	// Initialize FDB
-	fdb.MustAPIVersion(720)
-	db := fdb.MustOpenDefault()
-	recordDB := recordlayer.NewFDBDatabase(db)
+	BeforeEach(func() {
+		ctx = context.Background()
+		var err error
+		env, err = helpers.SetupTestEnvironment(ctx, "delete_conformance")
+		Expect(err).NotTo(HaveOccurred())
 
-	// Setup metadata
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
-
-	// Create test subspace
-	keyspace := subspace.FromBytes(tuple.Tuple{"delete_conformance_test"}.Pack())
-
-	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
-		store, err := recordlayer.NewStoreBuilder().
-			SetContext(ctx).
-			SetMetaDataProvider(recordMetaData).
-			SetSubspace(keyspace).
-			CreateOrOpen()
-		if err != nil {
-			return nil, err
-		}
-
-		// Test 1: Create and delete a record
-		order := &gen.Order{
-			OrderId: proto.Int64(9999),
-			Price:   proto.Int32(99),
-			Flower: &gen.Flower{
-				Type:  proto.String("TestFlower"),
-				Color: gen.Color_BLUE.Enum(),
-			},
-		}
-
-		// Save the record
-		savedRecord, err := store.SaveRecord(order)
-		if err != nil {
-			return nil, err
-		}
-		t.Logf("Saved record: key=%v, size=%d bytes", savedRecord.PrimaryKey, savedRecord.ValueSize)
-
-		// Verify it exists
-		primaryKey := tuple.Tuple{int64(9999)}
-		loadedRecord, err := store.LoadRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if loadedRecord == nil {
-			t.Errorf("Record should exist after save")
-			return nil, nil
-		}
-
-		// Delete the record
-		deleted, err := store.DeleteRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if !deleted {
-			t.Errorf("DeleteRecord should return true when record exists")
-		}
-		t.Logf("Successfully deleted record with key %v", primaryKey)
-
-		// Verify it no longer exists
-		loadedRecord, err = store.LoadRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if loadedRecord != nil {
-			t.Errorf("Record should not exist after delete")
-		}
-
-		// Test 2: Try to delete non-existent record
-		nonExistentKey := tuple.Tuple{int64(1111111)}
-		deleted, err = store.DeleteRecord(nonExistentKey)
-		if err != nil {
-			return nil, err
-		}
-		if deleted {
-			t.Errorf("DeleteRecord should return false when record doesn't exist")
-		}
-		t.Logf("Correctly returned false for non-existent record with key %v", nonExistentKey)
-
-		return "delete conformance test completed", nil
+		// Create conformance store for automatic Go/Java validation
+		store = helpers.NewConformanceStore(env.RecordDB, env.MetaData, env.Keyspace, env.ClusterFile)
 	})
 
-	if err != nil {
-		t.Fatalf("Delete conformance test failed: %v", err)
-	}
+	AfterEach(func() {
+		if env != nil {
+			_ = env.Cleanup(ctx)
+		}
+	})
 
-	t.Logf("Delete conformance test passed: %v", result)
-}
+	Describe("Delete Operations", func() {
+		It("should delete existing records", func() {
+			// Create a record (automatically validated with Java)
+			order := helpers.StandardOrder(1001)
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify it exists (automatically checked in both Go and Java)
+			exists, err := store.RecordExists(ctx, 1001)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeTrue(), "Record should exist before deletion")
+
+			// Delete the record (automatically validated with Java)
+			deleted, err := store.DeleteRecord(ctx, 1001)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Verify it's deleted (automatically checked in both Go and Java)
+			exists, err = store.RecordExists(ctx, 1001)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse(), "Record should not exist after deletion")
+		})
+
+		It("should handle deleting non-existent records", func() {
+			// Try to delete record that doesn't exist (validated with both Go and Java)
+			deleted, err := store.DeleteRecord(ctx, 9999)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeFalse(), "Deleting non-existent record should return false")
+
+			// Verify it doesn't exist (checked in both Go and Java)
+			exists, err := store.RecordExists(ctx, 9999)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
+		})
+
+		It("should handle deleting multiple records", func() {
+			// Create multiple records (each validated with Java)
+			for i := int64(100); i < 110; i++ {
+				order := helpers.StandardOrder(i)
+				err := store.SaveRecord(ctx, order)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Delete every other record (each validated with Java)
+			for i := int64(100); i < 110; i += 2 {
+				deleted, err := store.DeleteRecord(ctx, i)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deleted).To(BeTrue())
+			}
+
+			// Verify deletion status for all records (each checked in both Go and Java)
+			for i := int64(100); i < 110; i++ {
+				exists, err := store.RecordExists(ctx, i)
+				Expect(err).NotTo(HaveOccurred())
+
+				if i%2 == 0 {
+					Expect(exists).To(BeFalse(), "Even record should be deleted")
+				} else {
+					Expect(exists).To(BeTrue(), "Odd record should still exist")
+				}
+			}
+		})
+
+		It("should maintain consistency across multiple operations", func() {
+			// Create records (validated with Java)
+			for i := int64(200); i < 210; i++ {
+				order := helpers.StandardOrder(i)
+				err := store.SaveRecord(ctx, order)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Delete all records (validated with Java)
+			for i := int64(200); i < 210; i++ {
+				deleted, err := store.DeleteRecord(ctx, i)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deleted).To(BeTrue())
+			}
+
+			// Verify all are deleted (checked in both Go and Java)
+			for i := int64(200); i < 210; i++ {
+				exists, err := store.RecordExists(ctx, i)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeFalse())
+			}
+		})
+
+		It("should handle deleting same record twice", func() {
+			// Create record
+			order := helpers.StandardOrder(300)
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// First delete - should succeed
+			deleted, err := store.DeleteRecord(ctx, 300)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Second delete - should return false
+			deleted, err = store.DeleteRecord(ctx, 300)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeFalse())
+		})
+
+		It("should handle delete after update", func() {
+			// Create record
+			order1 := helpers.NewOrder(400).
+				WithPrice(100).
+				WithFlower("Rose", gen.Color_RED).
+				Build()
+			err := store.SaveRecord(ctx, order1)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update record
+			order2 := helpers.NewOrder(400).
+				WithPrice(200).
+				WithFlower("Tulip", gen.Color_BLUE).
+				Build()
+			err = store.SaveRecord(ctx, order2)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete updated record
+			deleted, err := store.DeleteRecord(ctx, 400)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Verify deletion
+			exists, err := store.RecordExists(ctx, 400)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
+		})
+
+		It("should handle deleting minimal vs full orders", func() {
+			// Create and delete full order
+			fullOrder := helpers.StandardOrder(500)
+			err := store.SaveRecord(ctx, fullOrder)
+			Expect(err).NotTo(HaveOccurred())
+
+			deleted, err := store.DeleteRecord(ctx, 500)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Create and delete minimal order
+			minOrder := helpers.MinimalOrder(501)
+			err = store.SaveRecord(ctx, minOrder)
+			Expect(err).NotTo(HaveOccurred())
+
+			deleted, err = store.DeleteRecord(ctx, 501)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+		})
+	})
+})

@@ -8,14 +8,36 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"google.golang.org/protobuf/proto"
 )
 
 // TestKeyStructure verifies the exact key structure for both modes
 func TestKeyStructure(t *testing.T) {
-	// Initialize FDB
-	fdb.MustAPIVersion(630)
-	db := fdb.MustOpenDefault()
+	ctx := context.Background()
+	
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("key_structure_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer container.Terminate(ctx)
+	
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+	
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+	
 	fdbDB := NewFDBDatabase(db)
 
 	testCases := []struct {
@@ -39,11 +61,11 @@ func TestKeyStructure(t *testing.T) {
 			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKeyExpr)
 			metaData := builder.Build()
 
-			_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+			_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 				store, err := NewStoreBuilder().
-					SetContext(ctx).
+					SetContext(rtx).
 					SetMetaDataProvider(metaData).
-					SetSubspace(subspace.Sub("key_structure_test", tc.name)).
+					SetSubspace(subspace.FromBytes(tuple.Tuple{"key_structure_test_" + tc.name}.Pack())).
 					CreateOrOpen()
 				if err != nil {
 					return nil, err
@@ -65,13 +87,13 @@ func TestKeyStructure(t *testing.T) {
 				expectedFullKey := recordsSubspace.Pack(tc.expectedKey)
 				
 				// Try to read with expected key
-				value := ctx.Transaction().Get(expectedFullKey).MustGet()
+				value := rtx.Transaction().Get(expectedFullKey).MustGet()
 				if value == nil {
 					t.Errorf("No value found at expected key")
 					
 					// Debug: scan all keys to see what's there
 					t.Log("Scanning all keys in records subspace:")
-					iter := ctx.Transaction().GetRange(recordsSubspace, fdb.RangeOptions{
+					iter := rtx.Transaction().GetRange(recordsSubspace, fdb.RangeOptions{
 						Limit: 10,
 					}).Iterator()
 					

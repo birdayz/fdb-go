@@ -6,15 +6,49 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
-// IsolationLevel represents the transaction isolation level
+// IsolationLevel represents the transaction isolation level.
+// Matches Java's IsolationLevel enum.
+//
+// Java Reference: com.apple.foundationdb.record.IsolationLevel
+// Location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/IsolationLevel.java
 type IsolationLevel int
 
 const (
-	// SerializableIsolation provides full ACID guarantees
-	SerializableIsolation IsolationLevel = iota
-	// SnapshotIsolation provides read-only snapshot isolation
-	SnapshotIsolation
+	// IsolationLevelSnapshot uses snapshot reads, which see a consistent view of the database
+	// at the time the transaction started. Snapshot reads do not conflict with writes.
+	//
+	// Java equivalent: SNAPSHOT
+	IsolationLevelSnapshot IsolationLevel = iota
+
+	// IsolationLevelSerializable uses serializable reads, which participate in conflict detection.
+	// Serializable reads will cause conflicts if another transaction writes to the same keys.
+	//
+	// Java equivalent: SERIALIZABLE
+	IsolationLevelSerializable
+
+	// Legacy aliases for backwards compatibility
+	SnapshotIsolation     = IsolationLevelSnapshot
+	SerializableIsolation = IsolationLevelSerializable
 )
+
+// IsSnapshot returns true if this isolation level uses snapshot reads.
+//
+// Java equivalent: IsolationLevel.isSnapshot()
+func (level IsolationLevel) IsSnapshot() bool {
+	return level == IsolationLevelSnapshot
+}
+
+// String returns a human-readable representation of the isolation level.
+func (level IsolationLevel) String() string {
+	switch level {
+	case IsolationLevelSnapshot:
+		return "SNAPSHOT"
+	case IsolationLevelSerializable:
+		return "SERIALIZABLE"
+	default:
+		return "UNKNOWN"
+	}
+}
 
 // CursorStreamingMode controls how FDB fetches data
 type CursorStreamingMode int
