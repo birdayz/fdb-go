@@ -32,7 +32,7 @@ jobs:
         with:
           path: |
             ~/.cache/golangci-lint
-            $(go env GOPATH)/bin/golangci-lint
+            ~/go/bin/golangci-lint
           key: ${{ runner.os }}-golangci-lint-${{ hashFiles('.github/workflows/ci.yml') }}
 
       - name: Install golangci-lint
@@ -100,7 +100,7 @@ jobs:
       - name: Cache Ginkgo
         uses: actions/cache@v4
         with:
-          path: $(go env GOPATH)/bin/ginkgo
+          path: ~/go/bin/ginkgo
           key: ${{ runner.os }}-ginkgo-${{ hashFiles('go.sum') }}
 
       - name: Install Ginkgo
