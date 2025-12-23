@@ -42,11 +42,11 @@ func (level IsolationLevel) IsSnapshot() bool {
 func (level IsolationLevel) String() string {
 	switch level {
 	case IsolationLevelSnapshot:
-		return "SNAPSHOT"
+		return "Snapshot"
 	case IsolationLevelSerializable:
-		return "SERIALIZABLE"
+		return "Serializable"
 	default:
-		return "UNKNOWN"
+		return "Unknown"
 	}
 }
 

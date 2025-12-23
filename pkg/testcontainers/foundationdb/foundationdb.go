@@ -296,8 +296,15 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 		return fmt.Errorf("context cancelled before initialization: %w", err)
 	}
 
+	// Add a timeout for the database initialization to prevent hanging
+	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	// Give FDB a moment to be fully ready after "FDBD joined cluster" log appears
+	time.Sleep(2 * time.Second)
+
 	// Run fdbcli WITHOUT --cluster-file (it uses the default /etc/foundationdb/fdb.cluster)
-	exitCode, output, err := c.Exec(ctx, []string{
+	exitCode, output, err := c.Exec(initCtx, []string{
 		"/usr/bin/fdbcli", "--exec", "configure new single memory",
 	})
 
@@ -305,7 +312,11 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 	outputStr := string(outputBytes)
 
 	if err != nil {
-		return fmt.Errorf("failed to run fdbcli: %w", err)
+		// Check if it was a timeout
+		if initCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("timeout initializing database (60s exceeded), output: %s", outputStr)
+		}
+		return fmt.Errorf("failed to run fdbcli: %w (output: %s)", err, outputStr)
 	}
 
 	if exitCode != 0 {
