@@ -1,4 +1,4 @@
-package foundationdb
+package foundationdb_test
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -20,9 +20,9 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	ctx := context.Background()
 
 	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("testcontainer_conformance"),
-		foundationdbtc.WithAPIVersion(720),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("testcontainer_conformance"),
+		foundationdb.WithAPIVersion(720),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
@@ -86,16 +86,16 @@ func TestMultipleContainersIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Start two separate FoundationDB containers
-	container1, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("test_db_1"),
+	container1, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("test_db_1"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start first container: %v", err)
 	}
 	defer container1.Terminate(ctx)
 
-	container2, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("test_db_2"),
+	container2, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("test_db_2"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start second container: %v", err)
@@ -199,10 +199,10 @@ func TestFoundationDBContainerConfiguration(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with custom configuration
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("custom_test_db"),
-		foundationdbtc.WithAPIVersion(720),
-		foundationdbtc.WithMemory("2GB"),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("custom_test_db"),
+		foundationdb.WithAPIVersion(720),
+		foundationdb.WithMemory("2GB"),
 		testcontainers.WithEnv(map[string]string{
 			"CUSTOM_ENV": "test_value",
 		}),

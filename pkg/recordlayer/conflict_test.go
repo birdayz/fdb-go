@@ -1,4 +1,4 @@
-package recordlayer
+package recordlayer_test
 
 import (
 	"context"
