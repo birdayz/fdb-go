@@ -2,9 +2,11 @@ package conformance_test
 
 import (
 	"context"
+	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/google/uuid"
 
 	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -13,23 +15,28 @@ import (
 var _ = Describe("Delete Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TestEnvironment
+		env   *helpers.TenantEnvironment
 		store *helpers.ConformanceStore
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		var err error
-		env, err = helpers.SetupTestEnvironment(ctx, "delete_conformance")
+
+		// Generate unique tenant name using UUID
+		tenantName := fmt.Sprintf("delete_%s", uuid.New().String())
+
+		// Use shared container with tenant isolation
+		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Create conformance store for automatic Go/Java validation
-		store = helpers.NewConformanceStore(env.RecordDB, env.MetaData, env.Keyspace, env.ClusterFile)
+		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)
+			_ = env.Cleanup(ctx)  // Deletes tenant only
 		}
 	})
 

@@ -2,10 +2,12 @@ package conformance_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/google/uuid"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
@@ -16,22 +18,27 @@ import (
 var _ = Describe("Isolation Level Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TestEnvironment
+		env   *helpers.TenantEnvironment
 		store *helpers.ConformanceStore
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		var err error
-		env, err = helpers.SetupTestEnvironment(ctx, "isolation_conformance")
+
+		// Generate unique tenant name using UUID
+		tenantName := fmt.Sprintf("isolation_%s", uuid.New().String())
+
+		// Use shared container with tenant isolation
+		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store = helpers.NewConformanceStore(env.RecordDB, env.MetaData, env.Keyspace, env.ClusterFile)
+		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)
+			_ = env.Cleanup(ctx)  // Deletes tenant only
 		}
 	})
 
@@ -41,9 +48,6 @@ var _ = Describe("Isolation Level Conformance", func() {
 
 		It("should NOT see uncommitted record with SNAPSHOT isolation", func() {
 			orderID := int64(10001)
-
-			db, err := env.Container.GetFDBDatabase(ctx)
-			Expect(err).NotTo(HaveOccurred())
 
 			// Channel to coordinate transaction timing
 			tx1Started := make(chan struct{})
@@ -57,7 +61,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)
@@ -92,7 +96,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				// Wait for TX1 to start and save record
 				<-tx1Started
 
-				tx2, err := db.CreateTransaction()
+				tx2, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx2)
@@ -118,7 +122,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			wg.Wait()
 
 			// After TX1 commits, new transaction with SNAPSHOT should see the record
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -322,9 +326,6 @@ var _ = Describe("Isolation Level Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			db, err := env.Container.GetFDBDatabase(ctx)
-			Expect(err).NotTo(HaveOccurred())
-
 			tx1Started := make(chan struct{})
 			tx2Committed := make(chan struct{})
 
@@ -337,7 +338,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)

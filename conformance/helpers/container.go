@@ -97,6 +97,80 @@ func (env *TestEnvironment) OpenRecordStore(ctx context.Context) (*recordlayer.F
 	return store, err
 }
 
+// TenantEnvironment encapsulates everything needed for a tenant-isolated conformance test
+// Unlike TestEnvironment which creates a new container per test, this reuses a shared container
+// and provides isolation via FDB tenants
+type TenantEnvironment struct {
+	Container   *foundationdbtc.Container
+	RecordDB    *recordlayer.FDBDatabase
+	MetaData    *recordlayer.RecordMetaData
+	Keyspace    subspace.Subspace
+	ClusterFile string
+	TenantName  string
+}
+
+// SetupTenantEnvironment creates a tenant-isolated test environment
+// This reuses the provided container and creates an FDB tenant for isolation
+func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Container, tenantName string) (*TenantEnvironment, error) {
+	// Create tenant
+	tenant, err := container.CreateTenant(ctx, tenantName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tenant: %w", err)
+	}
+
+	// Create Record Layer database wrapper for tenant
+	recordDB := recordlayer.NewFDBDatabaseFromTenant(tenant)
+
+	// Create metadata
+	metaData, err := createOrderMetaData()
+	if err != nil {
+		_ = container.DeleteTenant(ctx, tenantName)
+		return nil, fmt.Errorf("failed to create metadata: %w", err)
+	}
+
+	// Get cluster file
+	clusterFile, err := container.ClusterFile(ctx)
+	if err != nil {
+		_ = container.DeleteTenant(ctx, tenantName)
+		return nil, fmt.Errorf("failed to get cluster file: %w", err)
+	}
+
+	// Use root subspace - tenant provides isolation
+	keyspace := subspace.Sub(tuple.Tuple{})
+
+	return &TenantEnvironment{
+		Container:   container,
+		RecordDB:    recordDB,
+		MetaData:    metaData,
+		Keyspace:    keyspace,
+		ClusterFile: clusterFile,
+		TenantName:  tenantName,
+	}, nil
+}
+
+// Cleanup deletes the tenant (not the container)
+func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
+	if env.Container != nil && env.TenantName != "" {
+		return env.Container.DeleteTenant(ctx, env.TenantName)
+	}
+	return nil
+}
+
+// OpenRecordStore opens a record store in the tenant's keyspace
+func (env *TenantEnvironment) OpenRecordStore(ctx context.Context) (*recordlayer.FDBRecordStore, error) {
+	var store *recordlayer.FDBRecordStore
+	_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		var err error
+		store, err = recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(env.MetaData).
+			SetSubspace(env.Keyspace).
+			CreateOrOpen()
+		return nil, err
+	})
+	return store, err
+}
+
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema
 func createOrderMetaData() (*recordlayer.RecordMetaData, error) {
 	// Build metadata with primary key defined (matches pattern from record layer tests)

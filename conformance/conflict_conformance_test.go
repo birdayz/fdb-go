@@ -2,10 +2,12 @@ package conformance_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/google/uuid"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -18,22 +20,27 @@ import (
 var _ = Describe("Conflict Range Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TestEnvironment
+		env   *helpers.TenantEnvironment
 		store *helpers.ConformanceStore
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		var err error
-		env, err = helpers.SetupTestEnvironment(ctx, "conflict_conformance")
+
+		// Generate unique tenant name using UUID
+		tenantName := fmt.Sprintf("conflict_%s", uuid.New().String())
+
+		// Use shared container with tenant isolation
+		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store = helpers.NewConformanceStore(env.RecordDB, env.MetaData, env.Keyspace, env.ClusterFile)
+		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)
+			_ = env.Cleanup(ctx)  // Deletes tenant only
 		}
 	})
 
@@ -46,9 +53,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 			// Create initial record
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
-			Expect(err).NotTo(HaveOccurred())
-
-			db, err := env.Container.GetFDBDatabase(ctx)
 			Expect(err).NotTo(HaveOccurred())
 
 			tx1AddedConflict := make(chan struct{})
@@ -64,7 +68,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer GinkgoRecover()
 
 				// Create raw transaction
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)
@@ -101,7 +105,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				<-tx1AddedConflict
 
 				// Create raw transaction
-				tx2, err := db.CreateTransaction()
+				tx2, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx2)
@@ -213,8 +217,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			db, err := env.Container.GetFDBDatabase(ctx)
-			Expect(err).NotTo(HaveOccurred())
 
 			tx1ReadDone := make(chan struct{})
 			tx2Committed := make(chan struct{})
@@ -229,7 +231,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer GinkgoRecover()
 
 				// Create raw transaction
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)
@@ -267,7 +269,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				<-tx1ReadDone
 
 				// Create raw transaction
-				tx2, err := db.CreateTransaction()
+				tx2, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx2)
@@ -478,8 +480,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 		It("should handle conflict when SaveRecord happens after AddRecordReadConflict", func() {
 			orderID := int64(50001)
 
-			db, err := env.Container.GetFDBDatabase(ctx)
-			Expect(err).NotTo(HaveOccurred())
 
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})
@@ -493,7 +493,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)
@@ -545,8 +545,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			db, err := env.Container.GetFDBDatabase(ctx)
-			Expect(err).NotTo(HaveOccurred())
 
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})
@@ -560,7 +558,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1, err := db.CreateTransaction()
+				tx1, err := env.RecordDB.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
 
 				rtx := recordlayer.NewFDBRecordContext(tx1)

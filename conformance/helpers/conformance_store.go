@@ -20,6 +20,7 @@ type ConformanceStore struct {
 	keyspace    subspace.Subspace
 	java        *JavaInvoker
 	clusterFile string // FDB cluster file content for Java
+	tenantName  string // Optional tenant name for tenant-isolated tests
 }
 
 // bytesToIntArray converts a byte slice to an int array for JSON serialization
@@ -32,6 +33,19 @@ func bytesToIntArray(b []byte) []int {
 	return ints
 }
 
+// buildJavaParams builds base parameters for Java invocations
+// Includes tenant name if configured
+func (c *ConformanceStore) buildJavaParams() map[string]interface{} {
+	params := map[string]interface{}{
+		"clusterFile": c.clusterFile,
+		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
+	}
+	if c.tenantName != "" {
+		params["tenantName"] = c.tenantName
+	}
+	return params
+}
+
 // NewConformanceStore creates a store that validates Go operations with Java
 func NewConformanceStore(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, keyspace subspace.Subspace, clusterFile string) *ConformanceStore {
 	return &ConformanceStore{
@@ -40,6 +54,20 @@ func NewConformanceStore(recordDB *recordlayer.FDBDatabase, metaData *recordlaye
 		keyspace:    keyspace,
 		java:        NewJavaInvoker(),
 		clusterFile: clusterFile,
+		tenantName:  "", // No tenant
+	}
+}
+
+// NewConformanceStoreWithTenant creates a store for tenant-isolated tests
+// The tenant name is passed to Java to ensure both Go and Java use the same tenant
+func NewConformanceStoreWithTenant(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, clusterFile string, tenantName string) *ConformanceStore {
+	return &ConformanceStore{
+		recordDB:    recordDB,
+		metaData:    metaData,
+		keyspace:    subspace.Sub(tuple.Tuple{}), // Root subspace - tenant provides isolation
+		java:        NewJavaInvoker(),
+		clusterFile: clusterFile,
+		tenantName:  tenantName,
 	}
 }
 
@@ -70,11 +98,9 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 	}
 
 	// 2. Validate by having Java also save the record
-	err = c.java.InvokeAs(ctx, "saveOrder", map[string]interface{}{
-		"clusterFile": c.clusterFile,
-		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
-		"order":       order,
-	}, nil)
+	params := c.buildJavaParams()
+	params["order"] = order
+	err = c.java.InvokeAs(ctx, "saveOrder", params, nil)
 	if err != nil {
 		return fmt.Errorf("java validation failed: %w", err)
 	}
@@ -86,11 +112,9 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 	}
 
 	var javaOrder gen.Order
-	err = c.java.InvokeAs(ctx, "loadOrder", map[string]interface{}{
-		"clusterFile": c.clusterFile,
-		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
-		"orderID":     *order.OrderId,
-	}, &javaOrder)
+	params = c.buildJavaParams()
+	params["orderID"] = *order.OrderId
+	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
 	if err != nil {
 		return fmt.Errorf("java cross-check read failed: %w", err)
 	}
@@ -112,11 +136,9 @@ func (c *ConformanceStore) LoadRecord(ctx context.Context, orderID int64) (*gen.
 
 	// 2. Cross-check with Java
 	var javaOrder gen.Order
-	err = c.java.InvokeAs(ctx, "loadOrder", map[string]interface{}{
-		"clusterFile": c.clusterFile,
-		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
-		"orderID":     orderID,
-	}, &javaOrder)
+	params := c.buildJavaParams()
+	params["orderID"] = orderID
+	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
 	if err != nil {
 		return nil, fmt.Errorf("java cross-check failed: %w", err)
 	}
@@ -151,11 +173,9 @@ func (c *ConformanceStore) checkExistenceWithBoth(ctx context.Context, orderID i
 	}
 
 	// Check with Java
-	err = c.java.InvokeAs(ctx, "recordExists", map[string]interface{}{
-		"clusterFile": c.clusterFile,
-		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
-		"orderID":     orderID,
-	}, &javaExists)
+	params := c.buildJavaParams()
+	params["orderID"] = orderID
+	err = c.java.InvokeAs(ctx, "recordExists", params, &javaExists)
 	if err != nil {
 		return false, false, fmt.Errorf("java existence check failed: %w", err)
 	}

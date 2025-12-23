@@ -304,8 +304,9 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 	time.Sleep(2 * time.Second)
 
 	// Run fdbcli WITHOUT --cluster-file (it uses the default /etc/foundationdb/fdb.cluster)
+	// Enable tenant_mode=optional_experimental to support multi-tenancy
 	exitCode, output, err := c.Exec(initCtx, []string{
-		"/usr/bin/fdbcli", "--exec", "configure new single memory",
+		"/usr/bin/fdbcli", "--exec", "configure new single memory tenant_mode=optional_experimental",
 	})
 
 	outputBytes, _ := io.ReadAll(output)
@@ -398,6 +399,57 @@ func (c *Container) GetFDBDatabase(ctx context.Context) (fdb.Database, error) {
 	c.dbInitialized = true
 
 	return db, nil
+}
+
+// CreateTenant creates an FDB tenant for test isolation
+// The tenant provides a completely isolated keyspace within the same database
+// Returns a Tenant handle that can be used with FDBDatabase
+func (c *Container) CreateTenant(ctx context.Context, name string) (fdb.Tenant, error) {
+	// Ensure database is initialized
+	c.dbMutex.Lock()
+	if !c.dbInitialized {
+		c.dbMutex.Unlock()
+		return fdb.Tenant{}, fmt.Errorf("database not initialized, call GetFDBDatabase first")
+	}
+	db := c.cachedDB
+	c.dbMutex.Unlock()
+
+	// Create tenant using FDB API
+	tenantKey := fdb.Key(name)
+	err := db.CreateTenant(tenantKey)
+	if err != nil {
+		return fdb.Tenant{}, fmt.Errorf("failed to create tenant %q: %w", name, err)
+	}
+
+	// Open and return tenant handle
+	tenant, err := db.OpenTenant(tenantKey)
+	if err != nil {
+		// Try to clean up the tenant we just created
+		_ = db.DeleteTenant(tenantKey)
+		return fdb.Tenant{}, fmt.Errorf("failed to open tenant %q: %w", name, err)
+	}
+
+	return tenant, nil
+}
+
+// DeleteTenant deletes an FDB tenant and all its data
+// This provides atomic cleanup of all tenant data
+func (c *Container) DeleteTenant(ctx context.Context, name string) error {
+	c.dbMutex.Lock()
+	if !c.dbInitialized {
+		c.dbMutex.Unlock()
+		return nil // Nothing to clean up
+	}
+	db := c.cachedDB
+	c.dbMutex.Unlock()
+
+	tenantKey := fdb.Key(name)
+	err := db.DeleteTenant(tenantKey)
+	if err != nil {
+		return fmt.Errorf("failed to delete tenant %q: %w", name, err)
+	}
+
+	return nil
 }
 
 // Terminate terminates both containers, cleans up network and temporary files
