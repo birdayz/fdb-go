@@ -194,7 +194,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(40001)
 
 			order := helpers.StandardOrder(orderID)
-			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged)
+			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -208,7 +208,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 
 			// Update with same type - should succeed
 			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
-			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged)
+			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify update
@@ -231,7 +231,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(50001)
 
 			order := helpers.StandardOrder(orderID)
-			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged)
+			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordDoesNotExist)).To(BeTrue())
 		})
@@ -246,7 +246,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 
 			// Update with same type - should succeed
 			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
-			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged)
+			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify update
@@ -349,24 +349,24 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(recordlayer.RecordExistenceCheckNone.ErrorIfExists()).To(BeFalse())
 			Expect(recordlayer.RecordExistenceCheckErrorIfExists.ErrorIfExists()).To(BeTrue())
 			Expect(recordlayer.RecordExistenceCheckErrorIfNotExists.ErrorIfExists()).To(BeFalse())
-			Expect(recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged.ErrorIfExists()).To(BeFalse())
-			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged.ErrorIfExists()).To(BeFalse())
+			Expect(recordlayer.RecordExistenceCheckErrorIfTypeChanged.ErrorIfExists()).To(BeFalse())
+			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged.ErrorIfExists()).To(BeFalse())
 		})
 
 		It("should have correct ErrorIfNotExists() values", func() {
 			Expect(recordlayer.RecordExistenceCheckNone.ErrorIfNotExists()).To(BeFalse())
 			Expect(recordlayer.RecordExistenceCheckErrorIfExists.ErrorIfNotExists()).To(BeFalse())
 			Expect(recordlayer.RecordExistenceCheckErrorIfNotExists.ErrorIfNotExists()).To(BeTrue())
-			Expect(recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged.ErrorIfNotExists()).To(BeFalse())
-			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged.ErrorIfNotExists()).To(BeTrue())
+			Expect(recordlayer.RecordExistenceCheckErrorIfTypeChanged.ErrorIfNotExists()).To(BeFalse())
+			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged.ErrorIfNotExists()).To(BeTrue())
 		})
 
 		It("should have correct ErrorIfTypeChanged() values", func() {
 			Expect(recordlayer.RecordExistenceCheckNone.ErrorIfTypeChanged()).To(BeFalse())
 			Expect(recordlayer.RecordExistenceCheckErrorIfExists.ErrorIfTypeChanged()).To(BeFalse())
 			Expect(recordlayer.RecordExistenceCheckErrorIfNotExists.ErrorIfTypeChanged()).To(BeFalse())
-			Expect(recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged.ErrorIfTypeChanged()).To(BeTrue())
-			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged.ErrorIfTypeChanged()).To(BeTrue())
+			Expect(recordlayer.RecordExistenceCheckErrorIfTypeChanged.ErrorIfTypeChanged()).To(BeTrue())
+			Expect(recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged.ErrorIfTypeChanged()).To(BeTrue())
 		})
 
 		It("should have meaningful String() values", func() {
@@ -374,8 +374,8 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 				recordlayer.RecordExistenceCheckNone,
 				recordlayer.RecordExistenceCheckErrorIfExists,
 				recordlayer.RecordExistenceCheckErrorIfNotExists,
-				recordlayer.RecordExistenceCheckErrorIfRecordTypeChanged,
-				recordlayer.RecordExistenceCheckErrorIfNotExistsOrRecordTypeChanged,
+				recordlayer.RecordExistenceCheckErrorIfTypeChanged,
+				recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged,
 			}
 
 			for _, mode := range modes {
