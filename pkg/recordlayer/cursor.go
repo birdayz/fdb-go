@@ -147,7 +147,7 @@ type RecordCursor[T any] interface {
 
 // ForEach applies a function to each record in the cursor
 func ForEach[T any](ctx context.Context, cursor RecordCursor[T], fn func(T) error) error {
-	defer cursor.Close()
+	defer func() { _ = cursor.Close() }()
 	
 	for {
 		result, err := cursor.OnNext(ctx)

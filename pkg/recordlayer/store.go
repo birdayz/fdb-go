@@ -390,7 +390,7 @@ func (store *FDBRecordStore) UpdateRecord(record proto.Message) (*FDBStoredRecor
 // Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1222
 func (store *FDBRecordStore) AddRecordReadConflict(primaryKey tuple.Tuple) {
 	recordRange := store.getRangeForRecord(primaryKey)
-	store.context.Transaction().AddReadConflictRange(recordRange)
+	_ = store.context.Transaction().AddReadConflictRange(recordRange)
 }
 
 // AddRecordWriteConflict adds a write conflict range for the given primary key.
@@ -401,7 +401,7 @@ func (store *FDBRecordStore) AddRecordReadConflict(primaryKey tuple.Tuple) {
 // Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1228
 func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
 	recordRange := store.getRangeForRecord(primaryKey)
-	store.context.Transaction().AddWriteConflictRange(recordRange)
+	_ = store.context.Transaction().AddWriteConflictRange(recordRange)
 }
 
 // getRangeForRecord calculates the key range that covers all possible record type variants

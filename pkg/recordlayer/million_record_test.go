@@ -148,7 +148,7 @@ func TestMillionRecordScan(t *testing.T) {
 			}
 
 			cursor := store.ScanRecords(continuation, scanProps)
-			defer cursor.Close()
+			defer func() { _ = cursor.Close() }()
 			
 			batchRecordCount := 0
 			var lastContinuation RecordCursorContinuation
@@ -342,7 +342,7 @@ func TestMillionRecordPerformance(t *testing.T) {
 			CursorStreamingMode: StreamingModeIterator,
 		}
 		cursor := store.ScanRecords(nil, unlimitedScan)
-		defer cursor.Close()
+		defer func() { _ = cursor.Close() }()
 
 		for range cursor.Seq(ctx) {
 			readCount++

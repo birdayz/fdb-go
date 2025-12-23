@@ -23,7 +23,11 @@ func TestCursorSeqInterface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 	
 	// Initialize database
 	err = container.InitializeDatabase(ctx)

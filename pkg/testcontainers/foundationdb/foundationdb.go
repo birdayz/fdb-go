@@ -88,7 +88,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	// Step 2: Create custom socat container with custom entrypoint (waits for config)
 	socatEntrypoint, err := mountsFS.ReadFile("mounts/socat-entrypoint.sh")
 	if err != nil {
-		nw.Remove(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("read socat entrypoint: %w", err)
 	}
 
@@ -118,23 +118,23 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	socatContainer, err := testcontainers.GenericContainer(ctx, socatGenericReq)
 	if err != nil {
-		nw.Remove(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("create socat container: %w", err)
 	}
 
 	// Step 3: Start socat container to get mapped port
 	err = socatContainer.Start(ctx)
 	if err != nil {
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("start socat container: %w", err)
 	}
 
 	// Get mapped port from socat container
 	mappedPort, err := socatContainer.MappedPort(ctx, "4500/tcp")
 	if err != nil {
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("get socat mapped port: %w", err)
 	}
 
@@ -145,16 +145,16 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	socatConfig := fmt.Sprintf("# Injected by testcontainers\nTARGET_PORT=%d", sharedPort)
 	err = socatContainer.CopyToContainer(ctx, []byte(socatConfig), "/tmp/socat.conf", 0644)
 	if err != nil {
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("copy socat config: %w", err)
 	}
 
 	// Step 5: Create FoundationDB container with custom entrypoint
 	fdbEntrypoint, err := mountsFS.ReadFile("mounts/fdb-entrypoint.sh")
 	if err != nil {
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("read FDB entrypoint: %w", err)
 	}
 
@@ -182,8 +182,8 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 			continue
 		}
 		if err := opt.Customize(&fdbGenericReq); err != nil {
-			socatContainer.Terminate(ctx)
-			nw.Remove(ctx)
+			_ = socatContainer.Terminate(ctx)
+			_ = nw.Remove(ctx)
 			return nil, fmt.Errorf("customize request: %w", err)
 		}
 	}
@@ -196,17 +196,17 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	container, err := testcontainers.GenericContainer(ctx, fdbGenericReq)
 	if err != nil {
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("create FDB container: %w", err)
 	}
 
 	// Step 6: Start FDB container
 	err = container.Start(ctx)
 	if err != nil {
-		container.Terminate(ctx)
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = container.Terminate(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("start FDB container: %w", err)
 	}
 
@@ -214,9 +214,9 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	fdbConfig := fmt.Sprintf("# Injected by testcontainers\nFDB_PORT=%d", sharedPort)
 	err = container.CopyToContainer(ctx, []byte(fdbConfig), "/tmp/fdb.conf", 0644)
 	if err != nil {
-		container.Terminate(ctx)
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = container.Terminate(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("copy FDB config: %w", err)
 	}
 
@@ -224,9 +224,9 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	waitStrategy := wait.ForLog("FDBD joined cluster").WithStartupTimeout(30 * time.Second)
 	err = waitStrategy.WaitUntilReady(ctx, container)
 	if err != nil {
-		container.Terminate(ctx)
-		socatContainer.Terminate(ctx)
-		nw.Remove(ctx)
+		_ = container.Terminate(ctx)
+		_ = socatContainer.Terminate(ctx)
+		_ = nw.Remove(ctx)
 		return nil, fmt.Errorf("wait for FDB: %w", err)
 	}
 
@@ -346,12 +346,12 @@ func (c *Container) GetFDBDatabase(ctx context.Context) (fdb.Database, error) {
 	}
 
 	if _, err := io.WriteString(tmpFile, clusterFile); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
 		var empty fdb.Database
 		return empty, fmt.Errorf("failed to write cluster file: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Initialize FDB API version (only once per process)
 	apiVersionOnce.Do(func() {
@@ -367,14 +367,14 @@ func (c *Container) GetFDBDatabase(ctx context.Context) (fdb.Database, error) {
 	apiVersionMutex.RUnlock()
 
 	if currentVersion != c.APIVersion() {
-		os.Remove(tmpFile.Name())
+		_ = os.Remove(tmpFile.Name())
 		var empty fdb.Database
 		return empty, fmt.Errorf("FDB API version mismatch: already set to %d, requested %d (can only set once per process)", currentVersion, c.APIVersion())
 	}
 
-	db, err := fdb.Open(tmpFile.Name(), []byte("DB"))
+	db, err := fdb.OpenDatabase(tmpFile.Name())
 	if err != nil {
-		os.Remove(tmpFile.Name())
+		_ = os.Remove(tmpFile.Name())
 		var empty fdb.Database
 		return empty, fmt.Errorf("failed to open FDB database: %w", err)
 	}

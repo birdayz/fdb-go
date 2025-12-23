@@ -19,10 +19,9 @@ type keyValueCursor struct {
 	highEndpoint   EndpointType
 	continuation   []byte
 	scanProperties ScanProperties
-	
+
 	// Internal state
 	iterator      *fdb.RangeIterator
-	hasMore       bool
 	closed        bool
 	recordsRead   int
 	bytesScanned  int64
@@ -236,7 +235,7 @@ func (c *keyValueCursor) Close() error {
 // This implements Go 1.23+ iter.Seq for idiomatic iteration
 func (c *keyValueCursor) Seq(ctx context.Context) iter.Seq[*FDBStoredRecord[proto.Message]] {
 	return func(yield func(*FDBStoredRecord[proto.Message]) bool) {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		
 		for {
 			result, err := c.OnNext(ctx)
@@ -260,7 +259,7 @@ func (c *keyValueCursor) Seq(ctx context.Context) iter.Seq[*FDBStoredRecord[prot
 // This implements Go 1.23+ iter.Seq2 for error-aware iteration
 func (c *keyValueCursor) Seq2(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], error] {
 	return func(yield func(*FDBStoredRecord[proto.Message], error) bool) {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		
 		for {
 			result, err := c.OnNext(ctx)
@@ -286,7 +285,7 @@ func (c *keyValueCursor) Seq2(ctx context.Context) iter.Seq2[*FDBStoredRecord[pr
 // Useful for implementing pagination or resumable iteration
 func (c *keyValueCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], RecordCursorContinuation] {
 	return func(yield func(*FDBStoredRecord[proto.Message], RecordCursorContinuation) bool) {
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		
 		for {
 			result, err := c.OnNext(ctx)

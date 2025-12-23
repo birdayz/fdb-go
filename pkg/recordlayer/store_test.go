@@ -43,7 +43,7 @@ func BenchmarkDeserializeRecord_Standard(b *testing.B) {
 	
 	// Warmup - run a few iterations to stabilize performance
 	for i := 0; i < 1000; i++ {
-		store.deserializeRecord(testUnionData, recordType)
+		_, _ = store.deserializeRecord(testUnionData, recordType)
 	}
 	
 	b.ResetTimer()

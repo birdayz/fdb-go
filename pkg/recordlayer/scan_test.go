@@ -22,7 +22,11 @@ func TestBasicScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 	
 	// Initialize database
 	err = container.InitializeDatabase(ctx)
@@ -82,7 +86,7 @@ func TestBasicScan(t *testing.T) {
 
 		// Scan all records
 		cursor := store.ScanRecords(nil, ForwardScan)
-		defer cursor.Close()
+		defer func() { _ = cursor.Close() }()
 
 		var foundOrders []int64
 		scanCtx := context.Background()

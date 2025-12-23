@@ -27,7 +27,11 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	// Initialize database
 	err = container.InitializeDatabase(ctx)
@@ -92,7 +96,11 @@ func TestMultipleContainersIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start first container: %v", err)
 	}
-	defer container1.Terminate(ctx)
+	defer func() {
+		if err := container1.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container1: %v", err)
+		}
+	}()
 
 	container2, err := foundationdb.Run(ctx, "",
 		foundationdb.WithDatabase("test_db_2"),
@@ -100,7 +108,11 @@ func TestMultipleContainersIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start second container: %v", err)
 	}
-	defer container2.Terminate(ctx)
+	defer func() {
+		if err := container2.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container2: %v", err)
+		}
+	}()
 
 	// Verify containers are isolated
 	connStr1, err := container1.ConnectionString(ctx)
@@ -210,7 +222,11 @@ func TestFoundationDBContainerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start container with custom config: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	// Verify configuration
 	if container.Database() != "custom_test_db" {

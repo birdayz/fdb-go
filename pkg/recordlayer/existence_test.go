@@ -25,7 +25,11 @@ func TestRecordExists_BasicFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	// Initialize database
 	err = container.InitializeDatabase(ctx)
@@ -224,7 +228,11 @@ func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	err = container.InitializeDatabase(ctx)
 	if err != nil {
@@ -326,7 +334,11 @@ func TestInsertRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	err = container.InitializeDatabase(ctx)
 	if err != nil {
@@ -428,7 +440,11 @@ func TestUpdateRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
 
 	err = container.InitializeDatabase(ctx)
 	if err != nil {
