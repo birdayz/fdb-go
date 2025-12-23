@@ -19,16 +19,18 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Install FoundationDB Client
-        run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+      - name: Install Just
+        uses: extractions/setup-just@v2
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          working-directory: .
+      - name: Install FoundationDB Client
+        run: just install-fdb
+
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
+
+      - name: Run lint
+        run: just lint
 
   test:
     name: Test
@@ -42,16 +44,17 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Install Just
+        uses: extractions/setup-just@v2
+
       - name: Install FoundationDB Client
-        run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+        run: just install-fdb
 
       - name: Install dependencies
         run: go mod download
 
       - name: Run unit tests
-        run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./pkg/...
+        run: just test-unit
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -77,10 +80,11 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
+      - name: Install Just
+        uses: extractions/setup-just@v2
+
       - name: Install FoundationDB Client
-        run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+        run: just install-fdb
 
       - name: Install Ginkgo
         run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
@@ -89,9 +93,7 @@ jobs:
         run: go mod download
 
       - name: Run conformance tests
-        run: |
-          cd conformance
-          ginkgo -v --timeout 10m
+        run: just test-conformance
         env:
           TESTCONTAINERS_RYUK_DISABLED: false
 
@@ -107,10 +109,11 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Install Just
+        uses: extractions/setup-just@v2
+
       - name: Install FoundationDB Client
-        run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+        run: just install-fdb
 
       - name: Build
-        run: go build -v ./...
+        run: just build
