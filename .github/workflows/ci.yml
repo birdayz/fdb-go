@@ -25,8 +25,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-lint-go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: |
+            ${{ runner.os }}-lint-go-build-
             ${{ runner.os }}-go-build-
 
       - name: Install Just
@@ -68,8 +69,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-test-go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: |
+            ${{ runner.os }}-test-go-build-
             ${{ runner.os }}-go-build-
 
       - name: Install Just
@@ -105,8 +107,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-conformance-go-build-${{ hashFiles('**/go.sum') }}
           restore-keys: |
+            ${{ runner.os }}-conformance-go-build-
             ${{ runner.os }}-go-build-
 
       - name: Set up Java
@@ -131,38 +134,10 @@ jobs:
       - name: Install Ginkgo
         run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
 
+      - name: Build Java conformance helper
+        run: cd conformance/java && ./gradlew build
+
       - name: Run conformance tests
         run: just test-conformance
         env:
           TESTCONTAINERS_RYUK_DISABLED: false
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Cache Go build cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-build-
-
-      - name: Install Just
-        uses: extractions/setup-just@v2
-
-      - name: Install FoundationDB Client
-        run: just install-fdb
-
-      - name: Build
-        run: just build
