@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -47,43 +48,48 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			tx1Started := make(chan struct{})
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			tx1AddedConflict := make(chan struct{})
 			tx2Committed := make(chan struct{})
 
 			var tx1Err error
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: Add read conflict
+			// Transaction 1: Add read conflict (NO RETRY LOGIC)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1Err = func() error {
-					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-						fdbStore, err := recordlayer.NewStoreBuilder().
-							SetContext(rtx).
-							SetMetaDataProvider(env.MetaData).
-							SetSubspace(env.Keyspace).
-							CreateOrOpen()
-						if err != nil {
-							return nil, err
-						}
+				// Create raw transaction
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Add read conflict on the key
-						fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Signal TX2 can proceed
-						close(tx1Started)
+				// Add read conflict on the key FIRST
+				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
 
-						// Wait for TX2 to commit its write
-						<-tx2Committed
+				// CRITICAL: TX1 must write SOMETHING to be a read-write transaction
+				// Read-only transactions don't check for conflicts in FDB!
+				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))
 
-						// Try to commit - should fail due to conflict
-						return nil, nil
-					})
-					return err
-				}()
+				// Signal that TX1 has added the conflict range
+				close(tx1AddedConflict)
+
+				// Wait for TX2 to commit its write
+				<-tx2Committed
+
+				// Try to commit - should fail due to conflict
+				tx1Err = rtx.Commit()
 			}()
 
 			// Transaction 2: Write to same key
@@ -91,24 +97,28 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				// Wait for TX1 to add read conflict
-				<-tx1Started
+				// Wait for TX1 to add its read conflict range
+				<-tx1AddedConflict
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-					fdbStore, err := recordlayer.NewStoreBuilder().
-						SetContext(rtx).
-						SetMetaDataProvider(env.MetaData).
-						SetSubspace(env.Keyspace).
-						CreateOrOpen()
-					Expect(err).NotTo(HaveOccurred())
+				// Create raw transaction
+				tx2, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-					// Write to the same key - this will conflict with TX1's read conflict
-					order := helpers.NewOrder(orderID).WithPrice(999).Build()
-					_, err = fdbStore.SaveRecord(order)
-					Expect(err).NotTo(HaveOccurred())
+				rtx := recordlayer.NewFDBRecordContext(tx2)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-					return nil, nil
-				})
+				// Write to the same key - this will conflict with TX1's read conflict
+				order := helpers.NewOrder(orderID).WithPrice(999).Build()
+				_, err = fdbStore.SaveRecord(order)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Commit TX2
+				err = rtx.Commit()
 				Expect(err).NotTo(HaveOccurred())
 
 				// Signal TX1 that we've committed
@@ -117,7 +127,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 			wg.Wait()
 
-			// TX1 should have failed with a conflict error
+			// TX1 should have failed with a conflict error (FDB error code 1020 = NOT_COMMITTED)
 			Expect(tx1Err).To(HaveOccurred(), "TX1 should fail due to write conflict on read-conflicted key")
 		})
 
@@ -188,8 +198,13 @@ var _ = Describe("Conflict Range Conformance", func() {
 	})
 
 	Describe("AddRecordWriteConflict", func() {
-		// Tests that AddRecordWriteConflict() causes read conflicts
+		// Tests that AddRecordWriteConflict() causes conflicts for transactions that read the key
 		// Java: recordStore.addRecordWriteConflict(primaryKey)
+		// Write conflicts work like this:
+		//   - TX1 reads key X (implicit read conflict)
+		//   - TX2 adds write conflict on key X (treats it as if TX2 wrote X)
+		//   - TX2 commits
+		//   - TX1 tries to commit - FAILS because X was "written" after TX1's read version
 
 		It("should cause conflict when another transaction reads", func() {
 			orderID := int64(40003)
@@ -198,68 +213,79 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			tx1Started := make(chan struct{})
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			tx1ReadDone := make(chan struct{})
 			tx2Committed := make(chan struct{})
 
 			var tx1Err error
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: Add write conflict
+			// Transaction 1: READ the key first (creates implicit read conflict)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1Err = func() error {
-					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-						fdbStore, err := recordlayer.NewStoreBuilder().
-							SetContext(rtx).
-							SetMetaDataProvider(env.MetaData).
-							SetSubspace(env.Keyspace).
-							CreateOrOpen()
-						if err != nil {
-							return nil, err
-						}
+				// Create raw transaction
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Add write conflict on the key
-						fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Signal TX2 can proceed
-						close(tx1Started)
+				// Read the key - creates implicit read conflict
+				storedRecord, err := fdbStore.LoadRecord(tuple.Tuple{orderID})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(storedRecord).NotTo(BeNil())
 
-						// Wait for TX2 to commit its read
-						<-tx2Committed
+				// Must write something to be a read-write transaction
+				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))
 
-						// Try to commit - should fail due to conflict
-						return nil, nil
-					})
-					return err
-				}()
+				// Signal TX2 can proceed
+				close(tx1ReadDone)
+
+				// Wait for TX2 to commit its write conflict
+				<-tx2Committed
+
+				// Try to commit - should fail because TX2's write conflict overlaps with our read
+				tx1Err = rtx.Commit()
 			}()
 
-			// Transaction 2: Read from same key
+			// Transaction 2: Add write conflict on the same key
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				// Wait for TX1 to add write conflict
-				<-tx1Started
+				// Wait for TX1 to read the key first
+				<-tx1ReadDone
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-					fdbStore, err := recordlayer.NewStoreBuilder().
-						SetContext(rtx).
-						SetMetaDataProvider(env.MetaData).
-						SetSubspace(env.Keyspace).
-						CreateOrOpen()
-					Expect(err).NotTo(HaveOccurred())
+				// Create raw transaction
+				tx2, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-					// Read from the same key - this will conflict with TX1's write conflict
-					storedRecord, err := fdbStore.LoadRecord(tuple.Tuple{orderID})
-					Expect(err).NotTo(HaveOccurred())
-					Expect(storedRecord).NotTo(BeNil())
+				rtx := recordlayer.NewFDBRecordContext(tx2)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-					return nil, nil
-				})
+				// Add write conflict - this is like "writing" to the key
+				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+
+				// Must write something to be a read-write transaction
+				rtx.Transaction().Set(fdb.Key("tx2_marker"), []byte("tx2"))
+
+				// Commit TX2 - this will "write" to orderID
+				err = rtx.Commit()
 				Expect(err).NotTo(HaveOccurred())
 
 				// Signal TX1 that we've committed
@@ -269,7 +295,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			wg.Wait()
 
 			// TX1 should have failed with a conflict error
-			Expect(tx1Err).To(HaveOccurred(), "TX1 should fail due to read conflict on write-conflicted key")
+			Expect(tx1Err).To(HaveOccurred(), "TX1 should fail because TX2's write conflict overlaps with TX1's read")
 		})
 
 		It("should be self-consistent within same transaction", func() {
@@ -447,9 +473,13 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 	Describe("Conflict Behavior with RecordStore Operations", func() {
 		// Integration tests: How conflicts interact with actual CRUD operations
+		// IMPORTANT: Use raw transactions (CreateTransaction) NOT Run() to avoid retry logic
 
 		It("should handle conflict when SaveRecord happens after AddRecordReadConflict", func() {
 			orderID := int64(50001)
+
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
 
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})
@@ -458,34 +488,35 @@ var _ = Describe("Conflict Range Conformance", func() {
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: AddRecordReadConflict, wait, then try to proceed
+			// Transaction 1: AddRecordReadConflict (raw transaction, NO RETRY)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1Err = func() error {
-					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-						fdbStore, err := recordlayer.NewStoreBuilder().
-							SetContext(rtx).
-							SetMetaDataProvider(env.MetaData).
-							SetSubspace(env.Keyspace).
-							CreateOrOpen()
-						if err != nil {
-							return nil, err
-						}
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Add read conflict first
-						fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-						close(tx1Started)
+				// Add read conflict first
+				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
 
-						// Wait for TX2 to save
-						<-tx2Done
+				// CRITICAL: Must write something to be a read-write transaction
+				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))
 
-						return nil, nil
-					})
-					return err
-				}()
+				close(tx1Started)
+
+				// Wait for TX2 to save
+				<-tx2Done
+
+				// Try to commit - should fail
+				tx1Err = rtx.Commit()
 			}()
 
 			// Transaction 2: SaveRecord to same key
@@ -503,7 +534,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 			wg.Wait()
 
-			// TX1 should fail
+			// TX1 should fail with conflict
 			Expect(tx1Err).To(HaveOccurred())
 		})
 
@@ -514,6 +545,9 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})
 
@@ -521,31 +555,32 @@ var _ = Describe("Conflict Range Conformance", func() {
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: AddRecordReadConflict
+			// Transaction 1: AddRecordReadConflict (raw transaction, NO RETRY)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1Err = func() error {
-					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-						fdbStore, err := recordlayer.NewStoreBuilder().
-							SetContext(rtx).
-							SetMetaDataProvider(env.MetaData).
-							SetSubspace(env.Keyspace).
-							CreateOrOpen()
-						if err != nil {
-							return nil, err
-						}
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-						fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-						close(tx1Started)
-						<-tx2Done
+				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
 
-						return nil, nil
-					})
-					return err
-				}()
+				// CRITICAL: Must write something to be a read-write transaction
+				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))
+
+				close(tx1Started)
+				<-tx2Done
+
+				// Try to commit - should fail
+				tx1Err = rtx.Commit()
 			}()
 
 			// Transaction 2: Delete the record
@@ -564,7 +599,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 			wg.Wait()
 
-			// TX1 should fail
+			// TX1 should fail with conflict
 			Expect(tx1Err).To(HaveOccurred())
 		})
 	})

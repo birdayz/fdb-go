@@ -216,6 +216,88 @@ func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.Range
 - Conflict detection validation
 - Performance impact measurement
 
+#### ⚠️ Critical FDB Conflict Detection Semantics
+
+**IMPORTANT**: FoundationDB conflict detection has a subtle requirement that is **not documented** in the FDB API documentation but is critical for correct behavior:
+
+**A transaction MUST establish a read version before conflict ranges function properly.**
+
+##### The Problem
+
+If you add a read/write conflict range **without** establishing a read version first:
+```go
+// ❌ BROKEN: No read version established
+tx1, _ := db.CreateTransaction()
+tx1.AddReadConflictRange(keyRange)  // FDB uses version 0!
+// ... later ...
+tx1.Commit()  // May succeed when it should conflict
+```
+
+FDB will anchor the conflict range at "version 0" (or a cached minimum version). When a concurrent transaction commits at a much higher version (e.g., version 1000), no conflict is detected because FDB sees:
+- TX1 "read at version 0"
+- TX2 "wrote at version 1000"
+- These appear serializable → no conflict detected → **TX1 incorrectly succeeds**
+
+##### The Solution
+
+Establish a read version **before** adding conflict ranges:
+
+**Option 1: Explicit GetReadVersion() (RECOMMENDED)**
+```go
+// ✅ CORRECT: Explicitly establish read version
+tx1, _ := db.CreateTransaction()
+_ = tx1.GetReadVersion().MustGet()  // Anchor at current version
+tx1.AddReadConflictRange(keyRange)  // Now properly anchored
+```
+
+**Option 2: Perform any read operation**
+```go
+// ✅ CORRECT: Any read establishes version
+tx1, _ := db.CreateTransaction()
+_, _ = tx1.Get(someKey).Get()  // Establishes read version
+tx1.AddReadConflictRange(keyRange)
+```
+
+**Option 3: Snapshot read**
+```go
+// ✅ CORRECT: Snapshot read establishes version without conflicts
+tx1, _ := db.CreateTransaction()
+_ = tx1.Snapshot().Get(someKey).Get()
+tx1.AddReadConflictRange(keyRange)
+```
+
+##### Why This Matters for Record Layer
+
+In our Go port, **all conflict detection tests must follow this pattern**:
+
+```go
+// Pattern for conflict tests (NO RETRY LOGIC)
+tx1, _ := db.CreateTransaction()
+
+// CRITICAL: Establish read version first
+_ = tx1.GetReadVersion().MustGet()
+
+// Now build store and add conflicts
+rtx := recordlayer.NewFDBRecordContext(tx1)
+fdbStore, _ := recordlayer.NewStoreBuilder().
+    SetContext(rtx).
+    SetMetaDataProvider(metaData).
+    SetSubspace(keyspace).
+    CreateOrOpen()
+
+// Add conflicts - now properly anchored
+fdbStore.AddRecordReadConflict(primaryKey)
+```
+
+##### Sources
+
+This behavior is confirmed in:
+- [FDB GitHub Issue #2504](https://github.com/apple/foundationdb/issues/2504): "if there is a read version, use it, otherwise assume 0"
+- [FDB Forums: Why Read Version is necessary](https://forums.foundationdb.org/t/why-read-version-is-necessary-for-read-write-transactions/2386)
+- [FDB GitHub Issue #126](https://github.com/apple/foundationdb/issues/126): "Any keys in the write cache are skipped from explicit conflict range insert"
+
+**Key Takeaway**: This is a well-known FDB gotcha that affects **all languages** using FDB's conflict detection features. The Java FDB bindings have the same requirement, but it's often hidden by higher-level abstractions that perform reads first.
+
 ---
 
 ### Phase 1 Deliverables

@@ -408,20 +408,29 @@ func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
 // for the given primary key. This matches Java's TupleRange.allOf(primaryKey).toRange(recordsSubspace())
 //
 // Java equivalent: TupleRange.allOf(primaryKey).toRange(recordsSubspace())
-// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371
+// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371-377, 449-456
 //
-// The range includes all keys that begin with the primary key tuple.
-// We create a subspace with the primary key, which gives us a range that covers
-// all tuples that extend the primary key (e.g., {orderID, recordTypeIndex}).
+// Java's TupleRange.allOf() creates a range with RANGE_INCLUSIVE endpoints:
+//   - Begin: recordsSubspace.pack(primaryKey)
+//   - End: recordsSubspace.pack(primaryKey) + 0xFF
+//
+// This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
+// The range covers all keys that start with the primary key tuple (e.g., {orderID, recordTypeIndex, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
 	recordsSubspace := store.subspace.Sub(RecordKey)
-	// Create a subspace for this primary key
-	// This subspace will cover all keys that start with primaryKey
-	// e.g., if primaryKey = {orderID}, this covers {orderID, recordTypeIndex}
-	primaryKeySubspace := recordsSubspace.Sub(primaryKey...)
-	// Return the subspace as an ExactRange
-	// Subspaces implement ExactRange and cover [prefix + '\x00', prefix + '\xff')
-	return primaryKeySubspace
+
+	// Pack the primary key directly (Java's TupleRange.allOf approach)
+	// This gives us recordsSubspace.pack(primaryKey)
+	beginKey := recordsSubspace.Pack(primaryKey)
+
+	// For the end key, append 0xFF to create the inclusive range
+	// This matches Java's RANGE_INCLUSIVE endpoint handling
+	endKey := append(recordsSubspace.Pack(primaryKey), 0xFF)
+
+	return fdb.KeyRange{
+		Begin: fdb.Key(beginKey),
+		End:   fdb.Key(endKey),
+	}
 }
 
 // Context returns the record context this store is using

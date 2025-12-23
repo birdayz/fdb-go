@@ -326,6 +326,9 @@ var _ = Describe("Isolation Level Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
 			tx1Started := make(chan struct{})
 			tx2Committed := make(chan struct{})
 
@@ -333,42 +336,41 @@ var _ = Describe("Isolation Level Conformance", func() {
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: Read with SERIALIZABLE, then try to write
+			// Transaction 1: Read with SERIALIZABLE (raw transaction, NO RETRY)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				tx1Err = func() error {
-					_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-						fdbStore, err := recordlayer.NewStoreBuilder().
-							SetContext(rtx).
-							SetMetaDataProvider(env.MetaData).
-							SetSubspace(env.Keyspace).
-							CreateOrOpen()
-						if err != nil {
-							return nil, err
-						}
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Read with SERIALIZABLE - this WILL add read conflict
-						exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSerializable)
-						if err != nil {
-							return nil, err
-						}
-						Expect(exists).To(BeTrue())
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-						// Signal TX2 can proceed
-						close(tx1Started)
+				// Read with SERIALIZABLE - this WILL add read conflict
+				exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue())
 
-						// Wait for TX2 to commit its write
-						<-tx2Committed
+				// CRITICAL: Must write something to be a read-write transaction
+				// Read-only transactions don't check for conflicts in FDB!
+				order := helpers.NewOrder(orderID).WithPrice(888).Build()
+				_, err = fdbStore.SaveRecord(order)
+				Expect(err).NotTo(HaveOccurred())
 
-						// Try to write - should fail with conflict
-						order := helpers.NewOrder(orderID).WithPrice(888).Build()
-						_, err = fdbStore.SaveRecord(order)
-						return nil, err
-					})
-					return err
-				}()
+				// Signal TX2 can proceed
+				close(tx1Started)
+
+				// Wait for TX2 to commit its write
+				<-tx2Committed
+
+				// Try to commit - should fail with conflict
+				tx1Err = rtx.Commit()
 			}()
 
 			// Transaction 2: Write to same key after TX1 read
