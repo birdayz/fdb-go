@@ -100,6 +100,12 @@ func (e *RecordAlreadyExistsError) Error() string {
 	return e.Message
 }
 
+// Is implements error matching for errors.Is()
+func (e *RecordAlreadyExistsError) Is(target error) bool {
+	_, ok := target.(*RecordAlreadyExistsError)
+	return ok
+}
+
 // RecordDoesNotExistError is returned when attempting to update a record that does not exist.
 // Includes structured context matching Java's RecordDoesNotExistException.
 //
@@ -113,6 +119,12 @@ type RecordDoesNotExistError struct {
 
 func (e *RecordDoesNotExistError) Error() string {
 	return e.Message
+}
+
+// Is implements error matching for errors.Is()
+func (e *RecordDoesNotExistError) Is(target error) bool {
+	_, ok := target.(*RecordDoesNotExistError)
+	return ok
 }
 
 // RecordTypeChangedError is returned when attempting to update a record but its type has changed.
@@ -130,6 +142,12 @@ type RecordTypeChangedError struct {
 
 func (e *RecordTypeChangedError) Error() string {
 	return e.Message
+}
+
+// Is implements error matching for errors.Is()
+func (e *RecordTypeChangedError) Is(target error) bool {
+	_, ok := target.(*RecordTypeChangedError)
+	return ok
 }
 
 // Sentinel errors for backwards compatibility with existing code using errors.Is()

@@ -2,6 +2,7 @@ package recordlayer_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -311,7 +312,7 @@ func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 			if err == nil {
 				t.Fatal("Expected SaveRecordWithOptions to fail for existing record")
 			}
-			if err != recordlayer.ErrRecordAlreadyExists {
+			if !errors.Is(err, recordlayer.ErrRecordAlreadyExists) {
 				t.Fatalf("Expected ErrRecordAlreadyExists, got: %v", err)
 			}
 
@@ -417,7 +418,7 @@ func TestInsertRecord(t *testing.T) {
 			if err == nil {
 				t.Fatal("InsertRecord should fail for existing record")
 			}
-			if err != recordlayer.ErrRecordAlreadyExists {
+			if !errors.Is(err, recordlayer.ErrRecordAlreadyExists) {
 				t.Fatalf("Expected ErrRecordAlreadyExists, got: %v", err)
 			}
 
@@ -490,7 +491,7 @@ func TestUpdateRecord(t *testing.T) {
 			if err == nil {
 				t.Fatal("UpdateRecord should fail for non-existent record")
 			}
-			if err != recordlayer.ErrRecordDoesNotExist {
+			if !errors.Is(err, recordlayer.ErrRecordDoesNotExist) {
 				t.Fatalf("Expected ErrRecordDoesNotExist, got: %v", err)
 			}
 
