@@ -380,8 +380,8 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			for _, mode := range modes {
 				str := mode.String()
 				Expect(str).NotTo(BeEmpty())
-				// Should be readable for debugging
-				Expect(len(str)).To(BeNumerically(">", 4))
+				// Should be readable for debugging (NONE is 4 chars, others are longer)
+				Expect(len(str)).To(BeNumerically(">=", 4))
 			}
 		})
 	})

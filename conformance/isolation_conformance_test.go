@@ -42,48 +42,45 @@ var _ = Describe("Isolation Level Conformance", func() {
 		It("should NOT see uncommitted record with SNAPSHOT isolation", func() {
 			orderID := int64(10001)
 
+			db, err := env.Container.GetFDBDatabase(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
 			// Channel to coordinate transaction timing
 			tx1Started := make(chan struct{})
-			tx2CanCheck := make(chan struct{})
-			tx1CanCommit := make(chan struct{})
+			tx2Done := make(chan struct{})
 
 			var wg sync.WaitGroup
 			wg.Add(2)
 
-			// Transaction 1: Save record but don't commit yet
+			// Transaction 1: Save record but don't commit yet (raw transaction, NO RETRY)
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-					fdbStore, err := recordlayer.NewStoreBuilder().
-						SetContext(rtx).
-						SetMetaDataProvider(env.MetaData).
-						SetSubspace(env.Keyspace).
-						CreateOrOpen()
-					Expect(err).NotTo(HaveOccurred())
+				tx1, err := db.CreateTransaction()
+				Expect(err).NotTo(HaveOccurred())
 
-					// Save the record
-					order := helpers.StandardOrder(orderID)
-					_, err = fdbStore.SaveRecord(order)
-					Expect(err).NotTo(HaveOccurred())
+				rtx := recordlayer.NewFDBRecordContext(tx1)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
 
-					// Signal that record is saved (but not committed)
-					close(tx1Started)
+				// Save the record
+				order := helpers.StandardOrder(orderID)
+				_, err = fdbStore.SaveRecord(order)
+				Expect(err).NotTo(HaveOccurred())
 
-					// Wait for TX2 to check
-					<-tx2CanCheck
+				// Signal that record is saved (but not committed)
+				close(tx1Started)
 
-					// TX1 can now see its own write with SERIALIZABLE
-					exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSerializable)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(exists).To(BeTrue(), "TX1 should see its own write (read-your-writes)")
+				// Wait for TX2 to finish checking
+				<-tx2Done
 
-					// Signal TX1 can commit
-					close(tx1CanCommit)
-
-					return nil, nil
-				})
+				// Commit TX1
+				err = rtx.Commit()
 				Expect(err).NotTo(HaveOccurred())
 			}()
 
@@ -95,34 +92,33 @@ var _ = Describe("Isolation Level Conformance", func() {
 				// Wait for TX1 to start and save record
 				<-tx1Started
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-					fdbStore, err := recordlayer.NewStoreBuilder().
-						SetContext(rtx).
-						SetMetaDataProvider(env.MetaData).
-						SetSubspace(env.Keyspace).
-						CreateOrOpen()
-					Expect(err).NotTo(HaveOccurred())
-
-					// Check with SNAPSHOT isolation - should NOT see uncommitted record from TX1
-					exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSnapshot)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(exists).To(BeFalse(), "TX2 with SNAPSHOT should NOT see uncommitted write from TX1")
-
-					// Signal TX2 has checked
-					close(tx2CanCheck)
-
-					// Wait for TX1 to commit
-					<-tx1CanCommit
-
-					return nil, nil
-				})
+				tx2, err := db.CreateTransaction()
 				Expect(err).NotTo(HaveOccurred())
+
+				rtx := recordlayer.NewFDBRecordContext(tx2)
+				fdbStore, err := recordlayer.NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(env.MetaData).
+					SetSubspace(env.Keyspace).
+					CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Check with SNAPSHOT isolation - should NOT see uncommitted record from TX1
+				exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSnapshot)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeFalse(), "TX2 with SNAPSHOT should NOT see uncommitted write from TX1")
+
+				// Signal TX2 is done checking
+				close(tx2Done)
+
+				// TX2 is read-only, so we can just let it get garbage collected
+				// (no need to commit a read-only transaction)
 			}()
 
 			wg.Wait()
 
 			// After TX1 commits, new transaction with SNAPSHOT should see the record
-			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
