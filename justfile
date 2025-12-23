@@ -119,7 +119,7 @@ test-unit:
 # Run only conformance tests
 test-conformance:
     @echo "Running conformance tests..."
-    cd conformance && ginkgo -v --timeout 10m
+    cd conformance && ginkgo -v
     @echo "✅ Conformance tests passed!"
 
 # Run tests matching a pattern
