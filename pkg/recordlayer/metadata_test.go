@@ -459,12 +459,3 @@ func TestUnionDescriptor_Validation(t *testing.T) {
 		}
 	})
 }
-
-// Helper to create a test message that's definitely not in the union
-type invalidMessage struct {
-	protoreflect.Message
-}
-
-func (m *invalidMessage) ProtoReflect() protoreflect.Message {
-	return m
-}
