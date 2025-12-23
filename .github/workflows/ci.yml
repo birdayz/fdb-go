@@ -21,8 +21,8 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -44,8 +44,8 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Install dependencies
         run: go mod download
@@ -79,8 +79,8 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Install Ginkgo
         run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
@@ -109,8 +109,8 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+          wget https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Build
         run: go build -v ./...

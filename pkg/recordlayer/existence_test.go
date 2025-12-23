@@ -1,4 +1,4 @@
-package recordlayer
+package recordlayer_test
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // TestRecordExists_BasicFunctionality tests the RecordExists method
@@ -18,9 +18,9 @@ func TestRecordExists_BasicFunctionality(t *testing.T) {
 	ctx := context.Background()
 
 	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("record_exists_test"),
-		foundationdbtc.WithAPIVersion(720),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("record_exists_test"),
+		foundationdb.WithAPIVersion(720),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
@@ -217,9 +217,9 @@ func TestRecordExists_BasicFunctionality(t *testing.T) {
 func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 	ctx := context.Background()
 
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("existence_check_error_if_exists"),
-		foundationdbtc.WithAPIVersion(720),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("existence_check_error_if_exists"),
+		foundationdb.WithAPIVersion(720),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
@@ -319,9 +319,9 @@ func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 func TestInsertRecord(t *testing.T) {
 	ctx := context.Background()
 
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("insert_record_test"),
-		foundationdbtc.WithAPIVersion(720),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("insert_record_test"),
+		foundationdb.WithAPIVersion(720),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
@@ -421,9 +421,9 @@ func TestInsertRecord(t *testing.T) {
 func TestUpdateRecord(t *testing.T) {
 	ctx := context.Background()
 
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("update_record_test"),
-		foundationdbtc.WithAPIVersion(720),
+	container, err := foundationdb.Run(ctx, "",
+		foundationdb.WithDatabase("update_record_test"),
+		foundationdb.WithAPIVersion(720),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
