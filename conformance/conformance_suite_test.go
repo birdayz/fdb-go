@@ -21,7 +21,7 @@ var _ = BeforeSuite(func() {
 
 	GinkgoWriter.Println("🚀 Starting shared FDB container for test suite...")
 
-	// Start ONE container for the entire suite
+	// Start ONE container per parallel node
 	sharedContainer, err = foundationdbtc.Run(suiteCtx, "",
 		foundationdbtc.WithAPIVersion(720),
 	)
