@@ -231,6 +231,41 @@ func (c *ConformanceStore) RecordExists(ctx context.Context, orderID int64) (boo
 	return goExists, nil
 }
 
+// SaveRecordWithOptions saves a record with existence checking
+func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.Message, existenceCheck recordlayer.RecordExistenceCheck) error {
+	_, ok := msg.(*gen.Order)
+	if !ok {
+		return fmt.Errorf("only Order records are supported in conformance tests")
+	}
+
+	// Save with Go using existence check
+	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(c.metaData).
+			SetSubspace(c.keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = store.SaveRecordWithOptions(msg, existenceCheck)
+		return nil, err
+	})
+
+	return err
+}
+
+// InsertRecord saves a new record (ERROR_IF_EXISTS check)
+func (c *ConformanceStore) InsertRecord(ctx context.Context, msg proto.Message) error {
+	return c.SaveRecordWithOptions(ctx, msg, recordlayer.RecordExistenceCheckErrorIfExists)
+}
+
+// UpdateRecord updates an existing record (ERROR_IF_NOT_EXISTS_OR_TYPE_CHANGED check)
+func (c *ConformanceStore) UpdateRecord(ctx context.Context, msg proto.Message) error {
+	return c.SaveRecordWithOptions(ctx, msg, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+}
+
 // loadRecordWithGo is a helper that loads a record using only Go (for internal use)
 func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
 	var order *gen.Order
