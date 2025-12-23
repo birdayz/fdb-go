@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -211,7 +212,7 @@ func TestLoadRecord_InvalidRecordTypeKey(t *testing.T) {
 	// This simulates data corruption or version mismatch
 	t.Run("LoadWithInvalidTypeIndex", func(t *testing.T) {
 		// First, let's manually write bad data with an invalid record type index
-		err := db.Transact(func(tr recordlayer.FDBTransaction) (interface{}, error) {
+		_, err := db.Transact(func(tr fdb.Transaction) (interface{}, error) {
 			// Use an invalid record type index (e.g., 999)
 			invalidTypeIndex := int64(999)
 			primaryKey := int64(3001)
@@ -303,7 +304,7 @@ func TestRecordExists_InvalidRecordTypeKey(t *testing.T) {
 	keyspace := subspace.FromBytes(tuple.Tuple{"exists_invalid_type_test"}.Pack())
 
 	// Manually write a key with invalid type index
-	err = db.Transact(func(tr recordlayer.FDBTransaction) (interface{}, error) {
+	_, err = db.Transact(func(tr fdb.Transaction) (interface{}, error) {
 		invalidTypeIndex := int64(888)
 		primaryKey := int64(4001)
 
