@@ -5,22 +5,44 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestTypedStoreConformance(t *testing.T) {
-	// Initialize FDB API
-	fdb.MustAPIVersion(630)
-	
-	// Create database connection
-	database := fdb.MustOpenDefault()
-	
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("typed_store_conformance_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
 	// Create FDB Record Layer database wrapper
-	fdbDB := NewFDBDatabase(database)
+	fdbDB := NewFDBDatabase(db)
 	
 	// Create metadata for Order records
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -28,8 +50,8 @@ func TestTypedStoreConformance(t *testing.T) {
 	metaData := builder.Build()
 	
 	fmt.Println("=== Go Typed Store Conformance Test ===")
-	
-	_, err := fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
+
+	_, err = fdbDB.Run(context.Background(), func(ctx *FDBRecordContext) (interface{}, error) {
 		// Create base store
 		baseStore, err := NewStoreBuilder().
 			SetContext(ctx).

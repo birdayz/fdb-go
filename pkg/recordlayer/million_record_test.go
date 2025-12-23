@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // TestMillionRecordScan tests scanning 1M records across multiple transactions
@@ -23,18 +23,39 @@ func TestMillionRecordScan(t *testing.T) {
 		t.Skip("Skipping 1M record test in short mode")
 	}
 
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(630)
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("million_record_scan_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	db := fdb.MustOpenDefault()
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
 	fdbDB := NewFDBDatabase(db)
 
 	const numRecords = 1_000_000    // Full 1M record test
 	const writeBatchSize = 2_000   // Reasonable batch size with proper retry logic
 	const scanBatchSize = 10_000   // Records per scan batch
-
-	ctx := context.Background()
 	
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -257,16 +278,38 @@ func TestMillionRecordPerformance(t *testing.T) {
 
 	// This test is similar but focuses on performance benchmarking
 	// It can be used to measure improvements over time
-	
+
 	const numRecords = 100_000 // Smaller for CI/quick runs
-	
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(630)
+
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("million_record_performance_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	db := fdb.MustOpenDefault()
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
 	fdbDB := NewFDBDatabase(db)
-	ctx := context.Background()
 	
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -324,7 +367,7 @@ func TestMillionRecordPerformance(t *testing.T) {
 	// Read phase
 	readStart := time.Now()
 	readCount := 0
-	_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(metaData).

@@ -7,25 +7,47 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // TestLargeScanSequentialAccess tests that records are read in the correct order
 func TestLargeScanSequentialAccess(t *testing.T) {
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(630)
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("large_scan_sequential_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	db := fdb.MustOpenDefault()
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
 	fdbDB := NewFDBDatabase(db)
 
 	const numRecords = 10_000 // Reasonable test size
-	ctx := context.Background()
 	
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -35,7 +57,7 @@ func TestLargeScanSequentialAccess(t *testing.T) {
 	log.Printf("Testing sequential access order with %d records", numRecords)
 
 	// Write records
-	_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(metaData).
@@ -123,16 +145,38 @@ func TestLargeScanSequentialAccess(t *testing.T) {
 
 // TestBasicContinuation tests basic continuation mechanism with a smaller dataset
 func TestBasicContinuation(t *testing.T) {
-	if !fdb.IsAPIVersionSelected() {
-		fdb.MustAPIVersion(630)
+	ctx := context.Background()
+
+	// Start FoundationDB testcontainer
+	container, err := foundationdbtc.Run(ctx, "",
+		foundationdbtc.WithDatabase("basic_continuation_test"),
+		foundationdbtc.WithAPIVersion(720),
+	)
+	if err != nil {
+		t.Fatalf("Failed to start FoundationDB container: %v", err)
+	}
+	defer func() {
+		if err := container.Terminate(ctx); err != nil {
+			t.Logf("Failed to terminate container: %v", err)
+		}
+	}()
+
+	// Initialize database
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	db := fdb.MustOpenDefault()
+	// Get FDB database connection
+	db, err := container.GetFDBDatabase(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get FDB database: %v", err)
+	}
+
 	fdbDB := NewFDBDatabase(db)
 
 	const numRecords = 1000
 	const batchSize = 50
-	ctx := context.Background()
 	
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -142,7 +186,7 @@ func TestBasicContinuation(t *testing.T) {
 	log.Printf("Testing continuation mechanism with %d records", numRecords)
 
 	// Write records
-	_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 		store, err := NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(metaData).
