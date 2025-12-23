@@ -8,7 +8,6 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
