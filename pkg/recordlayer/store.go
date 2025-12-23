@@ -411,17 +411,17 @@ func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
 // Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/TupleRange.java:371
 //
 // The range includes all keys that begin with the primary key tuple.
-// For RANGE_INCLUSIVE endpoints, Java appends 0xFF byte to the packed high key (not as a tuple element).
-func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.KeyRange {
+// We create a subspace with the primary key, which gives us a range that covers
+// all tuples that extend the primary key (e.g., {orderID, recordTypeIndex}).
+func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
 	recordsSubspace := store.subspace.Sub(RecordKey)
-	// Pack the primary key tuple once
-	packedKey := recordsSubspace.Pack(primaryKey)
-	// Low key: exactly the packed primary key (RANGE_INCLUSIVE - no change)
-	lowKey := packedKey
-	// High key: packed primary key + 0xFF byte (RANGE_INCLUSIVE - append 0xFF byte)
-	// This creates a prefix range covering all keys that start with primaryKey
-	highKey := append(packedKey, 0xFF)
-	return fdb.KeyRange{Begin: fdb.Key(lowKey), End: fdb.Key(highKey)}
+	// Create a subspace for this primary key
+	// This subspace will cover all keys that start with primaryKey
+	// e.g., if primaryKey = {orderID}, this covers {orderID, recordTypeIndex}
+	primaryKeySubspace := recordsSubspace.Sub(primaryKey...)
+	// Return the subspace as an ExactRange
+	// Subspaces implement ExactRange and cover [prefix + '\x00', prefix + '\xff')
+	return primaryKeySubspace
 }
 
 // Context returns the record context this store is using
