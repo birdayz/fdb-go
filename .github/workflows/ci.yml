@@ -19,6 +19,11 @@ jobs:
         with:
           go-version: '1.21'
 
+      - name: Install FoundationDB Client
+        run: |
+          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
@@ -36,6 +41,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+
+      - name: Install FoundationDB Client
+        run: |
+          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
 
       - name: Install dependencies
         run: go mod download
@@ -67,6 +77,11 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
+      - name: Install FoundationDB Client
+        run: |
+          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
+
       - name: Install Ginkgo
         run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
 
@@ -91,6 +106,11 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+
+      - name: Install FoundationDB Client
+        run: |
+          wget https://github.com/apple/foundationdb/releases/download/7.1.61/foundationdb-clients_7.1.61-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.1.61-1_amd64.deb
 
       - name: Build
         run: go build -v ./...
