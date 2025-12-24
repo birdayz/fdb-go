@@ -24,9 +24,7 @@ jobs:
       - name: Cache Go build cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
+          path: ~/.cache/go-build
           key: ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-lint-go-
@@ -69,9 +67,7 @@ jobs:
       - name: Cache Go build and test cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
+          path: ~/.cache/go-build
           key: ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-test-go-
@@ -108,9 +104,7 @@ jobs:
       - name: Cache Go build and test cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
+          path: ~/.cache/go-build
           key: ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-conformance-go-
