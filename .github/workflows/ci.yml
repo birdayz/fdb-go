@@ -27,11 +27,9 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
+          key: ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-lint-go-
-            ${{ runner.os }}-go-
 
       - name: Install Just
         uses: extractions/setup-just@v2
@@ -74,11 +72,9 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
+          key: ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-test-go-
-            ${{ runner.os }}-go-
 
       - name: Install Just
         uses: actions/setup-just@v2
@@ -115,11 +111,9 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
+          key: ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-conformance-go-
-            ${{ runner.os }}-go-
 
       - name: Set up Java
         uses: actions/setup-java@v4
