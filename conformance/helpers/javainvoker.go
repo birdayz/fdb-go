@@ -113,12 +113,12 @@ func startJavaServer() (*JavaInvoker, error) {
 		default:
 			resp, err := invoker.httpClient.Get(baseURL + "/health")
 			if err == nil && resp.StatusCode == 200 {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				fmt.Fprintf(os.Stderr, "Java conformance server ready at %s\n", baseURL)
 				return invoker, nil
 			}
 			if resp != nil {
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -192,7 +192,7 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[st
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {

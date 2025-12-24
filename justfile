@@ -112,9 +112,14 @@ test-coverage:
 
 # Run only unit tests (pkg/...)
 test-unit:
-    @echo "Running unit tests..."
-    go test -v -race -coverprofile=coverage.txt -covermode=atomic ./pkg/...
+    @echo "Running unit tests (short mode - skips million record stress tests)..."
+    go test -short -v -race -coverprofile=coverage.txt -covermode=atomic ./pkg/...
     @echo "✅ Unit tests passed!"
+
+test-unit-full:
+    @echo "Running ALL unit tests (including million record stress tests)..."
+    go test -v -race -coverprofile=coverage.txt -covermode=atomic ./pkg/...
+    @echo "✅ All unit tests passed!"
 
 # Run only conformance tests
 test-conformance:

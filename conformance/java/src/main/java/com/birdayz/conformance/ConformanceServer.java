@@ -17,7 +17,9 @@ import java.util.Map;
  * Eliminates Gradle startup overhead by running as a persistent daemon.
  */
 public class ConformanceServer {
-    private static final Gson gson = new Gson();
+    private static final Gson gson = new com.google.gson.GsonBuilder()
+        .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
+        .create();
     private static final ConformanceSteps steps = new ConformanceSteps();
 
     public static void main(String[] args) throws IOException {
@@ -180,6 +182,15 @@ public class ConformanceServer {
                         } catch (Exception e) {
                             throw new RuntimeException("Failed to deserialize protobuf message: " + e.getMessage(), e);
                         }
+                    } else if (paramType == long.class || paramType == Long.class) {
+                        // Handle long specially to avoid precision loss from double conversion
+                        result[i] = value.getAsLong();
+                    } else if (paramType == int.class || paramType == Integer.class) {
+                        result[i] = value.getAsInt();
+                    } else if (paramType == boolean.class || paramType == Boolean.class) {
+                        result[i] = value.getAsBoolean();
+                    } else if (paramType == String.class) {
+                        result[i] = value.getAsString();
                     } else {
                         result[i] = gson.fromJson(value, paramType);
                     }
