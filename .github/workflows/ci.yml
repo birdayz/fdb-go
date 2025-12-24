@@ -24,11 +24,14 @@ jobs:
       - name: Cache Go build cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-lint-go-build-${{ hashFiles('**/go.sum') }}
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
           restore-keys: |
-            ${{ runner.os }}-lint-go-build-
-            ${{ runner.os }}-go-build-
+            ${{ runner.os }}-lint-go-${{ hashFiles('**/go.sum') }}-
+            ${{ runner.os }}-lint-go-
+            ${{ runner.os }}-go-
 
       - name: Install Just
         uses: extractions/setup-just@v2
@@ -65,17 +68,20 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Cache Go build cache
+      - name: Cache Go build and test cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-test-go-build-${{ hashFiles('**/go.sum') }}
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
           restore-keys: |
-            ${{ runner.os }}-test-go-build-
-            ${{ runner.os }}-go-build-
+            ${{ runner.os }}-test-go-${{ hashFiles('**/go.sum') }}-
+            ${{ runner.os }}-test-go-
+            ${{ runner.os }}-go-
 
       - name: Install Just
-        uses: extractions/setup-just@v2
+        uses: actions/setup-just@v2
 
       - name: Install FoundationDB Client
         run: just install-fdb
@@ -103,14 +109,17 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
-      - name: Cache Go build cache
+      - name: Cache Go build and test cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-conformance-go-build-${{ hashFiles('**/go.sum') }}
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}-${{ hashFiles('**/*.go') }}
           restore-keys: |
-            ${{ runner.os }}-conformance-go-build-
-            ${{ runner.os }}-go-build-
+            ${{ runner.os }}-conformance-go-${{ hashFiles('**/go.sum') }}-
+            ${{ runner.os }}-conformance-go-
+            ${{ runner.os }}-go-
 
       - name: Set up Java
         uses: actions/setup-java@v4
