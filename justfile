@@ -131,9 +131,15 @@ test-unit-full:
     go test -v -race -coverprofile=coverage.txt -covermode=atomic ./pkg/...
     @echo "✅ All unit tests passed!"
 
-# Run only conformance tests
+# Run only conformance tests (cacheable)
 test-conformance:
     @echo "Running conformance tests..."
+    cd conformance && ginkgo -p
+    @echo "✅ Conformance tests passed!"
+
+# Run conformance tests with verbose output
+test-conformance-verbose:
+    @echo "Running conformance tests (verbose)..."
     cd conformance && ginkgo -p -v
     @echo "✅ Conformance tests passed!"
 
