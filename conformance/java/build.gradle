@@ -29,6 +29,14 @@ task runConformance(type: JavaExec) {
     standardOutput = System.out
 }
 
+// Task to run conformance HTTP server
+task runServer(type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.birdayz.conformance.ConformanceServer'
+    standardInput = System.in
+    standardOutput = System.out
+}
+
 sourceSets {
     main {
         java {

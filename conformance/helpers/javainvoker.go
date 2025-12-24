@@ -1,63 +1,179 @@
 package helpers
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
-// JavaInvoker provides generic method invocation on Java conformance steps
+// JavaInvoker provides method invocation on Java conformance steps via persistent HTTP server
 type JavaInvoker struct {
-	gradlew string
-	workdir string
-	timeout time.Duration
+	baseURL    string
+	serverCmd  *exec.Cmd
+	httpClient *http.Client
+	mu         sync.Mutex
 }
 
-// NewJavaInvoker creates a new Java invoker with default settings
+var (
+	globalInvoker     *JavaInvoker
+	globalInvokerOnce sync.Once
+	globalInvokerErr  error
+)
+
+// NewJavaInvoker creates a new Java invoker with persistent server
 func NewJavaInvoker() *JavaInvoker {
-	// workdir is relative to where tests run (the conformance directory)
-	return &JavaInvoker{
-		gradlew: "gradlew",
-		workdir: "java",
-		timeout: 2 * time.Minute, // FDB operations can take time
+	globalInvokerOnce.Do(func() {
+		globalInvoker, globalInvokerErr = startJavaServer()
+	})
+
+	if globalInvokerErr != nil {
+		panic(fmt.Sprintf("Failed to start Java server: %v", globalInvokerErr))
 	}
+
+	return globalInvoker
+}
+
+// startJavaServer launches the Java HTTP server and waits for it to be ready
+func startJavaServer() (*JavaInvoker, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	workdir := filepath.Join(wd, "java")
+	gradlew := filepath.Join(workdir, "gradlew")
+
+	// Start server
+	cmd := exec.Command(gradlew, "runServer", "--console=plain")
+	cmd.Dir = workdir
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start server: %w", err)
+	}
+
+	// Read port from stdout
+	scanner := bufio.NewScanner(stdout)
+	var port string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "CONFORMANCE_SERVER_PORT=") {
+			port = strings.TrimPrefix(line, "CONFORMANCE_SERVER_PORT=")
+			break
+		}
+	}
+
+	if port == "" {
+		// Try to read stderr for error details
+		stderrBytes, _ := io.ReadAll(stderr)
+		return nil, fmt.Errorf("failed to read port from server stdout\nstderr: %s", string(stderrBytes))
+	}
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%s", port)
+
+	invoker := &JavaInvoker{
+		baseURL:   baseURL,
+		serverCmd: cmd,
+		httpClient: &http.Client{
+			Timeout: 2 * time.Minute,
+		},
+	}
+
+	// Wait for server to be ready
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			return nil, fmt.Errorf("server did not become ready in time")
+		default:
+			resp, err := invoker.httpClient.Get(baseURL + "/health")
+			if err == nil && resp.StatusCode == 200 {
+				resp.Body.Close()
+				fmt.Fprintf(os.Stderr, "Java conformance server ready at %s\n", baseURL)
+				return invoker, nil
+			}
+			if resp != nil {
+				resp.Body.Close()
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+// Close shuts down the Java server
+func (j *JavaInvoker) Close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if j.baseURL == "" {
+		return nil
+	}
+
+	// Try graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", j.baseURL+"/shutdown", nil)
+	_, _ = j.httpClient.Do(req)
+
+	// Wait a bit for graceful shutdown
+	time.Sleep(500 * time.Millisecond)
+
+	// Force kill if still running
+	if j.serverCmd.Process != nil {
+		_ = j.serverCmd.Process.Kill()
+	}
+
+	return nil
 }
 
 // Request is the JSON structure sent to Java
 type Request struct {
-	Step string      `json:"step"`
-	Args interface{} `json:"args"`
+	Step   string                 `json:"step"`
+	Params map[string]interface{} `json:"params"`
 }
 
 // Response is the JSON structure returned from Java
 type Response struct {
 	Success bool            `json:"success"`
 	Result  json.RawMessage `json:"result"`
-	Error   *ErrorDetail    `json:"error"`
+	Error   string          `json:"error,omitempty"`
 }
 
-// ErrorDetail contains error information from Java
-type ErrorDetail struct {
-	Message    string `json:"message"`
-	StackTrace string `json:"stackTrace"`
-}
+// Invoke calls a Java conformance step via HTTP POST
+func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[string]interface{}) (json.RawMessage, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 
-// Invoke calls a Java conformance step with generic JSON args
-// Returns the raw JSON result that can be unmarshaled by the caller
-func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, args interface{}) (json.RawMessage, error) {
 	// Build request
 	req := Request{
-		Step: stepName,
-		Args: args,
+		Step:   stepName,
+		Params: params,
 	}
 
 	reqBytes, err := json.Marshal(req)
@@ -65,59 +181,35 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, args interfac
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Execute Java
-	ctx, cancel := context.WithTimeout(ctx, j.timeout)
-	defer cancel()
-
-	// Tests run from the conformance package directory, so paths are relative to that
-	// Get absolute path to gradlew since exec.Command needs it
-	wd, err := os.Getwd()
+	// Make HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", j.baseURL+"/invoke", bytes.NewReader(reqBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get working directory: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
-	absGradlewPath := filepath.Join(wd, j.workdir, j.gradlew)
-	absWorkdir := filepath.Join(wd, j.workdir)
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	cmd := exec.CommandContext(ctx, absGradlewPath, "runConformance", "--console=plain")
-	cmd.Dir = absWorkdir
+	httpResp, err := j.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdin = bytes.NewReader(reqBytes)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("java execution failed: %w\nstderr: %s", err, stderr.String())
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Parse response - find the JSON line in Gradle output
-	// Gradle writes task output to stdout, we need to find the line with our JSON
-	output := stdout.String()
-	lines := strings.Split(output, "\n")
-	var jsonLine string
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Look for a line starting with { and ending with } (our JSON response)
-		if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
-			jsonLine = trimmed
-			break
-		}
-	}
-
-	if jsonLine == "" {
-		return nil, fmt.Errorf("no JSON response found in output: %s", output)
+	if httpResp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d: %s", httpResp.StatusCode, string(body))
 	}
 
 	var resp Response
-	if err := json.Unmarshal([]byte(jsonLine), &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w\nfull output: %s\njson line: %s", err, output, jsonLine)
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w\nBody: %s", err, string(body))
 	}
 
 	if !resp.Success {
-		if resp.Error != nil {
-			return nil, fmt.Errorf("java error: %s\n%s", resp.Error.Message, resp.Error.StackTrace)
-		}
-		return nil, fmt.Errorf("java step failed with no error details")
+		return nil, fmt.Errorf("java error: %s", resp.Error)
 	}
 
 	return resp.Result, nil
@@ -125,13 +217,13 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, args interfac
 
 // InvokeAs calls a Java step and unmarshals result into target
 // If result is nil, the return value is ignored
-func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, args interface{}, result interface{}) error {
-	raw, err := j.Invoke(ctx, stepName, args)
+func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, params map[string]interface{}, result interface{}) error {
+	raw, err := j.Invoke(ctx, stepName, params)
 	if err != nil {
 		return err
 	}
 
-	if result != nil && len(raw) > 0 && string(raw) != "null" {
+	if result != nil && len(raw) > 0 && string(raw) != "null" && string(raw) != `""` {
 		// Check if result is a proto.Message - use protojson for unmarshaling
 		if msg, ok := result.(proto.Message); ok {
 			if err := protojson.Unmarshal(raw, msg); err != nil {
