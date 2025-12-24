@@ -81,7 +81,7 @@ jobs:
         run: just install-fdb
 
       - name: Run unit tests
-        run: just test-unit
+        run: just test-unit-coverage
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
