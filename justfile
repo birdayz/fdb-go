@@ -139,13 +139,13 @@ test-unit-full:
 # Run only conformance tests (cacheable)
 test-conformance:
     @echo "Running conformance tests..."
-    cd conformance && ginkgo -p
+    go test -short ./conformance
     @echo "✅ Conformance tests passed!"
 
 # Run conformance tests with verbose output
 test-conformance-verbose:
     @echo "Running conformance tests (verbose)..."
-    cd conformance && ginkgo -p -v
+    go test -short -v ./conformance
     @echo "✅ Conformance tests passed!"
 
 # Run tests matching a pattern

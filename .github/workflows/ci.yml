@@ -92,15 +92,6 @@ jobs:
       - name: Install FoundationDB Client
         run: just install-fdb
 
-      - name: Cache Ginkgo
-        uses: actions/cache@v4
-        with:
-          path: ~/go/bin/ginkgo
-          key: ${{ runner.os }}-ginkgo-${{ hashFiles('go.sum') }}
-
-      - name: Install Ginkgo
-        run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
-
       - name: Build Java conformance helper
         run: cd conformance/java && ./gradlew build
 
