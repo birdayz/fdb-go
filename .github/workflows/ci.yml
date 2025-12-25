@@ -1,7 +1,5 @@
 name: CI
 
-# Test cache debugging - round 2
-
 on:
   push:
     branches: [ master, main ]
@@ -73,18 +71,7 @@ jobs:
         run: just install-fdb
 
       - name: Run unit tests
-        run: |
-          # Unset CI-specific env vars that change between runs to enable test caching
-          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
-          # Debug: show cache files before tests
-          echo "=== Cache files before test ==="
-          find $HOME/.cache/go-build -name "*-a" 2>/dev/null | wc -l || echo "0"
-          # Debug cache behavior
-          export GODEBUG=gocachetest=1
-          just test-unit
-          # Debug: show cache files after tests
-          echo "=== Cache files after test ==="
-          find $HOME/.cache/go-build -name "*-a" 2>/dev/null | wc -l || echo "0"
+        run: just test-unit
 
   conformance:
     name: Conformance Tests
@@ -99,6 +86,14 @@ jobs:
           go-version: '1.21'
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Cache test results
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-conformance-testcache-${{ hashFiles('**/*.go', 'go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-conformance-testcache-
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -117,8 +112,6 @@ jobs:
         run: cd conformance/java && ./gradlew build
 
       - name: Run conformance tests
-        run: |
-          # Unset CI-specific env vars that change between runs to enable test caching
-          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
-          export TESTCONTAINERS_RYUK_DISABLED=false
-          just test-conformance
+        run: just test-conformance
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: false
