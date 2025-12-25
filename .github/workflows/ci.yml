@@ -1,5 +1,7 @@
 name: CI
 
+# Test cache debugging
+
 on:
   push:
     branches: [ master, main ]
