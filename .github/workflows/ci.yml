@@ -71,7 +71,10 @@ jobs:
         run: just install-fdb
 
       - name: Run unit tests
-        run: just test-unit
+        run: |
+          # Unset CI-specific env vars that change between runs to enable test caching
+          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
+          just test-unit
 
   conformance:
     name: Conformance Tests
@@ -112,6 +115,8 @@ jobs:
         run: cd conformance/java && ./gradlew build
 
       - name: Run conformance tests
-        run: just test-conformance
-        env:
-          TESTCONTAINERS_RYUK_DISABLED: false
+        run: |
+          # Unset CI-specific env vars that change between runs to enable test caching
+          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
+          export TESTCONTAINERS_RYUK_DISABLED=false
+          just test-conformance
