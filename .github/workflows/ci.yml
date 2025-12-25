@@ -84,6 +84,12 @@ jobs:
         run: |
           # Unset CI-specific env vars that change between runs to enable test caching
           unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
+          # Debug: show what might affect cache
+          echo "PWD: $PWD"
+          echo "HOSTNAME: $HOSTNAME"
+          echo "HOME: $HOME"
+          ls -la go.mod | head -1
+          export GODEBUG=gocachetest=1
           just test-unit
 
   conformance:
