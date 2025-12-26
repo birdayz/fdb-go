@@ -73,6 +73,7 @@ jobs:
           key: ${{ runner.os }}-testcache-${{ hashFiles('**/*.go', 'go.sum') }}
           restore-keys: |
             ${{ runner.os }}-testcache-
+          save-always: true
 
       - name: Install Just
         uses: extractions/setup-just@v2
@@ -84,7 +85,6 @@ jobs:
         run: |
           # Unset CI-specific env vars that change between runs to enable test caching
           unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
-          export GODEBUG=gocachetest=1
           just test-unit
 
   conformance:
@@ -113,6 +113,7 @@ jobs:
           key: ${{ runner.os }}-conformance-testcache-${{ hashFiles('**/*.go', 'go.sum') }}
           restore-keys: |
             ${{ runner.os }}-conformance-testcache-
+          save-always: true
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -135,5 +136,4 @@ jobs:
           # Unset CI-specific env vars that change between runs to enable test caching
           unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
           export TESTCONTAINERS_RYUK_DISABLED=false
-          export GODEBUG=gocachetest=1
           just test-conformance
