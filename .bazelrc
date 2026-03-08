@@ -1,0 +1,6 @@
+test --test_output=errors
+
+# Testcontainers need Docker socket and HOME for config
+test --test_env=HOME
+test --test_env=DOCKER_HOST
+test --test_env=TESTCONTAINERS_RYUK_DISABLED

@@ -7,133 +7,55 @@ on:
     branches: [ master, main ]
 
 jobs:
-  lint:
-    name: Lint
+  build:
+    name: Build & Lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Restore file modification times
-        uses: chetan/git-restore-mtime-action@v2
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Install Just
-        uses: extractions/setup-just@v2
-
-      - name: Install FoundationDB Client
-        run: just install-fdb
-
-      - name: Cache golangci-lint
+      - name: Cache Bazel
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/golangci-lint
-            ~/go/bin/golangci-lint
-          key: ${{ runner.os }}-golangci-lint-${{ hashFiles('.github/workflows/ci.yml') }}
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: ${{ runner.os }}-bazel-build-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '**/*.go', 'go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-build-
 
-      - name: Install golangci-lint
+      - name: Install FoundationDB Client
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin
+          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
-      - name: Run lint
-        run: just lint
+      - name: Build all targets (includes nogo lint)
+        run: |
+          USE_BAZEL_VERSION=8.2.1 npx @aspect-build/bazelisk build //...
 
   test:
-    name: Test
+    name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Restore file modification times
-        uses: chetan/git-restore-mtime-action@v2
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Cache test results
+      - name: Cache Bazel
         uses: actions/cache@v4
         with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-testcache-${{ hashFiles('**/*.go', 'go.sum') }}
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: ${{ runner.os }}-bazel-test-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '**/*.go', 'go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-testcache-
+            ${{ runner.os }}-bazel-test-
           save-always: true
 
-      - name: Install Just
-        uses: extractions/setup-just@v2
-
       - name: Install FoundationDB Client
-        run: just install-fdb
-
-      - name: Run unit tests
         run: |
-          # Unset CI-specific env vars that change between runs to enable test caching
-          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
-          just test-unit
+          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
-  conformance:
-    name: Conformance Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Restore file modification times
-        uses: chetan/git-restore-mtime-action@v2
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: go.sum
-
-      - name: Cache test results
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/go-build
-          key: ${{ runner.os }}-conformance-testcache-${{ hashFiles('**/*.go', 'go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-conformance-testcache-
-          save-always: true
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '11'
-          cache: 'gradle'
-
-      - name: Install Just
-        uses: extractions/setup-just@v2
-
-      - name: Install FoundationDB Client
-        run: just install-fdb
-
-      - name: Build Java conformance helper
-        run: cd conformance/java && ./gradlew build
-
-      - name: Run conformance tests
+      - name: Run tests
         run: |
-          # Unset CI-specific env vars that change between runs to enable test caching
-          unset GITHUB_RUN_ID GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT RUNNER_TRACKING_ID
-          export TESTCONTAINERS_RYUK_DISABLED=false
-          just test-conformance
+          USE_BAZEL_VERSION=8.2.1 npx @aspect-build/bazelisk test //...

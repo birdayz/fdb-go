@@ -1,0 +1,19 @@
+load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "apple_proto",
+    srcs = glob(["*.proto"]),
+    strip_import_prefix = "/proto/apple",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@protobuf//:any_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+java_proto_library(
+    name = "apple_java_proto",
+    visibility = ["//visibility:public"],
+    deps = [":apple_proto"],
+)

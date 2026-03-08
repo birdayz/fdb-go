@@ -2,125 +2,72 @@ package recordlayer
 
 import (
 	"context"
-	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
 
-func TestDeleteRecord(t *testing.T) {
-	ctx := context.Background()
-	
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("delete_record_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
-	
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
-	
-	recordDB := NewFDBDatabase(db)
+var _ = Describe("DeleteRecord", func() {
+	It("deletes a record and verifies it is gone", func() {
+		ctx := context.Background()
 
-	// Create metadata
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
+		// Create metadata
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		recordMetaData := metaDataBuilder.Build()
 
-	// Test the delete functionality
-	result, err := recordDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-		// Create store
-		store, err := NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(recordMetaData).
-			SetSubspace(subspace.FromBytes(tuple.Tuple{"delete_test"}.Pack())).
-			CreateOrOpen()
-		if err != nil {
-			return nil, err
-		}
+		ks := specSubspace()
 
-		// First, create a test record
-		order := &gen.Order{
-			OrderId: proto.Int64(1001),
-			Price:   proto.Int32(25),
-			Flower: &gen.Flower{
-				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
-			},
-		}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			// Create store
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(ks).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
 
-		// Save the record
-		_, err = store.SaveRecord(order)
-		if err != nil {
-			return nil, err
-		}
+			// First, create a test record
+			order := &gen.Order{
+				OrderId: proto.Int64(1001),
+				Price:   proto.Int32(25),
+				Flower: &gen.Flower{
+					Type:  proto.String("Rose"),
+					Color: gen.Color_RED.Enum(),
+				},
+			}
 
-		// Verify the record exists
-		primaryKey := tuple.Tuple{int64(1001)}
-		loadedRecord, err := store.LoadRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if loadedRecord == nil {
-			t.Errorf("Expected record to exist after save")
-			return nil, nil
-		}
+			// Save the record
+			_, err = store.SaveRecord(order)
+			Expect(err).NotTo(HaveOccurred())
 
-		// Delete the record
-		deleted, err := store.DeleteRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if !deleted {
-			t.Errorf("Expected DeleteRecord to return true when record exists")
-		}
+			// Verify the record exists
+			primaryKey := tuple.Tuple{int64(1001)}
+			loadedRecord, err := store.LoadRecord(primaryKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadedRecord).NotTo(BeNil())
 
-		// Verify the record no longer exists
-		loadedRecord, err = store.LoadRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if loadedRecord != nil {
-			t.Errorf("Expected record to be deleted, but it still exists")
-		}
+			// Delete the record
+			deleted, err := store.DeleteRecord(primaryKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
 
-		// Try to delete the same record again (should return false)
-		deleted, err = store.DeleteRecord(primaryKey)
-		if err != nil {
-			return nil, err
-		}
-		if deleted {
-			t.Errorf("Expected DeleteRecord to return false when record doesn't exist")
-		}
+			// Verify the record no longer exists
+			loadedRecord, err = store.LoadRecord(primaryKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadedRecord).To(BeNil())
 
-		return "delete test completed", nil
+			// Try to delete the same record again (should return false)
+			deleted, err = store.DeleteRecord(primaryKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeFalse())
+
+			return "delete test completed", nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
-
-	if err != nil {
-		t.Logf("Delete test failed (expected without FDB): %v", err)
-		t.Logf("Result: %v", result)
-	} else {
-		t.Logf("Delete test completed successfully: %v", result)
-	}
-}
+})

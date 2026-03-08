@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "gen",
+    srcs = [
+        "record_cursor.pb.go",
+        "record_key_expression.pb.go",
+        "record_layer_demo.pb.go",
+        "record_metadata.pb.go",
+        "record_metadata_options.pb.go",
+        "record_query_plan.pb.go",
+        "tuple_fields.pb.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/gen",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/known/anypb",
+    ],
+)

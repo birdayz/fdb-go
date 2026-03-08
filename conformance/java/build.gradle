@@ -18,15 +18,7 @@ dependencies {
 }
 
 application {
-    mainClass = 'com.birdayz.conformance.ConformanceRunner'
-}
-
-// Task to run conformance runner with JSON stdin/stdout
-task runConformance(type: JavaExec) {
-    classpath = sourceSets.main.runtimeClasspath
-    mainClass = 'com.birdayz.conformance.ConformanceRunner'
-    standardInput = System.in
-    standardOutput = System.out
+    mainClass = 'com.birdayz.conformance.ConformanceServer'
 }
 
 // Task to run conformance HTTP server

@@ -3,162 +3,290 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"log"
-	"testing"
 	"time"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
-	"github.com/stretchr/testify/assert"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-// TestMillionRecordScan tests scanning 1M records across multiple transactions
-// This test verifies that our continuation mechanism works correctly for very large datasets
-// that definitely exceed FDB's 5-second transaction limit
-func TestMillionRecordScan(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping 1M record test in short mode")
-	}
+var _ = Describe("MillionRecordScan", func() {
+	It("scans 1M records across multiple transactions", Serial, Label("manual"), func() {
+		ctx := context.Background()
 
-	ctx := context.Background()
+		const numRecords = 1_000_000
+		const writeBatchSize = 2_000
+		const scanBatchSize = 10_000
 
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("million_record_scan_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		metaData := builder.Build()
+		testSubspace := specSubspace()
 
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
+		GinkgoWriter.Printf("Starting 1M record test...\n")
+		overallStart := time.Now()
 
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
+		// Step 1: Write 1M records in batches to avoid transaction timeouts
+		GinkgoWriter.Printf("Writing %d records in batches of %d...\n", numRecords, writeBatchSize)
+		writeStart := time.Now()
 
-	fdbDB := NewFDBDatabase(db)
+		writtenRecords := 0
+		for batch := 0; batch < numRecords/writeBatchSize; batch++ {
+			batchStart := time.Now()
 
-	const numRecords = 1_000_000    // Full 1M record test
-	const writeBatchSize = 2_000   // Reasonable batch size with proper retry logic
-	const scanBatchSize = 10_000   // Records per scan batch
-	
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	metaData := builder.Build()
-	testSubspace := subspace.Sub(fmt.Sprintf("million_test_%d", time.Now().UnixNano()))
-
-	log.Printf("🚀 Starting 1M record test...")
-	overallStart := time.Now()
-
-	// Step 1: Write 1M records in batches to avoid transaction timeouts
-	log.Printf("📝 Writing %d records in batches of %d...", numRecords, writeBatchSize)
-	writeStart := time.Now()
-	
-	writtenRecords := 0
-	for batch := 0; batch < numRecords/writeBatchSize; batch++ {
-		batchStart := time.Now()
-		
-		_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-			store, err := NewStoreBuilder().
-				SetContext(rtx).
-				SetMetaDataProvider(metaData).
-				SetSubspace(testSubspace).
-				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-
-			// Write this batch
-			startIdx := batch * writeBatchSize
-			endIdx := (batch + 1) * writeBatchSize
-			if endIdx > numRecords {
-				endIdx = numRecords
-			}
-
-			for i := startIdx; i < endIdx; i++ {
-				record := &gen.Order{
-					OrderId: proto.Int64(int64(i)),
-					Price:   proto.Int32(int32(i % 1000)), // Keep prices reasonable
-					Flower: &gen.Flower{
-						Type:  proto.String(fmt.Sprintf("flower_%d", i)),
-						Color: gen.Color_BLUE.Enum(),
-					},
-				}
-
-				_, err := store.SaveRecord(record)
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(metaData).
+					SetSubspace(testSubspace).
+					CreateOrOpen()
 				if err != nil {
-					return nil, fmt.Errorf("failed to save record %d: %w", i, err)
+					return nil, err
+				}
+
+				// Write this batch
+				startIdx := batch * writeBatchSize
+				endIdx := (batch + 1) * writeBatchSize
+				if endIdx > numRecords {
+					endIdx = numRecords
+				}
+
+				for i := startIdx; i < endIdx; i++ {
+					record := &gen.Order{
+						OrderId: proto.Int64(int64(i)),
+						Price:   proto.Int32(int32(i % 1000)),
+						Flower: &gen.Flower{
+							Type:  proto.String(fmt.Sprintf("flower_%d", i)),
+							Color: gen.Color_BLUE.Enum(),
+						},
+					}
+
+					_, err := store.SaveRecord(record)
+					if err != nil {
+						return nil, fmt.Errorf("failed to save record %d: %w", i, err)
+					}
+				}
+
+				return endIdx - startIdx, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			batchRecords := writeBatchSize
+			if batch == numRecords/writeBatchSize-1 {
+				batchRecords = numRecords % writeBatchSize
+				if batchRecords == 0 {
+					batchRecords = writeBatchSize
 				}
 			}
 
-			return endIdx - startIdx, nil
-		})
-		
-		if err != nil {
-			t.Fatalf("Failed to write batch %d: %v", batch, err)
-		}
-		
-		batchRecords := writeBatchSize
-		if batch == numRecords/writeBatchSize - 1 {
-			batchRecords = numRecords % writeBatchSize
-			if batchRecords == 0 {
-				batchRecords = writeBatchSize
+			writtenRecords += batchRecords
+			batchTime := time.Since(batchStart)
+
+			if batch%10 == 0 || batch == numRecords/writeBatchSize-1 {
+				GinkgoWriter.Printf("  Batch %d/%d: wrote %d records in %v (total: %d, %.1f%%)\n",
+					batch+1, numRecords/writeBatchSize, batchRecords, batchTime,
+					writtenRecords, float64(writtenRecords)*100/float64(numRecords))
 			}
 		}
-		
-		writtenRecords += batchRecords
-		batchTime := time.Since(batchStart)
-		
-		if batch%10 == 0 || batch == numRecords/writeBatchSize-1 {
-			log.Printf("  Batch %d/%d: wrote %d records in %v (total: %d, %.1f%%)", 
-				batch+1, numRecords/writeBatchSize, batchRecords, batchTime, 
-				writtenRecords, float64(writtenRecords)*100/float64(numRecords))
+
+		writeTime := time.Since(writeStart)
+		GinkgoWriter.Printf("Finished writing %d records in %v (%.0f records/sec)\n",
+			writtenRecords, writeTime, float64(writtenRecords)/writeTime.Seconds())
+
+		// Step 2: Read back all records using continuation-based scanning
+		GinkgoWriter.Printf("Reading back all %d records using cursor scan...\n", numRecords)
+		readStart := time.Now()
+
+		var totalRecordsRead int
+		var continuation []byte
+		transactionCount := 0
+
+		// Create scan properties with limits to force multiple transactions
+		scanProps := ScanProperties{
+			ExecuteProperties: ExecuteProperties{
+				ReturnedRowLimit: scanBatchSize,
+				TimeLimit:        3 * time.Second,
+			},
+			Reverse:             false,
+			CursorStreamingMode: StreamingModeSmall,
 		}
-	}
 
-	writeTime := time.Since(writeStart)
-	log.Printf("✅ Finished writing %d records in %v (%.0f records/sec)", 
-		writtenRecords, writeTime, float64(writtenRecords)/writeTime.Seconds())
+		for {
+			transactionCount++
+			batchStart := time.Now()
 
-	// Step 2: Read back all records using continuation-based scanning
-	log.Printf("📖 Reading back all %d records using cursor scan...", numRecords)
-	readStart := time.Now()
-	
-	var totalRecordsRead int
-	var continuation []byte
-	transactionCount := 0
+			// Each batch runs in its own transaction
+			batchResult, batchErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(metaData).
+					SetSubspace(testSubspace).
+					Open()
+				if err != nil {
+					return nil, err
+				}
 
-	// Create scan properties with limits to force multiple transactions
-	scanProps := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			ReturnedRowLimit: scanBatchSize,
-			TimeLimit:        3 * time.Second, // Force transaction boundaries
-		},
-		Reverse:               false,
-		CursorStreamingMode: StreamingModeSmall,
-	}
+				cursor := store.ScanRecords(continuation, scanProps)
+				defer func() { _ = cursor.Close() }()
 
-	for {
-		transactionCount++
-		batchStart := time.Now()
-		
-		// Each batch runs in its own transaction
-		batchResult, batchErr := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				batchRecordCount := 0
+				var lastContinuation RecordCursorContinuation
+
+				// Read this batch using SeqWithContinuation to get proper continuation
+				for record, cont := range cursor.SeqWithContinuation(ctx) {
+					order, ok := record.Record.(*gen.Order)
+					if !ok {
+						return nil, fmt.Errorf("unexpected record type: %T", record.Record)
+					}
+
+					expectedID := int64(totalRecordsRead + batchRecordCount)
+					if order.GetOrderId() != expectedID {
+						return nil, fmt.Errorf("record ID mismatch: got %d, expected %d", order.GetOrderId(), expectedID)
+					}
+
+					// Validate content
+					expectedPrice := int32(expectedID % 1000)
+					if order.GetPrice() != expectedPrice {
+						return nil, fmt.Errorf("price mismatch for record %d: got %d, expected %d", expectedID, order.GetPrice(), expectedPrice)
+					}
+
+					expectedFlowerType := fmt.Sprintf("flower_%d", expectedID)
+					if order.GetFlower().GetType() != expectedFlowerType {
+						return nil, fmt.Errorf("flower type mismatch for record %d: got %s, expected %s", expectedID, order.GetFlower().GetType(), expectedFlowerType)
+					}
+
+					if order.GetFlower().GetColor() != gen.Color_BLUE {
+						return nil, fmt.Errorf("flower color mismatch for record %d: got %v, expected BLUE", expectedID, order.GetFlower().GetColor())
+					}
+
+					batchRecordCount++
+					lastContinuation = cont
+				}
+
+				// Return batch results
+				result := map[string]interface{}{
+					"count":        batchRecordCount,
+					"continuation": []byte(nil),
+				}
+				if lastContinuation != nil && !lastContinuation.IsEnd() {
+					result["continuation"] = lastContinuation.ToBytes()
+				}
+
+				return result, nil
+			})
+			Expect(batchErr).NotTo(HaveOccurred())
+
+			// Extract results
+			resultMap := batchResult.(map[string]interface{})
+			recordsThisBatch := resultMap["count"].(int)
+			totalRecordsRead += recordsThisBatch
+			continuation = resultMap["continuation"].([]byte)
+
+			batchTime := time.Since(batchStart)
+
+			if transactionCount%10 == 0 || recordsThisBatch == 0 {
+				GinkgoWriter.Printf("  Transaction %d: read %d records in %v (total: %d, %.1f%%)\n",
+					transactionCount, recordsThisBatch, batchTime, totalRecordsRead,
+					float64(totalRecordsRead)*100/float64(numRecords))
+			}
+
+			// Check if we're done
+			if recordsThisBatch == 0 || totalRecordsRead >= numRecords || len(continuation) == 0 {
+				break
+			}
+
+			// Safety check to prevent infinite loops
+			if transactionCount > (numRecords/scanBatchSize)+10 {
+				Fail(fmt.Sprintf("Too many transactions, possible infinite loop (tx: %d)", transactionCount))
+			}
+		}
+
+		readTime := time.Since(readStart)
+		totalTime := time.Since(overallStart)
+
+		// Final verification and statistics
+		GinkgoWriter.Printf("\nMILLION RECORD TEST RESULTS:\n")
+		GinkgoWriter.Printf("  Total records written: %d\n", writtenRecords)
+		GinkgoWriter.Printf("  Total records read: %d\n", totalRecordsRead)
+		GinkgoWriter.Printf("  Write performance: %v (%.0f records/sec)\n", writeTime, float64(writtenRecords)/writeTime.Seconds())
+		GinkgoWriter.Printf("  Read performance: %v (%.0f records/sec)\n", readTime, float64(totalRecordsRead)/readTime.Seconds())
+		GinkgoWriter.Printf("  Total test time: %v\n", totalTime)
+		GinkgoWriter.Printf("  Write transactions: %d\n", numRecords/writeBatchSize)
+		GinkgoWriter.Printf("  Read transactions: %d\n", transactionCount)
+		GinkgoWriter.Printf("  Average records per read transaction: %.1f\n", float64(totalRecordsRead)/float64(transactionCount))
+
+		// Assertions
+		Expect(writtenRecords).To(Equal(numRecords))
+		Expect(totalRecordsRead).To(Equal(numRecords))
+		Expect(transactionCount).To(BeNumerically(">", 1))
+		Expect(transactionCount).To(BeNumerically("<=", (numRecords/scanBatchSize)+10))
+
+		GinkgoWriter.Println("MILLION RECORD TEST PASSED - Continuation mechanism handles large datasets")
+	})
+})
+
+var _ = Describe("MillionRecordPerformance", func() {
+	It("benchmarks 100K record write and read performance", Serial, Label("manual"), func() {
+		const numRecords = 100_000
+
+		ctx := context.Background()
+
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		metaData := builder.Build()
+		testSubspace := specSubspace()
+
+		start := time.Now()
+
+		// Write phase - use batching to avoid transaction limits
+		writeStart := time.Now()
+		batchSize := 1000
+
+		for batch := 0; batch < numRecords/batchSize; batch++ {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(metaData).
+					SetSubspace(testSubspace).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				startIdx := batch * batchSize
+				endIdx := (batch + 1) * batchSize
+				if endIdx > numRecords {
+					endIdx = numRecords
+				}
+
+				for i := startIdx; i < endIdx; i++ {
+					record := &gen.Order{
+						OrderId: proto.Int64(int64(i)),
+						Price:   proto.Int32(int32(i % 100)),
+						Flower: &gen.Flower{
+							Type:  proto.String(fmt.Sprintf("perf_%d", i)),
+							Color: gen.Color_RED.Enum(),
+						},
+					}
+
+					_, err := store.SaveRecord(record)
+					if err != nil {
+						return nil, fmt.Errorf("failed to save record %d: %w", i, err)
+					}
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		writeTime := time.Since(writeStart)
+
+		// Read phase
+		readStart := time.Now()
+		readCount := 0
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -168,250 +296,39 @@ func TestMillionRecordScan(t *testing.T) {
 				return nil, err
 			}
 
-			cursor := store.ScanRecords(continuation, scanProps)
+			unlimitedScan := ScanProperties{
+				ExecuteProperties: ExecuteProperties{
+					ReturnedRowLimit: 0,
+				},
+				Reverse:             false,
+				CursorStreamingMode: StreamingModeIterator,
+			}
+			cursor := store.ScanRecords(nil, unlimitedScan)
 			defer func() { _ = cursor.Close() }()
-			
-			batchRecordCount := 0
-			var lastContinuation RecordCursorContinuation
 
-			// Read this batch using SeqWithContinuation to get proper continuation
-			for record, cont := range cursor.SeqWithContinuation(ctx) {
-				order, ok := record.Record.(*gen.Order)
-				if !ok {
-					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
-				}
-				
-				expectedID := int64(totalRecordsRead + batchRecordCount)
-				if order.GetOrderId() != expectedID {
-					return nil, fmt.Errorf("record ID mismatch: got %d, expected %d", order.GetOrderId(), expectedID)
-				}
-				
-				// Validate content
-				expectedPrice := int32(expectedID % 1000)
-				if order.GetPrice() != expectedPrice {
-					return nil, fmt.Errorf("price mismatch for record %d: got %d, expected %d", expectedID, order.GetPrice(), expectedPrice)
-				}
-				
-				expectedFlowerType := fmt.Sprintf("flower_%d", expectedID)
-				if order.GetFlower().GetType() != expectedFlowerType {
-					return nil, fmt.Errorf("flower type mismatch for record %d: got %s, expected %s", expectedID, order.GetFlower().GetType(), expectedFlowerType)
-				}
-				
-				if order.GetFlower().GetColor() != gen.Color_BLUE {
-					return nil, fmt.Errorf("flower color mismatch for record %d: got %v, expected BLUE", expectedID, order.GetFlower().GetColor())
-				}
-				
-				batchRecordCount++
-				lastContinuation = cont
-			}
-
-			// Return batch results
-			result := map[string]interface{}{
-				"count":        batchRecordCount,
-				"continuation": []byte(nil),
-			}
-			if lastContinuation != nil && !lastContinuation.IsEnd() {
-				result["continuation"] = lastContinuation.ToBytes()
-			}
-			
-			return result, nil
-		})
-		
-		if batchErr != nil {
-			t.Fatalf("Failed during read batch %d: %v", transactionCount, batchErr)
-		}
-		
-		// Extract results
-		resultMap := batchResult.(map[string]interface{})
-		recordsThisBatch := resultMap["count"].(int)
-		totalRecordsRead += recordsThisBatch
-		continuation = resultMap["continuation"].([]byte)
-
-		batchTime := time.Since(batchStart)
-		
-		if transactionCount%10 == 0 || recordsThisBatch == 0 {
-			log.Printf("  Transaction %d: read %d records in %v (total: %d, %.1f%%)", 
-				transactionCount, recordsThisBatch, batchTime, totalRecordsRead,
-				float64(totalRecordsRead)*100/float64(numRecords))
-		}
-
-		// Check if we're done
-		if recordsThisBatch == 0 || totalRecordsRead >= numRecords || len(continuation) == 0 {
-			break
-		}
-
-		// Safety check to prevent infinite loops
-		if transactionCount > (numRecords/scanBatchSize)+10 {
-			t.Fatalf("Too many transactions, possible infinite loop (tx: %d)", transactionCount)
-		}
-	}
-
-	readTime := time.Since(readStart)
-	totalTime := time.Since(overallStart)
-
-	// Final verification and statistics
-	log.Printf("")
-	log.Printf("🎯 MILLION RECORD TEST RESULTS:")
-	log.Printf("  Total records written: %d", writtenRecords)
-	log.Printf("  Total records read: %d", totalRecordsRead)
-	log.Printf("  Write performance: %v (%.0f records/sec)", writeTime, float64(writtenRecords)/writeTime.Seconds())
-	log.Printf("  Read performance: %v (%.0f records/sec)", readTime, float64(totalRecordsRead)/readTime.Seconds())
-	log.Printf("  Total test time: %v", totalTime)
-	log.Printf("  Write transactions: %d", numRecords/writeBatchSize)
-	log.Printf("  Read transactions: %d", transactionCount)
-	log.Printf("  Average records per read transaction: %.1f", float64(totalRecordsRead)/float64(transactionCount))
-
-	// Assertions
-	assert.Equal(t, numRecords, writtenRecords, "Should write all intended records")
-	assert.Equal(t, numRecords, totalRecordsRead, "Should read back all written records")
-	assert.Greater(t, transactionCount, 1, "Should require multiple read transactions for 1M records")
-	assert.LessOrEqual(t, transactionCount, (numRecords/scanBatchSize)+10, "Should not require excessive transactions")
-	
-	log.Printf("✅ MILLION RECORD TEST PASSED - Continuation mechanism handles large datasets!")
-}
-
-// TestMillionRecordPerformance is a lighter version that focuses on performance metrics
-func TestMillionRecordPerformance(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping performance test in short mode")
-	}
-
-	// This test is similar but focuses on performance benchmarking
-	// It can be used to measure improvements over time
-
-	const numRecords = 100_000 // Smaller for CI/quick runs
-
-	ctx := context.Background()
-
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("million_record_performance_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
-
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
-
-	fdbDB := NewFDBDatabase(db)
-	
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	metaData := builder.Build()
-	testSubspace := subspace.Sub(fmt.Sprintf("perf_test_%d", time.Now().UnixNano()))
-
-	start := time.Now()
-
-	// Write phase - use batching to avoid transaction limits
-	writeStart := time.Now()
-	batchSize := 1000 // Safe batch size
-	
-	for batch := 0; batch < numRecords/batchSize; batch++ {
-		_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-			store, err := NewStoreBuilder().
-				SetContext(rtx).
-				SetMetaDataProvider(metaData).
-				SetSubspace(testSubspace).
-				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-
-			startIdx := batch * batchSize
-			endIdx := (batch + 1) * batchSize
-			if endIdx > numRecords {
-				endIdx = numRecords
-			}
-
-			for i := startIdx; i < endIdx; i++ {
-				record := &gen.Order{
-					OrderId: proto.Int64(int64(i)),
-					Price:   proto.Int32(int32(i % 100)),
-					Flower: &gen.Flower{
-						Type:  proto.String(fmt.Sprintf("perf_%d", i)),
-						Color: gen.Color_RED.Enum(),
-					},
-				}
-
-				_, err := store.SaveRecord(record)
-				if err != nil {
-					return nil, fmt.Errorf("failed to save record %d: %w", i, err)
-				}
+			for range cursor.Seq(ctx) {
+				readCount++
 			}
 
 			return nil, nil
 		})
-		
-		if err != nil {
-			t.Fatalf("Failed to write batch %d: %v", batch, err)
-		}
-	}
-	writeTime := time.Since(writeStart)
+		Expect(err).NotTo(HaveOccurred())
+		readTime := time.Since(readStart)
+		totalTime := time.Since(start)
 
-	// Read phase
-	readStart := time.Now()
-	readCount := 0
-	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-		store, err := NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(metaData).
-			SetSubspace(testSubspace).
-			Open()
-		if err != nil {
-			return nil, err
-		}
+		// Performance metrics
+		writeRate := float64(numRecords) / writeTime.Seconds()
+		readRate := float64(readCount) / readTime.Seconds()
 
-		unlimitedScan := ScanProperties{
-			ExecuteProperties: ExecuteProperties{
-				ReturnedRowLimit: 0, // No limit
-			},
-			Reverse: false,
-			CursorStreamingMode: StreamingModeIterator,
-		}
-		cursor := store.ScanRecords(nil, unlimitedScan)
-		defer func() { _ = cursor.Close() }()
+		GinkgoWriter.Printf("PERFORMANCE TEST RESULTS (%d records):\n", numRecords)
+		GinkgoWriter.Printf("  Write: %v (%.0f records/sec)\n", writeTime, writeRate)
+		GinkgoWriter.Printf("  Read: %v (%.0f records/sec)\n", readTime, readRate)
+		GinkgoWriter.Printf("  Total: %v\n", totalTime)
 
-		for range cursor.Seq(ctx) {
-			readCount++
-		}
+		Expect(readCount).To(Equal(numRecords))
 
-		return nil, nil
+		// Performance assertions (adjust based on your environment)
+		Expect(writeRate).To(BeNumerically(">", 1000.0))
+		Expect(readRate).To(BeNumerically(">", 5000.0))
 	})
-	
-	if err != nil {
-		t.Fatalf("Failed to read records: %v", err)
-	}
-	readTime := time.Since(readStart)
-	totalTime := time.Since(start)
-
-	// Performance metrics
-	writeRate := float64(numRecords) / writeTime.Seconds()
-	readRate := float64(readCount) / readTime.Seconds()
-	
-	log.Printf("📊 PERFORMANCE TEST RESULTS (%d records):", numRecords)
-	log.Printf("  Write: %v (%.0f records/sec)", writeTime, writeRate)
-	log.Printf("  Read: %v (%.0f records/sec)", readTime, readRate)
-	log.Printf("  Total: %v", totalTime)
-	
-	assert.Equal(t, numRecords, readCount, "Should read all records")
-	
-	// Performance assertions (adjust based on your environment)
-	assert.Greater(t, writeRate, 1000.0, "Write rate should be > 1000 records/sec")
-	assert.Greater(t, readRate, 5000.0, "Read rate should be > 5000 records/sec")
-}
+})

@@ -1,0 +1,102 @@
+{
+  "asmdecl": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "assign": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "atomic": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "bools": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "buildtag": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "composite": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "copylock": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "httpresponse": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "loopclosure": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "lostcancel": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "nilfunc": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "printf": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "shift": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "stdmethods": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "structtag": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "tests": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "unmarshal": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "unreachable": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "unsafeptr": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "unusedresult": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  }
+}

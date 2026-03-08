@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "foundationdb",
+    srcs = [
+        "embed.go",
+        "foundationdb.go",
+        "options.go",
+    ],
+    embedsrcs = [
+        "mounts/fdb-entrypoint.sh",
+        "mounts/socat-entrypoint.sh",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//network",
+        "@com_github_testcontainers_testcontainers_go//wait",
+        "@com_github_testcontainers_testcontainers_go_modules_socat//:socat",
+    ],
+)
+
+go_test(
+    name = "foundationdb_test",
+    srcs = [
+        "database_test.go",
+        "examples_test.go",
+        "foundationdb_test.go",
+        "integration_test.go",
+    ],
+    embed = [":foundationdb"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

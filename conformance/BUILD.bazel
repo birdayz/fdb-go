@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "conformance_test",
+    srcs = [
+        "conflict_conformance_test.go",
+        "conformance_suite_test.go",
+        "crud_test.go",
+        "delete_conformance_test.go",
+        "existence_check_conformance_test.go",
+        "isolation_conformance_test.go",
+    ],
+    data = ["//conformance/java:conformance_server"],
+    deps = [
+        "//conformance/helpers",
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

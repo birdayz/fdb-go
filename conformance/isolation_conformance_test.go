@@ -42,7 +42,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 		}
 	})
 
-	Describe("RecordExists with Concurrent Transactions", Ordered, func() {
+	Describe("RecordExists with Concurrent Transactions", func() {
 		// Java: writeCheckExistsConcurrently() - Tests that uncommitted writes
 		// are visible to serializable reads but not to snapshot reads in concurrent transactions
 
@@ -92,6 +92,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Done)
 
 				// Wait for TX1 to start and save record
 				<-tx1Started
@@ -112,8 +113,6 @@ var _ = Describe("Isolation Level Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(exists).To(BeFalse(), "TX2 with SNAPSHOT should NOT see uncommitted write from TX1")
 
-				// Signal TX2 is done checking
-				close(tx2Done)
 
 				// TX2 is read-only, so we can just let it get garbage collected
 				// (no need to commit a read-only transaction)
@@ -193,14 +192,13 @@ var _ = Describe("Isolation Level Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2CanCheck)
 
 				<-tx1CanUpdate
 
 				deleted, err := store.DeleteRecord(ctx, orderID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(deleted).To(BeTrue())
-
-				close(tx2CanCheck)
 			}()
 
 			// Transaction 2: Start before TX1, use SNAPSHOT to see old state
@@ -374,6 +372,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Committed)
 
 				// Wait for TX1 to read
 				<-tx1Started
@@ -394,9 +393,6 @@ var _ = Describe("Isolation Level Conformance", func() {
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())
-
-				// Signal TX1 that we've committed
-				close(tx2Committed)
 			}()
 
 			wg.Wait()

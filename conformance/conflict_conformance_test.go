@@ -152,6 +152,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx1Done)
 
 				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
@@ -169,13 +170,13 @@ var _ = Describe("Conflict Range Conformance", func() {
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred(), "TX1 should commit (read conflicts don't conflict with reads)")
-				close(tx1Done)
 			}()
 
 			// Transaction 2: Read from same key
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Done)
 
 				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
@@ -193,11 +194,9 @@ var _ = Describe("Conflict Range Conformance", func() {
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())
-				close(tx2Done)
 			}()
 
 			wg.Wait()
-			<-tx1Done
 		})
 	})
 
@@ -412,6 +411,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Done)
 
 				<-tx1Started
 
@@ -431,8 +431,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 					return nil, nil
 				})
 				Expect(err).NotTo(HaveOccurred())
-
-				close(tx2Done)
 			}()
 
 			wg.Wait()
@@ -523,13 +521,12 @@ var _ = Describe("Conflict Range Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Done)
 
 				<-tx1Started
 
 				err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 				Expect(err).NotTo(HaveOccurred())
-
-				close(tx2Done)
 			}()
 
 			wg.Wait()
@@ -585,14 +582,13 @@ var _ = Describe("Conflict Range Conformance", func() {
 			go func() {
 				defer wg.Done()
 				defer GinkgoRecover()
+				defer close(tx2Done)
 
 				<-tx1Started
 
 				deleted, err := store.DeleteRecord(ctx, orderID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(deleted).To(BeTrue())
-
-				close(tx2Done)
 			}()
 
 			wg.Wait()

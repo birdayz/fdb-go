@@ -25,5 +25,12 @@ go.work
 *~
 
 # OS files
-.DS_Store.claude
+.DS_Store
+.claude
 fdb-record-layer
+
+# Bazel symlinks
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-fdb-record-layer-go

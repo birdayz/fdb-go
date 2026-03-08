@@ -257,6 +257,82 @@ func Limit[T any](seq iter.Seq[T], n int) iter.Seq[T] {
 	}
 }
 
+// filterCursor wraps another cursor and filters records by a predicate.
+// Filtered records are skipped silently; continuations are forwarded from the inner cursor.
+type filterCursor[T any] struct {
+	inner     RecordCursor[T]
+	predicate func(T) bool
+}
+
+func (c *filterCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	for {
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if !result.HasNext() {
+			return result, nil
+		}
+		if c.predicate(result.GetValue()) {
+			return result, nil
+		}
+		// Skip this record, keep iterating
+	}
+}
+
+func (c *filterCursor[T]) Close() error {
+	return c.inner.Close()
+}
+
+func (c *filterCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *filterCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *filterCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
 // RecordCursorProto is a convenience type for cursors over protobuf messages
 type RecordCursorProto = RecordCursor[*FDBStoredRecord[proto.Message]]
 

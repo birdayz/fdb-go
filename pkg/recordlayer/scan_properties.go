@@ -157,18 +157,24 @@ type ScanProperties struct {
 	CursorStreamingMode CursorStreamingMode
 }
 
-// ForwardScan returns properties for a forward scan with default execution properties
-var ForwardScan = ScanProperties{
-	ExecuteProperties:   DefaultExecuteProperties().WithReturnedRowLimit(int(^uint(0) >> 1)), // Max int
-	Reverse:             false,
-	CursorStreamingMode: StreamingModeIterator,
+// ForwardScan returns properties for a forward scan with default execution properties.
+// Returns a fresh copy each time to prevent mutation of shared state.
+func ForwardScan() ScanProperties {
+	return ScanProperties{
+		ExecuteProperties:   DefaultExecuteProperties(), // No row limit (0 = unlimited)
+		Reverse:             false,
+		CursorStreamingMode: StreamingModeIterator,
+	}
 }
 
-// ReverseScan returns properties for a reverse scan with default execution properties
-var ReverseScan = ScanProperties{
-	ExecuteProperties:   DefaultExecuteProperties().WithReturnedRowLimit(int(^uint(0) >> 1)), // Max int
-	Reverse:             true,
-	CursorStreamingMode: StreamingModeIterator,
+// ReverseScan returns properties for a reverse scan with default execution properties.
+// Returns a fresh copy each time to prevent mutation of shared state.
+func ReverseScan() ScanProperties {
+	return ScanProperties{
+		ExecuteProperties:   DefaultExecuteProperties(), // No row limit (0 = unlimited)
+		Reverse:             true,
+		CursorStreamingMode: StreamingModeIterator,
+	}
 }
 
 // NewScanProperties creates scan properties with the given execution properties

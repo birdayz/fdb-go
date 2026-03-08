@@ -171,6 +171,36 @@ var _ = Describe("Delete Conformance", func() {
 			Expect(exists).To(BeFalse())
 		})
 
+		It("should allow re-insert after delete", func() {
+			// Create, delete, re-insert with different data
+			order1 := helpers.NewOrder(600).
+				WithPrice(100).
+				WithFlower("Rose", gen.Color_RED).
+				Build()
+			err := store.SaveRecord(ctx, order1)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete it
+			deleted, err := store.DeleteRecord(ctx, 600)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Re-insert with different data (validated with Java)
+			order2 := helpers.NewOrder(600).
+				WithPrice(999).
+				WithFlower("Tulip", gen.Color_BLUE).
+				Build()
+			err = store.SaveRecord(ctx, order2)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the new data is what we get back (cross-checked with Java)
+			loaded, err := store.LoadRecord(ctx, 600)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.GetPrice()).To(Equal(int32(999)))
+			Expect(loaded.GetFlower().GetType()).To(Equal("Tulip"))
+		})
+
 		It("should handle deleting minimal vs full orders", func() {
 			// Create and delete full order
 			fullOrder := helpers.StandardOrder(500)

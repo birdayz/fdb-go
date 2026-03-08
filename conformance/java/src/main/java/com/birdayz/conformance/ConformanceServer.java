@@ -11,6 +11,7 @@ import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.Executors;
 
 /**
  * HTTP server that keeps Java process alive and handles conformance step invocations.
@@ -25,6 +26,7 @@ public class ConformanceServer {
     public static void main(String[] args) throws IOException {
         // Bind to random available port
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.setExecutor(Executors.newFixedThreadPool(8));
 
         server.createContext("/invoke", ConformanceServer::handleInvoke);
         server.createContext("/health", ConformanceServer::handleHealth);
@@ -43,19 +45,21 @@ public class ConformanceServer {
 
     private static void handleHealth(HttpExchange exchange) throws IOException {
         String response = "{\"status\":\"ok\"}";
+        byte[] responseBytes = response.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, response.length());
+        exchange.sendResponseHeaders(200, responseBytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
-            os.write(response.getBytes(StandardCharsets.UTF_8));
+            os.write(responseBytes);
         }
     }
 
     private static void handleShutdown(HttpExchange exchange) throws IOException {
         String response = "{\"status\":\"shutting down\"}";
+        byte[] responseBytes = response.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, response.length());
+        exchange.sendResponseHeaders(200, responseBytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
-            os.write(response.getBytes(StandardCharsets.UTF_8));
+            os.write(responseBytes);
         }
         System.exit(0);
     }
@@ -103,10 +107,11 @@ public class ConformanceServer {
 
             // Build response manually to avoid double-encoding JSON
             String responseBody = String.format("{\"success\":true,\"result\":%s}", resultJson);
+            byte[] responseBytes = responseBody.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, responseBody.length());
+            exchange.sendResponseHeaders(200, responseBytes.length);
             try (OutputStream os = exchange.getResponseBody()) {
-                os.write(responseBody.getBytes(StandardCharsets.UTF_8));
+                os.write(responseBytes);
             }
 
         } catch (Exception e) {
@@ -125,10 +130,11 @@ public class ConformanceServer {
             "error", message
         );
         String responseBody = gson.toJson(response);
+        byte[] responseBytes = responseBody.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
-        exchange.sendResponseHeaders(code, responseBody.length());
+        exchange.sendResponseHeaders(code, responseBytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
-            os.write(responseBody.getBytes(StandardCharsets.UTF_8));
+            os.write(responseBytes);
         }
     }
 

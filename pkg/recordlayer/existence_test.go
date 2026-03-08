@@ -1,92 +1,57 @@
-package recordlayer_test
+package recordlayer
 
 import (
 	"context"
 	"errors"
-	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
-	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-// TestRecordExists_BasicFunctionality tests the RecordExists method
-func TestRecordExists_BasicFunctionality(t *testing.T) {
-	ctx := context.Background()
-
-	// Start FoundationDB testcontainer
-	container, err := foundationdb.Run(ctx, "",
-		foundationdb.WithDatabase("record_exists_test"),
-		foundationdb.WithAPIVersion(720),
+var _ = Describe("RecordExists_BasicFunctionality", func() {
+	var (
+		recordMetaData *RecordMetaData
 	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
 
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
+	BeforeEach(func() {
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		recordMetaData = metaDataBuilder.Build()
+	})
 
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
+	It("NonExistentRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
 
-	recordDB := recordlayer.NewFDBDatabase(db)
-
-	// Setup metadata
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
-
-	// Create test subspace
-	keyspace := subspace.FromBytes(tuple.Tuple{"record_exists_test"}.Pack())
-
-	// Test 1: RecordExists should return false for non-existent record
-	t.Run("NonExistentRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
-			exists, err := store.RecordExists(tuple.Tuple{int64(99999)}, recordlayer.IsolationLevelSerializable)
-			if err != nil {
-				t.Fatalf("RecordExists failed: %v", err)
-			}
-			if exists {
-				t.Fatal("Expected RecordExists to return false for non-existent record")
-			}
+			exists, err := store.RecordExists(tuple.Tuple{int64(99999)}, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Test 2: RecordExists should return true for existing record
-	t.Run("ExistingRecord", func(t *testing.T) {
-		// First, save a record
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+	It("ExistingRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// Save a record
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -107,41 +72,33 @@ func TestRecordExists_BasicFunctionality(t *testing.T) {
 			_, err = store.SaveRecord(order)
 			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Failed to save record: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 
-		// Now check if it exists
-		_, err = recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		// Check if it exists
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
-			exists, err := store.RecordExists(tuple.Tuple{int64(1001)}, recordlayer.IsolationLevelSerializable)
-			if err != nil {
-				t.Fatalf("RecordExists failed: %v", err)
-			}
-			if !exists {
-				t.Fatal("Expected RecordExists to return true for existing record")
-			}
+			exists, err := store.RecordExists(tuple.Tuple{int64(1001)}, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeTrue())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Test 3: RecordExists should return false after record is deleted
-	t.Run("DeletedRecord", func(t *testing.T) {
+	It("DeletedRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
 		// Save a record
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -162,102 +119,92 @@ func TestRecordExists_BasicFunctionality(t *testing.T) {
 			_, err = store.SaveRecord(order)
 			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Failed to save record: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 
 		// Delete the record
-		_, err = recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1002)})
-			if err != nil {
-				t.Fatalf("DeleteRecord failed: %v", err)
-			}
-			if !deleted {
-				t.Fatal("Expected DeleteRecord to return true")
-			}
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Delete transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 
-		// Check if it still exists
-		_, err = recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		// Check it no longer exists
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
-			exists, err := store.RecordExists(tuple.Tuple{int64(1002)}, recordlayer.IsolationLevelSerializable)
-			if err != nil {
-				t.Fatalf("RecordExists failed: %v", err)
-			}
-			if exists {
-				t.Fatal("Expected RecordExists to return false after record deletion")
-			}
+			exists, err := store.RecordExists(tuple.Tuple{int64(1002)}, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
-}
+})
 
-// TestRecordExistenceCheck_ErrorIfExists tests the ERROR_IF_EXISTS check
-func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
-	ctx := context.Background()
-
-	container, err := foundationdb.Run(ctx, "",
-		foundationdb.WithDatabase("existence_check_error_if_exists"),
-		foundationdb.WithAPIVersion(720),
+var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
+	var (
+		recordMetaData *RecordMetaData
 	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
 
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
+	BeforeEach(func() {
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		recordMetaData = metaDataBuilder.Build()
+	})
 
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
+	It("NewRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
 
-	recordDB := recordlayer.NewFDBDatabase(db)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
 
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
+			order := &gen.Order{
+				OrderId: proto.Int64(2001),
+				Price:   proto.Int32(100),
+				Flower: &gen.Flower{
+					Type:  proto.String("Daisy"),
+					Color: gen.Color_YELLOW.Enum(),
+				},
+			}
 
-	keyspace := subspace.FromBytes(tuple.Tuple{"error_if_exists_test"}.Pack())
+			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfExists)
+			Expect(err).NotTo(HaveOccurred())
 
-	// Test 1: Should succeed on new record
-	t.Run("NewRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ExistingRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// First save a record
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -269,35 +216,20 @@ func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 			order := &gen.Order{
 				OrderId: proto.Int64(2001),
 				Price:   proto.Int32(100),
-				Flower: &gen.Flower{
-					Type:  proto.String("Daisy"),
-					Color: gen.Color_YELLOW.Enum(),
-				},
 			}
-
-			_, err = store.SaveRecordWithOptions(order, recordlayer.RecordExistenceCheckErrorIfExists)
-			if err != nil {
-				t.Fatalf("Expected SaveRecordWithOptions to succeed for new record, got error: %v", err)
-			}
-
-			return nil, nil
+			_, err = store.SaveRecord(order)
+			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
-	})
+		Expect(err).NotTo(HaveOccurred())
 
-	// Test 2: Should fail on existing record
-	t.Run("ExistingRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		// Try to save again with ErrorIfExists
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			order := &gen.Order{
 				OrderId: proto.Int64(2001),
@@ -308,69 +240,39 @@ func TestRecordExistenceCheck_ErrorIfExists(t *testing.T) {
 				},
 			}
 
-			_, err = store.SaveRecordWithOptions(order, recordlayer.RecordExistenceCheckErrorIfExists)
-			if err == nil {
-				t.Fatal("Expected SaveRecordWithOptions to fail for existing record")
-			}
-			if !errors.Is(err, recordlayer.ErrRecordAlreadyExists) {
-				t.Fatalf("Expected ErrRecordAlreadyExists, got: %v", err)
-			}
+			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfExists)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, ErrRecordAlreadyExists)).To(BeTrue())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
-}
+})
 
-// TestInsertRecord tests the InsertRecord convenience method
-func TestInsertRecord(t *testing.T) {
-	ctx := context.Background()
-
-	container, err := foundationdb.Run(ctx, "",
-		foundationdb.WithDatabase("insert_record_test"),
-		foundationdb.WithAPIVersion(720),
+var _ = Describe("InsertRecord", func() {
+	var (
+		recordMetaData *RecordMetaData
 	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
 
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
+	BeforeEach(func() {
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		recordMetaData = metaDataBuilder.Build()
+	})
 
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
+	It("NewRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
 
-	recordDB := recordlayer.NewFDBDatabase(db)
-
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
-
-	keyspace := subspace.FromBytes(tuple.Tuple{"insert_record_test"}.Pack())
-
-	// Test 1: InsertRecord should succeed for new record
-	t.Run("NewRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			order := &gen.Order{
 				OrderId: proto.Int64(3001),
@@ -382,21 +284,20 @@ func TestInsertRecord(t *testing.T) {
 			}
 
 			_, err = store.InsertRecord(order)
-			if err != nil {
-				t.Fatalf("InsertRecord failed for new record: %v", err)
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Test 2: InsertRecord should fail for existing record
-	t.Run("ExistingRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+	It("ExistingRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// Insert a record first
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -404,6 +305,24 @@ func TestInsertRecord(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(3001),
+				Price:   proto.Int32(150),
+			}
+			_, err = store.InsertRecord(order)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Try to insert again - should fail
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
 
 			order := &gen.Order{
 				OrderId: proto.Int64(3001),
@@ -415,68 +334,38 @@ func TestInsertRecord(t *testing.T) {
 			}
 
 			_, err = store.InsertRecord(order)
-			if err == nil {
-				t.Fatal("InsertRecord should fail for existing record")
-			}
-			if !errors.Is(err, recordlayer.ErrRecordAlreadyExists) {
-				t.Fatalf("Expected ErrRecordAlreadyExists, got: %v", err)
-			}
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, ErrRecordAlreadyExists)).To(BeTrue())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
-}
+})
 
-// TestUpdateRecord tests the UpdateRecord convenience method
-func TestUpdateRecord(t *testing.T) {
-	ctx := context.Background()
-
-	container, err := foundationdb.Run(ctx, "",
-		foundationdb.WithDatabase("update_record_test"),
-		foundationdb.WithAPIVersion(720),
+var _ = Describe("UpdateRecord", func() {
+	var (
+		recordMetaData *RecordMetaData
 	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
 
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
+	BeforeEach(func() {
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		recordMetaData = metaDataBuilder.Build()
+	})
 
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
+	It("NonExistentRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
 
-	recordDB := recordlayer.NewFDBDatabase(db)
-
-	fileDesc := gen.File_record_layer_demo_proto
-	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
-	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
-
-	keyspace := subspace.FromBytes(tuple.Tuple{"update_record_test"}.Pack())
-
-	// Test 1: UpdateRecord should fail for non-existent record
-	t.Run("NonExistentRecord", func(t *testing.T) {
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
 				CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			order := &gen.Order{
 				OrderId: proto.Int64(4001),
@@ -488,25 +377,21 @@ func TestUpdateRecord(t *testing.T) {
 			}
 
 			_, err = store.UpdateRecord(order)
-			if err == nil {
-				t.Fatal("UpdateRecord should fail for non-existent record")
-			}
-			if !errors.Is(err, recordlayer.ErrRecordDoesNotExist) {
-				t.Fatalf("Expected ErrRecordDoesNotExist, got: %v", err)
-			}
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, ErrRecordDoesNotExist)).To(BeTrue())
 
 			return nil, nil
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// Test 2: UpdateRecord should succeed for existing record
-	t.Run("ExistingRecord", func(t *testing.T) {
-		// First insert a record
-		_, err := recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+	It("ExistingRecord", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// Insert a record first
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -527,13 +412,76 @@ func TestUpdateRecord(t *testing.T) {
 			_, err = store.InsertRecord(order)
 			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Failed to insert record: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 
-		// Now update it
-		_, err = recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		// Update it
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			order := &gen.Order{
+				OrderId: proto.Int64(4002),
+				Price:   proto.Int32(200),
+				Flower: &gen.Flower{
+					Type:  proto.String("Peony"),
+					Color: gen.Color_RED.Enum(),
+				},
+			}
+
+			_, err = store.UpdateRecord(order)
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the update
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			storedRecord, err := store.LoadRecord(tuple.Tuple{int64(4002)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storedRecord).NotTo(BeNil())
+
+			order := storedRecord.Record.(*gen.Order)
+			Expect(*order.Price).To(Equal(int32(200)))
+			Expect(*order.Flower.Color).To(Equal(gen.Color_RED))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
+	var (
+		recordMetaData *RecordMetaData
+	)
+
+	BeforeEach(func() {
+		fileDesc := gen.File_record_layer_demo_proto
+		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
+		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		recordMetaData = metaDataBuilder.Build()
+	})
+
+	It("DifferentTypeReturnsError", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// Save an Order with order_id = 5001
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -543,28 +491,21 @@ func TestUpdateRecord(t *testing.T) {
 			}
 
 			order := &gen.Order{
-				OrderId: proto.Int64(4002),
-				Price:   proto.Int32(200), // Updated price
+				OrderId: proto.Int64(5001),
+				Price:   proto.Int32(42),
 				Flower: &gen.Flower{
-					Type:  proto.String("Peony"),
-					Color: gen.Color_RED.Enum(), // Updated color
+					Type:  proto.String("Tulip"),
+					Color: gen.Color_YELLOW.Enum(),
 				},
 			}
-
-			_, err = store.UpdateRecord(order)
-			if err != nil {
-				t.Fatalf("UpdateRecord failed for existing record: %v", err)
-			}
-
-			return nil, nil
+			_, err = store.SaveRecord(order)
+			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
+		Expect(err).NotTo(HaveOccurred())
 
-		// Verify the update
-		_, err = recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-			store, err := recordlayer.NewStoreBuilder().
+		// Try to save a Customer with same primary key using ErrorIfTypeChanged
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
 				SetSubspace(keyspace).
@@ -573,28 +514,170 @@ func TestUpdateRecord(t *testing.T) {
 				return nil, err
 			}
 
-			storedRecord, err := store.LoadRecord(tuple.Tuple{int64(4002)})
-			if err != nil {
-				t.Fatalf("LoadRecord failed: %v", err)
+			customer := &gen.Customer{
+				CustomerId: proto.Int64(5001),
+				Name:       proto.String("Alice"),
+				Email:      proto.String("alice@example.com"),
 			}
-			if storedRecord == nil {
-				t.Fatal("Expected to find updated record")
-			}
-
-			order := storedRecord.Record.(*gen.Order)
-			if *order.Price != 200 {
-				t.Fatalf("Expected updated price 200, got %d", *order.Price)
-			}
-			if *order.Flower.Color != gen.Color_RED {
-				t.Fatalf("Expected updated color RED, got %v", *order.Flower.Color)
-			}
-
-			return nil, nil
+			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckErrorIfTypeChanged)
+			return nil, err
 		})
-		if err != nil {
-			t.Fatalf("Transaction failed: %v", err)
-		}
-	})
-}
 
-// TestRecordExistenceCheck_ErrorIfTypeChanged tests the ERROR_IF_RECORD_TYPE_CHANGED check
+		Expect(err).To(HaveOccurred())
+		var typeChangedErr *RecordTypeChangedError
+		Expect(errors.As(err, &typeChangedErr)).To(BeTrue())
+		Expect(typeChangedErr.ActualType).To(Equal("Order"))
+		Expect(typeChangedErr.ExpectedType).To(Equal("Customer"))
+	})
+
+	It("SameTypeSucceeds", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(5002),
+				Price:   proto.Int32(100),
+				Flower: &gen.Flower{
+					Type:  proto.String("Rose"),
+					Color: gen.Color_RED.Enum(),
+				},
+			}
+			_, err = store.SaveRecord(order)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save same type again with ErrorIfTypeChanged - should succeed
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(5002),
+				Price:   proto.Int32(200),
+				Flower: &gen.Flower{
+					Type:  proto.String("Rose"),
+					Color: gen.Color_BLUE.Enum(),
+				},
+			}
+			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfTypeChanged)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("NotExistsOrTypeChanged_NonExistent", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(5003),
+				Price:   proto.Int32(50),
+			}
+			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+			return nil, err
+		})
+
+		Expect(err).To(HaveOccurred())
+		var notExistsErr *RecordDoesNotExistError
+		Expect(errors.As(err, &notExistsErr)).To(BeTrue())
+	})
+
+	It("NotExistsOrTypeChanged_DifferentType", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		// Save an Order first
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(5004),
+				Price:   proto.Int32(75),
+			}
+			_, err = store.SaveRecord(order)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Try to save Customer with same primary key using ErrorIfNotExistsOrTypeChanged
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			customer := &gen.Customer{
+				CustomerId: proto.Int64(5004),
+				Name:       proto.String("Bob"),
+			}
+			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+			return nil, err
+		})
+
+		Expect(err).To(HaveOccurred())
+		var typeChangedErr *RecordTypeChangedError
+		Expect(errors.As(err, &typeChangedErr)).To(BeTrue())
+	})
+
+	It("NoExistingRecord_Succeeds", func() {
+		ctx := context.Background()
+		keyspace := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(recordMetaData).
+				SetSubspace(keyspace).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			order := &gen.Order{
+				OrderId: proto.Int64(5099),
+				Price:   proto.Int32(999),
+			}
+			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfTypeChanged)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

@@ -82,21 +82,6 @@ func (env *TestEnvironment) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// OpenRecordStore opens a record store in this environment
-func (env *TestEnvironment) OpenRecordStore(ctx context.Context) (*recordlayer.FDBRecordStore, error) {
-	var store *recordlayer.FDBRecordStore
-	_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-		var err error
-		store, err = recordlayer.NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(env.MetaData).
-			SetSubspace(env.Keyspace).
-			CreateOrOpen()
-		return nil, err
-	})
-	return store, err
-}
-
 // TenantEnvironment encapsulates everything needed for a tenant-isolated conformance test
 // Unlike TestEnvironment which creates a new container per test, this reuses a shared container
 // and provides isolation via FDB tenants
@@ -154,21 +139,6 @@ func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
 		return env.Container.DeleteTenant(ctx, env.TenantName)
 	}
 	return nil
-}
-
-// OpenRecordStore opens a record store in the tenant's keyspace
-func (env *TenantEnvironment) OpenRecordStore(ctx context.Context) (*recordlayer.FDBRecordStore, error) {
-	var store *recordlayer.FDBRecordStore
-	_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
-		var err error
-		store, err = recordlayer.NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(env.MetaData).
-			SetSubspace(env.Keyspace).
-			CreateOrOpen()
-		return nil, err
-	})
-	return store, err
 }
 
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema

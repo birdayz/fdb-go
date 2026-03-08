@@ -31,22 +31,20 @@ func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) 
 	// Get the field value
 	value := m.Get(fd)
 
-	// Convert to interface{} based on field type
+	// Convert to interface{} based on field type.
+	// All integer types are normalized to int64 because FDB's tuple layer
+	// only supports int64 (matching Java's long). Float32 → float64 for the same reason.
 	var result interface{}
 	switch fd.Kind() {
 	case protoreflect.StringKind:
 		result = value.String()
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		result = int32(value.Int())
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		result = value.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		result = uint32(value.Uint())
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		result = value.Uint()
-	case protoreflect.FloatKind:
-		result = float32(value.Float())
-	case protoreflect.DoubleKind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		result = int64(value.Uint())
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		result = value.Float()
 	case protoreflect.BoolKind:
 		result = value.Bool()
@@ -81,11 +79,20 @@ func (r *RecordTypeKeyExpression) Nest(expr KeyExpression) KeyExpression {
 	return r
 }
 
-// Evaluate returns the record type index, optionally followed by nested values
+// Evaluate returns the record type name, optionally followed by nested values.
+// In Java, RecordTypeKeyExpression.evaluate() returns the record type name as a string.
+// We derive it from the proto message's descriptor name.
 func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) {
-	// For RecordTypeKeyExpression, we can't evaluate without knowing the record type
-	// This will be handled specially in SaveRecord/LoadRecord
-	return nil, fmt.Errorf("RecordTypeKeyExpression requires record type context")
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	result := []interface{}{typeName}
+	if r.nested != nil {
+		nestedValues, err := r.nested.Evaluate(msg)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, nestedValues...)
+	}
+	return result, nil
 }
 
 // FieldNames returns the field names accessed by nested expression
@@ -107,6 +114,25 @@ func GetNestedExpression(expr KeyExpression) KeyExpression {
 	if rt, ok := expr.(*RecordTypeKeyExpression); ok {
 		return rt.nested
 	}
+	return nil
+}
+
+// EmptyKeyExpression produces an empty tuple — used for ungrouped record counting.
+// When used as a recordCountKey, a single total count is maintained.
+type EmptyKeyExpression struct{}
+
+// EmptyKey creates a key expression that produces an empty tuple.
+func EmptyKey() KeyExpression {
+	return &EmptyKeyExpression{}
+}
+
+// Evaluate returns an empty slice (no key components).
+func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([]interface{}, error) {
+	return []interface{}{}, nil
+}
+
+// FieldNames returns no field names.
+func (e *EmptyKeyExpression) FieldNames() []string {
 	return nil
 }
 

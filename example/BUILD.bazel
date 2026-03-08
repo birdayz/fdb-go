@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "example_lib",
+    srcs = ["getting_started.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/example",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_binary(
+    name = "example",
+    embed = [":example_lib"],
+    visibility = ["//visibility:public"],
+)

@@ -44,196 +44,161 @@ var (
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
-	context  *FDBRecordContext
-	metaData *RecordMetaData
-	subspace subspace.Subspace
+	context     *FDBRecordContext
+	metaData    *RecordMetaData
+	subspace    subspace.Subspace
+	storeHeader *gen.DataStoreInfo // Cached store header, loaded on Open/Create
 }
 
-// LoadRecord loads a record by its primary key
-func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
-	recordsSubspace := store.subspace.Sub(RecordKey)
-	
-	// Try each record type - like Java, we always append record type index
-	for _, recordType := range store.metaData.RecordTypes() {
-		recordTypeIndex := recordType.GetRecordTypeIndex()
-		keyTuple := append(primaryKey, recordTypeIndex)
-		recordKey := recordsSubspace.Pack(keyTuple)
-		
-		// Get the value from FDB
-		value := store.context.Transaction().Get(recordKey).MustGet()
-		if value != nil {
-			// Found the record! Now deserialize it
-			protoMessage, err := store.deserializeRecord(value, recordType)
-			if err != nil {
-				return nil, fmt.Errorf("failed to deserialize record: %w", err)
-			}
-			
-			return &FDBStoredRecord[proto.Message]{
-				PrimaryKey:   primaryKey,
-				RecordType:   recordType,
-				Record:       protoMessage,
-				ValueSize:    len(value),
-				KeySize:      len(recordKey),
-				Split:        false,
-			}, nil
+// validateRecordUpdateAllowed checks if the store allows record mutations.
+// Returns StoreIsLockedForRecordUpdatesError if the store header has
+// StoreLockState set to FORBID_RECORD_UPDATE.
+// Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
+func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
+	if store.storeHeader == nil {
+		return nil
+	}
+	lockState := store.storeHeader.GetStoreLockState()
+	if lockState == nil {
+		return nil
+	}
+	if lockState.GetLockState() == gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
+		return &StoreIsLockedForRecordUpdatesError{
+			Reason:    lockState.GetReason(),
+			Timestamp: lockState.GetTimestamp(),
 		}
 	}
-	
-	return nil, nil // Record not found with any record type
+	return nil
 }
 
-// SaveRecord saves a protobuf record to the store
-func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
-	// Extract the primary key from the record
-	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-	recordType := store.metaData.GetRecordType(recordTypeName)
-	if recordType == nil {
-		return nil, fmt.Errorf("unknown record type: %s", recordTypeName)
-	}
-
-	if recordType.PrimaryKey == nil {
-		return nil, fmt.Errorf("no primary key defined for record type: %s", recordTypeName)
-	}
-
-	// Extract primary key values using the key expression
-	keyValues, err := recordType.PrimaryKey.Evaluate(record)
-	if err != nil {
-		return nil, fmt.Errorf("failed to extract primary key: %w", err)
-	}
-
-	// Create primary key tuple  
-	primaryKey := make(tuple.Tuple, len(keyValues))
-	for i, v := range keyValues {
-		primaryKey[i] = v
-	}
-
-	// Like Java Record Layer, ALWAYS include record type index in the key
-	// This ensures no collisions between different record types
-	recordTypeIndex := recordType.GetRecordTypeIndex()
-	keyTuple := append(primaryKey, recordTypeIndex)
-
-	// Wrap the record in a UnionDescriptor like Java Record Layer does
-	// This ensures compatibility with Java's serialization format
-	unionRecord, err := store.wrapInUnion(record, recordType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
-	}
-
-	// Serialize the union message
-	data, err := proto.Marshal(unionRecord)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal union record: %w", err)
-	}
-
-	// Construct the key for the record using the RECORD_KEY subspace
-	// Key structure depends on whether record type is part of primary key
+// LoadRecord loads a record by its primary key.
+// Handles both unsplit (suffix 0) and split (suffixes 1, 2, ...) records
+// via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
+func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
 	recordsSubspace := store.subspace.Sub(RecordKey)
-	recordKey := recordsSubspace.Pack(keyTuple)
 
-	// Store the record in FDB
-	store.context.Transaction().Set(recordKey, data)
+	var sizeInfo SizeInfo
+	value, err := loadWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		store.metaData.IsSplitLongRecords(),
+		&sizeInfo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load record %v: %w", primaryKey, err)
+	}
+	if value == nil {
+		return nil, nil // Record not found
+	}
 
-	// Return the stored record
-	// Note: PrimaryKey is always the user-visible key (without record type prefix)
+	// Discover which record type is stored by inspecting the UnionDescriptor
+	recordType, protoMessage, err := store.deserializeAndDiscover(value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize record: %w", err)
+	}
+
 	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey:   primaryKey,
-		RecordType:   recordType,
-		Record:       record,
-		ValueSize:    len(data),
-		KeySize:      len(recordKey),
-		Split:        false,
+		PrimaryKey: primaryKey,
+		RecordType: recordType,
+		Record:     protoMessage,
+		KeyCount:   sizeInfo.KeyCount,
+		ValueSize:  sizeInfo.ValueSize,
+		KeySize:    sizeInfo.KeySize,
+		Split:      sizeInfo.IsSplit,
 	}, nil
 }
 
-// DeleteRecord deletes a record by its primary key, following Java's deleteRecordAsync semantics
-// Returns true if a record was deleted, false if no record existed with that key
+// SaveRecord saves a protobuf record to the store.
+// Equivalent to SaveRecordWithOptions(record, RecordExistenceCheckNone).
+// Java equivalent: FDBRecordStore.saveRecord(Message rec)
+func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
+	return store.SaveRecordWithOptions(record, RecordExistenceCheckNone)
+}
+
+// DeleteRecord deletes a record by its primary key, following Java's deleteRecordAsync semantics.
+// Returns true if a record was deleted, false if no record existed with that key.
+// Handles both split and unsplit records via SplitHelper.
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
-	// First, load the existing record to see if it exists and get its type
-	// This matches Java's behavior of loading the record first
-	existingRecord, err := store.LoadRecord(primaryKey)
-	if err != nil {
-		return false, fmt.Errorf("failed to load record for deletion: %w", err)
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return false, err
 	}
-	
-	// If no record exists, return false (not an error)
-	if existingRecord == nil {
-		return false, nil
-	}
-	
-	// For now, we don't implement store state validation or index updates
-	// TODO: Add store state validation (validateRecordUpdateAllowed)
-	// TODO: Add secondary index updates (updateSecondaryIndexes)
-	// TODO: Add record counting (addRecordCount with -1)
-	// TODO: Add version handling for versioned records
-	
-	// Delete the record from all possible locations (try each record type)
+
 	recordsSubspace := store.subspace.Sub(RecordKey)
-	
-	// Like Java, we need to try each record type since we don't know which one it is
-	for _, recordType := range store.metaData.RecordTypes() {
-		recordTypeIndex := recordType.GetRecordTypeIndex()
-		keyTuple := append(primaryKey, recordTypeIndex)
-		recordKey := recordsSubspace.Pack(keyTuple)
-		
-		// Check if this key exists before deleting
-		value := store.context.Transaction().Get(recordKey).MustGet()
-		if value != nil {
-			// Found the record! Delete it and return true
-			store.context.Transaction().Clear(recordKey)
-			
-			// TODO: Clear version key if versioning is enabled
-			// TODO: Update secondary indexes (call updateSecondaryIndexes(oldRecord, null))
-			// TODO: Decrement record count
-			
-			return true, nil
+	splitEnabled := store.metaData.IsSplitLongRecords()
+
+	// Load existing record to get size info and record data (for counting)
+	var oldSizeInfo SizeInfo
+	value, err := loadWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		splitEnabled,
+		&oldSizeInfo,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to load record for deletion %v: %w", primaryKey, err)
+	}
+	if value == nil {
+		return false, nil // Record not found
+	}
+
+	// Check for inline version
+	if store.metaData.IsStoreRecordVersions() {
+		oldSizeInfo.VersionedInline = true
+	}
+
+	// Delete all KV pairs for this record
+	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldSizeInfo)
+
+	// Deserialize old record if needed for counting or index updates
+	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
+	var oldRecordType *RecordType
+	var oldMsg proto.Message
+	if needDeserialize {
+		var deserErr error
+		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
+		if deserErr != nil {
+			return false, fmt.Errorf("failed to deserialize record for deletion: %w", deserErr)
 		}
 	}
-	
-	// This should not happen since LoadRecord found it, but handle gracefully
-	return false, nil
+
+	// Decrement record count
+	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
+		store.addRecordCount(oldMsg, littleEndianInt64MinusOne)
+	}
+
+	// Update secondary indexes
+	if store.metaData.HasIndexes() && oldMsg != nil {
+		oldStoredRecord := &FDBStoredRecord[proto.Message]{
+			PrimaryKey: primaryKey,
+			RecordType: oldRecordType,
+			Record:     oldMsg,
+		}
+		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
 }
 
 // RecordExists checks if a record exists with the given primary key.
-// This is more efficient than LoadRecord when you only need to check existence.
-//
-// The isolationLevel parameter controls whether to use snapshot or serializable isolation:
-// - IsolationLevelSnapshot: Uses snapshot reads (non-conflicting, sees consistent view at transaction start)
-// - IsolationLevelSerializable: Uses serializable reads (participates in conflict detection)
+// Handles both split and unsplit records via SplitHelper.
 //
 // Java equivalent: FDBRecordStore.recordExistsAsync(Tuple primaryKey, IsolationLevel isolationLevel)
-// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:1209
-//
-// Returns:
-//   - bool: true if a record exists with the given primary key
-//   - error: any error that occurred during the check
 func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel IsolationLevel) (bool, error) {
 	recordsSubspace := store.subspace.Sub(RecordKey)
 
-	// Try each record type - like LoadRecord, we check all possible record type indices
-	for _, recordType := range store.metaData.RecordTypes() {
-		recordTypeIndex := recordType.GetRecordTypeIndex()
-		keyTuple := append(primaryKey, recordTypeIndex)
-		recordKey := recordsSubspace.Pack(keyTuple)
-
-		// Check if the key exists using appropriate isolation level
-		// Java: ReadTransaction tr = isolationLevel.isSnapshot() ? ensureContextActive().snapshot() : ensureContextActive()
-		var value []byte
-		if isolationLevel.IsSnapshot() {
-			// Use snapshot read (non-conflicting)
-			value = store.context.Transaction().Snapshot().Get(recordKey).MustGet()
-		} else {
-			// Use normal read (participates in conflict detection)
-			value = store.context.Transaction().Get(recordKey).MustGet()
-		}
-
-		// TODO: Support split records (large records >100KB) like Java's SplitHelper.keyExists()
-		if value != nil {
-			return true, nil
-		}
+	var tx fdb.ReadTransaction
+	if isolationLevel.IsSnapshot() {
+		tx = store.context.Transaction().Snapshot()
+	} else {
+		tx = store.context.Transaction()
 	}
 
-	return false, nil
+	return recordExistsWithSplit(tx, recordsSubspace, primaryKey, store.metaData.IsSplitLongRecords())
 }
 
 // SaveRecordWithOptions saves a protobuf record with existence checking.
@@ -255,6 +220,10 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return nil, err
+	}
+
 	// Extract the primary key from the record
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
@@ -278,50 +247,58 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		primaryKey[i] = v
 	}
 
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	splitEnabled := store.metaData.IsSplitLongRecords()
+
+	// Always load the existing record (matching Java's saveRecordAsync behavior).
+	// This is needed for: existence checks, record counting, and future
+	// index updates / version management.
+	var oldSizeInfo SizeInfo
+	oldValue, err := loadWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		splitEnabled,
+		&oldSizeInfo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load existing record: %w", err)
+	}
+	oldRecordExists := oldValue != nil
+
 	// Perform existence checks
 	if existenceCheck != RecordExistenceCheckNone {
-		existingRecord, err := store.LoadRecord(primaryKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check record existence: %w", err)
-		}
-
-		// ERROR_IF_EXISTS: Fail if record already exists
-		if existenceCheck.ErrorIfExists() && existingRecord != nil {
+		if existenceCheck.ErrorIfExists() && oldRecordExists {
 			return nil, &RecordAlreadyExistsError{
 				Message:    "record already exists",
 				PrimaryKey: primaryKey,
 			}
 		}
 
-		// ERROR_IF_NOT_EXISTS: Fail if record doesn't exist
-		if existenceCheck.ErrorIfNotExists() && existingRecord == nil {
+		if existenceCheck.ErrorIfNotExists() && !oldRecordExists {
 			return nil, &RecordDoesNotExistError{
 				Message:    "record does not exist",
 				PrimaryKey: primaryKey,
 			}
 		}
 
-		// ERROR_IF_RECORD_TYPE_CHANGED: Fail if existing record has different type
-		if existenceCheck.ErrorIfTypeChanged() && existingRecord != nil {
-			existingTypeName := string(existingRecord.Record.ProtoReflect().Descriptor().Name())
-			if existingTypeName != recordTypeName {
-				return nil, &RecordTypeChangedError{
-					Message:      "record type changed",
-					PrimaryKey:   primaryKey,
-					ActualType:   existingTypeName,
-					ExpectedType: recordTypeName,
+		if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
+			_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+			if deserErr == nil {
+				existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
+				if existingTypeName != recordTypeName {
+					return nil, &RecordTypeChangedError{
+						Message:      "record type changed",
+						PrimaryKey:   primaryKey,
+						ActualType:   existingTypeName,
+						ExpectedType: recordTypeName,
+					}
 				}
 			}
 		}
 	}
 
-	// Like Java Record Layer, ALWAYS include record type index in the key
-	// This ensures no collisions between different record types
-	recordTypeIndex := recordType.GetRecordTypeIndex()
-	keyTuple := append(primaryKey, recordTypeIndex)
-
 	// Wrap the record in a UnionDescriptor like Java Record Layer does
-	// This ensures compatibility with Java's serialization format
 	unionRecord, err := store.wrapInUnion(record, recordType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
@@ -333,26 +310,76 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		return nil, fmt.Errorf("failed to marshal union record: %w", err)
 	}
 
-	// Construct the key for the record using the RECORD_KEY subspace
-	recordsSubspace := store.subspace.Sub(RecordKey)
-	recordKey := recordsSubspace.Pack(keyTuple)
+	// If versioning is enabled, mark old record as having inline version for proper cleanup
+	if store.metaData.IsStoreRecordVersions() && oldRecordExists {
+		oldSizeInfo.VersionedInline = true
+	}
 
-	// Store the record in FDB
-	store.context.Transaction().Set(recordKey, data)
+	// Save using split helper (handles both split and unsplit data)
+	var oldSizeInfoPtr *SizeInfo
+	if oldRecordExists {
+		oldSizeInfoPtr = &oldSizeInfo
+	}
 
-	// TODO: Update secondary indexes (Phase 5)
-	// TODO: Update record counts (Phase 3)
-	// TODO: Store version if versionstamp support is enabled (Phase 2)
+	var newSizeInfo SizeInfo
+	if err := saveWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		data,
+		splitEnabled,
+		oldSizeInfoPtr,
+		&newSizeInfo,
+	); err != nil {
+		return nil, fmt.Errorf("failed to save record: %w", err)
+	}
 
-	// Return the stored record
-	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey:   primaryKey,
-		RecordType:   recordType,
-		Record:       record,
-		ValueSize:    len(data),
-		KeySize:      len(recordKey),
-		Split:        false,
-	}, nil
+	// Save version if versioning is enabled (handled separately from split helper
+	// because Go FDB bindings need context-level AddVersionMutation for versionstamps)
+	if store.metaData.IsStoreRecordVersions() {
+		localVer := store.context.ClaimLocalVersion()
+		version, verErr := IncompleteVersion(localVer)
+		if verErr != nil {
+			return nil, fmt.Errorf("failed to create incomplete version: %w", verErr)
+		}
+		store.saveRecordVersion(primaryKey, version)
+	}
+
+	// Only increment record count for new inserts (not updates).
+	if !oldRecordExists {
+		store.addRecordCount(record, littleEndianInt64One)
+	}
+
+	newStoredRecord := &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		RecordType: recordType,
+		Record:     record,
+		KeyCount:   newSizeInfo.KeyCount,
+		ValueSize:  newSizeInfo.ValueSize,
+		KeySize:    newSizeInfo.KeySize,
+		Split:      newSizeInfo.IsSplit,
+	}
+
+	// Update secondary indexes
+	if store.metaData.HasIndexes() {
+		var oldStoredRecord *FDBStoredRecord[proto.Message]
+		if oldRecordExists {
+			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+			if deserErr != nil {
+				return nil, fmt.Errorf("failed to deserialize old record for index update: %w", deserErr)
+			}
+			oldStoredRecord = &FDBStoredRecord[proto.Message]{
+				PrimaryKey: primaryKey,
+				RecordType: oldRT,
+				Record:     oldMsg,
+			}
+		}
+		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord); err != nil {
+			return nil, err
+		}
+	}
+
+	return newStoredRecord, nil
 }
 
 // InsertRecord saves a record and throws an error if it already exists.
@@ -415,7 +442,7 @@ func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
 //   - End: recordsSubspace.pack(primaryKey) + 0xFF
 //
 // This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
-// The range covers all keys that start with the primary key tuple (e.g., {orderID, recordTypeIndex, UNSPLIT_RECORD}).
+// The range covers all keys that start with the primary key tuple (e.g., {orderID, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
 	recordsSubspace := store.subspace.Sub(RecordKey)
 
@@ -443,13 +470,183 @@ func (store *FDBRecordStore) Subspace() subspace.Subspace {
 	return store.subspace
 }
 
-// ScanRecords scans all records in the store
+// DeleteAllRecords deletes all records from the store.
+// This clears the records subspace and the record count subspace.
+// Matches Java's FDBRecordStore.deleteAllRecords().
+func (store *FDBRecordStore) DeleteAllRecords() error {
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return err
+	}
+
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	store.context.Transaction().ClearRange(recordsSubspace)
+
+	// Clear record counts. ClearRange alone doesn't override pending atomic
+	// Add mutations within the same transaction, so we also explicitly Set
+	// the count key to 0 to ensure reads in the same tx see the reset.
+	countSubspace := store.subspace.Sub(RecordCountKey)
+	store.context.Transaction().ClearRange(countSubspace)
+
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil {
+		fdbKey := countSubspace.Pack(tuple.Tuple{})
+		store.context.Transaction().Set(fdbKey, encodeRecordCount(0))
+	}
+
+	// Clear version keys
+	versionSubspace := store.subspace.Sub(RecordVersionKey)
+	store.context.Transaction().ClearRange(versionSubspace)
+
+	// Clear all index data
+	indexSubspace := store.subspace.Sub(IndexKey)
+	store.context.Transaction().ClearRange(indexSubspace)
+
+	return nil
+}
+
+// updateSecondaryIndexes updates all relevant indexes for a record change.
+// oldRecord is nil for inserts, newRecord is nil for deletes.
+// Matches Java's FDBRecordStore.updateSecondaryIndexes().
+func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	if oldRecord == nil && newRecord == nil {
+		return nil
+	}
+
+	var recordType *RecordType
+	if newRecord != nil {
+		recordType = newRecord.RecordType
+	} else {
+		recordType = oldRecord.RecordType
+	}
+
+	// Type-specific indexes
+	for _, index := range store.metaData.GetIndexesForRecordType(recordType.Name) {
+		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
+			return err
+		}
+	}
+
+	// Universal indexes (apply to all record types)
+	for _, index := range store.metaData.GetUniversalIndexes() {
+		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// indexSubspace returns the FDB subspace for a specific index.
+// Layout: [storeSubspace][IndexKey=2][indexSubspaceTupleKey]
+// Matches Java's FDBRecordStore.indexSubspace(Index).
+func (store *FDBRecordStore) indexSubspace(index *Index) subspace.Subspace {
+	return store.subspace.Sub(IndexKey, index.SubspaceTupleKey())
+}
+
+// getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
+// Currently only StandardIndexMaintainer (VALUE indexes) is supported.
+func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
+	return newStandardIndexMaintainer(index, store.indexSubspace(index), store.context.Transaction())
+}
+
+// saveRecordVersion stores the version for a record using the new inline format.
+// Version is stored adjacent to the record at recordsSubspace.pack(primaryKey, -1),
+// matching Java's SplitHelper.RECORD_VERSION for format version >= 6.
+// For incomplete versions, queues a SET_VERSIONSTAMPED_VALUE mutation.
+func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *FDBRecordVersion) {
+	versionKey := store.versionKey(primaryKey)
+
+	if version.IsComplete() {
+		// Direct set for complete versions (rare — only when explicitly provided)
+		store.context.Transaction().Set(versionKey, version.ToBytes())
+	} else {
+		// Queue SET_VERSIONSTAMPED_VALUE for incomplete versions
+		store.context.AddToLocalVersionCache(versionKey, version.GetLocalVersion())
+		store.context.AddVersionMutation(versionKey, buildVersionstampedValue(version))
+	}
+}
+
+// LoadRecordVersion loads the version associated with a record.
+// Returns nil if no version is stored or versioning is not enabled.
+// Matches Java's FDBRecordStore.loadRecordVersionAsync().
+func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot bool) (*FDBRecordVersion, error) {
+	versionKey := store.versionKey(primaryKey)
+
+	// Check local cache first (for versions saved in the current transaction)
+	if localVer, ok := store.context.GetLocalVersion(versionKey); ok {
+		v, err := IncompleteVersion(localVer)
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+
+	// Read from FDB
+	var value []byte
+	var getErr error
+	if snapshot {
+		value, getErr = store.context.Transaction().Snapshot().Get(fdb.Key(versionKey)).Get()
+	} else {
+		value, getErr = store.context.Transaction().Get(fdb.Key(versionKey)).Get()
+	}
+	if getErr != nil {
+		return nil, fmt.Errorf("failed to load record version: %w", getErr)
+	}
+
+	if value == nil {
+		return nil, nil
+	}
+
+	return CompleteVersionFromBytes(value)
+}
+
+// deleteRecordVersion clears the version key for a record.
+func (store *FDBRecordStore) deleteRecordVersion(primaryKey tuple.Tuple) {
+	versionKey := store.versionKey(primaryKey)
+	store.context.Transaction().Clear(fdb.Key(versionKey))
+	store.context.RemoveLocalVersion(versionKey)
+	store.context.RemoveVersionMutation(versionKey)
+}
+
+// versionKey returns the FDB key for storing a record's version.
+// Uses the new inline format: recordsSubspace.pack(primaryKey, RecordVersionSuffix).
+// Matches Java's SplitHelper.RECORD_VERSION = -1L for format version >= 6.
+func (store *FDBRecordStore) versionKey(primaryKey tuple.Tuple) fdb.Key {
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	keyTuple := make(tuple.Tuple, len(primaryKey)+1)
+	copy(keyTuple, primaryKey)
+	keyTuple[len(primaryKey)] = RecordVersionSuffix
+	return recordsSubspace.Pack(keyTuple)
+}
+
+// ScanRecords scans all records in the store.
+// For forward scans, continuation sets the low endpoint (start after last returned key).
+// For reverse scans, continuation sets the high endpoint (end before last returned key).
+// Matches Java's KeyValueCursorBase behavior.
 func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
 	lowEndpoint := EndpointTypeTreeStart
+	highEndpoint := EndpointTypeTreeEnd
 	if continuation != nil {
-		lowEndpoint = EndpointTypeContinuation
+		if scanProperties.IsReverse() {
+			highEndpoint = EndpointTypeContinuation
+		} else {
+			lowEndpoint = EndpointTypeContinuation
+		}
 	}
-	return store.ScanRecordsInRange(nil, nil, lowEndpoint, EndpointTypeTreeEnd, continuation, scanProperties)
+	return store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
+}
+
+// ScanRecordsByType scans records filtered to a specific record type.
+// This is a convenience method that wraps ScanRecords with a type filter.
+// Matches Java's RecordQuery with RecordTypeFilter.
+func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	inner := store.ScanRecords(continuation, scanProperties)
+	return &filterCursor[*FDBStoredRecord[proto.Message]]{
+		inner: inner,
+		predicate: func(rec *FDBStoredRecord[proto.Message]) bool {
+			return rec.RecordType.Name == recordTypeName
+		},
+	}
 }
 
 // ScanRecordsInRange scans records in a key range
@@ -662,7 +859,7 @@ func (b *StoreBuilder) validateBuilder() error {
 	if b.metaData == nil {
 		return fmt.Errorf("metadata is required")
 	}
-	if b.subspace.Bytes() == nil {
+	if b.subspace == nil || b.subspace.Bytes() == nil {
 		return fmt.Errorf("subspace is required")
 	}
 	return nil
@@ -694,6 +891,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return nil, err
 	}
+	store.storeHeader = storeHeader
 
 	return store, nil
 }
@@ -711,13 +909,14 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	}
 
 	// Verify store exists and has proper header
-	exists, _, err := store.checkStoreExists()
+	exists, storeHeader, err := store.checkStoreExists()
 	if err != nil {
 		return nil, err
 	}
 	if !exists {
 		return nil, ErrRecordStoreDoesNotExist
 	}
+	store.storeHeader = storeHeader
 
 	return store, nil
 }
@@ -735,18 +934,19 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 	}
 
 	// Check if store exists
-	exists, _, err := store.checkStoreExists()
+	exists, storeHeader, err := store.checkStoreExists()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader := createStoreHeader(int32(b.metaData.Version()))
+		storeHeader = createStoreHeader(int32(b.metaData.Version()))
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}
 	}
+	store.storeHeader = storeHeader
 
 	return store, nil
 }
@@ -781,6 +981,33 @@ func (store *FDBRecordStore) wrapInUnion(record proto.Message, recordType *Recor
 	unionReflect.Set(recordType.UnionFieldDescriptor, protoreflect.ValueOfMessage(record.ProtoReflect()))
 	
 	return union, nil
+}
+
+// deserializeAndDiscover unmarshals a UnionDescriptor and discovers which record type
+// is set by inspecting which field is populated. This is needed because with UnsplitRecord
+// the key suffix is always 0 and doesn't encode the record type.
+func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, error) {
+	union := &gen.UnionDescriptor{}
+	if err := proto.Unmarshal(data, union); err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal union descriptor: %w", err)
+	}
+
+	unionReflect := union.ProtoReflect()
+
+	// Check each record type's union field to find which one is populated
+	for _, rt := range store.metaData.RecordTypes() {
+		if rt.UnionFieldDescriptor == nil {
+			continue
+		}
+		if unionReflect.Has(rt.UnionFieldDescriptor) {
+			fieldValue := unionReflect.Get(rt.UnionFieldDescriptor)
+			if fieldValue.IsValid() && fieldValue.Message().IsValid() {
+				return rt, fieldValue.Message().Interface(), nil
+			}
+		}
+	}
+
+	return nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
 }
 
 // deserializeRecord unwraps a UnionDescriptor and extracts the actual record
@@ -939,6 +1166,26 @@ func (ts *TypedFDBRecordStore[T]) Context() *FDBRecordContext {
 // Subspace returns the subspace this store is using
 func (ts *TypedFDBRecordStore[T]) Subspace() subspace.Subspace {
 	return ts.baseStore.Subspace()
+}
+
+// DeleteAllRecords deletes all records from the store
+func (ts *TypedFDBRecordStore[T]) DeleteAllRecords() error {
+	return ts.baseStore.DeleteAllRecords()
+}
+
+// GetRecordCount returns the total record count
+func (ts *TypedFDBRecordStore[T]) GetRecordCount() (int64, error) {
+	return ts.baseStore.GetRecordCount()
+}
+
+// GetSnapshotRecordCount returns the count for a specific count key
+func (ts *TypedFDBRecordStore[T]) GetSnapshotRecordCount(countKey tuple.Tuple) (int64, error) {
+	return ts.baseStore.GetSnapshotRecordCount(countKey)
+}
+
+// ScanRecords returns a typed cursor scanning all records of this store's type
+func (ts *TypedFDBRecordStore[T]) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	return ts.baseStore.ScanRecordsByType(ts.recordType.Name, continuation, scanProperties)
 }
 
 // Users of the library should create their own typed stores for their types

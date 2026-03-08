@@ -10,11 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bazelbuild/rules_go/go/runfiles"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -33,6 +33,13 @@ var (
 	globalInvokerErr  error
 )
 
+// CloseJavaInvoker shuts down the global Java server if running.
+func CloseJavaInvoker() {
+	if globalInvoker != nil {
+		_ = globalInvoker.Close()
+	}
+}
+
 // NewJavaInvoker creates a new Java invoker with persistent server
 func NewJavaInvoker() *JavaInvoker {
 	globalInvokerOnce.Do(func() {
@@ -48,17 +55,24 @@ func NewJavaInvoker() *JavaInvoker {
 
 // startJavaServer launches the Java HTTP server and waits for it to be ready
 func startJavaServer() (*JavaInvoker, error) {
-	wd, err := os.Getwd()
+	// Find the Bazel-built conformance server binary via runfiles
+	r, err := runfiles.New()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get working directory: %w", err)
+		return nil, fmt.Errorf("failed to create runfiles: %w", err)
 	}
 
-	workdir := filepath.Join(wd, "java")
-	gradlew := filepath.Join(workdir, "gradlew")
+	serverBin, err := r.Rlocation("_main/conformance/java/conformance_server")
+	if err != nil {
+		return nil, fmt.Errorf("failed to find conformance_server in runfiles: %w", err)
+	}
+
+	if _, err := os.Stat(serverBin); err != nil {
+		return nil, fmt.Errorf("conformance_server binary not found at %s: %w", serverBin, err)
+	}
 
 	// Start server
-	cmd := exec.Command(gradlew, "runServer", "--console=plain")
-	cmd.Dir = workdir
+	cmd := exec.Command(serverBin)
+	cmd.Env = append(os.Environ(), r.Env()...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -167,9 +181,6 @@ type Response struct {
 
 // Invoke calls a Java conformance step via HTTP POST
 func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[string]interface{}) (json.RawMessage, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
 	// Build request
 	req := Request{
 		Step:   stepName,

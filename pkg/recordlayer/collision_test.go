@@ -2,267 +2,158 @@ package recordlayer
 
 import (
 	"context"
-	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
 
-// TestPrimaryKeyCollision tests that records can collide when not using record type prefix
-func TestPrimaryKeyCollision(t *testing.T) {
-	ctx := context.Background()
-	
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("collision_primary_key_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
-	
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
-	
-	fdbDB := NewFDBDatabase(db)
+var _ = Describe("PrimaryKeyCollision", func() {
+	It("records can collide when not using record type prefix", func() {
+		ctx := context.Background()
 
-	// Create metadata with collision-prone primary keys (no record type prefix)
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	
-	// Set primary keys WITHOUT record type prefix - can collide!
-	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	// Assuming we have a Customer type with customer_id field
-	// For this test, we'll just use Order twice to demonstrate
-	
-	metaData := builder.Build()
+		// Create metadata with collision-prone primary keys (no record type prefix)
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 
-	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-		store, err := NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(metaData).
-			SetSubspace(subspace.FromBytes(tuple.Tuple{"collision_test"}.Pack())).
-			CreateOrOpen()
-		if err != nil {
-			return nil, err
-		}
+		// Set primary keys WITHOUT record type prefix - can collide!
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 
-		// Save an Order with ID 123
-		order := &gen.Order{
-			OrderId: proto.Int64(123),
-			Price:   proto.Int32(100),
-			Flower: &gen.Flower{
-				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
-			},
-		}
+		metaData := builder.Build()
+		ks := specSubspace()
 
-		saved1, err := store.SaveRecord(order)
-		if err != nil {
-			return nil, err
-		}
-		t.Logf("Saved order with key: %v", saved1.PrimaryKey)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(ks).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
 
-		// Load it back
-		loaded1, err := store.LoadRecord(tuple.Tuple{int64(123)})
-		if err != nil {
-			return nil, err
-		}
-		if loaded1 == nil {
-			t.Fatal("Failed to load order")
-		}
+			// Save an Order with ID 123
+			order := &gen.Order{
+				OrderId: proto.Int64(123),
+				Price:   proto.Int32(100),
+				Flower: &gen.Flower{
+					Type:  proto.String("Rose"),
+					Color: gen.Color_RED.Enum(),
+				},
+			}
 
-		loadedOrder := loaded1.Record.(*gen.Order)
-		if *loadedOrder.Price != 100 {
-			t.Errorf("Expected price 100, got %d", *loadedOrder.Price)
-		}
+			saved1, err := store.SaveRecord(order)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Saved order with key: %v\n", saved1.PrimaryKey)
 
-		// In a real scenario with multiple types sharing same key space,
-		// saving Customer{customer_id: 123} would overwrite Order{order_id: 123}!
+			// Load it back
+			loaded1, err := store.LoadRecord(tuple.Tuple{int64(123)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded1).NotTo(BeNil())
 
-		return nil, nil
+			loadedOrder := loaded1.Record.(*gen.Order)
+			Expect(*loadedOrder.Price).To(Equal(int32(100)))
+
+			// In a real scenario with multiple types sharing same key space,
+			// saving Customer{customer_id: 123} would overwrite Order{order_id: 123}!
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
+})
 
-	if err != nil {
-		t.Fatal(err)
-	}
-}
+var _ = Describe("PrimaryKeyNoCollision", func() {
+	It("records don't collide (record type always included)", func() {
+		ctx := context.Background()
 
-// TestPrimaryKeyNoCollision tests that records don't collide (record type always included)
-func TestPrimaryKeyNoCollision(t *testing.T) {
-	ctx := context.Background()
-	
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("no_collision_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
-	
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
-	
-	fdbDB := NewFDBDatabase(db)
+		// Create metadata - record type index is always included automatically (like Java)
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 
-	// Create metadata - record type index is always included automatically (like Java)
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	
-	// Primary key - record type index prevents collisions automatically
-	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	
-	metaData := builder.Build()
+		// Primary key - record type index prevents collisions automatically
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 
-	_, err = fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
-		store, err := NewStoreBuilder().
-			SetContext(rtx).
-			SetMetaDataProvider(metaData).
-			SetSubspace(subspace.FromBytes(tuple.Tuple{"no_collision_test"}.Pack())).
-			CreateOrOpen()
-		if err != nil {
-			return nil, err
-		}
+		metaData := builder.Build()
+		ks := specSubspace()
 
-		// Save an Order with ID 123
-		order := &gen.Order{
-			OrderId: proto.Int64(123),
-			Price:   proto.Int32(100),
-			Flower: &gen.Flower{
-				Type:  proto.String("Rose"),
-				Color: gen.Color_RED.Enum(),
-			},
-		}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(metaData).
+				SetSubspace(ks).
+				CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
 
-		saved1, err := store.SaveRecord(order)
-		if err != nil {
-			return nil, err
-		}
-		t.Logf("Saved order with key: %v", saved1.PrimaryKey)
+			// Save an Order with ID 123
+			order := &gen.Order{
+				OrderId: proto.Int64(123),
+				Price:   proto.Int32(100),
+				Flower: &gen.Flower{
+					Type:  proto.String("Rose"),
+					Color: gen.Color_RED.Enum(),
+				},
+			}
 
-		// Load it back - note we still use the same primary key for loading
-		loaded1, err := store.LoadRecord(tuple.Tuple{int64(123)})
-		if err != nil {
-			return nil, err
-		}
-		if loaded1 == nil {
-			t.Fatal("Failed to load order")
-		}
+			saved1, err := store.SaveRecord(order)
+			Expect(err).NotTo(HaveOccurred())
+			GinkgoWriter.Printf("Saved order with key: %v\n", saved1.PrimaryKey)
 
-		loadedOrder := loaded1.Record.(*gen.Order)
-		if *loadedOrder.Price != 100 {
-			t.Errorf("Expected price 100, got %d", *loadedOrder.Price)
-		}
+			// Load it back - note we still use the same primary key for loading
+			loaded1, err := store.LoadRecord(tuple.Tuple{int64(123)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded1).NotTo(BeNil())
 
-		// Record type index ensures Order{order_id: 123} and Customer{customer_id: 123}
-		// have different keys and don't collide (like Java Record Layer)
+			loadedOrder := loaded1.Record.(*gen.Order)
+			Expect(*loadedOrder.Price).To(Equal(int32(100)))
 
-		return nil, nil
+			// Record type index ensures Order{order_id: 123} and Customer{customer_id: 123}
+			// have different keys and don't collide (like Java Record Layer)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
+})
 
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestJavaCompatibilityBothModes verifies wire format matches Java in both modes
-func TestJavaCompatibilityBothModes(t *testing.T) {
-	ctx := context.Background()
-	
-	// Start FoundationDB testcontainer
-	container, err := foundationdbtc.Run(ctx, "",
-		foundationdbtc.WithDatabase("java_compatibility_both_modes_test"),
-		foundationdbtc.WithAPIVersion(720),
-	)
-	if err != nil {
-		t.Fatalf("Failed to start FoundationDB container: %v", err)
-	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
-	
-	// Initialize database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
-	}
-	
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
-	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
-	}
-	
-	fdbDB := NewFDBDatabase(db)
-
+var _ = Describe("JavaCompatibilityBothModes", func() {
 	testCases := []struct {
 		name            string
 		primaryKeyExpr  KeyExpression
-		expectedKeySize int // Approximate
+		expectedKeySize int
 		description     string
 	}{
 		{
 			name:            "WithoutRecordType",
 			primaryKeyExpr:  Field("order_id"),
-			expectedKeySize: 15, // Smaller key
+			expectedKeySize: 15,
 			description:     "Java: Key.Expressions.field(\"order_id\")",
 		},
 		{
-			name:            "WithRecordType", 
-			primaryKeyExpr:  Field("order_id"), // Record type always included now
-			expectedKeySize: 17, // Same as without since record type is always included
+			name:            "WithRecordType",
+			primaryKeyExpr:  Field("order_id"),
+			expectedKeySize: 17,
 			description:     "Go: Always includes record type (like Java)",
 		},
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+		tc := tc // capture range variable
+		It(tc.name, func() {
+			ctx := context.Background()
+
 			// Create metadata
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKeyExpr)
 			metaData := builder.Build()
 
-			_, err := fdbDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			ks := specSubspace()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).
-					SetSubspace(subspace.FromBytes(tuple.Tuple{"java_compat_test_" + tc.name}.Pack())).
+					SetSubspace(ks).
 					CreateOrOpen()
-				if err != nil {
-					return nil, err
-				}
+				Expect(err).NotTo(HaveOccurred())
 
 				// Save a record
 				order := &gen.Order{
@@ -275,25 +166,20 @@ func TestJavaCompatibilityBothModes(t *testing.T) {
 				}
 
 				saved, err := store.SaveRecord(order)
-				if err != nil {
-					return nil, err
-				}
+				Expect(err).NotTo(HaveOccurred())
 
-				t.Logf("%s: %s", tc.name, tc.description)
-				t.Logf("Key size: %d bytes", saved.KeySize)
-				t.Logf("Primary key used for save: %v", saved.PrimaryKey)
-				
+				GinkgoWriter.Printf("%s: %s\n", tc.name, tc.description)
+				GinkgoWriter.Printf("Key size: %d bytes\n", saved.KeySize)
+				GinkgoWriter.Printf("Primary key used for save: %v\n", saved.PrimaryKey)
+
 				// The key size difference shows whether record type is included
-				if tc.name == "WithRecordType" && saved.KeySize <= tc.expectedKeySize-2 {
-					t.Errorf("Key should include record type prefix")
+				if tc.name == "WithRecordType" {
+					Expect(saved.KeySize).To(BeNumerically(">", tc.expectedKeySize-2))
 				}
 
 				return nil, nil
 			})
-
-			if err != nil {
-				t.Fatal(err)
-			}
+			Expect(err).NotTo(HaveOccurred())
 		})
 	}
-}
+})

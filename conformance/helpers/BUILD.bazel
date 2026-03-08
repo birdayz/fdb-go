@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "helpers",
+    srcs = [
+        "conformance_store.go",
+        "container.go",
+        "javainvoker.go",
+        "testdata.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/conformance/helpers",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)

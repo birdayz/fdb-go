@@ -97,30 +97,24 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 		return fmt.Errorf("go save failed: %w", err)
 	}
 
-	// 2. Validate by having Java also save the record
-	params := c.buildJavaParams()
-	params["order"] = order
-	err = c.java.InvokeAs(ctx, "saveOrder", params, nil)
-	if err != nil {
-		return fmt.Errorf("java validation failed: %w", err)
-	}
-
-	// 3. Cross-check: Read with both and verify they match
-	goOrder, err := c.loadRecordWithGo(ctx, *order.OrderId)
-	if err != nil {
-		return fmt.Errorf("go cross-check read failed: %w", err)
-	}
-
+	// 2. Read with Java (validate Java can read what Go wrote)
 	var javaOrder gen.Order
-	params = c.buildJavaParams()
+	params := c.buildJavaParams()
 	params["orderID"] = *order.OrderId
 	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
 	if err != nil {
 		return fmt.Errorf("java cross-check read failed: %w", err)
 	}
 
+	// 3. Read with Go (validate Go can read what it wrote)
+	goOrder, err := c.loadRecordWithGo(ctx, *order.OrderId)
+	if err != nil {
+		return fmt.Errorf("go cross-check read failed: %w", err)
+	}
+
+	// 4. Compare the two reads
 	if !proto.Equal(goOrder, &javaOrder) {
-		return fmt.Errorf("conformance mismatch: Go and Java saved different data\nGo:   %+v\nJava: %+v", goOrder, &javaOrder)
+		return fmt.Errorf("conformance mismatch: Java read differs from Go read\nGo:   %+v\nJava: %+v", goOrder, &javaOrder)
 	}
 
 	return nil
@@ -165,7 +159,10 @@ func (c *ConformanceStore) checkExistenceWithBoth(ctx context.Context, orderID i
 		}
 
 		storedRecord, err := store.LoadRecord(tuple.Tuple{orderID})
-		goExists = (err == nil && storedRecord != nil)
+		if err != nil {
+			return nil, err
+		}
+		goExists = (storedRecord != nil)
 		return nil, nil
 	})
 	if err != nil {
@@ -253,7 +250,7 @@ func (c *ConformanceStore) RecordExists(ctx context.Context, orderID int64) (boo
 
 // SaveRecordWithOptions saves a record with existence checking
 func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.Message, existenceCheck recordlayer.RecordExistenceCheck) error {
-	_, ok := msg.(*gen.Order)
+	order, ok := msg.(*gen.Order)
 	if !ok {
 		return fmt.Errorf("only Order records are supported in conformance tests")
 	}
@@ -272,8 +269,31 @@ func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.
 		_, err = store.SaveRecordWithOptions(msg, existenceCheck)
 		return nil, err
 	})
+	if err != nil {
+		return err
+	}
 
-	return err
+	// Cross-check: Read with Java (validate Java can read what Go wrote)
+	var javaOrder gen.Order
+	params := c.buildJavaParams()
+	params["orderID"] = *order.OrderId
+	err = c.java.InvokeAs(ctx, "loadOrder", params, &javaOrder)
+	if err != nil {
+		return fmt.Errorf("java cross-check read failed: %w", err)
+	}
+
+	// Cross-check: Read with Go (validate Go can read what it wrote)
+	goOrder, err := c.loadRecordWithGo(ctx, *order.OrderId)
+	if err != nil {
+		return fmt.Errorf("go cross-check read failed: %w", err)
+	}
+
+	// Compare the two reads
+	if !proto.Equal(goOrder, &javaOrder) {
+		return fmt.Errorf("conformance mismatch: Java read differs from Go read\nGo:   %+v\nJava: %+v", goOrder, &javaOrder)
+	}
+
+	return nil
 }
 
 // InsertRecord saves a new record (ERROR_IF_EXISTS check)

@@ -39,10 +39,10 @@ func (b *OrderBuilder) Build() *gen.Order {
 }
 
 // StandardOrder creates a standard test order with predictable values based on the ID
-// Price = ID * 10
+// Price is derived from the last 5 digits of ID (* 10), keeping it within int32 range.
 // Flower = "Rose_{ID}" with RED color
 func StandardOrder(id int64) *gen.Order {
-	price := int32(id * 10)
+	price := int32((id % 100000) * 10)
 	flowerType := fmt.Sprintf("Rose_%d", id)
 	return NewOrder(id).
 		WithPrice(price).

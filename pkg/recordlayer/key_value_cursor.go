@@ -4,13 +4,56 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	
+
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
 
-// keyValueCursor implements RecordCursor for scanning key-value pairs from FDB
+// continuationMagicNumber is the magic number used by Java's KeyValueCursorBase
+// to distinguish protobuf-wrapped continuations from raw byte continuations.
+// Must match Java's constant exactly for wire compatibility.
+// See: KeyValueCursorBase.java, Continuation class
+const continuationMagicNumber int64 = 6_773_487_359_078_157_740
+
+// wrapContinuation wraps raw continuation bytes in a KeyValueCursorContinuation
+// protobuf message with the magic number, matching Java's TO_NEW serialization.
+func wrapContinuation(innerBytes []byte) ([]byte, error) {
+	magic := continuationMagicNumber
+	msg := &gen.KeyValueCursorContinuation{
+		InnerContinuation: innerBytes,
+		MagicNumber:       &magic,
+	}
+	return proto.Marshal(msg)
+}
+
+// unwrapContinuation extracts the inner continuation bytes from a
+// potentially protobuf-wrapped continuation token. Handles both:
+// - New format: protobuf-wrapped with magic number
+// - Old format: raw bytes (returned as-is for backward compatibility)
+// Matches Java's KeyValueCursorBase.Continuation.getInnerContinuation()
+func unwrapContinuation(rawBytes []byte) []byte {
+	if rawBytes == nil {
+		return nil
+	}
+	msg := &gen.KeyValueCursorContinuation{}
+	if err := proto.Unmarshal(rawBytes, msg); err != nil {
+		// Parse failed — treat as old-format raw bytes
+		return rawBytes
+	}
+	if msg.MagicNumber == nil || *msg.MagicNumber != continuationMagicNumber {
+		// Magic number doesn't match — treat as old-format raw bytes
+		return rawBytes
+	}
+	return msg.InnerContinuation
+}
+
+// keyValueCursor implements RecordCursor for scanning key-value pairs from FDB.
+// Handles both unsplit records (single KV at suffix 0) and split records
+// (multiple KVs at suffixes 1, 2, 3, ...), acting as both the raw KV scanner
+// and Java's KeyValueUnsplitter.
 type keyValueCursor struct {
 	store          *FDBRecordStore
 	low            tuple.Tuple
@@ -26,6 +69,11 @@ type keyValueCursor struct {
 	recordsRead   int
 	bytesScanned  int64
 	prefixLength  int  // Length of the subspace prefix for continuation handling
+
+	// Buffered KV pair for split record handling.
+	// When collecting split chunks, we may read the first KV of the next record.
+	// That KV is buffered here for the next OnNext() call.
+	bufferedKV    *fdb.KeyValue
 }
 
 // OnNext returns the next record or indicates why iteration stopped
@@ -33,81 +81,323 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	if c.closed {
 		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("cursor is closed")
 	}
-	
+
 	// Initialize iterator on first call
 	if c.iterator == nil {
 		if err := c.initIterator(); err != nil {
 			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 		}
 	}
-	
-	// Check limits before fetching next record
+
 	executeProps := c.scanProperties.GetExecuteProperties()
+
+	// When we've returned the requested number of records, check if more exist
+	// to distinguish ReturnLimitReached from SourceExhausted.
 	if executeProps.ReturnedRowLimit > 0 && c.recordsRead >= executeProps.ReturnedRowLimit {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			ReturnLimitReached,
-			&BytesContinuation{bytes: c.continuation},
-		), nil
-	}
-	
-	// Advance iterator
-	if !c.iterator.Advance() {
-		// No more records
+		if c.hasMoreKVs() {
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+				ReturnLimitReached,
+				&BytesContinuation{bytes: c.continuation},
+			), nil
+		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			SourceExhausted,
 			&EndContinuation{},
 		), nil
 	}
-	
-	// Get the key-value pair
-	kv, err := c.iterator.Get()
-	if err != nil {
-		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("failed to get key-value: %w", err)
-	}
-	
-	// Update scan metrics
-	c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
-	
-	// Check byte limit
-	if executeProps.ScannedBytesLimit > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			ByteLimitReached,
-			&BytesContinuation{bytes: kv.Key},
-		), nil
-	}
-	
-	// Deserialize the record
-	record, err := c.deserializeKeyValue(kv)
+
+	// Read the next complete record (handles unsplit, split, and version-skip)
+	record, lastKey, err := c.readNextRecord()
 	if err != nil {
 		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
 	}
-	
-	c.recordsRead++
-	
-	// Create continuation token with only the key suffix (Java compatibility)
-	// Java expects: key[prefixLength:] not the full key
-	var continuationBytes []byte
-	if len(kv.Key) > c.prefixLength {
-		continuationBytes = kv.Key[c.prefixLength:]
-	} else {
-		// Should not happen, but handle gracefully
-		continuationBytes = kv.Key
+	if record == nil {
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+			SourceExhausted,
+			&EndContinuation{},
+		), nil
 	}
-	
-	// Return the record with continuation
+
+	// Update scan metrics
+	c.bytesScanned += int64(record.KeySize + record.ValueSize)
+
+	// Check byte limit
+	if executeProps.ScannedBytesLimit > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
+		var keySuffix []byte
+		if len(lastKey) > c.prefixLength {
+			keySuffix = lastKey[c.prefixLength:]
+		} else {
+			keySuffix = lastKey
+		}
+		cont, wrapErr := wrapContinuation(keySuffix)
+		if wrapErr != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("failed to wrap byte limit continuation: %w", wrapErr)
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+			ByteLimitReached,
+			&BytesContinuation{bytes: cont},
+		), nil
+	}
+
+	c.recordsRead++
+
+	// Create continuation token from the LAST key of this record.
+	// For unsplit records, this is the key at suffix 0.
+	// For split records, this is the last chunk's key (e.g., suffix 3).
+	// This ensures resuming starts after the complete record.
+	var keySuffix []byte
+	if len(lastKey) > c.prefixLength {
+		keySuffix = lastKey[c.prefixLength:]
+	} else {
+		keySuffix = lastKey
+	}
+
+	continuationBytes, err := wrapContinuation(keySuffix)
+	if err != nil {
+		return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("failed to wrap continuation: %w", err)
+	}
+	c.continuation = continuationBytes
+
 	return NewResultWithValue(
 		record,
 		&BytesContinuation{bytes: continuationBytes},
 	), nil
 }
 
+// readNextRecord reads the next complete record from the iterator.
+// Handles unsplit records (suffix 0), split records (suffixes 1, 2, ...),
+// and skips version keys (suffix -1).
+// Returns (nil, nil, nil) when the iterator is exhausted.
+func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.Key, error) {
+	recordsSubspace := c.store.subspace.Sub(RecordKey)
+
+	for {
+		// Get the next KV pair (from buffer or iterator)
+		kv, ok := c.nextKV()
+		if !ok {
+			return nil, nil, nil // exhausted
+		}
+
+		keyTuple, err := recordsSubspace.Unpack(kv.Key)
+		if err != nil || len(keyTuple) < 2 {
+			return nil, nil, fmt.Errorf("failed to unpack key: %v (tuple: %v)", err, keyTuple)
+		}
+
+		suffix, ok := keyTuple[len(keyTuple)-1].(int64)
+		if !ok {
+			return nil, nil, fmt.Errorf("key suffix is not int64: %T", keyTuple[len(keyTuple)-1])
+		}
+		primaryKey := keyTuple[:len(keyTuple)-1]
+
+		switch {
+		case suffix == RecordVersionSuffix:
+			// Skip version keys, continue to next KV
+			continue
+
+		case suffix == UnsplitRecord:
+			// Unsplit record — single KV
+			recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
+			if deserErr != nil {
+				return nil, nil, fmt.Errorf("failed to deserialize record: %w", deserErr)
+			}
+			return &FDBStoredRecord[proto.Message]{
+				PrimaryKey: primaryKey,
+				RecordType: recordType,
+				Record:     protoMessage,
+				KeyCount:   1,
+				ValueSize:  len(kv.Value),
+				KeySize:    len(kv.Key),
+				Split:      false,
+			}, kv.Key, nil
+
+		case suffix >= StartSplitRecord:
+			// Split record — collect all chunks for this primary key
+			return c.readSplitRecord(recordsSubspace, primaryKey, kv, suffix)
+
+		default:
+			// Unknown suffix — skip
+			continue
+		}
+	}
+}
+
+// splitChunk holds a split record chunk with its suffix index for proper ordering.
+type splitChunk struct {
+	suffix int64
+	key    fdb.Key
+	value  []byte
+}
+
+// readSplitRecord collects all split chunks for a primary key and reassembles the record.
+// firstKV is the first chunk already read (with suffix >= StartSplitRecord).
+// Handles both forward and reverse scans — chunks are sorted by suffix before reassembly.
+// Returns the reassembled record and the last key (in scan order) for continuation.
+func (c *keyValueCursor) readSplitRecord(
+	recordsSubspace subspace.Subspace,
+	primaryKey tuple.Tuple,
+	firstKV fdb.KeyValue,
+	firstSuffix int64,
+) (*FDBStoredRecord[proto.Message], fdb.Key, error) {
+	chunks := []splitChunk{{suffix: firstSuffix, key: firstKV.Key, value: firstKV.Value}}
+	lastKey := firstKV.Key
+	totalKeySize := len(firstKV.Key)
+	totalValueSize := len(firstKV.Value)
+
+	// Collect remaining chunks for this primary key
+	for {
+		kv, ok := c.nextKV()
+		if !ok {
+			break // Iterator exhausted
+		}
+
+		keyTuple, err := recordsSubspace.Unpack(kv.Key)
+		if err != nil || len(keyTuple) < 2 {
+			c.bufferedKV = &kv
+			break
+		}
+
+		suffix, ok := keyTuple[len(keyTuple)-1].(int64)
+		if !ok {
+			c.bufferedKV = &kv
+			break
+		}
+
+		kvPrimaryKey := keyTuple[:len(keyTuple)-1]
+
+		// Check if this KV belongs to the same primary key
+		if !sameTuple(primaryKey, kvPrimaryKey) {
+			c.bufferedKV = &kv
+			break
+		}
+
+		// Skip version keys within this primary key
+		if suffix == RecordVersionSuffix {
+			continue
+		}
+
+		// Skip unsplit key (suffix 0) if encountered — shouldn't happen but be safe
+		if suffix == UnsplitRecord {
+			c.bufferedKV = &kv
+			break
+		}
+
+		chunks = append(chunks, splitChunk{suffix: suffix, key: kv.Key, value: kv.Value})
+		lastKey = kv.Key
+		totalKeySize += len(kv.Key)
+		totalValueSize += len(kv.Value)
+	}
+
+	// Sort chunks by suffix for correct reassembly (needed for reverse scans
+	// where FDB returns chunks in descending suffix order)
+	sortSplitChunks(chunks)
+
+	// Validate sequential indices
+	for i, chunk := range chunks {
+		expected := StartSplitRecord + int64(i)
+		if chunk.suffix != expected {
+			return nil, nil, fmt.Errorf("split record segments out of order: expected %d, got %d", expected, chunk.suffix)
+		}
+	}
+
+	// Reassemble the record
+	totalLen := 0
+	for _, chunk := range chunks {
+		totalLen += len(chunk.value)
+	}
+	data := make([]byte, 0, totalLen)
+	for _, chunk := range chunks {
+		data = append(data, chunk.value...)
+	}
+
+	recordType, protoMessage, err := c.store.deserializeAndDiscover(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to deserialize split record: %w", err)
+	}
+
+	return &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		RecordType: recordType,
+		Record:     protoMessage,
+		KeyCount:   len(chunks),
+		ValueSize:  totalValueSize,
+		KeySize:    totalKeySize,
+		Split:      true,
+	}, lastKey, nil
+}
+
+// sortSplitChunks sorts chunks by suffix in ascending order (insertion sort — chunks are few).
+func sortSplitChunks(chunks []splitChunk) {
+	for i := 1; i < len(chunks); i++ {
+		key := chunks[i]
+		j := i - 1
+		for j >= 0 && chunks[j].suffix > key.suffix {
+			chunks[j+1] = chunks[j]
+			j--
+		}
+		chunks[j+1] = key
+	}
+}
+
+// nextKV returns the next KV pair from the buffer or iterator.
+// Returns (kv, true) on success, (zero, false) when exhausted.
+func (c *keyValueCursor) nextKV() (kv fdb.KeyValue, ok bool) {
+	// Return buffered KV if available
+	if c.bufferedKV != nil {
+		kv = *c.bufferedKV
+		c.bufferedKV = nil
+		return kv, true
+	}
+
+	// Advance iterator
+	if !c.iterator.Advance() {
+		return fdb.KeyValue{}, false
+	}
+
+	// Defend against FDB RangeIterator.Get() panicking when the internal
+	// batch state is inconsistent (e.g., empty kvs slice after Advance returns true).
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+
+	var err error
+	kv, err = c.iterator.Get()
+	if err != nil {
+		return fdb.KeyValue{}, false
+	}
+	return kv, true
+}
+
+// hasMoreKVs checks if there are more KV pairs available (from buffer or iterator).
+// Used for the limit-reached vs source-exhausted check.
+func (c *keyValueCursor) hasMoreKVs() bool {
+	if c.bufferedKV != nil {
+		return true
+	}
+	return c.iterator.Advance()
+}
+
+// sameTuple compares two tuples for equality.
+func sameTuple(a, b tuple.Tuple) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // initIterator sets up the FDB range iterator
 func (c *keyValueCursor) initIterator() error {
 	recordsSubspace := c.store.subspace.Sub(RecordKey)
-	
+
 	// Build range based on endpoints
 	var begin, end fdb.Key
-	
+
 	// Handle low endpoint
 	switch c.lowEndpoint {
 	case EndpointTypeTreeStart:
@@ -115,21 +405,20 @@ func (c *keyValueCursor) initIterator() error {
 	case EndpointTypeRangeInclusive:
 		begin = recordsSubspace.Pack(c.low)
 	case EndpointTypeRangeExclusive:
-		begin = fdb.Key(recordsSubspace.Pack(c.low))
+		packedKey := recordsSubspace.Pack(c.low)
+		begin = append(fdb.Key(packedKey), 0x00) // exclusive: start AFTER this key
 	case EndpointTypeContinuation:
 		if c.continuation != nil {
-			// Reconstruct the full key from prefix + continuation
-			// Java sends only the suffix, so we need to prepend the subspace prefix
-			fullKey := append(recordsSubspace.FDBKey(), c.continuation...)
-			// Start after the continuation key by appending 0x00
-			begin = append(fullKey, 0x00)
+			innerContinuation := unwrapContinuation(c.continuation)
+			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
+			begin = append(fullKey, 0x00) // Start after the continuation key
 		} else {
 			begin = recordsSubspace.FDBKey()
 		}
 	default:
 		begin = recordsSubspace.Pack(c.low)
 	}
-	
+
 	// Handle high endpoint
 	switch c.highEndpoint {
 	case EndpointTypeTreeEnd:
@@ -137,28 +426,43 @@ func (c *keyValueCursor) initIterator() error {
 		end = endKey.(fdb.Key)
 	case EndpointTypeRangeInclusive:
 		packedKey := recordsSubspace.Pack(c.high)
-		// Create end key by appending 0x00 to include the key
-		end = append(fdb.Key(packedKey), 0x00)
+		var strincErr error
+		end, strincErr = fdb.Strinc(packedKey)
+		if strincErr != nil {
+			return fmt.Errorf("failed to compute strinc for high endpoint: %w", strincErr)
+		}
 	case EndpointTypeRangeExclusive:
 		end = recordsSubspace.Pack(c.high)
+	case EndpointTypeContinuation:
+		if c.continuation != nil {
+			innerContinuation := unwrapContinuation(c.continuation)
+			fullKey := append(recordsSubspace.FDBKey(), innerContinuation...)
+			end = fullKey // exclusive: FDB won't return this key
+		} else {
+			_, endKey := recordsSubspace.FDBRangeKeys()
+			end = endKey.(fdb.Key)
+		}
 	default:
 		end = recordsSubspace.Pack(c.high)
 	}
-	
+
 	// Create range
 	rng := fdb.KeyRange{Begin: begin, End: end}
-	
+
 	// Get range options
 	options := fdb.RangeOptions{
 		Mode:    c.scanProperties.CursorStreamingMode.ToFDB(),
 		Reverse: c.scanProperties.IsReverse(),
 	}
-	
-	// Apply row limit if specified
-	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
-		options.Limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit - c.recordsRead
+
+	// Apply FDB-level row limit only for unsplit stores.
+	// When splitLongRecords is enabled, a single record may span multiple KVs,
+	// so the FDB row limit doesn't map cleanly to record limits.
+	// Record-level limits are enforced in OnNext() instead.
+	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
+		options.Limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit - c.recordsRead + 1
 	}
-	
+
 	// Create iterator
 	tx := c.store.context.Transaction()
 	var rangeResult fdb.RangeResult
@@ -167,87 +471,32 @@ func (c *keyValueCursor) initIterator() error {
 	} else {
 		rangeResult = tx.GetRange(rng, options)
 	}
-	
+
 	c.iterator = rangeResult.Iterator()
 	return nil
-}
-
-// deserializeKeyValue converts a key-value pair to a stored record
-func (c *keyValueCursor) deserializeKeyValue(kv fdb.KeyValue) (*FDBStoredRecord[proto.Message], error) {
-	recordsSubspace := c.store.subspace.Sub(RecordKey)
-	
-	// Unpack the key to get primary key and record type
-	keyTuple, err := recordsSubspace.Unpack(kv.Key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unpack key: %w", err)
-	}
-	
-	if len(keyTuple) < 1 {
-		return nil, fmt.Errorf("invalid key structure: %v", keyTuple)
-	}
-	
-	// Extract record type index (last element)
-	recordTypeIndex, ok := keyTuple[len(keyTuple)-1].(int64)
-	if !ok {
-		return nil, fmt.Errorf("invalid record type index in key: %v", keyTuple[len(keyTuple)-1])
-	}
-	
-	// Find record type by index
-	var recordType *RecordType
-	for _, rt := range c.store.metaData.recordTypes {
-		if rt.GetRecordTypeIndex() == int(recordTypeIndex) {
-			recordType = rt
-			break
-		}
-	}
-	
-	if recordType == nil {
-		return nil, fmt.Errorf("unknown record type index: %d", recordTypeIndex)
-	}
-	
-	// Extract primary key (all elements except the last)
-	primaryKey := keyTuple[:len(keyTuple)-1]
-	
-	// Deserialize the record
-	protoMessage, err := c.store.deserializeRecord(kv.Value, recordType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize record: %w", err)
-	}
-	
-	return &FDBStoredRecord[proto.Message]{
-		PrimaryKey: primaryKey,
-		RecordType: recordType,
-		Record:     protoMessage,
-		ValueSize:  len(kv.Value),
-		KeySize:    len(kv.Key),
-		Split:      false,
-	}, nil
 }
 
 // Close releases resources held by the cursor
 func (c *keyValueCursor) Close() error {
 	c.closed = true
-	// FDB iterators don't need explicit cleanup
 	return nil
 }
 
 // Seq returns an iterator sequence over values only
-// This implements Go 1.23+ iter.Seq for idiomatic iteration
 func (c *keyValueCursor) Seq(ctx context.Context) iter.Seq[*FDBStoredRecord[proto.Message]] {
 	return func(yield func(*FDBStoredRecord[proto.Message]) bool) {
 		defer func() { _ = c.Close() }()
-		
+
 		for {
 			result, err := c.OnNext(ctx)
 			if err != nil {
-				// Can't yield errors in Seq, so we stop iteration
 				return
 			}
-			
+
 			if !result.HasNext() {
 				return
 			}
-			
+
 			if !yield(result.GetValue()) {
 				return
 			}
@@ -256,24 +505,21 @@ func (c *keyValueCursor) Seq(ctx context.Context) iter.Seq[*FDBStoredRecord[prot
 }
 
 // Seq2 returns an iterator sequence over (value, error) pairs
-// This implements Go 1.23+ iter.Seq2 for error-aware iteration
 func (c *keyValueCursor) Seq2(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], error] {
 	return func(yield func(*FDBStoredRecord[proto.Message], error) bool) {
 		defer func() { _ = c.Close() }()
-		
+
 		for {
 			result, err := c.OnNext(ctx)
 			if err != nil {
-				if !yield(nil, err) {
-					return
-				}
-				continue
+				yield(nil, err)
+				return
 			}
-			
+
 			if !result.HasNext() {
 				return
 			}
-			
+
 			if !yield(result.GetValue(), nil) {
 				return
 			}
@@ -282,22 +528,20 @@ func (c *keyValueCursor) Seq2(ctx context.Context) iter.Seq2[*FDBStoredRecord[pr
 }
 
 // SeqWithContinuation returns an iterator sequence over (value, continuation) pairs
-// Useful for implementing pagination or resumable iteration
 func (c *keyValueCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], RecordCursorContinuation] {
 	return func(yield func(*FDBStoredRecord[proto.Message], RecordCursorContinuation) bool) {
 		defer func() { _ = c.Close() }()
-		
+
 		for {
 			result, err := c.OnNext(ctx)
 			if err != nil {
-				// Can't yield errors here, so we stop
 				return
 			}
-			
+
 			if !result.HasNext() {
 				return
 			}
-			
+
 			if !yield(result.GetValue(), result.GetContinuation()) {
 				return
 			}

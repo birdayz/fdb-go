@@ -1,0 +1,36 @@
+load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "nogo")
+
+exports_files(["buf.yaml"])
+
+# gazelle:prefix github.com/birdayz/fdb-record-layer-go
+# gazelle:proto disable
+gazelle(name = "gazelle")
+
+nogo(
+    name = "nogo",
+    config = "nogo_config.json",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@org_golang_x_tools//go/analysis/passes/asmdecl:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/assign:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/atomic:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/bools:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/buildtag:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/composite:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/copylock:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/httpresponse:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/loopclosure:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/lostcancel:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/nilfunc:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/printf:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/shift:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/stdmethods:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/structtag:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/tests:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/unmarshal:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/unreachable:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/unsafeptr:go_default_library",
+        "@org_golang_x_tools//go/analysis/passes/unusedresult:go_default_library",
+    ],
+)

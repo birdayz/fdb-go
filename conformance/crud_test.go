@@ -203,6 +203,51 @@ var _ = Describe("CRUD Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*loaded.Price).To(Equal(maxPrice))
 		})
+
+		It("should handle order ID of 0", func() {
+			order := helpers.NewOrder(0).
+				WithPrice(42).
+				WithFlower("Lily", gen.Color_YELLOW).
+				Build()
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			loaded, err := store.LoadRecord(ctx, 0)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*loaded.OrderId).To(Equal(int64(0)))
+			Expect(*loaded.Price).To(Equal(int32(42)))
+			Expect(*loaded.Flower.Type).To(Equal("Lily"))
+		})
+
+		It("should handle negative order IDs", func() {
+			order := helpers.NewOrder(-1).
+				WithPrice(77).
+				WithFlower("Cactus", gen.Color_RED).
+				Build()
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			loaded, err := store.LoadRecord(ctx, -1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*loaded.OrderId).To(Equal(int64(-1)))
+			Expect(*loaded.Price).To(Equal(int32(77)))
+			Expect(*loaded.Flower.Type).To(Equal("Cactus"))
+
+			// Also test a large negative close to min int64
+			largeNeg := int64(-9223372036854775000)
+			order2 := helpers.NewOrder(largeNeg).
+				WithPrice(1).
+				WithFlower("Edelweiss", gen.Color_BLUE).
+				Build()
+			err = store.SaveRecord(ctx, order2)
+			Expect(err).NotTo(HaveOccurred())
+
+			loaded2, err := store.LoadRecord(ctx, largeNeg)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*loaded2.OrderId).To(Equal(largeNeg))
+			Expect(*loaded2.Price).To(Equal(int32(1)))
+			Expect(*loaded2.Flower.Type).To(Equal("Edelweiss"))
+		})
 	})
 
 	Describe("Existence Checks", func() {
