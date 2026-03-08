@@ -9,12 +9,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// IndexMaintainer handles index updates when records are saved or deleted.
+// IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.
 type IndexMaintainer interface {
 	// Update updates the index for a record change.
 	// oldRecord is nil for inserts, newRecord is nil for deletes.
 	Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
+
+	// Scan scans the index within the given tuple range.
+	// Matches Java's IndexMaintainer.scan().
+	Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry]
 }
 
 // StandardIndexMaintainer handles VALUE index maintenance.
@@ -82,6 +86,13 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	return nil
+}
+
+// Scan scans index entries within the given tuple range.
+// Creates a KeyValueCursor over the index subspace and maps KVs to IndexEntry.
+// Matches Java's StandardIndexMaintainer.scan().
+func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
 // indexEntry represents a single index entry (indexed values + record primary key).

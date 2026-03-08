@@ -127,6 +127,13 @@ func (r RecordCursorResult[T]) GetNoNextReason() NoNextReason {
 	return r.noNextReason
 }
 
+// HasStoppedBeforeEnd returns true if the cursor stopped before exhausting all records.
+// This means the cursor can be resumed with the continuation to get more results.
+// Matches Java's RecordCursorResult.hasStoppedBeforeEnd().
+func (r RecordCursorResult[T]) HasStoppedBeforeEnd() bool {
+	return !r.hasNext && !r.noNextReason.IsSourceExhausted()
+}
+
 // RecordCursor is a generic async iterator over records
 type RecordCursor[T any] interface {
 	// OnNext asynchronously returns the next result from this cursor
@@ -143,6 +150,108 @@ type RecordCursor[T any] interface {
 	
 	// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs
 	SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation]
+}
+
+// emptyCursor is a cursor that immediately returns no results.
+// Matches Java's RecordCursor.empty().
+type emptyCursor[T any] struct{}
+
+// Empty returns a cursor that produces no results (source exhausted immediately).
+func Empty[T any]() RecordCursor[T] {
+	return &emptyCursor[T]{}
+}
+
+func (c *emptyCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error) {
+	return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+}
+
+func (c *emptyCursor[T]) Close() error { return nil }
+
+func (c *emptyCursor[T]) Seq(_ context.Context) iter.Seq[T] {
+	return func(func(T) bool) {}
+}
+
+func (c *emptyCursor[T]) Seq2(_ context.Context) iter.Seq2[T, error] {
+	return func(func(T, error) bool) {}
+}
+
+func (c *emptyCursor[T]) SeqWithContinuation(_ context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(func(T, RecordCursorContinuation) bool) {}
+}
+
+// listCursor wraps a slice as a cursor. Matches Java's RecordCursor.fromList().
+type listCursor[T any] struct {
+	items  []T
+	pos    int
+	closed bool
+}
+
+// FromList creates a cursor from a slice. Matches Java's RecordCursor.fromList().
+func FromList[T any](items []T) RecordCursor[T] {
+	return &listCursor[T]{items: items}
+}
+
+func (c *listCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error) {
+	if c.closed || c.pos >= len(c.items) {
+		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+	}
+	value := c.items[c.pos]
+	c.pos++
+	return NewResultWithValue(value, &BytesContinuation{}), nil
+}
+
+func (c *listCursor[T]) Close() error {
+	c.closed = true
+	return nil
+}
+
+func (c *listCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *listCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *listCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
 }
 
 // ForEach applies a function to each record in the cursor

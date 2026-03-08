@@ -341,6 +341,12 @@ func (m *RecordMetaData) HasIndexes() bool {
 	return len(m.indexes) > 0
 }
 
+// GetIndex returns the index with the given name, or nil if not found.
+// Matches Java's RecordMetaData.getIndex(String).
+func (m *RecordMetaData) GetIndex(name string) *Index {
+	return m.indexes[name]
+}
+
 // GetAllIndexes returns all indexes by name.
 func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 	return m.indexes

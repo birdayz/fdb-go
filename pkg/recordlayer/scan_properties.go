@@ -112,6 +112,10 @@ type ExecuteProperties struct {
 	
 	// FailOnScanLimitReached determines if hitting scan limits should fail the operation
 	FailOnScanLimitReached bool
+
+	// Skip is the number of records to skip before returning results.
+	// Matches Java's ExecuteProperties.getSkip().
+	Skip int
 }
 
 // DefaultExecuteProperties returns properties with sensible defaults

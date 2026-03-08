@@ -10,6 +10,7 @@ message Order {
     optional int64 order_id = 1;
     optional Flower flower = 2;
     optional int32 price = 3;
+    repeated string tags = 4;
 }
 
 message Customer {

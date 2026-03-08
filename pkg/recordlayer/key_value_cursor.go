@@ -64,16 +64,17 @@ type keyValueCursor struct {
 	scanProperties ScanProperties
 
 	// Internal state
-	iterator      *fdb.RangeIterator
-	closed        bool
-	recordsRead   int
-	bytesScanned  int64
-	prefixLength  int  // Length of the subspace prefix for continuation handling
+	iterator       *fdb.RangeIterator
+	closed         bool
+	recordsRead    int   // Records returned to the caller
+	recordsScanned int   // Records scanned (including skipped ones)
+	bytesScanned   int64
+	prefixLength   int // Length of the subspace prefix for continuation handling
 
 	// Buffered KV pair for split record handling.
 	// When collecting split chunks, we may read the first KV of the next record.
 	// That KV is buffered here for the next OnNext() call.
-	bufferedKV    *fdb.KeyValue
+	bufferedKV *fdb.KeyValue
 }
 
 // OnNext returns the next record or indicates why iteration stopped
@@ -118,25 +119,43 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 		), nil
 	}
 
+	c.recordsScanned++
+
 	// Update scan metrics
 	c.bytesScanned += int64(record.KeySize + record.ValueSize)
 
+	// Check scanned records limit
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned > executeProps.ScannedRecordsLimit {
+		cont, wrapErr := c.makeKeyContinuation(lastKey)
+		if wrapErr != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, wrapErr
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+			ScanLimitReached,
+			&BytesContinuation{bytes: cont},
+		), nil
+	}
+
 	// Check byte limit
 	if executeProps.ScannedBytesLimit > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
-		var keySuffix []byte
-		if len(lastKey) > c.prefixLength {
-			keySuffix = lastKey[c.prefixLength:]
-		} else {
-			keySuffix = lastKey
-		}
-		cont, wrapErr := wrapContinuation(keySuffix)
+		cont, wrapErr := c.makeKeyContinuation(lastKey)
 		if wrapErr != nil {
-			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, fmt.Errorf("failed to wrap byte limit continuation: %w", wrapErr)
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, wrapErr
 		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			ByteLimitReached,
 			&BytesContinuation{bytes: cont},
 		), nil
+	}
+
+	// Handle skip — count the record as scanned but don't return it
+	if executeProps.Skip > 0 && c.recordsScanned <= executeProps.Skip {
+		// Update continuation so we can resume after skipped records
+		c.continuation, err = c.makeKeyContinuation(lastKey)
+		if err != nil {
+			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, err
+		}
+		return c.OnNext(ctx) // Recurse to get next record
 	}
 
 	c.recordsRead++
@@ -369,6 +388,21 @@ func (c *keyValueCursor) nextKV() (kv fdb.KeyValue, ok bool) {
 	return kv, true
 }
 
+// makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
+func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
+	var keySuffix []byte
+	if len(key) > c.prefixLength {
+		keySuffix = key[c.prefixLength:]
+	} else {
+		keySuffix = key
+	}
+	cont, err := wrapContinuation(keySuffix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to wrap continuation: %w", err)
+	}
+	return cont, nil
+}
+
 // hasMoreKVs checks if there are more KV pairs available (from buffer or iterator).
 // Used for the limit-reached vs source-exhausted check.
 func (c *keyValueCursor) hasMoreKVs() bool {
@@ -459,8 +493,10 @@ func (c *keyValueCursor) initIterator() error {
 	// When splitLongRecords is enabled, a single record may span multiple KVs,
 	// so the FDB row limit doesn't map cleanly to record limits.
 	// Record-level limits are enforced in OnNext() instead.
+	// Skip is added to the FDB limit so we have enough KVs to skip AND return.
 	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
-		options.Limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit - c.recordsRead + 1
+		skip := c.scanProperties.ExecuteProperties.Skip
+		options.Limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead + 1
 	}
 
 	// Create iterator

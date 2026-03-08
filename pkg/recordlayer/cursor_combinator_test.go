@@ -168,6 +168,57 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("EmptyCursor", func() {
+		cursor := Empty[int]()
+		result, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.HasNext()).To(BeFalse())
+		Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+		Expect(result.GetContinuation().IsEnd()).To(BeTrue())
+
+		// Seq should produce nothing
+		count := 0
+		for range cursor.Seq(ctx) {
+			count++
+		}
+		Expect(count).To(Equal(0))
+	})
+
+	It("ListCursor", func() {
+		items := []string{"alice", "bob", "charlie"}
+		cursor := FromList(items)
+
+		collected, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(collected).To(Equal([]string{"alice", "bob", "charlie"}))
+	})
+
+	It("ListCursor empty", func() {
+		cursor := FromList([]int{})
+		result, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.HasNext()).To(BeFalse())
+		Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+	})
+
+	It("HasStoppedBeforeEnd", func() {
+		// Source exhausted → has NOT stopped before end
+		r1 := NewResultNoNext[int](SourceExhausted, &EndContinuation{})
+		Expect(r1.HasStoppedBeforeEnd()).To(BeFalse())
+
+		// Return limit reached → HAS stopped before end
+		r2 := NewResultNoNext[int](ReturnLimitReached, &BytesContinuation{bytes: []byte{1}})
+		Expect(r2.HasStoppedBeforeEnd()).To(BeTrue())
+
+		// Byte limit reached → HAS stopped before end
+		r3 := NewResultNoNext[int](ByteLimitReached, &BytesContinuation{bytes: []byte{1}})
+		Expect(r3.HasStoppedBeforeEnd()).To(BeTrue())
+
+		// Result with value → HasStoppedBeforeEnd is false (it has a value)
+		r4 := NewResultWithValue(42, &BytesContinuation{})
+		Expect(r4.HasStoppedBeforeEnd()).To(BeFalse())
+	})
+
 	It("ForEachAndAsList", func() {
 		ks := specSubspace()
 		populate10Orders(ctx, metaData)
@@ -200,6 +251,110 @@ var _ = Describe("CursorCombinators", func() {
 			// Sum of 10+20+...+100 = 550
 			Expect(sum).To(Equal(int32(550)))
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Skip records", func() {
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := range int64(10) {
+				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				if _, saveErr := store.SaveRecord(order); saveErr != nil {
+					return nil, saveErr
+				}
+			}
+
+			// Skip first 3 records, return remaining 7
+			scan := ForwardScan()
+			scan.ExecuteProperties.Skip = 3
+			records, scanErr := AsList(ctx, store.ScanRecords(nil, scan))
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			Expect(records).To(HaveLen(7))
+			// First returned record should be order_id=4
+			Expect(records[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(4)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Skip with row limit", func() {
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := range int64(10) {
+				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				if _, saveErr := store.SaveRecord(order); saveErr != nil {
+					return nil, saveErr
+				}
+			}
+
+			// Skip 3, then return at most 2
+			scan := ForwardScan()
+			scan.ExecuteProperties.Skip = 3
+			scan.ExecuteProperties.ReturnedRowLimit = 2
+			records, scanErr := AsList(ctx, store.ScanRecords(nil, scan))
+			if scanErr != nil {
+				return nil, scanErr
+			}
+			Expect(records).To(HaveLen(2))
+			Expect(records[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(4)))
+			Expect(records[1].Record.(*gen.Order).GetOrderId()).To(Equal(int64(5)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScannedRecordsLimit", func() {
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := range int64(10) {
+				order := &gen.Order{OrderId: proto.Int64(i + 1), Price: proto.Int32(int32((i + 1) * 10))}
+				if _, saveErr := store.SaveRecord(order); saveErr != nil {
+					return nil, saveErr
+				}
+			}
+
+			// Scanned records limit of 3 — scan 3, stop with ScanLimitReached
+			scan := ForwardScan()
+			scan.ExecuteProperties.ScannedRecordsLimit = 3
+			cursor := store.ScanRecords(nil, scan)
+
+			var records []*FDBStoredRecord[proto.Message]
+			var lastResult RecordCursorResult[*FDBStoredRecord[proto.Message]]
+			for {
+				result, nextErr := cursor.OnNext(ctx)
+				Expect(nextErr).NotTo(HaveOccurred())
+				lastResult = result
+				if !result.HasNext() {
+					break
+				}
+				records = append(records, result.GetValue())
+			}
+			Expect(records).To(HaveLen(3))
+			Expect(lastResult.GetNoNextReason()).To(Equal(ScanLimitReached))
+			Expect(lastResult.HasStoppedBeforeEnd()).To(BeTrue())
+
+			Expect(cursor.Close()).To(Succeed())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

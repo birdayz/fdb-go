@@ -9,6 +9,7 @@ go_test(
         "delete_conformance_test.go",
         "existence_check_conformance_test.go",
         "isolation_conformance_test.go",
+        "split_conformance_test.go",
     ],
     data = ["//conformance/java:conformance_server"],
     deps = [
@@ -21,5 +22,6 @@ go_test(
         "@com_github_google_uuid//:uuid",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
     ],
 )

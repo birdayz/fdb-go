@@ -6,6 +6,7 @@ go_library(
         "conformance_store.go",
         "container.go",
         "javainvoker.go",
+        "split_conformance_store.go",
         "testdata.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/conformance/helpers",

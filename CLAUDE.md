@@ -89,7 +89,9 @@ just clean          # bazel clean
 | `TypedFDBRecordStore[T]` | N/A (Go generics) | Type-safe wrapper with auto-type filtering on scan |
 | `FDBRecordVersion` | `FDBRecordVersion` | 12-byte version (10 global versionstamp + 2 local) |
 | `Index` | `Index` | Index definition (name, type, root expression, subspace key) |
-| `StandardIndexMaintainer` | `StandardIndexMaintainer` | VALUE index maintenance (insert/update/delete entries) |
+| `StandardIndexMaintainer` | `StandardIndexMaintainer` | VALUE index maintenance (insert/update/delete/scan entries) |
+| `IndexEntry` | `IndexEntry` | Single entry from index scan (key, value, primary key extraction) |
+| `TupleRange` | `TupleRange` | Range specification for index scans (ALL, AllOf, Between) |
 | `SizeInfo` | `SplitHelper.SizeInfo` | Track key count/size, value size, split/version flags |
 
 ### Java compatibility — non-negotiable
@@ -101,7 +103,7 @@ Wire-level compatibility is the whole point. These MUST match Java exactly:
 - Record store header format
 - Builder pattern (`Create`, `Open`, `CreateOrOpen`, `Build`)
 - Continuation tokens (protobuf-wrapped with magic number `6773487359078157740`)
-- Index entry format (`[indexValues..., primaryKey...]` at `IndexKey` subspace)
+- Index entry format (`[indexValues..., primaryKey...]` at `IndexKey` subspace, scannable via `ScanIndex`)
 - Split record format (100KB chunks at suffixes 1, 2, 3...; unsplit at suffix 0)
 - Record version storage (inline at `pk + -1` suffix, format version >= 6)
 

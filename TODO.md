@@ -37,6 +37,48 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ---
 
+## Conformance test coverage gaps (CRITICAL)
+
+The conformance framework (HTTP bridge to Java Record Layer) currently only validates **basic CRUD** (saveOrder, loadOrder, deleteOrder, recordExists). All complex features are Go-only tested — they verify Go reads its own writes but **never verify Java can read what Go writes** (or vice versa). For a project whose #1 goal is wire compatibility, this is unacceptable.
+
+### CRITICAL — wire format at risk without cross-validation
+
+- [ ] **Split record conformance** — Go splits >100KB records into chunks. Java must be able to read Go's chunks and vice versa. Need Java steps: `saveSplitOrder`, `loadSplitOrder` (with `setSplitLongRecords(true)` on store builder). Go test: save 250KB record, Java reads; Java saves 250KB, Go reads.
+
+- [ ] **Index entry format conformance** — Go writes index entries at `[store][2][indexSubspaceKey].pack(indexValues..., primaryKey...)`. Java must see the same entries. Need Java steps: `saveOrderWithIndex`, `scanIndex` (with metadata that adds VALUE index matching Go). Go test: save records with index, scan index with Java, compare entries.
+
+- [ ] **Record version conformance** — Go stores versions at `pk + -1` suffix as 12-byte values (10 global + 2 local). Java must read the same version bytes. Need Java step: `loadOrderWithVersion` (returns record + version). Go test: save with versioning, load version via Java, compare.
+
+- [ ] **Scan/continuation conformance** — Continuation tokens are protobuf-wrapped with magic number. A token produced by Go must be usable by Java and vice versa. Need Java step: `scanOrders` (with limit + continuation support). Go test: partial scan with Go, continue with Java using Go's continuation token.
+
+- [ ] **Record counting conformance** — Go uses FDB atomic ADD mutations (little-endian int64). Java must see the same count. Need Java step: `getRecordCount`. Go test: save N records with Go, read count with Java, compare.
+
+### HIGH — important for multi-type and completeness
+
+- [ ] **Multi-type conformance** — Only Order is tested. Customer records are never cross-validated. Need Java steps: `saveCustomer`, `loadCustomer`. Go test: save Customer with Go, load with Java; save with Java, load with Go.
+
+- [ ] **Reverse scan conformance** — Go reverse scans are only self-tested. Need Java scan step with reverse support.
+
+- [ ] **Fan-out index conformance** — Go fan-out creates multiple index entries per repeated field. Java must produce identical entries. Covered if index conformance tests include fan-out cases.
+
+### Current conformance coverage
+
+| Feature | Java Steps | Go Tests | Cross-validated |
+|---|---|---|---|
+| Basic CRUD | saveOrder, loadOrder, deleteOrder, recordExists | 5 test files | YES |
+| Existence checks | (via saveOrder) | existence_check_conformance_test.go | YES |
+| Isolation levels | (via raw FDB) | isolation_conformance_test.go | YES |
+| Conflict detection | (via raw FDB) | conflict_conformance_test.go | YES |
+| Split records | — | split_record_test.go (Go-only) | **NO** |
+| Record versioning | — | record_version_test.go (Go-only) | **NO** |
+| Secondary indexes | — | index_test.go (Go-only) | **NO** |
+| Index scanning | — | index_scan_test.go (Go-only) | **NO** |
+| Record counting | — | record_count_test.go (Go-only) | **NO** |
+| Continuation tokens | — | continuation_test.go (Go-only) | **NO** |
+| Multi-type records | — | multi_type_test.go (Go-only) | **NO** |
+
+---
+
 ## Bugs (found in conformance audit)
 
 ### CRITICAL
@@ -61,7 +103,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ### CRITICAL
 
-- [ ] **Index scanning** — Go has no `scan()` method on IndexMaintainer. Java's `StandardIndexMaintainer.scan()` returns `RecordCursor<IndexEntry>` with continuation support. **Blocks all index-based queries.** Java can read indexes written by Go but Go cannot query them.
+- [x] **Index scanning** — `IndexMaintainer.Scan()` and `FDBRecordStore.ScanIndex()` return `RecordCursor[*IndexEntry]` with `TupleRange` support (ALL, AllOf, Between, BetweenInclusive), continuations, row/byte limits, forward/reverse. `IndexEntry.PrimaryKey()` and `IndexValues()` for key extraction.
 
 - [ ] **Index state management** — Java has 4 states: `READABLE`, `WRITE_ONLY`, `DISABLED`, `READABLE_UNIQUE_PENDING` (stored in `IndexStateSpaceKey` subspace). Go has none — all indexes are implicitly READABLE always. Blocks online index builds and disable/rebuild workflows.
 
@@ -71,7 +113,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 - [ ] **Index management store methods** — Java FDBRecordStore has 15+ index methods missing in Go: `rebuildIndex`, `markIndexReadable`, `markIndexDisabled`, `markIndexWriteOnly`, `getIndexState`, `isIndexReadable`, `isIndexWriteOnly`, `isIndexDisabled`, `clearAndMarkIndexWriteOnly`, `getIndexBuildStateAsync`, etc.
 
-- [ ] **Repeated field fan-out** — Java produces multiple index entries per record for repeated/array fields. Go produces single entry only. Incorrect behavior for repeated proto fields.
+- [x] **Repeated field fan-out** — `FanOut("field")` creates `FieldKeyExpression` with `FanTypeFanOut`, producing one index entry per repeated value. Cross-product with `Concat()` works. Empty repeated field → no entries (matching Java).
 
 - [ ] **Sparse/filtered indexes** — Java `Index` has `IndexPredicate` to selectively index records. Go has no predicate field. Needed for partial indexes.
 
@@ -95,9 +137,9 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ### HIGH
 
-- [ ] **ThenKeyExpression** — Java's composite key type that evaluates cross-products of child expressions. Go has `CompositeKeyExpression` via `Concat()` but lacks the cross-product semantics of `ThenKeyExpression`. Critical for complex primary keys and composite indexes.
+- [x] **ThenKeyExpression** — `CompositeKeyExpression` via `Concat()` now computes Cartesian cross-product matching Java's `ThenKeyExpression` semantics.
 
-- [ ] **NestingKeyExpression** — Navigate through nested protobuf message hierarchies. Needed for indexing fields in nested messages.
+- [x] **NestingKeyExpression** — `Nest("field", child)` navigates into nested message fields. `NestFanOut("field", child)` for repeated message fields. Composite nested fields work (e.g., `Nest("flower", Concat(Field("type"), Field("color")))`). Enum fields supported via `int64` conversion.
 
 - [ ] **FormerIndex tracking** — Java tracks deleted indexes with `subspaceKey`, `addedVersion`, `removedVersion`, `formerName`. Needed for schema evolution — prevents subspace key reuse after index deletion.
 
@@ -135,13 +177,13 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ### HIGH
 
-- [ ] **ExecuteProperties `skip` field** — Java has `skip` (number of records to skip before applying row limit). Go has none.
+- [x] **ExecuteProperties `skip` field** — `ExecuteProperties.Skip` skips N records before applying row limit. FDB-level limit accounts for skip. Tested with skip-only and skip+row limit.
 
-- [ ] **ScannedRecordsLimit** — Java has separate `ScannedRecordsLimit` in ExecuteProperties. Go only has `ScannedBytesLimit`.
+- [x] **ScannedRecordsLimit** — `ExecuteProperties.ScannedRecordsLimit` enforced in `keyValueCursor.OnNext()`. Returns `ScanLimitReached` with continuation when limit hit.
 
-- [ ] **Cursor factory methods** — Java has `fromList()`, `fromIterator()`, `fromFuture()`, `empty()`. Go has none.
+- [x] **Cursor factory methods** — `Empty[T]()` and `FromList[T](items)` implemented matching Java's `RecordCursor.empty()` and `RecordCursor.fromList()`.
 
-- [ ] **RecordCursorResult validation** — Go returns zero value on `!HasNext()`. Java throws `IllegalResultValueAccessException`. Go also lacks `hasStoppedBeforeEnd()` helper.
+- [x] **RecordCursorResult validation** — `GetValue()` panics on `!HasNext()` matching Java's `IllegalResultValueAccessException`. `HasStoppedBeforeEnd()` helper added.
 
 ### MEDIUM
 
