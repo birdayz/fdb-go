@@ -7,10 +7,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// testMetaData creates metadata with all record types having primary keys set.
+func testMetaData(t testing.TB) *RecordMetaData {
+	t.Helper()
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("failed to build metadata: %v", err)
+	}
+	return md
+}
+
 // TestGetTypedRecordStore verifies the new Java-like API works
 func TestGetTypedRecordStore(t *testing.T) {
 	// Create base store
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,
@@ -66,7 +79,7 @@ func TestGetTypedRecordStore(t *testing.T) {
 
 // TestGetTypedRecordStore_InvalidType verifies error handling
 func TestGetTypedRecordStore_InvalidType(t *testing.T) {
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,

@@ -19,7 +19,9 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 		testSubspace := specSubspace()
 
 		GinkgoWriter.Printf("Testing sequential access order with %d records\n", numRecords)
@@ -115,7 +117,9 @@ var _ = Describe("BasicContinuation", func() {
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 		testSubspace := specSubspace()
 
 		GinkgoWriter.Printf("Testing continuation mechanism with %d records\n", numRecords)

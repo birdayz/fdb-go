@@ -29,11 +29,15 @@ func main() {
 	// Create metadata - equivalent to Java's RecordMetaData.newBuilder().setRecords(...)
 	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
 
-	// Set primary key for Order record type - equivalent to Java's setPrimaryKey(Key.Expressions.field("order_id"))
+	// Set primary keys for record types - equivalent to Java's setPrimaryKey(Key.Expressions.field("order_id"))
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 
 	// Build the metadata
-	recordMetaData := metaDataBuilder.Build()
+	recordMetaData, err := metaDataBuilder.Build()
+	if err != nil {
+		log.Fatalf("Failed to build metadata: %v", err)
+	}
 
 	// Create a keyspace path (simplified for now)
 	keyspace := subspace.FromBytes([]byte("record_layer_demo"))

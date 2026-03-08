@@ -67,14 +67,154 @@ var _ = Describe("FDBRecordVersion", func() {
 	})
 })
 
+var _ = Describe("FDBRecordVersion Comparison", func() {
+	makeComplete := func(globalBytes []byte, local int) *FDBRecordVersion {
+		v, err := NewCompleteVersion(globalBytes, local)
+		Expect(err).NotTo(HaveOccurred())
+		return v
+	}
+
+	makeIncomplete := func(local int) *FDBRecordVersion {
+		v, err := IncompleteVersion(local)
+		Expect(err).NotTo(HaveOccurred())
+		return v
+	}
+
+	zeroGlobal := make([]byte, GlobalVersionBytes)
+
+	Describe("Equal", func() {
+		It("EqualCompleteVersions", func() {
+			g := make([]byte, GlobalVersionBytes)
+			g[0] = 0x01
+			g[7] = 0x42
+			a := makeComplete(g, 5)
+			b := makeComplete(g, 5)
+			Expect(a.Equal(b)).To(BeTrue())
+			Expect(b.Equal(a)).To(BeTrue())
+		})
+
+		It("EqualIncompleteVersions", func() {
+			a := makeIncomplete(42)
+			b := makeIncomplete(42)
+			Expect(a.Equal(b)).To(BeTrue())
+		})
+
+		It("UnequalVersions", func() {
+			g1 := make([]byte, GlobalVersionBytes)
+			g1[0] = 0x01
+			g2 := make([]byte, GlobalVersionBytes)
+			g2[0] = 0x02
+			a := makeComplete(g1, 0)
+			b := makeComplete(g2, 0)
+			Expect(a.Equal(b)).To(BeFalse())
+
+			// Same global, different local
+			c := makeComplete(g1, 1)
+			Expect(a.Equal(c)).To(BeFalse())
+
+			// Complete vs incomplete
+			d := makeIncomplete(0)
+			Expect(a.Equal(d)).To(BeFalse())
+
+			// Different incomplete locals
+			e := makeIncomplete(1)
+			f := makeIncomplete(2)
+			Expect(e.Equal(f)).To(BeFalse())
+		})
+
+		It("NilHandling", func() {
+			a := makeComplete(zeroGlobal, 0)
+			Expect(a.Equal(nil)).To(BeFalse())
+			var nilV *FDBRecordVersion
+			Expect(nilV.Equal(nil)).To(BeTrue())
+			Expect(nilV.Equal(a)).To(BeFalse())
+		})
+	})
+
+	Describe("Less", func() {
+		It("CompleteSortsBeforeIncomplete", func() {
+			complete := makeComplete(zeroGlobal, 0)
+			incomplete := makeIncomplete(0)
+			Expect(complete.Less(incomplete)).To(BeTrue())
+			Expect(incomplete.Less(complete)).To(BeFalse())
+		})
+
+		It("LexicographicOrdering", func() {
+			g1 := make([]byte, GlobalVersionBytes)
+			g1[0] = 0x01
+			g2 := make([]byte, GlobalVersionBytes)
+			g2[0] = 0x02
+			a := makeComplete(g1, 0)
+			b := makeComplete(g2, 0)
+			Expect(a.Less(b)).To(BeTrue())
+			Expect(b.Less(a)).To(BeFalse())
+
+			// Same global, different local
+			c := makeComplete(g1, 1)
+			d := makeComplete(g1, 2)
+			Expect(c.Less(d)).To(BeTrue())
+			Expect(d.Less(c)).To(BeFalse())
+
+			// Equal versions: not less
+			e := makeComplete(g1, 5)
+			f := makeComplete(g1, 5)
+			Expect(e.Less(f)).To(BeFalse())
+		})
+
+		It("IncompleteOrderingByLocalVersion", func() {
+			a := makeIncomplete(1)
+			b := makeIncomplete(2)
+			// Incomplete versions have 0xFF global bytes, so ordering is by local version bytes
+			Expect(a.Less(b)).To(BeTrue())
+			Expect(b.Less(a)).To(BeFalse())
+		})
+
+		It("NilHandling", func() {
+			a := makeComplete(zeroGlobal, 0)
+			var nilV *FDBRecordVersion
+			// nil < non-nil
+			Expect(nilV.Less(a)).To(BeTrue())
+			// non-nil not < nil
+			Expect(a.Less(nil)).To(BeFalse())
+			// nil not < nil
+			Expect(nilV.Less(nil)).To(BeFalse())
+		})
+	})
+
+	Describe("String", func() {
+		It("CompleteVersion", func() {
+			g := make([]byte, GlobalVersionBytes)
+			g[0] = 0xAB
+			v := makeComplete(g, 1)
+			s := v.String()
+			Expect(s).To(ContainSubstring("complete=true"))
+			Expect(s).To(ContainSubstring("ab"))
+		})
+
+		It("IncompleteVersion", func() {
+			v := makeIncomplete(0)
+			s := v.String()
+			Expect(s).To(ContainSubstring("complete=false"))
+		})
+
+		It("NilVersion", func() {
+			var nilV *FDBRecordVersion
+			Expect(nilV.String()).To(Equal("FDBRecordVersion(nil)"))
+		})
+	})
+})
+
 var _ = Describe("RecordVersioning", func() {
 	ctx := context.Background()
 
 	newMeta := func() *RecordMetaData {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetStoreRecordVersions(true)
-		return builder.Build()
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md
 	}
 
 	It("VersionStoredOnSave", func() {
@@ -201,7 +341,9 @@ var _ = Describe("RecordVersioning", func() {
 	It("VersionNotStoredWhenDisabled", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

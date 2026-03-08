@@ -16,7 +16,9 @@ var _ = Describe("BasicScan", func() {
 		// Create metadata
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 

@@ -21,7 +21,9 @@ var _ = Describe("KeyStructure", func() {
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(primaryKeyExpr)
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
 			store, err := NewStoreBuilder().

@@ -54,7 +54,11 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	fileDesc := gen.File_record_layer_demo_proto
 	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	recordMetaData := metaDataBuilder.Build()
+	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	recordMetaData, err := metaDataBuilder.Build()
+	if err != nil {
+		t.Fatalf("Failed to build metadata: %v", err)
+	}
 
 	// Create test subspace
 	keyspace := subspace.FromBytes(tuple.Tuple{"testcontainer_conformance"}.Pack())

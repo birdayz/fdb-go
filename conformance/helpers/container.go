@@ -146,6 +146,10 @@ func createOrderMetaData() (*recordlayer.RecordMetaData, error) {
 	// Build metadata with primary key defined (matches pattern from record layer tests)
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-	metaData := builder.Build()
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	metaData, err := builder.Build()
+	if err != nil {
+		return nil, err
+	}
 	return metaData, nil
 }

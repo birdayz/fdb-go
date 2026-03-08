@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -15,7 +16,11 @@ func multiTypeMetaData() *RecordMetaData {
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-	return builder.Build()
+	md, err := builder.Build()
+	if err != nil {
+		panic(fmt.Sprintf("multiTypeMetaData: %v", err))
+	}
+	return md
 }
 
 var _ = Describe("MultiTypeRecords", func() {

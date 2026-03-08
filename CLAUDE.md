@@ -82,20 +82,28 @@ just clean          # bazel clean
 
 | Go type | Java equivalent | Purpose |
 |---|---|---|
-| `FDBDatabase` | `FDBDatabase` | Wraps `fdb.Database`, provides `Run()` with retry |
-| `FDBRecordContext` | `FDBRecordContext` | Wraps `fdb.Transaction`, Record Layer tx context |
-| `FDBRecordStore` | `FDBRecordStore` | Main record CRUD (Save, Load, Delete, Scan) |
-| `RecordMetaData` | `RecordMetaData` | Proto schema + record type metadata |
-| `TypedFDBRecordStore[T]` | N/A (Go generics) | Type-safe wrapper |
+| `FDBDatabase` | `FDBDatabase` | Wraps `fdb.Database`/`fdb.Tenant`, provides `Run()`/`RunWithVersionstamp()` |
+| `FDBRecordContext` | `FDBRecordContext` | Wraps `fdb.Transaction`, version mutations, local version cache |
+| `FDBRecordStore` | `FDBRecordStore` | Main record CRUD (Save, Load, Delete, Scan), index maintenance |
+| `RecordMetaData` | `RecordMetaData` | Proto schema + record type metadata + indexes |
+| `TypedFDBRecordStore[T]` | N/A (Go generics) | Type-safe wrapper with auto-type filtering on scan |
+| `FDBRecordVersion` | `FDBRecordVersion` | 12-byte version (10 global versionstamp + 2 local) |
+| `Index` | `Index` | Index definition (name, type, root expression, subspace key) |
+| `StandardIndexMaintainer` | `StandardIndexMaintainer` | VALUE index maintenance (insert/update/delete entries) |
+| `SizeInfo` | `SplitHelper.SizeInfo` | Track key count/size, value size, split/version flags |
 
 ### Java compatibility — non-negotiable
 
 Wire-level compatibility is the whole point. These MUST match Java exactly:
-- Subspace constants (`RecordKey = 1`, `IndexKey = 2`, etc.)
+- Subspace constants (`RecordKey = 1`, `IndexKey = 2`, etc.) — all 10 verified
 - Key construction (FDB tuple encoding)
 - Protobuf serialization format
 - Record store header format
 - Builder pattern (`Create`, `Open`, `CreateOrOpen`, `Build`)
+- Continuation tokens (protobuf-wrapped with magic number `6773487359078157740`)
+- Index entry format (`[indexValues..., primaryKey...]` at `IndexKey` subspace)
+- Split record format (100KB chunks at suffixes 1, 2, 3...; unsplit at suffix 0)
+- Record version storage (inline at `pk + -1` suffix, format version >= 6)
 
 ### Key patterns
 
@@ -118,9 +126,20 @@ record, err := typedStore.LoadRecord(ctx, primaryKey)
 ### FDB constraints to respect
 
 - 5-second transaction time limit → cursors need `TimeScanLimiter` and continuations
-- 100KB value size limit
+- 100KB value size limit → handled by split records (`SetSplitLongRecords(true)`)
 - 10MB transaction size limit
 - Key size limit (~10KB)
+
+### Java source reference
+
+Java source at `fdb-record-layer/` in repo root (gitignored). Key files:
+- `FDBRecordStore.java` — core CRUD, counting, save logic (5800+ lines)
+- `FDBRecordStoreKeyspace.java` — subspace constants (0-9)
+- `SplitHelper.java` — split/unsplit record logic
+- `KeyValueCursorBase.java` — continuation token format
+- `FDBRecordVersion.java` — version structure
+- `StandardIndexMaintainer.java` — VALUE index maintenance
+- `RecordMetaData.java` / `RecordMetaDataBuilder.java` — metadata
 
 ## Design principles
 
@@ -131,10 +150,19 @@ record, err := typedStore.LoadRecord(ctx, primaryKey)
 5. **Proto fidelity** — respect protobuf semantics (open enums, field presence, wire compat)
 6. **Test hard** — t.Parallel() where possible, cover edge cases, test Java interop
 
-## Cursor/continuation design (from Java)
+## Cursor/continuation design
 
-Java Record Layer uses protobuf for cursor continuations (`record_cursor.proto`). Key types:
+Implemented: `KeyValueCursorContinuation` (protobuf-wrapped with magic number). Supports forward/reverse scan, byte/row limits, split record reassembly, isolation levels.
+
+Future cursor combinators from Java (not yet implemented):
 - `FlatMapContinuation`, `IntersectionContinuation`, `UnionContinuation`
 - `ConcatContinuation`, `SizeStatisticsContinuation`
 
 Each serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
+
+## Conformance status (audited 2026-03-08)
+
+See `TODO.md` for full gap analysis. Summary:
+- **Complete**: CRUD, split records, subspace constants, continuation tokens, record versioning, record counting, VALUE indexes
+- **~28% API coverage** of Java FDBRecordStore (40/144 public methods)
+- **Key gaps**: index scanning, index state management, cursor combinators (union/intersection/flatmap), ThenKeyExpression, configurable retry runner

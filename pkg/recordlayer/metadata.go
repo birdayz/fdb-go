@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"fmt"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -69,10 +71,14 @@ type RecordType struct {
 }
 
 // KeyExpression represents an expression that extracts key components from a record.
-// For MVP, we'll just support simple field access.
+// Matches Java's KeyExpression interface which returns List<Key.Evaluated>.
 type KeyExpression interface {
-	// Evaluate extracts the key value(s) from a record
-	Evaluate(msg proto.Message) ([]interface{}, error)
+	// Evaluate extracts key tuples from a record.
+	// Returns a list of key tuples (each tuple is a []interface{}).
+	// Single-valued expressions return one tuple; fan-out expressions
+	// (e.g. repeated fields) return multiple tuples.
+	// Matches Java's KeyExpression.evaluateMessage() -> List<Key.Evaluated>.
+	Evaluate(msg proto.Message) ([][]interface{}, error)
 
 	// FieldNames returns the field names this expression accesses
 	FieldNames() []string
@@ -230,8 +236,14 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 }
 
 // Build creates the final RecordMetaData.
+// Returns an error if any record type has no primary key set.
 // The record types map is copied to prevent the builder from mutating the built metadata.
-func (b *RecordMetaDataBuilder) Build() *RecordMetaData {
+func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
+	for name, rt := range b.recordTypes {
+		if rt.PrimaryKey == nil {
+			return nil, fmt.Errorf("record type %q has no primary key set", name)
+		}
+	}
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
 		types[k] = v
@@ -249,7 +261,7 @@ func (b *RecordMetaDataBuilder) Build() *RecordMetaData {
 		splitLongRecords:    b.splitLongRecords,
 		indexes:             indexes,
 		universalIndexes:    b.universalIndexes,
-	}
+	}, nil
 }
 
 // RecordTypeBuilder provides methods to configure a specific record type
@@ -264,10 +276,13 @@ func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBu
 	return rtb
 }
 
-// NewRecordMetaData creates metadata from a protobuf file descriptor
-// This is a convenience function that matches the Java pattern
+// NewRecordMetaData creates metadata from a protobuf file descriptor.
+// This is a convenience function that matches the Java pattern.
+// Note: This will return nil if any record type has no primary key set.
+// Prefer using NewRecordMetaDataBuilder() and Build() directly for proper error handling.
 func NewRecordMetaData(fd protoreflect.FileDescriptor) *RecordMetaData {
-	return NewRecordMetaDataBuilder().SetRecords(fd).Build()
+	md, _ := NewRecordMetaDataBuilder().SetRecords(fd).Build()
+	return md
 }
 
 // GetRecordType returns the record type for the given name

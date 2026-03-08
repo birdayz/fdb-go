@@ -108,13 +108,13 @@ func (r RecordCursorResult[T]) HasNext() bool {
 	return r.hasNext
 }
 
-// GetValue returns the value if HasNext is true, otherwise returns zero value
+// GetValue returns the value. Panics if HasNext() is false — callers must check HasNext() first.
+// This matches Java's behavior of throwing IllegalResultValueAccessException.
 func (r RecordCursorResult[T]) GetValue() T {
-	if r.value != nil {
-		return *r.value
+	if !r.hasNext {
+		panic("GetValue called on RecordCursorResult with no value (check HasNext() first)")
 	}
-	var zero T
-	return zero
+	return *r.value
 }
 
 // GetContinuation returns the continuation for resuming the cursor

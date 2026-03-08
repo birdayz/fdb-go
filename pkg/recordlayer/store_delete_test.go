@@ -18,7 +18,9 @@ var _ = Describe("DeleteRecord", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData := metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		recordMetaData, buildErr := metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 

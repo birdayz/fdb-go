@@ -33,7 +33,7 @@ func init() {
 }
 
 func BenchmarkDeserializeRecord_Standard(b *testing.B) {
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(b)
 	
 	store := &FDBRecordStore{
 		metaData: metaData,
@@ -60,7 +60,7 @@ func BenchmarkDeserializeRecord_Standard(b *testing.B) {
 // Test basic deserialization works correctly
 func TestDeserializationWorks(t *testing.T) {
 	// Use proper builder to set up union field descriptors
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	store := &FDBRecordStore{
 		metaData: metaData,

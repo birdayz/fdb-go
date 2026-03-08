@@ -42,7 +42,10 @@ var _ = Describe("ContinuationToken", func() {
 		ctx = context.Background()
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData = builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		metaData, buildErr = builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("ResumeAfterExactlyN", func() {

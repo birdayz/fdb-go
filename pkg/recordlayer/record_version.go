@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -104,6 +106,46 @@ func (v *FDBRecordVersion) ToBytes() []byte {
 	result := make([]byte, VersionBytes)
 	copy(result, v.raw[:])
 	return result
+}
+
+// Equal returns true if two versions are equal.
+// Complete versions compare all 12 bytes; incomplete versions compare local version only.
+// Matches Java's FDBRecordVersion.equals().
+func (v *FDBRecordVersion) Equal(other *FDBRecordVersion) bool {
+	if v == nil || other == nil {
+		return v == other
+	}
+	if v.complete != other.complete {
+		return false
+	}
+	if v.complete {
+		return v.raw == other.raw
+	}
+	return v.GetLocalVersion() == other.GetLocalVersion()
+}
+
+// Less returns true if v sorts before other.
+// Complete versions sort before incomplete. Among versions of the same completeness,
+// lexicographic byte comparison of the full 12-byte raw representation.
+// Matches Java's FDBRecordVersion.compareTo().
+func (v *FDBRecordVersion) Less(other *FDBRecordVersion) bool {
+	if v == nil || other == nil {
+		return v == nil && other != nil
+	}
+	if v.complete != other.complete {
+		// Complete sorts before incomplete (Java: complete < incomplete).
+		return v.complete
+	}
+	return bytes.Compare(v.raw[:], other.raw[:]) < 0
+}
+
+// String returns a human-readable representation matching Java's toString().
+// Format: "FDBRecordVersion(complete=<bool>, raw=<hex>)"
+func (v *FDBRecordVersion) String() string {
+	if v == nil {
+		return "FDBRecordVersion(nil)"
+	}
+	return fmt.Sprintf("FDBRecordVersion(complete=%t, raw=%s)", v.complete, hex.EncodeToString(v.raw[:]))
 }
 
 // WithCommittedVersion completes an incomplete version using the committed versionstamp.

@@ -16,8 +16,10 @@ var _ = Describe("RecordCounting", func() {
 	It("BasicCounting", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey()) // Total count
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -49,8 +51,10 @@ var _ = Describe("RecordCounting", func() {
 	It("CountNotIncrementedOnUpdate", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -87,8 +91,10 @@ var _ = Describe("RecordCounting", func() {
 	It("CountDecrementedOnDelete", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -128,7 +134,9 @@ var _ = Describe("RecordCounting", func() {
 		// No SetRecordCountKey — counting should be disabled
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -156,8 +164,10 @@ var _ = Describe("RecordCounting", func() {
 	It("DeleteNonExistentDoesNotAffectCount", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -194,8 +204,10 @@ var _ = Describe("RecordCounting", func() {
 	It("DeleteAllRecordsResetsCount", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -248,7 +260,8 @@ var _ = Describe("RecordCounting", func() {
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(RecordTypeKey()) // Per-type counting
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -311,8 +324,10 @@ var _ = Describe("RecordCounting", func() {
 	It("InsertDeleteInsertCount", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

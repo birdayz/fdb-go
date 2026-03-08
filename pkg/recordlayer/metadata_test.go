@@ -22,7 +22,10 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("OrderInUnion", func() {
@@ -95,7 +98,10 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("LoadWithInvalidTypeIndex", func() {
@@ -166,7 +172,9 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData := metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		recordMetaData, buildErr := metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		// Manually write a key with invalid type index
 		_, err := sharedDB.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
@@ -212,7 +220,10 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("ValidateMessageIsInUnion", func() {
@@ -263,5 +274,38 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("RecordMetaDataBuilder_Validation", func() {
+	It("Build returns error when primary key is missing", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		// Intentionally do NOT set any primary keys
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("has no primary key set"))
+	})
+
+	It("Build returns error when one record type lacks primary key", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		// Customer primary key intentionally not set
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("Customer"))
+		Expect(err.Error()).To(ContainSubstring("has no primary key set"))
+	})
+
+	It("Build succeeds when all primary keys are set", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md).NotTo(BeNil())
+		Expect(md.GetRecordType("Order")).NotTo(BeNil())
+		Expect(md.GetRecordType("Customer")).NotTo(BeNil())
 	})
 })

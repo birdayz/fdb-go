@@ -21,7 +21,9 @@ var _ = Describe("SecondaryIndexes", func() {
 		for _, idx := range indexes {
 			builder.AddIndex("Order", idx)
 		}
-		return builder.Build()
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md
 	}
 
 	// scanIndexEntries reads all raw KV pairs in the index subspace for verification.
@@ -345,9 +347,11 @@ var _ = Describe("SecondaryIndexes", func() {
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.AddIndex("Order", priceIndex)
 		builder.AddIndex("Order", idIndex)
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -379,9 +383,11 @@ var _ = Describe("SecondaryIndexes", func() {
 		nameIndex := NewIndex("Customer$name", Field("name"))
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.AddIndex("Customer", nameIndex)
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -444,9 +450,11 @@ var _ = Describe("SecondaryIndexes", func() {
 
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.SetRecordCountKey(EmptyKey())
 		builder.AddIndex("Order", priceIndex)
-		metaData := builder.Build()
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

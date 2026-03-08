@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -31,7 +32,11 @@ func splitMetadata() *RecordMetaData {
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-	return builder.Build()
+	md, err := builder.Build()
+	if err != nil {
+		panic(fmt.Sprintf("splitMetadata: %v", err))
+	}
+	return md
 }
 
 var _ = Describe("SplitRecords", func() {
@@ -118,7 +123,9 @@ var _ = Describe("SplitRecords", func() {
 		// Metadata WITHOUT splitLongRecords
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		metaData := builder.Build()
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {

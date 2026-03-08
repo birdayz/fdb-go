@@ -19,7 +19,7 @@ func createTestOrderStore(baseStore *FDBRecordStore) *TypedFDBRecordStore[*gen.O
 
 func TestTypedRecordStore_OrderOperations(t *testing.T) {
 	// Create base store using proper builder
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,
@@ -41,7 +41,7 @@ func TestTypedRecordStore_OrderOperations(t *testing.T) {
 
 func TestTypedRecordStore_WrapUnwrapFunctions(t *testing.T) {
 	// Create base store using proper builder
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,
@@ -94,7 +94,7 @@ func TestTypedRecordStore_WrapUnwrapFunctions(t *testing.T) {
 
 func TestGenericTypedRecordStore_Creation(t *testing.T) {
 	// Create base store using proper builder
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(t)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,
@@ -132,7 +132,7 @@ func TestGenericTypedRecordStore_Creation(t *testing.T) {
 // Benchmark to ensure generic wrapper doesn't add significant overhead
 func BenchmarkTypedRecordStore_Overhead(b *testing.B) {
 	// Setup using proper builder
-	metaData := NewRecordMetaData(gen.File_record_layer_demo_proto)
+	metaData := testMetaData(b)
 	
 	baseStore := &FDBRecordStore{
 		metaData: metaData,

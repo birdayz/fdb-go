@@ -21,7 +21,10 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("NonExistentRecord", func() {
@@ -166,7 +169,10 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("NewRecord", func() {
@@ -259,7 +265,10 @@ var _ = Describe("InsertRecord", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("NewRecord", func() {
@@ -352,7 +361,10 @@ var _ = Describe("UpdateRecord", func() {
 		fileDesc := gen.File_record_layer_demo_proto
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		recordMetaData = metaDataBuilder.Build()
+		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("NonExistentRecord", func() {
@@ -472,7 +484,9 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-		recordMetaData = metaDataBuilder.Build()
+		var buildErr error
+		recordMetaData, buildErr = metaDataBuilder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
 	})
 
 	It("DifferentTypeReturnsError", func() {

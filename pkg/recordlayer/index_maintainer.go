@@ -91,19 +91,24 @@ type indexEntry struct {
 }
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.
-// Currently produces one entry per record (no fan-out for repeated fields).
+// Fans out when the expression returns multiple key tuples (e.g. repeated fields).
+// Matches Java's StandardIndexMaintainer.evaluateIndex().
 func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
-	values, err := m.index.RootExpression.Evaluate(record.Record)
+	tuples, err := m.index.RootExpression.Evaluate(record.Record)
 	if err != nil {
 		return nil, err
 	}
 
-	key := make(tuple.Tuple, len(values))
-	for i, v := range values {
-		key[i] = v
+	entries := make([]indexEntry, len(tuples))
+	for i, values := range tuples {
+		key := make(tuple.Tuple, len(values))
+		for j, v := range values {
+			key[j] = v
+		}
+		entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
 	}
 
-	return []indexEntry{{key: key, primaryKey: record.PrimaryKey}}, nil
+	return entries, nil
 }
 
 // checkUniqueness verifies no other record has the same index value.

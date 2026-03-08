@@ -44,13 +44,18 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 		return // Counting disabled
 	}
 
-	// Evaluate the count key expression against the record
-	subkey, err := countKey.Evaluate(record)
+	// Evaluate the count key expression against the record.
+	// Count keys should produce exactly one tuple.
+	subkeys, err := countKey.Evaluate(record)
 	if err != nil {
 		// Silently skip counting on evaluation errors (matches Java behavior
 		// where this is logged but doesn't fail the operation)
 		return
 	}
+	if len(subkeys) != 1 {
+		return // Count key must evaluate to exactly one tuple
+	}
+	subkey := subkeys[0]
 
 	// Build the FDB key: subspace + RecordCountKey + evaluated_subkey
 	countSubspace := store.subspace.Sub(RecordCountKey)

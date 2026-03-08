@@ -17,11 +17,12 @@ func Field(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name}
 }
 
-// Evaluate extracts the field value from the message
-func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) {
+// Evaluate extracts the field value from the message.
+// Returns one tuple containing the single field value.
+func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
 	// Get the message reflection
 	m := msg.ProtoReflect()
-	
+
 	// Find the field descriptor
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
 	if fd == nil {
@@ -54,7 +55,7 @@ func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) 
 		return nil, fmt.Errorf("unsupported field type %s for key expression", fd.Kind())
 	}
 
-	return []interface{}{result}, nil
+	return [][]interface{}{{result}}, nil
 }
 
 // FieldNames returns the field name accessed by this expression
@@ -82,15 +83,24 @@ func (r *RecordTypeKeyExpression) Nest(expr KeyExpression) KeyExpression {
 // Evaluate returns the record type name, optionally followed by nested values.
 // In Java, RecordTypeKeyExpression.evaluate() returns the record type name as a string.
 // We derive it from the proto message's descriptor name.
-func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) {
+// When nested is present, computes cross-product: each nested tuple is prefixed with the type name.
+func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
-	result := []interface{}{typeName}
-	if r.nested != nil {
-		nestedValues, err := r.nested.Evaluate(msg)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, nestedValues...)
+	if r.nested == nil {
+		return [][]interface{}{{typeName}}, nil
+	}
+
+	nestedTuples, err := r.nested.Evaluate(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([][]interface{}, len(nestedTuples))
+	for i, nt := range nestedTuples {
+		combined := make([]interface{}, 0, 1+len(nt))
+		combined = append(combined, typeName)
+		combined = append(combined, nt...)
+		result[i] = combined
 	}
 	return result, nil
 }
@@ -126,9 +136,9 @@ func EmptyKey() KeyExpression {
 	return &EmptyKeyExpression{}
 }
 
-// Evaluate returns an empty slice (no key components).
-func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([]interface{}, error) {
-	return []interface{}{}, nil
+// Evaluate returns one empty tuple (no key components).
+func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([][]interface{}, error) {
+	return [][]interface{}{{}}, nil
 }
 
 // FieldNames returns no field names.
@@ -146,16 +156,39 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 	return &CompositeKeyExpression{expressions: exprs}
 }
 
-// Evaluate returns values from all component expressions
-func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([]interface{}, error) {
-	var result []interface{}
+// Evaluate computes the Cartesian product of all child expression results.
+// Matches Java's ThenKeyExpression which crosses children:
+//
+//	child0 returns [[1], [2]]
+//	child1 returns [[a], [b]]
+//	result = [[1,a], [1,b], [2,a], [2,b]]
+//
+// For the common case where each child returns exactly one tuple, the result
+// is a single tuple that is the concatenation of all child tuples — identical
+// to the old flat-append behavior.
+func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+	// Start with a single empty tuple
+	result := [][]interface{}{{}}
+
 	for _, expr := range c.expressions {
-		values, err := expr.Evaluate(msg)
+		childTuples, err := expr.Evaluate(msg)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, values...)
+
+		// Cross-product: for each existing tuple, combine with each child tuple
+		var crossed [][]interface{}
+		for _, existing := range result {
+			for _, child := range childTuples {
+				combined := make([]interface{}, 0, len(existing)+len(child))
+				combined = append(combined, existing...)
+				combined = append(combined, child...)
+				crossed = append(crossed, combined)
+			}
+		}
+		result = crossed
 	}
+
 	return result, nil
 }
 
