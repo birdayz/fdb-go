@@ -288,7 +288,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `ChainedCursor` — procedural iterator with generator function. Raw byte continuations (no proto). Custom encode/decode.
   - [ ] **Aggregation**: `AggregateCursor` with accumulator states
   - [x] `AutoContinuingCursor` — auto-creates new transactions on scan/time/byte/row limits for seamless large-dataset scanning across tx boundaries. Includes retry logic for transient errors.
-  - [ ] **Control flow**: `FallbackCursor`
+  - [x] `FallbackCursor` — primary cursor with automatic failover on error. One-shot fallback, passes last successful result to factory.
 
 - [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
 
