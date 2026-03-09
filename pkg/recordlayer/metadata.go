@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"fmt"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -104,6 +105,10 @@ type KeyExpression interface {
 
 	// FieldNames returns the field names this expression accesses
 	FieldNames() []string
+
+	// ToKeyExpression serializes this expression to its protobuf representation.
+	// Matches Java's KeyExpression.toKeyExpression().
+	ToKeyExpression() *gen.KeyExpression
 }
 
 // RecordMetaDataBuilder provides a builder pattern for creating RecordMetaData

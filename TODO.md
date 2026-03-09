@@ -233,6 +233,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### MEDIUM
 
 - [ ] **Metadata proto serialization** — Java has `toProto()`/`fromProto()` for persisting metadata definitions. Go has none. Needed for storing metadata in FDB itself.
+  - [x] **KeyExpression proto serialization** — `ToKeyExpression()` on all expression types + `KeyExpressionFromProto()` dispatcher. Roundtrip + wire format tests. Matches Java's `KeyExpression.toKeyExpression()`/`fromProto()`. FanType mapping: Go None→SCALAR, FanOut→FAN_OUT, Concatenate→CONCATENATE.
+  - [ ] **RecordMetaData.toProto()/fromProto()** — Serialize full metadata (record types, indexes, primary keys, former indexes, settings).
 
 - [x] **Explicit record type keys** — `SetRecordTypeKey()` on `RecordTypeBuilder`, `GetRecordTypeKey()` on `RecordType`. Falls back to `RecordTypeIndex` if not set.
 

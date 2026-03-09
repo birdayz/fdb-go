@@ -1,0 +1,190 @@
+package recordlayer
+
+import (
+	"fmt"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+)
+
+// fanTypeToProto converts Go FanType to proto Field.FanType.
+// Go FanTypeNone → Proto SCALAR, FanTypeFanOut → FAN_OUT, FanTypeConcatenate → CONCATENATE.
+// Matches Java's KeyExpression.FanType.toProto().
+func fanTypeToProto(ft FanType) gen.Field_FanType {
+	switch ft {
+	case FanTypeFanOut:
+		return gen.Field_FAN_OUT
+	case FanTypeConcatenate:
+		return gen.Field_CONCATENATE
+	default: // FanTypeNone
+		return gen.Field_SCALAR
+	}
+}
+
+// fanTypeFromProto converts proto Field.FanType to Go FanType.
+func fanTypeFromProto(ft gen.Field_FanType) FanType {
+	switch ft {
+	case gen.Field_FAN_OUT:
+		return FanTypeFanOut
+	case gen.Field_CONCATENATE:
+		return FanTypeConcatenate
+	default: // SCALAR
+		return FanTypeNone
+	}
+}
+
+// ToKeyExpression serializes a FieldKeyExpression to proto.
+// Matches Java's FieldKeyExpression.toKeyExpression().
+func (f *FieldKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	ft := fanTypeToProto(f.fanType)
+	return &gen.KeyExpression{
+		Field: &gen.Field{
+			FieldName: &f.fieldName,
+			FanType:   &ft,
+		},
+	}
+}
+
+// ToKeyExpression serializes a CompositeKeyExpression (ThenKeyExpression) to proto.
+// Matches Java's ThenKeyExpression.toKeyExpression().
+func (c *CompositeKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	children := make([]*gen.KeyExpression, len(c.expressions))
+	for i, child := range c.expressions {
+		children[i] = child.ToKeyExpression()
+	}
+	return &gen.KeyExpression{
+		Then: &gen.Then{
+			Child: children,
+		},
+	}
+}
+
+// ToKeyExpression serializes a NestingKeyExpression to proto.
+// Matches Java's NestingKeyExpression.toKeyExpression().
+func (n *NestingKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	ft := fanTypeToProto(n.fanType)
+	return &gen.KeyExpression{
+		Nesting: &gen.Nesting{
+			Parent: &gen.Field{
+				FieldName: &n.parentField,
+				FanType:   &ft,
+			},
+			Child: n.child.ToKeyExpression(),
+		},
+	}
+}
+
+// ToKeyExpression serializes an EmptyKeyExpression to proto.
+// Matches Java's EmptyKeyExpression.toKeyExpression().
+func (e *EmptyKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	return &gen.KeyExpression{
+		Empty: &gen.Empty{},
+	}
+}
+
+// ToKeyExpression serializes a RecordTypeKeyExpression to proto.
+// A bare RecordTypeKeyExpression serializes as RecordTypeKey{}.
+// With a nested expression, serializes as Then{RecordTypeKey{}, nested} matching
+// Java's concat(recordTypeKey(), nested).
+func (r *RecordTypeKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	if r.nested == nil {
+		return &gen.KeyExpression{
+			RecordTypeKey: &gen.RecordTypeKey{},
+		}
+	}
+	// With nested → Then(RecordTypeKey, nested)
+	return &gen.KeyExpression{
+		Then: &gen.Then{
+			Child: []*gen.KeyExpression{
+				{RecordTypeKey: &gen.RecordTypeKey{}},
+				r.nested.ToKeyExpression(),
+			},
+		},
+	}
+}
+
+// KeyExpressionFromProto deserializes a protobuf KeyExpression to a Go KeyExpression.
+// Exactly one field must be set. Matches Java's KeyExpression.fromProto().
+func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
+	if expr == nil {
+		return nil, fmt.Errorf("nil key expression proto")
+	}
+
+	var root KeyExpression
+	found := 0
+
+	if expr.Field != nil {
+		found++
+		root = fieldFromProto(expr.Field)
+	}
+	if expr.Nesting != nil {
+		found++
+		child, err := nestingFromProto(expr.Nesting)
+		if err != nil {
+			return nil, err
+		}
+		root = child
+	}
+	if expr.Then != nil {
+		found++
+		then, err := thenFromProto(expr.Then)
+		if err != nil {
+			return nil, err
+		}
+		root = then
+	}
+	if expr.Empty != nil {
+		found++
+		root = EmptyKey()
+	}
+	if expr.RecordTypeKey != nil {
+		found++
+		root = RecordTypeKey()
+	}
+
+	if root == nil || found > 1 {
+		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
+	}
+	return root, nil
+}
+
+// fieldFromProto reconstructs a FieldKeyExpression from a proto Field.
+func fieldFromProto(f *gen.Field) *FieldKeyExpression {
+	return &FieldKeyExpression{
+		fieldName: f.GetFieldName(),
+		fanType:   fanTypeFromProto(f.GetFanType()),
+	}
+}
+
+// nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting.
+func nestingFromProto(n *gen.Nesting) (KeyExpression, error) {
+	if n.Parent == nil {
+		return nil, fmt.Errorf("nesting expression missing parent field")
+	}
+	child, err := KeyExpressionFromProto(n.Child)
+	if err != nil {
+		return nil, fmt.Errorf("nesting child: %w", err)
+	}
+	return &NestingKeyExpression{
+		parentField: n.Parent.GetFieldName(),
+		fanType:     fanTypeFromProto(n.Parent.GetFanType()),
+		child:       child,
+	}, nil
+}
+
+// thenFromProto reconstructs a CompositeKeyExpression from a proto Then.
+// Java flattens nested Then children; Go's CompositeKeyExpression naturally
+// handles this since Concat doesn't nest.
+func thenFromProto(t *gen.Then) (KeyExpression, error) {
+	if len(t.Child) < 2 {
+		return nil, fmt.Errorf("then expression requires at least 2 children, got %d", len(t.Child))
+	}
+	exprs := make([]KeyExpression, len(t.Child))
+	for i, child := range t.Child {
+		expr, err := KeyExpressionFromProto(child)
+		if err != nil {
+			return nil, fmt.Errorf("then child %d: %w", i, err)
+		}
+		exprs[i] = expr
+	}
+	return Concat(exprs...), nil
+}

@@ -1,0 +1,222 @@
+package recordlayer
+
+import (
+	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"google.golang.org/protobuf/proto"
+)
+
+func TestFieldKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		expr    KeyExpression
+		fanType gen.Field_FanType
+	}{
+		{"scalar", Field("order_id"), gen.Field_SCALAR},
+		{"fan_out", FanOut("tags"), gen.Field_FAN_OUT},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := tt.expr.ToKeyExpression()
+			if p.Field == nil {
+				t.Fatal("expected Field to be set")
+			}
+			if p.Field.GetFanType() != tt.fanType {
+				t.Fatalf("fan type: got %v, want %v", p.Field.GetFanType(), tt.fanType)
+			}
+
+			restored, err := KeyExpressionFromProto(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !keyExpressionEquals(tt.expr, restored) {
+				t.Fatalf("roundtrip mismatch")
+			}
+		})
+	}
+}
+
+func TestCompositeKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+	expr := Concat(Field("a"), Field("b"), FanOut("c"))
+	p := expr.ToKeyExpression()
+	if p.Then == nil {
+		t.Fatal("expected Then to be set")
+	}
+	if len(p.Then.Child) != 3 {
+		t.Fatalf("children: got %d, want 3", len(p.Then.Child))
+	}
+
+	restored, err := KeyExpressionFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keyExpressionEquals(expr, restored) {
+		t.Fatal("roundtrip mismatch")
+	}
+}
+
+func TestNestingKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		expr KeyExpression
+	}{
+		{"simple", Nest("flower", Field("type"))},
+		{"fan_out", NestFanOut("items", Field("price"))},
+		{"deep", Nest("flower", Concat(Field("type"), Field("color")))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := tt.expr.ToKeyExpression()
+			if p.Nesting == nil {
+				t.Fatal("expected Nesting to be set")
+			}
+
+			restored, err := KeyExpressionFromProto(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !keyExpressionEquals(tt.expr, restored) {
+				t.Fatal("roundtrip mismatch")
+			}
+		})
+	}
+}
+
+func TestEmptyKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+	expr := EmptyKey()
+	p := expr.ToKeyExpression()
+	if p.Empty == nil {
+		t.Fatal("expected Empty to be set")
+	}
+
+	restored, err := KeyExpressionFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keyExpressionEquals(expr, restored) {
+		t.Fatal("roundtrip mismatch")
+	}
+}
+
+func TestRecordTypeKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bare", func(t *testing.T) {
+		t.Parallel()
+		expr := RecordTypeKey()
+		p := expr.ToKeyExpression()
+		if p.RecordTypeKey == nil {
+			t.Fatal("expected RecordTypeKey to be set")
+		}
+		restored, err := KeyExpressionFromProto(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !keyExpressionEquals(expr, restored) {
+			t.Fatal("roundtrip mismatch")
+		}
+	})
+
+	t.Run("with_nested", func(t *testing.T) {
+		t.Parallel()
+		// RecordTypeKey with nested serializes as Then{RecordTypeKey, nested}
+		rtk := RecordTypeKey()
+		expr := rtk.Nest(Field("order_id"))
+		p := expr.ToKeyExpression()
+		if p.Then == nil {
+			t.Fatal("expected Then to be set for nested RecordTypeKey")
+		}
+		if len(p.Then.Child) != 2 {
+			t.Fatalf("children: got %d, want 2", len(p.Then.Child))
+		}
+		if p.Then.Child[0].RecordTypeKey == nil {
+			t.Fatal("first child should be RecordTypeKey")
+		}
+		if p.Then.Child[1].Field == nil {
+			t.Fatal("second child should be Field")
+		}
+	})
+}
+
+func TestKeyExpressionFromProtoErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil", func(t *testing.T) {
+		t.Parallel()
+		_, err := KeyExpressionFromProto(nil)
+		if err == nil {
+			t.Fatal("expected error for nil proto")
+		}
+	})
+
+	t.Run("empty_proto", func(t *testing.T) {
+		t.Parallel()
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{})
+		if err == nil {
+			t.Fatal("expected error for empty proto")
+		}
+	})
+
+	t.Run("then_too_few_children", func(t *testing.T) {
+		t.Parallel()
+		ft := gen.Field_SCALAR
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{
+			Then: &gen.Then{
+				Child: []*gen.KeyExpression{
+					{Field: &gen.Field{FieldName: proto.String("x"), FanType: &ft}},
+				},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for Then with 1 child")
+		}
+	})
+
+	t.Run("nesting_no_parent", func(t *testing.T) {
+		t.Parallel()
+		_, err := KeyExpressionFromProto(&gen.KeyExpression{
+			Nesting: &gen.Nesting{
+				Child: &gen.KeyExpression{Empty: &gen.Empty{}},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for Nesting without parent")
+		}
+	})
+}
+
+func TestKeyExpressionProtoWireRoundtrip(t *testing.T) {
+	t.Parallel()
+	// Test that serializing to bytes and back preserves the expression
+	expr := Concat(
+		Field("a"),
+		Nest("b", FanOut("c")),
+		EmptyKey(),
+	)
+
+	p := expr.ToKeyExpression()
+	data, err := proto.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var restored gen.KeyExpression
+	if err := proto.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := KeyExpressionFromProto(&restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keyExpressionEquals(expr, result) {
+		t.Fatal("wire roundtrip mismatch")
+	}
+}
