@@ -925,6 +925,292 @@ func (c *mapResultCursor[T, R]) SeqWithContinuation(ctx context.Context) iter.Se
 	}
 }
 
+// flatMapCursor takes an outer cursor and, for each outer value, creates
+// an inner cursor via a function, flattening all inner results into a single stream.
+// Matches Java's FlatMapPipelinedCursor. The pipelineSize parameter is accepted for
+// API compatibility but Go's synchronous FDB bindings process one outer value at a time.
+//
+// The continuation format uses FlatMapContinuation proto for wire compatibility with Java:
+//   - outer_continuation: position in the outer cursor
+//   - inner_continuation: position in the current inner cursor (if stopped mid-inner)
+//   - check_value: optional outer identity check for safe resumption
+type flatMapCursor[T, V any] struct {
+	innerFactory   func(T, []byte) RecordCursor[V]
+	checkValueFunc func(T) []byte
+	outer          RecordCursor[T]
+	inner          RecordCursor[V]
+	outerValue     *T                       // current outer value
+	priorOuterCont RecordCursorContinuation // outer continuation BEFORE current outer value
+	outerCont      RecordCursorContinuation // outer continuation AFTER current outer value
+	pendingInner   []byte                   // inner continuation for resume (nil = none pending)
+	pendingCheck   []byte                   // check value for resume validation
+	hasPending     bool                     // true if we're resuming with inner continuation
+	outerExhausted bool
+	closed         bool
+}
+
+// FlatMapPipelined creates a cursor that flat-maps an outer cursor through an inner cursor factory.
+// Matches Java's RecordCursor.flatMapPipelined().
+//
+// Parameters:
+//   - outerFactory: creates the outer cursor from a continuation
+//   - innerFactory: given an outer value and optional inner continuation, creates an inner cursor
+//   - continuation: serialized FlatMapContinuation for resumption (nil to start fresh)
+//   - pipelineSize: accepted for API compat (Go processes sequentially)
+func FlatMapPipelined[T, V any](
+	outerFactory CursorFactory[T],
+	innerFactory func(T, []byte) RecordCursor[V],
+	continuation []byte,
+	pipelineSize int,
+) RecordCursor[V] {
+	return FlatMapPipelinedWithCheck(outerFactory, innerFactory, nil, continuation, pipelineSize)
+}
+
+// FlatMapPipelinedWithCheck is like FlatMapPipelined but with an optional check value function.
+// The check value validates that the outer record hasn't changed between transactions when
+// resuming from a continuation mid-inner-cursor.
+func FlatMapPipelinedWithCheck[T, V any](
+	outerFactory CursorFactory[T],
+	innerFactory func(T, []byte) RecordCursor[V],
+	checkValueFunc func(T) []byte,
+	continuation []byte,
+	pipelineSize int,
+) RecordCursor[V] {
+	c := &flatMapCursor[T, V]{
+		innerFactory:   innerFactory,
+		checkValueFunc: checkValueFunc,
+	}
+
+	if len(continuation) > 0 {
+		var cont gen.FlatMapContinuation
+		if err := proto.Unmarshal(continuation, &cont); err == nil {
+			c.outer = outerFactory(cont.GetOuterContinuation())
+			if cont.InnerContinuation != nil {
+				// Resuming mid-inner — need to advance outer once, then create inner with continuation
+				c.hasPending = true
+				c.pendingInner = cont.InnerContinuation
+				c.pendingCheck = cont.CheckValue
+			}
+		} else {
+			c.outer = outerFactory(nil)
+		}
+	} else {
+		c.outer = outerFactory(nil)
+	}
+
+	return c
+}
+
+func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V], error) {
+	if c.closed {
+		return NewResultNoNext[V](SourceExhausted, &EndContinuation{}), nil
+	}
+
+	for {
+		// If we have an active inner cursor, try to get from it
+		if c.inner != nil {
+			result, err := c.inner.OnNext(ctx)
+			if err != nil {
+				return RecordCursorResult[V]{}, err
+			}
+
+			if result.HasNext() {
+				wrapped := c.wrapContinuation(result.GetContinuation())
+				return NewResultWithValue(result.GetValue(), wrapped), nil
+			}
+
+			// Inner cursor stopped
+			if result.GetNoNextReason().IsSourceExhausted() {
+				_ = c.inner.Close()
+				c.inner = nil
+				continue
+			}
+
+			// Inner stopped for non-exhaustion reason (limit, time, etc.)
+			wrapped := c.wrapContinuation(result.GetContinuation())
+			return NewResultNoNext[V](result.GetNoNextReason(), wrapped), nil
+		}
+
+		// No inner cursor — advance outer
+		if c.outerExhausted {
+			return NewResultNoNext[V](SourceExhausted, &EndContinuation{}), nil
+		}
+
+		outerResult, err := c.outer.OnNext(ctx)
+		if err != nil {
+			return RecordCursorResult[V]{}, err
+		}
+
+		if !outerResult.HasNext() {
+			c.outerExhausted = true
+			if outerResult.GetNoNextReason().IsSourceExhausted() {
+				return NewResultNoNext[V](SourceExhausted, &EndContinuation{}), nil
+			}
+			// Outer stopped for non-exhaustion reason
+			wrapped := c.wrapOuterStopContinuation(outerResult.GetContinuation())
+			return NewResultNoNext[V](outerResult.GetNoNextReason(), wrapped), nil
+		}
+
+		// Got an outer value — track continuation state
+		c.priorOuterCont = c.outerCont // continuation before this outer value
+		c.outerCont = outerResult.GetContinuation()
+		v := outerResult.GetValue()
+		c.outerValue = &v
+
+		// Check if we're resuming with a pending inner continuation
+		var innerCont []byte
+		if c.hasPending {
+			c.hasPending = false
+			// Validate check value if provided
+			if c.checkValueFunc != nil && c.pendingCheck != nil {
+				currentCheck := c.checkValueFunc(v)
+				if !bytesEqual(currentCheck, c.pendingCheck) {
+					// Outer record changed — restart inner from beginning
+					innerCont = nil
+				} else {
+					innerCont = c.pendingInner
+				}
+			} else {
+				innerCont = c.pendingInner
+			}
+			c.pendingInner = nil
+			c.pendingCheck = nil
+		}
+
+		c.inner = c.innerFactory(v, innerCont)
+	}
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *flatMapCursor[T, V]) wrapContinuation(innerCont RecordCursorContinuation) RecordCursorContinuation {
+	return &flatMapContinuationWrapper[T]{
+		priorOuterCont: c.priorOuterCont,
+		outerCont:      c.outerCont,
+		outerValue:     c.outerValue,
+		innerCont:      innerCont,
+		checkValueFunc: c.checkValueFunc,
+	}
+}
+
+func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorContinuation) RecordCursorContinuation {
+	fm := &gen.FlatMapContinuation{
+		OuterContinuation: outerCont.ToBytes(),
+	}
+	data, _ := proto.Marshal(fm)
+	return &BytesContinuation{bytes: data}
+}
+
+type flatMapContinuationWrapper[T any] struct {
+	priorOuterCont RecordCursorContinuation
+	outerCont      RecordCursorContinuation
+	outerValue     *T
+	innerCont      RecordCursorContinuation
+	checkValueFunc func(T) []byte
+}
+
+func (w *flatMapContinuationWrapper[T]) ToBytes() []byte {
+	fm := &gen.FlatMapContinuation{}
+
+	if w.innerCont == nil || w.innerCont.IsEnd() {
+		// Inner cursor exhausted — resume from outer's current position (after this value)
+		if w.outerCont != nil {
+			fm.OuterContinuation = w.outerCont.ToBytes()
+		}
+	} else {
+		// Inner cursor NOT exhausted — resume from prior outer position + inner position
+		if w.priorOuterCont != nil {
+			fm.OuterContinuation = w.priorOuterCont.ToBytes()
+		}
+		fm.InnerContinuation = w.innerCont.ToBytes()
+		if w.checkValueFunc != nil && w.outerValue != nil {
+			fm.CheckValue = w.checkValueFunc(*w.outerValue)
+		}
+	}
+
+	data, _ := proto.Marshal(fm)
+	return data
+}
+
+func (w *flatMapContinuationWrapper[T]) IsEnd() bool {
+	return false
+}
+
+func (c *flatMapCursor[T, V]) Close() error {
+	c.closed = true
+	var firstErr error
+	if c.inner != nil {
+		if err := c.inner.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if c.outer != nil {
+		if err := c.outer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (c *flatMapCursor[T, V]) Seq(ctx context.Context) iter.Seq[V] {
+	return func(yield func(V) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *flatMapCursor[T, V]) Seq2(ctx context.Context) iter.Seq2[V, error] {
+	return func(yield func(V, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(V), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *flatMapCursor[T, V]) SeqWithContinuation(ctx context.Context) iter.Seq2[V, RecordCursorContinuation] {
+	return func(yield func(V, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
 // Note: Most sequence utilities are available in Go 1.23+ standard library:
 // - slices.Collect() for collecting sequences
 // - Use range loops directly for counting, filtering, etc.

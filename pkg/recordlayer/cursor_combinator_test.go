@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"iter"
 	"slices"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -10,6 +11,70 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// posListCursor is a test cursor that tracks position in continuation bytes.
+// Used for testing FlatMapPipelined continuation resumption.
+type posListCursor struct {
+	items []int
+	pos   int
+}
+
+func (c *posListCursor) OnNext(_ context.Context) (RecordCursorResult[int], error) {
+	if c.pos >= len(c.items) {
+		return NewResultNoNext[int](SourceExhausted, &EndContinuation{}), nil
+	}
+	v := c.items[c.pos]
+	c.pos++
+	return NewResultWithValue(v, &BytesContinuation{bytes: []byte{byte(c.pos)}}), nil
+}
+
+func (c *posListCursor) Close() error { return nil }
+
+func (c *posListCursor) Seq(ctx context.Context) iter.Seq[int] {
+	return func(yield func(int) bool) {
+		for {
+			r, err := c.OnNext(ctx)
+			if err != nil || !r.HasNext() {
+				return
+			}
+			if !yield(r.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *posListCursor) Seq2(ctx context.Context) iter.Seq2[int, error] {
+	return func(yield func(int, error) bool) {
+		for {
+			r, err := c.OnNext(ctx)
+			if err != nil {
+				yield(0, err)
+				return
+			}
+			if !r.HasNext() {
+				return
+			}
+			if !yield(r.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *posListCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[int, RecordCursorContinuation] {
+	return func(yield func(int, RecordCursorContinuation) bool) {
+		for {
+			r, err := c.OnNext(ctx)
+			if err != nil || !r.HasNext() {
+				return
+			}
+			if !yield(r.GetValue(), r.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
 
 // populate10Orders saves 10 orders (IDs 1-10, prices 10-100) into the given subspace.
 func populate10Orders(ctx context.Context, metaData *RecordMetaData) {
@@ -442,6 +507,183 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(r2.HasNext()).To(BeFalse())
 		Expect(r2.GetNoNextReason()).To(Equal(SourceExhausted))
 		Expect(mapped.Close()).To(Succeed())
+	})
+
+	It("FlatMapPipelined basic", func() {
+		// Outer: [1, 2, 3], Inner: for each outer x → [x*10, x*10+1]
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[int] { return FromList([]int{1, 2, 3}) },
+			func(outer int, cont []byte) RecordCursor[int] {
+				return FromList([]int{outer * 10, outer*10 + 1})
+			},
+			nil, 1,
+		)
+		result, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{10, 11, 20, 21, 30, 31}))
+	})
+
+	It("FlatMapPipelined outer empty", func() {
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[int] { return Empty[int]() },
+			func(outer int, cont []byte) RecordCursor[int] {
+				return FromList([]int{outer * 10})
+			},
+			nil, 1,
+		)
+		result, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeEmpty())
+	})
+
+	It("FlatMapPipelined inner empty", func() {
+		// Some outer values produce empty inner cursors
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[int] { return FromList([]int{1, 2, 3}) },
+			func(outer int, cont []byte) RecordCursor[int] {
+				if outer == 2 {
+					return Empty[int]() // skip middle
+				}
+				return FromList([]int{outer * 10})
+			},
+			nil, 1,
+		)
+		result, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{10, 30}))
+	})
+
+	It("FlatMapPipelined all inner empty", func() {
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[int] { return FromList([]int{1, 2, 3}) },
+			func(outer int, cont []byte) RecordCursor[int] {
+				return Empty[int]()
+			},
+			nil, 1,
+		)
+		result, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeEmpty())
+	})
+
+	It("FlatMapPipelined exhaustion returns SourceExhausted", func() {
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[int] { return FromList([]int{1}) },
+			func(outer int, cont []byte) RecordCursor[int] {
+				return FromList([]int{10})
+			},
+			nil, 1,
+		)
+		r1, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r1.HasNext()).To(BeTrue())
+		Expect(r1.GetValue()).To(Equal(10))
+
+		r2, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r2.HasNext()).To(BeFalse())
+		Expect(r2.GetNoNextReason()).To(Equal(SourceExhausted))
+		Expect(cursor.Close()).To(Succeed())
+	})
+
+	It("FlatMapPipelined continuation preserves position", func() {
+		// Use a position-tracking list cursor that encodes index in continuation
+		posFactory := func(items []int) CursorFactory[int] {
+			return func(cont []byte) RecordCursor[int] {
+				start := 0
+				if len(cont) == 1 {
+					start = int(cont[0])
+				}
+				return &posListCursor{items: items, pos: start}
+			}
+		}
+
+		makeOuter := posFactory([]int{1, 2, 3})
+		makeInner := func(outer int, cont []byte) RecordCursor[int] {
+			return posFactory([]int{outer * 10, outer*10 + 1})(cont)
+		}
+
+		// Read 3 items: 10, 11, 20
+		cursor := LimitRowsCursor(FlatMapPipelined(makeOuter, makeInner, nil, 1), 3)
+		var results []int
+		var lastCont RecordCursorContinuation
+		for {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			results = append(results, r.GetValue())
+			lastCont = r.GetContinuation()
+		}
+		Expect(results).To(Equal([]int{10, 11, 20}))
+		Expect(lastCont).NotTo(BeNil())
+		Expect(cursor.Close()).To(Succeed())
+
+		// Continue from continuation — should get 21, 30, 31
+		contBytes := lastCont.ToBytes()
+		Expect(contBytes).NotTo(BeEmpty())
+
+		cursor2 := FlatMapPipelined(makeOuter, makeInner, contBytes, 1)
+		results2, err := AsList(ctx, cursor2)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(results2).To(Equal([]int{21, 30, 31}))
+	})
+
+	It("FlatMapPipelined with check value", func() {
+		posFactory := func(items []int) CursorFactory[int] {
+			return func(cont []byte) RecordCursor[int] {
+				start := 0
+				if len(cont) == 1 {
+					start = int(cont[0])
+				}
+				return &posListCursor{items: items, pos: start}
+			}
+		}
+
+		makeOuter := posFactory([]int{1, 2})
+		makeInner := func(outer int, cont []byte) RecordCursor[int] {
+			return posFactory([]int{outer * 10, outer*10 + 1})(cont)
+		}
+		checkFunc := func(outer int) []byte {
+			return []byte(fmt.Sprintf("id:%d", outer))
+		}
+
+		// Read 1 item, get continuation with check value
+		cursor := LimitRowsCursor(
+			FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, nil, 1),
+			1,
+		)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(10))
+
+		contBytes := r.GetContinuation().ToBytes()
+		Expect(cursor.Close()).To(Succeed())
+
+		// Resume — check value should match, inner cursor picks up
+		cursor2 := FlatMapPipelinedWithCheck(makeOuter, makeInner, checkFunc, contBytes, 1)
+		results, err := AsList(ctx, cursor2)
+		Expect(err).NotTo(HaveOccurred())
+		// Should continue from where we left off: 11, 20, 21
+		Expect(results).To(Equal([]int{11, 20, 21}))
+	})
+
+	It("FlatMapPipelined with type transformation", func() {
+		// Outer: strings, Inner: ints (different types)
+		cursor := FlatMapPipelined(
+			func(cont []byte) RecordCursor[string] {
+				return FromList([]string{"a", "bb", "ccc"})
+			},
+			func(outer string, cont []byte) RecordCursor[int] {
+				return FromList([]int{len(outer)})
+			},
+			nil, 1,
+		)
+		result, err := AsList(ctx, cursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{1, 2, 3}))
 	})
 
 	It("ScannedRecordsLimit", func() {
