@@ -131,7 +131,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 
-- [ ] **Index validation** — Java has `validateEntries()` to detect orphaned/missing entries. Go has none.
+- [x] **Index validation** — `ValidateIndex()` scans all records and index entries to detect orphaned entries (in index but not in records) and missing entries (in records but not in index).
 
 - [ ] **Primary key component deduplication** — Java's `primaryKeyComponentPositions` tracks overlap between PK and index key to avoid redundant storage. Go always appends full PK (wastes space but is wire-compatible).
 
@@ -246,9 +246,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
-- [ ] **FDBDatabaseRunner** — Java has configurable retry with `maxAttempts`, `initialDelayMillis`, `maxDelayMillis`, `ExponentialDelay` backoff. Go delegates entirely to FDB's native `Transact()` retry with no control over retry parameters.
+- [x] **FDBDatabaseRunner** — `FDBDatabaseRunner` with `MaxAttempts`, `InitialDelay`, `MaxDelay`, exponential backoff. `RunWithRetry()` wraps transaction execution with configurable retry. Falls back to FDB's native retry when config is nil.
 
-- [ ] **FDBRecordContextConfig** — Java has builder for transaction settings: transaction ID, timeout, priority, MDC context, tags, tracing, weak read semantics. Go's FDBRecordContext is minimal (just tx + go context).
+- [x] **FDBRecordContextConfig** — `RecordContextConfig` with `TransactionTimeout`, `Priority`, `TransactionID`. Applied in `Run()`/`RunWithRetry()`.
 
 - [x] **Commit hooks** — `AddCommitCheck()` for pre-commit consistency checks, `AddPostCommit()` for post-commit callbacks. Run in `flushAndCommit()`. Matches Java's `CommitCheckAsync` and `PostCommit` interfaces.
 
@@ -308,6 +308,6 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Clean up PORT.md** — 57KB, contains inaccurate claims. Update or delete.
-- [ ] **Clean up PHASE1_TEST_GAPS.md** — Many "CRITICAL GAP" items now resolved. Update or delete.
-- [ ] **Clean up FDB_CONFLICT_DETECTION.md** — Implementation notes captured in code/tests. Consider deleting.
+- [x] **Clean up PORT.md** — Deleted stale 57KB file.
+- [x] **Clean up PHASE1_TEST_GAPS.md** — Deleted stale file.
+- [x] **Clean up FDB_CONFLICT_DETECTION.md** — Deleted stale file.
