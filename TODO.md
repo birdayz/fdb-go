@@ -149,7 +149,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **NestingKeyExpression** — `Nest("field", child)` navigates into nested message fields. `NestFanOut("field", child)` for repeated message fields. Composite nested fields work (e.g., `Nest("flower", Concat(Field("type"), Field("color")))`). Enum fields supported via `int64` conversion.
 
-- [ ] **FormerIndex tracking** — Java tracks deleted indexes with `subspaceKey`, `addedVersion`, `removedVersion`, `formerName`. Needed for schema evolution — prevents subspace key reuse after index deletion.
+- [x] **FormerIndex tracking** — `FormerIndex` struct with `SubspaceKey`, `AddedVersion`, `RemovedVersion`, `FormerName`. `RemoveIndex()` on builder creates FormerIndex and removes from all record types. `Build()` validates no subspace key reuse. `GetFormerIndexes()` on metadata.
 
 - [ ] **Schema validation** — Java has `MetaDataValidator` and `MetaDataEvolutionValidator`. Go has no validation on schema changes (primary key changes, version bumps, etc.).
 
@@ -157,13 +157,13 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Metadata proto serialization** — Java has `toProto()`/`fromProto()` for persisting metadata definitions. Go has none. Needed for storing metadata in FDB itself.
 
-- [ ] **Explicit record type keys** — Java supports `setRecordTypeKey()` to override auto-derived type keys from proto field numbers. Go relies solely on proto field numbers.
+- [x] **Explicit record type keys** — `SetRecordTypeKey()` on `RecordTypeBuilder`, `GetRecordTypeKey()` on `RecordType`. Falls back to `RecordTypeIndex` if not set.
 
 - [x] **Multi-type indexes** — `AddMultiTypeIndex(recordTypeNames, index)`. 0 types → universal, 1 type → single-type, 2+ types → multi-type (stored per RecordType, included in `GetIndexesForRecordType`). Matches Java semantics.
 
 - [ ] **Schema evolution version tracking** — Go has `version` field but no `updateRecords()` method to bump version or validate backward compatibility.
 
-- [ ] **Primary key prefix checking** — Java has `primaryKeyHasRecordTypePrefix()` to check if RecordTypeKeyExpression starts all primary keys. Useful for type-specific range queries.
+- [x] **Primary key prefix checking** — `PrimaryKeyHasRecordTypePrefix()` on `RecordMetaData`. Checks all record types' primary keys start with `RecordTypeKeyExpression`, including through `CompositeKeyExpression`.
 
 ### LOW
 
@@ -205,7 +205,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
 
-- [ ] **RecordCursor instance methods** — Java has `getNext()`, `asIterator()`, `getCount()`, `first()`, `skip()`, `limitRowsTo()`, `skipThenLimit()`, `mapResult()`, `filterInstrumented()`, `reduce()`. Go has `ForEach()`/`AsList()` as standalone functions only.
+- [x] **RecordCursor instance methods** — `First()`, `GetCount()`, `Reduce()` as standalone generic functions. `SkipCursor()`, `LimitRowsCursor()` as cursor wrappers. Matches Java's `first()`, `getCount()`, `reduce()`, `skip()`, `limitRowsTo()`.
 
 ### LOW
 

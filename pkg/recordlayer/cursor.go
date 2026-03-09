@@ -475,6 +475,213 @@ type RecordCursorProto = RecordCursor[*FDBStoredRecord[proto.Message]]
 // TypedRecordCursor is a convenience type for typed record cursors
 type TypedRecordCursor[T proto.Message] RecordCursor[*FDBStoredRecord[T]]
 
+// First returns the first element from a cursor, or nil if empty.
+// Matches Java's RecordCursor.first().
+func First[T any](ctx context.Context, cursor RecordCursor[T]) (*T, error) {
+	defer func() { _ = cursor.Close() }()
+	result, err := cursor.OnNext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !result.HasNext() {
+		return nil, nil
+	}
+	v := result.GetValue()
+	return &v, nil
+}
+
+// GetCount returns the number of elements in a cursor by consuming it.
+// Matches Java's RecordCursor.getCount().
+func GetCount[T any](ctx context.Context, cursor RecordCursor[T]) (int, error) {
+	defer func() { _ = cursor.Close() }()
+	count := 0
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return count, err
+		}
+		if !result.HasNext() {
+			return count, nil
+		}
+		count++
+	}
+}
+
+// Reduce folds all cursor values into a single result using the given function.
+// Matches Java's RecordCursor.reduce().
+func Reduce[T any, R any](ctx context.Context, cursor RecordCursor[T], initial R, fn func(R, T) R) (R, error) {
+	defer func() { _ = cursor.Close() }()
+	acc := initial
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return acc, err
+		}
+		if !result.HasNext() {
+			return acc, nil
+		}
+		acc = fn(acc, result.GetValue())
+	}
+}
+
+// SkipCursor wraps a cursor and skips the first n elements.
+// Matches Java's RecordCursor.skip().
+func SkipCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
+	if n <= 0 {
+		return cursor
+	}
+	return &skipCursor[T]{inner: cursor, remaining: n}
+}
+
+type skipCursor[T any] struct {
+	inner     RecordCursor[T]
+	remaining int
+}
+
+func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	for c.remaining > 0 {
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if !result.HasNext() {
+			return result, nil
+		}
+		c.remaining--
+	}
+	return c.inner.OnNext(ctx)
+}
+
+func (c *skipCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *skipCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *skipCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *skipCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
+// LimitRowsCursor wraps a cursor and limits to at most n elements.
+// Matches Java's RecordCursor.limitRowsTo().
+func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
+	if n <= 0 {
+		return Empty[T]()
+	}
+	return &limitRowsCursor[T]{inner: cursor, remaining: n}
+}
+
+type limitRowsCursor[T any] struct {
+	inner     RecordCursor[T]
+	remaining int
+}
+
+func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.remaining <= 0 {
+		return NewResultNoNext[T](ReturnLimitReached, &EndContinuation{}), nil
+	}
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+	if result.HasNext() {
+		c.remaining--
+	}
+	return result, nil
+}
+
+func (c *limitRowsCursor[T]) Close() error { return c.inner.Close() }
+
+func (c *limitRowsCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *limitRowsCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *limitRowsCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
 // Note: Most sequence utilities are available in Go 1.23+ standard library:
 // - slices.Collect() for collecting sequences
 // - Use range loops directly for counting, filtering, etc.

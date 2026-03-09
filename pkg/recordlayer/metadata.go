@@ -44,6 +44,20 @@ type RecordMetaData struct {
 	// universalIndexes apply to all record types.
 	// Java equivalent: RecordMetaData.getUniversalIndexes()
 	universalIndexes []*Index
+
+	// formerIndexes tracks deleted indexes for schema evolution safety.
+	// Java equivalent: RecordMetaData.getFormerIndexes()
+	formerIndexes []*FormerIndex
+}
+
+// FormerIndex tracks a deleted index for schema evolution safety.
+// Prevents accidental reuse of an index's subspace key after deletion.
+// Matches Java's com.apple.foundationdb.record.metadata.FormerIndex.
+type FormerIndex struct {
+	SubspaceKey    interface{}
+	AddedVersion   int
+	RemovedVersion int
+	FormerName     string
 }
 
 // RecordType represents a type of record that can be stored
@@ -72,6 +86,10 @@ type RecordType struct {
 	// multiTypeIndexes span multiple record types.
 	// Java equivalent: RecordType.getMultiTypeIndexes()
 	multiTypeIndexes []*Index
+
+	// explicitRecordTypeKey overrides the auto-derived record type key.
+	// If nil, RecordTypeIndex is used. Matches Java's RecordType.getRecordTypeKey().
+	explicitRecordTypeKey interface{}
 }
 
 // KeyExpression represents an expression that extracts key components from a record.
@@ -99,6 +117,7 @@ type RecordMetaDataBuilder struct {
 	splitLongRecords    bool
 	indexes             map[string]*Index
 	universalIndexes    []*Index
+	formerIndexes       []*FormerIndex
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -252,6 +271,44 @@ func (b *RecordMetaDataBuilder) AddUniversalIndex(index *Index) *RecordMetaDataB
 	return b
 }
 
+// RemoveIndex removes an index by name and records it as a FormerIndex
+// to prevent subspace key reuse. Matches Java's RecordMetaDataBuilder.removeIndex(String).
+func (b *RecordMetaDataBuilder) RemoveIndex(indexName string) *RecordMetaDataBuilder {
+	idx, ok := b.indexes[indexName]
+	if !ok {
+		return b
+	}
+
+	former := &FormerIndex{
+		SubspaceKey:    idx.SubspaceTupleKey(),
+		AddedVersion:   idx.AddedVersion,
+		RemovedVersion: b.version,
+		FormerName:     idx.Name,
+	}
+	b.formerIndexes = append(b.formerIndexes, former)
+	delete(b.indexes, indexName)
+
+	// Remove from record type single-type indexes
+	for _, rt := range b.recordTypes {
+		rt.indexes = removeIndexFromSlice(rt.indexes, indexName)
+		rt.multiTypeIndexes = removeIndexFromSlice(rt.multiTypeIndexes, indexName)
+	}
+	// Remove from universal indexes
+	b.universalIndexes = removeIndexFromSlice(b.universalIndexes, indexName)
+
+	return b
+}
+
+func removeIndexFromSlice(indexes []*Index, name string) []*Index {
+	result := indexes[:0]
+	for _, idx := range indexes {
+		if idx.Name != name {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
 // GetRecordType returns the record type builder for setting primary keys, etc.
 func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 	recordType := b.recordTypes[name]
@@ -281,6 +338,15 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for k, v := range b.indexes {
 		indexes[k] = v
 	}
+	// Validate no former index subspace key conflicts with current indexes
+	for _, fi := range b.formerIndexes {
+		for _, idx := range indexes {
+			if fi.SubspaceKey == idx.SubspaceTupleKey() {
+				return nil, fmt.Errorf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)
+			}
+		}
+	}
+
 	return &RecordMetaData{
 		recordTypes:         types,
 		fileDescriptor:      b.fileDescriptor,
@@ -290,6 +356,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		splitLongRecords:    b.splitLongRecords,
 		indexes:             indexes,
 		universalIndexes:    b.universalIndexes,
+		formerIndexes:       b.formerIndexes,
 	}, nil
 }
 
@@ -302,6 +369,14 @@ type RecordTypeBuilder struct {
 // SetPrimaryKey sets the primary key expression for this record type
 func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBuilder {
 	rtb.recordType.PrimaryKey = keyExpr
+	return rtb
+}
+
+// SetRecordTypeKey overrides the auto-derived record type key for this record type.
+// By default, the record type index (proto field number order) is used.
+// Matches Java's RecordTypeBuilder.setRecordTypeKey(Key.Evaluated).
+func (rtb *RecordTypeBuilder) SetRecordTypeKey(key interface{}) *RecordTypeBuilder {
+	rtb.recordType.explicitRecordTypeKey = key
 	return rtb
 }
 
@@ -350,6 +425,15 @@ func (rt *RecordType) GetRecordTypeIndex() int {
 	return rt.RecordTypeIndex
 }
 
+// GetRecordTypeKey returns the explicit record type key if set, or falls back
+// to the record type index. Matches Java's RecordType.getRecordTypeKey().
+func (rt *RecordType) GetRecordTypeKey() interface{} {
+	if rt.explicitRecordTypeKey != nil {
+		return rt.explicitRecordTypeKey
+	}
+	return rt.RecordTypeIndex
+}
+
 // GetIndexesForRecordType returns the indexes defined for a specific record type,
 // including both single-type and multi-type indexes.
 // Does NOT include universal indexes — use GetUniversalIndexes() for those.
@@ -387,4 +471,37 @@ func (m *RecordMetaData) GetIndex(name string) *Index {
 // GetAllIndexes returns all indexes by name.
 func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 	return m.indexes
+}
+
+// GetFormerIndexes returns all former (deleted) indexes.
+// Matches Java's RecordMetaData.getFormerIndexes().
+func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {
+	return m.formerIndexes
+}
+
+// PrimaryKeyHasRecordTypePrefix returns true if all record types have a
+// primary key that starts with a RecordTypeKeyExpression.
+// Matches Java's RecordMetaData.primaryKeyHasRecordTypePrefix().
+func (m *RecordMetaData) PrimaryKeyHasRecordTypePrefix() bool {
+	for _, rt := range m.recordTypes {
+		if !primaryKeyStartsWithRecordType(rt.PrimaryKey) {
+			return false
+		}
+	}
+	return true
+}
+
+// primaryKeyStartsWithRecordType checks if a key expression starts with RecordTypeKeyExpression.
+func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
+	if expr == nil {
+		return false
+	}
+	if _, ok := expr.(*RecordTypeKeyExpression); ok {
+		return true
+	}
+	if comp, ok := expr.(*CompositeKeyExpression); ok && len(comp.expressions) > 0 {
+		_, ok := comp.expressions[0].(*RecordTypeKeyExpression)
+		return ok
+	}
+	return false
 }
