@@ -393,7 +393,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **COUNT index UpdateWhileWriteOnly skips range set check** — Fixed: `UpdateWhileWriteOnly` now checks `IndexingRangeSet.ContainsKey()` before updating, matching Java's `StandardIndexMaintainer.updateWriteOnlyByRecords()`. Only updates if PK is in the already-built range. Added `isKeyInIndexBuildRange()` to `indexStoreContext`. 4 tests.
 
-- [ ] **Record count rebuild on metadata version change** — When count key expression changes between metadata versions, Go won't detect or rebuild counts. Java's `checkPossiblyRebuildRecordCounts()` handles this. (`store.go:683`)
+- [x] **Record count rebuild on metadata version change** — Fixed: `checkPossiblyRebuildRecordCounts()` compares stored `RecordCountKey` proto against current metadata, independent of version numbers. Clears old counts, rescans all records, updates store header. Runs before the version-gated index rebuild, matching Java's `checkRebuild()` flow. 4 tests: add key, change key, remove key, unchanged key no-op.
 
 - [ ] **validateRecordUpdateAllowed timing differs** — Go checks lock state BEFORE loading the existing record (`store.go:236,127`). Java checks AFTER load but BEFORE write. Changes error precedence: Go returns `StoreIsLockedForRecordUpdatesError` first, masking existence/type errors.
 

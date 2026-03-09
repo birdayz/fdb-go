@@ -781,7 +781,22 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 	}
 
+	// Check record counts BEFORE the version gate — this compares the stored
+	// RecordCountKey proto against the current one, independent of version.
+	// Matches Java's checkRebuild() which always calls checkPossiblyRebuildRecordCounts().
+	needHeaderWrite, err := store.checkPossiblyRebuildRecordCounts(storeHeader)
+	if err != nil {
+		return fmt.Errorf("rebuild record counts: %w", err)
+	}
+
 	if newMetaDataVersion == oldMetaDataVersion {
+		// Even when versions match, the record count check may have modified
+		// the header (updated RecordCountKey). Persist if needed.
+		if needHeaderWrite {
+			if err := store.writeStoreHeader(storeHeader); err != nil {
+				return fmt.Errorf("update store header after record count rebuild: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -827,6 +842,96 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	storeHeader.LastUpdateTime = &lastUpdateTime
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return fmt.Errorf("update store header after rebuild: %w", err)
+	}
+
+	return nil
+}
+
+// checkPossiblyRebuildRecordCounts detects when the record count key expression
+// has changed between metadata versions and rebuilds the counts.
+// Returns true if the store header was modified (caller must persist).
+// Triggers when:
+//   - Current metadata has a count key but the store header has a different one (or none)
+//   - Current metadata has no count key but the store header still has one
+//
+// Matches Java's FDBRecordStore.checkPossiblyRebuildRecordCounts().
+func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.DataStoreInfo) (bool, error) {
+	currentKey := store.metaData.GetRecordCountKey()
+
+	var needRebuild bool
+	if currentKey != nil {
+		// Current metadata has a count key — check if header matches.
+		currentKeyProto := currentKey.ToKeyExpression()
+		storedKeyProto := storeHeader.GetRecordCountKey()
+		if storedKeyProto == nil || !proto.Equal(currentKeyProto, storedKeyProto) {
+			needRebuild = true
+		}
+	} else if storeHeader.GetRecordCountKey() != nil {
+		// Current metadata removed count key — clear stale data.
+		needRebuild = true
+	}
+
+	if !needRebuild {
+		return false, nil
+	}
+
+	// Clear existing count data.
+	store.context.Transaction().ClearRange(store.subspace.Sub(RecordCountKey))
+
+	// Update header with the new (or cleared) count key.
+	if currentKey != nil {
+		storeHeader.RecordCountKey = currentKey.ToKeyExpression()
+	} else {
+		storeHeader.RecordCountKey = nil
+	}
+
+	// Rebuild counts by scanning all records (only if key is set and not disabled).
+	if currentKey != nil && !store.isRecordCountDisabled() {
+		if err := store.rebuildRecordCounts(currentKey); err != nil {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+// rebuildRecordCounts scans all records and repopulates the count subspace.
+// Uses direct SET (not atomic ADD) since we're writing from a clean state.
+// Matches Java's FDBRecordStore.addRebuildRecordCountsJob().
+func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
+	ctx := context.Background()
+	counts := make(map[string]int64) // packed count key → count
+	keyMap := make(map[string]tuple.Tuple) // packed → tuple (for FDB writes)
+
+	cursor := store.ScanRecords(nil, ForwardScan())
+	defer cursor.Close()
+
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return fmt.Errorf("scan records for count rebuild: %w", err)
+		}
+		if !result.HasNext() {
+			break
+		}
+		rec := result.GetValue()
+		subkeys, err := countKey.Evaluate(rec.Record)
+		if err != nil || len(subkeys) != 1 {
+			continue
+		}
+		keyTuple := make(tuple.Tuple, len(subkeys[0]))
+		for i, v := range subkeys[0] {
+			keyTuple[i] = v
+		}
+		packed := string(keyTuple.Pack())
+		counts[packed]++
+		keyMap[packed] = keyTuple
+	}
+
+	countSubspace := store.subspace.Sub(RecordCountKey)
+	for packed, count := range counts {
+		fdbKey := countSubspace.Pack(keyMap[packed])
+		store.context.Transaction().Set(fdbKey, encodeRecordCount(count))
 	}
 
 	return nil

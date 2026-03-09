@@ -686,6 +686,203 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("rebuilds record counts when count key added to metadata", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store WITHOUT record counting.
+			builder1 := baseMetaData()
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Open with record counting enabled — counts should be rebuilt.
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(EmptyKey())
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				count, err := store.GetRecordCount()
+				if err != nil {
+					return nil, err
+				}
+				Expect(count).To(Equal(int64(5)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rebuilds record counts when count key expression changes", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with ungrouped counting (EmptyKey).
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(EmptyKey())
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				count, err := store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(5)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Change to per-type counting (RecordTypeKey).
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(RecordTypeKey())
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Old ungrouped count should be gone; per-type count should work.
+				orderCount, err := store.GetSnapshotRecordCountForRecordType("Order")
+				if err != nil {
+					return nil, err
+				}
+				Expect(orderCount).To(Equal(int64(5)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("clears record counts when count key removed from metadata", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store WITH record counting.
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(EmptyKey())
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				count, err := store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(5)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Open WITHOUT counting — counts should be cleared.
+			// Version must be >= stored (1) to avoid StaleMetaDataVersionError.
+			builder2 := baseMetaData()
+			builder2.SetVersion(1)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Counting no longer configured — should error.
+				_, err = store.GetRecordCount()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("recordCountKey is nil"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("no-ops record count rebuild when key expression unchanged", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with counting.
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(EmptyKey())
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Open with SAME count key + new index (triggers version bump).
+			// Count should stay intact (not reset to 0 and rebuilt).
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(EmptyKey())
+			builder2.AddIndex("Order", priceIndex)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				count, err := store.GetRecordCount()
+				if err != nil {
+					return nil, err
+				}
+				Expect(count).To(Equal(int64(5)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("AlwaysRebuildPolicy forces inline rebuild regardless of record count", func() {
 			ks := specSubspace()
 
