@@ -283,9 +283,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
   - [x] `Empty`, `FromList`, `FromListWithContinuation`, `Filter`, `Skip`, `LimitRows`, `SkipThenLimit`, `OrElse` — basic utilities
   - [x] **Set operations**: `UnionCursor` (ordered merge-union with deduplication), `IntersectionCursor` (ordered merge-intersection). Both support forward/reverse, proto-wrapped continuations, multi-cursor (3+). `ComparisonKeyFunc` for custom comparison keys.
-  - [ ] `DedupCursor`
+  - [x] `DedupCursor` — adjacent duplicate removal with proto-wrapped `DedupContinuation`. Custom equal/pack/unpack functions.
   - [x] `FlatMapPipelinedCursor` — flat-map with proto-wrapped `FlatMapContinuation`, check value support
-  - [ ] **Composition**: `ChainedCursor`
+  - [x] `ChainedCursor` — procedural iterator with generator function. Raw byte continuations (no proto). Custom encode/decode.
   - [ ] **Aggregation**: `AggregateCursor` with accumulator states
   - [x] `AutoContinuingCursor` — auto-creates new transactions on scan/time/byte/row limits for seamless large-dataset scanning across tx boundaries. Includes retry logic for transient errors.
   - [ ] **Control flow**: `FallbackCursor`
