@@ -379,6 +379,64 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ---
 
+## Behavioral compatibility gaps (found in 2026-03-09 audit)
+
+### CRITICAL
+
+- [ ] **updateSecondaryIndexes doesn't handle cross-type overwrites** — When saving a record that changes type (same PK, different message type via `RecordExistenceCheckNone`), Go only considers the new type's indexes. Index entries from the old type's indexes are never removed, leaving orphans. Java correctly computes the index diff between old and new types. (`store.go:569`)
+
+- [ ] **Stale metadata detection missing** — When stored metadata version > local version (newer code already evolved the store), Go silently proceeds. Java throws `RecordStoreStaleMetaDataVersionException`. Could cause silent data corruption from stale code. (`store.go:687`)
+
+- [ ] **Unique index pre-commit check missing** — Java adds `addIndexUniquenessCommitCheck()` to validate uniqueness at commit time, catching concurrent inserts that both pass the scan check. Go has no equivalent — two concurrent transactions can both insert conflicting unique values. (`index_maintainer.go:164`)
+
+### HIGH
+
+- [ ] **COUNT index UpdateWhileWriteOnly skips range set check** — Go passes through to `Update()` unconditionally. Java checks the range set for non-idempotent indexes during WRITE_ONLY builds, only updating if PK is in the already-built range. Can cause double-counting during online COUNT index builds. (`count_index_maintainer.go:71`)
+
+- [ ] **Record count rebuild on metadata version change** — When count key expression changes between metadata versions, Go won't detect or rebuild counts. Java's `checkPossiblyRebuildRecordCounts()` handles this. (`store.go:683`)
+
+- [ ] **validateRecordUpdateAllowed timing differs** — Go checks lock state BEFORE loading the existing record (`store.go:236,127`). Java checks AFTER load but BEFORE write. Changes error precedence: Go returns `StoreIsLockedForRecordUpdatesError` first, masking existence/type errors.
+
+### MEDIUM
+
+- [ ] **Key/value size validation missing on index entries** — Java's `StandardIndexMaintainer.checkKeyValueSizes()` validates entry sizes before write. Go relies on FDB to reject at commit time with less informative errors.
+
+- [ ] **COUNT index doesn't skip common grouping keys on update** — Go always decrements old + increments new grouping keys, even when unchanged. Creates extra no-op atomic mutations. Functionally correct but wastes transaction bytes.
+
+- [ ] **COUNT index conformance tests missing** — COUNT index only has Go-only integration tests. No cross-Java conformance validation of entry key format or value decoding.
+
+---
+
+## Go style issues (found in 2026-03-09 audit)
+
+### HIGH
+
+- [ ] **RecordCursor interface too wide (5 methods)** — `Seq`, `Seq2`, `SeqWithContinuation` have identical implementations across 10+ cursor types, creating ~500 lines of duplicated boilerplate. Should slim to 2 methods (`OnNext` + `Close`) and make `Seq`/`Seq2`/`SeqWithContinuation` free functions. Follows `io.Reader` + `io.ReadAll` pattern.
+
+- [ ] **Panics in library code** — `FDBRecordVersion` has 5 panics (`GetGlobalVersion`, `GetDBVersion`, `Next`, `Prev`, `ToVersionstamp`). `RecordCursorResult.GetValue()` panics on `!HasNext()`. Library code should return errors, never panic.
+
+### MEDIUM
+
+- [ ] **sync.Map misuse in FDBRecordContext** — `localVersionCache` and `versionMutations` use `sync.Map` but `FDBRecordContext` wraps a single-threaded FDB transaction. Plain `map` would be faster and simpler. `HasVersionMutations()` iterates the entire map just to check emptiness.
+
+- [ ] **Silent error swallowing in addRecordCount** — `record_count.go:64` swallows key expression evaluation errors. Java logs but doesn't fail either, but Go should at minimum log.
+
+- [ ] **recover() catches all panics in key_value_cursor.go** — `nextKV()` uses `recover()` to defend against FDB `RangeIterator.Get()` panic, but catches ALL panics including nil pointer dereferences and OOB indexing, making bugs invisible.
+
+- [ ] **store.go too large (1736 lines)** — Should split into `store.go` (CRUD), `store_builder.go` (builder/lifecycle), `store_typed.go` (TypedFDBRecordStore), `store_version.go` (version management).
+
+- [ ] **cursor.go too large (1514 lines)** — Should split into `cursor.go` (interface/result), `cursor_combinators.go` (filter/skip/limit), `cursor_util.go` (AsList/First/Reduce/ForEach).
+
+- [ ] **NewRecordMetaData discards Build() error** — `metadata.go:534` does `md, _ := builder.Build()`, returns nil on invalid schema with no indication. Should return error or be removed.
+
+### STYLE (LOW)
+
+- [ ] **Get prefix on ~30 trivial accessors** — `GetRecordType()`, `GetIndex()`, `GetValue()`, `GetContinuation()`, etc. Go convention: drop `Get` for simple field reads.
+
+- [ ] **interface{} → any** — ~15 uses of `interface{}` should use modern `any` alias.
+
+---
+
 ## Split records — conformance status
 
 **FULLY CONFORMANT.** No gaps found. All constants, save/load/delete/exists methods, SizeInfo tracking, cursor integration, and edge cases match Java behavior. Wire-compatible. Version handling separated into store layer (architectural choice, not a gap).
@@ -397,6 +455,6 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [x] **Clean up PORT.md** — Deleted stale 57KB file.
+- [x] **PORT.md** — Comprehensive porting assessment with subsystem ratings, test coverage, conformance matrix. Updated 2026-03-09.
 - [x] **Clean up PHASE1_TEST_GAPS.md** — Deleted stale file.
 - [x] **Clean up FDB_CONFLICT_DETECTION.md** — Deleted stale file.
