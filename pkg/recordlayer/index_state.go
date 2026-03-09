@@ -121,6 +121,36 @@ func (store *FDBRecordStore) MarkIndexReadable(indexName string) (bool, error) {
 	return true, nil
 }
 
+// MarkIndexReadableOrUniquePending transitions a unique index to READABLE if it has
+// no uniqueness violations, or to READABLE_UNIQUE_PENDING if violations exist.
+// For non-unique indexes, always transitions to READABLE.
+// Returns true if the state was changed.
+// Matches Java's FDBRecordStore.markIndexReadable() with uniqueness check.
+func (store *FDBRecordStore) MarkIndexReadableOrUniquePending(indexName string) (bool, error) {
+	idx := store.metaData.GetIndex(indexName)
+	if idx == nil {
+		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+	}
+
+	targetState := IndexStateReadable
+	if idx.IsUnique() {
+		violations, err := store.ScanUniquenessViolations(idx)
+		if err != nil {
+			return false, fmt.Errorf("check uniqueness violations for index %q: %w", indexName, err)
+		}
+		if len(violations) > 0 {
+			targetState = IndexStateReadableUniquePending
+		}
+	}
+
+	current := store.GetIndexState(indexName)
+	if current == targetState {
+		return false, nil
+	}
+	store.setIndexState(indexName, targetState)
+	return true, nil
+}
+
 // MarkIndexWriteOnly transitions an index to WRITE_ONLY state.
 // Returns true if the state was changed.
 // Matches Java's FDBRecordStore.markIndexWriteOnly().

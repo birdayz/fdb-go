@@ -3,8 +3,10 @@ package recordlayer
 import (
 	"context"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
@@ -357,6 +359,103 @@ var _ = Describe("IndexState", func() {
 				_, err = store.MarkIndexDisabled("nonexistent")
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("not found"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("MarkIndexReadableOrUniquePending", func() {
+		It("marks non-unique index as READABLE", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Disable first, then mark readable-or-unique-pending
+				_, err = store.MarkIndexDisabled("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+				changed, err := store.MarkIndexReadableOrUniquePending("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(store.GetIndexState("Order$price")).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("marks unique index with violations as READABLE_UNIQUE_PENDING", func() {
+			ss := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.AddIndex("Order", uniqueIdx)
+			mdWithUnique, buildErr := builder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				if err != nil {
+					return nil, err
+				}
+				// Manually add a uniqueness violation entry
+				idx := mdWithUnique.GetIndex("Order$unique_price")
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+
+				// Now mark it — should be READABLE_UNIQUE_PENDING
+				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadableUniquePending))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("marks unique index without violations as READABLE", func() {
+			ss := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.AddIndex("Order", uniqueIdx)
+			mdWithUnique, buildErr := builder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Save records with distinct prices — no violations
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				if err != nil {
+					return nil, err
+				}
+				// Disable then re-mark
+				_, err = store.MarkIndexDisabled("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadable))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
