@@ -64,3 +64,8 @@ message UnionContinuation {
     optional bool second_exhausted = 4;
     repeated CursorState other_child_state = 5;
 }
+
+message DedupContinuation {
+    required bytes innerContinuation = 1;
+    optional bytes lastValue = 2;
+}
