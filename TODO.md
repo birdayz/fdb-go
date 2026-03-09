@@ -275,7 +275,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [ ] **Cursor combinators** — Java has 20+ cursor combinator types. Implemented in Go:
   - [x] `ConcatCursor` — sequential concatenation with proto-wrapped continuations
   - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
-  - [x] `Empty`, `FromList`, `Filter`, `Skip`, `LimitRows` — basic utilities
+  - [x] `Empty`, `FromList`, `FromListWithContinuation`, `Filter`, `Skip`, `LimitRows`, `SkipThenLimit`, `OrElse` — basic utilities
   - [ ] **Set operations**: `UnionCursor`, `IntersectionCursor`, `DedupCursor`
   - [x] `FlatMapPipelinedCursor` — flat-map with proto-wrapped `FlatMapContinuation`, check value support
   - [ ] **Composition**: `ChainedCursor`
