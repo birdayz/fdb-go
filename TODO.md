@@ -385,7 +385,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **updateSecondaryIndexes doesn't handle cross-type overwrites** — Fixed: three-way index partition (old-only/new-only/common) matching Java's `updateSecondaryIndexes()`. Old-type-only index entries are deleted, new-type-only entries are inserted, common entries are updated. 4 tests: cross-type overwrite, round-trip back, same-type sanity, cross-type delete.
 
-- [ ] **Stale metadata detection missing** — When stored metadata version > local version (newer code already evolved the store), Go silently proceeds. Java throws `RecordStoreStaleMetaDataVersionException`. Could cause silent data corruption from stale code. (`store.go:687`)
+- [x] **Stale metadata detection missing** — Fixed: `checkPossiblyRebuild` now returns `StaleMetaDataVersionError` when stored version > local version, matching Java's `RecordStoreStaleMetaDataVersionException`. Also fixed `SetSplitLongRecords`, `SetStoreRecordVersions`, and `SetRecordCountKey` to bump metadata version when value changes, matching Java. 4 tests.
 
 - [ ] **Unique index pre-commit check missing** — Java adds `addIndexUniquenessCommitCheck()` to validate uniqueness at commit time, catching concurrent inserts that both pass the scan check. Go has no equivalent — two concurrent transactions can both insert conflicting unique values. (`index_maintainer.go:164`)
 

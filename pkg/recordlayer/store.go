@@ -42,6 +42,18 @@ var (
 	ErrRecordStoreNoInfoButNotEmpty = errors.New("record store has no info but is not empty")
 )
 
+// StaleMetaDataVersionError is returned when the stored metadata version is
+// newer than the local metadata version, meaning another instance already
+// evolved the schema. Matches Java's RecordStoreStaleMetaDataVersionException.
+type StaleMetaDataVersionError struct {
+	LocalVersion  int
+	StoredVersion int
+}
+
+func (e *StaleMetaDataVersionError) Error() string {
+	return fmt.Sprintf("local meta-data has stale version: local %d, stored %d", e.LocalVersion, e.StoredVersion)
+}
+
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
@@ -760,7 +772,16 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	oldMetaDataVersion := int(storeHeader.GetMetaDataversion())
 	newMetaDataVersion := store.metaData.Version()
 
-	if newMetaDataVersion <= oldMetaDataVersion {
+	// Stale metadata check: stored version is newer than local version.
+	// Matches Java: throws RecordStoreStaleMetaDataVersionException.
+	if oldMetaDataVersion > newMetaDataVersion {
+		return &StaleMetaDataVersionError{
+			LocalVersion:  newMetaDataVersion,
+			StoredVersion: oldMetaDataVersion,
+		}
+	}
+
+	if newMetaDataVersion == oldMetaDataVersion {
 		return nil
 	}
 

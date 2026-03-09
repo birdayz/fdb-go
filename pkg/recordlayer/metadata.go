@@ -138,7 +138,7 @@ func NewRecordMetaDataBuilder() *RecordMetaDataBuilder {
 // SetRecords sets the protobuf file descriptor containing record definitions
 func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *RecordMetaDataBuilder {
 	b.fileDescriptor = fd
-	
+
 	// Find the UnionDescriptor to map fields to record types
 	unionDesc := fd.Messages().ByName("UnionDescriptor")
 	if unionDesc == nil {
@@ -209,6 +209,9 @@ func (b *RecordMetaDataBuilder) setRecordsWithoutUnion(fd protoreflect.FileDescr
 // If nil (default), record counting is disabled.
 // Java equivalent: RecordMetaDataBuilder.setRecordCountKey(KeyExpression)
 func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMetaDataBuilder {
+	if b.recordCountKey != key {
+		b.version++ // Matches Java: bumps version when value changes
+	}
 	b.recordCountKey = key
 	return b
 }
@@ -217,6 +220,9 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 // When enabled, each save assigns an FDBRecordVersion to the record.
 // Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
 func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDataBuilder {
+	if b.storeRecordVersions != store {
+		b.version++ // Matches Java: bumps version when value changes
+	}
 	b.storeRecordVersions = store
 	return b
 }
@@ -241,6 +247,9 @@ func (b *RecordMetaDataBuilder) SetVersion(version int) *RecordMetaDataBuilder {
 // SetSplitLongRecords enables or disables splitting records >100KB across
 // multiple FDB key-value pairs. Matches Java's RecordMetaDataBuilder.setSplitLongRecords(boolean).
 func (b *RecordMetaDataBuilder) SetSplitLongRecords(split bool) *RecordMetaDataBuilder {
+	if b.splitLongRecords != split {
+		b.version++ // Matches Java: bumps version when value changes
+	}
 	b.splitLongRecords = split
 	return b
 }
