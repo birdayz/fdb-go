@@ -83,11 +83,12 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Composite index (PK dedup) | saveOrderWithCompositeIndex, scanCompositeIndex | composite_index_conformance_test.go | YES |
 | COUNT index | saveOrderWithCountIndex, deleteOrderWithCountIndex, scanCountIndex | count_index_conformance_test.go | YES |
 | SUM index | saveOrderWithSumIndex, deleteOrderWithSumIndex, scanSumIndex | sum_index_conformance_test.go | YES |
+| RangeSet wire format | rangeSetInsert, rangeSetContains, rangeSetMissingRanges | rangeset_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
 - [x] **SUM index conformance** — CRITICAL. 7 specs: Go writes→Java scans, Java writes→Go scans, mixed writes combined sum, Go deletes Java-written record, Java deletes Go-written record, update via Go, update via Java. Cross-validated.
-- [ ] **RangeSet wire format conformance** — CRITICAL. Foundation for index building. Storage: `pack(rangeBegin) → rangeEnd` (raw bytes). Go InsertRange→Java reads, Java→Go reads. ~4 specs.
+- [x] **RangeSet wire format conformance** — CRITICAL. 4 specs: Go writes full range→Java reads, Java writes full range→Go reads, Go writes partial→Java reads gaps, Java writes partial→Go reads gaps. Wire format `pack(rangeBegin) → rangeEnd` cross-validated.
 - [ ] **DeleteAllRecords cross-validation** — CRITICAL. Clears 9 subspaces, easy to miss one. Go deletes→Java confirms empty, Java→Go. ~4 specs.
 - [ ] **Store header format conformance** — HIGH. Format/user/metadata version persistence. Go creates→Java reads header, Java→Go. ~2 specs.
 - [ ] **Index state persistence across reopen** — HIGH. Mark WRITE_ONLY→close→reopen→verify persisted. Cross-platform. ~3-4 specs.
@@ -204,7 +205,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Java saves records + Go rebuilds index → Java scans → entries match.
    - [x] Cross-rebuild: Go rebuild and Java rebuild produce identical entries.
    - [ ] Go writes WRITE_ONLY records while Java builds → entries consistent.
-   - [ ] RangeSet wire format: Go writes ranges → Java reads them (and vice versa).
+   - [x] RangeSet wire format: Go writes ranges → Java reads them (and vice versa). 4 specs in rangeset_conformance_test.go.
 
 ### HIGH
 

@@ -22,6 +22,7 @@ java_library(
         "@maven//:com_google_code_gson_gson",
         "@maven//:com_google_protobuf_protobuf_java",
         "@maven//:com_google_protobuf_protobuf_java_util",
+        "@maven//:org_foundationdb_fdb_extensions",
         "@maven//:org_foundationdb_fdb_java",
         "@maven//:org_foundationdb_fdb_record_layer_core",
     ],

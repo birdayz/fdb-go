@@ -972,6 +972,65 @@ public class ConformanceSteps {
         });
     }
 
+    // --- RangeSet wire format conformance steps ---
+
+    @ConformanceStep("rangeSetInsert")
+    public boolean rangeSetInsert(String clusterFile, byte[] rsSubspace, byte[] begin, byte[] end, String tenantName) {
+        FDBDatabase db = createDatabase(clusterFile);
+        Database nativeDb = db.database();
+        com.apple.foundationdb.async.RangeSet rs = new com.apple.foundationdb.async.RangeSet(new Subspace(rsSubspace));
+        if (tenantName != null && !tenantName.isEmpty()) {
+            Tenant tenant = nativeDb.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+            return rs.insertRange(tenant, begin, end).join();
+        } else {
+            return rs.insertRange(nativeDb, begin, end).join();
+        }
+    }
+
+    @ConformanceStep("rangeSetContains")
+    public boolean rangeSetContains(String clusterFile, byte[] rsSubspace, byte[] key, String tenantName) {
+        FDBDatabase db = createDatabase(clusterFile);
+        Database nativeDb = db.database();
+        com.apple.foundationdb.async.RangeSet rs = new com.apple.foundationdb.async.RangeSet(new Subspace(rsSubspace));
+        if (tenantName != null && !tenantName.isEmpty()) {
+            Tenant tenant = nativeDb.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+            return rs.contains(tenant, key).join();
+        } else {
+            return rs.contains(nativeDb, key).join();
+        }
+    }
+
+    @ConformanceStep("rangeSetMissingRanges")
+    public java.util.List<java.util.Map<String, Object>> rangeSetMissingRanges(String clusterFile, byte[] rsSubspace, String tenantName) {
+        FDBDatabase db = createDatabase(clusterFile);
+        Database nativeDb = db.database();
+        com.apple.foundationdb.async.RangeSet rs = new com.apple.foundationdb.async.RangeSet(new Subspace(rsSubspace));
+        java.util.List<com.apple.foundationdb.Range> missing;
+        if (tenantName != null && !tenantName.isEmpty()) {
+            Tenant tenant = nativeDb.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
+            missing = rs.missingRanges(tenant).join();
+        } else {
+            missing = rs.missingRanges(nativeDb).join();
+        }
+
+        java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+        for (com.apple.foundationdb.Range range : missing) {
+            java.util.Map<String, Object> map = new java.util.HashMap<>();
+            java.util.List<Integer> beginInts = new java.util.ArrayList<>();
+            for (byte b : range.begin) {
+                beginInts.add(b & 0xFF);
+            }
+            java.util.List<Integer> endInts = new java.util.ArrayList<>();
+            for (byte b : range.end) {
+                endInts.add(b & 0xFF);
+            }
+            map.put("begin", beginInts);
+            map.put("end", endInts);
+            result.add(map);
+        }
+        return result;
+    }
+
     // --- SUM index conformance steps ---
 
     private static RecordMetaData createSumIndexedMetaData() {
