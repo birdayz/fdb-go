@@ -251,7 +251,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("fails unique index rebuild with duplicate values", func() {
+	It("tracks violations for unique index rebuild with duplicate values", func() {
 		ks := specSubspace()
 
 		// Phase 1: Insert records WITHOUT the unique index.
@@ -275,7 +275,8 @@ var _ = Describe("RebuildIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Phase 2: Add the unique index and try rebuild — should fail.
+		// Phase 2: Add the unique index and rebuild — Java behavior: writes violation
+		// entries to subspace 7 instead of throwing, transitions to READABLE_UNIQUE_PENDING.
 		nameIndex := NewIndex("Customer$name", Field("name"))
 		nameIndex.SetUnique()
 		builder2 := baseMetaData()
@@ -290,10 +291,20 @@ var _ = Describe("RebuildIndex", func() {
 				return nil, err
 			}
 
-			return nil, store.RebuildIndex(nameIndex)
+			err = store.RebuildIndex(nameIndex)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Index should be READABLE_UNIQUE_PENDING, not READABLE
+			Expect(store.GetIndexState(nameIndex.Name)).To(Equal(IndexStateReadableUniquePending))
+
+			// Should have violation entries
+			violations, err := store.ScanUniquenessViolations(nameIndex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(violations)).To(BeNumerically(">=", 2))
+
+			return nil, nil
 		})
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("uniqueness violation"))
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("index is maintained after rebuild when new records are added", func() {

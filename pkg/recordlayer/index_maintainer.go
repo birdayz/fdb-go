@@ -27,6 +27,15 @@ type IndexMaintainer interface {
 	Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry]
 }
 
+// indexStoreContext provides the store methods needed by index maintainers.
+// Avoids circular dependency by using an interface instead of *FDBRecordStore directly.
+type indexStoreContext interface {
+	isIndexWriteOnly(index *Index) bool
+	isIndexReadableUniquePending(index *Index) bool
+	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
+	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
+}
+
 // StandardIndexMaintainer handles VALUE index maintenance.
 // Evaluates the index key expression against records, then sets/clears entries
 // in the index subspace. Matches Java's StandardIndexMaintainer.
@@ -34,13 +43,15 @@ type StandardIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
+	store         indexStoreContext
 }
 
-func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction) *StandardIndexMaintainer {
+func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *StandardIndexMaintainer {
 	return &StandardIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
+		store:         store,
 	}
 }
 
@@ -79,8 +90,14 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Remove old entries first so uniqueness checks see clean state
+	isWriteOnlyOrUniquePending := m.store != nil && (m.store.isIndexWriteOnly(m.index) || m.store.isIndexReadableUniquePending(m.index))
 	for i := range oldEntries {
 		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey))))
+		// Clean up violation entries on delete for WRITE_ONLY/READABLE_UNIQUE_PENDING indexes.
+		// Matches Java's StandardIndexMaintainer.updateOneKeyAsync() remove path.
+		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
+			m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+		}
 	}
 
 	// Add new entries
@@ -172,6 +189,14 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		existingPK := tuple.Tuple(existingTuple[indexColCount:])
 		// If same PK, it's just our own record being updated — not a violation
 		if !tuplesEqual(existingPK, entry.primaryKey) {
+			// WRITE_ONLY indexes: write violation entries instead of throwing.
+			// Matches Java's StandardIndexMaintainer.checkUniqueness() which
+			// calls addUniquenessViolation() for both conflicting PKs.
+			if m.store != nil && m.store.isIndexWriteOnly(m.index) {
+				m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey)
+				m.store.addUniquenessViolation(m.index, entry.key, existingPK)
+				return nil
+			}
 			return &RecordIndexUniquenessViolationError{
 				IndexName:   m.index.Name,
 				IndexKey:    entry.key,

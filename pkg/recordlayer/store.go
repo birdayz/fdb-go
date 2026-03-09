@@ -654,8 +654,9 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 		}
 	}
 
-	// Step 4: Mark index READABLE.
-	if _, err := store.MarkIndexReadable(index.Name); err != nil {
+	// Step 4: Mark index READABLE (or READABLE_UNIQUE_PENDING if violations exist).
+	// Matches Java: uses markIndexReadable which checks violations for unique indexes.
+	if _, err := store.MarkIndexReadableOrUniquePending(index.Name); err != nil {
 		return fmt.Errorf("rebuild index %q: mark readable: %w", index.Name, err)
 	}
 
@@ -777,7 +778,24 @@ func (store *FDBRecordStore) indexSubspace(index *Index) subspace.Subspace {
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
 // Currently only StandardIndexMaintainer (VALUE indexes) is supported.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
-	return newStandardIndexMaintainer(index, store.indexSubspace(index), store.context.Transaction())
+	return newStandardIndexMaintainer(index, store.indexSubspace(index), store.context.Transaction(), store)
+}
+
+// indexStoreContext interface implementation for FDBRecordStore.
+func (store *FDBRecordStore) isIndexWriteOnly(index *Index) bool {
+	return store.IsIndexWriteOnly(index.Name)
+}
+
+func (store *FDBRecordStore) isIndexReadableUniquePending(index *Index) bool {
+	return store.GetIndexState(index.Name) == IndexStateReadableUniquePending
+}
+
+func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	store.AddUniquenessViolation(index, indexKey, primaryKey)
+}
+
+func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
 
 // saveRecordVersion stores the version for a record using the new inline format.
