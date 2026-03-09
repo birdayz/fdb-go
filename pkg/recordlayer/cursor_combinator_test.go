@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -317,6 +318,130 @@ var _ = Describe("CursorCombinators", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ConcatCursors basic", func() {
+		first := FromList([]int{1, 2, 3})
+		second := FromList([]int{4, 5, 6})
+
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return first },
+			func(_ []byte) RecordCursor[int] { return second },
+			nil,
+		)
+		result, err := AsList(ctx, concat)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{1, 2, 3, 4, 5, 6}))
+	})
+
+	It("ConcatCursors first empty", func() {
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return FromList([]int{}) },
+			func(_ []byte) RecordCursor[int] { return FromList([]int{7, 8}) },
+			nil,
+		)
+		result, err := AsList(ctx, concat)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{7, 8}))
+	})
+
+	It("ConcatCursors second empty", func() {
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return FromList([]int{1, 2}) },
+			func(_ []byte) RecordCursor[int] { return FromList([]int{}) },
+			nil,
+		)
+		result, err := AsList(ctx, concat)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]int{1, 2}))
+	})
+
+	It("ConcatCursors both empty", func() {
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return Empty[int]() },
+			func(_ []byte) RecordCursor[int] { return Empty[int]() },
+			nil,
+		)
+		result, err := AsList(ctx, concat)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeEmpty())
+	})
+
+	It("ConcatCursors continuation wraps inner", func() {
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return FromList([]int{1, 2}) },
+			func(_ []byte) RecordCursor[int] { return FromList([]int{3, 4}) },
+			nil,
+		)
+
+		// Read one record and check continuation is non-nil
+		r, err := concat.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(1))
+		Expect(r.GetContinuation()).NotTo(BeNil())
+		Expect(r.GetContinuation().IsEnd()).To(BeFalse())
+		Expect(concat.Close()).To(Succeed())
+	})
+
+	It("ConcatCursors exhaustion returns SourceExhausted", func() {
+		concat := ConcatCursors(
+			func(_ []byte) RecordCursor[int] { return FromList([]int{1}) },
+			func(_ []byte) RecordCursor[int] { return FromList([]int{2}) },
+			nil,
+		)
+		// Drain
+		r1, _ := concat.OnNext(ctx)
+		Expect(r1.HasNext()).To(BeTrue())
+		r2, _ := concat.OnNext(ctx)
+		Expect(r2.HasNext()).To(BeTrue())
+		r3, _ := concat.OnNext(ctx)
+		Expect(r3.HasNext()).To(BeFalse())
+		Expect(r3.GetNoNextReason()).To(Equal(SourceExhausted))
+		Expect(concat.Close()).To(Succeed())
+	})
+
+	It("MapCursor transforms values", func() {
+		inner := FromList([]int{1, 2, 3})
+		mapped := MapCursor(inner, func(n int) string {
+			return fmt.Sprintf("item_%d", n)
+		})
+		result, err := AsList(ctx, mapped)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]string{"item_1", "item_2", "item_3"}))
+	})
+
+	It("MapCursor empty", func() {
+		mapped := MapCursor(Empty[int](), func(n int) string { return "" })
+		result, err := AsList(ctx, mapped)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeEmpty())
+	})
+
+	It("MapCursor preserves continuation", func() {
+		inner := FromList([]int{10, 20, 30})
+		mapped := MapCursor(inner, func(n int) int { return n * 2 })
+
+		r, err := mapped.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue()).To(Equal(20))
+		Expect(r.GetContinuation()).NotTo(BeNil())
+		Expect(mapped.Close()).To(Succeed())
+	})
+
+	It("MapCursor exhaustion", func() {
+		inner := FromList([]int{1})
+		mapped := MapCursor(inner, func(n int) int { return n + 100 })
+
+		r1, _ := mapped.OnNext(ctx)
+		Expect(r1.HasNext()).To(BeTrue())
+		Expect(r1.GetValue()).To(Equal(101))
+
+		r2, _ := mapped.OnNext(ctx)
+		Expect(r2.HasNext()).To(BeFalse())
+		Expect(r2.GetNoNextReason()).To(Equal(SourceExhausted))
+		Expect(mapped.Close()).To(Succeed())
 	})
 
 	It("ScannedRecordsLimit", func() {

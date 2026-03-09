@@ -5,6 +5,8 @@ import (
 	"iter"
 
 	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
 // NoNextReason indicates why a cursor stopped producing records
@@ -669,6 +671,247 @@ func (c *limitRowsCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
 
 func (c *limitRowsCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
 	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
+// ConcatCursor concatenates two cursors: returns all results from the first cursor,
+// then all results from the second. Matches Java's ConcatCursor.
+//
+// Uses cursor factories (not raw cursors) so that on continuation resumption,
+// only the relevant cursor is created. Continuation tokens are proto-wrapped
+// with ConcatContinuation for wire compatibility with Java.
+type concatCursor[T any] struct {
+	firstFactory  CursorFactory[T]
+	secondFactory CursorFactory[T]
+	current       RecordCursor[T]
+	onSecond      bool
+	closed        bool
+}
+
+// CursorFactory creates a cursor from an optional continuation.
+// nil continuation means start from the beginning.
+type CursorFactory[T any] func(continuation []byte) RecordCursor[T]
+
+// ConcatCursors concatenates two cursor factories: results from first, then second.
+// Continuation tokens are wire-compatible with Java's ConcatCursor.
+func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) RecordCursor[T] {
+	c := &concatCursor[T]{
+		firstFactory:  first,
+		secondFactory: second,
+	}
+
+	if len(continuation) > 0 {
+		var cont gen.ConcatContinuation
+		if err := proto.Unmarshal(continuation, &cont); err == nil {
+			if cont.GetSecond() {
+				c.onSecond = true
+				c.current = second(cont.GetContinuation())
+			} else {
+				c.current = first(cont.GetContinuation())
+			}
+		} else {
+			// Invalid continuation — start fresh
+			c.current = first(nil)
+		}
+	} else {
+		c.current = first(nil)
+	}
+
+	return c
+}
+
+func (c *concatCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.closed {
+		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+	}
+
+	result, err := c.current.OnNext(ctx)
+	if err != nil {
+		return result, err
+	}
+
+	if result.HasNext() {
+		// Wrap the inner continuation with ConcatContinuation
+		innerCont := result.GetContinuation()
+		wrapped := c.wrapContinuation(innerCont)
+		return NewResultWithValue(result.GetValue(), wrapped), nil
+	}
+
+	// Current cursor exhausted
+	if !c.onSecond && result.GetNoNextReason() == SourceExhausted {
+		// First cursor done — switch to second
+		_ = c.current.Close()
+		c.onSecond = true
+		c.current = c.secondFactory(nil)
+		return c.OnNext(ctx)
+	}
+
+	// Second cursor done or first stopped for non-exhaustion reason
+	innerCont := result.GetContinuation()
+	wrapped := c.wrapContinuation(innerCont)
+	return NewResultNoNext[T](result.GetNoNextReason(), wrapped), nil
+}
+
+func (c *concatCursor[T]) wrapContinuation(inner RecordCursorContinuation) RecordCursorContinuation {
+	if inner == nil || inner.IsEnd() {
+		if c.onSecond {
+			return &EndContinuation{}
+		}
+		// First cursor at end but haven't switched yet
+		return &concatContinuationWrapper{onSecond: false, inner: nil}
+	}
+	return &concatContinuationWrapper{onSecond: c.onSecond, inner: inner.ToBytes()}
+}
+
+type concatContinuationWrapper struct {
+	onSecond bool
+	inner    []byte
+}
+
+func (c *concatContinuationWrapper) ToBytes() []byte {
+	cont := &gen.ConcatContinuation{
+		Second:       proto.Bool(c.onSecond),
+		Continuation: c.inner,
+	}
+	data, _ := proto.Marshal(cont)
+	return data
+}
+
+func (c *concatContinuationWrapper) IsEnd() bool {
+	return false
+}
+
+func (c *concatCursor[T]) Close() error {
+	c.closed = true
+	if c.current != nil {
+		return c.current.Close()
+	}
+	return nil
+}
+
+func (c *concatCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *concatCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *concatCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
+// MapResultCursor applies a transformation function to each cursor result.
+// Unlike Map (which operates on iter.Seq), this operates at the RecordCursor level
+// and preserves continuations. Matches Java's MapResultCursor.
+type mapResultCursor[T, R any] struct {
+	inner RecordCursor[T]
+	fn    func(T) R
+}
+
+// MapCursor creates a cursor that transforms each value using the given function.
+// Continuations from the inner cursor are passed through transparently.
+func MapCursor[T, R any](cursor RecordCursor[T], fn func(T) R) RecordCursor[R] {
+	return &mapResultCursor[T, R]{inner: cursor, fn: fn}
+}
+
+func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return RecordCursorResult[R]{}, err
+	}
+	if !result.HasNext() {
+		return NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+	mapped := c.fn(result.GetValue())
+	return NewResultWithValue(mapped, result.GetContinuation()), nil
+}
+
+func (c *mapResultCursor[T, R]) Close() error { return c.inner.Close() }
+
+func (c *mapResultCursor[T, R]) Seq(ctx context.Context) iter.Seq[R] {
+	return func(yield func(R) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *mapResultCursor[T, R]) Seq2(ctx context.Context) iter.Seq2[R, error] {
+	return func(yield func(R, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(R), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *mapResultCursor[T, R]) SeqWithContinuation(ctx context.Context) iter.Seq2[R, RecordCursorContinuation] {
+	return func(yield func(R, RecordCursorContinuation) bool) {
 		defer func() { _ = c.Close() }()
 		for {
 			result, err := c.OnNext(ctx)

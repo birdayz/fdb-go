@@ -23,9 +23,19 @@ package com.apple.foundationdb.record;
 
 option java_outer_classname = "RecordCursorProto";
 
-// KeyValueCursorContinuation wraps the raw continuation bytes with a magic
-// number for format versioning. Field numbers MUST match Java's
-// record_cursor.proto for wire compatibility.
+// All field numbers MUST match Java's record_cursor.proto for wire compatibility.
+
+message FlatMapContinuation {
+    optional bytes outer_continuation = 1;
+    optional bytes inner_continuation = 2;
+    optional bytes check_value = 3;
+}
+
+message ConcatContinuation {
+    optional bool second = 1;
+    optional bytes continuation = 3;
+}
+
 message KeyValueCursorContinuation {
     optional bytes inner_continuation = 1;
     optional sfixed64 magic_number = 2;
