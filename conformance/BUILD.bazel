@@ -11,6 +11,7 @@ go_test(
         "count_index_conformance_test.go",
         "crud_test.go",
         "customer_conformance_test.go",
+        "delete_all_conformance_test.go",
         "delete_conformance_test.go",
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",

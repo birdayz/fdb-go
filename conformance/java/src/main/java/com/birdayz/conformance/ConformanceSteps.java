@@ -972,6 +972,26 @@ public class ConformanceSteps {
         });
     }
 
+    // --- DeleteAllRecords conformance steps ---
+
+    @ConformanceStep("deleteAllRecordsWithIndex")
+    public void deleteAllRecordsWithIndex(String clusterFile, byte[] subspace, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openIndexedStore(context, subspace);
+            store.deleteAllRecords();
+            return null;
+        });
+    }
+
+    @ConformanceStep("countRecordsWithIndex")
+    public long countRecordsWithIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openIndexedStore(context, subspace);
+            return store.scanRecords(null, ScanProperties.FORWARD_SCAN)
+                .getCount().join();
+        });
+    }
+
     // --- RangeSet wire format conformance steps ---
 
     @ConformanceStep("rangeSetInsert")
