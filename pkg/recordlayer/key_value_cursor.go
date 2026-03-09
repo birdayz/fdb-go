@@ -120,6 +120,22 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 		), nil
 	}
 
+	// Check scanned records limit BEFORE reading next record.
+	// Continuation points to the last RETURNED record, so resumption starts after it.
+	// Matches Java's CursorLimitManager.tryRecordScan() which checks limits pre-read.
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned >= executeProps.ScannedRecordsLimit {
+		if c.continuation != nil {
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+				ScanLimitReached,
+				&BytesContinuation{bytes: c.continuation},
+			), nil
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+			ScanLimitReached,
+			&EndContinuation{},
+		), nil
+	}
+
 	// Read the next complete record (handles unsplit, split, and version-skip)
 	record, lastKey, err := c.readNextRecord()
 	if err != nil {
@@ -137,19 +153,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Update scan metrics
 	c.bytesScanned += int64(record.KeySize + record.ValueSize)
 
-	// Check scanned records limit
-	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned > executeProps.ScannedRecordsLimit {
-		cont, wrapErr := c.makeKeyContinuation(lastKey)
-		if wrapErr != nil {
-			return RecordCursorResult[*FDBStoredRecord[proto.Message]]{}, wrapErr
-		}
-		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-			ScanLimitReached,
-			&BytesContinuation{bytes: cont},
-		), nil
-	}
-
-	// Check byte limit
+	// Check byte limit (post-read, since we need the byte count)
 	if executeProps.ScannedBytesLimit > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
 		cont, wrapErr := c.makeKeyContinuation(lastKey)
 		if wrapErr != nil {

@@ -80,6 +80,7 @@ just clean          # bazel clean
 ```
 
 - **After writing Go code, always run `just build`** to compile + nogo lint. Lint errors are build errors.
+- **Run `just test` regularly** — Bazel cache is perfect, so it only reruns what changed. Catches regressions early. Run at minimum after each feature/fix before committing.
 - After adding/removing Go files or changing `go.mod`, run `just gazelle` then `bazel mod tidy`.
 - Proto codegen stays with `buf generate` — not in Bazel.
 - **IMPORTANT**: Always use `bazelisk` (not `bazel`) when running bazel commands directly. The `just` recipes handle this, but if invoking bazel manually, use `bazelisk`.
