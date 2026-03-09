@@ -136,10 +136,6 @@ func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[
 // Handles both split and unsplit records via SplitHelper.
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
-	if err := store.validateRecordUpdateAllowed(); err != nil {
-		return false, err
-	}
-
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
@@ -157,6 +153,12 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	}
 	if value == nil {
 		return false, nil // Record not found
+	}
+
+	// Check lock state AFTER load but BEFORE write, matching Java's
+	// deleteTypedRecord() which loads first, then validates.
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return false, err
 	}
 
 	// Check for inline version
@@ -245,10 +247,6 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	if err := store.validateRecordUpdateAllowed(); err != nil {
-		return nil, err
-	}
-
 	// Extract the primary key from the record
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
@@ -326,6 +324,13 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 				}
 			}
 		}
+	}
+
+	// Check lock state AFTER load and existence checks but BEFORE write,
+	// matching Java's saveRecordAsync() error precedence: existence/type
+	// errors take priority over lock errors.
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return nil, err
 	}
 
 	// Wrap the record in a UnionDescriptor like Java Record Layer does

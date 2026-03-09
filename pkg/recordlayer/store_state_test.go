@@ -2,10 +2,12 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
@@ -119,6 +121,79 @@ var _ = Describe("Store state management", func() {
 				price := int32(100)
 				_, err = store.SaveRecord(&gen.Order{OrderId: &id, Price: &price})
 				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("validateRecordUpdateAllowed error precedence", func() {
+		It("existence error takes priority over lock error on save", func() {
+			ss := specSubspace()
+
+			// Create store and lock it.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				lockState := &gen.DataStoreInfo_StoreLockState{
+					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
+				}
+				return nil, store.SetStoreLockState(lockState)
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try SaveRecordWithOptions(ERROR_IF_NOT_EXISTS) on locked store
+			// for a record that doesn't exist.
+			// Should get RecordDoesNotExistError, NOT StoreIsLockedForRecordUpdatesError.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecordWithOptions(
+					&gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)},
+					RecordExistenceCheckErrorIfNotExists,
+				)
+				return nil, err
+			})
+			Expect(err).To(HaveOccurred())
+			var doesNotExist *RecordDoesNotExistError
+			Expect(errors.As(err, &doesNotExist)).To(BeTrue(),
+				"expected RecordDoesNotExistError, got: %v", err)
+		})
+
+		It("delete on non-existent record returns false without lock error", func() {
+			ss := specSubspace()
+
+			// Create store and lock it.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				lockState := &gen.DataStoreInfo_StoreLockState{
+					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
+				}
+				return nil, store.SetStoreLockState(lockState)
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete non-existent record — should return (false, nil),
+			// NOT StoreIsLockedForRecordUpdatesError.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				deleted, err := store.DeleteRecord(tuple.Tuple{int64(999)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deleted).To(BeFalse())
+				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})

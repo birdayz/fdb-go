@@ -395,7 +395,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Record count rebuild on metadata version change** — Fixed: `checkPossiblyRebuildRecordCounts()` compares stored `RecordCountKey` proto against current metadata, independent of version numbers. Clears old counts, rescans all records, updates store header. Runs before the version-gated index rebuild, matching Java's `checkRebuild()` flow. 4 tests: add key, change key, remove key, unchanged key no-op.
 
-- [ ] **validateRecordUpdateAllowed timing differs** — Go checks lock state BEFORE loading the existing record (`store.go:236,127`). Java checks AFTER load but BEFORE write. Changes error precedence: Go returns `StoreIsLockedForRecordUpdatesError` first, masking existence/type errors.
+- [x] **validateRecordUpdateAllowed timing differs** — Fixed: moved `validateRecordUpdateAllowed()` after record load and existence checks, before write. Now existence/type errors take precedence over lock errors, matching Java's `saveRecordAsync()` and `deleteTypedRecord()`. Delete of non-existent record returns `(false, nil)` even when locked. 2 tests.
 
 ### MEDIUM
 
