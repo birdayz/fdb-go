@@ -159,7 +159,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Explicit record type keys** — Java supports `setRecordTypeKey()` to override auto-derived type keys from proto field numbers. Go relies solely on proto field numbers.
 
-- [ ] **Multi-type indexes** — Java has `addMultiTypeIndex()` for indexes spanning multiple record types. Go only has single-type and universal indexes.
+- [x] **Multi-type indexes** — `AddMultiTypeIndex(recordTypeNames, index)`. 0 types → universal, 1 type → single-type, 2+ types → multi-type (stored per RecordType, included in `GetIndexesForRecordType`). Matches Java semantics.
 
 - [ ] **Schema evolution version tracking** — Go has `version` field but no `updateRecords()` method to bump version or validate backward compatibility.
 
@@ -228,7 +228,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Store statistics** — Java has `estimateStoreSizeAsync()`, `estimateRecordsSizeAsync()`. Go has none.
 
-- [ ] **Format version / user version access** — Java has `getFormatVersion()`, `getUserVersion()`, `setUserVersion()`. Go has no version introspection.
+- [x] **Format version / user version access** — `GetFormatVersion()`, `GetUserVersion()`, `SetUserVersion()`, `GetMetaDataVersion()`. Persisted in store header.
 
 - [ ] **Serializer access** — Java has `getSerializer()`, `getContext()`, `getKeyspacePath()`, `getIndexMaintainerRegistry()`. Go exposes `context` and `subspace` but not others.
 
@@ -278,11 +278,11 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Version comparison/ordering** — Java has `compareTo()`, `equals()`, `hashCode()`. Go has none. Needed for sorting versions and using them in collections.
+- [x] **Version comparison/ordering** — `Equal()`, `Less()` implemented matching Java's `equals()`/`compareTo()`.
 
-- [ ] **Version range methods** — Java has `firstInDBVersion()`, `lastInDBVersion()`, `firstInGlobalVersion()`, `lastInGlobalVersion()`, `next()`, `prev()`. Go has none. Needed for version-based range queries.
+- [x] **Version range methods** — `FirstInDBVersion()`, `LastInDBVersion()`, `FirstInGlobalVersion()`, `LastInGlobalVersion()`, `Next()`, `Prev()`. All matching Java semantics.
 
-- [ ] **MIN_VERSION / MAX_VERSION constants** — Java defines these as sentinel values. Go has none.
+- [x] **MIN_VERSION / MAX_VERSION constants** — `MinVersion()` (all zeros), `MaxVersion()` (all 0xFE). Matching Java sentinel values.
 
 ### LOW
 

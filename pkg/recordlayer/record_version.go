@@ -148,6 +148,86 @@ func (v *FDBRecordVersion) String() string {
 	return fmt.Sprintf("FDBRecordVersion(complete=%t, raw=%s)", v.complete, hex.EncodeToString(v.raw[:]))
 }
 
+// MinVersion returns the minimum possible complete version (all zeros).
+// Matches Java's FDBRecordVersion.MIN_VERSION.
+func MinVersion() *FDBRecordVersion {
+	return &FDBRecordVersion{complete: true}
+}
+
+// MaxVersion returns the maximum possible complete version (all 0xFE bytes).
+// Matches Java's FDBRecordVersion.MAX_VERSION.
+// Note: 0xFE not 0xFF because 0xFF in global bytes indicates incomplete.
+func MaxVersion() *FDBRecordVersion {
+	var raw [VersionBytes]byte
+	for i := range raw {
+		raw[i] = 0xFE
+	}
+	return &FDBRecordVersion{raw: raw, complete: true}
+}
+
+// FirstInDBVersion returns the first version with the given DB commit version.
+// The batch and local portions are set to 0.
+// Matches Java's FDBRecordVersion.firstInDBVersion().
+func FirstInDBVersion(dbVersion int64) *FDBRecordVersion {
+	var raw [VersionBytes]byte
+	binary.BigEndian.PutUint64(raw[:8], uint64(dbVersion))
+	// bytes 8-9 (batch) = 0, bytes 10-11 (local) = 0
+	return &FDBRecordVersion{raw: raw, complete: true}
+}
+
+// LastInDBVersion returns the last version with the given DB commit version.
+// The batch portion is set to 0xFFFF and local to 0xFFFF.
+// Matches Java's FDBRecordVersion.lastInDBVersion().
+func LastInDBVersion(dbVersion int64) *FDBRecordVersion {
+	var raw [VersionBytes]byte
+	binary.BigEndian.PutUint64(raw[:8], uint64(dbVersion))
+	raw[8] = 0xFF
+	raw[9] = 0xFF
+	raw[10] = 0xFF
+	raw[11] = 0xFF
+	return &FDBRecordVersion{raw: raw, complete: true}
+}
+
+// FirstInGlobalVersion returns the first version with the given 10-byte global version.
+// The local version is set to 0.
+// Matches Java's FDBRecordVersion.firstInGlobalVersion().
+func FirstInGlobalVersion(globalVersion []byte) (*FDBRecordVersion, error) {
+	return NewCompleteVersion(globalVersion, 0)
+}
+
+// LastInGlobalVersion returns the last version with the given 10-byte global version.
+// The local version is set to 0xFFFF.
+// Matches Java's FDBRecordVersion.lastInGlobalVersion().
+func LastInGlobalVersion(globalVersion []byte) (*FDBRecordVersion, error) {
+	return NewCompleteVersion(globalVersion, 0xFFFF)
+}
+
+// Next returns the version immediately after this one (local + 1).
+// Panics if already at max local version (0xFFFF).
+func (v *FDBRecordVersion) Next() *FDBRecordVersion {
+	local := v.GetLocalVersion()
+	if local >= 0xFFFF {
+		panic("cannot get next version: already at max local version")
+	}
+	var raw [VersionBytes]byte
+	copy(raw[:], v.raw[:])
+	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(local+1))
+	return &FDBRecordVersion{raw: raw, complete: v.complete}
+}
+
+// Prev returns the version immediately before this one (local - 1).
+// Panics if already at min local version (0).
+func (v *FDBRecordVersion) Prev() *FDBRecordVersion {
+	local := v.GetLocalVersion()
+	if local <= 0 {
+		panic("cannot get prev version: already at min local version")
+	}
+	var raw [VersionBytes]byte
+	copy(raw[:], v.raw[:])
+	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(local-1))
+	return &FDBRecordVersion{raw: raw, complete: v.complete}
+}
+
 // WithCommittedVersion completes an incomplete version using the committed versionstamp.
 // This is called after transaction commit when the real versionstamp is known.
 func (v *FDBRecordVersion) WithCommittedVersion(committedVersion []byte) (*FDBRecordVersion, error) {

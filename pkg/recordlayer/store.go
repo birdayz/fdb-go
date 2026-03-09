@@ -812,6 +812,44 @@ type FDBStoredRecord[M proto.Message] struct {
 
 
 
+// GetFormatVersion returns the store format version.
+// Matches Java's FDBRecordStore.getFormatVersion().
+func (store *FDBRecordStore) GetFormatVersion() int32 {
+	if store.storeHeader != nil && store.storeHeader.FormatVersion != nil {
+		return *store.storeHeader.FormatVersion
+	}
+	return 0
+}
+
+// GetUserVersion returns the user-defined store version.
+// Matches Java's FDBRecordStore.getUserVersion().
+func (store *FDBRecordStore) GetUserVersion() int32 {
+	if store.storeHeader != nil && store.storeHeader.UserVersion != nil {
+		return *store.storeHeader.UserVersion
+	}
+	return 0
+}
+
+// SetUserVersion updates the user-defined store version and writes it to FDB.
+// Matches Java's FDBRecordStore.setUserVersion().
+func (store *FDBRecordStore) SetUserVersion(version int32) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	store.storeHeader.UserVersion = &version
+	lastUpdateTime := uint64(time.Now().UnixMilli())
+	store.storeHeader.LastUpdateTime = &lastUpdateTime
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// GetMetaDataVersion returns the metadata version stored in the header.
+func (store *FDBRecordStore) GetMetaDataVersion() int32 {
+	if store.storeHeader != nil && store.storeHeader.MetaDataversion != nil {
+		return *store.storeHeader.MetaDataversion
+	}
+	return 0
+}
+
 // createStoreHeader creates a DataStoreInfo header for a new record store
 func createStoreHeader(metaDataVersion int32) *gen.DataStoreInfo {
 	formatVersion := int32(FormatVersionCurrent)

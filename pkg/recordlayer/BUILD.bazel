@@ -49,6 +49,7 @@ go_test(
         "large_scan_test.go",
         "metadata_test.go",
         "million_record_test.go",
+        "multi_type_index_test.go",
         "multi_type_test.go",
         "record_count_test.go",
         "record_version_test.go",
@@ -61,8 +62,10 @@ go_test(
         "store_delete_test.go",
         "store_generic_test.go",
         "store_test.go",
+        "store_version_test.go",
         "typed_api_test.go",
         "typed_store_conformance_test.go",
+        "version_range_test.go",
     ],
     embed = [":recordlayer"],
     deps = [

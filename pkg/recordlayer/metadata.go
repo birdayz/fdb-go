@@ -66,8 +66,12 @@ type RecordType struct {
 	// Union field descriptor for reflection-based access
 	UnionFieldDescriptor protoreflect.FieldDescriptor
 
-	// indexes defined for this record type
+	// indexes defined for this record type (single-type)
 	indexes []*Index
+
+	// multiTypeIndexes span multiple record types.
+	// Java equivalent: RecordType.getMultiTypeIndexes()
+	multiTypeIndexes []*Index
 }
 
 // KeyExpression represents an expression that extracts key components from a record.
@@ -212,6 +216,31 @@ func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *R
 	return b
 }
 
+// AddMultiTypeIndex adds an index spanning multiple record types.
+// If recordTypeNames is nil or empty, treats as universal index.
+// If only one name, adds as single-type index.
+// Matches Java's RecordMetaDataBuilder.addMultiTypeIndex().
+func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, index *Index) *RecordMetaDataBuilder {
+	if len(recordTypeNames) == 0 {
+		return b.AddUniversalIndex(index)
+	}
+	if len(recordTypeNames) == 1 {
+		return b.AddIndex(recordTypeNames[0], index)
+	}
+	if b.indexes == nil {
+		b.indexes = make(map[string]*Index)
+	}
+	b.indexes[index.Name] = index
+	for _, name := range recordTypeNames {
+		rt, ok := b.recordTypes[name]
+		if !ok {
+			continue
+		}
+		rt.multiTypeIndexes = append(rt.multiTypeIndexes, index)
+	}
+	return b
+}
+
 // AddUniversalIndex adds an index that applies to all record types.
 // Matches Java's RecordMetaDataBuilder.addUniversalIndex(Index index).
 func (b *RecordMetaDataBuilder) AddUniversalIndex(index *Index) *RecordMetaDataBuilder {
@@ -321,14 +350,22 @@ func (rt *RecordType) GetRecordTypeIndex() int {
 	return rt.RecordTypeIndex
 }
 
-// GetIndexesForRecordType returns the indexes defined for a specific record type.
+// GetIndexesForRecordType returns the indexes defined for a specific record type,
+// including both single-type and multi-type indexes.
 // Does NOT include universal indexes — use GetUniversalIndexes() for those.
+// Matches Java's RecordType.getAllIndexes().
 func (m *RecordMetaData) GetIndexesForRecordType(name string) []*Index {
 	rt := m.recordTypes[name]
 	if rt == nil {
 		return nil
 	}
-	return rt.indexes
+	if len(rt.multiTypeIndexes) == 0 {
+		return rt.indexes
+	}
+	all := make([]*Index, 0, len(rt.indexes)+len(rt.multiTypeIndexes))
+	all = append(all, rt.indexes...)
+	all = append(all, rt.multiTypeIndexes...)
+	return all
 }
 
 // GetUniversalIndexes returns indexes that apply to all record types.
