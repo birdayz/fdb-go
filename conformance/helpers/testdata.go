@@ -63,3 +63,19 @@ func StandardOrders(startID, count int64) []*gen.Order {
 func MinimalOrder(id int64) *gen.Order {
 	return &gen.Order{OrderId: &id}
 }
+
+// StandardCustomer creates a standard test customer with predictable values based on the ID
+func StandardCustomer(id int64) *gen.Customer {
+	name := fmt.Sprintf("Customer_%d", id)
+	email := fmt.Sprintf("customer_%d@example.com", id)
+	return &gen.Customer{
+		CustomerId: &id,
+		Name:       &name,
+		Email:      &email,
+	}
+}
+
+// MinimalCustomer creates a customer with only the customer ID set (minimal valid record)
+func MinimalCustomer(id int64) *gen.Customer {
+	return &gen.Customer{CustomerId: &id}
+}

@@ -12,21 +12,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// continuationMagicNumber is the magic number used by Java's KeyValueCursorBase
-// to distinguish protobuf-wrapped continuations from raw byte continuations.
-// Must match Java's constant exactly for wire compatibility.
-// See: KeyValueCursorBase.java, Continuation class
+// continuationMagicNumber is the magic number used by newer Java KeyValueCursorBase
+// versions (post-4.2.6.0) to distinguish protobuf-wrapped continuations from raw
+// byte continuations. We support reading this format but produce raw bytes for
+// compatibility with Java Record Layer 4.2.6.0 which only supports raw format.
 const continuationMagicNumber int64 = 6_773_487_359_078_157_740
 
-// wrapContinuation wraps raw continuation bytes in a KeyValueCursorContinuation
-// protobuf message with the magic number, matching Java's TO_NEW serialization.
+// wrapContinuation returns raw continuation bytes (TO_OLD format).
+// This matches Java Record Layer 4.2.6.0's serialization format.
+// The raw bytes are the FDB key suffix relative to the scan subspace.
 func wrapContinuation(innerBytes []byte) ([]byte, error) {
-	magic := continuationMagicNumber
-	msg := &gen.KeyValueCursorContinuation{
-		InnerContinuation: innerBytes,
-		MagicNumber:       &magic,
-	}
-	return proto.Marshal(msg)
+	return innerBytes, nil
 }
 
 // unwrapContinuation extracts the inner continuation bytes from a

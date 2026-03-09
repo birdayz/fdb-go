@@ -23,9 +23,9 @@ type ConformanceStore struct {
 	tenantName  string // Optional tenant name for tenant-isolated tests
 }
 
-// bytesToIntArray converts a byte slice to an int array for JSON serialization
+// BytesToIntArray converts a byte slice to an int array for JSON serialization.
 // Go's json.Marshal encodes []byte as base64, but Gson expects [1,2,3,...]
-func bytesToIntArray(b []byte) []int {
+func BytesToIntArray(b []byte) []int {
 	ints := make([]int, len(b))
 	for i, v := range b {
 		ints[i] = int(v)
@@ -38,7 +38,7 @@ func bytesToIntArray(b []byte) []int {
 func (c *ConformanceStore) buildJavaParams() map[string]interface{} {
 	params := map[string]interface{}{
 		"clusterFile": c.clusterFile,
-		"subspace":    bytesToIntArray(c.keyspace.Bytes()),
+		"subspace":    BytesToIntArray(c.keyspace.Bytes()),
 	}
 	if c.tenantName != "" {
 		params["tenantName"] = c.tenantName

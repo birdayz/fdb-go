@@ -5,6 +5,8 @@ go_library(
     srcs = [
         "conformance_store.go",
         "container.go",
+        "customer_conformance_store.go",
+        "index_conformance_store.go",
         "javainvoker.go",
         "split_conformance_store.go",
         "testdata.go",

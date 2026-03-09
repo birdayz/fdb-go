@@ -1,13 +1,22 @@
 package com.birdayz.conformance;
 
+import com.apple.foundationdb.record.IndexScanType;
+import com.apple.foundationdb.record.IndexState;
 import com.apple.foundationdb.record.RecordMetaData;
 import com.apple.foundationdb.record.RecordMetaDataBuilder;
+import com.apple.foundationdb.record.RecordMetaDataProvider;
+import com.apple.foundationdb.record.ScanProperties;
+import com.apple.foundationdb.record.TupleRange;
+import com.apple.foundationdb.record.IndexEntry;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBDatabaseFactory;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
+import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStoreBase;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContextConfig;
+import com.apple.foundationdb.record.metadata.Index;
+import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
@@ -16,14 +25,23 @@ import com.apple.foundationdb.Tenant;
 import com.apple.foundationdb.Transaction;
 import com.google.protobuf.Message;
 
+import com.apple.foundationdb.record.ExecuteProperties;
+import com.apple.foundationdb.record.provider.foundationdb.FDBRecordVersion;
 import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Order;
+import com.apple.foundationdb.record.RecordLayerDemo.Customer;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Conformance test steps that can be invoked from Go via the generic invokeJava() function.
@@ -33,6 +51,24 @@ public class ConformanceSteps {
 
     private static String cachedClusterContent = null;
     private static FDBDatabase cachedDatabase = null;
+
+    /**
+     * UserVersionChecker that always marks indexes as READABLE.
+     * Needed for conformance tests where Go creates the store and index entries,
+     * but Java doesn't know the index was already built.
+     */
+    private static final FDBRecordStoreBase.UserVersionChecker ALWAYS_READABLE_CHECKER = new FDBRecordStoreBase.UserVersionChecker() {
+        @Override
+        public CompletableFuture<Integer> checkUserVersion(int oldUserVersion, int oldMetaDataVersion,
+                                                            RecordMetaDataProvider metaData) {
+            return CompletableFuture.completedFuture(0);
+        }
+
+        @Override
+        public IndexState needRebuildIndex(Index index, long recordCount, boolean indexOnNewRecordTypes) {
+            return IndexState.READABLE;
+        }
+    };
 
     @FunctionalInterface
     private interface ContextAction<T> {
@@ -52,10 +88,18 @@ public class ConformanceSteps {
         if (tenantName != null && !tenantName.isEmpty()) {
             Database nativeDb = db.database();
             Tenant tenant = nativeDb.openTenant(tenantName.getBytes(StandardCharsets.UTF_8));
-            return tenant.run(transaction -> {
-                FDBRecordContext context = createContextFromTransaction(db, transaction);
-                return action.execute(context);
-            });
+            // Use createTransaction + FDBRecordContext.commitAsync() instead of tenant.run()
+            // to ensure pre-commit hooks (like version mutation flush) fire correctly.
+            Transaction tx = tenant.createTransaction();
+            try {
+                FDBRecordContext context = createContextFromTransaction(db, tx);
+                T result = action.execute(context);
+                context.commitAsync().join();
+                return result;
+            } catch (Exception e) {
+                tx.cancel();
+                throw e;
+            }
         } else {
             return db.run(context -> action.execute(context));
         }
@@ -217,6 +261,369 @@ public class ConformanceSteps {
                 .mergeFrom(record.getRecord())
                 .setOrderId(orderID)
                 .build();
+        });
+    }
+
+    // --- Index conformance steps ---
+
+    private static RecordMetaData createIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.addIndex("Order", new Index("Order$price", Key.Expressions.field("price"), IndexTypes.VALUE));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithIndex")
+    public void saveOrderWithIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("loadOrderWithIndex")
+    public Order loadOrderWithIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openIndexedStore(context, subspace);
+
+            FDBStoredRecord<Message> record = store.loadRecord(Tuple.from(orderID));
+            if (record == null) {
+                throw new RuntimeException("Record not found: " + orderID);
+            }
+
+            return Order.newBuilder()
+                .mergeFrom(record.getRecord())
+                .setOrderId(orderID)
+                .build();
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithIndex")
+    public boolean deleteOrderWithIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanIndex")
+    public java.util.List<java.util.Map<String, Object>> scanIndex(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex(indexName);
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_VALUE, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+
+                java.util.List<Object> pkValues = new java.util.ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    // --- Scan conformance steps ---
+
+    @ConformanceStep("scanOrders")
+    public List<Map<String, Object>> scanOrders(String clusterFile, byte[] subspace, int limit, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+
+            ScanProperties scanProps;
+            if (limit > 0) {
+                scanProps = new ScanProperties(ExecuteProperties.newBuilder()
+                    .setReturnedRowLimit(limit)
+                    .build());
+            } else {
+                scanProps = ScanProperties.FORWARD_SCAN;
+            }
+
+            List<FDBStoredRecord<Message>> records = store.scanRecords(null, scanProps)
+                .asList().join();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (FDBStoredRecord<Message> record : records) {
+                Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+                Map<String, Object> orderMap = new HashMap<>();
+                orderMap.put("orderId", order.getOrderId());
+                if (order.hasPrice()) {
+                    orderMap.put("price", order.getPrice());
+                }
+                if (order.hasFlower()) {
+                    Map<String, Object> flowerMap = new HashMap<>();
+                    flowerMap.put("type", order.getFlower().getType());
+                    flowerMap.put("color", order.getFlower().getColor().name());
+                    orderMap.put("flower", flowerMap);
+                }
+                result.add(orderMap);
+            }
+            return result;
+        });
+    }
+
+    // --- Record count conformance steps ---
+
+    private static RecordMetaData createCountingMetaData() {
+        RecordMetaDataBuilder builder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        builder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        builder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.setRecordCountKey(Key.Expressions.empty());
+        return builder.build();
+    }
+
+    @ConformanceStep("saveOrderCounting")
+    public void saveOrderCounting(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createCountingMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderCounting")
+    public boolean deleteOrderCounting(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createCountingMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("getRecordCount")
+    public long getRecordCount(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createCountingMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+            return store.getSnapshotRecordCount().join();
+        });
+    }
+
+    // --- Record version conformance steps ---
+
+    private static RecordMetaData createVersionedMetaData() {
+        RecordMetaDataBuilder builder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        builder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        builder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.setStoreRecordVersions(true);
+        return builder.build();
+    }
+
+    @ConformanceStep("saveOrderVersioned")
+    public void saveOrderVersioned(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createVersionedMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("loadOrderWithVersion")
+    public Map<String, Object> loadOrderWithVersion(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createVersionedMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .open();
+
+            FDBStoredRecord<Message> record = store.loadRecord(Tuple.from(orderID));
+            if (record == null) {
+                throw new RuntimeException("Record not found: " + orderID);
+            }
+
+            Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("orderId", order.getOrderId());
+            if (order.hasPrice()) {
+                result.put("price", order.getPrice());
+            }
+
+            if (record.hasVersion()) {
+                FDBRecordVersion version = record.getVersion();
+                result.put("hasVersion", true);
+                result.put("globalVersion", Base64.getEncoder().encodeToString(version.getGlobalVersion()));
+                result.put("localVersion", version.getLocalVersion());
+                result.put("isComplete", version.isComplete());
+            } else {
+                result.put("hasVersion", false);
+            }
+
+            return result;
+        });
+    }
+
+    // --- Continuation token conformance steps ---
+
+    @ConformanceStep("scanOrdersWithContinuation")
+    public Map<String, Object> scanOrdersWithContinuation(String clusterFile, byte[] subspace, int limit, String continuation, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+
+            byte[] contBytes = null;
+            if (continuation != null && !continuation.isEmpty()) {
+                contBytes = Base64.getDecoder().decode(continuation);
+            }
+
+            ScanProperties scanProps = new ScanProperties(ExecuteProperties.newBuilder()
+                .setReturnedRowLimit(limit)
+                .build());
+
+            com.apple.foundationdb.record.RecordCursor<FDBStoredRecord<Message>> cursor =
+                store.scanRecords(contBytes, scanProps);
+
+            List<Map<String, Object>> orders = new ArrayList<>();
+            byte[] nextContinuation = null;
+
+            com.apple.foundationdb.record.RecordCursorResult<FDBStoredRecord<Message>> result;
+            while ((result = cursor.getNext()) != null && result.hasNext()) {
+                FDBStoredRecord<Message> record = result.get();
+                Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+                Map<String, Object> orderMap = new HashMap<>();
+                orderMap.put("orderId", order.getOrderId());
+                if (order.hasPrice()) {
+                    orderMap.put("price", order.getPrice());
+                }
+                orders.add(orderMap);
+            }
+            // After loop, result is the "no next" result — its continuation is the resume point
+            if (result != null) {
+                nextContinuation = result.getContinuation().toBytes();
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("orders", orders);
+            if (nextContinuation != null) {
+                response.put("continuation", Base64.getEncoder().encodeToString(nextContinuation));
+            }
+            // Track whether source was exhausted
+            if (result != null) {
+                response.put("sourceExhausted", result.getNoNextReason().isSourceExhausted());
+            }
+            return response;
+        });
+    }
+
+    // --- Customer conformance steps ---
+
+    @ConformanceStep("saveCustomer")
+    public void saveCustomer(String clusterFile, byte[] subspace, Customer customer, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+            store.saveRecord(customer);
+            return null;
+        });
+    }
+
+    @ConformanceStep("loadCustomer")
+    public Customer loadCustomer(String clusterFile, byte[] subspace, long customerID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .open();
+            FDBStoredRecord<Message> record = store.loadRecord(Tuple.from(customerID));
+            if (record == null) {
+                throw new RuntimeException("Customer not found: " + customerID);
+            }
+            return Customer.newBuilder()
+                .mergeFrom(record.getRecord())
+                .setCustomerId(customerID)
+                .build();
+        });
+    }
+
+    @ConformanceStep("deleteCustomer")
+    public boolean deleteCustomer(String clusterFile, byte[] subspace, long customerID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .open();
+            return store.deleteRecord(Tuple.from(customerID));
+        });
+    }
+
+    @ConformanceStep("customerExists")
+    public boolean customerExists(String clusterFile, byte[] subspace, long customerID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .open();
+            return store.loadRecord(Tuple.from(customerID)) != null;
         });
     }
 }

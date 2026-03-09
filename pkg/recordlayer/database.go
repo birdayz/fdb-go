@@ -2,12 +2,12 @@ package recordlayer
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
 // FDBDatabase provides access to the underlying FoundationDB database or tenant
@@ -248,12 +248,14 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 }
 
 // buildVersionstampedValue builds the value for SET_VERSIONSTAMPED_VALUE mutation.
-// Format: 12-byte version (with 0xFF placeholder in global portion) + 4-byte offset (little-endian).
-// The offset (0) tells FDB where in the value to write the versionstamp.
-func buildVersionstampedValue(version *FDBRecordVersion) []byte {
-	buf := make([]byte, VersionBytes+4)
-	copy(buf, version.ToBytes())
-	// Offset = 0: versionstamp goes at the beginning of the value
-	binary.LittleEndian.PutUint32(buf[VersionBytes:], 0)
-	return buf
+// Matches Java's SplitHelper.packVersion(): wraps an incomplete versionstamp in
+// a Tuple and uses PackWithVersionstamp to produce bytes with the offset appended.
+// After FDB commit, the stored value is a packed Tuple containing the completed versionstamp.
+func buildVersionstampedValue(version *FDBRecordVersion) ([]byte, error) {
+	vs := tuple.Versionstamp{
+		UserVersion: uint16(version.GetLocalVersion()),
+	}
+	// TransactionVersion is all 0xFF for incomplete versionstamps (placeholder)
+	copy(vs.TransactionVersion[:], incompleteGlobalVersionMarker[:])
+	return tuple.Tuple{vs}.PackWithVersionstamp(nil)
 }

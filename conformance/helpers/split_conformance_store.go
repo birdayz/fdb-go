@@ -44,7 +44,7 @@ func NewSplitConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspa
 func (s *SplitConformanceStore) buildJavaParams() map[string]interface{} {
 	params := map[string]interface{}{
 		"clusterFile": s.clusterFile,
-		"subspace":    bytesToIntArray(s.keyspace.Bytes()),
+		"subspace":    BytesToIntArray(s.keyspace.Bytes()),
 	}
 	if s.tenantName != "" {
 		params["tenantName"] = s.tenantName
