@@ -213,6 +213,14 @@ func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDa
 	return b
 }
 
+// SetVersion sets the metadata schema version.
+// This should be bumped when the schema changes for evolution tracking.
+// Matches Java's RecordMetaDataBuilder.setVersion(int).
+func (b *RecordMetaDataBuilder) SetVersion(version int) *RecordMetaDataBuilder {
+	b.version = version
+	return b
+}
+
 // SetSplitLongRecords enables or disables splitting records >100KB across
 // multiple FDB key-value pairs. Matches Java's RecordMetaDataBuilder.setSplitLongRecords(boolean).
 func (b *RecordMetaDataBuilder) SetSplitLongRecords(split bool) *RecordMetaDataBuilder {

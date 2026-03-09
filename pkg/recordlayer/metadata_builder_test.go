@@ -168,4 +168,25 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			Expect(md.PrimaryKeyHasRecordTypePrefix()).To(BeTrue())
 		})
 	})
+
+	Describe("SetVersion", func() {
+		It("sets metadata version", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.SetVersion(42)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(md.Version()).To(Equal(42))
+		})
+
+		It("defaults to 0", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(md.Version()).To(Equal(0))
+		})
+	})
 })

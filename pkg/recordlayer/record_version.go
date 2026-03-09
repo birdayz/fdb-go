@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
 // FDBRecordVersion represents a version associated with a record in the store.
@@ -226,6 +228,28 @@ func (v *FDBRecordVersion) Prev() *FDBRecordVersion {
 	copy(raw[:], v.raw[:])
 	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(local-1))
 	return &FDBRecordVersion{raw: raw, complete: v.complete}
+}
+
+// FromVersionstamp creates a complete FDBRecordVersion from an FDB tuple.Versionstamp.
+// Matches Java's FDBRecordVersion.fromVersionstamp(Versionstamp).
+func FromVersionstamp(vs tuple.Versionstamp) *FDBRecordVersion {
+	var raw [VersionBytes]byte
+	copy(raw[:GlobalVersionBytes], vs.TransactionVersion[:])
+	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], vs.UserVersion)
+	return &FDBRecordVersion{raw: raw, complete: true}
+}
+
+// ToVersionstamp converts this complete version to an FDB tuple.Versionstamp.
+// Panics if the version is incomplete.
+// Matches Java's FDBRecordVersion.toVersionstamp().
+func (v *FDBRecordVersion) ToVersionstamp() tuple.Versionstamp {
+	if !v.complete {
+		panic("cannot convert incomplete FDBRecordVersion to Versionstamp")
+	}
+	var vs tuple.Versionstamp
+	copy(vs.TransactionVersion[:], v.raw[:GlobalVersionBytes])
+	vs.UserVersion = binary.BigEndian.Uint16(v.raw[GlobalVersionBytes:])
+	return vs
 }
 
 // WithCommittedVersion completes an incomplete version using the committed versionstamp.

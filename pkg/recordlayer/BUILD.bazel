@@ -38,6 +38,8 @@ go_test(
     timeout = "long",
     srcs = [
         "collision_test.go",
+        "commit_hooks_test.go",
+        "context_test.go",
         "continuation_test.go",
         "cursor_combinator_test.go",
         "cursor_functions_test.go",

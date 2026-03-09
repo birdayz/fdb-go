@@ -45,14 +45,21 @@ func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
 // Before committing, flushes any queued SET_VERSIONSTAMPED_VALUE mutations.
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
-	return d.transactor.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	var lastCtx *FDBRecordContext
+	result, err := d.transactor.Transact(func(tx fdb.Transaction) (interface{}, error) {
 		recordCtx := &FDBRecordContext{
 			tx:  tx,
 			ctx: ctx,
 		}
+		lastCtx = recordCtx
 
 		result, err := fn(recordCtx)
 		if err != nil {
+			return nil, err
+		}
+
+		// Run pre-commit checks before flushing
+		if err := recordCtx.runCommitChecks(); err != nil {
 			return nil, err
 		}
 
@@ -61,6 +68,15 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (i
 
 		return result, nil
 	})
+	if err != nil {
+		return result, err
+	}
+
+	// Run post-commit callbacks after successful commit
+	if lastCtx != nil {
+		lastCtx.runPostCommits()
+	}
+	return result, nil
 }
 
 // RunWithVersionstamp is like Run but also returns the committed versionstamp.
@@ -69,6 +85,7 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (i
 func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, []byte, error) {
 	var vsFuture fdb.FutureKey
 	var hasVersionMutations bool
+	var lastCtx *FDBRecordContext
 
 	result, err := d.transactor.Transact(func(tx fdb.Transaction) (interface{}, error) {
 		// Reset on retry — previous attempt's future is stale
@@ -79,9 +96,15 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 			tx:  tx,
 			ctx: ctx,
 		}
+		lastCtx = recordCtx
 
 		result, err := fn(recordCtx)
 		if err != nil {
+			return nil, err
+		}
+
+		// Run pre-commit checks
+		if err := recordCtx.runCommitChecks(); err != nil {
 			return nil, err
 		}
 
@@ -96,6 +119,11 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 	})
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Run post-commit callbacks after successful commit
+	if lastCtx != nil {
+		lastCtx.runPostCommits()
 	}
 
 	if hasVersionMutations && vsFuture != nil {
@@ -120,6 +148,15 @@ func (d *FDBDatabase) CreateTransaction() (fdb.Transaction, error) {
 	return d.db.CreateTransaction()
 }
 
+// CommitCheckFunc is a pre-commit check that runs before the transaction commits.
+// If it returns an error, the commit is aborted.
+// Matches Java's CommitCheckAsync interface.
+type CommitCheckFunc func() error
+
+// PostCommitFunc is a callback that runs after a successful commit.
+// Matches Java's PostCommit interface.
+type PostCommitFunc func()
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Matches Java's FDBRecordContext.
@@ -131,6 +168,10 @@ type FDBRecordContext struct {
 	localVersion      atomic.Int32 // per-transaction local version counter
 	localVersionCache sync.Map     // key (string) → local version (int)
 	versionMutations  sync.Map     // key (string) → value ([]byte) for SET_VERSIONSTAMPED_VALUE
+
+	// Commit hooks — matches Java's CommitCheckAsync / PostCommit
+	commitChecks []CommitCheckFunc
+	postCommits  []PostCommitFunc
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
@@ -210,6 +251,51 @@ func (rc *FDBRecordContext) flushVersionMutations() {
 		rc.tx.SetVersionstampedValue(fdb.Key(keyBytes), valueBytes)
 		return true
 	})
+}
+
+// AddCommitCheck registers a pre-commit check function.
+// All checks run before the transaction commits. If any returns an error,
+// the commit is aborted with that error.
+// Matches Java's FDBRecordContext.addCommitCheck(CommitCheckAsync).
+func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
+	rc.commitChecks = append(rc.commitChecks, check)
+}
+
+// AddPostCommit registers a post-commit callback.
+// All callbacks run after the transaction successfully commits.
+// Matches Java's FDBRecordContext.addPostCommit(PostCommit).
+func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
+	rc.postCommits = append(rc.postCommits, hook)
+}
+
+// runCommitChecks runs all registered pre-commit checks.
+// Returns the first error encountered, or nil if all pass.
+func (rc *FDBRecordContext) runCommitChecks() error {
+	for _, check := range rc.commitChecks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runPostCommits runs all registered post-commit callbacks.
+func (rc *FDBRecordContext) runPostCommits() {
+	for _, hook := range rc.postCommits {
+		hook()
+	}
+}
+
+// GetReadVersion returns the transaction's read version.
+// Matches Java's FDBRecordContext.getReadVersion().
+func (rc *FDBRecordContext) GetReadVersion() (int64, error) {
+	return rc.tx.GetReadVersion().Get()
+}
+
+// SetReadVersion sets the transaction's read version explicitly.
+// Matches Java's FDBRecordContext.setReadVersion().
+func (rc *FDBRecordContext) SetReadVersion(version int64) {
+	rc.tx.SetReadVersion(version)
 }
 
 // HasVersionMutations returns true if there are pending version mutations.

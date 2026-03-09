@@ -161,7 +161,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Multi-type indexes** — `AddMultiTypeIndex(recordTypeNames, index)`. 0 types → universal, 1 type → single-type, 2+ types → multi-type (stored per RecordType, included in `GetIndexesForRecordType`). Matches Java semantics.
 
-- [ ] **Schema evolution version tracking** — Go has `version` field but no `updateRecords()` method to bump version or validate backward compatibility.
+- [x] **Schema evolution version tracking** — `SetVersion()` on builder sets metadata version. Used in store header for compatibility tracking.
 
 - [x] **Primary key prefix checking** — `PrimaryKeyHasRecordTypePrefix()` on `RecordMetaData`. Checks all record types' primary keys start with `RecordTypeKeyExpression`, including through `CompositeKeyExpression`.
 
@@ -250,7 +250,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **FDBRecordContextConfig** — Java has builder for transaction settings: transaction ID, timeout, priority, MDC context, tags, tracing, weak read semantics. Go's FDBRecordContext is minimal (just tx + go context).
 
-- [ ] **Commit hooks** — Java has `CommitCheckAsync` (pre-commit consistency checks) and `PostCommit` (post-commit actions) interfaces. Go has none.
+- [x] **Commit hooks** — `AddCommitCheck()` for pre-commit consistency checks, `AddPostCommit()` for post-commit callbacks. Run in `flushAndCommit()`. Matches Java's `CommitCheckAsync` and `PostCommit` interfaces.
 
 ### MEDIUM
 
@@ -260,7 +260,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Store state caching** — Java has `FDBRecordStoreStateCache` to avoid redundant header reads. Go loads state on demand without caching.
 
-- [ ] **Read/write version management** — Java has `getReadVersion()`, `setReadVersion()`, `getReadVersionAsync()`. Go has none.
+- [x] **Read/write version management** — `GetReadVersion()`, `SetReadVersion()` on `FDBRecordContext`. Wraps FDB transaction read version.
 
 - [ ] **Conflict key reporting** — Java has `reportConflictingKeys()`, `getNotCommittedConflictingKeys()` for debugging. Go has none.
 
@@ -286,7 +286,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Versionstamp conversion** — Java has `fromVersionstamp()`/`toVersionstamp()` explicit converters. Go handles this differently (context-level mutations) which works but lacks the explicit API.
+- [x] **Versionstamp conversion** — `FromVersionstamp()` creates FDBRecordVersion from FDB Versionstamp. `ToVersionstamp()` converts back. Matches Java API.
 
 ---
 
