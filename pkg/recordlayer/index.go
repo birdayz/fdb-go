@@ -9,6 +9,7 @@ import (
 const (
 	IndexTypeValue = "value"
 	IndexTypeCount = "count"
+	IndexTypeSum   = "sum"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -65,6 +66,20 @@ func NewCountIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeCount,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewSumIndex creates a SUM index with the given name and root key expression.
+// SUM indexes use FDB atomic ADD to maintain running sums per grouping key.
+// The expression must include at least one grouped (aggregated) column.
+// Matches Java's new Index(name, rootExpression, IndexTypes.SUM).
+func NewSumIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeSum,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

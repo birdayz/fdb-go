@@ -993,6 +993,8 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 	switch index.Type {
 	case IndexTypeCount:
 		return newCountIndexMaintainer(index, idxSubspace, tx, store)
+	case IndexTypeSum:
+		return newSumIndexMaintainer(index, idxSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

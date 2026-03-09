@@ -284,9 +284,19 @@ func (store *FDBRecordStore) indexStateSubspace() subspace.Subspace {
 // clearIndexData removes all FDB data for an index.
 // Matches Java's FDBRecordStore.clearIndexData().
 func (store *FDBRecordStore) clearIndexData(index *Index) {
-	// Clear index entries
+	// Clear index entries using PrefixRange (not subspace.Range) to include
+	// the exact prefix key. Ungrouped aggregate indexes (COUNT/SUM) store
+	// data at the subspace prefix itself, which subspace.Range() excludes.
+	// Matches Java's Range.startsWith(indexSubspace.pack()) — see comment in
+	// FDBRecordStore.clearIndexData: "startsWith to handle ungrouped aggregate indexes".
 	idxSubspace := store.indexSubspace(index)
-	store.context.Transaction().ClearRange(idxSubspace)
+	idxPrefixRange, err := fdb.PrefixRange(idxSubspace.Bytes())
+	if err == nil {
+		store.context.Transaction().ClearRange(idxPrefixRange)
+	} else {
+		// Fallback: should never happen for valid subspace prefixes
+		store.context.Transaction().ClearRange(idxSubspace)
+	}
 
 	// Clear secondary space
 	secSubspace := store.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey())
