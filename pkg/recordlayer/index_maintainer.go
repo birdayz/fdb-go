@@ -106,9 +106,14 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Add new entries
+	valueBytes := tuple.Tuple{}.Pack() // VALUE index stores empty tuple
 	for i := range newEntries {
 		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
 		keyBytes := m.indexSubspace.Pack(entryTupleKey)
+
+		if err := checkKeyValueSizes(m.index, newEntries[i].primaryKey, keyBytes, valueBytes); err != nil {
+			return err
+		}
 
 		if m.index.IsUnique() && !indexKeyContainsNull(newEntries[i].key) {
 			if err := m.checkUniqueness(newEntries[i]); err != nil {
@@ -116,8 +121,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			}
 		}
 
-		// VALUE index stores empty tuple as value
-		m.tx.Set(fdb.Key(keyBytes), tuple.Tuple{}.Pack())
+		m.tx.Set(fdb.Key(keyBytes), valueBytes)
 	}
 
 	return nil
@@ -218,6 +222,57 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	}
 
 	return nil
+}
+
+// checkKeyValueSizes validates that an index entry's key and value don't exceed
+// FDB limits. Called on insert only (not delete).
+// Matches Java's StandardIndexMaintainer.checkKeyValueSizes().
+func checkKeyValueSizes(index *Index, primaryKey tuple.Tuple, keyBytes, valueBytes []byte) error {
+	if len(keyBytes) > KeySizeLimit {
+		return &IndexKeySizeError{
+			IndexName:  index.Name,
+			PrimaryKey: primaryKey,
+			KeySize:    len(keyBytes),
+			Limit:      KeySizeLimit,
+		}
+	}
+	if len(valueBytes) > ValueSizeLimit {
+		return &IndexValueSizeError{
+			IndexName:  index.Name,
+			PrimaryKey: primaryKey,
+			ValueSize:  len(valueBytes),
+			Limit:      ValueSizeLimit,
+		}
+	}
+	return nil
+}
+
+// IndexKeySizeError indicates an index entry key exceeds the FDB key size limit.
+// Matches Java's FDBExceptions.FDBStoreKeySizeException.
+type IndexKeySizeError struct {
+	IndexName  string
+	PrimaryKey tuple.Tuple
+	KeySize    int
+	Limit      int
+}
+
+func (e *IndexKeySizeError) Error() string {
+	return fmt.Sprintf("index entry key too large for index %q (pk=%v): %d bytes exceeds limit %d",
+		e.IndexName, e.PrimaryKey, e.KeySize, e.Limit)
+}
+
+// IndexValueSizeError indicates an index entry value exceeds the FDB value size limit.
+// Matches Java's FDBExceptions.FDBStoreValueSizeException.
+type IndexValueSizeError struct {
+	IndexName  string
+	PrimaryKey tuple.Tuple
+	ValueSize  int
+	Limit      int
+}
+
+func (e *IndexValueSizeError) Error() string {
+	return fmt.Sprintf("index entry value too large for index %q (pk=%v): %d bytes exceeds limit %d",
+		e.IndexName, e.PrimaryKey, e.ValueSize, e.Limit)
 }
 
 // indexKeyContainsNull returns true if any element of the index key is nil.

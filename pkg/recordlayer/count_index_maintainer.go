@@ -39,15 +39,14 @@ func newCountIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx f
 // For updates: decrements old grouping keys, increments new grouping keys.
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys().
 func (m *CountIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	var oldKeys, newKeys []tuple.Tuple
+
 	if oldRecord != nil {
 		entries, err := m.evaluateGroupingKeys(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate count index %q for old record: %w", m.index.Name, err)
 		}
-		for _, key := range entries {
-			fdbKey := m.indexSubspace.Pack(key)
-			m.tx.Add(fdb.Key(fdbKey), littleEndianInt64MinusOne)
-		}
+		oldKeys = entries
 	}
 
 	if newRecord != nil {
@@ -55,13 +54,61 @@ func (m *CountIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[prot
 		if err != nil {
 			return fmt.Errorf("evaluate count index %q for new record: %w", m.index.Name, err)
 		}
-		for _, key := range entries {
-			fdbKey := m.indexSubspace.Pack(key)
-			m.tx.Add(fdb.Key(fdbKey), littleEndianInt64One)
+		newKeys = entries
+	}
+
+	// Skip common grouping keys on update — no-op mutations waste transaction bytes.
+	// Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys() which filters
+	// out keys present in both old and new via commonKeys().
+	if oldKeys != nil && newKeys != nil {
+		oldKeys, newKeys = removeCommonGroupingKeys(oldKeys, newKeys)
+	}
+
+	for _, key := range oldKeys {
+		fdbKey := m.indexSubspace.Pack(key)
+		m.tx.Add(fdb.Key(fdbKey), littleEndianInt64MinusOne)
+	}
+
+	for _, key := range newKeys {
+		fdbKey := m.indexSubspace.Pack(key)
+		if newRecord != nil {
+			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, littleEndianInt64One); err != nil {
+				return err
+			}
 		}
+		m.tx.Add(fdb.Key(fdbKey), littleEndianInt64One)
 	}
 
 	return nil
+}
+
+// removeCommonGroupingKeys removes grouping keys present in both old and new.
+// This avoids no-op -1/+1 atomic mutations when the grouping key didn't change.
+func removeCommonGroupingKeys(old, new []tuple.Tuple) ([]tuple.Tuple, []tuple.Tuple) {
+	newSet := make(map[string]struct{}, len(new))
+	for _, t := range new {
+		newSet[string(t.Pack())] = struct{}{}
+	}
+
+	common := make(map[string]struct{})
+	var filteredOld []tuple.Tuple
+	for _, t := range old {
+		p := string(t.Pack())
+		if _, ok := newSet[p]; ok {
+			common[p] = struct{}{}
+		} else {
+			filteredOld = append(filteredOld, t)
+		}
+	}
+
+	var filteredNew []tuple.Tuple
+	for _, t := range new {
+		if _, ok := common[string(t.Pack())]; !ok {
+			filteredNew = append(filteredNew, t)
+		}
+	}
+
+	return filteredOld, filteredNew
 }
 
 // UpdateWhileWriteOnly for COUNT indexes checks the index build range set

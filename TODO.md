@@ -81,6 +81,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Reverse scan | scanOrdersReverse, scanOrdersReverseWithContinuation | reverse_scan_conformance_test.go | YES |
 | Fan-out indexes | saveOrderWithFanOutIndex, scanFanOutIndex, deleteOrderWithFanOutIndex | fanout_index_conformance_test.go | YES |
 | Composite index (PK dedup) | saveOrderWithCompositeIndex, scanCompositeIndex | composite_index_conformance_test.go | YES |
+| COUNT index | saveOrderWithCountIndex, deleteOrderWithCountIndex, scanCountIndex | count_index_conformance_test.go | YES |
 
 ---
 
@@ -399,11 +400,11 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Key/value size validation missing on index entries** — Java's `StandardIndexMaintainer.checkKeyValueSizes()` validates entry sizes before write. Go relies on FDB to reject at commit time with less informative errors.
+- [x] **Key/value size validation missing on index entries** — Fixed: `checkKeyValueSizes()` validates FDB key (10KB) and value (100KB) limits before writing index entries. Returns `IndexKeySizeError`/`IndexValueSizeError` with index name, primary key, and sizes. Applied in both `StandardIndexMaintainer.Update()` and `CountIndexMaintainer.Update()`. 1 test.
 
-- [ ] **COUNT index doesn't skip common grouping keys on update** — Go always decrements old + increments new grouping keys, even when unchanged. Creates extra no-op atomic mutations. Functionally correct but wastes transaction bytes.
+- [x] **COUNT index doesn't skip common grouping keys on update** — Fixed: `CountIndexMaintainer.Update()` now calls `removeCommonGroupingKeys()` to filter unchanged grouping keys before applying -1/+1 atomic mutations. Matches Java's `AtomicMutationIndexMaintainer.updateIndexKeys()` common key filtering.
 
-- [ ] **COUNT index conformance tests missing** — COUNT index only has Go-only integration tests. No cross-Java conformance validation of entry key format or value decoding.
+- [x] **COUNT index conformance tests** — 6 conformance specs: Go writes→both scan, Java writes→both scan, mixed writes combined counts, Go deletes Java-written record, Java deletes Go-written record, update moves counts. Java uses `new GroupingKeyExpression(field("price"), 0)` matching Go's `GroupAll(Field("price"))`.
 
 ---
 

@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -539,6 +540,39 @@ var _ = Describe("SecondaryIndexes", func() {
 			kvs = scanIndexEntries(store, priceIndex)
 			Expect(kvs).To(HaveLen(2))
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects index entry with key exceeding size limit", func() {
+		ks := specSubspace()
+
+		// Index on tags with fan-out — a single very long tag will produce a large key.
+		tagIndex := NewIndex("Order$tags", FanOut("tags"))
+		md := buildMetaWithIndex(tagIndex)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create a tag string that will exceed KeySizeLimit (10KB) once packed.
+			longTag := make([]byte, KeySizeLimit+1)
+			for i := range longTag {
+				longTag[i] = 'x'
+			}
+			order := &gen.Order{
+				OrderId: proto.Int64(1),
+				Price:   proto.Int32(100),
+				Tags:    []string{string(longTag)},
+			}
+			_, err = store.SaveRecord(order)
+			Expect(err).To(HaveOccurred())
+			var keySizeErr *IndexKeySizeError
+			Expect(errors.As(err, &keySizeErr)).To(BeTrue(),
+				"expected IndexKeySizeError, got: %v", err)
+			Expect(keySizeErr.IndexName).To(Equal("Order$tags"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
