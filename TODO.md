@@ -110,6 +110,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Build() doesn't validate primary keys** — Fixed: `Build()` now returns `(*RecordMetaData, error)` and validates all record types have primary keys set. All callers updated.
 
+- [x] **ScannedRecordsLimit checks after read, skipping records on resume** — Fixed: The scan limit check happened after `readNextRecord()`, making the continuation point past the undelivered record. On resume, that record was skipped. Moved check before read, matching Java's `CursorLimitManager.tryRecordScan()` which checks limits pre-read.
+
 ### MEDIUM
 
 - [x] **FDBRecordVersion missing Equal/Less** — Fixed: Added `Equal()`, `Less()`, `String()` methods matching Java's `equals()`/`compareTo()`/`toString()` semantics.
@@ -275,9 +277,11 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
   - [x] `Empty`, `FromList`, `Filter`, `Skip`, `LimitRows` — basic utilities
   - [ ] **Set operations**: `UnionCursor`, `IntersectionCursor`, `DedupCursor`
-  - [ ] **Composition**: `FlatMapPipelinedCursor`, `ChainedCursor`
+  - [x] `FlatMapPipelinedCursor` — flat-map with proto-wrapped `FlatMapContinuation`, check value support
+  - [ ] **Composition**: `ChainedCursor`
   - [ ] **Aggregation**: `AggregateCursor` with accumulator states
-  - [ ] **Control flow**: `FallbackCursor`, `AutoContinuingCursor` (auto-creates new transactions on time limit, seamless large-dataset scanning across tx boundaries — research Java's implementation first)
+  - [x] `AutoContinuingCursor` — auto-creates new transactions on scan/time/byte/row limits for seamless large-dataset scanning across tx boundaries. Includes retry logic for transient errors.
+  - [ ] **Control flow**: `FallbackCursor`
 
 - [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
 
