@@ -905,6 +905,11 @@ func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey t
 	store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
 
+func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error) {
+	irs := NewIndexingRangeSet(store.subspace, index)
+	return irs.ContainsKey(store.context.Transaction(), primaryKey.Pack())
+}
+
 // saveRecordVersion stores the version for a record using the new inline format.
 // Version is stored adjacent to the record at recordsSubspace.pack(primaryKey, -1),
 // matching Java's SplitHelper.RECORD_VERSION for format version >= 6.

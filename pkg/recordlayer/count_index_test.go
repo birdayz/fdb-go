@@ -223,6 +223,200 @@ var _ = Describe("CountIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("UpdateWhileWriteOnly skips count for records outside built range", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark index WRITE_ONLY (clears any auto-built data).
+			_, err = store.ClearAndMarkIndexWriteOnly(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Simulate partial build: mark PK range [0x00, pack(5)) as built.
+			// PKs 1-4 are "already built", PK 5+ are not.
+			irs := NewIndexingRangeSet(ks, countIdx)
+			pk5 := tuple.Tuple{int64(5)}.Pack()
+			_, err = irs.InsertRange(rtx.Transaction(), []byte{0x00}, pk5, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save records in built range — should update count.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save records outside built range — should NOT update count.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark readable to scan.
+			_, err = store.MarkIndexReadable(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only records in built range (PK=2, PK=3) should be counted.
+			// PK=7 and PK=10 were outside the range — skipped.
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UpdateWhileWriteOnly updates count for records inside built range", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark index WRITE_ONLY.
+			_, err = store.ClearAndMarkIndexWriteOnly(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Simulate full range built (entire key space).
+			irs := NewIndexingRangeSet(ks, countIdx)
+			_, err = irs.InsertRange(rtx.Transaction(), []byte{0x00}, []byte{0xff}, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			// All saves should update the count — entire range is built.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.MarkIndexReadable(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(entries[1].Key).To(Equal(tuple.Tuple{int64(200)}))
+			Expect(entries[1].Value).To(Equal(tuple.Tuple{int64(1)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UpdateWhileWriteOnly handles delete in built range", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark index WRITE_ONLY with full range built.
+			_, err = store.ClearAndMarkIndexWriteOnly(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+			irs := NewIndexingRangeSet(ks, countIdx)
+			_, err = irs.InsertRange(rtx.Transaction(), []byte{0x00}, []byte{0xff}, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 3 records.
+			for i := int64(1); i <= 3; i++ {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Delete one — should decrement count.
+			_, err = store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.MarkIndexReadable(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UpdateWhileWriteOnly skips delete for records outside built range", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark WRITE_ONLY with only range [0x00, pack(5)) built.
+			_, err = store.ClearAndMarkIndexWriteOnly(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+			irs := NewIndexingRangeSet(ks, countIdx)
+			pk5 := tuple.Tuple{int64(5)}.Pack()
+			_, err = irs.InsertRange(rtx.Transaction(), []byte{0x00}, pk5, false)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert record in built range, then save outside built range.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete the record outside built range — should NOT decrement.
+			_, err = store.DeleteRecord(tuple.Tuple{int64(7)})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.MarkIndexReadable(countIdx.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			// Only PK=2 was counted (in built range). PK=7 was skipped on insert AND delete.
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(1)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("reverse scans count index", func() {
 		ks := specSubspace()
 

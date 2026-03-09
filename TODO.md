@@ -391,7 +391,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
-- [ ] **COUNT index UpdateWhileWriteOnly skips range set check** — Go passes through to `Update()` unconditionally. Java checks the range set for non-idempotent indexes during WRITE_ONLY builds, only updating if PK is in the already-built range. Can cause double-counting during online COUNT index builds. (`count_index_maintainer.go:71`)
+- [x] **COUNT index UpdateWhileWriteOnly skips range set check** — Fixed: `UpdateWhileWriteOnly` now checks `IndexingRangeSet.ContainsKey()` before updating, matching Java's `StandardIndexMaintainer.updateWriteOnlyByRecords()`. Only updates if PK is in the already-built range. Added `isKeyInIndexBuildRange()` to `indexStoreContext`. 4 tests.
 
 - [ ] **Record count rebuild on metadata version change** — When count key expression changes between metadata versions, Go won't detect or rebuild counts. Java's `checkPossiblyRebuildRecordCounts()` handles this. (`store.go:683`)
 

@@ -34,6 +34,11 @@ type indexStoreContext interface {
 	isIndexReadableUniquePending(index *Index) bool
 	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
 	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
+	// isKeyInIndexBuildRange checks if a primary key is in the already-built range
+	// of an index being built online. Used by non-idempotent index maintainers
+	// (COUNT) during WRITE_ONLY to avoid double-counting.
+	// Matches Java's StandardIndexMaintainer.addedRangeWithKey().
+	isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error)
 }
 
 // StandardIndexMaintainer handles VALUE index maintenance.

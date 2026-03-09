@@ -64,11 +64,36 @@ func (m *CountIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[prot
 	return nil
 }
 
-// UpdateWhileWriteOnly for COUNT indexes is a pass-through to Update.
-// COUNT is NOT idempotent, but during index building, all records are
-// scanned and counted, so duplicates from concurrent writes are acceptable.
-// Matches Java's AtomicMutationIndexMaintainer behavior.
+// UpdateWhileWriteOnly for COUNT indexes checks the index build range set
+// before updating. COUNT is non-idempotent — blindly updating would cause
+// double-counting when the online indexer has already processed the record.
+// Only updates if the record's primary key is in the already-built range.
+// If not in range, the online indexer will handle it when it gets there.
+// Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
 func (m *CountIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	var primaryKey tuple.Tuple
+	if oldRecord != nil {
+		primaryKey = oldRecord.PrimaryKey
+	} else if newRecord != nil {
+		primaryKey = newRecord.PrimaryKey
+	} else {
+		return nil
+	}
+
+	if m.store == nil {
+		// No store context — fall back to direct update.
+		return m.Update(oldRecord, newRecord)
+	}
+
+	inRange, err := m.store.isKeyInIndexBuildRange(m.index, primaryKey)
+	if err != nil {
+		return fmt.Errorf("check index build range for COUNT index %q: %w", m.index.Name, err)
+	}
+
+	if !inRange {
+		return nil // Not yet built — the online indexer will handle it.
+	}
+
 	return m.Update(oldRecord, newRecord)
 }
 
