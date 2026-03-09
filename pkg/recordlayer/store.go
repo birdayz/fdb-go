@@ -47,7 +47,8 @@ type FDBRecordStore struct {
 	context     *FDBRecordContext
 	metaData    *RecordMetaData
 	subspace    subspace.Subspace
-	storeHeader *gen.DataStoreInfo // Cached store header, loaded on Open/Create
+	storeHeader *gen.DataStoreInfo    // Cached store header, loaded on Open/Create
+	indexStates map[string]IndexState // Cached index states, loaded on Open/Create
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
@@ -528,6 +529,9 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 
 	// Type-specific indexes
 	for _, index := range store.metaData.GetIndexesForRecordType(recordType.Name) {
+		if !store.shouldMaintainIndex(index.Name) {
+			continue
+		}
 		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
 			return err
 		}
@@ -535,6 +539,9 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 
 	// Universal indexes (apply to all record types)
 	for _, index := range store.metaData.GetUniversalIndexes() {
+		if !store.shouldMaintainIndex(index.Name) {
+			continue
+		}
 		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
 			return err
 		}
@@ -936,6 +943,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 		return nil, err
 	}
 	store.storeHeader = storeHeader
+	store.indexStates = make(map[string]IndexState)
 
 	return store, nil
 }
@@ -962,6 +970,10 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	}
 	store.storeHeader = storeHeader
 
+	if err := store.loadIndexStates(); err != nil {
+		return nil, err
+	}
+
 	return store, nil
 }
 
@@ -987,6 +999,11 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		// Create store header if it doesn't exist
 		storeHeader = createStoreHeader(int32(b.metaData.Version()))
 		if err := store.writeStoreHeader(storeHeader); err != nil {
+			return nil, err
+		}
+		store.indexStates = make(map[string]IndexState)
+	} else {
+		if err := store.loadIndexStates(); err != nil {
 			return nil, err
 		}
 	}

@@ -18,6 +18,7 @@ import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContextConfi
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.IndexTypes;
 import com.apple.foundationdb.record.metadata.Key;
+import com.apple.foundationdb.record.metadata.expressions.KeyExpression;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.apple.foundationdb.Database;
@@ -566,6 +567,173 @@ public class ConformanceSteps {
                 response.put("sourceExhausted", result.getNoNextReason().isSourceExhausted());
             }
             return response;
+        });
+    }
+
+    // --- Reverse scan conformance steps ---
+
+    @ConformanceStep("scanOrdersReverse")
+    public List<Map<String, Object>> scanOrdersReverse(String clusterFile, byte[] subspace, int limit, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+
+            ScanProperties scanProps;
+            if (limit > 0) {
+                scanProps = new ScanProperties(ExecuteProperties.newBuilder()
+                    .setReturnedRowLimit(limit)
+                    .build(), true); // reverse=true
+            } else {
+                scanProps = ScanProperties.REVERSE_SCAN;
+            }
+
+            List<FDBStoredRecord<Message>> records = store.scanRecords(null, scanProps)
+                .asList().join();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (FDBStoredRecord<Message> record : records) {
+                Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+                Map<String, Object> orderMap = new HashMap<>();
+                orderMap.put("orderId", order.getOrderId());
+                if (order.hasPrice()) {
+                    orderMap.put("price", order.getPrice());
+                }
+                result.add(orderMap);
+            }
+            return result;
+        });
+    }
+
+    @ConformanceStep("scanOrdersReverseWithContinuation")
+    public Map<String, Object> scanOrdersReverseWithContinuation(String clusterFile, byte[] subspace, int limit, String continuation, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .createOrOpen();
+
+            byte[] contBytes = null;
+            if (continuation != null && !continuation.isEmpty()) {
+                contBytes = Base64.getDecoder().decode(continuation);
+            }
+
+            ScanProperties scanProps = new ScanProperties(ExecuteProperties.newBuilder()
+                .setReturnedRowLimit(limit)
+                .build(), true); // reverse=true
+
+            com.apple.foundationdb.record.RecordCursor<FDBStoredRecord<Message>> cursor =
+                store.scanRecords(contBytes, scanProps);
+
+            List<Map<String, Object>> orders = new ArrayList<>();
+            byte[] nextContinuation = null;
+
+            com.apple.foundationdb.record.RecordCursorResult<FDBStoredRecord<Message>> result;
+            while ((result = cursor.getNext()) != null && result.hasNext()) {
+                FDBStoredRecord<Message> record = result.get();
+                Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+                Map<String, Object> orderMap = new HashMap<>();
+                orderMap.put("orderId", order.getOrderId());
+                if (order.hasPrice()) {
+                    orderMap.put("price", order.getPrice());
+                }
+                orders.add(orderMap);
+            }
+            if (result != null) {
+                nextContinuation = result.getContinuation().toBytes();
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("orders", orders);
+            if (nextContinuation != null) {
+                response.put("continuation", Base64.getEncoder().encodeToString(nextContinuation));
+            }
+            if (result != null) {
+                response.put("sourceExhausted", result.getNoNextReason().isSourceExhausted());
+            }
+            return response;
+        });
+    }
+
+    // --- Fan-out index conformance steps ---
+
+    private static RecordMetaData createFanOutIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.addIndex("Order", new Index("Order$tags",
+            Key.Expressions.field("tags", KeyExpression.FanType.FanOut), IndexTypes.VALUE));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openFanOutIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createFanOutIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithFanOutIndex")
+    public void saveOrderWithFanOutIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openFanOutIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("scanFanOutIndex")
+    public java.util.List<java.util.Map<String, Object>> scanFanOutIndex(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createFanOutIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex(indexName);
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_VALUE, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+
+                java.util.List<Object> pkValues = new java.util.ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithFanOutIndex")
+    public boolean deleteOrderWithFanOutIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openFanOutIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
         });
     }
 

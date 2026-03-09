@@ -230,6 +230,15 @@ func sliceEqualNormalized(a, b []interface{}) bool {
 }
 
 func normalizedEqual(a, b interface{}) bool {
+	// Handle string comparison (e.g., fan-out index on string fields)
+	aStr, aIsStr := a.(string)
+	bStr, bIsStr := b.(string)
+	if aIsStr && bIsStr {
+		return aStr == bStr
+	}
+	if aIsStr != bIsStr {
+		return false
+	}
 	return toInt64(a) == toInt64(b)
 }
 

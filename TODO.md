@@ -59,9 +59,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Continuation token cross-platform** — 3 specs: Go→Java resume, Java→Go resume, alternating Go/Java. Cross-validated. Go uses TO_OLD (raw bytes) format matching Java Record Layer 4.2.6.0.
 
-- [ ] **Reverse scan conformance** — Go reverse scans are only self-tested. Need Java scan step with reverse support.
+- [x] **Reverse scan conformance** — 6 specs: Go writes/Java reverse scans, Java writes/Go reverse scans, limit, forward-reverse mirror, cross-platform continuation resume, empty store. Cross-validated.
 
-- [ ] **Fan-out index conformance** — Go fan-out creates multiple index entries per repeated field. Java must produce identical entries.
+- [x] **Fan-out index conformance** — 7 specs: Go writes/Java scans fan-out entries, Java writes/Go scans, multiple records, empty repeated field, delete removes all entries, update changes entries, cross-write. Cross-validated.
 
 ### Current conformance coverage
 
@@ -78,6 +78,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Split records | saveSplitOrder, loadSplitOrder | split_conformance_test.go | YES |
 | Secondary indexes | saveOrderWithIndex, scanIndex, deleteOrderWithIndex | index_conformance_test.go | YES |
 | Continuation tokens | scanOrdersWithContinuation | continuation_conformance_test.go | YES |
+| Reverse scan | scanOrdersReverse, scanOrdersReverseWithContinuation | reverse_scan_conformance_test.go | YES |
+| Fan-out indexes | saveOrderWithFanOutIndex, scanFanOutIndex, deleteOrderWithFanOutIndex | fanout_index_conformance_test.go | YES |
 
 ---
 
@@ -111,13 +113,13 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Index scanning** — `IndexMaintainer.Scan()` and `FDBRecordStore.ScanIndex()` return `RecordCursor[*IndexEntry]` with `TupleRange` support (ALL, AllOf, Between, BetweenInclusive), continuations, row/byte limits, forward/reverse. `IndexEntry.PrimaryKey()` and `IndexValues()` for key extraction.
 
-- [ ] **Index state management** — Java has 4 states: `READABLE`, `WRITE_ONLY`, `DISABLED`, `READABLE_UNIQUE_PENDING` (stored in `IndexStateSpaceKey` subspace). Go has none — all indexes are implicitly READABLE always. Blocks online index builds and disable/rebuild workflows.
+- [x] **Index state management** — 4 states: `READABLE`, `WRITE_ONLY`, `DISABLED`, `READABLE_UNIQUE_PENDING`. Stored in `IndexStateSpaceKey` (5) subspace as tuple-packed int64. Loaded on store Open/CreateOrOpen. `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`. DISABLED indexes skip maintenance. Non-scannable indexes reject ScanIndex. Matches Java's wire format and semantics.
 
 - [ ] **Index build support** — Java has `updateWhileWriteOnly`, `isIdempotent`, `addedRangeWithKey`, RangeSet tracking for online builds. Go has none. Cannot build indexes on existing data.
 
 ### HIGH
 
-- [ ] **Index management store methods** — Java FDBRecordStore has 15+ index methods missing in Go: `rebuildIndex`, `markIndexReadable`, `markIndexDisabled`, `markIndexWriteOnly`, `getIndexState`, `isIndexReadable`, `isIndexWriteOnly`, `isIndexDisabled`, `clearAndMarkIndexWriteOnly`, `getIndexBuildStateAsync`, etc.
+- [x] **Index management store methods** — `GetIndexState`, `IsIndexReadable`, `IsIndexWriteOnly`, `IsIndexDisabled`, `IsIndexScannable`, `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`. Still missing: `rebuildIndex`, `getIndexBuildStateAsync`, `markIndexReadableOrUniquePending`.
 
 - [x] **Repeated field fan-out** — `FanOut("field")` creates `FieldKeyExpression` with `FanTypeFanOut`, producing one index entry per repeated value. Cross-product with `Concat()` works. Empty repeated field → no entries (matching Java).
 
@@ -220,7 +222,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Query execution methods** — Java has `countRecords()`, `evaluateIndexRecordFunction()`, `evaluateStoreFunction()`, `evaluateAggregateFunction()`. Go has none.
 
-- [ ] **Per-type record count** — Java has `getSnapshotRecordCountForRecordType()`. Go has `GetSnapshotRecordCount()` (total only, though per-type counting works via RecordTypeKeyExpression internally).
+- [x] **Per-type record count** — `GetSnapshotRecordCountForRecordType(recordTypeName)` added. Requires `RecordTypeKeyExpression` as count key. Matches Java's `getSnapshotRecordCountForRecordType()`.
 
 ### MEDIUM
 

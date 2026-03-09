@@ -179,6 +179,33 @@ func (c *emptyCursor[T]) SeqWithContinuation(_ context.Context) iter.Seq2[T, Rec
 	return func(func(T, RecordCursorContinuation) bool) {}
 }
 
+// errorCursor is a cursor that immediately returns an error on every OnNext call.
+// Used when a cursor cannot be created (e.g., scanning a non-readable index).
+type errorCursor[T any] struct {
+	err error
+}
+
+func (c *errorCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error) {
+	return RecordCursorResult[T]{}, c.err
+}
+
+func (c *errorCursor[T]) Close() error { return nil }
+
+func (c *errorCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(func(T) bool) {}
+}
+
+func (c *errorCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		var zero T
+		yield(zero, c.err)
+	}
+}
+
+func (c *errorCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(func(T, RecordCursorContinuation) bool) {}
+}
+
 // listCursor wraps a slice as a cursor. Matches Java's RecordCursor.fromList().
 type listCursor[T any] struct {
 	items  []T

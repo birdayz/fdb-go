@@ -138,16 +138,19 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 }
 
 // ScanIndex scans a secondary index and returns a cursor over IndexEntry results.
+// Returns an error cursor if the index is not in a scannable state (DISABLED or WRITE_ONLY).
 // Matches Java's FDBRecordStore.scanIndex().
-//
-// TODO: When index state management is implemented, this should check
-// isIndexScannable(index) and reject scans on non-READABLE indexes.
 func (store *FDBRecordStore) ScanIndex(
 	index *Index,
 	scanRange TupleRange,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	if !store.IsIndexScannable(index.Name) {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("%w: %s is %s", ErrIndexNotReadable, index.Name, store.GetIndexState(index.Name)),
+		}
+	}
 	idxSubspace := store.indexSubspace(index)
 	return newIndexCursor(index, idxSubspace, store.context.Transaction(), scanRange, continuation, scanProperties)
 }

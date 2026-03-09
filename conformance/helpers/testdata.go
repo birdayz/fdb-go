@@ -24,6 +24,12 @@ func (b *OrderBuilder) WithPrice(price int32) *OrderBuilder {
 	return b
 }
 
+// WithTags sets the tags for the order (repeated string field)
+func (b *OrderBuilder) WithTags(tags ...string) *OrderBuilder {
+	b.order.Tags = tags
+	return b
+}
+
 // WithFlower sets the flower type and color for the order
 func (b *OrderBuilder) WithFlower(flowerType string, color gen.Color) *OrderBuilder {
 	b.order.Flower = &gen.Flower{

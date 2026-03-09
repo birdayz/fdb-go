@@ -98,3 +98,17 @@ func (store *FDBRecordStore) GetSnapshotRecordCount(countKey tuple.Tuple) (int64
 func (store *FDBRecordStore) GetRecordCount() (int64, error) {
 	return store.GetSnapshotRecordCount(tuple.Tuple{})
 }
+
+// GetSnapshotRecordCountForRecordType returns the count of records for a specific record type.
+// Requires that the metadata uses RecordTypeKeyExpression as the count key.
+// Matches Java's getSnapshotRecordCountForRecordType().
+func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName string) (int64, error) {
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey == nil {
+		return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil)")
+	}
+	if !IsRecordTypeExpression(countKey) {
+		return 0, fmt.Errorf("per-type counting requires RecordTypeKeyExpression as count key")
+	}
+	return store.GetSnapshotRecordCount(tuple.Tuple{recordTypeName})
+}
