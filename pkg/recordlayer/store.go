@@ -662,6 +662,16 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	return nil
 }
 
+// validateFormatVersion checks that the stored format version is supported.
+// Matches Java's FormatVersion.validateFormatVersion().
+func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
+	storedVersion := storeHeader.GetFormatVersion()
+	if storedVersion > FormatVersionCurrent {
+		return fmt.Errorf("unsupported format version %d (max supported: %d)", storedVersion, FormatVersionCurrent)
+	}
+	return nil
+}
+
 // checkPossiblyRebuild compares the stored metadata version with the current
 // metadata version. If the current metadata has a higher version, indexes added
 // since the old version are rebuilt or marked according to the IndexRebuildPolicy.
@@ -707,9 +717,12 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 	}
 
-	// Update store header with new metadata version.
+	// Update store header with new metadata version and format version.
+	// Matches Java's checkRebuild() which sets info.setFormatVersion(formatVersion).
 	newVersion := int32(newMetaDataVersion)
 	storeHeader.MetaDataversion = &newVersion
+	fmtVersion := int32(FormatVersionCurrent)
+	storeHeader.FormatVersion = &fmtVersion
 	lastUpdateTime := uint64(time.Now().UnixMilli())
 	storeHeader.LastUpdateTime = &lastUpdateTime
 	if err := store.writeStoreHeader(storeHeader); err != nil {
@@ -1375,6 +1388,12 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	}
 	store.storeHeader = storeHeader
 
+	// Validate format version is supported.
+	// Matches Java's FormatVersion.validateFormatVersion().
+	if err := store.validateFormatVersion(storeHeader); err != nil {
+		return nil, err
+	}
+
 	if err := store.loadIndexStates(); err != nil {
 		return nil, err
 	}
@@ -1412,6 +1431,10 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		}
 		store.indexStates = make(map[string]IndexState)
 	} else {
+		// Validate format version is supported.
+		if err := store.validateFormatVersion(storeHeader); err != nil {
+			return nil, err
+		}
 		if err := store.loadIndexStates(); err != nil {
 			return nil, err
 		}
