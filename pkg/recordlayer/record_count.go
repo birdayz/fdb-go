@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
@@ -166,9 +167,16 @@ func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_R
 		return fmt.Errorf("invalid state transition for RecordCountState: %s → %s", existing, newState)
 	}
 
-	// When transitioning to DISABLED, clear all count data
+	// When transitioning to DISABLED, clear all count data.
+	// Use PrefixRange to include the exact prefix key — ungrouped counts
+	// are stored at countSubspace.Pack(tuple.Tuple{}) which equals the prefix.
 	if toDisabled {
-		store.context.Transaction().ClearRange(store.subspace.Sub(RecordCountKey))
+		countSubspace := store.subspace.Sub(RecordCountKey)
+		if pr, err := fdb.PrefixRange(countSubspace.Bytes()); err == nil {
+			store.context.Transaction().ClearRange(pr)
+		} else {
+			store.context.Transaction().ClearRange(countSubspace)
+		}
 	}
 
 	store.storeHeader.RecordCountState = &newState

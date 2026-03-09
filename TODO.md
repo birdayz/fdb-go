@@ -83,6 +83,16 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Composite index (PK dedup) | saveOrderWithCompositeIndex, scanCompositeIndex | composite_index_conformance_test.go | YES |
 | COUNT index | saveOrderWithCountIndex, deleteOrderWithCountIndex, scanCountIndex | count_index_conformance_test.go | YES |
 
+### NEW — conformance gaps identified 2026-03-09
+
+- [ ] **SUM index conformance** — CRITICAL. New atomic index type has no cross-platform validation. Go writes→Java scans, Java writes→Go scans, delete decrement, update regroup. ~6-8 specs.
+- [ ] **RangeSet wire format conformance** — CRITICAL. Foundation for index building. Storage: `pack(rangeBegin) → rangeEnd` (raw bytes). Go InsertRange→Java reads, Java→Go reads. ~4 specs.
+- [ ] **DeleteAllRecords cross-validation** — CRITICAL. Clears 9 subspaces, easy to miss one. Go deletes→Java confirms empty, Java→Go. ~4 specs.
+- [ ] **Store header format conformance** — HIGH. Format/user/metadata version persistence. Go creates→Java reads header, Java→Go. ~2 specs.
+- [ ] **Index state persistence across reopen** — HIGH. Mark WRITE_ONLY→close→reopen→verify persisted. Cross-platform. ~3-4 specs.
+- [ ] **FormerIndex tracking conformance** — HIGH. Prevents subspace key reuse (data corruption safety). Go removes index→Java verifies FormerIndex. ~2 specs.
+- [ ] **Store delete+recreate lifecycle** — HIGH. DeleteAllRecords then Create with same subspace. Header properly reset. ~3 specs.
+
 ---
 
 ## Bugs (found in conformance audit)

@@ -553,6 +553,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 	// Clear all subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
 	// Java does two range clears: [records, indexState) and (indexState, storeEnd).
 	// We clear individual subspaces for clarity.
+	// Use PrefixRange to include the exact prefix key — ungrouped aggregate
+	// data (e.g. record counts) is stored at the subspace prefix itself,
+	// which subspace.FDBRangeKeys() excludes.
 	for _, key := range []int{
 		RecordKey,                   // 1 - records
 		IndexKey,                    // 2 - index data
@@ -563,7 +566,12 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		RecordVersionKey,            // 8 - record versions
 		IndexBuildSpaceKey,          // 9 - index build state
 	} {
-		tx.ClearRange(store.subspace.Sub(key))
+		sub := store.subspace.Sub(key)
+		if pr, err := fdb.PrefixRange(sub.Bytes()); err == nil {
+			tx.ClearRange(pr)
+		} else {
+			tx.ClearRange(sub)
+		}
 	}
 
 	// Reset record count to 0. ClearRange alone doesn't override pending atomic
@@ -880,8 +888,14 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 		return false, nil
 	}
 
-	// Clear existing count data.
-	store.context.Transaction().ClearRange(store.subspace.Sub(RecordCountKey))
+	// Clear existing count data. Use PrefixRange to include the exact prefix
+	// key — ungrouped counts are stored at the subspace prefix itself.
+	countSub := store.subspace.Sub(RecordCountKey)
+	if pr, err := fdb.PrefixRange(countSub.Bytes()); err == nil {
+		store.context.Transaction().ClearRange(pr)
+	} else {
+		store.context.Transaction().ClearRange(countSub)
+	}
 
 	// Update header with the new (or cleared) count key.
 	if currentKey != nil {
