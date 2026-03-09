@@ -232,7 +232,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Metadata proto serialization** — Java has `toProto()`/`fromProto()` for persisting metadata definitions. Go has none. Needed for storing metadata in FDB itself.
+- [x] **Metadata proto serialization** — Java has `toProto()`/`fromProto()` for persisting metadata definitions. Implemented in Go.
   - [x] **KeyExpression proto serialization** — `ToKeyExpression()` on all expression types + `KeyExpressionFromProto()` dispatcher. Roundtrip + wire format tests. Matches Java's `KeyExpression.toKeyExpression()`/`fromProto()`. FanType mapping: Go None→SCALAR, FanOut→FAN_OUT, Concatenate→CONCATENATE.
   - [x] **RecordMetaData.toProto()/fromProto()** — `ToProto()` serializes metadata (file descriptor, dependencies, indexes with record type associations, record types with primary keys, former indexes, flags). `RecordMetaDataFromProto()` rebuilds from proto with topological dependency resolution. Index subspace keys tuple-packed. Explicit record type keys via Value proto. Wire roundtrip tested.
 
@@ -278,7 +278,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `ConcatCursor` — sequential concatenation with proto-wrapped continuations
   - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
   - [x] `Empty`, `FromList`, `FromListWithContinuation`, `Filter`, `Skip`, `LimitRows`, `SkipThenLimit`, `OrElse` — basic utilities
-  - [ ] **Set operations**: `UnionCursor`, `IntersectionCursor`, `DedupCursor`
+  - [x] **Set operations**: `UnionCursor` (ordered merge-union with deduplication), `IntersectionCursor` (ordered merge-intersection). Both support forward/reverse, proto-wrapped continuations, multi-cursor (3+). `ComparisonKeyFunc` for custom comparison keys.
+  - [ ] `DedupCursor`
   - [x] `FlatMapPipelinedCursor` — flat-map with proto-wrapped `FlatMapContinuation`, check value support
   - [ ] **Composition**: `ChainedCursor`
   - [ ] **Aggregation**: `AggregateCursor` with accumulator states

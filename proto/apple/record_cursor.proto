@@ -40,3 +40,27 @@ message KeyValueCursorContinuation {
     optional bytes inner_continuation = 1;
     optional sfixed64 magic_number = 2;
 }
+
+message IntersectionContinuation {
+    message CursorState {
+        optional bytes continuation = 1;
+        optional bool started = 2;
+    }
+    optional bytes first_continuation = 1;
+    optional bytes second_continuation = 2;
+    optional bool first_started = 3;
+    optional bool second_started = 4;
+    repeated CursorState other_child_state = 5;
+}
+
+message UnionContinuation {
+    message CursorState {
+        optional bytes continuation = 1;
+        optional bool exhausted = 2;
+    }
+    optional bytes first_continuation = 1;
+    optional bytes second_continuation = 2;
+    optional bool first_exhausted = 3;
+    optional bool second_exhausted = 4;
+    repeated CursorState other_child_state = 5;
+}
