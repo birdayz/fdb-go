@@ -383,7 +383,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### CRITICAL
 
-- [ ] **updateSecondaryIndexes doesn't handle cross-type overwrites** — When saving a record that changes type (same PK, different message type via `RecordExistenceCheckNone`), Go only considers the new type's indexes. Index entries from the old type's indexes are never removed, leaving orphans. Java correctly computes the index diff between old and new types. (`store.go:569`)
+- [x] **updateSecondaryIndexes doesn't handle cross-type overwrites** — Fixed: three-way index partition (old-only/new-only/common) matching Java's `updateSecondaryIndexes()`. Old-type-only index entries are deleted, new-type-only entries are inserted, common entries are updated. 4 tests: cross-type overwrite, round-trip back, same-type sanity, cross-type delete.
 
 - [ ] **Stale metadata detection missing** — When stored metadata version > local version (newer code already evolved the store), Go silently proceeds. Java throws `RecordStoreStaleMetaDataVersionException`. Could cause silent data corruption from stale code. (`store.go:687`)
 

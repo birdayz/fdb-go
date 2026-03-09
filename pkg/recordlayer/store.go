@@ -565,40 +565,116 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 
 // updateSecondaryIndexes updates all relevant indexes for a record change.
 // oldRecord is nil for inserts, newRecord is nil for deletes.
-// Matches Java's FDBRecordStore.updateSecondaryIndexes().
+//
+// When old and new records have the same type (or one is nil), indexes are
+// updated straightforwardly. When types differ (cross-type overwrite), indexes
+// are partitioned into three sets: old-only (delete entries), new-only (insert
+// entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
 
-	var recordType *RecordType
-	if newRecord != nil {
-		recordType = newRecord.RecordType
-	} else {
-		recordType = oldRecord.RecordType
+	// Fast path: same type (or one side nil) — no three-way split needed.
+	sameType := oldRecord == nil || newRecord == nil || oldRecord.RecordType.Name == newRecord.RecordType.Name
+	if sameType {
+		var recordType *RecordType
+		if newRecord != nil {
+			recordType = newRecord.RecordType
+		} else {
+			recordType = oldRecord.RecordType
+		}
+
+		for _, index := range store.metaData.GetIndexesForRecordType(recordType.Name) {
+			if !store.shouldMaintainIndex(index.Name) {
+				continue
+			}
+			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+				return err
+			}
+		}
+		for _, index := range store.metaData.GetUniversalIndexes() {
+			if !store.shouldMaintainIndex(index.Name) {
+				continue
+			}
+			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
-	// Type-specific indexes
-	for _, index := range store.metaData.GetIndexesForRecordType(recordType.Name) {
-		if !store.shouldMaintainIndex(index.Name) {
-			continue
-		}
-		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+	// Slow path: cross-type overwrite. Partition indexes into old-only,
+	// new-only, and common sets. Matches Java's three-way split.
+	oldIndexes := store.enabledIndexesForRecord(oldRecord)
+	newIndexes := store.enabledIndexesForRecord(newRecord)
+
+	commonIndexes, oldOnly, newOnly := partitionIndexes(oldIndexes, newIndexes)
+
+	// Delete entries from indexes that only the old type had.
+	for _, index := range oldOnly {
+		if err := store.updateOneIndex(index, oldRecord, nil); err != nil {
 			return err
 		}
 	}
-
-	// Universal indexes (apply to all record types)
-	for _, index := range store.metaData.GetUniversalIndexes() {
-		if !store.shouldMaintainIndex(index.Name) {
-			continue
+	// Insert entries into indexes that only the new type has.
+	for _, index := range newOnly {
+		if err := store.updateOneIndex(index, nil, newRecord); err != nil {
+			return err
 		}
+	}
+	// Update entries in indexes shared by both types.
+	for _, index := range commonIndexes {
 		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// enabledIndexesForRecord returns all enabled indexes (type-specific + universal)
+// that apply to the given record.
+func (store *FDBRecordStore) enabledIndexesForRecord(rec *FDBStoredRecord[proto.Message]) []*Index {
+	var result []*Index
+	for _, index := range store.metaData.GetIndexesForRecordType(rec.RecordType.Name) {
+		if store.shouldMaintainIndex(index.Name) {
+			result = append(result, index)
+		}
+	}
+	for _, index := range store.metaData.GetUniversalIndexes() {
+		if store.shouldMaintainIndex(index.Name) {
+			result = append(result, index)
+		}
+	}
+	return result
+}
+
+// partitionIndexes splits old and new index lists into three disjoint sets:
+// common (in both), oldOnly (only in old), newOnly (only in new).
+// Identity is by index name.
+func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly []*Index) {
+	newSet := make(map[string]*Index, len(newIndexes))
+	for _, idx := range newIndexes {
+		newSet[idx.Name] = idx
+	}
+
+	oldSet := make(map[string]struct{}, len(oldIndexes))
+	for _, idx := range oldIndexes {
+		oldSet[idx.Name] = struct{}{}
+		if _, ok := newSet[idx.Name]; ok {
+			common = append(common, idx)
+		} else {
+			oldOnly = append(oldOnly, idx)
+		}
+	}
+
+	for _, idx := range newIndexes {
+		if _, ok := oldSet[idx.Name]; !ok {
+			newOnly = append(newOnly, idx)
+		}
+	}
+	return
 }
 
 // updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
