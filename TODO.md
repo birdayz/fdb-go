@@ -80,6 +80,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Continuation tokens | scanOrdersWithContinuation | continuation_conformance_test.go | YES |
 | Reverse scan | scanOrdersReverse, scanOrdersReverseWithContinuation | reverse_scan_conformance_test.go | YES |
 | Fan-out indexes | saveOrderWithFanOutIndex, scanFanOutIndex, deleteOrderWithFanOutIndex | fanout_index_conformance_test.go | YES |
+| Composite index (PK dedup) | saveOrderWithCompositeIndex, scanCompositeIndex | composite_index_conformance_test.go | YES |
 
 ---
 
@@ -123,7 +124,64 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Index state management** — 4 states: `READABLE`, `WRITE_ONLY`, `DISABLED`, `READABLE_UNIQUE_PENDING`. Stored in `IndexStateSpaceKey` (5) subspace as tuple-packed int64. Loaded on store Open/CreateOrOpen. `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`. DISABLED indexes skip maintenance. Non-scannable indexes reject ScanIndex. Matches Java's wire format and semantics.
 
-- [ ] **Index build support** — Java has `updateWhileWriteOnly`, `isIdempotent`, `addedRangeWithKey`, RangeSet tracking for online builds. Go has none. Cannot build indexes on existing data.
+- [ ] **Index build support** — Cannot build indexes on existing data. Broken into sub-tasks below.
+
+#### Index build sub-tasks (dependency order)
+
+1. **RangeSet** (CRITICAL — foundation for all index building)
+   - [ ] `RangeSet` type backed by FDB subspace. Wire-compatible with Java's `com.apple.foundationdb.async.RangeSet`.
+   - Storage: each key-value = `[subspace.pack(rangeBegin)] → rangeEnd` (raw bytes, NOT packed). Range semantics: `[begin, end)` inclusive-exclusive. Valid key space: `[\x00, \xff)`.
+   - [ ] `InsertRange(tx, begin, end, requireEmpty bool) bool` — fill gaps in range set. `requireEmpty=true` = atomic test-and-set (returns false if range wasn't empty). `requireEmpty=false` = fill gaps, write-conflict only on gaps actually filled.
+   - [ ] `Contains(tx, key) bool` — snapshot read + read-conflict on key only.
+   - [ ] `MissingRanges(tx, begin, end, limit) []Range` — return gaps not yet in set.
+   - [ ] `IsEmpty(tx) bool` — check if entire `[\x00, \xff)` is missing.
+   - [ ] `Clear(tx)` — remove all entries.
+   - [ ] Unit tests: insert, contains, missing ranges, overlapping inserts, abutting ranges, concurrent inserts, empty checks.
+
+2. **IndexingRangeSet wrapper** (CRITICAL — wires RangeSet to index subspaces)
+   - [ ] `IndexingRangeSet` at store subspace `[6, indexSubspaceKey]` (INDEX_RANGE_SPACE).
+   - [ ] `FirstMissingRange()`, `ContainsKey(primaryKey)`, `InsertRange(begin, end, requireEmpty)`, `ListMissingRanges()`.
+   - [ ] Cleared on index delete / `ClearAndMarkIndexWriteOnly`.
+
+3. **WRITE_ONLY index maintenance** (CRITICAL — correctness during concurrent builds)
+   - [ ] `StandardIndexMaintainer.UpdateWhileWriteOnly(oldRecord, newRecord)` — called instead of `Update()` when index is WRITE_ONLY.
+   - [ ] For idempotent indexes: update directly (always safe).
+   - [ ] For non-idempotent indexes: check `addedRangeWithKey(primaryKey)` → only update if PK is in already-built range. Skip otherwise (builder will handle it).
+   - [ ] Wire into `updateSecondaryIndexes()` — use `UpdateWhileWriteOnly` when `IsIndexWriteOnly(idx)`.
+
+4. **OnlineIndexer — BY_RECORDS strategy** (CRITICAL — the actual builder)
+   - [ ] `OnlineIndexer` type with builder pattern: `SetIndex`, `SetStore`, `SetLimit`, `SetMaxRetries`.
+   - [ ] `BuildIndex()` — main entry: mark WRITE_ONLY → iterate all missing ranges → mark READABLE.
+   - [ ] `buildRangeOnly(store, recordsScanned)` — find first missing range via `IndexingRangeSet`, scan records in range, call `updateMaintainerBuilder()` per record, insert built range with `requireEmpty=true`.
+   - [ ] Transaction boundaries: each `buildRangeOnly` call = one transaction. Cursor continuation = primary key of last processed record.
+   - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned (int64 little-endian).
+   - [ ] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection.
+   - [ ] `MarkReadable()` — verify no missing ranges, transition WRITE_ONLY → READABLE.
+
+5. **rebuildIndex on store** (HIGH — needed for store.Open with new indexes)
+   - [ ] `FDBRecordStore.rebuildIndex(index)` — clear index entries + range set, rebuild from all records in one transaction (small datasets) or via OnlineIndexer (large).
+   - [ ] Called during `CreateOrOpen` when metadata adds a new index to an existing store.
+
+6. **OnlineIndexer — BY_INDEX strategy** (MEDIUM — optimization, not essential)
+   - [ ] Build new index from existing readable index instead of scanning all records.
+   - [ ] Uses source index's `ScanIndexRecords` → update target index.
+   - [ ] Range tracking uses source index entry keys instead of primary keys.
+   - [ ] Validation: source must be READABLE VALUE index, no duplicates.
+
+7. **Multi-target index building** (LOW — optimization for bulk schema changes)
+   - [ ] Build multiple WRITE_ONLY indexes in a single record scan pass.
+   - [ ] All target indexes share the same missing-range tracking (first index's RangeSet).
+
+8. **Mutual/concurrent index building** (LOW — multi-process coordination)
+   - [ ] Multiple OnlineIndexer processes build different ranges concurrently.
+   - [ ] Heartbeat tracking at `[9, indexSubspaceKey, 7, uuid]`.
+   - [ ] `requireEmpty=true` prevents double-processing of ranges.
+
+9. **Conformance tests** (CRITICAL — must validate wire compat)
+   - [ ] Go builds index on existing data → Java scans index, sees correct entries.
+   - [ ] Java builds index on existing data → Go scans index, sees correct entries.
+   - [ ] Go writes WRITE_ONLY records while Java builds → entries consistent.
+   - [ ] RangeSet wire format: Go writes ranges → Java reads them (and vice versa).
 
 ### HIGH
 
@@ -133,6 +191,10 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Sparse/filtered indexes** — `Index.Predicate` field: function that returns true if a record should be indexed. `StandardIndexMaintainer` skips entries when predicate returns false. Matches Java's `IndexPredicate` concept.
 
+- [x] **NULL-safe unique index checks** — Skip uniqueness check when index key contains null values. Matches Java's `indexEntry.keyContainsNonUniqueNull()` guard in `StandardIndexMaintainer.updateOneKeyAsync()`. Default `NullStandin.NULL` behavior: null key components bypass uniqueness enforcement.
+
+- [x] **ScanIndexRecords (fetch records from index)** — `ScanIndexRecords()` on store: scans an index, extracts primary keys from entries, fetches the actual records. Returns `RecordCursor[*FDBIndexedRecord]` (wraps both IndexEntry and stored record). Orphan entries (deleted records) are skipped. Matches Java's `scanIndexRecords()` → `fetchIndexRecords()` pipeline.
+
 ### MEDIUM
 
 - [ ] **Index types beyond VALUE** — Java has 15+ types: COUNT, COUNT_UPDATES, COUNT_NOT_NULL, SUM, MIN_EVER_TUPLE/LONG, MAX_EVER_TUPLE/LONG, RANK, TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Go only has VALUE.
@@ -141,7 +203,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Index validation** — `ValidateIndex()` scans all records and index entries to detect orphaned entries (in index but not in records) and missing entries (in records but not in index).
 
-- [ ] **Primary key component deduplication** — Java's `primaryKeyComponentPositions` tracks overlap between PK and index key to avoid redundant storage. Go always appends full PK. **Wire-incompatible** when Java trims PK components from index entries — Go and Java produce different index entry keys. Only triggers when index key expression overlaps with primary key (e.g., index on `Field("name")` with PK `Concat(RecordTypeKey(), Field("name"))`).
+- [x] **Primary key component deduplication** — `primaryKeyComponentPositions` computed at `Build()` time via `buildPrimaryKeyComponentPositions()`. `indexEntryKey()` calls `trimPrimaryKey()` to omit PK components already in the index key. `getEntryPrimaryKey()` reconstructs the full PK on read. Wire-compatible with Java. Conformance-tested: Go writes → Java scans, Java writes → Go scans, cross-write. 3 conformance specs + 15 unit tests.
 
 - [x] **Bulk index delete** — `DeleteIndexEntries()` clears all entries for a given index. `DeleteIndexEntriesInRange()` clears entries within a tuple range.
 

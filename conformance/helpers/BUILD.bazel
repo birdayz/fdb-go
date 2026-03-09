@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "helpers",
     srcs = [
+        "composite_index_conformance_store.go",
         "conformance_store.go",
         "container.go",
         "customer_conformance_store.go",

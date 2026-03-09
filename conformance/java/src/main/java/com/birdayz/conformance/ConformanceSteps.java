@@ -360,6 +360,85 @@ public class ConformanceSteps {
         });
     }
 
+    // --- Composite index conformance steps (PK dedup) ---
+
+    private static RecordMetaData createCompositeIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.addIndex("Order", new Index("Order$price_id",
+            Key.Expressions.concatenateFields("price", "order_id"), IndexTypes.VALUE));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openCompositeIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createCompositeIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithCompositeIndex")
+    public void saveOrderWithCompositeIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCompositeIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("scanCompositeIndex")
+    public java.util.List<java.util.Map<String, Object>> scanCompositeIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createCompositeIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("Order$price_id");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_VALUE, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+
+                java.util.List<Object> pkValues = new java.util.ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithCompositeIndex")
+    public boolean deleteOrderWithCompositeIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCompositeIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
     // --- Scan conformance steps ---
 
     @ConformanceStep("scanOrders")

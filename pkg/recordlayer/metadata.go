@@ -417,6 +417,28 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		bindRecordTypeKeyExpressions(idx.RootExpression)
 	}
 
+	// Compute primaryKeyComponentPositions for each index.
+	// For each record type that has this index, compute the overlap between
+	// the index key expression and the primary key. If a primary key component
+	// already appears in the index key, it is deduplicated from the index entry.
+	// Matches Java's RecordMetaDataBuilder which calls buildPrimaryKeyComponentPositions().
+	for _, rt := range types {
+		for _, idx := range rt.indexes {
+			if idx.primaryKeyComponentPositions == nil {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+			}
+		}
+	}
+	// Universal indexes: use the first record type's primary key (they should all match)
+	for _, idx := range b.universalIndexes {
+		if idx.primaryKeyComponentPositions == nil {
+			for _, rt := range types {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+				break
+			}
+		}
+	}
+
 	return &RecordMetaData{
 		recordTypes:         types,
 		fileDescriptor:      b.fileDescriptor,

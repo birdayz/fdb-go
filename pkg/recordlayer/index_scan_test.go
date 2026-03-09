@@ -425,7 +425,7 @@ var _ = Describe("IndexScanning", func() {
 					pk := int64(i + 1)
 					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{price, pk}))
 					Expect(entry.PrimaryKey()).To(Equal(tuple.Tuple{pk}))
-					Expect(entry.Key).To(HaveLen(3)) // 2 indexed + 1 PK
+					Expect(entry.Key).To(HaveLen(2)) // 2 indexed, PK deduplicated
 				}
 
 				return nil, nil
@@ -904,6 +904,140 @@ var _ = Describe("IndexScanning", func() {
 				// Column size is 2 (price + flower.type), so PK is 3rd element
 				Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
 				Expect(entries[1].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ScanIndexRecords", func() {
+		It("returns full records via index lookup", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				insertOrders(store, 3)
+
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(3))
+
+				for i, rec := range records {
+					expectedPK := int64(i + 1)
+					expectedPrice := int32((i + 1) * 100)
+
+					Expect(rec.IndexEntry).NotTo(BeNil())
+					Expect(rec.IndexEntry.IndexValues()).To(Equal(tuple.Tuple{int64(expectedPrice)}))
+
+					Expect(rec.Record).NotTo(BeNil())
+					Expect(rec.Record.PrimaryKey).To(Equal(tuple.Tuple{expectedPK}))
+					order := rec.Record.Record.(*gen.Order)
+					Expect(order.GetOrderId()).To(Equal(expectedPK))
+					Expect(order.GetPrice()).To(Equal(expectedPrice))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("respects TupleRange filtering", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				insertOrders(store, 5)
+
+				records, err := AsList(ctx, store.ScanIndexRecords(
+					"Order$price",
+					TupleRangeAllOf(tuple.Tuple{int64(300)}),
+					nil,
+					ForwardScan(),
+				))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(1))
+				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(300)))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns error for unknown index", func() {
+			metaData := buildMetaWithIndex()
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				cursor := store.ScanIndexRecords("nonexistent", TupleRangeAll, nil, ForwardScan())
+				_, scanErr := cursor.OnNext(ctx)
+				Expect(scanErr).To(HaveOccurred())
+				Expect(scanErr.Error()).To(ContainSubstring("not found"))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("supports row limits", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				insertOrders(store, 5)
+
+				scanProps := ForwardScan()
+				scanProps.ExecuteProperties.ReturnedRowLimit = 2
+
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, scanProps))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(2))
+
+				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
+				Expect(records[1].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("supports reverse scan", func() {
+			priceIndex := NewIndex("Order$price", Field("price"))
+			metaData := buildMetaWithIndex(priceIndex)
+
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				insertOrders(store, 3)
+
+				records, err := AsList(ctx, store.ScanIndexRecords("Order$price", TupleRangeAll, nil, ReverseScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(records).To(HaveLen(3))
+
+				Expect(records[0].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(300)))
+				Expect(records[1].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(200)))
+				Expect(records[2].Record.Record.(*gen.Order).GetPrice()).To(Equal(int32(100)))
 
 				return nil, nil
 			})

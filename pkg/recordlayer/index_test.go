@@ -296,15 +296,14 @@ var _ = Describe("SecondaryIndexes", func() {
 			kvs := scanIndexEntries(store, compositeIndex)
 			Expect(kvs).To(HaveLen(1))
 
-			// Entry key: (price, order_id, primary_key=order_id)
+			// Entry key: (price, order_id) — PK (order_id) is deduplicated since it
+			// already appears in the index key. Matches Java's primaryKeyComponentPositions.
 			idxSubspace := store.subspace.Sub(IndexKey, compositeIndex.SubspaceTupleKey())
 			entryTuple, err := idxSubspace.Unpack(kvs[0].Key)
 			Expect(err).NotTo(HaveOccurred())
-			// Composite: (999, 42) + PK (42) = (999, 42, 42)
-			Expect(entryTuple).To(HaveLen(3))
+			Expect(entryTuple).To(HaveLen(2))
 			Expect(entryTuple[0]).To(Equal(int64(999)))
 			Expect(entryTuple[1]).To(Equal(int64(42)))
-			Expect(entryTuple[2]).To(Equal(int64(42)))
 
 			return nil, nil
 		})
@@ -439,6 +438,58 @@ var _ = Describe("SecondaryIndexes", func() {
 
 			kvs := scanIndexEntries(store, priceIndex)
 			Expect(kvs).To(HaveLen(1))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UniqueIndexNullKeySkipsUniquenessCheck", func() {
+		// Java's StandardIndexMaintainer skips uniqueness checks when the index key
+		// contains a null component (NullStandin.NULL). Multiple records with null
+		// index values should coexist without uniqueness violations.
+		flowerTypeIndex := NewIndex("Order$flowerType", Nest("flower", Field("type"))).SetUnique()
+		metaData := buildMetaWithIndex(flowerTypeIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Two orders WITHOUT flower set → index key is (nil, pk).
+			// Both should succeed because null keys skip uniqueness checks.
+			order1 := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+			_, err = store.SaveRecord(order1)
+			Expect(err).NotTo(HaveOccurred())
+
+			order2 := &gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)}
+			_, err = store.SaveRecord(order2)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Both entries should exist in the index
+			kvs := scanIndexEntries(store, flowerTypeIndex)
+			Expect(kvs).To(HaveLen(2))
+
+			// But a UNIQUE non-null value should still be enforced
+			order3 := &gen.Order{
+				OrderId: proto.Int64(3),
+				Price:   proto.Int32(300),
+				Flower:  &gen.Flower{Type: proto.String("Rose")},
+			}
+			_, err = store.SaveRecord(order3)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Another record with the same non-null flower type → violation
+			order4 := &gen.Order{
+				OrderId: proto.Int64(4),
+				Price:   proto.Int32(400),
+				Flower:  &gen.Flower{Type: proto.String("Rose")},
+			}
+			_, err = store.SaveRecord(order4)
+			Expect(err).To(HaveOccurred())
+			var violation *RecordIndexUniquenessViolationError
+			Expect(err).To(BeAssignableToTypeOf(violation))
 
 			return nil, nil
 		})

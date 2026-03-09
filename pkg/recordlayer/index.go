@@ -35,6 +35,14 @@ type Index struct {
 	// If nil, all records are indexed. If set, only records where
 	// Predicate returns true are indexed (sparse/filtered index).
 	Predicate IndexPredicate
+
+	// primaryKeyComponentPositions tracks overlap between index key and primary key.
+	// Each element corresponds to a primary key component:
+	//   >= 0: the component already appears at that position in the index key (deduplicated)
+	//   < 0:  the component is NOT in the index key (appended to the entry)
+	// nil means no overlap (all PK components are appended as-is).
+	// Matches Java's Index.primaryKeyComponentPositions.
+	primaryKeyComponentPositions []int
 }
 
 // NewIndex creates a VALUE index with the given name and root key expression.
@@ -84,12 +92,56 @@ func (idx *Index) SetUnique() *Index {
 }
 
 // indexEntryKey builds the FDB tuple for an index entry.
-// Format: (indexedValues..., primaryKeyValues...).
-// Matches Java's FDBRecordStoreBase.indexEntryKey() — for the simple case
-// where no primary key component positions are set (no trimming).
-func indexEntryKey(indexValues tuple.Tuple, primaryKey tuple.Tuple) tuple.Tuple {
-	entry := make(tuple.Tuple, 0, len(indexValues)+len(primaryKey))
+// Format: (indexedValues..., trimmedPrimaryKeyValues...).
+// When the index has primaryKeyComponentPositions, PK components that already
+// appear in the index key are omitted (deduplicated). This matches Java's
+// FDBRecordStoreBase.indexEntryKey() which calls Index.trimPrimaryKey().
+func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) tuple.Tuple {
+	trimmed := idx.trimPrimaryKey(primaryKey)
+	entry := make(tuple.Tuple, 0, len(indexValues)+len(trimmed))
 	entry = append(entry, indexValues...)
-	entry = append(entry, primaryKey...)
+	entry = append(entry, trimmed...)
 	return entry
+}
+
+// trimPrimaryKey removes PK components that already appear in the index key.
+// Returns the remaining PK components that need to be appended to the index entry.
+// Matches Java's Index.trimPrimaryKey().
+func (idx *Index) trimPrimaryKey(primaryKey tuple.Tuple) tuple.Tuple {
+	if idx.primaryKeyComponentPositions == nil {
+		return primaryKey
+	}
+	trimmed := make(tuple.Tuple, 0, len(primaryKey))
+	for i, pos := range idx.primaryKeyComponentPositions {
+		if pos < 0 && i < len(primaryKey) {
+			trimmed = append(trimmed, primaryKey[i])
+		}
+	}
+	return trimmed
+}
+
+// getEntryPrimaryKey reconstructs the full primary key from an index entry key.
+// When primaryKeyComponentPositions is set, some PK components come from the
+// index key portion and some from the appended portion.
+// Matches Java's Index.getEntryPrimaryKey().
+func (idx *Index) getEntryPrimaryKey(entryKey tuple.Tuple) tuple.Tuple {
+	colSize := keyExpressionColumnSize(idx.RootExpression)
+	if idx.primaryKeyComponentPositions == nil {
+		if colSize < len(entryKey) {
+			return entryKey[colSize:]
+		}
+		return tuple.Tuple{}
+	}
+
+	pk := make(tuple.Tuple, len(idx.primaryKeyComponentPositions))
+	after := colSize
+	for i, pos := range idx.primaryKeyComponentPositions {
+		if pos >= 0 && pos < len(entryKey) {
+			pk[i] = entryKey[pos]
+		} else if after < len(entryKey) {
+			pk[i] = entryKey[after]
+			after++
+		}
+	}
+	return pk
 }

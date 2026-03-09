@@ -88,7 +88,7 @@ var _ = Describe("Index validation", func() {
 
 				// Manually add an orphaned index entry (no corresponding record)
 				indexSub := store.indexSubspace(priceIndex)
-				orphanKey := indexEntryKey(tuple.Tuple{int64(999)}, tuple.Tuple{int64(99)})
+				orphanKey := indexEntryKey(priceIndex, tuple.Tuple{int64(999)}, tuple.Tuple{int64(99)})
 				rtx.Transaction().Set(fdb.Key(indexSub.Pack(orphanKey)), tuple.Tuple{}.Pack())
 
 				result, err := store.ValidateIndex(ctx, priceIndex)
@@ -130,7 +130,7 @@ var _ = Describe("Index validation", func() {
 
 				// Manually delete the index entry to create a "missing" entry
 				indexSub := store.indexSubspace(priceIndex)
-				entryKey := indexEntryKey(tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})
+				entryKey := indexEntryKey(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})
 				rtx.Transaction().Clear(fdb.Key(indexSub.Pack(entryKey)))
 
 				result, err := store.ValidateIndex(ctx, priceIndex)

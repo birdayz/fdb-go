@@ -384,3 +384,92 @@ func (n *NestingKeyExpression) FieldNames() []string {
 	result = append(result, childNames...)
 	return result
 }
+
+// normalizeKeyForPositions flattens a key expression into a list of atomic
+// components for position matching. CompositeKeyExpression is flattened
+// recursively; NestingKeyExpression re-wraps each child; all others return
+// themselves as a single-element list.
+// Matches Java's KeyExpression.normalizeKeyForPositions().
+func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
+	switch e := expr.(type) {
+	case *CompositeKeyExpression:
+		var result []KeyExpression
+		for _, child := range e.expressions {
+			result = append(result, normalizeKeyForPositions(child)...)
+		}
+		return result
+	case *NestingKeyExpression:
+		childNorms := normalizeKeyForPositions(e.child)
+		result := make([]KeyExpression, len(childNorms))
+		for i, cn := range childNorms {
+			result[i] = &NestingKeyExpression{
+				parentField: e.parentField,
+				fanType:     e.fanType,
+				child:       cn,
+			}
+		}
+		return result
+	default:
+		return []KeyExpression{expr}
+	}
+}
+
+// keyExpressionEquals returns true if two key expressions are structurally
+// identical. Used by buildPrimaryKeyComponentPositions to find overlapping
+// components between index key and primary key.
+// Matches Java's KeyExpression.equals() semantics.
+func keyExpressionEquals(a, b KeyExpression) bool {
+	switch av := a.(type) {
+	case *FieldKeyExpression:
+		bv, ok := b.(*FieldKeyExpression)
+		return ok && av.fieldName == bv.fieldName && av.fanType == bv.fanType
+	case *RecordTypeKeyExpression:
+		_, ok := b.(*RecordTypeKeyExpression)
+		return ok // All RecordTypeKeyExpressions are structurally equal for position matching
+	case *EmptyKeyExpression:
+		_, ok := b.(*EmptyKeyExpression)
+		return ok
+	case *CompositeKeyExpression:
+		bv, ok := b.(*CompositeKeyExpression)
+		if !ok || len(av.expressions) != len(bv.expressions) {
+			return false
+		}
+		for i := range av.expressions {
+			if !keyExpressionEquals(av.expressions[i], bv.expressions[i]) {
+				return false
+			}
+		}
+		return true
+	case *NestingKeyExpression:
+		bv, ok := b.(*NestingKeyExpression)
+		return ok && av.parentField == bv.parentField && av.fanType == bv.fanType &&
+			keyExpressionEquals(av.child, bv.child)
+	default:
+		return false
+	}
+}
+
+// buildPrimaryKeyComponentPositions computes the overlap between an index key
+// expression and a primary key expression. Returns nil if there's no overlap.
+// Matches Java's RecordMetaDataBuilder.buildPrimaryKeyComponentPositions().
+func buildPrimaryKeyComponentPositions(indexKey, primaryKey KeyExpression) []int {
+	indexNorm := normalizeKeyForPositions(indexKey)
+	pkNorm := normalizeKeyForPositions(primaryKey)
+
+	positions := make([]int, len(pkNorm))
+	anyFound := false
+	for i, pkExpr := range pkNorm {
+		positions[i] = -1
+		for j, idxExpr := range indexNorm {
+			if keyExpressionEquals(pkExpr, idxExpr) {
+				positions[i] = j
+				anyFound = true
+				break
+			}
+		}
+	}
+	if !anyFound {
+		return nil
+	}
+	return positions
+}

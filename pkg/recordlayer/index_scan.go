@@ -8,6 +8,7 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"google.golang.org/protobuf/proto"
 )
 
 // IndexScanType identifies the type of index scan.
@@ -84,16 +85,12 @@ type IndexEntry struct {
 }
 
 // PrimaryKey extracts the primary key portion from the index entry key.
-// Index entries store keys as [indexValues..., primaryKeyValues...].
-// Matches Java's IndexEntry.getPrimaryKey().
+// When the index has primaryKeyComponentPositions, some PK components are
+// pulled from the index key portion (deduplicated) and the rest from the
+// appended tail. Matches Java's IndexEntry.getPrimaryKey() → Index.getEntryPrimaryKey().
 func (e *IndexEntry) PrimaryKey() tuple.Tuple {
 	if e.primaryKey == nil {
-		colSize := keyExpressionColumnSize(e.Index.RootExpression)
-		if colSize < len(e.Key) {
-			e.primaryKey = e.Key[colSize:]
-		} else {
-			e.primaryKey = tuple.Tuple{}
-		}
+		e.primaryKey = e.Index.getEntryPrimaryKey(e.Key)
 	}
 	return e.primaryKey
 }
@@ -409,6 +406,131 @@ func (c *indexCursor) Seq2(ctx context.Context) iter.Seq2[*IndexEntry, error] {
 // SeqWithContinuation returns an iterator sequence over (IndexEntry, continuation) pairs.
 func (c *indexCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*IndexEntry, RecordCursorContinuation] {
 	return func(yield func(*IndexEntry, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
+// FDBIndexedRecord wraps a record that was found via an index scan.
+// Contains both the index entry used to locate the record and the record itself.
+// Matches Java's com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord.
+type FDBIndexedRecord struct {
+	IndexEntry *IndexEntry
+	Record     *FDBStoredRecord[proto.Message]
+}
+
+// ScanIndexRecords scans a secondary index and fetches the actual records.
+// For each index entry, it loads the record by primary key.
+// Orphan index entries (pointing to deleted records) are skipped.
+// Matches Java's FDBRecordStore.scanIndexRecords().
+func (store *FDBRecordStore) ScanIndexRecords(
+	indexName string,
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*FDBIndexedRecord] {
+	index := store.metaData.GetIndex(indexName)
+	if index == nil {
+		return &errorCursor[*FDBIndexedRecord]{
+			err: fmt.Errorf("index %q not found", indexName),
+		}
+	}
+
+	indexCursor := store.ScanIndex(index, scanRange, continuation, scanProperties)
+	return &indexRecordCursor{
+		inner: indexCursor,
+		store: store,
+	}
+}
+
+// indexRecordCursor maps index entries to stored records by loading each record
+// via its primary key. Skips orphan entries (where the record no longer exists).
+type indexRecordCursor struct {
+	inner RecordCursor[*IndexEntry]
+	store *FDBRecordStore
+}
+
+func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBIndexedRecord], error) {
+	for {
+		result, err := c.inner.OnNext(ctx)
+		if err != nil {
+			return RecordCursorResult[*FDBIndexedRecord]{}, err
+		}
+		if !result.HasNext() {
+			return NewResultNoNext[*FDBIndexedRecord](
+				result.GetNoNextReason(),
+				result.GetContinuation(),
+			), nil
+		}
+
+		entry := result.GetValue()
+		pk := entry.PrimaryKey()
+
+		rec, err := c.store.LoadRecord(pk)
+		if err != nil {
+			return RecordCursorResult[*FDBIndexedRecord]{}, fmt.Errorf("load record for index entry %v: %w", pk, err)
+		}
+		if rec == nil {
+			// Orphan index entry — record was deleted but index not cleaned up.
+			// Skip it (matches Java's IndexOrphanBehavior.SKIP).
+			continue
+		}
+
+		return NewResultWithValue(&FDBIndexedRecord{
+			IndexEntry: entry,
+			Record:     rec,
+		}, result.GetContinuation()), nil
+	}
+}
+
+func (c *indexRecordCursor) Close() error {
+	return c.inner.Close()
+}
+
+func (c *indexRecordCursor) Seq(ctx context.Context) iter.Seq[*FDBIndexedRecord] {
+	return func(yield func(*FDBIndexedRecord) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *indexRecordCursor) Seq2(ctx context.Context) iter.Seq2[*FDBIndexedRecord, error] {
+	return func(yield func(*FDBIndexedRecord, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *indexRecordCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*FDBIndexedRecord, RecordCursorContinuation] {
+	return func(yield func(*FDBIndexedRecord, RecordCursorContinuation) bool) {
 		defer func() { _ = c.Close() }()
 		for {
 			result, err := c.OnNext(ctx)

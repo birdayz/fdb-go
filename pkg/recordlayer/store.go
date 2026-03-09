@@ -1007,7 +1007,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 // Matches Java's StandardIndexMaintainer.resolveUniquenessViolation().
 func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey := indexEntryKey(indexKey, primaryKey)
+	entryKey := indexEntryKey(index, indexKey, primaryKey)
 	store.context.Transaction().Clear(fdb.Key(violationSubspace.Pack(entryKey)))
 }
 
@@ -1015,7 +1015,7 @@ func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey t
 // Used during WRITE_ONLY index builds when a uniqueness conflict is detected.
 func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey := indexEntryKey(indexKey, primaryKey)
+	entryKey := indexEntryKey(index, indexKey, primaryKey)
 	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), tuple.Tuple{}.Pack())
 }
 

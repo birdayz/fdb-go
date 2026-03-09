@@ -62,20 +62,20 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 
 	// Skip unchanged entries (optimization matching Java's skipUpdateForUnchangedKeys)
 	if oldEntries != nil && newEntries != nil {
-		oldEntries, newEntries = removeCommonEntries(oldEntries, newEntries)
+		oldEntries, newEntries = removeCommonEntries(m.index, oldEntries, newEntries)
 	}
 
 	// Remove old entries first so uniqueness checks see clean state
 	for i := range oldEntries {
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(indexEntryKey(oldEntries[i].key, oldEntries[i].primaryKey))))
+		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey))))
 	}
 
 	// Add new entries
 	for i := range newEntries {
-		entryTupleKey := indexEntryKey(newEntries[i].key, newEntries[i].primaryKey)
+		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
 		keyBytes := m.indexSubspace.Pack(entryTupleKey)
 
-		if m.index.IsUnique() {
+		if m.index.IsUnique() && !indexKeyContainsNull(newEntries[i].key) {
 			if err := m.checkUniqueness(newEntries[i]); err != nil {
 				return err
 			}
@@ -171,6 +171,18 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	return nil
 }
 
+// indexKeyContainsNull returns true if any element of the index key is nil.
+// Matches Java's IndexEntry.keyContainsNonUniqueNull(): when an index key
+// component is null (from NullStandin.NULL), uniqueness checks are skipped.
+func indexKeyContainsNull(key tuple.Tuple) bool {
+	for _, v := range key {
+		if v == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // tuplesEqual compares two tuples by their packed byte representation.
 func tuplesEqual(a, b tuple.Tuple) bool {
 	return string(a.Pack()) == string(b.Pack())
@@ -179,9 +191,9 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 // removeCommonEntries filters out entries that are identical in both old and new.
 // This avoids unnecessary FDB mutations when a record update doesn't change
 // the indexed value. Matches Java's StandardIndexMaintainer.commonKeys optimization.
-func removeCommonEntries(old, new []indexEntry) ([]indexEntry, []indexEntry) {
+func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry) {
 	packEntry := func(e indexEntry) string {
-		return string(indexEntryKey(e.key, e.primaryKey).Pack())
+		return string(indexEntryKey(idx, e.key, e.primaryKey).Pack())
 	}
 
 	newSet := make(map[string]struct{}, len(new))

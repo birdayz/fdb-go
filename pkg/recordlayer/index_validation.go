@@ -63,7 +63,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 			for j, v := range values {
 				key[j] = v
 			}
-			entryKey := indexEntryKey(key, record.PrimaryKey)
+			entryKey := indexEntryKey(index, key, record.PrimaryKey)
 			packed := string(entryKey.Pack())
 			expectedEntries[packed] = IndexValidationEntry{
 				IndexKey:   key,
