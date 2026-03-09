@@ -971,4 +971,82 @@ public class ConformanceSteps {
             return null;
         });
     }
+
+    // --- SUM index conformance steps ---
+
+    private static RecordMetaData createSumIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        // Ungrouped SUM of price: field("price").ungrouped()
+        // = new GroupingKeyExpression(field("price"), 1)
+        // groupingCount = 1-1 = 0 → no grouping key, price is the summed value
+        metaDataBuilder.addIndex("Order", new Index("sum_price",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.SUM));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openSumIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createSumIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithSumIndex")
+    public void saveOrderWithSumIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openSumIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithSumIndex")
+    public boolean deleteOrderWithSumIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openSumIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanSumIndex")
+    public java.util.List<java.util.Map<String, Object>> scanSumIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createSumIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("sum_price");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                map.put("sum", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
 }

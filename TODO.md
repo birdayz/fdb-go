@@ -82,10 +82,11 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Fan-out indexes | saveOrderWithFanOutIndex, scanFanOutIndex, deleteOrderWithFanOutIndex | fanout_index_conformance_test.go | YES |
 | Composite index (PK dedup) | saveOrderWithCompositeIndex, scanCompositeIndex | composite_index_conformance_test.go | YES |
 | COUNT index | saveOrderWithCountIndex, deleteOrderWithCountIndex, scanCountIndex | count_index_conformance_test.go | YES |
+| SUM index | saveOrderWithSumIndex, deleteOrderWithSumIndex, scanSumIndex | sum_index_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
-- [ ] **SUM index conformance** — CRITICAL. New atomic index type has no cross-platform validation. Go writes→Java scans, Java writes→Go scans, delete decrement, update regroup. ~6-8 specs.
+- [x] **SUM index conformance** — CRITICAL. 7 specs: Go writes→Java scans, Java writes→Go scans, mixed writes combined sum, Go deletes Java-written record, Java deletes Go-written record, update via Go, update via Java. Cross-validated.
 - [ ] **RangeSet wire format conformance** — CRITICAL. Foundation for index building. Storage: `pack(rangeBegin) → rangeEnd` (raw bytes). Go InsertRange→Java reads, Java→Go reads. ~4 specs.
 - [ ] **DeleteAllRecords cross-validation** — CRITICAL. Clears 9 subspaces, easy to miss one. Go deletes→Java confirms empty, Java→Go. ~4 specs.
 - [ ] **Store header format conformance** — HIGH. Format/user/metadata version persistence. Go creates→Java reads header, Java→Go. ~2 specs.
