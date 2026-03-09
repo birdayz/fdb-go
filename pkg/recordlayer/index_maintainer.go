@@ -159,7 +159,10 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 }
 
 // checkUniqueness verifies no other record has the same index value.
-// Scans the index subspace for entries with the same index key but different primary key.
+// Scans the FULL prefix range (no limit) so FDB's read-conflict tracking
+// covers the entire range, preventing concurrent inserts of conflicting entries.
+// Java reads the full range too (no limit) and registers the scan as a
+// commit check via addIndexUniquenessCommitCheck().
 // Matches Java's StandardIndexMaintainer.checkUniqueness().
 func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	prefixKey := m.indexSubspace.Pack(entry.key)
@@ -168,41 +171,44 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		return fmt.Errorf("prefix range for uniqueness check on index %q: %w", m.index.Name, err)
 	}
 
-	kvs, err := m.tx.GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+	// No Limit — read the full range so FDB records a read conflict on the
+	// entire prefix. With Limit:1, FDB only tracks conflict up to the first
+	// key found, allowing concurrent inserts at higher keys to go undetected.
+	kvs, err := m.tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
 		return fmt.Errorf("uniqueness scan for index %q: %w", m.index.Name, err)
 	}
 
-	if len(kvs) == 0 {
-		return nil
-	}
-
-	// Unpack the existing entry to extract its primary key
-	existingTuple, err := m.indexSubspace.Unpack(kvs[0].Key)
-	if err != nil {
-		return fmt.Errorf("unpack existing index entry: %w", err)
-	}
-
-	// Primary key starts after the index key columns
 	indexColCount := len(entry.key)
-	if len(existingTuple) > indexColCount {
+
+	for _, kv := range kvs {
+		existingTuple, err := m.indexSubspace.Unpack(kv.Key)
+		if err != nil {
+			return fmt.Errorf("unpack existing index entry: %w", err)
+		}
+
+		if len(existingTuple) <= indexColCount {
+			continue
+		}
+
 		existingPK := tuple.Tuple(existingTuple[indexColCount:])
-		// If same PK, it's just our own record being updated — not a violation
-		if !tuplesEqual(existingPK, entry.primaryKey) {
-			// WRITE_ONLY indexes: write violation entries instead of throwing.
-			// Matches Java's StandardIndexMaintainer.checkUniqueness() which
-			// calls addUniquenessViolation() for both conflicting PKs.
-			if m.store != nil && m.store.isIndexWriteOnly(m.index) {
-				m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey)
-				m.store.addUniquenessViolation(m.index, entry.key, existingPK)
-				return nil
-			}
-			return &RecordIndexUniquenessViolationError{
-				IndexName:   m.index.Name,
-				IndexKey:    entry.key,
-				PrimaryKey:  entry.primaryKey,
-				ExistingKey: existingPK,
-			}
+		if tuplesEqual(existingPK, entry.primaryKey) {
+			continue // Our own record — not a violation
+		}
+
+		// WRITE_ONLY indexes: write violation entries instead of throwing.
+		// Matches Java's StandardIndexMaintainer.checkUniqueness() which
+		// calls addUniquenessViolation() for both conflicting PKs.
+		if m.store != nil && m.store.isIndexWriteOnly(m.index) {
+			m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey)
+			m.store.addUniquenessViolation(m.index, entry.key, existingPK)
+			return nil
+		}
+		return &RecordIndexUniquenessViolationError{
+			IndexName:   m.index.Name,
+			IndexKey:    entry.key,
+			PrimaryKey:  entry.primaryKey,
+			ExistingKey: existingPK,
 		}
 	}
 

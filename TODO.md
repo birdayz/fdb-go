@@ -387,7 +387,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Stale metadata detection missing** — Fixed: `checkPossiblyRebuild` now returns `StaleMetaDataVersionError` when stored version > local version, matching Java's `RecordStoreStaleMetaDataVersionException`. Also fixed `SetSplitLongRecords`, `SetStoreRecordVersions`, and `SetRecordCountKey` to bump metadata version when value changes, matching Java. 4 tests.
 
-- [ ] **Unique index pre-commit check missing** — Java adds `addIndexUniquenessCommitCheck()` to validate uniqueness at commit time, catching concurrent inserts that both pass the scan check. Go has no equivalent — two concurrent transactions can both insert conflicting unique values. (`index_maintainer.go:164`)
+- [x] **Unique index pre-commit check missing** — Fixed: `checkUniqueness` now reads the full prefix range (removed `Limit:1`) so FDB's read-conflict tracking covers the entire index value range. With `Limit:1`, FDB only tracked conflicts up to the first key found, allowing concurrent inserts at higher keys. Now matches Java's `StandardIndexMaintainer.checkUniqueness()` which also reads the full range. 3 tests: concurrent same-key rejection, concurrent different-key success, sequential uniqueness enforcement.
 
 ### HIGH
 
