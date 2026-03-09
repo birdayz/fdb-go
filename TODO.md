@@ -190,7 +190,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
-- [x] **Index management store methods** — `GetIndexState`, `IsIndexReadable`, `IsIndexWriteOnly`, `IsIndexDisabled`, `IsIndexScannable`, `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`, `RebuildIndex`. Still missing: `getIndexBuildStateAsync`, `markIndexReadableOrUniquePending`.
+- [x] **Index management store methods** — `GetIndexState`, `IsIndexReadable`, `IsIndexWriteOnly`, `IsIndexDisabled`, `IsIndexScannable`, `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`, `RebuildIndex`, `MarkIndexReadableOrUniquePending`. Still missing: `getIndexBuildStateAsync`.
 
 - [x] **Repeated field fan-out** — `FanOut("field")` creates `FieldKeyExpression` with `FanTypeFanOut`, producing one index entry per repeated value. Cross-product with `Concat()` works. Empty repeated field → no entries (matching Java).
 
@@ -226,7 +226,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **FormerIndex tracking** — `FormerIndex` struct with `SubspaceKey`, `AddedVersion`, `RemovedVersion`, `FormerName`. `RemoveIndex()` on builder creates FormerIndex and removes from all record types. `Build()` validates no subspace key reuse. `GetFormerIndexes()` on metadata.
 
-- [ ] **Schema validation** — Java has `MetaDataValidator` and `MetaDataEvolutionValidator`. Go has no validation on schema changes (primary key changes, version bumps, etc.).
+- [ ] **Schema evolution validation** — Java has `MetaDataEvolutionValidator` for old→new schema changes (field drops, type changes, index changes). Go has `MetaDataValidator` checks at Build time (duplicate type keys, duplicate subspace keys, PK fan-out, former index version ordering) but no evolution validation.
 
 ### MEDIUM
 
