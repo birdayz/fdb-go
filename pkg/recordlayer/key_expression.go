@@ -385,6 +385,32 @@ func (n *NestingKeyExpression) FieldNames() []string {
 	return result
 }
 
+// createsDuplicates returns true if a key expression can produce multiple tuples
+// for a single record (e.g., FanOut on a repeated field). Matches Java's
+// KeyExpression.createsDuplicates() — used to validate primary keys don't fan out.
+func createsDuplicates(expr KeyExpression) bool {
+	switch e := expr.(type) {
+	case *FieldKeyExpression:
+		return e.fanType == FanTypeFanOut
+	case *NestingKeyExpression:
+		return e.fanType == FanTypeFanOut || createsDuplicates(e.child)
+	case *CompositeKeyExpression:
+		for _, child := range e.expressions {
+			if createsDuplicates(child) {
+				return true
+			}
+		}
+		return false
+	case *RecordTypeKeyExpression:
+		if e.nested != nil {
+			return createsDuplicates(e.nested)
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // normalizeKeyForPositions flattens a key expression into a list of atomic
 // components for position matching. CompositeKeyExpression is flattened
 // recursively; NestingKeyExpression re-wraps each child; all others return

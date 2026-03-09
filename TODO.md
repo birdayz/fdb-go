@@ -375,7 +375,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] Bazel migration, nogo linting, CI pipeline, justfile — all done
 - [ ] **KeySpace/KeySpacePath** — Enterprise key management. LOW priority.
-- [ ] **ScanLimiter** — TimeScanLimiter, ByteScanLimiter, RecordScanLimiter composability. Important for production.
+- [x] **ScanLimiter** — TimeScanLimiter, ByteScanLimiter, RecordScanLimiter all enforced in both `keyValueCursor` and `indexCursor`. Time limit uses free initial pass (first record always succeeds). Continuation returned for cross-transaction resumption.
 
 ---
 

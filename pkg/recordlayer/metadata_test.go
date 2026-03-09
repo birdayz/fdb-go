@@ -308,4 +308,62 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		Expect(md.GetRecordType("Order")).NotTo(BeNil())
 		Expect(md.GetRecordType("Customer")).NotTo(BeNil())
 	})
+
+	It("Build rejects primary key with fan-out (createsDuplicates)", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(FanOut("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("create duplicates"))
+	})
+
+	It("Build rejects duplicate record type keys", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		// Set both types to the same record type key
+		builder.GetRecordType("Order").SetRecordTypeKey(42)
+		builder.GetRecordType("Customer").SetRecordTypeKey(42)
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("same record type key"))
+	})
+
+	It("Build rejects duplicate index subspace keys", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		idx1 := NewIndex("idx_price", Field("price"))
+		idx1.SetSubspaceKey(int64(99))
+		idx2 := NewIndex("idx_order_id", Field("order_id"))
+		idx2.SetSubspaceKey(int64(99))
+		builder.AddIndex("Order", idx1)
+		builder.AddIndex("Order", idx2)
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("same subspace key"))
+	})
+
+	It("Build rejects former index with addedVersion > removedVersion", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		// Add then remove an index to create a FormerIndex
+		idx := NewIndex("temp_idx", Field("price"))
+		builder.AddIndex("Order", idx)
+		builder.RemoveIndex("temp_idx")
+		// Corrupt the FormerIndex versions
+		fi := builder.GetFormerIndexes()
+		Expect(fi).To(HaveLen(1))
+		fi[0].AddedVersion = 100
+		fi[0].RemovedVersion = 50
+		md, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(md).To(BeNil())
+		Expect(err.Error()).To(ContainSubstring("addedVersion"))
+	})
 })

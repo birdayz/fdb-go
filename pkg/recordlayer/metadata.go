@@ -348,6 +348,11 @@ func removeIndexFromSlice(indexes []*Index, name string) []*Index {
 	return result
 }
 
+// GetFormerIndexes returns the builder's former indexes (for testing/inspection).
+func (b *RecordMetaDataBuilder) GetFormerIndexes() []*FormerIndex {
+	return b.formerIndexes
+}
+
 // GetRecordType returns the record type builder for setting primary keys, etc.
 func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 	recordType := b.recordTypes[name]
@@ -364,11 +369,28 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // Returns an error if any record type has no primary key set.
 // The record types map is copied to prevent the builder from mutating the built metadata.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
+	// Validate primary keys: must be set and must not create duplicates.
+	// Matches Java's MetaDataValidator.validatePrimaryKey().
 	for name, rt := range b.recordTypes {
 		if rt.PrimaryKey == nil {
 			return nil, fmt.Errorf("record type %q has no primary key set", name)
 		}
+		if createsDuplicates(rt.PrimaryKey) {
+			return nil, fmt.Errorf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)
+		}
 	}
+
+	// Validate no duplicate record type keys.
+	// Matches Java's MetaDataValidator which checks for duplicate type keys.
+	typeKeySeen := make(map[interface{}]string)
+	for name, rt := range b.recordTypes {
+		key := rt.GetRecordTypeKey()
+		if prevName, exists := typeKeySeen[key]; exists {
+			return nil, fmt.Errorf("record types %q and %q have the same record type key %v", prevName, name, key)
+		}
+		typeKeySeen[key] = name
+	}
+
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
 		types[k] = v
@@ -377,12 +399,32 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for k, v := range b.indexes {
 		indexes[k] = v
 	}
+
+	// Validate no duplicate subspace keys among current indexes.
+	// Matches Java's MetaDataValidator.validateIndexes().
+	indexSubspaceKeySeen := make(map[interface{}]string)
+	for _, idx := range indexes {
+		sk := idx.SubspaceTupleKey()
+		if prevName, exists := indexSubspaceKeySeen[sk]; exists {
+			return nil, fmt.Errorf("indexes %q and %q have the same subspace key %v", prevName, idx.Name, sk)
+		}
+		indexSubspaceKeySeen[sk] = idx.Name
+	}
+
 	// Validate no former index subspace key conflicts with current indexes
 	for _, fi := range b.formerIndexes {
 		for _, idx := range indexes {
 			if fi.SubspaceKey == idx.SubspaceTupleKey() {
 				return nil, fmt.Errorf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)
 			}
+		}
+	}
+
+	// Validate former index version ordering.
+	// Matches Java's MetaDataValidator: addedVersion ≤ removedVersion, both ≤ metadata version.
+	for _, fi := range b.formerIndexes {
+		if fi.AddedVersion > fi.RemovedVersion {
+			return nil, fmt.Errorf("former index %q has addedVersion (%d) > removedVersion (%d)", fi.FormerName, fi.AddedVersion, fi.RemovedVersion)
 		}
 	}
 
