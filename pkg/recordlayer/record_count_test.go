@@ -531,4 +531,39 @@ var _ = Describe("RecordCounting", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("CountRecordsByScan", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			// Insert 5 records
+			for i := int64(1); i <= 5; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				if _, err := store.SaveRecord(order); err != nil {
+					return nil, err
+				}
+			}
+
+			// CountRecords scans all records
+			count, err := store.CountRecords(ctx, nil, nil, EndpointTypeTreeStart, EndpointTypeTreeEnd, nil, ForwardScan())
+			if err != nil {
+				return nil, err
+			}
+			Expect(count).To(Equal(5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

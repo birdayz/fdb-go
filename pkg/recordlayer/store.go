@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"context"
 	"fmt"
 	"errors"
 	"time"
@@ -959,6 +960,20 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		prefixLength:   prefixLength,
 		startTime:      time.Now(),
 	}
+}
+
+// CountRecords counts records in a range by scanning the records subspace.
+// Unlike GetRecordCount() which uses atomic counters, this actually scans records.
+// Matches Java's FDBRecordStore.countRecords().
+func (store *FDBRecordStore) CountRecords(
+	ctx context.Context,
+	low, high tuple.Tuple,
+	lowEndpoint, highEndpoint EndpointType,
+	continuation []byte,
+	scanProperties ScanProperties,
+) (int, error) {
+	cursor := store.ScanRecordsInRange(low, high, lowEndpoint, highEndpoint, continuation, scanProperties)
+	return GetCount(ctx, cursor)
 }
 
 // GetTypedRecordStore creates a type-safe wrapper for a specific record type
