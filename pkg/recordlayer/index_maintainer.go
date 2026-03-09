@@ -16,6 +16,12 @@ type IndexMaintainer interface {
 	// oldRecord is nil for inserts, newRecord is nil for deletes.
 	Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
 
+	// UpdateWhileWriteOnly updates the index during WRITE_ONLY state (index being built).
+	// For idempotent indexes (VALUE), this is a pass-through to Update().
+	// For non-idempotent indexes, checks if the record's PK is in the already-built range.
+	// Matches Java's StandardIndexMaintainer.updateWhileWriteOnly().
+	UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
+
 	// Scan scans the index within the given tuple range.
 	// Matches Java's IndexMaintainer.scan().
 	Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry]
@@ -36,6 +42,13 @@ func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, t
 		indexSubspace: indexSubspace,
 		tx:            tx,
 	}
+}
+
+// UpdateWhileWriteOnly updates the index during WRITE_ONLY state.
+// StandardIndexMaintainer is idempotent, so this is a pass-through to Update().
+// Matches Java's StandardIndexMaintainer.updateWhileWriteOnly() + isIdempotent() = true.
+func (m *StandardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	return m.Update(oldRecord, newRecord)
 }
 
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).

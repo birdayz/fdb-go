@@ -1,0 +1,349 @@
+package recordlayer
+
+import (
+	"bytes"
+	"errors"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+)
+
+// Wire-compatible Go implementation of Java's com.apple.foundationdb.async.RangeSet.
+//
+// Storage format: each FDB key-value pair represents a contiguous range [begin, end).
+//   - Key:   subspace.Pack(tuple.Tuple{rangeBeginBytes})  (tuple-packed in subspace)
+//   - Value: rangeEndBytes                                (raw bytes, NOT tuple-packed)
+//
+// Valid key space: [\x00, \xff). FIRST_KEY = {0x00}, FINAL_KEY = {0xff}.
+
+var (
+	// RangeSetFirstKey is the minimum valid range boundary.
+	RangeSetFirstKey = []byte{0x00}
+	// RangeSetFinalKey is the exclusive upper bound sentinel.
+	RangeSetFinalKey = []byte{0xff}
+
+	errRangeSetEmptyKey      = errors.New("rangeset: key must be non-empty")
+	errRangeSetKeyTooLarge   = errors.New("rangeset: key must be less than \\xff")
+	errRangeSetInvertedRange = errors.New("rangeset: begin must be <= end")
+)
+
+// RangeSetRange represents a gap (missing range) as [Begin, End).
+type RangeSetRange struct {
+	Begin []byte
+	End   []byte
+}
+
+// RangeSet tracks ranges of completed work in an FDB subspace.
+// Wire-compatible with Java's com.apple.foundationdb.async.RangeSet.
+type RangeSet struct {
+	subspace subspace.Subspace
+}
+
+// NewRangeSet creates a RangeSet that stores data in the given subspace.
+func NewRangeSet(ss subspace.Subspace) *RangeSet {
+	return &RangeSet{subspace: ss}
+}
+
+func rangeSetCheckKey(key []byte) error {
+	if len(key) == 0 {
+		return errRangeSetEmptyKey
+	}
+	if bytes.Compare(key, RangeSetFinalKey) >= 0 {
+		return errRangeSetKeyTooLarge
+	}
+	return nil
+}
+
+// rangeSetKeyAfter returns the lexicographic successor by appending 0x00.
+// Matches Java's RangeSet.keyAfter().
+func rangeSetKeyAfter(key []byte) []byte {
+	ret := make([]byte, len(key)+1)
+	copy(ret, key)
+	return ret
+}
+
+// Contains checks if key is in any range in the set.
+// Adds a read conflict on the key for proper isolation.
+func (rs *RangeSet) Contains(tr fdb.Transaction, key []byte) (bool, error) {
+	if err := rangeSetCheckKey(key); err != nil {
+		return false, err
+	}
+
+	frobnicated := rs.subspace.Pack(tuple.Tuple{key})
+	if err := tr.AddReadConflictKey(fdb.Key(frobnicated)); err != nil {
+		return false, err
+	}
+
+	// Reverse scan: find last range entry that starts at or before our key.
+	ssBegin, _ := rs.subspace.FDBRangeKeys()
+	kvs, err := tr.Snapshot().GetRange(
+		fdb.KeyRange{Begin: ssBegin, End: fdb.Key(rangeSetKeyAfter(frobnicated))},
+		fdb.RangeOptions{Limit: 1, Reverse: true},
+	).GetSliceWithError()
+	if err != nil {
+		return false, err
+	}
+
+	if len(kvs) == 0 {
+		return false, nil
+	}
+
+	endRange := kvs[0].Value
+	return bytes.Compare(key, endRange) < 0, nil
+}
+
+// InsertRange adds range [begin, end) to the set.
+// If begin is nil, uses FIRST_KEY. If end is nil, uses FINAL_KEY.
+// If requireEmpty is true, only inserts if the range is currently empty (atomic test-and-set).
+// Returns true if the database was modified.
+func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEmpty bool) (bool, error) {
+	beginNonNull := begin
+	if beginNonNull == nil {
+		beginNonNull = RangeSetFirstKey
+	}
+	endNonNull := end
+	if endNonNull == nil {
+		endNonNull = RangeSetFinalKey
+	}
+
+	// Java validates begin with checkKey but NOT end (end can be FINAL_KEY).
+	if err := rangeSetCheckKey(beginNonNull); err != nil {
+		return false, err
+	}
+	if bytes.Compare(beginNonNull, endNonNull) > 0 {
+		return false, errRangeSetInvertedRange
+	}
+
+	// Empty range: no-op.
+	if bytes.Equal(beginNonNull, endNonNull) {
+		return false, nil
+	}
+
+	frobnicatedBegin := rs.subspace.Pack(tuple.Tuple{beginNonNull})
+	frobnicatedEnd := rs.subspace.Pack(tuple.Tuple{endNonNull})
+
+	// Read conflict on the range being inserted.
+	if err := tr.AddReadConflictRange(fdb.KeyRange{
+		Begin: fdb.Key(frobnicatedBegin),
+		End:   fdb.Key(frobnicatedEnd),
+	}); err != nil {
+		return false, err
+	}
+
+	snap := tr.Snapshot()
+	keyAfterBegin := rangeSetKeyAfter(frobnicatedBegin)
+
+	// "before" scan: last range entry that starts at or before our begin.
+	ssBegin, _ := rs.subspace.FDBRangeKeys()
+	beforeKVs, err := snap.GetRange(
+		fdb.KeyRange{Begin: ssBegin, End: fdb.Key(keyAfterBegin)},
+		fdb.RangeOptions{Limit: 1, Reverse: true},
+	).GetSliceWithError()
+	if err != nil {
+		return false, err
+	}
+
+	// "after" scan: entries starting strictly after our begin, up to our end.
+	afterLimit := 0 // unlimited
+	if requireEmpty {
+		afterLimit = 1
+	}
+	afterKVs, err := snap.GetRange(
+		fdb.KeyRange{Begin: fdb.Key(keyAfterBegin), End: fdb.Key(frobnicatedEnd)},
+		fdb.RangeOptions{Limit: afterLimit},
+	).GetSliceWithError()
+	if err != nil {
+		return false, err
+	}
+
+	lastSeen := frobnicatedBegin
+	hasBefore := len(beforeKVs) > 0
+	var beforeKV fdb.KeyValue
+
+	if hasBefore {
+		beforeKV = beforeKVs[0]
+		beforeEnd := beforeKV.Value // raw range end
+		if bytes.Compare(beginNonNull, beforeEnd) < 0 {
+			// Before range covers our begin.
+			if requireEmpty {
+				return false, nil
+			}
+			lastSeen = rs.subspace.Pack(tuple.Tuple{beforeEnd})
+		}
+	}
+
+	if requireEmpty {
+		// After iterator must be empty for the range to be empty.
+		if len(afterKVs) > 0 {
+			return false, nil
+		}
+
+		// Consolidation: if before ends exactly where we start, extend it.
+		if hasBefore && bytes.Equal(beforeKV.Value, beginNonNull) {
+			if err := tr.AddReadConflictKey(fdb.Key(beforeKV.Key)); err != nil {
+				return false, err
+			}
+			tr.Set(fdb.Key(beforeKV.Key), endNonNull)
+		} else {
+			tr.Set(fdb.Key(frobnicatedBegin), endNonNull)
+		}
+
+		if err := tr.AddWriteConflictRange(fdb.KeyRange{
+			Begin: fdb.Key(frobnicatedBegin),
+			End:   fdb.Key(frobnicatedEnd),
+		}); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// Gap-filling mode (requireEmpty = false).
+	changed := false
+	for _, kv := range afterKVs {
+		if bytes.Compare(lastSeen, kv.Key) < 0 {
+			// Gap: fill from lastSeen to this entry's start.
+			unpackedKey, unpackErr := rs.subspace.Unpack(fdb.Key(kv.Key))
+			if unpackErr != nil {
+				return false, unpackErr
+			}
+			tr.Set(fdb.Key(lastSeen), unpackedKey[0].([]byte))
+			if err := tr.AddWriteConflictRange(fdb.KeyRange{
+				Begin: fdb.Key(lastSeen),
+				End:   fdb.Key(kv.Key),
+			}); err != nil {
+				return false, err
+			}
+			changed = true
+		}
+		lastSeen = rs.subspace.Pack(tuple.Tuple{kv.Value})
+	}
+
+	// Final gap: from lastSeen to end.
+	if bytes.Compare(lastSeen, frobnicatedEnd) < 0 {
+		tr.Set(fdb.Key(lastSeen), endNonNull)
+		if err := tr.AddWriteConflictRange(fdb.KeyRange{
+			Begin: fdb.Key(lastSeen),
+			End:   fdb.Key(frobnicatedEnd),
+		}); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// MissingRanges returns the gaps (ranges not in the set) within [begin, end).
+// If begin is nil, uses FIRST_KEY. If end is nil, uses FINAL_KEY.
+// If limit <= 0, returns all gaps.
+func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit int) ([]RangeSetRange, error) {
+	beginNonNull := begin
+	if beginNonNull == nil {
+		beginNonNull = RangeSetFirstKey
+	}
+	endNonNull := end
+	if endNonNull == nil {
+		endNonNull = RangeSetFinalKey
+	}
+
+	if err := rangeSetCheckKey(beginNonNull); err != nil {
+		return nil, err
+	}
+	if bytes.Compare(beginNonNull, endNonNull) > 0 {
+		return nil, errRangeSetInvertedRange
+	}
+
+	if bytes.Equal(beginNonNull, endNonNull) {
+		return nil, nil
+	}
+
+	frobnicatedBegin := rs.subspace.Pack(tuple.Tuple{beginNonNull})
+	frobnicatedEnd := rs.subspace.Pack(tuple.Tuple{endNonNull})
+
+	// Read conflict on the search range (matches Java's addReadConflictRangeIfNotSnapshot).
+	if err := tr.AddReadConflictRange(fdb.KeyRange{
+		Begin: fdb.Key(frobnicatedBegin),
+		End:   fdb.Key(frobnicatedEnd),
+	}); err != nil {
+		return nil, err
+	}
+
+	snap := tr.Snapshot()
+	keyAfterBegin := rangeSetKeyAfter(frobnicatedBegin)
+
+	// "before" scan: last entry before our begin.
+	ssBegin, _ := rs.subspace.FDBRangeKeys()
+	beforeKVs, err := snap.GetRange(
+		fdb.KeyRange{Begin: ssBegin, End: fdb.Key(keyAfterBegin)},
+		fdb.RangeOptions{Limit: 1, Reverse: true},
+	).GetSliceWithError()
+	if err != nil {
+		return nil, err
+	}
+
+	// "after" scan: entries from begin to end.
+	afterKVs, err := snap.GetRange(
+		fdb.KeyRange{Begin: fdb.Key(keyAfterBegin), End: fdb.Key(frobnicatedEnd)},
+		fdb.RangeOptions{},
+	).GetSliceWithError()
+	if err != nil {
+		return nil, err
+	}
+
+	currBegin := beginNonNull
+
+	// Check before entry.
+	if len(beforeKVs) > 0 {
+		beforeEnd := beforeKVs[0].Value
+		if bytes.Compare(beginNonNull, beforeEnd) < 0 {
+			currBegin = beforeEnd
+		}
+	}
+
+	var results []RangeSetRange
+	for _, kv := range afterKVs {
+		unpackedKey, unpackErr := rs.subspace.Unpack(fdb.Key(kv.Key))
+		if unpackErr != nil {
+			return nil, unpackErr
+		}
+		nextBegin := unpackedKey[0].([]byte)
+
+		if bytes.Compare(currBegin, nextBegin) < 0 {
+			results = append(results, RangeSetRange{Begin: currBegin, End: nextBegin})
+			if limit > 0 && len(results) >= limit {
+				return results, nil
+			}
+		}
+		currBegin = kv.Value // Move past this range.
+	}
+
+	// Final gap.
+	if bytes.Compare(currBegin, endNonNull) < 0 {
+		if limit <= 0 || len(results) < limit {
+			results = append(results, RangeSetRange{Begin: currBegin, End: endNonNull})
+		}
+	}
+
+	return results, nil
+}
+
+// IsEmpty returns true if no ranges have been inserted into this set.
+func (rs *RangeSet) IsEmpty(tr fdb.Transaction) (bool, error) {
+	ranges, err := rs.MissingRanges(tr, nil, nil, 1)
+	if err != nil {
+		return false, err
+	}
+	if len(ranges) == 1 {
+		return bytes.Equal(ranges[0].Begin, RangeSetFirstKey) &&
+			bytes.Equal(ranges[0].End, RangeSetFinalKey), nil
+	}
+	// No missing ranges → set covers everything → not empty.
+	return false, nil
+}
+
+// Clear removes all ranges from the set.
+func (rs *RangeSet) Clear(tr fdb.Transaction) {
+	begin, end := rs.subspace.FDBRangeKeys()
+	tr.ClearRange(fdb.KeyRange{Begin: begin, End: end})
+}

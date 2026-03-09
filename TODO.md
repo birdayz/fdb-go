@@ -124,43 +124,46 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Index state management** — 4 states: `READABLE`, `WRITE_ONLY`, `DISABLED`, `READABLE_UNIQUE_PENDING`. Stored in `IndexStateSpaceKey` (5) subspace as tuple-packed int64. Loaded on store Open/CreateOrOpen. `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`. DISABLED indexes skip maintenance. Non-scannable indexes reject ScanIndex. Matches Java's wire format and semantics.
 
-- [ ] **Index build support** — Cannot build indexes on existing data. Broken into sub-tasks below.
+- [x] **Index build support (core)** — RangeSet, IndexingRangeSet, WRITE_ONLY maintenance, OnlineIndexer BY_RECORDS. Remaining: progress tracking, indexing stamps, rebuildIndex, BY_INDEX strategy.
 
 #### Index build sub-tasks (dependency order)
 
-1. **RangeSet** (CRITICAL — foundation for all index building)
-   - [ ] `RangeSet` type backed by FDB subspace. Wire-compatible with Java's `com.apple.foundationdb.async.RangeSet`.
+1. **RangeSet** (CRITICAL — foundation for all index building) ✅
+   - [x] `RangeSet` type backed by FDB subspace. Wire-compatible with Java's `com.apple.foundationdb.async.RangeSet`.
    - Storage: each key-value = `[subspace.pack(rangeBegin)] → rangeEnd` (raw bytes, NOT packed). Range semantics: `[begin, end)` inclusive-exclusive. Valid key space: `[\x00, \xff)`.
-   - [ ] `InsertRange(tx, begin, end, requireEmpty bool) bool` — fill gaps in range set. `requireEmpty=true` = atomic test-and-set (returns false if range wasn't empty). `requireEmpty=false` = fill gaps, write-conflict only on gaps actually filled.
-   - [ ] `Contains(tx, key) bool` — snapshot read + read-conflict on key only.
-   - [ ] `MissingRanges(tx, begin, end, limit) []Range` — return gaps not yet in set.
-   - [ ] `IsEmpty(tx) bool` — check if entire `[\x00, \xff)` is missing.
-   - [ ] `Clear(tx)` — remove all entries.
-   - [ ] Unit tests: insert, contains, missing ranges, overlapping inserts, abutting ranges, concurrent inserts, empty checks.
+   - [x] `InsertRange(tx, begin, end, requireEmpty bool) bool` — fill gaps in range set. `requireEmpty=true` = atomic test-and-set (returns false if range wasn't empty). `requireEmpty=false` = fill gaps, write-conflict only on gaps actually filled.
+   - [x] `Contains(tx, key) bool` — snapshot read + read-conflict on key only.
+   - [x] `MissingRanges(tx, begin, end, limit) []Range` — return gaps not yet in set.
+   - [x] `IsEmpty(tx) bool` — check if entire `[\x00, \xff)` is missing.
+   - [x] `Clear(tx)` — remove all entries.
+   - [x] Unit tests: insert, contains, missing ranges, overlapping inserts, abutting ranges, consolidation, empty checks, wire format, incremental build pattern, multi-byte keys.
 
-2. **IndexingRangeSet wrapper** (CRITICAL — wires RangeSet to index subspaces)
-   - [ ] `IndexingRangeSet` at store subspace `[6, indexSubspaceKey]` (INDEX_RANGE_SPACE).
-   - [ ] `FirstMissingRange()`, `ContainsKey(primaryKey)`, `InsertRange(begin, end, requireEmpty)`, `ListMissingRanges()`.
-   - [ ] Cleared on index delete / `ClearAndMarkIndexWriteOnly`.
+2. **IndexingRangeSet wrapper** (CRITICAL) ✅
+   - [x] `IndexingRangeSet` at store subspace `[6, indexSubspaceKey]` (INDEX_RANGE_SPACE).
+   - [x] `FirstMissingRange()`, `ContainsKey(primaryKey)`, `InsertRange(begin, end, requireEmpty)`, `ListMissingRanges()`, `IsComplete()`, `Clear()`.
+   - [x] Already cleared on index delete / `ClearAndMarkIndexWriteOnly` (via `clearIndexData`).
 
-3. **WRITE_ONLY index maintenance** (CRITICAL — correctness during concurrent builds)
-   - [ ] `StandardIndexMaintainer.UpdateWhileWriteOnly(oldRecord, newRecord)` — called instead of `Update()` when index is WRITE_ONLY.
-   - [ ] For idempotent indexes: update directly (always safe).
-   - [ ] For non-idempotent indexes: check `addedRangeWithKey(primaryKey)` → only update if PK is in already-built range. Skip otherwise (builder will handle it).
-   - [ ] Wire into `updateSecondaryIndexes()` — use `UpdateWhileWriteOnly` when `IsIndexWriteOnly(idx)`.
+3. **WRITE_ONLY index maintenance** (CRITICAL) ✅
+   - [x] `IndexMaintainer.UpdateWhileWriteOnly(oldRecord, newRecord)` interface method.
+   - [x] `StandardIndexMaintainer.UpdateWhileWriteOnly()` — idempotent VALUE indexes pass through to `Update()`. Matches Java's `isIdempotent() = true`.
+   - [x] `updateSecondaryIndexes()` dispatches via `updateOneIndex()`: calls `UpdateWhileWriteOnly` when `IsIndexWriteOnly(idx)`, else `Update`. Matches Java.
 
-4. **OnlineIndexer — BY_RECORDS strategy** (CRITICAL — the actual builder)
-   - [ ] `OnlineIndexer` type with builder pattern: `SetIndex`, `SetStore`, `SetLimit`, `SetMaxRetries`.
-   - [ ] `BuildIndex()` — main entry: mark WRITE_ONLY → iterate all missing ranges → mark READABLE.
-   - [ ] `buildRangeOnly(store, recordsScanned)` — find first missing range via `IndexingRangeSet`, scan records in range, call `updateMaintainerBuilder()` per record, insert built range with `requireEmpty=true`.
-   - [ ] Transaction boundaries: each `buildRangeOnly` call = one transaction. Cursor continuation = primary key of last processed record.
-   - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned (int64 little-endian).
-   - [ ] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection.
-   - [ ] `MarkReadable()` — verify no missing ranges, transition WRITE_ONLY → READABLE.
+4. **OnlineIndexer — BY_RECORDS strategy** (CRITICAL) ✅
+   - [x] `OnlineIndexer` type with builder: `SetDatabase`, `SetMetaData`, `SetIndex`, `SetSubspace`, `SetLimit`, `SetRecordTypes`.
+   - [x] `BuildIndex(ctx)` — marks WRITE_ONLY → iterates all missing ranges → marks READABLE. Returns total records indexed.
+   - [x] `buildRange(ctx)` — finds first missing range via `IndexingRangeSet`, scans records in range, evaluates index + writes entries via `maintainer.Update(nil, rec)`, marks built range with `requireEmpty=true`.
+   - [x] Transaction boundaries: each `buildRange` = one transaction. Continuation = last processed PK (matches Java: boundary records re-scanned, safe for idempotent indexes).
+   - [x] Record type filtering: `shouldIndexRecord()` checks if record type has this index defined.
+   - [x] 8 integration tests: basic build, composite index with PK dedup, empty store, post-build maintenance, small limit chunking, unique index, record type filtering, builder validation.
+   - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned. Not yet implemented (optimization, not wire-format critical).
+   - [ ] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. Not yet implemented.
 
-5. **rebuildIndex on store** (HIGH — needed for store.Open with new indexes)
-   - [ ] `FDBRecordStore.rebuildIndex(index)` — clear index entries + range set, rebuild from all records in one transaction (small datasets) or via OnlineIndexer (large).
-   - [ ] Called during `CreateOrOpen` when metadata adds a new index to an existing store.
+5. **rebuildIndex on store** (HIGH — needed for store.Open with new indexes) ✅
+   - [x] `FDBRecordStore.RebuildIndex(index)` — clears index data, marks WRITE_ONLY, pre-marks full range in RangeSet, scans all records inline, re-indexes, marks READABLE. Single-transaction path matching Java's `IndexingBase.rebuildIndexAsync()`.
+   - [x] 8 tests: basic VALUE index, empty store, stale cleanup, type filtering, range set completion, unique index, uniqueness violation, post-rebuild maintenance.
+   - [x] `CreateOrOpen` auto-rebuild: `checkPossiblyRebuild()` compares stored metadata version with current. Uses `GetIndexesToBuildSince(oldVersion)` to find new indexes. Rebuilds inline and updates store header. Matches Java's `FDBRecordStore.checkPossiblyRebuild()`.
+   - [x] `addIndexCommon()` on builder: sets `LastModifiedVersion` and `AddedVersion` matching Java's `RecordMetaDataBuilder.addIndexCommon()`. Bumps builder version on each index add.
+   - [x] 7 additional tests: version tracking on AddIndex, pre-set version preserved, GetIndexesToBuildSince, auto-rebuild single index, no rebuild on same version, store header version updated, multi-index auto-rebuild.
 
 6. **OnlineIndexer — BY_INDEX strategy** (MEDIUM — optimization, not essential)
    - [ ] Build new index from existing readable index instead of scanning all records.
@@ -178,14 +181,16 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [ ] `requireEmpty=true` prevents double-processing of ranges.
 
 9. **Conformance tests** (CRITICAL — must validate wire compat)
-   - [ ] Go builds index on existing data → Java scans index, sees correct entries.
-   - [ ] Java builds index on existing data → Go scans index, sees correct entries.
+   - [x] Go saves records + Go rebuilds index → Java scans → entries match.
+   - [x] Go saves records + Java rebuilds index → Go scans → entries match.
+   - [x] Java saves records + Go rebuilds index → Java scans → entries match.
+   - [x] Cross-rebuild: Go rebuild and Java rebuild produce identical entries.
    - [ ] Go writes WRITE_ONLY records while Java builds → entries consistent.
    - [ ] RangeSet wire format: Go writes ranges → Java reads them (and vice versa).
 
 ### HIGH
 
-- [x] **Index management store methods** — `GetIndexState`, `IsIndexReadable`, `IsIndexWriteOnly`, `IsIndexDisabled`, `IsIndexScannable`, `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`. Still missing: `rebuildIndex`, `getIndexBuildStateAsync`, `markIndexReadableOrUniquePending`.
+- [x] **Index management store methods** — `GetIndexState`, `IsIndexReadable`, `IsIndexWriteOnly`, `IsIndexDisabled`, `IsIndexScannable`, `MarkIndexReadable`, `MarkIndexWriteOnly`, `MarkIndexDisabled`, `ClearAndMarkIndexWriteOnly`, `RebuildIndex`. Still missing: `getIndexBuildStateAsync`, `markIndexReadableOrUniquePending`.
 
 - [x] **Repeated field fan-out** — `FanOut("field")` creates `FieldKeyExpression` with `FanTypeFanOut`, producing one index entry per repeated value. Cross-product with `Concat()` works. Empty repeated field → no entries (matching Java).
 

@@ -15,6 +15,7 @@ go_test(
         "fanout_index_conformance_test.go",
         "index_conformance_test.go",
         "isolation_conformance_test.go",
+        "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",
         "scan_conformance_test.go",
         "split_conformance_test.go",

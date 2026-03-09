@@ -580,7 +580,7 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 		if !store.shouldMaintainIndex(index.Name) {
 			continue
 		}
-		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
 			return err
 		}
 	}
@@ -590,12 +590,124 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 		if !store.shouldMaintainIndex(index.Name) {
 			continue
 		}
-		if err := store.getIndexMaintainer(index).Update(oldRecord, newRecord); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
+// Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
+func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	maintainer := store.getIndexMaintainer(index)
+	if store.IsIndexWriteOnly(index.Name) {
+		return maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
+	}
+	return maintainer.Update(oldRecord, newRecord)
+}
+
+// RebuildIndex rebuilds an index within the current transaction.
+// Clears existing index data, scans all records, and re-indexes them.
+// Upon completion, the index is marked READABLE.
+//
+// Because this runs in a single transaction, it is limited by FDB's
+// 5-second time limit and 10MB transaction size. For large stores,
+// use OnlineIndexer.BuildIndex() which splits work across transactions.
+//
+// Matches Java's FDBRecordStore.rebuildIndex() which delegates to
+// IndexingBase.rebuildIndexAsync() for the in-transaction path.
+func (store *FDBRecordStore) RebuildIndex(index *Index) error {
+	// Step 1: Clear index data and mark WRITE_ONLY.
+	// Matches Java: clearAndMarkIndexWriteOnly(index)
+	if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
+		return fmt.Errorf("rebuild index %q: clear and mark write-only: %w", index.Name, err)
+	}
+
+	// Step 2: Pre-mark the full range as built in the RangeSet.
+	// Java does this BEFORE scanning records so that even if marking readable
+	// fails (e.g. uniqueness violations), the range set records that all data
+	// was scanned, preventing re-scanning on future builds.
+	rangeSet := NewIndexingRangeSet(store.subspace, index)
+	if _, err := rangeSet.InsertRange(store.context.Transaction(), nil, nil, true); err != nil {
+		return fmt.Errorf("rebuild index %q: insert full range: %w", index.Name, err)
+	}
+
+	// Step 3: Scan all records and build index entries.
+	scanProps := ForwardScan()
+	cursor := store.ScanRecords(nil, scanProps)
+	maintainer := store.getIndexMaintainer(index)
+
+	for rec, err := range cursor.Seq2(store.context.ctx) {
+		if err != nil {
+			return fmt.Errorf("rebuild index %q: scan records: %w", index.Name, err)
+		}
+
+		if !store.shouldIndexRecordForIndex(rec, index) {
+			continue
+		}
+
+		if err := maintainer.Update(nil, rec); err != nil {
+			return fmt.Errorf("rebuild index %q: index record pk=%v: %w", index.Name, rec.PrimaryKey, err)
+		}
+	}
+
+	// Step 4: Mark index READABLE.
+	if _, err := store.MarkIndexReadable(index.Name); err != nil {
+		return fmt.Errorf("rebuild index %q: mark readable: %w", index.Name, err)
+	}
+
+	return nil
+}
+
+// checkPossiblyRebuild compares the stored metadata version with the current
+// metadata version. If the current metadata has a higher version, indexes added
+// since the old version are rebuilt inline.
+// Matches Java's FDBRecordStore.checkPossiblyRebuild() / checkRebuild().
+func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo) error {
+	oldMetaDataVersion := int(storeHeader.GetMetaDataversion())
+	newMetaDataVersion := store.metaData.Version()
+
+	if newMetaDataVersion <= oldMetaDataVersion {
+		return nil
+	}
+
+	// Find indexes added since the old version.
+	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
+	for _, index := range indexesToBuild {
+		if err := store.RebuildIndex(index); err != nil {
+			return fmt.Errorf("auto-rebuild index %q on metadata version change (%d -> %d): %w",
+				index.Name, oldMetaDataVersion, newMetaDataVersion, err)
+		}
+	}
+
+	// Update store header with new metadata version.
+	newVersion := int32(newMetaDataVersion)
+	storeHeader.MetaDataversion = &newVersion
+	lastUpdateTime := uint64(time.Now().UnixMilli())
+	storeHeader.LastUpdateTime = &lastUpdateTime
+	if err := store.writeStoreHeader(storeHeader); err != nil {
+		return fmt.Errorf("update store header after rebuild: %w", err)
+	}
+
+	return nil
+}
+
+// shouldIndexRecordForIndex checks if a record matches the given index's record types.
+// Returns true if the record's type has this index defined (either per-type or universal).
+func (store *FDBRecordStore) shouldIndexRecordForIndex(rec *FDBStoredRecord[proto.Message], index *Index) bool {
+	for _, idx := range store.metaData.GetIndexesForRecordType(rec.RecordType.Name) {
+		if idx.Name == index.Name {
+			return true
+		}
+	}
+	for _, idx := range store.metaData.GetUniversalIndexes() {
+		if idx.Name == index.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // indexSubspace returns the FDB subspace for a specific index.
@@ -1155,7 +1267,9 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	return store, nil
 }
 
-// Open opens an existing record store, fails if store doesn't exist
+// Open opens an existing record store, fails if store doesn't exist.
+// When the current metadata version is higher than the stored version,
+// new indexes are automatically rebuilt inline (matching Java's checkVersion flow).
 func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
@@ -1181,10 +1295,18 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
+	// Check if metadata has evolved — rebuild new indexes if needed.
+	if err := store.checkPossiblyRebuild(storeHeader); err != nil {
+		return nil, err
+	}
+
 	return store, nil
 }
 
-// CreateOrOpen creates store if it doesn't exist, opens if it does (like Java)
+// CreateOrOpen creates store if it doesn't exist, opens if it does (like Java).
+// When opening an existing store whose metadata version is older than the
+// current metadata, new indexes are automatically rebuilt inline.
+// Matches Java's FDBRecordStore.checkPossiblyRebuild().
 func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
@@ -1215,6 +1337,13 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		}
 	}
 	store.storeHeader = storeHeader
+
+	// Check if metadata has evolved — rebuild new indexes if needed.
+	if exists {
+		if err := store.checkPossiblyRebuild(storeHeader); err != nil {
+			return nil, err
+		}
+	}
 
 	return store, nil
 }

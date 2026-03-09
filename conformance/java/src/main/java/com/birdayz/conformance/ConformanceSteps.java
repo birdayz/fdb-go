@@ -873,4 +873,26 @@ public class ConformanceSteps {
             return store.loadRecord(Tuple.from(customerID)) != null;
         });
     }
+
+    /**
+     * Rebuild a VALUE index on existing data within a single transaction.
+     * Opens the store with indexed metadata and calls rebuildIndex().
+     * Matches Go's FDBRecordStore.RebuildIndex().
+     */
+    @ConformanceStep("rebuildIndex")
+    public void rebuildIndex(String clusterFile, byte[] subspace, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("Order$price");
+            store.rebuildIndex(index).join();
+            return null;
+        });
+    }
 }

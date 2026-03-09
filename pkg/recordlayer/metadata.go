@@ -247,12 +247,8 @@ func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *R
 	if !ok {
 		return b
 	}
-	b.assignSubspaceKey(index)
+	b.addIndexCommon(index)
 	rt.indexes = append(rt.indexes, index)
-	if b.indexes == nil {
-		b.indexes = make(map[string]*Index)
-	}
-	b.indexes[index.Name] = index
 	return b
 }
 
@@ -262,6 +258,26 @@ func (b *RecordMetaDataBuilder) assignSubspaceKey(index *Index) {
 		b.subspaceKeyCounter++
 		index.SetSubspaceKey(b.subspaceKeyCounter)
 	}
+}
+
+// addIndexCommon performs the shared setup for all AddIndex variants.
+// Sets LastModifiedVersion and AddedVersion on the index and registers it
+// in the builder's index map. Matches Java's RecordMetaDataBuilder.addIndexCommon().
+func (b *RecordMetaDataBuilder) addIndexCommon(index *Index) {
+	b.assignSubspaceKey(index)
+	if index.LastModifiedVersion <= 0 {
+		b.version++
+		index.LastModifiedVersion = b.version
+	} else if index.LastModifiedVersion > b.version {
+		b.version = index.LastModifiedVersion
+	}
+	if index.AddedVersion <= 0 {
+		index.AddedVersion = index.LastModifiedVersion
+	}
+	if b.indexes == nil {
+		b.indexes = make(map[string]*Index)
+	}
+	b.indexes[index.Name] = index
 }
 
 // AddMultiTypeIndex adds an index spanning multiple record types.
@@ -275,11 +291,7 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 	if len(recordTypeNames) == 1 {
 		return b.AddIndex(recordTypeNames[0], index)
 	}
-	b.assignSubspaceKey(index)
-	if b.indexes == nil {
-		b.indexes = make(map[string]*Index)
-	}
-	b.indexes[index.Name] = index
+	b.addIndexCommon(index)
 	for _, name := range recordTypeNames {
 		rt, ok := b.recordTypes[name]
 		if !ok {
@@ -293,12 +305,8 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 // AddUniversalIndex adds an index that applies to all record types.
 // Matches Java's RecordMetaDataBuilder.addUniversalIndex(Index index).
 func (b *RecordMetaDataBuilder) AddUniversalIndex(index *Index) *RecordMetaDataBuilder {
-	b.assignSubspaceKey(index)
+	b.addIndexCommon(index)
 	b.universalIndexes = append(b.universalIndexes, index)
-	if b.indexes == nil {
-		b.indexes = make(map[string]*Index)
-	}
-	b.indexes[index.Name] = index
 	return b
 }
 
@@ -569,6 +577,20 @@ func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 // Matches Java's RecordMetaData.getFormerIndexes().
 func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {
 	return m.formerIndexes
+}
+
+// GetIndexesToBuildSince returns indexes that were added or modified since the
+// given metadata version. Used by CreateOrOpen to detect new indexes that need
+// to be built when opening an existing store with updated metadata.
+// Matches Java's RecordMetaData.getIndexesToBuildSince(int).
+func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
+	var result []*Index
+	for _, idx := range m.indexes {
+		if idx.LastModifiedVersion > version {
+			result = append(result, idx)
+		}
+	}
+	return result
 }
 
 // PrimaryKeyHasRecordTypePrefix returns true if all record types have a
