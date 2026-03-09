@@ -209,6 +209,7 @@ func (c *errorCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, R
 }
 
 // listCursor wraps a slice as a cursor. Matches Java's RecordCursor.fromList().
+// Supports continuation via single-byte position encoding (up to 255 elements).
 type listCursor[T any] struct {
 	items  []T
 	pos    int
@@ -220,13 +221,31 @@ func FromList[T any](items []T) RecordCursor[T] {
 	return &listCursor[T]{items: items}
 }
 
+// FromListWithContinuation creates a cursor from a slice, starting from a continuation.
+// Matches Java's RecordCursor.fromList(list, continuation).
+// Continuation format: 4-byte big-endian position (nil = start from beginning).
+func FromListWithContinuation[T any](items []T, continuation []byte) RecordCursor[T] {
+	start := 0
+	if len(continuation) == 4 {
+		start = int(continuation[0])<<24 | int(continuation[1])<<16 | int(continuation[2])<<8 | int(continuation[3])
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+	return &listCursor[T]{items: items, pos: start}
+}
+
+func listCursorContinuation(pos int) []byte {
+	return []byte{byte(pos >> 24), byte(pos >> 16), byte(pos >> 8), byte(pos)}
+}
+
 func (c *listCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error) {
 	if c.closed || c.pos >= len(c.items) {
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
 	value := c.items[c.pos]
 	c.pos++
-	return NewResultWithValue(value, &BytesContinuation{}), nil
+	return NewResultWithValue(value, &BytesContinuation{bytes: listCursorContinuation(c.pos)}), nil
 }
 
 func (c *listCursor[T]) Close() error {
@@ -670,6 +689,102 @@ func (c *limitRowsCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
 }
 
 func (c *limitRowsCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
+// SkipThenLimit is a convenience that skips n elements then limits to m.
+// Matches Java's RecordCursor.skipThenLimit().
+func SkipThenLimit[T any](cursor RecordCursor[T], skip, limit int) RecordCursor[T] {
+	return LimitRowsCursor(SkipCursor(cursor, skip), limit)
+}
+
+// OrElse returns the primary cursor if it has results, otherwise falls back
+// to the alternative cursor. Matches Java's RecordCursor.orElse().
+func OrElse[T any](primary RecordCursor[T], alternative func() RecordCursor[T]) RecordCursor[T] {
+	return &orElseCursor[T]{primary: primary, alternative: alternative}
+}
+
+type orElseCursor[T any] struct {
+	primary     RecordCursor[T]
+	alternative func() RecordCursor[T]
+	active      RecordCursor[T]
+	firstResult *RecordCursorResult[T]
+	started     bool
+}
+
+func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if !c.started {
+		c.started = true
+		// Try the primary cursor first
+		result, err := c.primary.OnNext(ctx)
+		if err != nil {
+			return result, err
+		}
+		if result.HasNext() {
+			c.active = c.primary
+			return result, nil
+		}
+		// Primary exhausted immediately — switch to alternative
+		_ = c.primary.Close()
+		c.active = c.alternative()
+		return c.active.OnNext(ctx)
+	}
+	return c.active.OnNext(ctx)
+}
+
+func (c *orElseCursor[T]) Close() error {
+	if c.active != nil {
+		return c.active.Close()
+	}
+	return c.primary.Close()
+}
+
+func (c *orElseCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *orElseCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *orElseCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
 	return func(yield func(T, RecordCursorContinuation) bool) {
 		defer func() { _ = c.Close() }()
 		for {
