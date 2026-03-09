@@ -925,6 +925,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 		continuation:   continuation,
 		scanProperties: scanProperties,
 		prefixLength:   prefixLength,
+		startTime:      time.Now(),
 	}
 }
 

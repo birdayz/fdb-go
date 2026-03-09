@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -257,5 +258,257 @@ var _ = Describe("BasicContinuation", func() {
 		Expect(batchCount).To(BeNumerically(">", 1))
 
 		GinkgoWriter.Printf("Read %d records in %d batches\n", totalRecordsRead, batchCount)
+	})
+})
+
+var _ = Describe("TimeLimitScan", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		return builder
+	}
+
+	It("stops record scan when time limit is reached", func() {
+		ks := specSubspace()
+
+		priceIndex := NewIndex("Order$price", Field("price"))
+		builder := baseMetaData()
+		builder.AddIndex("Order", priceIndex)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save 100 records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 100; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				_, err = store.SaveRecord(order)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Scan with a very short time limit (1 nanosecond).
+		// This should return at least 1 record (free initial pass) then stop.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+
+			props := ForwardScan()
+			props.ExecuteProperties.TimeLimit = 1 * time.Nanosecond
+			cursor := store.ScanRecords(nil, props)
+			defer cursor.Close()
+
+			var count int
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					Expect(result.GetNoNextReason()).To(Equal(TimeLimitReached))
+					break
+				}
+				count++
+			}
+
+			// Should have read at least 1 (free initial pass) but fewer than 100.
+			Expect(count).To(BeNumerically(">=", 1))
+			Expect(count).To(BeNumerically("<", 100))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("stops index scan when time limit is reached", func() {
+		ks := specSubspace()
+
+		priceIndex := NewIndex("Order$price", Field("price"))
+		builder := baseMetaData()
+		builder.AddIndex("Order", priceIndex)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save 100 records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 100; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				_, err = store.SaveRecord(order)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Scan index with 1ns time limit.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+
+			props := ForwardScan()
+			props.ExecuteProperties.TimeLimit = 1 * time.Nanosecond
+			cursor := store.ScanIndex(priceIndex, TupleRangeAll, nil, props)
+			defer cursor.Close()
+
+			var count int
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					Expect(result.GetNoNextReason()).To(Equal(TimeLimitReached))
+					break
+				}
+				count++
+			}
+
+			Expect(count).To(BeNumerically(">=", 1))
+			Expect(count).To(BeNumerically("<", 100))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("allows resumption with continuation after time limit", func() {
+		ks := specSubspace()
+
+		builder := baseMetaData()
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save 50 records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 50; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				_, err = store.SaveRecord(order)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Scan in multiple batches using time limit continuations.
+		var totalRecords int
+		var continuation []byte
+		batches := 0
+
+		for batches < 100 { // Safety limit
+			var batchCount int
+			var sourceExhausted bool
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+
+				props := ForwardScan()
+				props.ExecuteProperties.TimeLimit = 1 * time.Nanosecond
+				cursor := store.ScanRecords(continuation, props)
+				defer cursor.Close()
+
+				for {
+					result, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					if !result.HasNext() {
+						if result.GetNoNextReason() == SourceExhausted {
+							sourceExhausted = true
+						}
+						cont := result.GetContinuation()
+						if cont != nil {
+							continuation = cont.ToBytes()
+						}
+						break
+					}
+					batchCount++
+					cont := result.GetContinuation()
+					if cont != nil {
+						continuation = cont.ToBytes()
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			totalRecords += batchCount
+			batches++
+
+			if sourceExhausted {
+				break
+			}
+		}
+
+		Expect(totalRecords).To(Equal(50))
+		Expect(batches).To(BeNumerically(">", 1))
+	})
+
+	It("does not enforce time limit when TimeLimit is zero", func() {
+		ks := specSubspace()
+
+		builder := baseMetaData()
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 10; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+				_, err = store.SaveRecord(order)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Scan without time limit — should get all records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+
+			entries, err := AsList(ctx, store.ScanRecords(nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			Expect(entries).To(HaveLen(10))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })

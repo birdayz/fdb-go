@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -66,6 +67,7 @@ type keyValueCursor struct {
 	recordsScanned int   // Records scanned (including skipped ones)
 	bytesScanned   int64
 	prefixLength   int // Length of the subspace prefix for continuation handling
+	startTime      time.Time // For time limit enforcement
 
 	// Buffered KV pair for split record handling.
 	// When collecting split chunks, we may read the first KV of the next record.
@@ -99,6 +101,21 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			SourceExhausted,
+			&EndContinuation{},
+		), nil
+	}
+
+	// Check time limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
+	// Allow at least one record before enforcing (free initial pass).
+	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
+		if c.continuation != nil {
+			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+				TimeLimitReached,
+				&BytesContinuation{bytes: c.continuation},
+			), nil
+		}
+		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
+			TimeLimitReached,
 			&EndContinuation{},
 		), nil
 	}

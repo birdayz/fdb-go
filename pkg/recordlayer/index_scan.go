@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -170,6 +171,7 @@ type indexCursor struct {
 	bytesScanned int64
 	prefixLength int
 	lastCont     []byte
+	startTime    time.Time
 }
 
 func newIndexCursor(
@@ -188,6 +190,7 @@ func newIndexCursor(
 		continuation:  continuation,
 		scanProps:     scanProps,
 		prefixLength:  len(indexSubspace.FDBKey()),
+		startTime:     time.Now(),
 	}
 }
 
@@ -215,6 +218,20 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 		}
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
+			&EndContinuation{},
+		), nil
+	}
+
+	// Check time limit before reading next entry (free initial pass for first record).
+	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
+		if c.lastCont != nil {
+			return NewResultNoNext[*IndexEntry](
+				TimeLimitReached,
+				&BytesContinuation{bytes: c.lastCont},
+			), nil
+		}
+		return NewResultNoNext[*IndexEntry](
+			TimeLimitReached,
 			&EndContinuation{},
 		), nil
 	}
