@@ -166,6 +166,44 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	return result, nil
 }
 
+// OpenContext creates a new FDBRecordContext with a fresh transaction, applying
+// the runner's context configuration. Matches Java's FDBDatabaseRunner.openContext().
+// The caller is responsible for committing or cancelling the transaction.
+func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext, error) {
+	var tx fdb.Transaction
+	var err error
+	if r.db.tenant != (fdb.Tenant{}) {
+		tx, err = r.db.tenant.CreateTransaction()
+	} else {
+		tx, err = r.db.db.CreateTransaction()
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	recordCtx := &FDBRecordContext{
+		tx:  tx,
+		ctx: ctx,
+	}
+
+	if r.ContextConfig != nil {
+		if r.ContextConfig.TransactionTimeout > 0 {
+			if err := tx.Options().SetTimeout(int64(r.ContextConfig.TransactionTimeout / time.Millisecond)); err != nil {
+				tx.Cancel()
+				return nil, err
+			}
+		}
+		if r.ContextConfig.Priority != PriorityDefault {
+			if err := recordCtx.SetTransactionPriority(r.ContextConfig.Priority); err != nil {
+				tx.Cancel()
+				return nil, err
+			}
+		}
+	}
+
+	return recordCtx, nil
+}
+
 // calculateDelay returns the delay for the given attempt using exponential backoff with jitter.
 func (r *FDBDatabaseRunner) calculateDelay(attempt int) time.Duration {
 	delay := float64(r.InitialDelay) * math.Pow(2, float64(attempt-1))

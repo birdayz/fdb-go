@@ -686,6 +686,90 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(result).To(Equal([]int{1, 2, 3}))
 	})
 
+	It("AutoContinuingCursor scans across transaction boundaries", func() {
+		ks := specSubspace()
+		populate10Orders(ctx, metaData)
+
+		runner := NewFDBDatabaseRunner(sharedDB)
+
+		// Use a scan limit of 3 to force multiple transactions
+		autoCursor := NewAutoContinuingCursor(
+			runner,
+			func(rtx *FDBRecordContext, continuation []byte) RecordCursor[*FDBStoredRecord[proto.Message]] {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				scan := ForwardScan()
+				scan.ExecuteProperties.ScannedRecordsLimit = 3
+				return store.ScanRecords(continuation, scan)
+			},
+			0,
+		)
+
+		// Should get all 10 records despite 3-per-transaction limit
+		records, err := AsList(ctx, autoCursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records).To(HaveLen(10))
+
+		// Verify order
+		for i, rec := range records {
+			order := rec.Record.(*gen.Order)
+			Expect(order.GetOrderId()).To(Equal(int64(i + 1)))
+		}
+	})
+
+	It("AutoContinuingCursor with empty store", func() {
+		ks := specSubspace()
+		// Don't populate — empty store
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		runner := NewFDBDatabaseRunner(sharedDB)
+		autoCursor := NewAutoContinuingCursor(
+			runner,
+			func(rtx *FDBRecordContext, continuation []byte) RecordCursor[*FDBStoredRecord[proto.Message]] {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				return store.ScanRecords(continuation, ForwardScan())
+			},
+			0,
+		)
+
+		records, err := AsList(ctx, autoCursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records).To(BeEmpty())
+	})
+
+	It("AutoContinuingCursor with row limit per transaction", func() {
+		ks := specSubspace()
+		populate10Orders(ctx, metaData)
+
+		runner := NewFDBDatabaseRunner(sharedDB)
+
+		// ReturnedRowLimit of 2 per inner cursor
+		autoCursor := NewAutoContinuingCursor(
+			runner,
+			func(rtx *FDBRecordContext, continuation []byte) RecordCursor[*FDBStoredRecord[proto.Message]] {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				scan := ForwardScan()
+				scan.ExecuteProperties.ReturnedRowLimit = 2
+				return store.ScanRecords(continuation, scan)
+			},
+			0,
+		)
+
+		records, err := AsList(ctx, autoCursor)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records).To(HaveLen(10))
+	})
+
 	It("ScannedRecordsLimit", func() {
 		ks := specSubspace()
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

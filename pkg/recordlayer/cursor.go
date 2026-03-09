@@ -1211,6 +1211,187 @@ func (c *flatMapCursor[T, V]) SeqWithContinuation(ctx context.Context) iter.Seq2
 	}
 }
 
+// autoContinuingCursor wraps a cursor generator and automatically creates new
+// transactions when the inner cursor stops due to limits (time, scan, byte, row).
+// This enables seamless scanning of large datasets across FDB's 5-second transaction
+// boundary. Matches Java's AutoContinuingCursor.
+//
+// Unlike other cursors, AutoContinuingCursor manages its own transaction lifecycle —
+// it is NOT used within a transaction, but spans across multiple transactions.
+type autoContinuingCursor[T any] struct {
+	runner     *FDBDatabaseRunner
+	generator  func(*FDBRecordContext, []byte) RecordCursor[T]
+	maxRetries int
+
+	currentCtx    *FDBRecordContext
+	currentCursor RecordCursor[T]
+	lastResult    *RecordCursorResult[T]
+	closed        bool
+}
+
+// NewAutoContinuingCursor creates a cursor that automatically creates new transactions
+// when the inner cursor stops before exhaustion (e.g., time limit, scan limit).
+// Matches Java's AutoContinuingCursor.
+//
+// Parameters:
+//   - runner: provides transaction creation and context configuration
+//   - generator: creates a cursor within a transaction context from a continuation
+//   - maxRetries: maximum retries on transient FDB errors (0 = no retries)
+func NewAutoContinuingCursor[T any](
+	runner *FDBDatabaseRunner,
+	generator func(*FDBRecordContext, []byte) RecordCursor[T],
+	maxRetries int,
+) RecordCursor[T] {
+	return &autoContinuingCursor[T]{
+		runner:     runner,
+		generator:  generator,
+		maxRetries: maxRetries,
+	}
+}
+
+func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
+	if c.closed {
+		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+	}
+
+	for {
+		result, err := c.onNextWithRetry(ctx, 0)
+		if err != nil {
+			return RecordCursorResult[T]{}, err
+		}
+
+		if result.HasStoppedBeforeEnd() {
+			// Inner cursor stopped due to a limit — create new transaction and continue
+			contBytes := result.GetContinuation().ToBytes()
+			if err := c.openContextAndGenerateCursor(ctx, contBytes); err != nil {
+				return RecordCursorResult[T]{}, err
+			}
+			continue
+		}
+
+		// Either has a value or source is exhausted
+		if result.HasNext() {
+			c.lastResult = &result
+		}
+		return result, nil
+	}
+}
+
+func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt int) (RecordCursorResult[T], error) {
+	if c.currentCursor == nil {
+		if err := c.openContextAndGenerateCursor(ctx, c.lastContinuation()); err != nil {
+			return RecordCursorResult[T]{}, err
+		}
+	}
+
+	result, err := c.currentCursor.OnNext(ctx)
+	if err != nil {
+		if !isRetryableError(err) || attempt >= c.maxRetries {
+			return RecordCursorResult[T]{}, err
+		}
+		// Retryable error — create new cursor from last successful position
+		if openErr := c.openContextAndGenerateCursor(ctx, c.lastContinuation()); openErr != nil {
+			return RecordCursorResult[T]{}, openErr
+		}
+		return c.onNextWithRetry(ctx, attempt+1)
+	}
+
+	return result, nil
+}
+
+func (c *autoContinuingCursor[T]) lastContinuation() []byte {
+	if c.lastResult == nil {
+		return nil
+	}
+	return c.lastResult.GetContinuation().ToBytes()
+}
+
+func (c *autoContinuingCursor[T]) openContextAndGenerateCursor(ctx context.Context, continuation []byte) error {
+	// Close previous cursor and context
+	if c.currentCursor != nil {
+		_ = c.currentCursor.Close()
+		c.currentCursor = nil
+	}
+	if c.currentCtx != nil {
+		c.currentCtx.Transaction().Cancel()
+		c.currentCtx = nil
+	}
+
+	recordCtx, err := c.runner.OpenContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	c.currentCtx = recordCtx
+	c.currentCursor = c.generator(recordCtx, continuation)
+	return nil
+}
+
+func (c *autoContinuingCursor[T]) Close() error {
+	c.closed = true
+	var firstErr error
+	if c.currentCursor != nil {
+		if err := c.currentCursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.currentCursor = nil
+	}
+	if c.currentCtx != nil {
+		c.currentCtx.Transaction().Cancel()
+		c.currentCtx = nil
+	}
+	return firstErr
+}
+
+func (c *autoContinuingCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+func (c *autoContinuingCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+func (c *autoContinuingCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = c.Close() }()
+		for {
+			result, err := c.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
+}
+
 // Note: Most sequence utilities are available in Go 1.23+ standard library:
 // - slices.Collect() for collecting sequences
 // - Use range loops directly for counting, filtering, etc.
