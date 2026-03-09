@@ -44,11 +44,12 @@ var (
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
-	context     *FDBRecordContext
-	metaData    *RecordMetaData
-	subspace    subspace.Subspace
-	storeHeader *gen.DataStoreInfo    // Cached store header, loaded on Open/Create
-	indexStates map[string]IndexState // Cached index states, loaded on Open/Create
+	context            *FDBRecordContext
+	metaData           *RecordMetaData
+	subspace           subspace.Subspace
+	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create
+	indexStates        map[string]IndexState  // Cached index states, loaded on Open/Create
+	indexRebuildPolicy IndexRebuildPolicy     // Policy for rebuilding indexes on metadata version change
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
@@ -663,8 +664,9 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 
 // checkPossiblyRebuild compares the stored metadata version with the current
 // metadata version. If the current metadata has a higher version, indexes added
-// since the old version are rebuilt inline.
-// Matches Java's FDBRecordStore.checkPossiblyRebuild() / checkRebuild().
+// since the old version are rebuilt or marked according to the IndexRebuildPolicy.
+// Matches Java's FDBRecordStore.checkPossiblyRebuild() / checkRebuild() /
+// getStatesForRebuildIndexes().
 func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo) error {
 	oldMetaDataVersion := int(storeHeader.GetMetaDataversion())
 	newMetaDataVersion := store.metaData.Version()
@@ -675,10 +677,33 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 
 	// Find indexes added since the old version.
 	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
-	for _, index := range indexesToBuild {
-		if err := store.RebuildIndex(index); err != nil {
-			return fmt.Errorf("auto-rebuild index %q on metadata version change (%d -> %d): %w",
-				index.Name, oldMetaDataVersion, newMetaDataVersion, err)
+	if len(indexesToBuild) > 0 {
+		// Get record count for the policy decision (lazy in Java, eager here).
+		recordCount, err := store.getRecordCountForRebuildPolicy()
+		if err != nil {
+			return fmt.Errorf("check record count for rebuild: %w", err)
+		}
+
+		for _, index := range indexesToBuild {
+			// TODO: detect indexOnNewRecordTypes (index covers only record types
+			// added in this same version bump). For now, conservatively false.
+			desiredState := store.indexRebuildPolicy(index, recordCount, false)
+
+			switch desiredState {
+			case IndexStateReadable:
+				if err := store.RebuildIndex(index); err != nil {
+					return fmt.Errorf("auto-rebuild index %q on metadata version change (%d -> %d): %w",
+						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
+				}
+			case IndexStateWriteOnly:
+				if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
+					return fmt.Errorf("mark index %q write-only: %w", index.Name, err)
+				}
+			case IndexStateDisabled:
+				if _, err := store.MarkIndexDisabled(index.Name); err != nil {
+					return fmt.Errorf("mark index %q disabled: %w", index.Name, err)
+				}
+			}
 		}
 	}
 
@@ -692,6 +717,25 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	}
 
 	return nil
+}
+
+// getRecordCountForRebuildPolicy returns the approximate record count
+// for the IndexRebuildPolicy decision. Uses GetRecordCount if available,
+// falls back to 0 (which triggers inline rebuild — safe default for stores
+// without counting enabled).
+func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
+	if store.metaData.GetRecordCountKey() != nil {
+		count, err := store.GetRecordCount()
+		if err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+	// Without counting, we can't know the count cheaply.
+	// Return 0 to trigger inline rebuild (safe for small stores,
+	// matches Java's lazy evaluation where count is only fetched
+	// if the checker explicitly requests it).
+	return 0, nil
 }
 
 // shouldIndexRecordForIndex checks if a record matches the given index's record types.
@@ -1190,12 +1234,36 @@ func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) erro
 	return nil
 }
 
+// IndexRebuildPolicy determines what state a new/changed index should be put in
+// when the store is opened with updated metadata.
+// Matches Java's FDBRecordStoreBase.UserVersionChecker.needRebuildIndex().
+type IndexRebuildPolicy func(index *Index, recordCount int64, indexOnNewRecordTypes bool) IndexState
+
+// DefaultIndexRebuildPolicy matches Java's default behavior:
+// inline rebuild (READABLE) for stores with ≤200 records or indexes on new record types,
+// DISABLED otherwise (requires OnlineIndexer).
+// Java constant: FDBRecordStoreBase.MAX_RECORDS_FOR_REBUILD = 200.
+func DefaultIndexRebuildPolicy(index *Index, recordCount int64, indexOnNewRecordTypes bool) IndexState {
+	const maxRecordsForRebuild = 200
+	if indexOnNewRecordTypes || recordCount <= maxRecordsForRebuild {
+		return IndexStateReadable
+	}
+	return IndexStateDisabled
+}
+
+// AlwaysRebuildPolicy always rebuilds indexes inline.
+// Matches Java's ALWAYS_READABLE_CHECKER behavior.
+func AlwaysRebuildPolicy(_ *Index, _ int64, _ bool) IndexState {
+	return IndexStateReadable
+}
+
 // StoreBuilder builds an FDBRecordStore with configuration options.
 // This follows the builder pattern from Java exactly.
 type StoreBuilder struct {
-	context  *FDBRecordContext
-	metaData *RecordMetaData
-	subspace subspace.Subspace
+	context            *FDBRecordContext
+	metaData           *RecordMetaData
+	subspace           subspace.Subspace
+	indexRebuildPolicy IndexRebuildPolicy
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1221,6 +1289,29 @@ func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 	return b
 }
 
+// SetIndexRebuildPolicy sets the policy for rebuilding indexes during store open
+// when the metadata version changes. If not set, DefaultIndexRebuildPolicy is used
+// (inline rebuild for ≤200 records, DISABLED otherwise).
+// Matches Java's FDBRecordStore.newBuilder().setUserVersionChecker().
+func (b *StoreBuilder) SetIndexRebuildPolicy(policy IndexRebuildPolicy) *StoreBuilder {
+	b.indexRebuildPolicy = policy
+	return b
+}
+
+// newStore creates an FDBRecordStore from the builder's settings.
+func (b *StoreBuilder) newStore() *FDBRecordStore {
+	policy := b.indexRebuildPolicy
+	if policy == nil {
+		policy = DefaultIndexRebuildPolicy
+	}
+	return &FDBRecordStore{
+		context:            b.context,
+		metaData:           b.metaData,
+		subspace:           b.subspace,
+		indexRebuildPolicy: policy,
+	}
+}
+
 // validateBuilder checks that all required fields are set
 func (b *StoreBuilder) validateBuilder() error {
 	if b.context == nil {
@@ -1241,11 +1332,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
-	store := &FDBRecordStore{
-		context:  b.context,
-		metaData: b.metaData,
-		subspace: b.subspace,
-	}
+	store := b.newStore()
 
 	// Check if store already exists
 	exists, _, err := store.checkStoreExists()
@@ -1275,11 +1362,7 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
-	store := &FDBRecordStore{
-		context:  b.context,
-		metaData: b.metaData,
-		subspace: b.subspace,
-	}
+	store := b.newStore()
 
 	// Verify store exists and has proper header
 	exists, storeHeader, err := store.checkStoreExists()
@@ -1312,11 +1395,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
-	store := &FDBRecordStore{
-		context:  b.context,
-		metaData: b.metaData,
-		subspace: b.subspace,
-	}
+	store := b.newStore()
 
 	// Check if store exists
 	exists, storeHeader, err := store.checkStoreExists()
@@ -1354,11 +1433,7 @@ func (b *StoreBuilder) Build() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
-	return &FDBRecordStore{
-		context:  b.context,
-		metaData: b.metaData,
-		subspace: b.subspace,
-	}, nil
+	return b.newStore(), nil
 }
 
 // wrapInUnion wraps a record message in a UnionDescriptor for storage compatibility with Java

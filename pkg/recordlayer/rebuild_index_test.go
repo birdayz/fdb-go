@@ -627,5 +627,106 @@ var _ = Describe("RebuildIndex", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("marks index DISABLED when DefaultIndexRebuildPolicy and too many records", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with record counting, save >200 records.
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(&EmptyKeyExpression{})
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 201; i++ {
+					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					_, err = store.SaveRecord(order)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Open with a new index. Default policy sees >200 records → DISABLED.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(&EmptyKeyExpression{})
+			builder2.AddIndex("Order", priceIndex)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Index should be DISABLED, not READABLE.
+				Expect(store.IsIndexDisabled("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("AlwaysRebuildPolicy forces inline rebuild regardless of record count", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with counting, save >200 records.
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(&EmptyKeyExpression{})
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 201; i++ {
+					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}
+					_, err = store.SaveRecord(order)
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Open with AlwaysRebuildPolicy → forces READABLE.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(&EmptyKeyExpression{})
+			builder2.AddIndex("Order", priceIndex)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(AlwaysRebuildPolicy).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				if err != nil {
+					return nil, err
+				}
+				Expect(entries).To(HaveLen(201))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 })
