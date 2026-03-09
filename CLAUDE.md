@@ -91,6 +91,25 @@ just clean          # bazel clean
 - Proto codegen stays with `buf generate` — not in Bazel.
 - **IMPORTANT**: Always use `bazelisk` (not `bazel`) when running bazel commands directly. The `just` recipes handle this, but if invoking bazel manually, use `bazelisk`.
 
+### Debugging Bazel cache invalidation
+
+When builds unexpectedly recompile instead of using the cache:
+
+1. **Find which option changed** (analysis cache): Look for `WARNING: Build option --foo has changed, discarding analysis cache` in output.
+
+2. **Find why actions re-execute** (action cache): Use `--explain` + `--verbose_explanations`:
+   ```sh
+   bazelisk build //... --explain=/tmp/bazel_explain.log --verbose_explanations
+   ```
+   Then read `/tmp/bazel_explain.log` — it says exactly why each action ran (e.g. `Effective client environment has changed. Now using PATH=...`).
+
+3. **Common culprits when switching between interactive/CI/Claude Code shells**:
+   - `PATH` leaking into actions (fix: `--incompatible_strict_action_env` in `.bazelrc`)
+   - `--test_env=VAR` inheriting different values (fix: pin values or remove)
+   - `--isatty` / `--terminal_columns` auto-detected by Bazel client (cosmetic, usually not the real issue)
+
+4. **`.bazelrc` uses `--incompatible_strict_action_env`** to prevent shell environment from leaking into build actions. This ensures cache sharing across different shell environments.
+
 ## Architecture
 
 ### Core types
