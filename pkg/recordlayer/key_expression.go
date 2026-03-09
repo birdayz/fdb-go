@@ -499,3 +499,81 @@ func buildPrimaryKeyComponentPositions(indexKey, primaryKey KeyExpression) []int
 	}
 	return positions
 }
+
+// GroupingKeyExpression wraps a key expression and divides its columns into
+// "grouping" (leading) and "grouped" (trailing) parts. The grouping columns
+// form the GROUP BY key, and the grouped columns are the aggregated values.
+// Matches Java's com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression.
+type GroupingKeyExpression struct {
+	wholeKey     KeyExpression
+	groupedCount int // number of trailing columns that are "grouped" (aggregated)
+}
+
+// GroupBy creates a GroupingKeyExpression that groups by the given expressions
+// and treats the receiver as the aggregated value.
+// Example: Field("score").GroupBy(Field("game_id")) →
+//   wholeKey = Concat(game_id, score), groupedCount = 1
+// Matches Java's KeyExpression.groupBy().
+func GroupBy(grouped KeyExpression, groupBy ...KeyExpression) *GroupingKeyExpression {
+	groupedColCount := keyExpressionColumnSize(grouped)
+	allExprs := make([]KeyExpression, 0, len(groupBy)+1)
+	allExprs = append(allExprs, groupBy...)
+	allExprs = append(allExprs, grouped)
+
+	var wholeKey KeyExpression
+	if len(allExprs) == 1 {
+		wholeKey = allExprs[0]
+	} else {
+		wholeKey = Concat(allExprs...)
+	}
+	return &GroupingKeyExpression{wholeKey: wholeKey, groupedCount: groupedColCount}
+}
+
+// Ungrouped creates a GroupingKeyExpression where all columns are "grouped"
+// (aggregated) and there are no grouping columns. Used for ungrouped counts.
+// Example: Ungrouped(EmptyKey()) → count all records with no grouping.
+// Matches Java's KeyExpression.ungrouped().
+func Ungrouped(expr KeyExpression) *GroupingKeyExpression {
+	return &GroupingKeyExpression{
+		wholeKey:     expr,
+		groupedCount: keyExpressionColumnSize(expr),
+	}
+}
+
+// GroupAll creates a GroupingKeyExpression where all columns are "grouping"
+// and there are no aggregated columns. Used for COUNT indexes where the
+// entire expression forms the GROUP BY key.
+// Example: GroupAll(Field("price")) → count grouped by price.
+// Matches Java's new GroupingKeyExpression(expr, 0).
+func GroupAll(expr KeyExpression) *GroupingKeyExpression {
+	return &GroupingKeyExpression{
+		wholeKey:     expr,
+		groupedCount: 0,
+	}
+}
+
+// Evaluate delegates to the whole key expression.
+// The grouping/grouped split is metadata, not evaluation logic.
+func (g *GroupingKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+	return g.wholeKey.Evaluate(msg)
+}
+
+// FieldNames returns field names from the whole key.
+func (g *GroupingKeyExpression) FieldNames() []string {
+	return g.wholeKey.FieldNames()
+}
+
+// GetWholeKey returns the underlying key expression.
+func (g *GroupingKeyExpression) GetWholeKey() KeyExpression {
+	return g.wholeKey
+}
+
+// GetGroupedCount returns the number of trailing "grouped" (aggregated) columns.
+func (g *GroupingKeyExpression) GetGroupedCount() int {
+	return g.groupedCount
+}
+
+// GetGroupingCount returns the number of leading "grouping" (GROUP BY) columns.
+func (g *GroupingKeyExpression) GetGroupingCount() int {
+	return keyExpressionColumnSize(g.wholeKey) - g.groupedCount
+}

@@ -8,6 +8,7 @@ import (
 // Index type constants matching Java's IndexTypes.
 const (
 	IndexTypeValue = "value"
+	IndexTypeCount = "count"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -51,6 +52,19 @@ func NewIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeValue,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewCountIndex creates a COUNT index with the given name and root key expression.
+// COUNT indexes use FDB atomic ADD to maintain counts per grouping key.
+// Matches Java's new Index(name, rootExpression, IndexTypes.COUNT).
+func NewCountIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeCount,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

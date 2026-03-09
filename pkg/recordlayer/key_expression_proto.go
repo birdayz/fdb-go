@@ -140,6 +140,14 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		found++
 		root = RecordTypeKey()
 	}
+	if expr.Grouping != nil {
+		found++
+		g, err := groupingFromProto(expr.Grouping)
+		if err != nil {
+			return nil, err
+		}
+		root = g
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -187,4 +195,28 @@ func thenFromProto(t *gen.Then) (KeyExpression, error) {
 		exprs[i] = expr
 	}
 	return Concat(exprs...), nil
+}
+
+// groupingFromProto reconstructs a GroupingKeyExpression from a proto Grouping.
+func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
+	wholeKey, err := KeyExpressionFromProto(g.WholeKey)
+	if err != nil {
+		return nil, fmt.Errorf("grouping whole key: %w", err)
+	}
+	return &GroupingKeyExpression{
+		wholeKey:     wholeKey,
+		groupedCount: int(g.GetGroupedCount()),
+	}, nil
+}
+
+// ToKeyExpression serializes GroupingKeyExpression to proto.
+// Matches Java's GroupingKeyExpression.toKeyExpression().
+func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	gc := int32(g.groupedCount)
+	return &gen.KeyExpression{
+		Grouping: &gen.Grouping{
+			WholeKey:     g.wholeKey.ToKeyExpression(),
+			GroupedCount: &gc,
+		},
+	}
 }

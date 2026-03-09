@@ -23,6 +23,12 @@ See `TODO.md` in repo root for tracked issues and improvements. Use checkbox for
 
 **Build & verify:** always use `just test` (not manual bazelisk commands) — it runs everything and the Bazel cache handles incrementality perfectly.
 
+**Run specific Ginkgo tests via Bazel:**
+```sh
+bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="--ginkgo.focus=CountIndex" --test_output=streamed
+```
+Use `--ginkgo.focus=<regex>` to target a specific `Describe`/`It` block. Multiple words work as regex, e.g. `--ginkgo.focus="CountIndex.*delete"`.
+
 **Commits:** commit after each feature passes tests. One logical change per commit. Always include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`. Do NOT push unless the user asks.
 
 **Update TODO.md** as work completes — mark items `[x]` with a short note of what was done.

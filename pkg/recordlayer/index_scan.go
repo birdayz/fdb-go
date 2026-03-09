@@ -130,6 +130,8 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 		return keyExpressionColumnSize(e.child)
 	case *EmptyKeyExpression:
 		return 0
+	case *GroupingKeyExpression:
+		return keyExpressionColumnSize(e.wholeKey)
 	default:
 		return 0
 	}
@@ -137,6 +139,7 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 
 // ScanIndex scans a secondary index and returns a cursor over IndexEntry results.
 // Returns an error cursor if the index is not in a scannable state (DISABLED or WRITE_ONLY).
+// Dispatches to the appropriate maintainer's Scan() method (VALUE vs COUNT).
 // Matches Java's FDBRecordStore.scanIndex().
 func (store *FDBRecordStore) ScanIndex(
 	index *Index,
@@ -149,8 +152,8 @@ func (store *FDBRecordStore) ScanIndex(
 			err: fmt.Errorf("%w: %s is %s", ErrIndexNotReadable, index.Name, store.GetIndexState(index.Name)),
 		}
 	}
-	idxSubspace := store.indexSubspace(index)
-	return newIndexCursor(index, idxSubspace, store.context.Transaction(), scanRange, continuation, scanProperties)
+	maintainer := store.getIndexMaintainer(index)
+	return maintainer.Scan(scanRange, continuation, scanProperties)
 }
 
 // indexCursor iterates key-value pairs from an index subspace and maps

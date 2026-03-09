@@ -778,9 +778,17 @@ func (store *FDBRecordStore) indexSubspace(index *Index) subspace.Subspace {
 }
 
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
-// Currently only StandardIndexMaintainer (VALUE indexes) is supported.
+// Dispatches to CountIndexMaintainer for COUNT indexes, StandardIndexMaintainer otherwise.
+// Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
-	return newStandardIndexMaintainer(index, store.indexSubspace(index), store.context.Transaction(), store)
+	idxSubspace := store.indexSubspace(index)
+	tx := store.context.Transaction()
+	switch index.Type {
+	case IndexTypeCount:
+		return newCountIndexMaintainer(index, idxSubspace, tx, store)
+	default:
+		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
+	}
 }
 
 // indexStoreContext interface implementation for FDBRecordStore.
