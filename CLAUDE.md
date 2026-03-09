@@ -19,18 +19,13 @@ We require **very high and thorough test coverage**. Every new feature, bug fix,
 
 See `TODO.md` in repo root for tracked issues and improvements. Use checkbox format `- [x]` / `- [ ]` with severity levels.
 
-**Before starting any implementation batch:**
-1. Mark items in `TODO.md` as `[x]` with a short description of what was implemented
-2. Then write the code
-3. Run `bazelisk run //:gazelle && bazelisk build //...` to compile + lint
-4. Run `bazelisk test //pkg/recordlayer:recordlayer_test --test_output=errors` to verify
-5. Only commit when the user explicitly says "commit"
+**Working rhythm:** one thing at a time. Implement a feature, write tests, run `just test`, commit, move on. Don't batch multiple unrelated features into one commit.
 
-**Do NOT commit unless the user asks.** Do NOT push unless the user asks.
+**Build & verify:** always use `just test` (not manual bazelisk commands) — it runs everything and the Bazel cache handles incrementality perfectly.
 
-**Commit style:** batch related changes into a single commit with a descriptive title line + bullet points. Always include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`.
+**Commits:** commit after each feature passes tests. One logical change per commit. Always include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`. Do NOT push unless the user asks.
 
-**Working rhythm:** pick 3-5 TODO items per batch, implement + test them all, then wait for the user to say "commit" before committing. Keep grinding through TODO items until told to stop.
+**Update TODO.md** as work completes — mark items `[x]` with a short note of what was done.
 
 ## Stack
 
@@ -168,18 +163,18 @@ Java source at `fdb-record-layer/` in repo root (gitignored). Key files:
 5. **Proto fidelity** — respect protobuf semantics (open enums, field presence, wire compat)
 6. **Test hard** — t.Parallel() where possible, cover edge cases, test Java interop
 
+## Proto definitions
+
+**Use Java's proto files directly.** The canonical definitions live at `fdb-record-layer/fdb-record-layer-core/src/main/proto/`. Our `proto/apple/` should mirror those — do NOT hand-maintain a subset and add messages one by one. Copy the full proto when adding new message types.
+
 ## Cursor/continuation design
 
-Implemented: `KeyValueCursorContinuation` (protobuf-wrapped with magic number). Supports forward/reverse scan, byte/row limits, split record reassembly, isolation levels.
+Implemented: `KeyValueCursorContinuation`, `ConcatContinuation` (protobuf-wrapped). Supports forward/reverse scan, byte/row/time limits, split record reassembly, isolation levels. `ConcatCursor` and `MapCursor` combinators available.
 
-Future cursor combinators from Java (not yet implemented):
-- `FlatMapContinuation`, `IntersectionContinuation`, `UnionContinuation`
-- `ConcatContinuation`, `SizeStatisticsContinuation`
-
-Each serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
+Each continuation serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
 
 ## Conformance status (updated 2026-03-09)
 
-See `TODO.md` for full gap analysis (77 completed, 32 remaining). Summary:
-- **Complete**: CRUD, split records, subspace constants, continuation tokens, record versioning, record counting, VALUE indexes, index scanning, index state management, ThenKeyExpression, NestingKeyExpression, fan-out indexes, multi-type indexes, FormerIndex tracking, commit hooks, configurable retry runner, index validation, uniqueness violation tracking, store state management, transaction priority, store statistics
-- **Key gaps**: cursor combinators (union/intersection/flatmap), index build support, aggregate index types, schema validation, metadata proto serialization
+See `TODO.md` for full gap analysis. Summary:
+- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit), time/byte/record scan limits, MetaDataValidator, commit hooks, retry runner, store state management
+- **Key gaps**: cursor combinators (union/intersection/flatmap), aggregate index types, metadata proto serialization, AutoContinuingCursor

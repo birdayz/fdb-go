@@ -270,13 +270,14 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Cursor combinators** — Java has 20+ cursor combinator types completely missing in Go:
-  - **Set operations**: `UnionCursor`, `IntersectionCursor`, `DedupCursor`
-  - **Composition**: `FlatMapPipelinedCursor`, `ConcatCursor`, `ChainedCursor`
-  - **Aggregation**: `AggregateCursor` with accumulator states
-  - **Control flow**: `FallbackCursor`, `AutoContinuingCursor`, `RecursiveCursor`
-  - **Transformation**: `MapPipelinedCursor`, `MapResultCursor`, `MapWhileCursor`, `SkipCursor`
-  - **Utilities**: `EmptyCursor`, `ListCursor`, `IteratorCursor`, `FutureCursor`, `LazyCursor`
+- [ ] **Cursor combinators** — Java has 20+ cursor combinator types. Implemented in Go:
+  - [x] `ConcatCursor` — sequential concatenation with proto-wrapped continuations
+  - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
+  - [x] `Empty`, `FromList`, `Filter`, `Skip`, `LimitRows` — basic utilities
+  - [ ] **Set operations**: `UnionCursor`, `IntersectionCursor`, `DedupCursor`
+  - [ ] **Composition**: `FlatMapPipelinedCursor`, `ChainedCursor`
+  - [ ] **Aggregation**: `AggregateCursor` with accumulator states
+  - [ ] **Control flow**: `FallbackCursor`, `AutoContinuingCursor` (auto-creates new transactions on time limit, seamless large-dataset scanning across tx boundaries — research Java's implementation first)
 
 - [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
 
