@@ -6,6 +6,8 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
 // Little-endian int64 constants for atomic ADD mutations.
@@ -33,15 +35,28 @@ func decodeRecordCount(b []byte) int64 {
 	return int64(binary.LittleEndian.Uint64(b))
 }
 
+// isRecordCountDisabled returns true if the record count state is DISABLED.
+// Matches Java's check: header.getRecordCountState() != DISABLED.
+func (store *FDBRecordStore) isRecordCountDisabled() bool {
+	if store.storeHeader == nil {
+		return false
+	}
+	return store.storeHeader.GetRecordCountState() == gen.DataStoreInfo_DISABLED
+}
+
 // addRecordCount atomically increments or decrements the record count.
 // Uses FDB's atomic ADD mutation for lock-free concurrent counting.
+// Skips mutation when RecordCountState is DISABLED.
 // Matches Java's FDBRecordStore.addRecordCount().
 //
 // Key format: subspace[RecordCountKey] + evaluated_count_key_tuple
 func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []byte) {
 	countKey := store.metaData.GetRecordCountKey()
 	if countKey == nil {
-		return // Counting disabled
+		return // Counting not configured
+	}
+	if store.isRecordCountDisabled() {
+		return // Count state is DISABLED — skip mutation
 	}
 
 	// Evaluate the count key expression against the record.
@@ -71,6 +86,7 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 
 // GetSnapshotRecordCount returns the count of records matching the given key.
 // Uses snapshot reads (non-conflicting) matching Java's getSnapshotRecordCount().
+// Only allowed when RecordCountState is READABLE.
 //
 // For ungrouped counting (EmptyKeyExpression), pass an empty tuple.
 // For per-type counting, pass a tuple with the record type name/index.
@@ -79,6 +95,9 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 func (store *FDBRecordStore) GetSnapshotRecordCount(countKey tuple.Tuple) (int64, error) {
 	if store.metaData.GetRecordCountKey() == nil {
 		return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil)")
+	}
+	if store.storeHeader != nil && store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_READABLE {
+		return 0, fmt.Errorf("record count is not readable (state: %s)", store.storeHeader.GetRecordCountState())
 	}
 
 	countSubspace := store.subspace.Sub(RecordCountKey)
@@ -116,4 +135,42 @@ func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName 
 		return 0, fmt.Errorf("unknown record type %q", recordTypeName)
 	}
 	return store.GetSnapshotRecordCount(tuple.Tuple{rt.GetRecordTypeKey()})
+}
+
+// UpdateRecordCountState transitions the record count state.
+// Valid transitions: READABLE↔WRITE_ONLY, any→DISABLED. DISABLED is terminal.
+// When transitioning to DISABLED, clears all count data.
+// Matches Java's FDBRecordStore.updateRecordCountStateAsync().
+func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_RecordCountState) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+
+	existing := store.storeHeader.GetRecordCountState()
+	if existing == newState {
+		return nil // No-op
+	}
+
+	// Validate transition. Matches Java's state machine:
+	// READABLE → WRITE_ONLY: allowed
+	// WRITE_ONLY → READABLE: allowed
+	// any → DISABLED: allowed
+	// DISABLED → anything: forbidden (terminal state)
+	if existing == gen.DataStoreInfo_DISABLED {
+		return fmt.Errorf("invalid state transition for RecordCountState: DISABLED → %s (DISABLED is terminal)", newState)
+	}
+	toWriteOnly := existing == gen.DataStoreInfo_READABLE && newState == gen.DataStoreInfo_WRITE_ONLY
+	toReadable := existing == gen.DataStoreInfo_WRITE_ONLY && newState == gen.DataStoreInfo_READABLE
+	toDisabled := newState == gen.DataStoreInfo_DISABLED
+	if !toWriteOnly && !toReadable && !toDisabled {
+		return fmt.Errorf("invalid state transition for RecordCountState: %s → %s", existing, newState)
+	}
+
+	// When transitioning to DISABLED, clear all count data
+	if toDisabled {
+		store.context.Transaction().ClearRange(store.subspace.Sub(RecordCountKey))
+	}
+
+	store.storeHeader.RecordCountState = &newState
+	return store.writeStoreHeader(store.storeHeader)
 }

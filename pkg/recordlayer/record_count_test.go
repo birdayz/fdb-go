@@ -365,4 +365,170 @@ var _ = Describe("RecordCounting", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("DisabledStateSkipsMutations", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.SetRecordCountKey(EmptyKey())
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			// Insert 3 records with counting active
+			for i := int64(1); i <= 3; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				if _, err := store.SaveRecord(order); err != nil {
+					return nil, err
+				}
+			}
+			count, err := store.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(3)))
+
+			// Transition to DISABLED — clears count data
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+
+			// Saves should still work, but count should not be maintained
+			order4 := &gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(40)}
+			_, err = store.SaveRecord(order4)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deletes should work too
+			_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// GetRecordCount should fail (state is DISABLED, not READABLE)
+			_, err = store.GetRecordCount()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not readable"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("DisabledStateIsTerminal", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.SetRecordCountKey(EmptyKey())
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			// READABLE → DISABLED: allowed
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+
+			// DISABLED → READABLE: forbidden
+			err = store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("DISABLED"))
+
+			// DISABLED → WRITE_ONLY: also forbidden
+			err = store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("DISABLED"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("WriteOnlyStateMaintainsCountButBlocksQuery", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.SetRecordCountKey(EmptyKey())
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			// Insert 2 records
+			for i := int64(1); i <= 2; i++ {
+				order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}
+				if _, err := store.SaveRecord(order); err != nil {
+					return nil, err
+				}
+			}
+
+			// Transition to WRITE_ONLY
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+
+			// Saves should still maintain the count
+			order3 := &gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)}
+			_, err = store.SaveRecord(order3)
+			Expect(err).NotTo(HaveOccurred())
+
+			// But querying should be blocked
+			_, err = store.GetRecordCount()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not readable"))
+
+			// Transition back to READABLE
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+
+			// Now count should work and reflect all 3 records
+			count, err := store.GetRecordCount()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(int64(3)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("StateTransitionValidation", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.SetRecordCountKey(EmptyKey())
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+
+			// Same state → no-op
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+
+			// READABLE → WRITE_ONLY: allowed
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_WRITE_ONLY)).To(Succeed())
+
+			// WRITE_ONLY → READABLE: allowed
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_READABLE)).To(Succeed())
+
+			// READABLE → DISABLED: allowed
+			Expect(store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)).To(Succeed())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

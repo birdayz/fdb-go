@@ -116,9 +116,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **FDBRecordVersion missing Equal/Less** — Fixed: Added `Equal()`, `Less()`, `String()` methods matching Java's `equals()`/`compareTo()`/`toString()` semantics.
 
-- [ ] **WRITE_ONLY uniqueness violation tracking in maintainer** — QA audit finding: Java's `StandardIndexMaintainer.checkUniqueness()` writes violation entries to subspace 7 when index is WRITE_ONLY (instead of throwing). Go always throws `RecordIndexUniquenessViolationError`. Root cause: `StandardIndexMaintainer` has no store context to check `IsIndexWriteOnly()`. Also: Java cleans up violation entries on delete when index is WRITE_ONLY/READABLE_UNIQUE_PENDING.
+- [x] **WRITE_ONLY uniqueness violation tracking in maintainer** — QA audit finding: Java's `StandardIndexMaintainer.checkUniqueness()` writes violation entries to subspace 7 when index is WRITE_ONLY (instead of throwing). Fixed: added `indexStoreContext` interface, `checkUniqueness()` now writes violations when WRITE_ONLY, `Update()` cleans up violations on delete. `RebuildIndex` uses `MarkIndexReadableOrUniquePending`.
 
-- [ ] **Record count DISABLED state check** — QA audit finding: Java checks `RecordCountState.DISABLED` in store header before incrementing count. Go always increments when `recordCountKey != nil`.
+- [x] **Record count DISABLED state check** — Fixed: `addRecordCount()` now checks `RecordCountState != DISABLED` before mutating. `GetSnapshotRecordCount()` checks `== READABLE` before querying. `UpdateRecordCountState()` enforces valid transitions (READABLE↔WRITE_ONLY, any→DISABLED, DISABLED is terminal). When transitioning to DISABLED, clears all count data. 5 new tests.
 
 ---
 
