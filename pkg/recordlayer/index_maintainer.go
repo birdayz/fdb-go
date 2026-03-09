@@ -103,8 +103,14 @@ type indexEntry struct {
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.
 // Fans out when the expression returns multiple key tuples (e.g. repeated fields).
+// If the index has a predicate and the record doesn't match, returns nil (no entries).
 // Matches Java's StandardIndexMaintainer.evaluateIndex().
 func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+	// Check predicate for sparse/filtered indexes
+	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
+		return nil, nil
+	}
+
 	tuples, err := m.index.RootExpression.Evaluate(record.Record)
 	if err != nil {
 		return nil, err

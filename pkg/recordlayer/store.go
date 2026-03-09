@@ -153,6 +153,16 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	// Delete all KV pairs for this record
 	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldSizeInfo)
 
+	// Clean up version mutations (incomplete versionstamp + local version cache).
+	// deleteSplit clears the FDB key, but we also need to dequeue any pending
+	// incomplete version mutation from the context. Matches Java's deleteTypedRecord
+	// which calls context.removeVersionMutation().
+	if store.metaData.IsStoreRecordVersions() {
+		versionKey := store.versionKey(primaryKey)
+		store.context.RemoveLocalVersion(versionKey)
+		store.context.RemoveVersionMutation(versionKey)
+	}
+
 	// Deserialize old record if needed for counting or index updates
 	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
 	var oldRecordType *RecordType
@@ -478,36 +488,74 @@ func (store *FDBRecordStore) Subspace() subspace.Subspace {
 	return store.subspace
 }
 
+// GetMetaData returns the metadata for this store.
+// Matches Java's FDBRecordStore.getRecordMetaData().
+func (store *FDBRecordStore) GetMetaData() *RecordMetaData {
+	return store.metaData
+}
+
+// GetIndexMaintainer returns the index maintainer for the given index.
+// Matches Java's FDBRecordStore.getIndexMaintainer().
+func (store *FDBRecordStore) GetIndexMaintainer(index *Index) IndexMaintainer {
+	return store.getIndexMaintainer(index)
+}
+
+// DeleteIndexEntries clears all entries for the given index.
+// Matches Java's StandardIndexMaintainer.deleteWhere() with no predicate.
+func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
+	indexSub := store.indexSubspace(index)
+	store.context.Transaction().ClearRange(indexSub)
+}
+
+// DeleteIndexEntriesInRange clears index entries matching the given tuple prefix.
+// For example, passing tuple.Tuple{"alice"} clears all entries where the first
+// indexed value is "alice".
+func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tuple.Tuple) {
+	indexSub := store.indexSubspace(index)
+	prefixKey := indexSub.Pack(prefix)
+	r, err := fdb.PrefixRange(prefixKey)
+	if err != nil {
+		return // Invalid prefix, nothing to clear
+	}
+	store.context.Transaction().ClearRange(r)
+}
+
 // DeleteAllRecords deletes all records from the store.
-// This clears the records subspace and the record count subspace.
-// Matches Java's FDBRecordStore.deleteAllRecords().
+// Clears all data subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
+// Matches Java's FDBRecordStore.deleteAllRecords() which clears everything
+// from records through index state begin, then from index state end through store end.
 func (store *FDBRecordStore) DeleteAllRecords() error {
 	if err := store.validateRecordUpdateAllowed(); err != nil {
 		return err
 	}
 
-	recordsSubspace := store.subspace.Sub(RecordKey)
-	store.context.Transaction().ClearRange(recordsSubspace)
+	tx := store.context.Transaction()
 
-	// Clear record counts. ClearRange alone doesn't override pending atomic
-	// Add mutations within the same transaction, so we also explicitly Set
-	// the count key to 0 to ensure reads in the same tx see the reset.
-	countSubspace := store.subspace.Sub(RecordCountKey)
-	store.context.Transaction().ClearRange(countSubspace)
-
-	countKey := store.metaData.GetRecordCountKey()
-	if countKey != nil {
-		fdbKey := countSubspace.Pack(tuple.Tuple{})
-		store.context.Transaction().Set(fdbKey, encodeRecordCount(0))
+	// Clear all subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
+	// Java does two range clears: [records, indexState) and (indexState, storeEnd).
+	// We clear individual subspaces for clarity.
+	for _, key := range []int{
+		RecordKey,                   // 1 - records
+		IndexKey,                    // 2 - index data
+		IndexSecondarySpaceKey,      // 3 - secondary index data
+		RecordCountKey,              // 4 - record counts
+		IndexRangeSpaceKey,          // 6 - index ranges
+		IndexUniquenessViolationsKey, // 7 - uniqueness violations
+		RecordVersionKey,            // 8 - record versions
+		IndexBuildSpaceKey,          // 9 - index build state
+	} {
+		tx.ClearRange(store.subspace.Sub(key))
 	}
 
-	// Clear version keys
-	versionSubspace := store.subspace.Sub(RecordVersionKey)
-	store.context.Transaction().ClearRange(versionSubspace)
-
-	// Clear all index data
-	indexSubspace := store.subspace.Sub(IndexKey)
-	store.context.Transaction().ClearRange(indexSubspace)
+	// Reset record count to 0. ClearRange alone doesn't override pending atomic
+	// Add mutations within the same transaction, so we also explicitly Set
+	// the count key to 0 to ensure reads in the same tx see the reset.
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil {
+		countSubspace := store.subspace.Sub(RecordCountKey)
+		fdbKey := countSubspace.Pack(tuple.Tuple{})
+		tx.Set(fdbKey, encodeRecordCount(0))
+	}
 
 	return nil
 }

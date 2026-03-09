@@ -65,6 +65,7 @@ go_test(
         "runner_test.go",
         "save_error_test.go",
         "scan_test.go",
+        "sparse_index_test.go",
         "split_record_test.go",
         "store_builder_test.go",
         "store_delete_test.go",

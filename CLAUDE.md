@@ -15,9 +15,22 @@ We require **very high and thorough test coverage**. Every new feature, bug fix,
 
 **All tests MUST call `t.Parallel()`**. Each test must be safe to run concurrently — use unique key prefixes or subspaces for isolation, never rely on shared mutable state. This is critical for fast test execution on beefy CPUs.
 
-## Work tracking
+## Work tracking & workflow
 
-See `TODO.md` in repo root for tracked issues and improvements. Update it as work progresses. Use checkbox format `- [x]` / `- [ ]` with severity levels.
+See `TODO.md` in repo root for tracked issues and improvements. Use checkbox format `- [x]` / `- [ ]` with severity levels.
+
+**Before starting any implementation batch:**
+1. Mark items in `TODO.md` as `[x]` with a short description of what was implemented
+2. Then write the code
+3. Run `bazelisk run //:gazelle && bazelisk build //...` to compile + lint
+4. Run `bazelisk test //pkg/recordlayer:recordlayer_test --test_output=errors` to verify
+5. Only commit when the user explicitly says "commit"
+
+**Do NOT commit unless the user asks.** Do NOT push unless the user asks.
+
+**Commit style:** batch related changes into a single commit with a descriptive title line + bullet points. Always include `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`.
+
+**Working rhythm:** pick 3-5 TODO items per batch, implement + test them all, then wait for the user to say "commit" before committing. Keep grinding through TODO items until told to stop.
 
 ## Stack
 
@@ -93,6 +106,9 @@ just clean          # bazel clean
 | `IndexEntry` | `IndexEntry` | Single entry from index scan (key, value, primary key extraction) |
 | `TupleRange` | `TupleRange` | Range specification for index scans (ALL, AllOf, Between) |
 | `SizeInfo` | `SplitHelper.SizeInfo` | Track key count/size, value size, split/version flags |
+| `FDBDatabaseRunner` | `FDBDatabaseRunnerImpl` | Configurable retry with exponential backoff |
+| `RecordContextConfig` | `FDBRecordContextConfig` | Transaction settings (timeout, priority, ID) |
+| `FormerIndex` | `FormerIndex` | Tracks deleted indexes for schema evolution safety |
 
 ### Java compatibility — non-negotiable
 
@@ -162,9 +178,8 @@ Future cursor combinators from Java (not yet implemented):
 
 Each serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
 
-## Conformance status (audited 2026-03-08)
+## Conformance status (updated 2026-03-09)
 
-See `TODO.md` for full gap analysis. Summary:
-- **Complete**: CRUD, split records, subspace constants, continuation tokens, record versioning, record counting, VALUE indexes
-- **~28% API coverage** of Java FDBRecordStore (40/144 public methods)
-- **Key gaps**: index scanning, index state management, cursor combinators (union/intersection/flatmap), ThenKeyExpression, configurable retry runner
+See `TODO.md` for full gap analysis (77 completed, 32 remaining). Summary:
+- **Complete**: CRUD, split records, subspace constants, continuation tokens, record versioning, record counting, VALUE indexes, index scanning, index state management, ThenKeyExpression, NestingKeyExpression, fan-out indexes, multi-type indexes, FormerIndex tracking, commit hooks, configurable retry runner, index validation, uniqueness violation tracking, store state management, transaction priority, store statistics
+- **Key gaps**: cursor combinators (union/intersection/flatmap), index build support, aggregate index types, schema validation, metadata proto serialization

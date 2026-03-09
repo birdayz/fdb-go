@@ -186,6 +186,9 @@ type FDBRecordContext struct {
 	// Commit hooks — matches Java's CommitCheckAsync / PostCommit
 	commitChecks []CommitCheckFunc
 	postCommits  []PostCommitFunc
+
+	// Diagnostic: tracked read conflict ranges for debugging
+	conflictRanges []fdb.KeyRange
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
@@ -323,6 +326,28 @@ func (rc *FDBRecordContext) SetTransactionPriority(priority TransactionPriority)
 	default:
 		return nil // Default priority, no option needed
 	}
+}
+
+// GetConflictingKeys attempts to identify conflicting keys after a commit failure.
+// Reads the transaction's read conflict ranges. This is a best-effort diagnostic tool.
+// Note: FDB does not natively expose which specific keys conflicted. This method
+// provides the read conflict ranges that were registered, which may help debugging.
+// Matches Java's FDBRecordContext.reportConflictingKeys() (diagnostic, not exact).
+func (rc *FDBRecordContext) GetConflictingKeys() []fdb.KeyRange {
+	return rc.conflictRanges
+}
+
+// AddReadConflictRange adds a read conflict range and tracks it for diagnostics.
+func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
+	if err := rc.tx.AddReadConflictRange(r); err != nil {
+		return err
+	}
+	begin, end := r.FDBRangeKeys()
+	rc.conflictRanges = append(rc.conflictRanges, fdb.KeyRange{
+		Begin: begin.(fdb.Key),
+		End:   end.(fdb.Key),
+	})
+	return nil
 }
 
 // HasVersionMutations returns true if there are pending version mutations.

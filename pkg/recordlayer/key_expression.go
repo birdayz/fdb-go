@@ -43,6 +43,11 @@ func FanOut(name string) KeyExpression {
 // For repeated fields with FanOut, returns one tuple per value.
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
 func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+	if msg == nil {
+		// Nil message → null key component. Matches Java's behavior when
+		// evaluating a field on a null message (returns Key.Evaluated.NULL).
+		return [][]interface{}{{nil}}, nil
+	}
 	m := msg.ProtoReflect()
 
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
@@ -135,10 +140,15 @@ func (f *FieldKeyExpression) FieldNames() []string {
 	return []string{f.fieldName}
 }
 
-// RecordTypeKeyExpression represents the special record type key prefix
+// RecordTypeKeyExpression represents the special record type key prefix.
+// Matches Java's RecordTypeKeyExpression: evaluates to the record type key
+// (an integer derived from the union descriptor field number).
 type RecordTypeKeyExpression struct {
 	// nested is the optional nested key expression
 	nested KeyExpression
+	// typeKeys maps proto message full name → record type key (int64).
+	// Populated by metadata builder. Matches Java's record.getRecordType().getRecordTypeKey().
+	typeKeys map[string]int64
 }
 
 // RecordTypeKey creates a key expression that prefixes with the record type
@@ -152,14 +162,31 @@ func (r *RecordTypeKeyExpression) Nest(expr KeyExpression) KeyExpression {
 	return r
 }
 
-// Evaluate returns the record type name, optionally followed by nested values.
-// In Java, RecordTypeKeyExpression.evaluate() returns the record type name as a string.
-// We derive it from the proto message's descriptor name.
-// When nested is present, computes cross-product: each nested tuple is prefixed with the type name.
+// bindTypeKeys populates the type key lookup map. Called by metadata builder.
+func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
+	r.typeKeys = typeKeys
+}
+
+// Evaluate returns the record type key (integer), optionally followed by nested values.
+// Matches Java's RecordTypeKeyExpression.evaluateMessage() which returns
+// record.getRecordType().getRecordTypeKey() — the union descriptor field number.
 func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
+
+	// Look up the integer record type key (proto field number from union descriptor).
+	var typeKey interface{}
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			typeKey = k
+		} else {
+			typeKey = typeName // fallback for unbound expressions
+		}
+	} else {
+		typeKey = typeName // fallback for unbound expressions
+	}
+
 	if r.nested == nil {
-		return [][]interface{}{{typeName}}, nil
+		return [][]interface{}{{typeKey}}, nil
 	}
 
 	nestedTuples, err := r.nested.Evaluate(msg)
@@ -170,7 +197,7 @@ func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, 
 	result := make([][]interface{}, len(nestedTuples))
 	for i, nt := range nestedTuples {
 		combined := make([]interface{}, 0, 1+len(nt))
-		combined = append(combined, typeName)
+		combined = append(combined, typeKey)
 		combined = append(combined, nt...)
 		result[i] = combined
 	}

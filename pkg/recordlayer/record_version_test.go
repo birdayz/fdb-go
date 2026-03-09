@@ -338,6 +338,49 @@ var _ = Describe("RecordVersioning", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("DeleteInSameTxCleansUpIncompleteVersionMutation", func() {
+		metaData := newMeta()
+		ks := specSubspace()
+
+		// Save and delete in the SAME transaction.
+		// The incomplete version mutation must be dequeued, otherwise it gets
+		// flushed at commit and writes a version for a deleted record.
+		_, _, err := sharedDB.RunWithVersionstamp(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			if err != nil {
+				return nil, err
+			}
+			// Delete in same transaction
+			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Verify: no pending version mutations in context
+			Expect(rtx.HasVersionMutations()).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify in a new transaction: no version key exists
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+			v, err := store.LoadRecordVersion(tuple.Tuple{int64(1)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(v).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("VersionNotStoredWhenDisabled", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))

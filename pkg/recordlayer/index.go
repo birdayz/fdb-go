@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"google.golang.org/protobuf/proto"
 )
 
 // Index type constants matching Java's IndexTypes.
@@ -14,6 +15,11 @@ const (
 	IndexOptionUnique = "unique"
 )
 
+// IndexPredicate is a function that determines whether a record should be indexed.
+// Return true to include the record in the index, false to skip it.
+// Matches Java's Index predicate concept for sparse/filtered indexes.
+type IndexPredicate func(msg proto.Message) bool
+
 // Index represents a secondary index definition.
 // Matches Java's com.apple.foundationdb.record.metadata.Index.
 type Index struct {
@@ -24,6 +30,11 @@ type Index struct {
 	Options        map[string]string
 	AddedVersion   int
 	LastModifiedVersion int
+
+	// Predicate filters which records are included in this index.
+	// If nil, all records are indexed. If set, only records where
+	// Predicate returns true are indexed (sparse/filtered index).
+	Predicate IndexPredicate
 }
 
 // NewIndex creates a VALUE index with the given name and root key expression.
@@ -57,6 +68,13 @@ func (idx *Index) SetSubspaceKey(key interface{}) *Index {
 func (idx *Index) IsUnique() bool {
 	v, ok := idx.Options[IndexOptionUnique]
 	return ok && v == "true"
+}
+
+// SetPredicate sets a filter predicate for sparse/filtered indexes.
+// Only records where the predicate returns true will have index entries.
+func (idx *Index) SetPredicate(p IndexPredicate) *Index {
+	idx.Predicate = p
+	return idx
 }
 
 // SetUnique marks this index as enforcing uniqueness.

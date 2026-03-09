@@ -110,5 +110,10 @@ func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName 
 	if !IsRecordTypeExpression(countKey) {
 		return 0, fmt.Errorf("per-type counting requires RecordTypeKeyExpression as count key")
 	}
-	return store.GetSnapshotRecordCount(tuple.Tuple{recordTypeName})
+	// Use the record type key (matching Java), not the string name.
+	rt := store.metaData.GetRecordType(recordTypeName)
+	if rt == nil {
+		return 0, fmt.Errorf("unknown record type %q", recordTypeName)
+	}
+	return store.GetSnapshotRecordCount(tuple.Tuple{rt.GetRecordTypeKey()})
 }

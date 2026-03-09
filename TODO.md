@@ -97,6 +97,14 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
+- [x] **DeleteRecord doesn't cleanup incomplete version mutations** — Fixed: `DeleteRecord` now calls `deleteRecordVersion()` to remove queued version mutations from `FDBRecordContext`, preventing stale version data for deleted records. Matches Java's `deleteTypedRecord` which calls `context.removeVersionMutation()`.
+
+- [x] **DeleteAllRecords doesn't clear all data subspaces** — Fixed: Go only cleared subspaces 1,2,4,8. Java clears all subspaces except 0 (header) and 5 (index state). Missing: 3 (secondary index), 6 (index range), 7 (uniqueness violations), 9 (index build). Fixed to match Java's approach.
+
+- [x] **RecordTypeKeyExpression uses string name instead of integer type key** — Fixed two bugs: (1) `RecordTypeIndex` was a sequential counter (0,1,2...) instead of the proto field number from UnionDescriptor. Java uses `field.getNumber()`. (2) `RecordTypeKeyExpression.Evaluate()` returned the proto message name string (`"Order"`) instead of the integer record type key. Java returns `record.getRecordType().getRecordTypeKey()` which is the proto field number (as `Long`). Fixed by storing a type-key lookup map in the expression, populated at metadata build time.
+
+- [x] **FieldKeyExpression panics on nil message** — Fixed: `Evaluate(nil)` crashed at `msg.ProtoReflect()`. Happens when NestingKeyExpression evaluates a child on an unset message field. Now returns `nil` (null key component) matching Java's behavior of returning `Key.Evaluated.NULL`.
+
 - [x] **GetValue() returns zero on !HasNext()** — Fixed: `GetValue()` now panics when `hasNext` is false, matching Java's `IllegalResultValueAccessException`.
 
 - [x] **Build() doesn't validate primary keys** — Fixed: `Build()` now returns `(*RecordMetaData, error)` and validates all record types have primary keys set. All callers updated.
@@ -123,7 +131,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Repeated field fan-out** — `FanOut("field")` creates `FieldKeyExpression` with `FanTypeFanOut`, producing one index entry per repeated value. Cross-product with `Concat()` works. Empty repeated field → no entries (matching Java).
 
-- [ ] **Sparse/filtered indexes** — Java `Index` has `IndexPredicate` to selectively index records. Go has no predicate field. Needed for partial indexes.
+- [x] **Sparse/filtered indexes** — `Index.Predicate` field: function that returns true if a record should be indexed. `StandardIndexMaintainer` skips entries when predicate returns false. Matches Java's `IndexPredicate` concept.
 
 ### MEDIUM
 
@@ -133,9 +141,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Index validation** — `ValidateIndex()` scans all records and index entries to detect orphaned entries (in index but not in records) and missing entries (in records but not in index).
 
-- [ ] **Primary key component deduplication** — Java's `primaryKeyComponentPositions` tracks overlap between PK and index key to avoid redundant storage. Go always appends full PK (wastes space but is wire-compatible).
+- [ ] **Primary key component deduplication** — Java's `primaryKeyComponentPositions` tracks overlap between PK and index key to avoid redundant storage. Go always appends full PK. **Wire-incompatible** when Java trims PK components from index entries — Go and Java produce different index entry keys. Only triggers when index key expression overlaps with primary key (e.g., index on `Field("name")` with PK `Concat(RecordTypeKey(), Field("name"))`).
 
-- [ ] **Bulk index delete** — Java has `canDeleteWhere()`/`deleteWhere()` for range-based deletion. Go has none.
+- [x] **Bulk index delete** — `DeleteIndexEntries()` clears all entries for a given index. `DeleteIndexEntriesInRange()` clears entries within a tuple range.
 
 - [ ] **Aggregate functions via indexes** — Java has `canEvaluateAggregateFunction()`/`evaluateAggregateFunction()` for COUNT, MIN, MAX, SUM via index maintainers. Go's COUNT is via store atomic mutations, not indexes.
 
@@ -175,7 +183,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Views** — Named query/aggregation views.
 
-- [ ] **Subspace key counter** — `enableCounterBasedSubspaceKeys()` for auto-incrementing index subspace keys.
+- [x] **Subspace key counter** — `EnableCounterBasedSubspaceKeys()` on builder. Auto-assigns incrementing int64 subspace keys to indexes instead of using index name strings.
 
 - [ ] **Extension options processing** — Processing protobuf schema extension options.
 
@@ -230,7 +238,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Format version / user version access** — `GetFormatVersion()`, `GetUserVersion()`, `SetUserVersion()`, `GetMetaDataVersion()`. Persisted in store header.
 
-- [ ] **Serializer access** — Java has `getSerializer()`, `getContext()`, `getKeyspacePath()`, `getIndexMaintainerRegistry()`. Go exposes `context` and `subspace` but not others.
+- [x] **Serializer access** — `GetMetaData()`, `GetIndexMaintainer()` on store. `Context()` and `Subspace()` already exposed.
 
 - [ ] **Conformance test for type-changed existence check** — `conformance/existence_check_conformance_test.go` covers 4 of 5 modes. Add Java cross-validation for `ERROR_IF_RECORD_TYPE_CHANGED`.
 
@@ -262,7 +270,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Read/write version management** — `GetReadVersion()`, `SetReadVersion()` on `FDBRecordContext`. Wraps FDB transaction read version.
 
-- [ ] **Conflict key reporting** — Java has `reportConflictingKeys()`, `getNotCommittedConflictingKeys()` for debugging. Go has none.
+- [x] **Conflict key reporting** — `GetConflictingKeys()` on `FDBRecordContext` wraps FDB's conflict range reporting for debugging.
 
 ### LOW
 
@@ -282,7 +290,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Version range methods** — `FirstInDBVersion()`, `LastInDBVersion()`, `FirstInGlobalVersion()`, `LastInGlobalVersion()`, `Next()`, `Prev()`. All matching Java semantics.
 
-- [x] **MIN_VERSION / MAX_VERSION constants** — `MinVersion()` (all zeros), `MaxVersion()` (all 0xFE). Matching Java sentinel values.
+- [x] **MIN_VERSION / MAX_VERSION constants** — `MinVersion()` (all zeros), `MaxVersion()` fixed to match Java: bytes 0-8 = 0xFF, byte 9 = 0xFE, bytes 10-11 = 0xFF. Was incorrectly all-0xFE.
 
 ### LOW
 

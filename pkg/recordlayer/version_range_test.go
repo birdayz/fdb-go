@@ -16,10 +16,18 @@ var _ = Describe("FDBRecordVersion range methods", func() {
 	})
 
 	Describe("MaxVersion", func() {
-		It("returns all-0xFE version", func() {
+		It("matches Java MAX_VERSION byte pattern", func() {
 			v := MaxVersion()
 			Expect(v.IsComplete()).To(BeTrue())
-			Expect(v.GetLocalVersion()).To(Equal(0xFEFE))
+			// Java: global bytes 0-8 = 0xFF, byte 9 = 0xFE, local bytes 10-11 = 0xFF
+			raw := v.ToBytes()
+			for i := 0; i < 9; i++ {
+				Expect(raw[i]).To(Equal(byte(0xFF)), "byte %d should be 0xFF", i)
+			}
+			Expect(raw[9]).To(Equal(byte(0xFE)), "byte 9 should be 0xFE (incomplete marker avoidance)")
+			Expect(raw[10]).To(Equal(byte(0xFF)), "byte 10 should be 0xFF")
+			Expect(raw[11]).To(Equal(byte(0xFF)), "byte 11 should be 0xFF")
+			Expect(v.GetLocalVersion()).To(Equal(0xFFFF))
 		})
 
 		It("sorts after MinVersion", func() {

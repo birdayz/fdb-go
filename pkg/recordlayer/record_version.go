@@ -156,14 +156,22 @@ func MinVersion() *FDBRecordVersion {
 	return &FDBRecordVersion{complete: true}
 }
 
-// MaxVersion returns the maximum possible complete version (all 0xFE bytes).
-// Matches Java's FDBRecordVersion.MAX_VERSION.
-// Note: 0xFE not 0xFF because 0xFF in global bytes indicates incomplete.
+// MaxVersion returns the maximum possible complete version.
+// Matches Java's FDBRecordVersion.MAX_VERSION:
+//
+//	global bytes 0-8: 0xFF, byte 9: 0xFE (0xFF...FF would mean incomplete)
+//	local bytes 10-11: 0xFF
 func MaxVersion() *FDBRecordVersion {
 	var raw [VersionBytes]byte
-	for i := range raw {
-		raw[i] = 0xFE
+	// Global version: first 9 bytes 0xFF, byte 9 = 0xFE
+	// (all-0xFF global version = incomplete marker, so max complete has byte 9 = 0xFE)
+	for i := 0; i < 9; i++ {
+		raw[i] = 0xFF
 	}
+	raw[9] = 0xFE
+	// Local version: 0xFFFF
+	raw[10] = 0xFF
+	raw[11] = 0xFF
 	return &FDBRecordVersion{raw: raw, complete: true}
 }
 

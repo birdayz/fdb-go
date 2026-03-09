@@ -285,14 +285,15 @@ var _ = Describe("RecordCounting", func() {
 				}
 			}
 
-			// Check per-type counts
-			orderCount, err := store.GetSnapshotRecordCount(tuple.Tuple{"Order"})
+			// Check per-type counts using GetSnapshotRecordCountForRecordType
+			// (which correctly maps record type name → integer type key)
+			orderCount, err := store.GetSnapshotRecordCountForRecordType("Order")
 			if err != nil {
 				return nil, err
 			}
 			Expect(orderCount).To(Equal(int64(3)))
 
-			customerCount, err := store.GetSnapshotRecordCount(tuple.Tuple{"Customer"})
+			customerCount, err := store.GetSnapshotRecordCountForRecordType("Customer")
 			if err != nil {
 				return nil, err
 			}
@@ -303,14 +304,14 @@ var _ = Describe("RecordCounting", func() {
 				return nil, err
 			}
 
-			orderCount, err = store.GetSnapshotRecordCount(tuple.Tuple{"Order"})
+			orderCount, err = store.GetSnapshotRecordCountForRecordType("Order")
 			if err != nil {
 				return nil, err
 			}
 			Expect(orderCount).To(Equal(int64(2)))
 
 			// Customer count should be unchanged
-			customerCount, err = store.GetSnapshotRecordCount(tuple.Tuple{"Customer"})
+			customerCount, err = store.GetSnapshotRecordCountForRecordType("Customer")
 			if err != nil {
 				return nil, err
 			}

@@ -109,15 +109,17 @@ type KeyExpression interface {
 // RecordMetaDataBuilder provides a builder pattern for creating RecordMetaData
 // This matches the Java RecordMetaDataBuilder pattern
 type RecordMetaDataBuilder struct {
-	recordTypes         map[string]*RecordType
-	fileDescriptor      protoreflect.FileDescriptor
-	version             int
-	recordCountKey      KeyExpression
-	storeRecordVersions bool
-	splitLongRecords    bool
-	indexes             map[string]*Index
-	universalIndexes    []*Index
-	formerIndexes       []*FormerIndex
+	recordTypes              map[string]*RecordType
+	fileDescriptor           protoreflect.FileDescriptor
+	version                  int
+	recordCountKey           KeyExpression
+	storeRecordVersions      bool
+	splitLongRecords         bool
+	indexes                  map[string]*Index
+	universalIndexes         []*Index
+	formerIndexes            []*FormerIndex
+	counterBasedSubspaceKeys bool
+	subspaceKeyCounter       int64
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -142,32 +144,33 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 	
 	// Auto-discover record types from UnionDescriptor fields
 	unionFields := unionDesc.Fields()
-	recordTypeIndex := 0
-	
+
 	for i := 0; i < unionFields.Len(); i++ {
 		field := unionFields.Get(i)
 		fieldName := string(field.Name())
-		
+
 		// Skip non-record fields (field names like "_Order" map to "Order" record type)
 		if len(fieldName) > 1 && fieldName[0] == '_' {
 			recordTypeName := fieldName[1:] // "_Order" -> "Order"
-			
+
 			// Find the actual message descriptor for this record type
 			recordMsgDesc := fd.Messages().ByName(protoreflect.Name(recordTypeName))
 			if recordMsgDesc == nil {
 				continue // Skip if message not found
 			}
-			
+
+			// Use the proto field number as the record type index.
+			// Matches Java: RecordType.getRecordTypeKey() returns the smallest
+			// union field number matching this message type.
 			recordType := &RecordType{
 				Name:                 recordTypeName,
 				Descriptor:           recordMsgDesc,
 				PrimaryKey:           nil, // Will be set explicitly
 				SinceVersion:         1,
-				RecordTypeIndex:      recordTypeIndex,
+				RecordTypeIndex:      int(field.Number()),
 				UnionFieldDescriptor: field, // Store the union field for reflection
 			}
 			b.recordTypes[recordTypeName] = recordType
-			recordTypeIndex++
 		}
 	}
 	
@@ -213,6 +216,15 @@ func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDa
 	return b
 }
 
+// EnableCounterBasedSubspaceKeys switches index subspace keys from name-based (string)
+// to counter-based (int64). Each index added after this call gets an auto-incrementing
+// integer subspace key instead of the index name. Matches Java's
+// RecordMetaDataBuilder.enableCounterBasedSubspaceKeys().
+func (b *RecordMetaDataBuilder) EnableCounterBasedSubspaceKeys() *RecordMetaDataBuilder {
+	b.counterBasedSubspaceKeys = true
+	return b
+}
+
 // SetVersion sets the metadata schema version.
 // This should be bumped when the schema changes for evolution tracking.
 // Matches Java's RecordMetaDataBuilder.setVersion(int).
@@ -235,12 +247,21 @@ func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *R
 	if !ok {
 		return b
 	}
+	b.assignSubspaceKey(index)
 	rt.indexes = append(rt.indexes, index)
 	if b.indexes == nil {
 		b.indexes = make(map[string]*Index)
 	}
 	b.indexes[index.Name] = index
 	return b
+}
+
+// assignSubspaceKey sets a counter-based subspace key if enabled.
+func (b *RecordMetaDataBuilder) assignSubspaceKey(index *Index) {
+	if b.counterBasedSubspaceKeys {
+		b.subspaceKeyCounter++
+		index.SetSubspaceKey(b.subspaceKeyCounter)
+	}
 }
 
 // AddMultiTypeIndex adds an index spanning multiple record types.
@@ -254,6 +275,7 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 	if len(recordTypeNames) == 1 {
 		return b.AddIndex(recordTypeNames[0], index)
 	}
+	b.assignSubspaceKey(index)
 	if b.indexes == nil {
 		b.indexes = make(map[string]*Index)
 	}
@@ -271,6 +293,7 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 // AddUniversalIndex adds an index that applies to all record types.
 // Matches Java's RecordMetaDataBuilder.addUniversalIndex(Index index).
 func (b *RecordMetaDataBuilder) AddUniversalIndex(index *Index) *RecordMetaDataBuilder {
+	b.assignSubspaceKey(index)
 	b.universalIndexes = append(b.universalIndexes, index)
 	if b.indexes == nil {
 		b.indexes = make(map[string]*Index)
@@ -353,6 +376,45 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 				return nil, fmt.Errorf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)
 			}
 		}
+	}
+
+	// Build type keys map (message name → record type key as int64) and bind
+	// all RecordTypeKeyExpression instances so they evaluate to the correct
+	// integer type key instead of the string name. Matches Java's
+	// RecordTypeKeyExpression.evaluateMessage() → record.getRecordType().getRecordTypeKey().
+	typeKeys := make(map[string]int64, len(types))
+	for _, rt := range types {
+		key := rt.GetRecordTypeKey()
+		switch k := key.(type) {
+		case int:
+			typeKeys[rt.Name] = int64(k)
+		case int64:
+			typeKeys[rt.Name] = k
+		}
+	}
+	bindRecordTypeKeyExpressions := func(expr KeyExpression) {
+		if expr == nil {
+			return
+		}
+		if rt, ok := expr.(*RecordTypeKeyExpression); ok {
+			rt.bindTypeKeys(typeKeys)
+		}
+		if comp, ok := expr.(*CompositeKeyExpression); ok {
+			for _, child := range comp.expressions {
+				if rt, ok := child.(*RecordTypeKeyExpression); ok {
+					rt.bindTypeKeys(typeKeys)
+				}
+			}
+		}
+	}
+	for _, rt := range types {
+		bindRecordTypeKeyExpressions(rt.PrimaryKey)
+	}
+	if b.recordCountKey != nil {
+		bindRecordTypeKeyExpressions(b.recordCountKey)
+	}
+	for _, idx := range indexes {
+		bindRecordTypeKeyExpressions(idx.RootExpression)
 	}
 
 	return &RecordMetaData{

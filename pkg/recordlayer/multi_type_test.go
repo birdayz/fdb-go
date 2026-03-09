@@ -261,8 +261,9 @@ var _ = Describe("MultiTypeRecords", func() {
 		Expect(orderType).NotTo(BeNil(), "Order type not found in metadata")
 		Expect(customerType).NotTo(BeNil(), "Customer type not found in metadata")
 
-		// Order is _Order (field 1) → index 0, Customer is _Customer (field 2) → index 1
-		Expect(orderType.RecordTypeIndex).To(Equal(0))
-		Expect(customerType.RecordTypeIndex).To(Equal(1))
+		// Order is _Order (field 1) → proto field number 1, Customer is _Customer (field 2) → 2
+		// Matches Java: RecordType.getRecordTypeKey() returns union descriptor field number
+		Expect(orderType.RecordTypeIndex).To(Equal(1))
+		Expect(customerType.RecordTypeIndex).To(Equal(2))
 	})
 })
