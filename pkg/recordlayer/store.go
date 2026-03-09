@@ -551,8 +551,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 	// Reset record count to 0. ClearRange alone doesn't override pending atomic
 	// Add mutations within the same transaction, so we also explicitly Set
 	// the count key to 0 to ensure reads in the same tx see the reset.
+	// Skip when count state is DISABLED (no count data should exist).
 	countKey := store.metaData.GetRecordCountKey()
-	if countKey != nil {
+	if countKey != nil && !store.isRecordCountDisabled() {
 		countSubspace := store.subspace.Sub(RecordCountKey)
 		fdbKey := countSubspace.Pack(tuple.Tuple{})
 		tx.Set(fdbKey, encodeRecordCount(0))
