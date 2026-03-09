@@ -850,6 +850,127 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 	return 0
 }
 
+// RecordStoreState captures the mutable state of a record store at a point in time.
+// Matches Java's RecordStoreState.
+type RecordStoreState struct {
+	StoreHeader *gen.DataStoreInfo
+	IndexStates map[string]IndexState
+}
+
+// GetRecordStoreState returns the current state of the store (header + index states).
+// Matches Java's FDBRecordStore.getRecordStoreState().
+func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
+	states := make(map[string]IndexState, len(store.indexStates))
+	for k, v := range store.indexStates {
+		states[k] = v
+	}
+	return &RecordStoreState{
+		StoreHeader: store.storeHeader,
+		IndexStates: states,
+	}
+}
+
+// SetStoreLockState sets the store lock state in the header and persists it.
+// Use FORBID_RECORD_UPDATE to prevent record mutations.
+// Matches Java's FDBRecordStore.setStoreLockStateAsync().
+func (store *FDBRecordStore) SetStoreLockState(lockState *gen.DataStoreInfo_StoreLockState) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	store.storeHeader.StoreLockState = lockState
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// ReloadRecordStoreState forces a reload of the store state from FDB.
+// Useful when another transaction may have changed the state.
+// Matches Java's FDBRecordStore.loadRecordStoreStateAsync() force reload path.
+func (store *FDBRecordStore) ReloadRecordStoreState() error {
+	exists, header, err := store.checkStoreExists()
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrRecordStoreDoesNotExist
+	}
+	store.storeHeader = header
+	return store.loadIndexStates()
+}
+
+// EstimateStoreSize returns the estimated byte size of the entire store subspace.
+// Uses FDB's GetEstimatedRangeSizeBytes which provides an approximation.
+// Matches Java's FDBRecordStore.estimateStoreSizeAsync().
+func (store *FDBRecordStore) EstimateStoreSize() (int64, error) {
+	begin, end := store.subspace.FDBRangeKeys()
+	kr := fdb.KeyRange{Begin: begin, End: end}
+	return store.context.Transaction().GetEstimatedRangeSizeBytes(kr).Get()
+}
+
+// EstimateRecordsSize returns the estimated byte size of the records subspace only.
+// Matches Java's FDBRecordStore.estimateRecordsSizeAsync().
+func (store *FDBRecordStore) EstimateRecordsSize() (int64, error) {
+	recordsSub := store.subspace.Sub(RecordKey)
+	begin, end := recordsSub.FDBRangeKeys()
+	kr := fdb.KeyRange{Begin: begin, End: end}
+	return store.context.Transaction().GetEstimatedRangeSizeBytes(kr).Get()
+}
+
+// UniquenessViolation represents a recorded uniqueness violation entry.
+// Matches Java's RecordIndexUniquenessViolation.
+type UniquenessViolation struct {
+	IndexName  string
+	IndexKey   tuple.Tuple
+	PrimaryKey tuple.Tuple
+}
+
+// ScanUniquenessViolations returns all uniqueness violations recorded for the given index.
+// Violations are stored in the IndexUniquenessViolationsKey (7) subspace.
+// Matches Java's StandardIndexMaintainer.scanUniquenessViolations().
+func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]UniquenessViolation, error) {
+	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
+	begin, end := violationSubspace.FDBRangeKeys()
+	kr := fdb.KeyRange{Begin: begin, End: end}
+
+	kvs, err := store.context.Transaction().GetRange(kr, fdb.RangeOptions{}).GetSliceWithError()
+	if err != nil {
+		return nil, fmt.Errorf("scan uniqueness violations for index %q: %w", index.Name, err)
+	}
+
+	var violations []UniquenessViolation
+	for _, kv := range kvs {
+		t, err := violationSubspace.Unpack(kv.Key)
+		if err != nil {
+			return nil, fmt.Errorf("unpack violation key: %w", err)
+		}
+		// Key format: [indexKey..., primaryKey...]
+		colCount := keyExpressionColumnSize(index.RootExpression)
+		if len(t) > colCount {
+			violations = append(violations, UniquenessViolation{
+				IndexName:  index.Name,
+				IndexKey:   tuple.Tuple(t[:colCount]),
+				PrimaryKey: tuple.Tuple(t[colCount:]),
+			})
+		}
+	}
+	return violations, nil
+}
+
+// ResolveUniquenessViolation removes a single uniqueness violation entry.
+// Call this after manually resolving the conflict (e.g., deleting the duplicate record).
+// Matches Java's StandardIndexMaintainer.resolveUniquenessViolation().
+func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
+	entryKey := indexEntryKey(indexKey, primaryKey)
+	store.context.Transaction().Clear(fdb.Key(violationSubspace.Pack(entryKey)))
+}
+
+// AddUniquenessViolation records a uniqueness violation for the given index.
+// Used during WRITE_ONLY index builds when a uniqueness conflict is detected.
+func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
+	entryKey := indexEntryKey(indexKey, primaryKey)
+	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), tuple.Tuple{}.Pack())
+}
+
 // createStoreHeader creates a DataStoreInfo header for a new record store
 func createStoreHeader(metaDataVersion int32) *gen.DataStoreInfo {
 	formatVersion := int32(FormatVersionCurrent)

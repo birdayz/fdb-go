@@ -148,6 +148,20 @@ func (d *FDBDatabase) CreateTransaction() (fdb.Transaction, error) {
 	return d.db.CreateTransaction()
 }
 
+// TransactionPriority controls the priority of FDB transactions.
+// Matches Java's FDBTransactionPriority.
+type TransactionPriority int
+
+const (
+	// PriorityDefault is the default transaction priority.
+	PriorityDefault TransactionPriority = iota
+	// PriorityBatch is a lower priority for background/batch operations.
+	PriorityBatch
+	// PrioritySystemImmediate is the highest priority, bypasses throttling.
+	// Use with extreme care — only for system-level operations.
+	PrioritySystemImmediate
+)
+
 // CommitCheckFunc is a pre-commit check that runs before the transaction commits.
 // If it returns an error, the commit is aborted.
 // Matches Java's CommitCheckAsync interface.
@@ -296,6 +310,19 @@ func (rc *FDBRecordContext) GetReadVersion() (int64, error) {
 // Matches Java's FDBRecordContext.setReadVersion().
 func (rc *FDBRecordContext) SetReadVersion(version int64) {
 	rc.tx.SetReadVersion(version)
+}
+
+// SetTransactionPriority sets the priority for this transaction.
+// Matches Java's FDBRecordContext applying FDBTransactionPriority.
+func (rc *FDBRecordContext) SetTransactionPriority(priority TransactionPriority) error {
+	switch priority {
+	case PriorityBatch:
+		return rc.tx.Options().SetPriorityBatch()
+	case PrioritySystemImmediate:
+		return rc.tx.Options().SetPrioritySystemImmediate()
+	default:
+		return nil // Default priority, no option needed
+	}
 }
 
 // HasVersionMutations returns true if there are pending version mutations.

@@ -129,7 +129,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Index types beyond VALUE** — Java has 15+ types: COUNT, COUNT_UPDATES, COUNT_NOT_NULL, SUM, MIN_EVER_TUPLE/LONG, MAX_EVER_TUPLE/LONG, RANK, TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Go only has VALUE.
 
-- [ ] **Uniqueness violation tracking** — Java has `scanUniquenessViolations()`, `clearUniquenessViolations()` in `IndexUniquenessViolationsKey` (7) subspace. Go detects violations but doesn't track them.
+- [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 
 - [ ] **Index validation** — Java has `validateEntries()` to detect orphaned/missing entries. Go has none.
 
@@ -218,7 +218,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
-- [ ] **Store state management** — Java has `loadRecordStoreStateAsync()`, `getRecordStoreState()`, `setStoreLockStateAsync()`, `updateRecordCountStateAsync()`. Go loads state on Build but has no explicit state management API.
+- [x] **Store state management** — `GetRecordStoreState()` returns store header + index states. `SetStoreLockState()` persists lock state to header. `ReloadRecordStoreState()` forces reload from FDB.
 
 - [ ] **Query execution methods** — Java has `countRecords()`, `evaluateIndexRecordFunction()`, `evaluateStoreFunction()`, `evaluateAggregateFunction()`. Go has none.
 
@@ -226,7 +226,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Store statistics** — Java has `estimateStoreSizeAsync()`, `estimateRecordsSizeAsync()`. Go has none.
+- [x] **Store statistics** — `EstimateStoreSize()` and `EstimateRecordsSize()` using FDB `GetEstimatedRangeSizeBytes()`.
 
 - [x] **Format version / user version access** — `GetFormatVersion()`, `GetUserVersion()`, `SetUserVersion()`, `GetMetaDataVersion()`. Persisted in store header.
 
@@ -256,7 +256,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Timer / instrumentation** — Java has comprehensive `FDBStoreTimer` with event counters and timing throughout all operations. Go has no instrumentation.
 
-- [ ] **Transaction priority** — Java has `FDBTransactionPriority` enum: `BATCH`, `DEFAULT`, `SYSTEM_IMMEDIATE`. Go has none.
+- [x] **Transaction priority** — `TransactionPriority` type with `PriorityDefault`, `PriorityBatch`, `PrioritySystemImmediate`. `SetTransactionPriority()` on `FDBRecordContext`.
 
 - [ ] **Store state caching** — Java has `FDBRecordStoreStateCache` to avoid redundant header reads. Go loads state on demand without caching.
 
