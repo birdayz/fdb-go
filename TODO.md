@@ -94,6 +94,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | COUNT_UPDATES index | saveOrderWithCountUpdatesIndex, deleteOrderWithCountUpdatesIndex, scanCountUpdatesIndex | count_updates_index_conformance_test.go | YES |
 | MAX_EVER_TUPLE index | saveOrderWithMaxEverTupleIndex, deleteOrderWithMaxEverTupleIndex, scanMaxEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
 | MIN_EVER_TUPLE index | saveOrderWithMinEverTupleIndex, deleteOrderWithMinEverTupleIndex, scanMinEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
+| CLEAR_WHEN_ZERO | saveOrderWithCountCWZ, deleteOrderWithCountCWZ, scanCountCWZIndex | clear_when_zero_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -445,7 +446,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH
 
-- [ ] **RecordCursor interface too wide (5 methods)** — `Seq`, `Seq2`, `SeqWithContinuation` have identical implementations across 10+ cursor types, creating ~500 lines of duplicated boilerplate. Should slim to 2 methods (`OnNext` + `Close`) and make `Seq`/`Seq2`/`SeqWithContinuation` free functions. Follows `io.Reader` + `io.ReadAll` pattern.
+- [x] **RecordCursor interface too wide (5 methods)** — Fixed: slimmed to 2 methods (`OnNext` + `Close`). `Seq`/`Seq2`/`SeqWithContinuation` are now package-level generic functions. Removed 63 identical method implementations across 21 cursor types. Net -900 lines.
 
 - [ ] **Panics in library code** — `FDBRecordVersion` has 5 panics (`GetGlobalVersion`, `GetDBVersion`, `Next`, `Prev`, `ToVersionstamp`). `RecordCursorResult.GetValue()` panics on `!HasNext()`. Library code should return errors, never panic.
 
