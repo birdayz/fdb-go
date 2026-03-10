@@ -357,8 +357,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Store state management** — `GetRecordStoreState()` returns store header + index states. `SetStoreLockState()` persists lock state to header. `ReloadRecordStoreState()` forces reload from FDB.
 
-- [ ] **Query execution methods** — Java has `evaluateIndexRecordFunction()`, `evaluateStoreFunction()`. Go has `EvaluateAggregateFunction()` (done) but not the other two.
+- [ ] **Query execution methods** — Java has `evaluateStoreFunction()`. Go has `EvaluateAggregateFunction()` and `EvaluateRecordFunction()` (done) but not `evaluateStoreFunction()`.
   - [x] `CountRecords(ctx, low, high, lowEndpoint, highEndpoint, continuation, scanProperties)` — scan-based record count (not atomic counter). Matches Java's `FDBRecordStore.countRecords()`.
+  - [x] `EvaluateRecordFunction(fn, record)` — evaluates index record functions (e.g. RANK) for a specific record. Auto-selects best index. 5 tests.
 
 - [x] **Per-type record count** — `GetSnapshotRecordCountForRecordType(recordTypeName)` added. Requires `RecordTypeKeyExpression` as count key. Matches Java's `getSnapshotRecordCountForRecordType()`.
 

@@ -1637,3 +1637,238 @@ var _ = Describe("RANK Aggregate Functions", func() {
 	})
 })
 
+var _ = Describe("RANK Record Functions", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		return builder
+	}
+
+	It("rank function returns rank of a record's score", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert records: prices 300, 100, 500, 200, 400
+			records := make([]*FDBStoredRecord[proto.Message], 5)
+			prices := []int32{300, 100, 500, 200, 400}
+			for i, price := range prices {
+				rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+				records[i] = rec
+			}
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: GroupBy(Field("price")),
+			}
+
+			// price=300 → rank 2
+			rank, err := store.EvaluateRecordFunction(fn, records[0])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank).NotTo(BeNil())
+			Expect(*rank).To(Equal(int64(2)))
+
+			// price=100 → rank 0
+			rank, err = store.EvaluateRecordFunction(fn, records[1])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			// price=500 → rank 4
+			rank, err = store.EvaluateRecordFunction(fn, records[2])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(4)))
+
+			// price=200 → rank 1
+			rank, err = store.EvaluateRecordFunction(fn, records[3])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(1)))
+
+			// price=400 → rank 3
+			rank, err = store.EvaluateRecordFunction(fn, records[4])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(3)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rank function with explicit index name", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: GroupBy(Field("price")),
+				Index:   "rank_by_price",
+			}
+
+			rank, err := store.EvaluateRecordFunction(fn, rec)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank).NotTo(BeNil())
+			Expect(*rank).To(Equal(int64(0)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rank function with duplicate scores", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// 3 records at price=100, 2 at price=200
+			var rec100, rec200 *FDBStoredRecord[proto.Message]
+			for i := int64(1); i <= 3; i++ {
+				r, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				if i == 1 {
+					rec100 = r
+				}
+			}
+			for i := int64(4); i <= 5; i++ {
+				r, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				if i == 4 {
+					rec200 = r
+				}
+			}
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: GroupBy(Field("price")),
+			}
+
+			// All records with price=100 → rank 0
+			rank, err := store.EvaluateRecordFunction(fn, rec100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			// All records with price=200 → rank 1
+			rank, err = store.EvaluateRecordFunction(fn, rec200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(1)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rank function updates after delete", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			rec1, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+			rec3, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: GroupBy(Field("price")),
+			}
+
+			// Before delete: rank of 300 = 2
+			rank, err := store.EvaluateRecordFunction(fn, rec3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(2)))
+
+			// Delete price=200
+			_, err = store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// After delete: rank of 300 = 1
+			rank, err = store.EvaluateRecordFunction(fn, rec3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(1)))
+
+			// rank of 100 still = 0
+			rank, err = store.EvaluateRecordFunction(fn, rec1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rank function errors when no matching index exists", func() {
+		ks := specSubspace()
+
+		// No RANK index, only VALUE.
+		builder := baseMetaData()
+		builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			rec, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: GroupBy(Field("price")),
+			}
+
+			_, err = store.EvaluateRecordFunction(fn, rec)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("requires appropriate index"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
