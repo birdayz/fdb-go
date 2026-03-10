@@ -7,9 +7,11 @@ import (
 
 // Index type constants matching Java's IndexTypes.
 const (
-	IndexTypeValue = "value"
-	IndexTypeCount = "count"
-	IndexTypeSum   = "sum"
+	IndexTypeValue       = "value"
+	IndexTypeCount       = "count"
+	IndexTypeSum         = "sum"
+	IndexTypeMaxEverLong = "max_ever_long"
+	IndexTypeMinEverLong = "min_ever_long"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -80,6 +82,34 @@ func NewSumIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeSum,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMaxEverLongIndex creates a MAX_EVER_LONG index with the given name and root key expression.
+// MAX_EVER_LONG indexes use FDB atomic MAX to track the maximum value seen per grouping key.
+// Values must be non-negative (unsigned comparison). Deletes are no-ops (_EVER = irreversible).
+// Matches Java's new Index(name, rootExpression, IndexTypes.MAX_EVER_LONG).
+func NewMaxEverLongIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMaxEverLong,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMinEverLongIndex creates a MIN_EVER_LONG index with the given name and root key expression.
+// MIN_EVER_LONG indexes use FDB atomic MIN to track the minimum value seen per grouping key.
+// Values must be non-negative (unsigned comparison). Deletes are no-ops (_EVER = irreversible).
+// Matches Java's new Index(name, rootExpression, IndexTypes.MIN_EVER_LONG).
+func NewMinEverLongIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMinEverLong,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

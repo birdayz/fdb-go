@@ -1009,6 +1009,10 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newCountIndexMaintainer(index, idxSubspace, tx, store)
 	case IndexTypeSum:
 		return newSumIndexMaintainer(index, idxSubspace, tx, store)
+	case IndexTypeMaxEverLong:
+		return newMinMaxEverIndexMaintainer(index, idxSubspace, tx, store, true)
+	case IndexTypeMinEverLong:
+		return newMinMaxEverIndexMaintainer(index, idxSubspace, tx, store, false)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}
