@@ -52,25 +52,23 @@ func (store *FDBRecordStore) isRecordCountDisabled() bool {
 // Matches Java's FDBRecordStore.addRecordCount().
 //
 // Key format: subspace[RecordCountKey] + evaluated_count_key_tuple
-func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []byte) {
+func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []byte) error {
 	countKey := store.metaData.GetRecordCountKey()
 	if countKey == nil {
-		return // Counting not configured
+		return nil // Counting not configured
 	}
 	if store.isRecordCountDisabled() {
-		return // Count state is DISABLED — skip mutation
+		return nil // Count state is DISABLED — skip mutation
 	}
 
 	// Evaluate the count key expression against the record.
 	// Count keys should produce exactly one tuple.
 	subkeys, err := countKey.Evaluate(record)
 	if err != nil {
-		// Silently skip counting on evaluation errors (matches Java behavior
-		// where this is logged but doesn't fail the operation)
-		return
+		return fmt.Errorf("record count key evaluation failed: %w", err)
 	}
 	if len(subkeys) != 1 {
-		return // Count key must evaluate to exactly one tuple
+		return fmt.Errorf("record count key must evaluate to exactly one tuple, got %d", len(subkeys))
 	}
 	subkey := subkeys[0]
 
@@ -84,6 +82,7 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 
 	// Atomic ADD — no read needed, no conflicts generated
 	store.context.Transaction().Add(fdbKey, increment)
+	return nil
 }
 
 // GetSnapshotRecordCount returns the count of records matching the given key.

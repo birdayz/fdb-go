@@ -3,8 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"sync"
-	"sync/atomic"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -179,9 +177,9 @@ type FDBRecordContext struct {
 	ctx context.Context
 
 	// Version management — matches Java's FDBRecordContext
-	localVersion      atomic.Int32 // per-transaction local version counter
-	localVersionCache sync.Map     // key (string) → local version (int)
-	versionMutations  sync.Map     // key (string) → value ([]byte) for SET_VERSIONSTAMPED_VALUE
+	localVersion      int32             // per-transaction local version counter
+	localVersionCache map[string]int    // key (string) → local version (int)
+	versionMutations  map[string][]byte // key (string) → value for SET_VERSIONSTAMPED_VALUE
 
 	// Commit hooks — matches Java's CommitCheckAsync / PostCommit
 	commitChecks []CommitCheckFunc
@@ -223,51 +221,53 @@ func (rc *FDBRecordContext) Cancel() {
 // ClaimLocalVersion atomically claims the next local version number.
 // Matches Java's FDBRecordContext.claimLocalVersion().
 func (rc *FDBRecordContext) ClaimLocalVersion() int {
-	return int(rc.localVersion.Add(1) - 1) // returns 0, 1, 2, ...
+	v := rc.localVersion
+	rc.localVersion++
+	return int(v) // returns 0, 1, 2, ...
 }
 
 // AddToLocalVersionCache caches a local version for a version key within this transaction.
 // Matches Java's FDBRecordContext.addToLocalVersionCache().
 func (rc *FDBRecordContext) AddToLocalVersionCache(versionKey []byte, localVersion int) {
-	rc.localVersionCache.Store(string(versionKey), localVersion)
+	if rc.localVersionCache == nil {
+		rc.localVersionCache = make(map[string]int)
+	}
+	rc.localVersionCache[string(versionKey)] = localVersion
 }
 
 // GetLocalVersion retrieves a cached local version for the given key.
 // Returns (localVersion, true) if found, (0, false) otherwise.
 func (rc *FDBRecordContext) GetLocalVersion(versionKey []byte) (int, bool) {
-	v, ok := rc.localVersionCache.Load(string(versionKey))
-	if !ok {
-		return 0, false
-	}
-	return v.(int), true
+	v, ok := rc.localVersionCache[string(versionKey)]
+	return v, ok
 }
 
 // RemoveLocalVersion removes a cached local version entry.
 func (rc *FDBRecordContext) RemoveLocalVersion(versionKey []byte) {
-	rc.localVersionCache.Delete(string(versionKey))
+	delete(rc.localVersionCache, string(versionKey))
 }
 
 // AddVersionMutation queues a SET_VERSIONSTAMPED_VALUE mutation to be applied at commit.
 // The value must include the versionstamp placeholder bytes.
 // Matches Java's FDBRecordContext.addVersionMutation().
 func (rc *FDBRecordContext) AddVersionMutation(versionKey []byte, value []byte) {
-	rc.versionMutations.Store(string(versionKey), value)
+	if rc.versionMutations == nil {
+		rc.versionMutations = make(map[string][]byte)
+	}
+	rc.versionMutations[string(versionKey)] = value
 }
 
 // RemoveVersionMutation removes a queued version mutation.
 func (rc *FDBRecordContext) RemoveVersionMutation(versionKey []byte) {
-	rc.versionMutations.Delete(string(versionKey))
+	delete(rc.versionMutations, string(versionKey))
 }
 
 // flushVersionMutations applies all queued SET_VERSIONSTAMPED_VALUE mutations
 // to the underlying FDB transaction. Called before commit.
 func (rc *FDBRecordContext) flushVersionMutations() {
-	rc.versionMutations.Range(func(key, value any) bool {
-		keyBytes := []byte(key.(string))
-		valueBytes := value.([]byte)
-		rc.tx.SetVersionstampedValue(fdb.Key(keyBytes), valueBytes)
-		return true
-	})
+	for key, value := range rc.versionMutations {
+		rc.tx.SetVersionstampedValue(fdb.Key(key), value)
+	}
 }
 
 // AddCommitCheck registers a pre-commit check function.
@@ -352,12 +352,7 @@ func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
 
 // HasVersionMutations returns true if there are pending version mutations.
 func (rc *FDBRecordContext) HasVersionMutations() bool {
-	has := false
-	rc.versionMutations.Range(func(_, _ any) bool {
-		has = true
-		return false // stop after first
-	})
-	return has
+	return len(rc.versionMutations) > 0
 }
 
 // CommitWithVersionstamp commits the transaction, first flushing all queued

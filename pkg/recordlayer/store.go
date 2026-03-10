@@ -193,7 +193,9 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 	// Decrement record count
 	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
-		store.addRecordCount(oldMsg, littleEndianInt64MinusOne)
+		if err := store.addRecordCount(oldMsg, littleEndianInt64MinusOne); err != nil {
+			return false, fmt.Errorf("failed to decrement record count: %w", err)
+		}
 	}
 
 	// Update secondary indexes
@@ -384,7 +386,9 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 	// Only increment record count for new inserts (not updates).
 	if !oldRecordExists {
-		store.addRecordCount(record, littleEndianInt64One)
+		if err := store.addRecordCount(record, littleEndianInt64One); err != nil {
+			return nil, fmt.Errorf("failed to increment record count: %w", err)
+		}
 	}
 
 	newStoredRecord := &FDBStoredRecord[proto.Message]{
