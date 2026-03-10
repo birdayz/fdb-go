@@ -1235,3 +1235,258 @@ var _ = Describe("RankIndex", func() {
 	})
 })
 
+var _ = Describe("RANK Aggregate Functions", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		return builder
+	}
+
+	It("COUNT_DISTINCT returns number of unique scores", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 5 orders: prices 100, 200, 200, 300, 300
+			for i, price := range []int32{100, 200, 200, 300, 300} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameCountDistinct, Operand: GroupBy(Field("price"))},
+				TupleRangeAll, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(3)})) // 3 unique prices
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RANK_FOR_SCORE returns rank of a given score", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, price := range []int32{100, 200, 300} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Rank of score 100 = 0 (lowest)
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameRankForScore, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(100)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(0)}))
+
+			// Rank of score 300 = 2 (highest)
+			result, err = store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameRankForScore, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(300)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SCORE_FOR_RANK returns score at a given rank", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, price := range []int32{100, 200, 300} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Score at rank 0 = 100
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameScoreForRank, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(100)}))
+
+			// Score at rank 2 = 300
+			result, err = store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameScoreForRank, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(2)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(300)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SCORE_FOR_RANK returns nil for out-of-bounds rank", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Rank 5 is out of bounds (only 1 record)
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameScoreForRank, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(5)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SCORE_FOR_RANK_ELSE_SKIP returns sentinel for out-of-bounds rank", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Rank 5 out of bounds → sentinel
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameScoreForRankElseSkip, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(5)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{"*"}))
+
+			// Rank 0 in bounds → actual score
+			result, err = store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameScoreForRankElseSkip, Operand: GroupBy(Field("price"))},
+				TupleRangeAllOf(tuple.Tuple{int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(100)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("auto-selects RANK index for aggregate functions", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, price := range []int32{100, 200, 300} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Auto-select (no explicit index name)
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{Name: FunctionNameCountDistinct, Operand: GroupBy(Field("price"))},
+				TupleRangeAll, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(3)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("COUNT_DISTINCT after deletes reflects current state", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 3 records with distinct prices
+			for i, price := range []int32{100, 200, 300} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			fn := &IndexAggregateFunction{Name: FunctionNameCountDistinct, Operand: GroupBy(Field("price"))}
+
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"}, fn,
+				TupleRangeAll, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(3)}))
+
+			// Delete order 2 (price=200)
+			_, err = store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = store.EvaluateAggregateFunction(ctx, []string{"Order"}, fn,
+				TupleRangeAll, IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+

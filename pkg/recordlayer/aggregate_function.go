@@ -18,6 +18,12 @@ const (
 	FunctionNameMaxEver      = "max_ever"
 	FunctionNameMin          = "min"
 	FunctionNameMax          = "max"
+
+	// RANK aggregate function names.
+	FunctionNameRankForScore          = "rank_for_score"
+	FunctionNameScoreForRank          = "score_for_rank"
+	FunctionNameScoreForRankElseSkip  = "score_for_rank_else_skip"
+	FunctionNameCountDistinct         = "count_distinct"
 )
 
 // IndexAggregateFunction specifies an aggregate computation to evaluate via an index.
@@ -143,6 +149,8 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		// The operand's ungrouped part must be a prefix of the index expression.
 		return (fn.Name == FunctionNameMin || fn.Name == FunctionNameMax) &&
 			isUngroupedPrefixOf(fn.Operand, idx.RootExpression)
+	case IndexTypeRank:
+		return canEvaluateRankAggregate(fn, idx)
 	default:
 		return false
 	}
@@ -159,6 +167,11 @@ func evaluateAggregate(
 	// For VALUE indexes doing MIN/MAX: scan 1 entry
 	if fn.Name == FunctionNameMin || fn.Name == FunctionNameMax {
 		return evaluateMinMaxFromValueIndex(ctx, fn, maintainer, scanRange, isolationLevel)
+	}
+
+	// For RANK index aggregate functions: delegate to rank-specific evaluation.
+	if rm, ok := maintainer.(*RankIndexMaintainer); ok {
+		return evaluateRankAggregate(fn, rm, scanRange)
 	}
 
 	// For atomic mutation indexes (COUNT/SUM/MIN_EVER/MAX_EVER): scan all + reduce
@@ -347,4 +360,177 @@ func tupleGreater(a, b tuple.Tuple) bool {
 // Used for MIN_EVER aggregation on tuple-packed values.
 func tupleLess(a, b tuple.Tuple) bool {
 	return bytes.Compare(a.Pack(), b.Pack()) < 0
+}
+
+// canEvaluateRankAggregate checks if a RANK index can serve a given aggregate function.
+// Matches Java's RankIndexMaintainer.canEvaluateAggregateFunction().
+func canEvaluateRankAggregate(fn *IndexAggregateFunction, idx *Index) bool {
+	switch fn.Name {
+	case FunctionNameCountDistinct:
+		return expressionsEqual(fn.Operand, idx.RootExpression)
+	case FunctionNameCount:
+		// COUNT on a unique RANK index where the operand covers only grouping columns.
+		if !idx.IsUnique() {
+			return false
+		}
+		groupingCount := 0
+		if g, ok := idx.RootExpression.(*GroupingKeyExpression); ok {
+			groupingCount = g.GetGroupingCount()
+		}
+		return keyExpressionColumnSize(fn.Operand) == groupingCount &&
+			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case FunctionNameScoreForRank, FunctionNameScoreForRankElseSkip, FunctionNameRankForScore:
+		return expressionsEqual(fn.Operand, idx.RootExpression)
+	default:
+		return false
+	}
+}
+
+// evaluateRankAggregate evaluates a RANK aggregate function using the ranked set.
+// The scanRange must be an "equals" range (all Low == High values).
+// Matches Java's RankIndexMaintainer.evaluateAggregateFunction().
+func evaluateRankAggregate(
+	fn *IndexAggregateFunction,
+	rm *RankIndexMaintainer,
+	scanRange TupleRange,
+) (tuple.Tuple, error) {
+	groupPrefixSize := rm.getGroupingCount()
+
+	// Extract the group prefix and the trailing value from the scan range.
+	// The scan range for RANK aggregates must be an "equals" range.
+	groupPrefix, trailingValue, err := splitEqualRangeForRank(scanRange, groupPrefixSize)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate %s: %w", fn.Name, err)
+	}
+
+	// Build the ranked set subspace for this group.
+	rankSubspace := rm.secondarySubspace
+	if len(groupPrefix) > 0 {
+		elems := make(tuple.Tuple, len(groupPrefix))
+		for i, v := range groupPrefix {
+			elems[i] = v
+		}
+		rankSubspace = rankSubspace.Sub(elems...)
+	}
+	rankedSet := NewRankedSet(rankSubspace, rm.rankedSetConfig)
+
+	// Init if needed.
+	needed, err := rankedSet.InitNeeded(rm.tx.Snapshot())
+	if err != nil {
+		return nil, err
+	}
+	if needed {
+		if err := rankedSet.Init(rm.tx); err != nil {
+			return nil, err
+		}
+	}
+
+	switch fn.Name {
+	case FunctionNameCount, FunctionNameCountDistinct:
+		size, err := rankedSet.Size(rm.tx)
+		if err != nil {
+			return nil, err
+		}
+		return tuple.Tuple{size}, nil
+
+	case FunctionNameScoreForRank, FunctionNameScoreForRankElseSkip:
+		if trailingValue == nil {
+			return nil, nil
+		}
+		rank, ok := trailingValue.(int64)
+		if !ok {
+			return nil, fmt.Errorf("evaluate %s: rank must be int64, got %T", fn.Name, trailingValue)
+		}
+		scoreBytes, err := rankedSet.GetNth(rm.tx, rank)
+		if err != nil {
+			return nil, err
+		}
+		if scoreBytes == nil {
+			if fn.Name == FunctionNameScoreForRankElseSkip {
+				// Return a sentinel value matching Java's COMPARISON_SKIPPED_BINDING.
+				return tuple.Tuple{"*"}, nil
+			}
+			return nil, nil
+		}
+		scoreTuple, err := tuple.Unpack(scoreBytes)
+		if err != nil {
+			return nil, fmt.Errorf("evaluate %s: unpack score: %w", fn.Name, err)
+		}
+		return scoreTuple, nil
+
+	case FunctionNameRankForScore:
+		if trailingValue == nil {
+			return nil, nil
+		}
+		// The trailing value is the score. Pack it as a single-element tuple.
+		scoreTuple := tuple.Tuple{trailingValue}
+		rankResult, err := rankedSet.Rank(rm.tx, scoreTuple.Pack(), false)
+		if err != nil {
+			return nil, err
+		}
+		if rankResult == nil {
+			return nil, nil
+		}
+		return tuple.Tuple{*rankResult}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported RANK aggregate function: %s", fn.Name)
+	}
+}
+
+// splitEqualRangeForRank extracts group prefix and trailing value from a TupleRange
+// that must be an "equals" range (Low == High). Returns the group prefix elements
+// and the trailing value element (rank or score), if any.
+func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, any, error) {
+	if scanRange.Low == nil {
+		return nil, nil, nil
+	}
+
+	values := scanRange.Low
+	if len(values) <= groupPrefixSize {
+		// Only group prefix, no trailing value.
+		groupPrefix := make([]any, len(values))
+		for i, v := range values {
+			groupPrefix[i] = v
+		}
+		return groupPrefix, nil, nil
+	}
+
+	groupPrefix := make([]any, groupPrefixSize)
+	for i := range groupPrefixSize {
+		groupPrefix[i] = values[i]
+	}
+	trailingValue := values[groupPrefixSize]
+	return groupPrefix, trailingValue, nil
+}
+
+// expressionsEqual checks if two key expressions are structurally equivalent.
+func expressionsEqual(a, b KeyExpression) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	// Compare by field names and column sizes.
+	aNames := a.FieldNames()
+	bNames := b.FieldNames()
+	if len(aNames) != len(bNames) {
+		return false
+	}
+	for i := range aNames {
+		if aNames[i] != bNames[i] {
+			return false
+		}
+	}
+	// Also check grouping structure.
+	aGrouping, aOk := a.(*GroupingKeyExpression)
+	bGrouping, bOk := b.(*GroupingKeyExpression)
+	if aOk != bOk {
+		return false
+	}
+	if aOk && bOk {
+		return aGrouping.groupedCount == bGrouping.groupedCount
+	}
+	return true
 }
