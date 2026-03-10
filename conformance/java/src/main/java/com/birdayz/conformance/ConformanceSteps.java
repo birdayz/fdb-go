@@ -1109,6 +1109,87 @@ public class ConformanceSteps {
         });
     }
 
+    // --- Index state persistence conformance steps ---
+
+    /**
+     * Mark an index as WRITE_ONLY via Java's store.markIndexWriteOnly().
+     * Uses the indexed metadata (Order$price VALUE index).
+     */
+    @ConformanceStep("markIndexWriteOnly")
+    public void markIndexWriteOnly(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createIndexedMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            store.markIndexWriteOnly(indexName).join();
+            return null;
+        });
+    }
+
+    /**
+     * Mark an index as DISABLED via Java's store.markIndexDisabled().
+     */
+    @ConformanceStep("markIndexDisabled")
+    public void markIndexDisabled(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createIndexedMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            store.markIndexDisabled(indexName).join();
+            return null;
+        });
+    }
+
+    /**
+     * Mark an index as READABLE via Java's store.markIndexReadable().
+     */
+    @ConformanceStep("markIndexReadable")
+    public void markIndexReadable(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createIndexedMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+            store.markIndexReadable(indexName).join();
+            return null;
+        });
+    }
+
+    /**
+     * Read the raw index state from FDB (no store open).
+     * Returns the state as a string: "READABLE", "WRITE_ONLY", "DISABLED", "READABLE_UNIQUE_PENDING".
+     * If no state key exists, returns "READABLE" (default).
+     */
+    @ConformanceStep("getIndexStateRaw")
+    public String getIndexStateRaw(String clusterFile, byte[] subspace, String indexName, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            Subspace sub = new Subspace(subspace);
+            // Index state key: subspace[5][indexName]
+            Subspace isSubspace = sub.get(5L);
+            byte[] stateKey = isSubspace.pack(Tuple.from(indexName));
+            byte[] stateBytes = context.ensureActive().get(stateKey).join();
+            if (stateBytes == null) {
+                return "READABLE"; // Default
+            }
+            long code = Tuple.fromBytes(stateBytes).getLong(0);
+            switch ((int)code) {
+                case 0: return "READABLE";
+                case 1: return "WRITE_ONLY";
+                case 2: return "DISABLED";
+                case 3: return "READABLE_UNIQUE_PENDING";
+                default: return "UNKNOWN(" + code + ")";
+            }
+        });
+    }
+
     // --- SUM index conformance steps ---
 
     private static RecordMetaData createSumIndexedMetaData() {

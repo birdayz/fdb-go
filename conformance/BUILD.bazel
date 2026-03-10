@@ -16,6 +16,7 @@ go_test(
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",
         "index_conformance_test.go",
+        "index_state_conformance_test.go",
         "isolation_conformance_test.go",
         "rangeset_conformance_test.go",
         "rebuild_index_conformance_test.go",

@@ -10,6 +10,7 @@ go_library(
         "customer_conformance_store.go",
         "fanout_index_conformance_store.go",
         "index_conformance_store.go",
+        "index_state_conformance_store.go",
         "javainvoker.go",
         "rebuild_index_conformance_store.go",
         "split_conformance_store.go",
