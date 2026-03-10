@@ -299,6 +299,21 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 		), nil
 	}
 
+	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
+	// Allow at least one entry (free initial pass).
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
+		if c.lastCont != nil {
+			return NewResultNoNext[*IndexEntry](
+				ByteLimitReached,
+				&BytesContinuation{bytes: c.lastCont},
+			), nil
+		}
+		return NewResultNoNext[*IndexEntry](
+			ByteLimitReached,
+			&EndContinuation{},
+		), nil
+	}
+
 	if !c.iterator.Advance() {
 		return NewResultNoNext[*IndexEntry](
 			SourceExhausted,
@@ -316,19 +331,8 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 		return RecordCursorResult[*IndexEntry]{}, err
 	}
 
+	// Accumulate bytes scanned — checked pre-read on next call
 	c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
-
-	// Check byte limit
-	if executeProps.ScannedBytesLimit > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
-		cont, wrapErr := c.makeContinuation(kv.Key)
-		if wrapErr != nil {
-			return RecordCursorResult[*IndexEntry]{}, wrapErr
-		}
-		return NewResultNoNext[*IndexEntry](
-			ByteLimitReached,
-			&BytesContinuation{bytes: cont},
-		), nil
-	}
 
 	c.recordsRead++
 

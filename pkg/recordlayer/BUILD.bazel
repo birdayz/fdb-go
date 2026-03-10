@@ -112,6 +112,7 @@ go_test(
         "reverse_scan_test.go",
         "runner_test.go",
         "save_error_test.go",
+        "scan_limit_test.go",
         "scan_test.go",
         "sparse_index_test.go",
         "split_record_test.go",
