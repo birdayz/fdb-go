@@ -7,11 +7,13 @@ import (
 
 // Index type constants matching Java's IndexTypes.
 const (
-	IndexTypeValue       = "value"
-	IndexTypeCount       = "count"
-	IndexTypeSum         = "sum"
-	IndexTypeMaxEverLong = "max_ever_long"
-	IndexTypeMinEverLong = "min_ever_long"
+	IndexTypeValue        = "value"
+	IndexTypeCount        = "count"
+	IndexTypeCountNotNull = "count_not_null"
+	IndexTypeCountUpdates = "count_updates"
+	IndexTypeSum          = "sum"
+	IndexTypeMaxEverLong  = "max_ever_long"
+	IndexTypeMinEverLong  = "min_ever_long"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -110,6 +112,33 @@ func NewMinEverLongIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeMinEverLong,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewCountNotNullIndex creates a COUNT_NOT_NULL index with the given name and root key expression.
+// Like COUNT, but skips entries where the key contains a null value (nil element).
+// Matches Java's new Index(name, rootExpression, IndexTypes.COUNT_NOT_NULL).
+func NewCountNotNullIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeCountNotNull,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewCountUpdatesIndex creates a COUNT_UPDATES index with the given name and root key expression.
+// Like COUNT, but deletes are no-ops (count never decrements) and updates always re-count
+// (skipUpdateForUnchangedKeys = false). Tracks total insert+update events.
+// Matches Java's new Index(name, rootExpression, IndexTypes.COUNT_UPDATES).
+func NewCountUpdatesIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeCountUpdates,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

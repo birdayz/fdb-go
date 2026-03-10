@@ -9,12 +9,14 @@ import (
 
 // Aggregate function name constants matching Java's FunctionNames.
 const (
-	FunctionNameCount     = "count"
-	FunctionNameSum       = "sum"
-	FunctionNameMinEver   = "min_ever"
-	FunctionNameMaxEver   = "max_ever"
-	FunctionNameMin       = "min"
-	FunctionNameMax       = "max"
+	FunctionNameCount        = "count"
+	FunctionNameCountNotNull = "count_not_null"
+	FunctionNameCountUpdates = "count_updates"
+	FunctionNameSum          = "sum"
+	FunctionNameMinEver      = "min_ever"
+	FunctionNameMaxEver      = "max_ever"
+	FunctionNameMin          = "min"
+	FunctionNameMax          = "max"
 )
 
 // IndexAggregateFunction specifies an aggregate computation to evaluate via an index.
@@ -117,6 +119,10 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 	switch idx.Type {
 	case IndexTypeCount:
 		return fn.Name == FunctionNameCount && isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeCountNotNull:
+		return fn.Name == FunctionNameCountNotNull && isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeCountUpdates:
+		return fn.Name == FunctionNameCountUpdates && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeSum:
 		return fn.Name == FunctionNameSum && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeMaxEverLong:
@@ -230,7 +236,7 @@ func evaluateAtomicAggregate(
 // aggregate function name. Matches Java's AtomicMutation.getIdentity()/getAggregator().
 func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tuple.Tuple) {
 	switch name {
-	case FunctionNameCount, FunctionNameSum:
+	case FunctionNameCount, FunctionNameCountNotNull, FunctionNameCountUpdates, FunctionNameSum:
 		return tuple.Tuple{int64(0)}, func(accum, entry tuple.Tuple) tuple.Tuple {
 			a := accum[0].(int64)
 			b := int64(0)
