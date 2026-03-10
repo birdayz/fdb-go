@@ -911,4 +911,183 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("splitPoint=0: all columns go to value, key is empty", func() {
+		// splitPoint=0 means no columns in key, all in value. Only PK in the FDB key.
+		coveringIndex := NewIndex("covering_all_value",
+			KeyWithValue(Field("price"), 0))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(2))
+
+			// Key has 0 index columns + PK only, sorted by PK (order_id)
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+			Expect(entries[1].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+
+			// Value has the price
+			Expect(entries[0].Value).To(HaveLen(1))
+			Expect(entries[0].Value[0]).To(Equal(int64(500)))
+			Expect(entries[1].Value[0]).To(Equal(int64(300)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("splitPoint=len(inner): all columns in key, empty value", func() {
+		// splitPoint equals number of inner columns — nothing goes to value.
+		coveringIndex := NewIndex("covering_all_key",
+			KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 2))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100),
+				Flower: &gen.Flower{Type: proto.String("Rose")},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+
+			// Key has both columns + PK
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[0].Key[1]).To(Equal("Rose"))
+
+			// Value should be empty (splitPoint = len(inner))
+			Expect(entries[0].Value).To(HaveLen(0))
+
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("FanOut with covering index produces multiple entries with value", func() {
+		// FanOut("tags") produces one entry per tag. With splitPoint=0, tags go to value.
+		// Key portion is empty, so FDB key is just PK + tag value.
+		coveringIndex := NewIndex("covering_fanout",
+			KeyWithValue(Concat(FanOut("tags"), Nest("flower", Field("type"))), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100),
+				Tags:   []string{"premium", "gift"},
+				Flower: &gen.Flower{Type: proto.String("Rose")},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			// 2 entries: one per tag
+			Expect(entries).To(HaveLen(2))
+
+			// Sorted by tag (key[0]), both have flower type in value
+			Expect(entries[0].Key[0]).To(Equal("gift"))
+			Expect(entries[0].Value[0]).To(Equal("Rose"))
+			Expect(entries[1].Key[0]).To(Equal("premium"))
+			Expect(entries[1].Value[0]).To(Equal("Rose"))
+
+			// Both entries point to same record
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+			Expect(entries[1].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("continuation token works with covering index", func() {
+		coveringIndex := NewIndex("covering_price",
+			KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 5; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)),
+					Flower: &gen.Flower{Type: proto.String("Rose")},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Page 1: scan with limit 2
+			scan1 := ForwardScan()
+			scan1.ExecuteProperties.ReturnedRowLimit = 2
+			cursor := store.ScanIndex(coveringIndex, TupleRangeAll, nil, scan1)
+			var continuation []byte
+			var firstBatch []*IndexEntry
+			for {
+				r, nextErr := cursor.OnNext(ctx)
+				Expect(nextErr).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					continuation = r.GetContinuation().ToBytes()
+					break
+				}
+				firstBatch = append(firstBatch, r.GetValue())
+			}
+			Expect(cursor.Close()).To(Succeed())
+			Expect(firstBatch).To(HaveLen(2))
+			Expect(firstBatch[0].Key[0]).To(Equal(int64(100)))
+			Expect(firstBatch[1].Key[0]).To(Equal(int64(200)))
+			Expect(firstBatch[0].Value[0]).To(Equal("Rose"))
+
+			// Page 2: resume with continuation
+			Expect(continuation).NotTo(BeNil())
+			scan2 := ForwardScan()
+			scan2.ExecuteProperties.ReturnedRowLimit = 2
+			page2, err := AsList(ctx, store.ScanIndex(coveringIndex, TupleRangeAll, continuation, scan2))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page2).To(HaveLen(2))
+			Expect(page2[0].Key[0]).To(Equal(int64(300)))
+			Expect(page2[1].Key[0]).To(Equal(int64(400)))
+
+			// Value preserved across continuation
+			Expect(page2[0].Value[0]).To(Equal("Rose"))
+			Expect(page2[1].Value[0]).To(Equal("Rose"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
