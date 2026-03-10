@@ -92,6 +92,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | MIN_EVER_LONG index | saveOrderWithMinEverLongIndex, deleteOrderWithMinEverLongIndex, scanMinEverLongIndex | min_max_ever_index_conformance_test.go | YES |
 | COUNT_NOT_NULL index | saveOrderWithCountNotNullIndex, deleteOrderWithCountNotNullIndex, scanCountNotNullIndex | count_not_null_index_conformance_test.go | YES |
 | COUNT_UPDATES index | saveOrderWithCountUpdatesIndex, deleteOrderWithCountUpdatesIndex, scanCountUpdatesIndex | count_updates_index_conformance_test.go | YES |
+| MAX_EVER_TUPLE index | saveOrderWithMaxEverTupleIndex, deleteOrderWithMaxEverTupleIndex, scanMaxEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
+| MIN_EVER_TUPLE index | saveOrderWithMinEverTupleIndex, deleteOrderWithMinEverTupleIndex, scanMinEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
