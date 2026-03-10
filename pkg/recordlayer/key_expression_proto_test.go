@@ -220,3 +220,104 @@ func TestKeyExpressionProtoWireRoundtrip(t *testing.T) {
 		t.Fatal("wire roundtrip mismatch")
 	}
 }
+
+func TestLiteralKeyExpressionRoundtrip(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{"nil", nil},
+		{"int64", int64(42)},
+		{"string", "hello"},
+		{"bool", true},
+		{"float64", 3.14},
+		{"bytes", []byte{0xDE, 0xAD}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			expr := Literal(tt.value)
+			p := expr.ToKeyExpression()
+			if p.Value == nil {
+				t.Fatal("expected Value to be set")
+			}
+
+			restored, err := KeyExpressionFromProto(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !keyExpressionEquals(expr, restored) {
+				t.Fatalf("roundtrip mismatch for %v", tt.value)
+			}
+		})
+	}
+}
+
+func TestLiteralKeyExpressionEvaluate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("constant_value", func(t *testing.T) {
+		t.Parallel()
+		expr := Literal(int64(99))
+		result, err := expr.Evaluate(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result) != 1 || len(result[0]) != 1 {
+			t.Fatalf("expected [[99]], got %v", result)
+		}
+		if result[0][0] != int64(99) {
+			t.Fatalf("expected 99, got %v", result[0][0])
+		}
+	})
+
+	t.Run("nil_value", func(t *testing.T) {
+		t.Parallel()
+		expr := Literal(nil)
+		result, err := expr.Evaluate(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result[0][0] != nil {
+			t.Fatalf("expected nil, got %v", result[0][0])
+		}
+	})
+
+	t.Run("ignores_record", func(t *testing.T) {
+		t.Parallel()
+		// Literal should return the same value regardless of what message is passed
+		expr := Literal("fixed")
+		result, err := expr.Evaluate(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result[0][0] != "fixed" {
+			t.Fatalf("expected 'fixed', got %v", result[0][0])
+		}
+	})
+
+	t.Run("field_names_empty", func(t *testing.T) {
+		t.Parallel()
+		expr := Literal(int64(1))
+		if len(expr.FieldNames()) != 0 {
+			t.Fatalf("expected no field names, got %v", expr.FieldNames())
+		}
+	})
+
+	t.Run("column_size", func(t *testing.T) {
+		t.Parallel()
+		if keyExpressionColumnSize(Literal(int64(1))) != 1 {
+			t.Fatal("expected column size 1")
+		}
+	})
+
+	t.Run("in_composite", func(t *testing.T) {
+		t.Parallel()
+		// Literal works in Concat (composite key expression)
+		expr := Concat(Literal("prefix"), Field("order_id"))
+		if keyExpressionColumnSize(expr) != 2 {
+			t.Fatal("expected column size 2")
+		}
+	})
+}

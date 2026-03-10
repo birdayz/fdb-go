@@ -470,6 +470,15 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 		bv, ok := b.(*NestingKeyExpression)
 		return ok && av.parentField == bv.parentField && av.fanType == bv.fanType &&
 			keyExpressionEquals(av.child, bv.child)
+	case *LiteralKeyExpression:
+		bv, ok := b.(*LiteralKeyExpression)
+		if !ok {
+			return false
+		}
+		// Compare via proto serialization for type-safe equality
+		ap, _ := valueToProto(av.value)
+		bp, _ := valueToProto(bv.value)
+		return proto.Equal(ap, bp)
 	default:
 		return false
 	}
@@ -576,4 +585,36 @@ func (g *GroupingKeyExpression) GetGroupedCount() int {
 // GetGroupingCount returns the number of leading "grouping" (GROUP BY) columns.
 func (g *GroupingKeyExpression) GetGroupingCount() int {
 	return keyExpressionColumnSize(g.wholeKey) - g.groupedCount
+}
+
+// LiteralKeyExpression represents a static constant value in a key expression.
+// The value does not depend on the record — it evaluates to the same fixed value for every record.
+// Primary use case: passing static arguments to function key expressions, or creating
+// composite indexes with a fixed prefix.
+// Matches Java's LiteralKeyExpression.
+type LiteralKeyExpression struct {
+	value any
+}
+
+// Literal creates a key expression that always evaluates to the given constant value.
+// Supported types: nil, int, int32, int64, float32, float64, bool, string, []byte.
+// Matches Java's Key.Expressions.value(Object).
+func Literal(value any) *LiteralKeyExpression {
+	return &LiteralKeyExpression{value: value}
+}
+
+// Evaluate returns the constant value regardless of the record.
+// Matches Java's LiteralKeyExpression.evaluateMessage() which ignores the record parameter.
+func (l *LiteralKeyExpression) Evaluate(_ proto.Message) ([][]any, error) {
+	return [][]any{{l.value}}, nil
+}
+
+// FieldNames returns an empty slice — literal expressions don't access any fields.
+func (l *LiteralKeyExpression) FieldNames() []string {
+	return nil
+}
+
+// GetValue returns the constant value held by this expression.
+func (l *LiteralKeyExpression) GetValue() any {
+	return l.value
 }

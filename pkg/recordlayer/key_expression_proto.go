@@ -148,6 +148,10 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		}
 		root = g
 	}
+	if expr.Value != nil {
+		found++
+		root = Literal(valueFromProto(expr.Value))
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -218,5 +222,14 @@ func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 			WholeKey:     g.wholeKey.ToKeyExpression(),
 			GroupedCount: &gc,
 		},
+	}
+}
+
+// ToKeyExpression serializes LiteralKeyExpression to proto.
+// Matches Java's LiteralKeyExpression.toKeyExpression().
+func (l *LiteralKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	v, _ := valueToProto(l.value)
+	return &gen.KeyExpression{
+		Value: v,
 	}
 }

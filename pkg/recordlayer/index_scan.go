@@ -131,6 +131,8 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 		return 0
 	case *GroupingKeyExpression:
 		return keyExpressionColumnSize(e.wholeKey)
+	case *LiteralKeyExpression:
+		return 1
 	default:
 		return 0
 	}
