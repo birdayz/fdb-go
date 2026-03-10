@@ -18,6 +18,7 @@ go_test(
         "index_conformance_test.go",
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
+        "min_max_ever_index_conformance_test.go",
         "rangeset_conformance_test.go",
         "rebuild_index_conformance_test.go",
         "reverse_scan_conformance_test.go",

@@ -12,6 +12,7 @@ go_library(
         "index_conformance_store.go",
         "index_state_conformance_store.go",
         "javainvoker.go",
+        "min_max_ever_index_conformance_store.go",
         "rebuild_index_conformance_store.go",
         "split_conformance_store.go",
         "store_header_conformance_store.go",

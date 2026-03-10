@@ -1267,4 +1267,158 @@ public class ConformanceSteps {
             return result;
         });
     }
+
+    // ========== MAX_EVER_LONG index ==========
+
+    private static RecordMetaData createMaxEverLongIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        // Ungrouped MAX_EVER_LONG of price: field("price").ungrouped()
+        // = new GroupingKeyExpression(field("price"), 1)
+        metaDataBuilder.addIndex("Order", new Index("max_ever_price",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.MAX_EVER_LONG));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openMaxEverLongIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createMaxEverLongIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithMaxEverLongIndex")
+    public void saveOrderWithMaxEverLongIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMaxEverLongIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithMaxEverLongIndex")
+    public boolean deleteOrderWithMaxEverLongIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMaxEverLongIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanMaxEverLongIndex")
+    public java.util.List<java.util.Map<String, Object>> scanMaxEverLongIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createMaxEverLongIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("max_ever_price");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                map.put("value", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    // ========== MIN_EVER_LONG index ==========
+
+    private static RecordMetaData createMinEverLongIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        // Ungrouped MIN_EVER_LONG of price: field("price").ungrouped()
+        // = new GroupingKeyExpression(field("price"), 1)
+        metaDataBuilder.addIndex("Order", new Index("min_ever_price",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.MIN_EVER_LONG));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openMinEverLongIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createMinEverLongIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithMinEverLongIndex")
+    public void saveOrderWithMinEverLongIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMinEverLongIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithMinEverLongIndex")
+    public boolean deleteOrderWithMinEverLongIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMinEverLongIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanMinEverLongIndex")
+    public java.util.List<java.util.Map<String, Object>> scanMinEverLongIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createMinEverLongIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("min_ever_price");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                map.put("value", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
 }
