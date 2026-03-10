@@ -202,5 +202,6 @@ Each continuation serializes cursor state to bytes for reconstruction across tra
 ## Conformance status (updated 2026-03-10)
 
 See `TODO.md` for full gap analysis. Summary:
-- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, RANK indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit), time/byte/record scan limits, MetaDataValidator, commit hooks, retry runner, store state management
-- **Key gaps**: TEXT index, more key expression types, store state caching, timer/instrumentation
+- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/COUNT_NOT_NULL/COUNT_UPDATES indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
+- **Key gaps**: TEXT/VERSION index, more key expression types, store state caching, timer/instrumentation
+- **Test counts**: 569 unit/integration specs, 225 conformance specs (794 total)

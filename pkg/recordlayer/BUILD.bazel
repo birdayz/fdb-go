@@ -35,6 +35,7 @@ go_library(
         "rank_index_maintainer.go",
         "ranked_set.go",
         "record_count.go",
+        "record_function.go",
         "record_version.go",
         "runner.go",
         "scan_properties.go",
