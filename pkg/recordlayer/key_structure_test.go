@@ -25,7 +25,7 @@ var _ = Describe("KeyStructure", func() {
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).

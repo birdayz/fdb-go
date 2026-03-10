@@ -24,7 +24,7 @@ var _ = Describe("DeleteRecord", func() {
 
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			// Create store
 			store, err := NewStoreBuilder().
 				SetContext(rtx).

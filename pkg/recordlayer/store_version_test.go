@@ -27,7 +27,7 @@ var _ = Describe("Store version access", func() {
 
 	Describe("GetFormatVersion", func() {
 		It("returns the current format version", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -42,7 +42,7 @@ var _ = Describe("Store version access", func() {
 
 	Describe("GetUserVersion / SetUserVersion", func() {
 		It("defaults to 0", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -57,7 +57,7 @@ var _ = Describe("Store version access", func() {
 		It("persists across reopens", func() {
 			ss := specSubspace()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -67,7 +67,7 @@ var _ = Describe("Store version access", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -82,7 +82,7 @@ var _ = Describe("Store version access", func() {
 
 	Describe("GetMetaDataVersion", func() {
 		It("returns the metadata version from the header", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {

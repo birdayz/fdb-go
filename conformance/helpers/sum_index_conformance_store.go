@@ -12,7 +12,7 @@ import (
 
 // SumIndexEntryResult represents a single SUM index entry for comparison.
 type SumIndexEntryResult struct {
-	Key []interface{} // Grouping key (empty for ungrouped)
+	Key []any // Grouping key (empty for ungrouped)
 	Sum int64         // Sum value for this grouping key
 }
 
@@ -63,8 +63,8 @@ func NewSumIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace sub
 	}, nil
 }
 
-func (s *SumIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *SumIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -76,7 +76,7 @@ func (s *SumIndexConformanceStore) buildJavaParams() map[string]interface{} {
 
 // SaveOrderGo saves an order with Go (with SUM index maintenance).
 func (s *SumIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -98,7 +98,7 @@ func (s *SumIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen
 // DeleteOrderGo deletes an order with Go (with SUM index maintenance).
 func (s *SumIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -120,7 +120,7 @@ func (s *SumIndexConformanceStore) DeleteOrderJava(ctx context.Context, orderID 
 // ScanSumIndexGo scans the SUM index using Go and returns results.
 func (s *SumIndexConformanceStore) ScanSumIndexGo(ctx context.Context) ([]SumIndexEntryResult, error) {
 	var results []SumIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -149,7 +149,7 @@ func (s *SumIndexConformanceStore) ScanSumIndexGo(ctx context.Context) ([]SumInd
 func (s *SumIndexConformanceStore) ScanSumIndexJava(ctx context.Context) ([]SumIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanSumIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanSumIndex failed: %w", err)
 	}

@@ -121,7 +121,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			wg.Wait()
 
 			// After TX1 commits, new transaction with SNAPSHOT should see the record
-			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -141,7 +141,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 		It("should support read-your-writes with SERIALIZABLE isolation", func() {
 			orderID := int64(10002)
 
-			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -206,7 +206,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -262,7 +262,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -290,7 +290,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -377,7 +377,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				// Wait for TX1 to read
 				<-tx1Started
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -409,7 +409,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).

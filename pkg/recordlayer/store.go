@@ -1079,7 +1079,11 @@ func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *
 	if version.IsComplete() {
 		// Direct set for complete versions (rare — only when explicitly provided)
 		// Pack as Tuple{Versionstamp} matching Java's SplitHelper.packVersion()
-		store.context.Transaction().Set(versionKey, packVersion(version))
+		packed, err := packVersion(version)
+		if err != nil {
+			return fmt.Errorf("pack version: %w", err)
+		}
+		store.context.Transaction().Set(versionKey, packed)
 	} else {
 		// Queue SET_VERSIONSTAMPED_VALUE for incomplete versions
 		store.context.AddToLocalVersionCache(versionKey, version.GetLocalVersion())
@@ -1094,14 +1098,18 @@ func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *
 
 // packVersion packs a complete FDBRecordVersion as a Tuple containing a Versionstamp.
 // Matches Java's SplitHelper.packVersion().
-func packVersion(version *FDBRecordVersion) []byte {
+func packVersion(version *FDBRecordVersion) ([]byte, error) {
+	globalVer, err := version.GetGlobalVersion()
+	if err != nil {
+		return nil, err
+	}
 	var txVer [10]byte
-	copy(txVer[:], version.GetGlobalVersion())
+	copy(txVer[:], globalVer)
 	vs := tuple.Versionstamp{
 		TransactionVersion: txVer,
 		UserVersion:        uint16(version.GetLocalVersion()),
 	}
-	return tuple.Tuple{vs}.Pack()
+	return tuple.Tuple{vs}.Pack(), nil
 }
 
 // unpackVersion unpacks a stored version value (a packed Tuple with a Versionstamp)

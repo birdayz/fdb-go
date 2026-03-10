@@ -49,8 +49,8 @@ func NewIndexStateConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace s
 	}, nil
 }
 
-func (s *IndexStateConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *IndexStateConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -62,7 +62,7 @@ func (s *IndexStateConformanceStore) buildJavaParams() map[string]interface{} {
 
 // CreateStoreGo creates the indexed store using Go's CreateOrOpen.
 func (s *IndexStateConformanceStore) CreateStoreGo(ctx context.Context) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		_, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		return nil, err
@@ -72,7 +72,7 @@ func (s *IndexStateConformanceStore) CreateStoreGo(ctx context.Context) error {
 
 // MarkIndexWriteOnlyGo marks an index as WRITE_ONLY using Go.
 func (s *IndexStateConformanceStore) MarkIndexWriteOnlyGo(ctx context.Context, indexName string) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).
 			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
@@ -87,7 +87,7 @@ func (s *IndexStateConformanceStore) MarkIndexWriteOnlyGo(ctx context.Context, i
 
 // MarkIndexDisabledGo marks an index as DISABLED using Go.
 func (s *IndexStateConformanceStore) MarkIndexDisabledGo(ctx context.Context, indexName string) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).
 			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
@@ -102,7 +102,7 @@ func (s *IndexStateConformanceStore) MarkIndexDisabledGo(ctx context.Context, in
 
 // MarkIndexReadableGo marks an index as READABLE using Go.
 func (s *IndexStateConformanceStore) MarkIndexReadableGo(ctx context.Context, indexName string) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).
 			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
@@ -139,7 +139,7 @@ func (s *IndexStateConformanceStore) MarkIndexReadableJava(ctx context.Context, 
 // GetIndexStateRawGo reads the raw index state from FDB using Go (no store open).
 func (s *IndexStateConformanceStore) GetIndexStateRawGo(ctx context.Context, indexName string) (string, error) {
 	var state string
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		isSubspace := s.Keyspace.Sub(int64(5)) // IndexStateSpaceKey = 5
 		stateKey := fdb.Key(isSubspace.Pack(tuple.Tuple{indexName}))
 		stateBytes, err := rtx.Transaction().Get(stateKey).Get()
@@ -187,7 +187,7 @@ func (s *IndexStateConformanceStore) GetIndexStateRawJava(ctx context.Context, i
 // GetIndexStateViaOpenGo opens the store with Go and reads the index state through the store API.
 func (s *IndexStateConformanceStore) GetIndexStateViaOpenGo(ctx context.Context, indexName string) (string, error) {
 	var state string
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).
 			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).Open()

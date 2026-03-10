@@ -51,8 +51,8 @@ func NewFanOutIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 	}, nil
 }
 
-func (s *FanOutIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *FanOutIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -64,7 +64,7 @@ func (s *FanOutIndexConformanceStore) buildJavaParams() map[string]interface{} {
 
 // SaveOrderGo saves an order with Go (with fan-out index maintenance).
 func (s *FanOutIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -86,7 +86,7 @@ func (s *FanOutIndexConformanceStore) SaveOrderJava(ctx context.Context, order *
 // DeleteOrderGo deletes an order with Go (with fan-out index maintenance).
 func (s *FanOutIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -108,7 +108,7 @@ func (s *FanOutIndexConformanceStore) DeleteOrderJava(ctx context.Context, order
 // ScanIndexGo scans the tags fan-out index using Go and returns results.
 func (s *FanOutIndexConformanceStore) ScanIndexGo(ctx context.Context) ([]IndexEntryResult, error) {
 	var results []IndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -134,7 +134,7 @@ func (s *FanOutIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]Inde
 	params := s.buildJavaParams()
 	params["indexName"] = "Order$tags"
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanFanOutIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanFanOutIndex failed: %w", err)
 	}

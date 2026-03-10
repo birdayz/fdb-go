@@ -45,7 +45,7 @@ func main() {
 	fmt.Println("Setting up Record Store...")
 
 	// Example of the transaction pattern - equivalent to Java's db.run(context -> { ... })
-	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
+	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		// Create record store - equivalent to Java's FDBRecordStore.newBuilder()...
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(ctx).

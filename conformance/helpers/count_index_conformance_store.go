@@ -13,7 +13,7 @@ import (
 
 // CountIndexEntryResult represents a single COUNT index entry for comparison.
 type CountIndexEntryResult struct {
-	Key   []interface{} // Grouping key (e.g., [price])
+	Key   []any // Grouping key (e.g., [price])
 	Count int64         // Count for this grouping key
 }
 
@@ -64,8 +64,8 @@ func NewCountIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace s
 	}, nil
 }
 
-func (s *CountIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *CountIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -77,7 +77,7 @@ func (s *CountIndexConformanceStore) buildJavaParams() map[string]interface{} {
 
 // SaveOrderGo saves an order with Go (with COUNT index maintenance).
 func (s *CountIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -99,7 +99,7 @@ func (s *CountIndexConformanceStore) SaveOrderJava(ctx context.Context, order *g
 // DeleteOrderGo deletes an order with Go (with COUNT index maintenance).
 func (s *CountIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -121,7 +121,7 @@ func (s *CountIndexConformanceStore) DeleteOrderJava(ctx context.Context, orderI
 // ScanCountIndexGo scans the COUNT index using Go and returns results.
 func (s *CountIndexConformanceStore) ScanCountIndexGo(ctx context.Context) ([]CountIndexEntryResult, error) {
 	var results []CountIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -150,7 +150,7 @@ func (s *CountIndexConformanceStore) ScanCountIndexGo(ctx context.Context) ([]Co
 func (s *CountIndexConformanceStore) ScanCountIndexJava(ctx context.Context) ([]CountIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanCountIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanCountIndex failed: %w", err)
 	}

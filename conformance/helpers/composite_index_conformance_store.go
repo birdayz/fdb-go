@@ -56,8 +56,8 @@ func NewCompositeIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspa
 	}, nil
 }
 
-func (s *CompositeIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *CompositeIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -69,7 +69,7 @@ func (s *CompositeIndexConformanceStore) buildJavaParams() map[string]interface{
 
 // SaveOrderGo saves an order with Go (with composite index maintenance).
 func (s *CompositeIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -91,7 +91,7 @@ func (s *CompositeIndexConformanceStore) SaveOrderJava(ctx context.Context, orde
 // ScanIndexGo scans the composite index using Go.
 func (s *CompositeIndexConformanceStore) ScanIndexGo(ctx context.Context) ([]IndexEntryResult, error) {
 	var results []IndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -116,7 +116,7 @@ func (s *CompositeIndexConformanceStore) ScanIndexGo(ctx context.Context) ([]Ind
 func (s *CompositeIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]IndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanCompositeIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanCompositeIndex failed: %w", err)
 	}
@@ -138,7 +138,7 @@ func (s *CompositeIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]I
 // LoadOrderGo loads an order using Go.
 func (s *CompositeIndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*gen.Order, error) {
 	var order *gen.Order
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {

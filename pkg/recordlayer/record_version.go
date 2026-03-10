@@ -85,22 +85,23 @@ func (v *FDBRecordVersion) GetLocalVersion() int {
 }
 
 // GetGlobalVersion returns the 10-byte global versionstamp.
-// Panics if the version is incomplete.
-func (v *FDBRecordVersion) GetGlobalVersion() []byte {
+// Returns an error if the version is incomplete.
+func (v *FDBRecordVersion) GetGlobalVersion() ([]byte, error) {
 	if !v.complete {
-		panic("cannot get global version of incomplete FDBRecordVersion")
+		return nil, fmt.Errorf("cannot get global version of incomplete FDBRecordVersion")
 	}
 	result := make([]byte, GlobalVersionBytes)
 	copy(result, v.raw[:GlobalVersionBytes])
-	return result
+	return result, nil
 }
 
 // GetDBVersion returns the 8-byte FDB commit version (big-endian).
-func (v *FDBRecordVersion) GetDBVersion() int64 {
+// Returns an error if the version is incomplete.
+func (v *FDBRecordVersion) GetDBVersion() (int64, error) {
 	if !v.complete {
-		panic("cannot get DB version of incomplete FDBRecordVersion")
+		return 0, fmt.Errorf("cannot get DB version of incomplete FDBRecordVersion")
 	}
-	return int64(binary.BigEndian.Uint64(v.raw[:8]))
+	return int64(binary.BigEndian.Uint64(v.raw[:8])), nil
 }
 
 // ToBytes serializes the version to 12 bytes.
@@ -213,29 +214,29 @@ func LastInGlobalVersion(globalVersion []byte) (*FDBRecordVersion, error) {
 }
 
 // Next returns the version immediately after this one (local + 1).
-// Panics if already at max local version (0xFFFF).
-func (v *FDBRecordVersion) Next() *FDBRecordVersion {
+// Returns an error if already at max local version (0xFFFF).
+func (v *FDBRecordVersion) Next() (*FDBRecordVersion, error) {
 	local := v.GetLocalVersion()
 	if local >= 0xFFFF {
-		panic("cannot get next version: already at max local version")
+		return nil, fmt.Errorf("cannot get next version: already at max local version")
 	}
 	var raw [VersionBytes]byte
 	copy(raw[:], v.raw[:])
 	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(local+1))
-	return &FDBRecordVersion{raw: raw, complete: v.complete}
+	return &FDBRecordVersion{raw: raw, complete: v.complete}, nil
 }
 
 // Prev returns the version immediately before this one (local - 1).
-// Panics if already at min local version (0).
-func (v *FDBRecordVersion) Prev() *FDBRecordVersion {
+// Returns an error if already at min local version (0).
+func (v *FDBRecordVersion) Prev() (*FDBRecordVersion, error) {
 	local := v.GetLocalVersion()
 	if local <= 0 {
-		panic("cannot get prev version: already at min local version")
+		return nil, fmt.Errorf("cannot get prev version: already at min local version")
 	}
 	var raw [VersionBytes]byte
 	copy(raw[:], v.raw[:])
 	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], uint16(local-1))
-	return &FDBRecordVersion{raw: raw, complete: v.complete}
+	return &FDBRecordVersion{raw: raw, complete: v.complete}, nil
 }
 
 // FromVersionstamp creates a complete FDBRecordVersion from an FDB tuple.Versionstamp.
@@ -248,16 +249,16 @@ func FromVersionstamp(vs tuple.Versionstamp) *FDBRecordVersion {
 }
 
 // ToVersionstamp converts this complete version to an FDB tuple.Versionstamp.
-// Panics if the version is incomplete.
+// Returns an error if the version is incomplete.
 // Matches Java's FDBRecordVersion.toVersionstamp().
-func (v *FDBRecordVersion) ToVersionstamp() tuple.Versionstamp {
+func (v *FDBRecordVersion) ToVersionstamp() (tuple.Versionstamp, error) {
 	if !v.complete {
-		panic("cannot convert incomplete FDBRecordVersion to Versionstamp")
+		return tuple.Versionstamp{}, fmt.Errorf("cannot convert incomplete FDBRecordVersion to Versionstamp")
 	}
 	var vs tuple.Versionstamp
 	copy(vs.TransactionVersion[:], v.raw[:GlobalVersionBytes])
 	vs.UserVersion = binary.BigEndian.Uint16(v.raw[GlobalVersionBytes:])
-	return vs
+	return vs, nil
 }
 
 // WithCommittedVersion completes an incomplete version using the committed versionstamp.

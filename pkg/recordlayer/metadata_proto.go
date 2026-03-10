@@ -335,7 +335,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 
 // valueToProto serializes a Go value to a Value proto.
 // Matches Java's LiteralKeyExpression.toProtoValue().
-func valueToProto(v interface{}) (*gen.Value, error) {
+func valueToProto(v any) (*gen.Value, error) {
 	if v == nil {
 		return &gen.Value{}, nil
 	}
@@ -365,7 +365,7 @@ func valueToProto(v interface{}) (*gen.Value, error) {
 
 // valueFromProto deserializes a Value proto to a Go value.
 // Matches Java's LiteralKeyExpression.fromProtoValue().
-func valueFromProto(p *gen.Value) interface{} {
+func valueFromProto(p *gen.Value) any {
 	if p == nil {
 		return nil
 	}

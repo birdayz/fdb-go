@@ -63,8 +63,8 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	}, nil
 }
 
-func (s *RebuildIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *RebuildIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -76,7 +76,7 @@ func (s *RebuildIndexConformanceStore) buildJavaParams() map[string]interface{} 
 
 // SaveOrderGo saves an order WITHOUT index using Go.
 func (s *RebuildIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataNoIdx).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -97,7 +97,7 @@ func (s *RebuildIndexConformanceStore) SaveOrderJava(ctx context.Context, order 
 
 // RebuildIndexGo opens store with indexed metadata and rebuilds the index within one transaction.
 func (s *RebuildIndexConformanceStore) RebuildIndexGo(ctx context.Context) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataIdx).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -117,7 +117,7 @@ func (s *RebuildIndexConformanceStore) RebuildIndexJava(ctx context.Context) err
 // ScanIndexGo scans the price index using Go.
 func (s *RebuildIndexConformanceStore) ScanIndexGo(ctx context.Context) ([]IndexEntryResult, error) {
 	var results []IndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaDataIdx).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -143,7 +143,7 @@ func (s *RebuildIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]Ind
 	params := s.buildJavaParams()
 	params["indexName"] = "Order$price"
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanIndex failed: %w", err)
 	}

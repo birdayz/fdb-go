@@ -33,8 +33,8 @@ func NewCustomerConformanceStoreWithTenant(recordDB *recordlayer.FDBDatabase, me
 	}
 }
 
-func (c *CustomerConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (c *CustomerConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": c.clusterFile,
 		"subspace":    BytesToIntArray(c.keyspace.Bytes()),
 	}
@@ -159,7 +159,7 @@ func (c *CustomerConformanceStore) JavaSaveThenGoLoad(ctx context.Context, custo
 
 func (c *CustomerConformanceStore) loadWithGo(ctx context.Context, customerID int64) (*gen.Customer, error) {
 	var customer *gen.Customer
-	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).
@@ -185,7 +185,7 @@ func (c *CustomerConformanceStore) loadWithGo(ctx context.Context, customerID in
 
 func (c *CustomerConformanceStore) existsInGo(ctx context.Context, customerID int64) bool {
 	var exists bool
-	_, _ = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, _ = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).

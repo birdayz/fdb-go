@@ -33,7 +33,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 		java = helpers.NewJavaInvoker()
 
 		// Seed 10 orders with Go
-		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(env.MetaData).
@@ -59,8 +59,8 @@ var _ = Describe("Continuation Token Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
 		}
@@ -72,7 +72,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 
 	// javaScanResult represents the response from scanOrdersWithContinuation
 	type javaScanResult struct {
-		Orders          []map[string]interface{} `json:"orders"`
+		Orders          []map[string]any `json:"orders"`
 		Continuation    string                   `json:"continuation"` // base64
 		SourceExhausted bool                     `json:"sourceExhausted"`
 	}
@@ -97,7 +97,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 		var nextCont []byte
 		var sourceExhausted bool
 
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(env.MetaData).

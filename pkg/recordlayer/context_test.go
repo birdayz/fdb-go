@@ -17,7 +17,7 @@ var _ = Describe("FDBRecordContext", func() {
 
 	Describe("GetReadVersion / SetReadVersion", func() {
 		It("returns a read version", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rv, err := rtx.GetReadVersion()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(rv).To(BeNumerically(">", 0))
@@ -29,7 +29,7 @@ var _ = Describe("FDBRecordContext", func() {
 		It("uses a set read version", func() {
 			// Get a valid read version first
 			var readVersion int64
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rv, err := rtx.GetReadVersion()
 				if err != nil {
 					return nil, err
@@ -40,7 +40,7 @@ var _ = Describe("FDBRecordContext", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Use that read version in another transaction
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.SetReadVersion(readVersion)
 				rv, err := rtx.GetReadVersion()
 				Expect(err).NotTo(HaveOccurred())
@@ -60,7 +60,9 @@ var _ = Describe("FDBRecordContext", func() {
 			v := FromVersionstamp(vs)
 			Expect(v.IsComplete()).To(BeTrue())
 			Expect(v.GetLocalVersion()).To(Equal(42))
-			Expect(v.GetDBVersion()).To(Equal(int64(1)))
+			dbv, err := v.GetDBVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dbv).To(Equal(int64(1)))
 		})
 
 		It("ToVersionstamp round-trips", func() {
@@ -69,15 +71,17 @@ var _ = Describe("FDBRecordContext", func() {
 			}
 			vs.TransactionVersion = [10]byte{0, 0, 0, 0, 0, 0, 0, 7, 0, 3}
 			v := FromVersionstamp(vs)
-			roundTripped := v.ToVersionstamp()
+			roundTripped, err := v.ToVersionstamp()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(roundTripped.TransactionVersion).To(Equal(vs.TransactionVersion))
 			Expect(roundTripped.UserVersion).To(Equal(vs.UserVersion))
 		})
 
-		It("panics on incomplete ToVersionstamp", func() {
+		It("errors on incomplete ToVersionstamp", func() {
 			v, err := IncompleteVersion(5)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(func() { v.ToVersionstamp() }).To(Panic())
+			_, err = v.ToVersionstamp()
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })

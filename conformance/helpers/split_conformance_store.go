@@ -41,8 +41,8 @@ func NewSplitConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspa
 }
 
 // buildJavaParams builds base parameters for Java invocations.
-func (s *SplitConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *SplitConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.keyspace.Bytes()),
 	}
@@ -61,7 +61,7 @@ func (s *SplitConformanceStore) SaveRecord(ctx context.Context, msg proto.Messag
 	}
 
 	// 1. Save with Go (split-enabled metadata)
-	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(s.metaData).
@@ -137,7 +137,7 @@ func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *g
 // loadRecordWithGo loads a record using only Go with split-enabled metadata.
 func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
 	var order *gen.Order
-	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(s.metaData).

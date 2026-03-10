@@ -42,7 +42,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 		ks := specSubspace()
 		md, priceIdx, emailIdx, universalIdx := buildMetaData()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -98,7 +98,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 		ks := specSubspace()
 		md, priceIdx, emailIdx, _ := buildMetaData()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -136,7 +136,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 		ks := specSubspace()
 		md, priceIdx, _, _ := buildMetaData()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -164,7 +164,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 		ks := specSubspace()
 		md, priceIdx, emailIdx, _ := buildMetaData()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())

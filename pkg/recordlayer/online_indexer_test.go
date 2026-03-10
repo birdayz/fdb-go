@@ -30,7 +30,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -66,7 +66,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(BeNumerically(">=", 10))
 
 			// Phase 3: Verify index is READABLE and can be scanned.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -95,7 +95,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -129,7 +129,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(Equal(int64(5)))
 
 			// Verify: entries should be deduplicated (2 elements, not 3).
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -159,7 +159,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Create the store first.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).CreateOrOpen()
 				return nil, err
@@ -179,7 +179,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(Equal(int64(0)))
 
 			// Verify readable.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -197,7 +197,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -229,7 +229,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert more records after build — index should auto-maintain.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -255,7 +255,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -289,7 +289,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(BeNumerically(">=", 20))
 
 			// Verify all entries present.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())
@@ -310,7 +310,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -351,7 +351,7 @@ var _ = Describe("OnlineIndexer", func() {
 			mdNoIndex, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
@@ -389,7 +389,7 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(total).To(BeNumerically(">=", 5))
 
 			// Verify exactly 5 entries.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 				Expect(err).NotTo(HaveOccurred())

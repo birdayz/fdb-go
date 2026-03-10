@@ -310,7 +310,7 @@ var _ = Describe("Customer Direct Store Operations", func() {
 	})
 
 	It("should save and load Customer through typed store", func() {
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(env.MetaData).

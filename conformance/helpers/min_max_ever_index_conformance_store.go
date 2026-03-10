@@ -12,7 +12,7 @@ import (
 
 // MinMaxEverIndexEntryResult represents a single MIN/MAX_EVER_LONG index entry.
 type MinMaxEverIndexEntryResult struct {
-	Key   []interface{} // Grouping key (empty for ungrouped)
+	Key   []any // Grouping key (empty for ungrouped)
 	Value int64         // Min or max value for this grouping key
 }
 
@@ -58,8 +58,8 @@ func NewMaxEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keys
 	}, nil
 }
 
-func (s *MaxEverLongIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *MaxEverLongIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -70,7 +70,7 @@ func (s *MaxEverLongIndexConformanceStore) buildJavaParams() map[string]interfac
 }
 
 func (s *MaxEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -90,7 +90,7 @@ func (s *MaxEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, or
 
 func (s *MaxEverLongIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -110,7 +110,7 @@ func (s *MaxEverLongIndexConformanceStore) DeleteOrderJava(ctx context.Context, 
 
 func (s *MaxEverLongIndexConformanceStore) ScanMaxEverIndexGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	var results []MinMaxEverIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -138,7 +138,7 @@ func (s *MaxEverLongIndexConformanceStore) ScanMaxEverIndexGo(ctx context.Contex
 func (s *MaxEverLongIndexConformanceStore) ScanMaxEverIndexJava(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanMaxEverLongIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanMaxEverLongIndex failed: %w", err)
 	}
@@ -199,8 +199,8 @@ func NewMinEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keys
 	}, nil
 }
 
-func (s *MinEverLongIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *MinEverLongIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -211,7 +211,7 @@ func (s *MinEverLongIndexConformanceStore) buildJavaParams() map[string]interfac
 }
 
 func (s *MinEverLongIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -231,7 +231,7 @@ func (s *MinEverLongIndexConformanceStore) SaveOrderJava(ctx context.Context, or
 
 func (s *MinEverLongIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -251,7 +251,7 @@ func (s *MinEverLongIndexConformanceStore) DeleteOrderJava(ctx context.Context, 
 
 func (s *MinEverLongIndexConformanceStore) ScanMinEverIndexGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	var results []MinMaxEverIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -279,7 +279,7 @@ func (s *MinEverLongIndexConformanceStore) ScanMinEverIndexGo(ctx context.Contex
 func (s *MinEverLongIndexConformanceStore) ScanMinEverIndexJava(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanMinEverLongIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanMinEverLongIndex failed: %w", err)
 	}

@@ -42,9 +42,9 @@ func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
 // Run executes a function within a transaction with automatic retry handling.
 // Before committing, flushes any queued SET_VERSIONSTAMPED_VALUE mutations.
 // Matches Java's FDBRecordContext.commitAsync() behavior.
-func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
+func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
-	result, err := d.transactor.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
 		recordCtx := &FDBRecordContext{
 			tx:  tx,
 			ctx: ctx,
@@ -80,12 +80,12 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (i
 // RunWithVersionstamp is like Run but also returns the committed versionstamp.
 // Use this when you need the versionstamp after commit (e.g. for record versioning).
 // Returns (result, versionstamp, error). Versionstamp is nil for read-only transactions.
-func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, []byte, error) {
+func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, []byte, error) {
 	var vsFuture fdb.FutureKey
 	var hasVersionMutations bool
 	var lastCtx *FDBRecordContext
 
-	result, err := d.transactor.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
 		// Reset on retry — previous attempt's future is stale
 		vsFuture = nil
 		hasVersionMutations = false

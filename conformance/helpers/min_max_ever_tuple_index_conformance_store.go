@@ -52,8 +52,8 @@ func NewMaxEverTupleIndexConformanceStore(recordDB *recordlayer.FDBDatabase, key
 	}, nil
 }
 
-func (s *MaxEverTupleIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *MaxEverTupleIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -64,7 +64,7 @@ func (s *MaxEverTupleIndexConformanceStore) buildJavaParams() map[string]interfa
 }
 
 func (s *MaxEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -84,7 +84,7 @@ func (s *MaxEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, o
 
 func (s *MaxEverTupleIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -104,7 +104,7 @@ func (s *MaxEverTupleIndexConformanceStore) DeleteOrderJava(ctx context.Context,
 
 func (s *MaxEverTupleIndexConformanceStore) ScanMaxEverTupleIndexGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	var results []MinMaxEverIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -132,7 +132,7 @@ func (s *MaxEverTupleIndexConformanceStore) ScanMaxEverTupleIndexGo(ctx context.
 func (s *MaxEverTupleIndexConformanceStore) ScanMaxEverTupleIndexJava(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanMaxEverTupleIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanMaxEverTupleIndex failed: %w", err)
 	}
@@ -193,8 +193,8 @@ func NewMinEverTupleIndexConformanceStore(recordDB *recordlayer.FDBDatabase, key
 	}, nil
 }
 
-func (s *MinEverTupleIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *MinEverTupleIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -205,7 +205,7 @@ func (s *MinEverTupleIndexConformanceStore) buildJavaParams() map[string]interfa
 }
 
 func (s *MinEverTupleIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -225,7 +225,7 @@ func (s *MinEverTupleIndexConformanceStore) SaveOrderJava(ctx context.Context, o
 
 func (s *MinEverTupleIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -245,7 +245,7 @@ func (s *MinEverTupleIndexConformanceStore) DeleteOrderJava(ctx context.Context,
 
 func (s *MinEverTupleIndexConformanceStore) ScanMinEverTupleIndexGo(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	var results []MinMaxEverIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -273,7 +273,7 @@ func (s *MinEverTupleIndexConformanceStore) ScanMinEverTupleIndexGo(ctx context.
 func (s *MinEverTupleIndexConformanceStore) ScanMinEverTupleIndexJava(ctx context.Context) ([]MinMaxEverIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanMinEverTupleIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanMinEverTupleIndex failed: %w", err)
 	}

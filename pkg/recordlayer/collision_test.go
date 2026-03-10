@@ -25,7 +25,7 @@ var _ = Describe("PrimaryKeyCollision", func() {
 		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -79,7 +79,7 @@ var _ = Describe("PrimaryKeyNoCollision", func() {
 		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -153,7 +153,7 @@ var _ = Describe("JavaCompatibilityBothModes", func() {
 
 			ks := specSubspace()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).

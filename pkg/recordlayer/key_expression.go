@@ -42,11 +42,11 @@ func FanOut(name string) KeyExpression {
 // For non-repeated fields, returns one tuple with the single value.
 // For repeated fields with FanOut, returns one tuple per value.
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
-func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	if msg == nil {
 		// Nil message → null key component. Matches Java's behavior when
 		// evaluating a field on a null message (returns Key.Evaluated.NULL).
-		return [][]interface{}{{nil}}, nil
+		return [][]any{{nil}}, nil
 	}
 	m := msg.ProtoReflect()
 
@@ -65,11 +65,11 @@ func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error
 	if err != nil {
 		return nil, err
 	}
-	return [][]interface{}{{result}}, nil
+	return [][]any{{result}}, nil
 }
 
 // evaluateRepeated handles repeated proto fields according to FanType.
-func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]interface{}, error) {
+func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
 	list := m.Get(fd).List()
 	count := list.Len()
 
@@ -78,18 +78,18 @@ func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protore
 		if count == 0 {
 			return nil, nil // Empty list → no index entries (matches Java)
 		}
-		result := make([][]interface{}, count)
+		result := make([][]any, count)
 		for i := 0; i < count; i++ {
 			val, err := scalarToInterface(fd, list.Get(i))
 			if err != nil {
 				return nil, err
 			}
-			result[i] = []interface{}{val}
+			result[i] = []any{val}
 		}
 		return result, nil
 
 	case FanTypeConcatenate:
-		values := make([]interface{}, count)
+		values := make([]any, count)
 		for i := 0; i < count; i++ {
 			val, err := scalarToInterface(fd, list.Get(i))
 			if err != nil {
@@ -98,16 +98,16 @@ func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protore
 			values[i] = val
 		}
 		// All values packed into a single tuple element (as a nested tuple)
-		return [][]interface{}{{values}}, nil
+		return [][]any{{values}}, nil
 
 	default: // FanTypeNone
 		return nil, fmt.Errorf("field %s is repeated with FanType.None", f.fieldName)
 	}
 }
 
-// scalarToInterface converts a protoreflect.Value to a Go interface{} suitable for FDB tuples.
+// scalarToInterface converts a protoreflect.Value to a Go any suitable for FDB tuples.
 // All integer types → int64, all floats → float64 (FDB tuple layer constraint).
-func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value) (interface{}, error) {
+func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value) (any, error) {
 	kind := fd.Kind()
 	// For list elements, get the element kind from the field descriptor
 	if fd.IsList() {
@@ -170,11 +170,11 @@ func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
 // Evaluate returns the record type key (integer), optionally followed by nested values.
 // Matches Java's RecordTypeKeyExpression.evaluateMessage() which returns
 // record.getRecordType().getRecordTypeKey() — the union descriptor field number.
-func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
 
 	// Look up the integer record type key (proto field number from union descriptor).
-	var typeKey interface{}
+	var typeKey any
 	if r.typeKeys != nil {
 		if k, ok := r.typeKeys[typeName]; ok {
 			typeKey = k
@@ -186,7 +186,7 @@ func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, 
 	}
 
 	if r.nested == nil {
-		return [][]interface{}{{typeKey}}, nil
+		return [][]any{{typeKey}}, nil
 	}
 
 	nestedTuples, err := r.nested.Evaluate(msg)
@@ -194,9 +194,9 @@ func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, 
 		return nil, err
 	}
 
-	result := make([][]interface{}, len(nestedTuples))
+	result := make([][]any, len(nestedTuples))
 	for i, nt := range nestedTuples {
-		combined := make([]interface{}, 0, 1+len(nt))
+		combined := make([]any, 0, 1+len(nt))
 		combined = append(combined, typeKey)
 		combined = append(combined, nt...)
 		result[i] = combined
@@ -236,8 +236,8 @@ func EmptyKey() KeyExpression {
 }
 
 // Evaluate returns one empty tuple (no key components).
-func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([][]interface{}, error) {
-	return [][]interface{}{{}}, nil
+func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([][]any, error) {
+	return [][]any{{}}, nil
 }
 
 // FieldNames returns no field names.
@@ -265,9 +265,9 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 // For the common case where each child returns exactly one tuple, the result
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
-func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	// Start with a single empty tuple
-	result := [][]interface{}{{}}
+	result := [][]any{{}}
 
 	for _, expr := range c.expressions {
 		childTuples, err := expr.Evaluate(msg)
@@ -276,10 +276,10 @@ func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, e
 		}
 
 		// Cross-product: for each existing tuple, combine with each child tuple
-		var crossed [][]interface{}
+		var crossed [][]any
 		for _, existing := range result {
 			for _, child := range childTuples {
-				combined := make([]interface{}, 0, len(existing)+len(child))
+				combined := make([]any, 0, len(existing)+len(child))
 				combined = append(combined, existing...)
 				combined = append(combined, child...)
 				crossed = append(crossed, combined)
@@ -328,7 +328,7 @@ func NestFanOut(parentField string, child KeyExpression) KeyExpression {
 
 // Evaluate navigates into the parent message field and evaluates the child
 // expression on the sub-message(s).
-func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	m := msg.ProtoReflect()
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(n.parentField))
 	if fd == nil {
@@ -353,7 +353,7 @@ func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, err
 }
 
 // evaluateRepeated handles repeated message fields.
-func (n *NestingKeyExpression) evaluateRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]interface{}, error) {
+func (n *NestingKeyExpression) evaluateRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
 	if n.fanType != FanTypeFanOut {
 		return nil, fmt.Errorf("field %s is repeated, must use NestFanOut", n.parentField)
 	}
@@ -364,7 +364,7 @@ func (n *NestingKeyExpression) evaluateRepeated(m protoreflect.Message, fd proto
 		return nil, nil // Empty repeated → no results
 	}
 
-	var result [][]interface{}
+	var result [][]any
 	for i := 0; i < count; i++ {
 		subMsg := list.Get(i).Message().Interface()
 		childTuples, err := n.child.Evaluate(subMsg)
@@ -554,7 +554,7 @@ func GroupAll(expr KeyExpression) *GroupingKeyExpression {
 
 // Evaluate delegates to the whole key expression.
 // The grouping/grouped split is metadata, not evaluation logic.
-func (g *GroupingKeyExpression) Evaluate(msg proto.Message) ([][]interface{}, error) {
+func (g *GroupingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	return g.wholeKey.Evaluate(msg)
 }
 

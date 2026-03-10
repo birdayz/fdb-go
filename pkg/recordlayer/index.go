@@ -35,7 +35,7 @@ type Index struct {
 	Name           string
 	Type           string
 	RootExpression KeyExpression
-	subspaceKey    interface{}
+	subspaceKey    any
 	Options        map[string]string
 	AddedVersion   int
 	LastModifiedVersion int
@@ -181,13 +181,13 @@ func NewCountUpdatesIndex(name string, rootExpression KeyExpression) *Index {
 // SubspaceTupleKey returns the key used to identify this index's subspace within
 // the IndexKey (2) subspace. Defaults to the index name.
 // Matches Java's Index.getSubspaceTupleKey().
-func (idx *Index) SubspaceTupleKey() interface{} {
+func (idx *Index) SubspaceTupleKey() any {
 	return idx.subspaceKey
 }
 
 // SetSubspaceKey overrides the default subspace key (index name).
 // Matches Java's Index.setSubspaceKey().
-func (idx *Index) SetSubspaceKey(key interface{}) *Index {
+func (idx *Index) SetSubspaceKey(key any) *Index {
 	idx.subspaceKey = key
 	return idx
 }

@@ -11,12 +11,12 @@ import (
 // ComparisonKeyFunc extracts a comparison key from a cursor element.
 // The key is a list of comparable values used for merge ordering.
 // Matches Java's KeyedMergeCursorState.comparisonKeyFunction.
-type ComparisonKeyFunc[T any] func(T) []interface{}
+type ComparisonKeyFunc[T any] func(T) []any
 
 // compareKeys compares two comparison keys lexicographically.
 // Returns negative if a < b, positive if a > b, zero if equal.
 // Matches Java's KeyComparisons.KEY_COMPARATOR.
-func compareKeys(a, b []interface{}) int {
+func compareKeys(a, b []any) int {
 	minLen := len(a)
 	if len(b) < minLen {
 		minLen = len(b)
@@ -32,7 +32,7 @@ func compareKeys(a, b []interface{}) int {
 
 // compareField compares two individual field values.
 // Matches Java's KeyComparisons.FIELD_COMPARATOR.
-func compareField(a, b interface{}) int {
+func compareField(a, b any) int {
 	if a == nil && b == nil {
 		return 0
 	}
@@ -102,7 +102,7 @@ type mergeChildState[T any] struct {
 	cursor        RecordCursor[T]
 	compKeyFunc   ComparisonKeyFunc[T]
 	result        RecordCursorResult[T]
-	comparisonKey []interface{}
+	comparisonKey []any
 	hasResult     bool
 }
 
@@ -185,7 +185,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// Find minimum (or maximum for reverse) key across all children
 	var minIdx int = -1
-	var minKey []interface{}
+	var minKey []any
 	for i, child := range c.children {
 		if !child.hasResult {
 			continue

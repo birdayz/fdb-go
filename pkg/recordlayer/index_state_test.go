@@ -32,7 +32,7 @@ var _ = Describe("IndexState", func() {
 
 	Describe("Default state", func() {
 		It("all indexes default to READABLE", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -55,7 +55,7 @@ var _ = Describe("IndexState", func() {
 			ss := specSubspace()
 
 			// Mark disabled in one transaction
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -74,7 +74,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Reopen in new transaction — state should be persisted
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -89,7 +89,7 @@ var _ = Describe("IndexState", func() {
 		})
 
 		It("returns false if already disabled", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -109,7 +109,7 @@ var _ = Describe("IndexState", func() {
 
 	Describe("MarkIndexWriteOnly", func() {
 		It("sets write-only state", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -133,7 +133,7 @@ var _ = Describe("IndexState", func() {
 			ss := specSubspace()
 
 			// Disable
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -145,7 +145,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Re-enable
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -163,7 +163,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify persisted
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -181,7 +181,7 @@ var _ = Describe("IndexState", func() {
 			ss := specSubspace()
 
 			// Save a record so the index has entries
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -195,7 +195,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify index entry exists
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -212,7 +212,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Clear and mark write-only
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -228,7 +228,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Mark readable and verify index is empty (data was cleared)
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -255,7 +255,7 @@ var _ = Describe("IndexState", func() {
 			ss := specSubspace()
 
 			// Disable the index
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -267,7 +267,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save a record — should succeed but not create index entries
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -281,7 +281,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Re-enable index and scan — should be empty (no entries were created)
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -306,7 +306,7 @@ var _ = Describe("IndexState", func() {
 
 	Describe("ScanIndex rejects non-readable index", func() {
 		It("returns error when scanning disabled index", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -327,7 +327,7 @@ var _ = Describe("IndexState", func() {
 		})
 
 		It("returns error when scanning write-only index", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -350,7 +350,7 @@ var _ = Describe("IndexState", func() {
 
 	Describe("Unknown index errors", func() {
 		It("returns error for non-existent index", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -368,7 +368,7 @@ var _ = Describe("IndexState", func() {
 	Describe("MarkIndexReadableOrUniquePending", func() {
 		It("marks non-unique index as READABLE", func() {
 			ss := specSubspace()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -398,7 +398,7 @@ var _ = Describe("IndexState", func() {
 			mdWithUnique, buildErr := builder.Build()
 			Expect(buildErr).NotTo(HaveOccurred())
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -434,7 +434,7 @@ var _ = Describe("IndexState", func() {
 			mdWithUnique, buildErr := builder.Build()
 			Expect(buildErr).NotTo(HaveOccurred())
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
 				if err != nil {

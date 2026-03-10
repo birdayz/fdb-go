@@ -51,8 +51,8 @@ func NewStoreHeaderConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace 
 	}, nil
 }
 
-func (s *StoreHeaderConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *StoreHeaderConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -64,7 +64,7 @@ func (s *StoreHeaderConformanceStore) buildJavaParams() map[string]interface{} {
 
 // CreateStoreGo creates a store using Go's CreateOrOpen.
 func (s *StoreHeaderConformanceStore) CreateStoreGo(ctx context.Context) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		_, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		return nil, err
@@ -89,7 +89,7 @@ func (s *StoreHeaderConformanceStore) CreateStoreJavaWithUserVersion(ctx context
 
 // SetUserVersionGo opens the store with Go and sets the user version.
 func (s *StoreHeaderConformanceStore) SetUserVersionGo(ctx context.Context, userVersion int32) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -104,7 +104,7 @@ func (s *StoreHeaderConformanceStore) SetUserVersionGo(ctx context.Context, user
 // No store open — just a raw FDB read to avoid side effects.
 func (s *StoreHeaderConformanceStore) GetStoreHeaderRawGo(ctx context.Context) (*StoreHeaderResult, error) {
 	var result StoreHeaderResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		headerKey := fdb.Key(s.Keyspace.Pack(tuple.Tuple{int64(0)})) // StoreInfoKey = 0
 		headerBytes, err := rtx.Transaction().Get(headerKey).Get()
 		if err != nil {
@@ -129,7 +129,7 @@ func (s *StoreHeaderConformanceStore) GetStoreHeaderRawGo(ctx context.Context) (
 func (s *StoreHeaderConformanceStore) GetStoreHeaderRawJava(ctx context.Context) (*StoreHeaderResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResult map[string]interface{}
+	var javaResult map[string]any
 	if err := s.java.InvokeAs(ctx, "getStoreHeaderRaw", params, &javaResult); err != nil {
 		return nil, fmt.Errorf("java getStoreHeaderRaw failed: %w", err)
 	}
@@ -150,7 +150,7 @@ func (s *StoreHeaderConformanceStore) GetStoreHeaderRawJava(ctx context.Context)
 // GetStoreHeaderViaOpenGo opens the store with Go and reads the header through the store API.
 func (s *StoreHeaderConformanceStore) GetStoreHeaderViaOpenGo(ctx context.Context) (*StoreHeaderResult, error) {
 	var result StoreHeaderResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {

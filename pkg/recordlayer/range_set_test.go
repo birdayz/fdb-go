@@ -21,7 +21,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("Contains", func() {
 		It("returns false for empty set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				result, err := rs.Contains(rtx.Transaction(), []byte{0x50})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeFalse())
@@ -32,7 +32,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns true for key inside a range", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -47,7 +47,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false for key outside a range", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -61,7 +61,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns true for key at range begin (inclusive)", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -75,7 +75,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false for key at range end (exclusive)", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -89,7 +89,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("rejects empty key", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.Contains(rtx.Transaction(), []byte{})
 				Expect(err).To(MatchError(errRangeSetEmptyKey))
 				return nil, nil
@@ -99,7 +99,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("rejects key >= 0xff", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.Contains(rtx.Transaction(), []byte{0xff})
 				Expect(err).To(MatchError(errRangeSetKeyTooLarge))
 				return nil, nil
@@ -111,7 +111,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("InsertRange", func() {
 		It("inserts a range into empty set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -131,7 +131,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false for empty range (begin == end)", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x10}, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeFalse())
@@ -142,7 +142,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("handles nil begin/end (full range)", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), nil, nil, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -162,7 +162,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false when range already fully contained", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -179,7 +179,7 @@ var _ = Describe("RangeSet", func() {
 			rs := newRangeSet()
 
 			// Insert two disjoint ranges in first transaction.
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x20}, false)
 				Expect(err).NotTo(HaveOccurred())
 				_, err = rs.InsertRange(rtx.Transaction(), []byte{0x40}, []byte{0x50}, false)
@@ -189,7 +189,7 @@ var _ = Describe("RangeSet", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Fill gap in second transaction.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -205,7 +205,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("rejects inverted range", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x50}, []byte{0x10}, false)
 				Expect(err).To(MatchError(errRangeSetInvertedRange))
 				return nil, nil
@@ -217,7 +217,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("InsertRange with requireEmpty", func() {
 		It("inserts into empty range", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -232,14 +232,14 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false when range overlaps existing (before covers begin)", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x30}, false)
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x20}, []byte{0x50}, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeFalse())
@@ -250,14 +250,14 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false when range has entries inside", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x30}, []byte{0x40}, false)
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeFalse())
@@ -269,7 +269,7 @@ var _ = Describe("RangeSet", func() {
 		It("consolidates abutting before-range", func() {
 			rs := newRangeSet()
 			// Insert [0x10, 0x30)
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x30}, false)
 				Expect(err).NotTo(HaveOccurred())
 				return nil, nil
@@ -277,7 +277,7 @@ var _ = Describe("RangeSet", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Insert [0x30, 0x50) with requireEmpty — should consolidate with [0x10, 0x30).
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x30}, []byte{0x50}, true)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
@@ -298,7 +298,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("MissingRanges", func() {
 		It("returns full range for empty set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				ranges, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 0)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ranges).To(HaveLen(1))
@@ -311,7 +311,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns no ranges for full set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), nil, nil, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -325,7 +325,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns gaps between ranges", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x20}, false)
 				Expect(err).NotTo(HaveOccurred())
 				_, err = rs.InsertRange(rtx.Transaction(), []byte{0x40}, []byte{0x50}, false)
@@ -350,7 +350,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("respects limit", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x20}, false)
 				Expect(err).NotTo(HaveOccurred())
 				_, err = rs.InsertRange(rtx.Transaction(), []byte{0x40}, []byte{0x50}, false)
@@ -368,7 +368,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("scopes to given begin/end", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x30}, []byte{0x40}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -387,7 +387,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns nothing when queried range is fully covered", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x50}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -403,7 +403,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("IsEmpty", func() {
 		It("returns true for empty set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				empty, err := rs.IsEmpty(rtx.Transaction())
 				Expect(err).NotTo(HaveOccurred())
 				Expect(empty).To(BeTrue())
@@ -414,7 +414,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false after insert", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x20}, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -428,7 +428,7 @@ var _ = Describe("RangeSet", func() {
 
 		It("returns false for full set", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), nil, nil, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -444,7 +444,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("Clear", func() {
 		It("removes all ranges", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), nil, nil, false)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -462,7 +462,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("multi-key ranges", func() {
 		It("handles multi-byte keys correctly", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				// Insert a range with multi-byte keys
 				begin := []byte{0x10, 0x20, 0x30}
 				end := []byte{0x50, 0x60, 0x70}
@@ -488,7 +488,7 @@ var _ = Describe("RangeSet", func() {
 			// This simulates how the online indexer uses RangeSet:
 			// primary keys are tuple-packed byte arrays.
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				pk1 := tuple.Tuple{int64(1)}.Pack()
 				pk2 := tuple.Tuple{int64(100)}.Pack()
 
@@ -525,7 +525,7 @@ var _ = Describe("RangeSet", func() {
 			}
 
 			for _, chunk := range chunks {
-				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					// Find first missing range
 					missing, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 1)
 					Expect(err).NotTo(HaveOccurred())
@@ -541,7 +541,7 @@ var _ = Describe("RangeSet", func() {
 			}
 
 			// After all chunks, set should be full.
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				missing, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 0)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(missing).To(BeEmpty())
@@ -558,7 +558,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("overlapping inserts", func() {
 		It("handles overlapping ranges correctly", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				// Insert [0x10, 0x40)
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x10}, []byte{0x40}, false)
 				Expect(err).NotTo(HaveOccurred())
@@ -566,7 +566,7 @@ var _ = Describe("RangeSet", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				// Insert overlapping [0x30, 0x60) — extends the range
 				changed, err := rs.InsertRange(rtx.Transaction(), []byte{0x30}, []byte{0x60}, false)
 				Expect(err).NotTo(HaveOccurred())
@@ -585,7 +585,7 @@ var _ = Describe("RangeSet", func() {
 	Describe("wire format", func() {
 		It("stores key as tuple-packed bytes and value as raw bytes", func() {
 			rs := newRangeSet()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				begin := []byte{0x10}
 				end := []byte{0x50}
 				_, err := rs.InsertRange(rtx.Transaction(), begin, end, false)

@@ -47,8 +47,8 @@ var _ = Describe("Record Count Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
 		}
@@ -59,7 +59,7 @@ var _ = Describe("Record Count Conformance", func() {
 	}
 
 	saveOrderWithGoCounting := func(order *gen.Order) {
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(countMeta).
@@ -75,7 +75,7 @@ var _ = Describe("Record Count Conformance", func() {
 	}
 
 	deleteOrderWithGoCounting := func(orderID int64) {
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(countMeta).
@@ -92,7 +92,7 @@ var _ = Describe("Record Count Conformance", func() {
 
 	getGoRecordCount := func() int64 {
 		var count int64
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(countMeta).
@@ -199,7 +199,7 @@ var _ = Describe("Record Count Conformance", func() {
 	Describe("Count starts at zero", func() {
 		It("should return 0 for empty store", func() {
 			// Force store creation
-			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				_, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(countMeta).

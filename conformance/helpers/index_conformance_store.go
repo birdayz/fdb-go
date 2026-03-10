@@ -25,8 +25,8 @@ type IndexConformanceStore struct {
 
 // IndexEntryResult represents a single index entry for comparison.
 type IndexEntryResult struct {
-	Key        []interface{} // Full key tuple (indexed values + primary key)
-	PrimaryKey []interface{} // Primary key extracted from the entry
+	Key        []any // Full key tuple (indexed values + primary key)
+	PrimaryKey []any // Primary key extracted from the entry
 }
 
 // NewIndexConformanceStore creates a conformance store with a VALUE index on Order.price.
@@ -60,8 +60,8 @@ func NewIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspa
 }
 
 // buildJavaParams builds base parameters for Java invocations.
-func (s *IndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *IndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -73,7 +73,7 @@ func (s *IndexConformanceStore) buildJavaParams() map[string]interface{} {
 
 // SaveOrderGo saves an order with Go (with index maintenance).
 func (s *IndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -95,7 +95,7 @@ func (s *IndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Or
 // DeleteOrderGo deletes an order with Go (with index maintenance).
 func (s *IndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -117,7 +117,7 @@ func (s *IndexConformanceStore) DeleteOrderJava(ctx context.Context, orderID int
 // ScanIndexGo scans the price index using Go and returns results.
 func (s *IndexConformanceStore) ScanIndexGo(ctx context.Context) ([]IndexEntryResult, error) {
 	var results []IndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -143,7 +143,7 @@ func (s *IndexConformanceStore) ScanIndexJava(ctx context.Context) ([]IndexEntry
 	params := s.buildJavaParams()
 	params["indexName"] = "Order$price"
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanIndex failed: %w", err)
 	}
@@ -165,7 +165,7 @@ func (s *IndexConformanceStore) ScanIndexJava(ctx context.Context) ([]IndexEntry
 // LoadOrderGo loads an order using Go.
 func (s *IndexConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*gen.Order, error) {
 	var order *gen.Order
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -217,7 +217,7 @@ func entriesEqual(a, b IndexEntryResult) bool {
 
 // sliceEqualNormalized compares two slices, normalizing numbers to int64 for comparison.
 // Java sends numbers as float64 through JSON; Go uses int64 from FDB tuples.
-func sliceEqualNormalized(a, b []interface{}) bool {
+func sliceEqualNormalized(a, b []any) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -229,7 +229,7 @@ func sliceEqualNormalized(a, b []interface{}) bool {
 	return true
 }
 
-func normalizedEqual(a, b interface{}) bool {
+func normalizedEqual(a, b any) bool {
 	// Handle string comparison (e.g., fan-out index on string fields)
 	aStr, aIsStr := a.(string)
 	bStr, bIsStr := b.(string)
@@ -242,7 +242,7 @@ func normalizedEqual(a, b interface{}) bool {
 	return toInt64(a) == toInt64(b)
 }
 
-func toInt64(v interface{}) int64 {
+func toInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
 		return n
@@ -257,17 +257,17 @@ func toInt64(v interface{}) int64 {
 	}
 }
 
-func tupleToSlice(t tuple.Tuple) []interface{} {
-	s := make([]interface{}, len(t))
+func tupleToSlice(t tuple.Tuple) []any {
+	s := make([]any, len(t))
 	for i, v := range t {
 		s[i] = v
 	}
 	return s
 }
 
-func toInterfaceSlice(v interface{}) []interface{} {
+func toInterfaceSlice(v any) []any {
 	switch s := v.(type) {
-	case []interface{}:
+	case []any:
 		return s
 	default:
 		return nil

@@ -182,7 +182,7 @@ var _ = Describe("Index Rebuild Conformance", func() {
 	})
 })
 
-func idxToInt64(v interface{}) int64 {
+func idxToInt64(v any) int64 {
 	switch n := v.(type) {
 	case int64:
 		return n

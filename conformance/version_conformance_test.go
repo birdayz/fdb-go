@@ -59,8 +59,8 @@ var _ = Describe("Record Version Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
 		}
@@ -71,7 +71,7 @@ var _ = Describe("Record Version Conformance", func() {
 	}
 
 	saveOrderWithGoVersioned := func(order *gen.Order) []byte {
-		_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(versionMeta).
@@ -89,7 +89,7 @@ var _ = Describe("Record Version Conformance", func() {
 
 	loadVersionWithGo := func(orderID int64) *recordlayer.FDBRecordVersion {
 		var version *recordlayer.FDBRecordVersion
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(versionMeta).
@@ -169,7 +169,7 @@ var _ = Describe("Record Version Conformance", func() {
 
 	Describe("Version local ordering", func() {
 		It("should assign sequential local versions within one transaction", func() {
-			_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(versionMeta).

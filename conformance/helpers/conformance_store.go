@@ -35,8 +35,8 @@ func BytesToIntArray(b []byte) []int {
 
 // buildJavaParams builds base parameters for Java invocations
 // Includes tenant name if configured
-func (c *ConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (c *ConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": c.clusterFile,
 		"subspace":    BytesToIntArray(c.keyspace.Bytes()),
 	}
@@ -80,7 +80,7 @@ func (c *ConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) er
 	}
 
 	// 1. Save with Go
-	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).
@@ -148,7 +148,7 @@ func (c *ConformanceStore) LoadRecord(ctx context.Context, orderID int64) (*gen.
 // checkExistenceWithBoth checks if a record exists using both Go and Java implementations
 func (c *ConformanceStore) checkExistenceWithBoth(ctx context.Context, orderID int64) (goExists bool, javaExists bool, err error) {
 	// Check with Go
-	_, err = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).
@@ -194,7 +194,7 @@ func (c *ConformanceStore) DeleteRecord(ctx context.Context, orderID int64) (boo
 
 	// 2. Delete with Go
 	var goDeleted bool
-	_, err = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err = c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).
@@ -256,7 +256,7 @@ func (c *ConformanceStore) SaveRecordWithOptions(ctx context.Context, msg proto.
 	}
 
 	// Save with Go using existence check
-	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).
@@ -309,7 +309,7 @@ func (c *ConformanceStore) UpdateRecord(ctx context.Context, msg proto.Message) 
 // loadRecordWithGo is a helper that loads a record using only Go (for internal use)
 func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
 	var order *gen.Order
-	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(c.metaData).

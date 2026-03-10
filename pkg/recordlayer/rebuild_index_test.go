@@ -32,7 +32,7 @@ var _ = Describe("RebuildIndex", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -74,7 +74,7 @@ var _ = Describe("RebuildIndex", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -103,7 +103,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Phase 1: Insert records with index.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -118,7 +118,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Phase 2: Delete some records and rebuild.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
@@ -152,7 +152,7 @@ var _ = Describe("RebuildIndex", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -191,7 +191,7 @@ var _ = Describe("RebuildIndex", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -226,7 +226,7 @@ var _ = Describe("RebuildIndex", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -259,7 +259,7 @@ var _ = Describe("RebuildIndex", func() {
 		mdNoIndex, err := builder1.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -284,7 +284,7 @@ var _ = Describe("RebuildIndex", func() {
 		mdWithIndex, err := builder2.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
 			if err != nil {
@@ -317,7 +317,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Phase 1: Insert records and rebuild index.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -336,7 +336,7 @@ var _ = Describe("RebuildIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Phase 2: Add more records — index should be maintained since it's READABLE.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
@@ -425,7 +425,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -450,7 +450,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -488,7 +488,7 @@ var _ = Describe("RebuildIndex", func() {
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -506,7 +506,7 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Re-open with same metadata — no rebuild should happen, index has 3 entries.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -532,7 +532,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				return nil, err
@@ -546,7 +546,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				return nil, err
@@ -555,7 +555,7 @@ var _ = Describe("RebuildIndex", func() {
 
 			// Phase 3: Re-open with same md2 — should NOT rebuild again
 			// (stored version now matches md2 version).
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -576,7 +576,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -609,7 +609,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -648,7 +648,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -673,7 +673,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -694,7 +694,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -716,7 +716,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -741,7 +741,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -766,7 +766,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -792,7 +792,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -818,7 +818,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -842,7 +842,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -867,7 +867,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -892,7 +892,7 @@ var _ = Describe("RebuildIndex", func() {
 			md1, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
 				if err != nil {
@@ -917,7 +917,7 @@ var _ = Describe("RebuildIndex", func() {
 			md2, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
 					SetIndexRebuildPolicy(AlwaysRebuildPolicy).

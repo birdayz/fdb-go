@@ -55,7 +55,7 @@ type RecordMetaData struct {
 // Prevents accidental reuse of an index's subspace key after deletion.
 // Matches Java's com.apple.foundationdb.record.metadata.FormerIndex.
 type FormerIndex struct {
-	SubspaceKey    interface{}
+	SubspaceKey    any
 	AddedVersion   int
 	RemovedVersion int
 	FormerName     string
@@ -90,18 +90,18 @@ type RecordType struct {
 
 	// explicitRecordTypeKey overrides the auto-derived record type key.
 	// If nil, RecordTypeIndex is used. Matches Java's RecordType.getRecordTypeKey().
-	explicitRecordTypeKey interface{}
+	explicitRecordTypeKey any
 }
 
 // KeyExpression represents an expression that extracts key components from a record.
 // Matches Java's KeyExpression interface which returns List<Key.Evaluated>.
 type KeyExpression interface {
 	// Evaluate extracts key tuples from a record.
-	// Returns a list of key tuples (each tuple is a []interface{}).
+	// Returns a list of key tuples (each tuple is a []any).
 	// Single-valued expressions return one tuple; fan-out expressions
 	// (e.g. repeated fields) return multiple tuples.
 	// Matches Java's KeyExpression.evaluateMessage() -> List<Key.Evaluated>.
-	Evaluate(msg proto.Message) ([][]interface{}, error)
+	Evaluate(msg proto.Message) ([][]any, error)
 
 	// FieldNames returns the field names this expression accesses
 	FieldNames() []string
@@ -396,7 +396,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 
 	// Validate no duplicate record type keys.
 	// Matches Java's MetaDataValidator which checks for duplicate type keys.
-	typeKeySeen := make(map[interface{}]string)
+	typeKeySeen := make(map[any]string)
 	for name, rt := range b.recordTypes {
 		key := rt.GetRecordTypeKey()
 		if prevName, exists := typeKeySeen[key]; exists {
@@ -416,7 +416,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 
 	// Validate no duplicate subspace keys among current indexes.
 	// Matches Java's MetaDataValidator.validateIndexes().
-	indexSubspaceKeySeen := make(map[interface{}]string)
+	indexSubspaceKeySeen := make(map[any]string)
 	for _, idx := range indexes {
 		sk := idx.SubspaceTupleKey()
 		if prevName, exists := indexSubspaceKeySeen[sk]; exists {
@@ -531,7 +531,7 @@ func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBu
 // SetRecordTypeKey overrides the auto-derived record type key for this record type.
 // By default, the record type index (proto field number order) is used.
 // Matches Java's RecordTypeBuilder.setRecordTypeKey(Key.Evaluated).
-func (rtb *RecordTypeBuilder) SetRecordTypeKey(key interface{}) *RecordTypeBuilder {
+func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 	rtb.recordType.explicitRecordTypeKey = key
 	return rtb
 }
@@ -575,7 +575,7 @@ func (rt *RecordType) GetRecordTypeIndex() int {
 
 // GetRecordTypeKey returns the explicit record type key if set, or falls back
 // to the record type index. Matches Java's RecordType.getRecordTypeKey().
-func (rt *RecordType) GetRecordTypeKey() interface{} {
+func (rt *RecordType) GetRecordTypeKey() any {
 	if rt.explicitRecordTypeKey != nil {
 		return rt.explicitRecordTypeKey
 	}

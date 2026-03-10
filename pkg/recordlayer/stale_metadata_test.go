@@ -27,7 +27,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 
 		// Create store with version 5.
 		md5 := buildMD(5)
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md5).SetSubspace(ks).CreateOrOpen()
 			return nil, err
@@ -36,7 +36,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 
 		// Try to open with version 3 — should fail with StaleMetaDataVersionError.
 		md3 := buildMD(3)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md3).SetSubspace(ks).Open()
 			return nil, err
@@ -53,7 +53,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 		ks := specSubspace()
 
 		md := buildMD(5)
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			return nil, err
@@ -61,7 +61,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Re-open with same version — should succeed.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			return nil, err
@@ -73,7 +73,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 		ks := specSubspace()
 
 		md3 := buildMD(3)
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md3).SetSubspace(ks).CreateOrOpen()
 			return nil, err
@@ -82,7 +82,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 
 		// Open with higher version — should succeed (checkPossiblyRebuild proceeds).
 		md5 := buildMD(5)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			_, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md5).SetSubspace(ks).Open()
 			return nil, err

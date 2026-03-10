@@ -36,7 +36,7 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	}
 
 	// Try a simple transaction
-	_, err = db.Transact(func(tr fdb.Transaction) (interface{}, error) {
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
 		// Just do a simple get operation
 		tr.Get(fdb.Key("test_key")).MustGet()
 		return "success", nil

@@ -46,7 +46,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -84,7 +84,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -128,7 +128,7 @@ var _ = Describe("SplitRecords", func() {
 		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -151,7 +151,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -192,7 +192,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -234,7 +234,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -278,7 +278,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -341,7 +341,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -429,7 +429,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -473,7 +473,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -510,7 +510,7 @@ var _ = Describe("SplitRecords", func() {
 		metaData := splitMetadata()
 		ks := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).

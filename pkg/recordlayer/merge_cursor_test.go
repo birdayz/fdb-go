@@ -6,8 +6,8 @@ import (
 )
 
 // intCompKey extracts an int as the comparison key.
-func intCompKey(v int) []interface{} {
-	return []interface{}{v}
+func intCompKey(v int) []any {
+	return []any{v}
 }
 
 func TestUnionCursorBasic(t *testing.T) {
@@ -337,18 +337,18 @@ func TestCompareKeys(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		a, b     []interface{}
+		a, b     []any
 		expected int
 	}{
-		{"equal", []interface{}{1, "a"}, []interface{}{1, "a"}, 0},
-		{"less_first", []interface{}{1, "a"}, []interface{}{2, "a"}, -1},
-		{"greater_first", []interface{}{2, "a"}, []interface{}{1, "a"}, 1},
-		{"less_second", []interface{}{1, "a"}, []interface{}{1, "b"}, -1},
-		{"shorter", []interface{}{1}, []interface{}{1, "a"}, -1},
-		{"longer", []interface{}{1, "a"}, []interface{}{1}, 1},
-		{"nil_first", []interface{}{nil, "a"}, []interface{}{1, "a"}, -1},
-		{"both_nil", []interface{}{nil}, []interface{}{nil}, 0},
-		{"empty", []interface{}{}, []interface{}{}, 0},
+		{"equal", []any{1, "a"}, []any{1, "a"}, 0},
+		{"less_first", []any{1, "a"}, []any{2, "a"}, -1},
+		{"greater_first", []any{2, "a"}, []any{1, "a"}, 1},
+		{"less_second", []any{1, "a"}, []any{1, "b"}, -1},
+		{"shorter", []any{1}, []any{1, "a"}, -1},
+		{"longer", []any{1, "a"}, []any{1}, 1},
+		{"nil_first", []any{nil, "a"}, []any{1, "a"}, -1},
+		{"both_nil", []any{nil}, []any{nil}, 0},
+		{"empty", []any{}, []any{}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -366,7 +366,7 @@ func TestCompareFieldTypes(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		a, b     interface{}
+		a, b     any
 		expected int
 	}{
 		{"int64_equal", int64(5), int64(5), 0},

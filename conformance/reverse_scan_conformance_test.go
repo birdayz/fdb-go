@@ -39,8 +39,8 @@ var _ = Describe("Reverse Scan Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
 		}
@@ -51,7 +51,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 	}
 
 	saveOrdersWithGo := func(orders []*gen.Order) {
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(env.MetaData).
@@ -73,7 +73,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 
 	reverseScanWithGo := func(limit int) []*gen.Order {
 		var result []*gen.Order
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(env.MetaData).
@@ -255,7 +255,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			var goPage2 []*gen.Order
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).

@@ -552,7 +552,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		tagIndex := NewIndex("Order$tags", FanOut("tags"))
 		md := buildMetaWithIndex(tagIndex)
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())

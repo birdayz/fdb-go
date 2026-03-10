@@ -30,7 +30,7 @@ var _ = Describe("Store state management", func() {
 
 	Describe("GetRecordStoreState", func() {
 		It("returns store header and index states", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -51,7 +51,7 @@ var _ = Describe("Store state management", func() {
 			ss := specSubspace()
 
 			// Create store and lock it
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -66,7 +66,7 @@ var _ = Describe("Store state management", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to save — should fail
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -86,7 +86,7 @@ var _ = Describe("Store state management", func() {
 			ss := specSubspace()
 
 			// Create and lock
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -100,7 +100,7 @@ var _ = Describe("Store state management", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Unlock
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -111,7 +111,7 @@ var _ = Describe("Store state management", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save should work now
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -131,7 +131,7 @@ var _ = Describe("Store state management", func() {
 			ss := specSubspace()
 
 			// Create store and lock it.
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -147,7 +147,7 @@ var _ = Describe("Store state management", func() {
 			// Try SaveRecordWithOptions(ERROR_IF_NOT_EXISTS) on locked store
 			// for a record that doesn't exist.
 			// Should get RecordDoesNotExistError, NOT StoreIsLockedForRecordUpdatesError.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -169,7 +169,7 @@ var _ = Describe("Store state management", func() {
 			ss := specSubspace()
 
 			// Create store and lock it.
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -184,7 +184,7 @@ var _ = Describe("Store state management", func() {
 
 			// Delete non-existent record — should return (false, nil),
 			// NOT StoreIsLockedForRecordUpdatesError.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
@@ -203,7 +203,7 @@ var _ = Describe("Store state management", func() {
 		It("reloads state from FDB", func() {
 			ss := specSubspace()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -223,7 +223,7 @@ var _ = Describe("Store state management", func() {
 		It("returns a non-negative estimate", func() {
 			ss := specSubspace()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -249,7 +249,7 @@ var _ = Describe("Store state management", func() {
 		It("returns a non-negative estimate", func() {
 			ss := specSubspace()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -277,7 +277,7 @@ var _ = Describe("Store state management", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(idxMd).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -309,7 +309,7 @@ var _ = Describe("Store state management", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(idxMd).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -343,7 +343,7 @@ var _ = Describe("Store state management", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(idxMd).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -360,14 +360,14 @@ var _ = Describe("Store state management", func() {
 
 	Describe("SetTransactionPriority", func() {
 		It("sets batch priority without error", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				return nil, rtx.SetTransactionPriority(PriorityBatch)
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		It("sets default priority without error", func() {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				return nil, rtx.SetTransactionPriority(PriorityDefault)
 			})
 			Expect(err).NotTo(HaveOccurred())

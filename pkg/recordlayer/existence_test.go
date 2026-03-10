@@ -31,7 +31,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -53,7 +53,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		keyspace := specSubspace()
 
 		// Save a record
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -78,7 +78,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Check if it exists
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -100,7 +100,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		keyspace := specSubspace()
 
 		// Save a record
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -125,7 +125,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Delete the record
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -142,7 +142,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Check it no longer exists
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -179,7 +179,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -209,7 +209,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 		keyspace := specSubspace()
 
 		// First save a record
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -229,7 +229,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Try to save again with ErrorIfExists
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -275,7 +275,7 @@ var _ = Describe("InsertRecord", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -305,7 +305,7 @@ var _ = Describe("InsertRecord", func() {
 		keyspace := specSubspace()
 
 		// Insert a record first
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -325,7 +325,7 @@ var _ = Describe("InsertRecord", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Try to insert again - should fail
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -371,7 +371,7 @@ var _ = Describe("UpdateRecord", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -402,7 +402,7 @@ var _ = Describe("UpdateRecord", func() {
 		keyspace := specSubspace()
 
 		// Insert a record first
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -427,7 +427,7 @@ var _ = Describe("UpdateRecord", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Update it
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -452,7 +452,7 @@ var _ = Describe("UpdateRecord", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Verify the update
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -494,7 +494,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		keyspace := specSubspace()
 
 		// Save an Order with order_id = 5001
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -518,7 +518,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Try to save a Customer with same primary key using ErrorIfTypeChanged
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -548,7 +548,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -572,7 +572,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Save same type again with ErrorIfTypeChanged - should succeed
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -600,7 +600,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -628,7 +628,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		keyspace := specSubspace()
 
 		// Save an Order first
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -648,7 +648,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Try to save Customer with same primary key using ErrorIfNotExistsOrTypeChanged
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -675,7 +675,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).

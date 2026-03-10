@@ -126,7 +126,7 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 
 // markWriteOnly transitions the index to WRITE_ONLY state.
 func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -139,7 +139,7 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 
 // markReadable transitions the index to READABLE state after verifying completion.
 func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -168,7 +168,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 	var recordsProcessed int64
 	var hasMore bool
 
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err

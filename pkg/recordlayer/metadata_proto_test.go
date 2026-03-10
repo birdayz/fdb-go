@@ -137,7 +137,7 @@ func TestValueToProtoRoundtrip(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		val  interface{}
+		val  any
 	}{
 		{"int", 42},
 		{"int64", int64(123456)},

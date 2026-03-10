@@ -93,7 +93,7 @@ func (c RecordExistenceCheck) String() string {
 // Java includes: LogMessageKeys.PRIMARY_KEY
 type RecordAlreadyExistsError struct {
 	Message    string
-	PrimaryKey interface{} // tuple.Tuple, but using interface{} to avoid import cycle
+	PrimaryKey any // tuple.Tuple, but using any to avoid import cycle
 }
 
 func (e *RecordAlreadyExistsError) Error() string {
@@ -114,7 +114,7 @@ func (e *RecordAlreadyExistsError) Is(target error) bool {
 // Java includes: LogMessageKeys.PRIMARY_KEY
 type RecordDoesNotExistError struct {
 	Message    string
-	PrimaryKey interface{} // tuple.Tuple, but using interface{} to avoid import cycle
+	PrimaryKey any // tuple.Tuple, but using any to avoid import cycle
 }
 
 func (e *RecordDoesNotExistError) Error() string {
@@ -135,7 +135,7 @@ func (e *RecordDoesNotExistError) Is(target error) bool {
 // Java includes: LogMessageKeys.PRIMARY_KEY, LogMessageKeys.ACTUAL_TYPE, LogMessageKeys.EXPECTED_TYPE
 type RecordTypeChangedError struct {
 	Message      string
-	PrimaryKey   interface{} // tuple.Tuple, but using interface{} to avoid import cycle
+	PrimaryKey   any // tuple.Tuple, but using any to avoid import cycle
 	ActualType   string
 	ExpectedType string
 }

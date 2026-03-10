@@ -57,8 +57,8 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(keyspace.Bytes()),
 		}
@@ -69,7 +69,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 	}
 
 	saveOrderGo := func(orderID int64, price int32) {
-		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).CreateOrOpen()
 			if err != nil {
@@ -85,7 +85,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 	}
 
 	deleteAllRecordsGo := func() {
-		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).Open()
 			if err != nil {
@@ -98,7 +98,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 	countRecordsGo := func() int {
 		var count int
-		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).Open()
 			if err != nil {
@@ -117,7 +117,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 	scanIndexGo := func() int {
 		var count int
-		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).Open()
 			if err != nil {
@@ -156,7 +156,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 
 			// Java confirms: 0 index entries
 			params["indexName"] = "Order$price"
-			var indexEntries []map[string]interface{}
+			var indexEntries []map[string]any
 			Expect(java.InvokeAs(ctx, "scanIndex", params, &indexEntries)).To(Succeed())
 			Expect(indexEntries).To(BeEmpty())
 		})

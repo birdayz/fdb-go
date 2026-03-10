@@ -46,8 +46,8 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"rsSubspace":  helpers.BytesToIntArray(rsSubspace.Bytes()),
 		}
@@ -60,7 +60,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 	Describe("Go writes full range, Java reads", func() {
 		It("should see the range as complete via Java", func() {
 			// Go inserts full range [0x00, 0xFF)
-			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				rs := recordlayer.NewRangeSet(rsSubspace)
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x00}, []byte{0xff}, false)
 				return nil, err
@@ -77,7 +77,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 
 			// Java: missingRanges should be empty
 			params = buildJavaParams()
-			var missing []map[string]interface{}
+			var missing []map[string]any
 			err = java.InvokeAs(ctx, "rangeSetMissingRanges", params, &missing)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(missing).To(BeEmpty())
@@ -96,7 +96,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 			Expect(inserted).To(BeTrue())
 
 			// Go: Contains(0x50) should be true
-			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				rs := recordlayer.NewRangeSet(rsSubspace)
 				contains, err := rs.Contains(rtx.Transaction(), []byte{0x50})
 				Expect(err).NotTo(HaveOccurred())
@@ -116,7 +116,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 	Describe("Go writes partial range, Java reads gaps", func() {
 		It("should see the correct missing range via Java", func() {
 			// Go inserts [0x00, 0x50)
-			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				rs := recordlayer.NewRangeSet(rsSubspace)
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x00}, []byte{0x50}, false)
 				return nil, err
@@ -140,13 +140,13 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 
 			// Java: missingRanges should be [0x50, 0xFF)
 			params = buildJavaParams()
-			var missing []map[string]interface{}
+			var missing []map[string]any
 			err = java.InvokeAs(ctx, "rangeSetMissingRanges", params, &missing)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(missing).To(HaveLen(1))
 
-			beginInts := missing[0]["begin"].([]interface{})
-			endInts := missing[0]["end"].([]interface{})
+			beginInts := missing[0]["begin"].([]any)
+			endInts := missing[0]["end"].([]any)
 			Expect(intSliceToBytes(beginInts)).To(Equal([]byte{0x50}))
 			Expect(intSliceToBytes(endInts)).To(Equal([]byte{0xff}))
 		})
@@ -164,7 +164,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 			Expect(inserted).To(BeTrue())
 
 			// Go reads
-			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				rs := recordlayer.NewRangeSet(rsSubspace)
 
 				// Contains(0x20) = true
@@ -192,7 +192,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 })
 
 // intSliceToBytes converts a JSON number array to a byte slice.
-func intSliceToBytes(ints []interface{}) []byte {
+func intSliceToBytes(ints []any) []byte {
 	result := make([]byte, len(ints))
 	for i, v := range ints {
 		switch n := v.(type) {

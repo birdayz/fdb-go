@@ -27,7 +27,7 @@ var _ = Describe("TypedStoreConformance", func() {
 	It("typed save then base load", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			baseStore, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -67,7 +67,7 @@ var _ = Describe("TypedStoreConformance", func() {
 	It("base save then typed load", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			baseStore, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -106,7 +106,7 @@ var _ = Describe("TypedStoreConformance", func() {
 	It("wire format verification", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			baseStore, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -178,7 +178,7 @@ var _ = Describe("TypedStoreConformance", func() {
 	It("cross-load verification", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			baseStore, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).

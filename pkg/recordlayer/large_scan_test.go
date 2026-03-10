@@ -28,7 +28,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 		GinkgoWriter.Printf("Testing sequential access order with %d records\n", numRecords)
 
 		// Write records
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -61,7 +61,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Read back and verify order
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -126,7 +126,7 @@ var _ = Describe("BasicContinuation", func() {
 		GinkgoWriter.Printf("Testing continuation mechanism with %d records\n", numRecords)
 
 		// Write records
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).
@@ -174,7 +174,7 @@ var _ = Describe("BasicContinuation", func() {
 			batchCount++
 
 			// Each batch runs in its own transaction
-			batchResult, batchErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			batchResult, batchErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).
@@ -222,7 +222,7 @@ var _ = Describe("BasicContinuation", func() {
 				}
 
 				// Return batch results as a map for easier type assertion
-				result := map[string]interface{}{
+				result := map[string]any{
 					"count":        batchRecordCount,
 					"continuation": []byte(nil),
 				}
@@ -235,7 +235,7 @@ var _ = Describe("BasicContinuation", func() {
 			Expect(batchErr).NotTo(HaveOccurred())
 
 			// Extract results
-			resultMap := batchResult.(map[string]interface{})
+			resultMap := batchResult.(map[string]any)
 
 			recordsThisBatch := resultMap["count"].(int)
 			totalRecordsRead += recordsThisBatch
@@ -281,7 +281,7 @@ var _ = Describe("TimeLimitScan", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Save 100 records.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			if err != nil {
@@ -300,7 +300,7 @@ var _ = Describe("TimeLimitScan", func() {
 
 		// Scan with a very short time limit (1 nanosecond).
 		// This should return at least 1 record (free initial pass) then stop.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			if err != nil {
@@ -341,7 +341,7 @@ var _ = Describe("TimeLimitScan", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Save 100 records.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			if err != nil {
@@ -359,7 +359,7 @@ var _ = Describe("TimeLimitScan", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Scan index with 1ns time limit.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			if err != nil {
@@ -397,7 +397,7 @@ var _ = Describe("TimeLimitScan", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Save 50 records.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			if err != nil {
@@ -423,7 +423,7 @@ var _ = Describe("TimeLimitScan", func() {
 			var batchCount int
 			var sourceExhausted bool
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				if err != nil {
@@ -477,7 +477,7 @@ var _ = Describe("TimeLimitScan", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			if err != nil {
@@ -495,7 +495,7 @@ var _ = Describe("TimeLimitScan", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Scan without time limit — should get all records.
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			if err != nil {

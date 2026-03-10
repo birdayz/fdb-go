@@ -90,7 +90,7 @@ var _ = Describe("Multi-type indexes", func() {
 			ss := specSubspace()
 
 			// Save an Order — should create index entry
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -104,7 +104,7 @@ var _ = Describe("Multi-type indexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify index entry exists
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {

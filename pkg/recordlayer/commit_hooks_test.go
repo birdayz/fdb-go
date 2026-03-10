@@ -29,7 +29,7 @@ var _ = Describe("Commit hooks", func() {
 	Describe("AddCommitCheck", func() {
 		It("runs pre-commit check that passes", func() {
 			checkRan := false
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -53,7 +53,7 @@ var _ = Describe("Commit hooks", func() {
 
 		It("aborts on pre-commit check failure", func() {
 			errCheck := errors.New("consistency violation")
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -75,7 +75,7 @@ var _ = Describe("Commit hooks", func() {
 
 		It("runs multiple checks in order", func() {
 			var order []int
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddCommitCheck(func() error {
 					order = append(order, 1)
 					return nil
@@ -96,7 +96,7 @@ var _ = Describe("Commit hooks", func() {
 
 		It("stops at first failing check", func() {
 			var order []int
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddCommitCheck(func() error {
 					order = append(order, 1)
 					return nil
@@ -119,7 +119,7 @@ var _ = Describe("Commit hooks", func() {
 	Describe("AddPostCommit", func() {
 		It("runs post-commit callback after successful commit", func() {
 			postCommitRan := false
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddPostCommit(func() {
 					postCommitRan = true
 				})
@@ -131,7 +131,7 @@ var _ = Describe("Commit hooks", func() {
 
 		It("does not run post-commit on error", func() {
 			postCommitRan := false
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddPostCommit(func() {
 					postCommitRan = true
 				})
@@ -143,7 +143,7 @@ var _ = Describe("Commit hooks", func() {
 
 		It("does not run post-commit when pre-commit check fails", func() {
 			postCommitRan := false
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddCommitCheck(func() error {
 					return errors.New("check failed")
 				})

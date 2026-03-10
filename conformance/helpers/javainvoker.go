@@ -169,7 +169,7 @@ func (j *JavaInvoker) Close() error {
 // Request is the JSON structure sent to Java
 type Request struct {
 	Step   string                 `json:"step"`
-	Params map[string]interface{} `json:"params"`
+	Params map[string]any `json:"params"`
 }
 
 // Response is the JSON structure returned from Java
@@ -180,7 +180,7 @@ type Response struct {
 }
 
 // Invoke calls a Java conformance step via HTTP POST
-func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[string]interface{}) (json.RawMessage, error) {
+func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[string]any) (json.RawMessage, error) {
 	// Build request
 	req := Request{
 		Step:   stepName,
@@ -228,7 +228,7 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[st
 
 // InvokeAs calls a Java step and unmarshals result into target
 // If result is nil, the return value is ignored
-func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, params map[string]interface{}, result interface{}) error {
+func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, params map[string]any, result any) error {
 	raw, err := j.Invoke(ctx, stepName, params)
 	if err != nil {
 		return err

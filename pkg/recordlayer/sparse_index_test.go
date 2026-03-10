@@ -37,7 +37,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 
 		ss := specSubspace()
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
@@ -79,7 +79,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 
 		ss := specSubspace()
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
@@ -123,7 +123,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 		ss := specSubspace()
 
 		// Save with price >= 500 (indexed)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
@@ -137,7 +137,7 @@ var _ = Describe("Sparse/filtered indexes", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Update price to < 500 (should remove from index)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
@@ -178,7 +178,7 @@ var _ = Describe("Bulk index operations", func() {
 
 		ss := specSubspace()
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
@@ -222,7 +222,7 @@ var _ = Describe("Bulk index operations", func() {
 
 		ss := specSubspace()
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
@@ -298,7 +298,7 @@ var _ = Describe("Store accessor methods", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 			if err != nil {
@@ -320,7 +320,7 @@ var _ = Describe("Store accessor methods", func() {
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 			if err != nil {

@@ -79,7 +79,7 @@ func (r *FDBDatabaseRunner) SetContextConfig(config *RecordContextConfig) *FDBDa
 // Retries on FDB retryable errors (conflict, etc.) up to MaxAttempts times.
 // Non-retryable errors are returned immediately.
 // Matches Java's FDBDatabaseRunnerImpl.run().
-func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
+func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < r.MaxAttempts; attempt++ {
@@ -107,7 +107,7 @@ func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRe
 }
 
 // runOnce executes fn in a single transaction, applying context config.
-func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordContext) (interface{}, error)) (interface{}, error) {
+func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var createTx func() (fdb.Transaction, error)
 	if r.db.tenant != (fdb.Tenant{}) {
 		createTx = r.db.tenant.CreateTransaction

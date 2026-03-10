@@ -32,7 +32,9 @@ var _ = Describe("FDBRecordVersion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(v.IsComplete()).To(BeTrue())
 		Expect(v.GetLocalVersion()).To(Equal(7))
-		Expect(v.GetGlobalVersion()).To(Equal(global))
+		gv, err := v.GetGlobalVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gv).To(Equal(global))
 	})
 
 	It("WithCommittedVersion", func() {
@@ -43,7 +45,9 @@ var _ = Describe("FDBRecordVersion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(complete.IsComplete()).To(BeTrue())
 		Expect(complete.GetLocalVersion()).To(Equal(3))
-		Expect(complete.GetGlobalVersion()).To(Equal(committed))
+		gv, err := complete.GetGlobalVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gv).To(Equal(committed))
 	})
 
 	It("InvalidInputs", func() {
@@ -63,7 +67,11 @@ var _ = Describe("FDBRecordVersion", func() {
 		parsed, err := CompleteVersionFromBytes(original.ToBytes())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(parsed.GetLocalVersion()).To(Equal(original.GetLocalVersion()))
-		Expect(parsed.GetGlobalVersion()).To(Equal(original.GetGlobalVersion()))
+		parsedGV, err := parsed.GetGlobalVersion()
+		Expect(err).NotTo(HaveOccurred())
+		originalGV, err := original.GetGlobalVersion()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(parsedGV).To(Equal(originalGV))
 	})
 })
 
@@ -260,7 +268,9 @@ var _ = Describe("RecordVersioning", func() {
 			Expect(version).NotTo(BeNil())
 			Expect(version.IsComplete()).To(BeTrue())
 			Expect(version.GetLocalVersion()).To(Equal(0))
-			Expect(version.GetGlobalVersion()).To(Equal(vs))
+			vGV, err := version.GetGlobalVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vGV).To(Equal(vs))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -427,7 +437,9 @@ var _ = Describe("RecordVersioning", func() {
 			Expect(loaded).NotTo(BeNil())
 			Expect(loaded.HasVersion()).To(BeTrue())
 			Expect(loaded.Version.IsComplete()).To(BeTrue())
-			Expect(loaded.Version.GetGlobalVersion()).To(Equal(vs))
+			loadedGV, err := loaded.Version.GetGlobalVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadedGV).To(Equal(vs))
 			Expect(loaded.Version.GetLocalVersion()).To(Equal(0))
 			return nil, nil
 		})
@@ -568,7 +580,9 @@ var _ = Describe("RecordVersioning", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(v).NotTo(BeNil())
 			Expect(v.IsComplete()).To(BeTrue())
-			Expect(v.GetGlobalVersion()).To(Equal(vs2))
+			vGV2, err := v.GetGlobalVersion()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vGV2).To(Equal(vs2))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -32,7 +32,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -57,7 +57,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -109,7 +109,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		keyspace := specSubspace()
 
 		// Save a valid record first
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -130,7 +130,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Manually write a key with an invalid/unknown record type index
-		_, err = sharedDB.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
+		_, err = sharedDB.db.Transact(func(tr fdb.Transaction) (any, error) {
 			invalidTypeIndex := int64(999)
 			primaryKey := int64(3001)
 
@@ -145,7 +145,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Now try to load this record - should not panic
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -177,7 +177,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		Expect(buildErr).NotTo(HaveOccurred())
 
 		// Manually write a key with invalid type index
-		_, err := sharedDB.db.Transact(func(tr fdb.Transaction) (interface{}, error) {
+		_, err := sharedDB.db.Transact(func(tr fdb.Transaction) (any, error) {
 			invalidTypeIndex := int64(888)
 			primaryKey := int64(4001)
 
@@ -192,7 +192,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// RecordExists should handle invalid type index gracefully (not panic)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -230,7 +230,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -255,7 +255,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 		ctx := context.Background()
 		keyspace := specSubspace()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).

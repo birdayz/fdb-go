@@ -62,7 +62,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	It("BasicSeq", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := saveTestOrders(rtx)
 			scanCtx := context.Background()
 
@@ -86,7 +86,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	It("Seq2WithErrors", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := saveTestOrders(rtx)
 			scanCtx := context.Background()
 
@@ -110,7 +110,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	It("StdlibIntegration", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := saveTestOrders(rtx)
 			scanCtx := context.Background()
 
@@ -150,7 +150,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	It("ChainingOperations", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := saveTestOrders(rtx)
 			scanCtx := context.Background()
 
@@ -182,7 +182,7 @@ var _ = Describe("CursorSeqInterface", func() {
 	It("LimitFunction", func() {
 		ctx := context.Background()
 
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := saveTestOrders(rtx)
 			scanCtx := context.Background()
 

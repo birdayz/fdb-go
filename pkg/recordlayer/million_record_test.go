@@ -38,7 +38,7 @@ var _ = Describe("MillionRecordScan", func() {
 		for batch := 0; batch < numRecords/writeBatchSize; batch++ {
 			batchStart := time.Now()
 
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).
@@ -120,7 +120,7 @@ var _ = Describe("MillionRecordScan", func() {
 			batchStart := time.Now()
 
 			// Each batch runs in its own transaction
-			batchResult, batchErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			batchResult, batchErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).
@@ -168,7 +168,7 @@ var _ = Describe("MillionRecordScan", func() {
 				}
 
 				// Return batch results
-				result := map[string]interface{}{
+				result := map[string]any{
 					"count":        batchRecordCount,
 					"continuation": []byte(nil),
 				}
@@ -181,7 +181,7 @@ var _ = Describe("MillionRecordScan", func() {
 			Expect(batchErr).NotTo(HaveOccurred())
 
 			// Extract results
-			resultMap := batchResult.(map[string]interface{})
+			resultMap := batchResult.(map[string]any)
 			recordsThisBatch := resultMap["count"].(int)
 			totalRecordsRead += recordsThisBatch
 			continuation = resultMap["continuation"].([]byte)
@@ -249,7 +249,7 @@ var _ = Describe("MillionRecordPerformance", func() {
 		batchSize := 1000
 
 		for batch := 0; batch < numRecords/batchSize; batch++ {
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(metaData).
@@ -290,7 +290,7 @@ var _ = Describe("MillionRecordPerformance", func() {
 		// Read phase
 		readStart := time.Now()
 		readCount := 0
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(metaData).

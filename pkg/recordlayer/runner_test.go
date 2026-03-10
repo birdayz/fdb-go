@@ -30,7 +30,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 	Describe("RunWithRetry", func() {
 		It("succeeds on first attempt", func() {
 			runner := NewFDBDatabaseRunner(sharedDB)
-			result, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			result, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
 				if err != nil {
@@ -47,7 +47,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		It("does not retry non-retryable errors", func() {
 			runner := NewFDBDatabaseRunner(sharedDB).SetMaxAttempts(3)
 			attempts := 0
-			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				attempts++
 				return nil, errors.New("permanent error")
 			})
@@ -60,7 +60,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			cancel() // Cancel immediately
 
 			runner := NewFDBDatabaseRunner(sharedDB)
-			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
 				return nil, nil
 			})
 			// First attempt should succeed since cancel is checked before retry delay
@@ -75,7 +75,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 				TransactionID:      "test-tx-123",
 			})
 
-			result, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			result, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				return "ok", nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -105,7 +105,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		It("runs pre-commit checks", func() {
 			runner := NewFDBDatabaseRunner(sharedDB)
 			checkRan := false
-			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddCommitCheck(func() error {
 					checkRan = true
 					return nil
@@ -119,7 +119,7 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		It("runs post-commit hooks", func() {
 			runner := NewFDBDatabaseRunner(sharedDB)
 			postRan := false
-			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rtx.AddPostCommit(func() {
 					postRan = true
 				})

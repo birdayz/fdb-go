@@ -54,8 +54,8 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 		}
 	})
 
-	buildJavaParams := func() map[string]interface{} {
-		params := map[string]interface{}{
+	buildJavaParams := func() map[string]any {
+		params := map[string]any{
 			"clusterFile": env.ClusterFile,
 			"subspace":    helpers.BytesToIntArray(keyspace.Bytes()),
 		}
@@ -68,7 +68,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 	Describe("DeleteAllRecords preserves store header", func() {
 		It("header fields survive DeleteAllRecords and are readable by Java", func() {
 			// Go creates store and saves a record
-			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).CreateOrOpen()
 				if err != nil {
@@ -86,7 +86,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go deletes all records
-			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).Open()
 				if err != nil {
@@ -113,7 +113,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 	Describe("DeleteAllRecords preserves index state", func() {
 		It("index state WRITE_ONLY survives DeleteAllRecords cross-platform", func() {
 			// Go creates store
-			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				_, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).CreateOrOpen()
 				return nil, err
@@ -121,7 +121,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go marks index WRITE_ONLY
-			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).
 					SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).Open()
@@ -134,7 +134,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Go saves a record and deletes all
-			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).
 					SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).Open()
@@ -180,7 +180,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(java.InvokeAs(ctx, "deleteAllRecordsWithIndex", params, nil)).To(Succeed())
 
 			// Go re-creates store (CreateOrOpen on same subspace) and saves new records
-			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				store, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(keyspace).CreateOrOpen()
 				if err != nil {
@@ -199,7 +199,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 
 			// Java scans index — should have 1 entry
 			params["indexName"] = "Order$price"
-			var indexEntries []map[string]interface{}
+			var indexEntries []map[string]any
 			Expect(java.InvokeAs(ctx, "scanIndex", params, &indexEntries)).To(Succeed())
 			Expect(indexEntries).To(HaveLen(1))
 		})

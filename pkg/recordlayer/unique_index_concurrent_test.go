@@ -38,7 +38,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().
 						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 					if err != nil {
@@ -75,7 +75,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().
 						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 					if err != nil {
@@ -101,7 +101,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 		md, idx := buildMD()
 
 		// Insert a record with price=42, PK=1
-		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -112,7 +112,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Try to insert another record with price=42, PK=2 — should fail
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
@@ -126,7 +126,7 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 		Expect(err.Error()).To(ContainSubstring("uniqueness violation"))
 
 		// Verify only one entry in the index
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())

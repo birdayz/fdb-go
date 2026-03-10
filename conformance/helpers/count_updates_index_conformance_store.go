@@ -53,8 +53,8 @@ func NewCountUpdatesIndexConformanceStore(recordDB *recordlayer.FDBDatabase, key
 	}, nil
 }
 
-func (s *CountUpdatesIndexConformanceStore) buildJavaParams() map[string]interface{} {
-	params := map[string]interface{}{
+func (s *CountUpdatesIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
 		"clusterFile": s.clusterFile,
 		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
 	}
@@ -65,7 +65,7 @@ func (s *CountUpdatesIndexConformanceStore) buildJavaParams() map[string]interfa
 }
 
 func (s *CountUpdatesIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -85,7 +85,7 @@ func (s *CountUpdatesIndexConformanceStore) SaveOrderJava(ctx context.Context, o
 
 func (s *CountUpdatesIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
 	var deleted bool
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
 		if err != nil {
@@ -105,7 +105,7 @@ func (s *CountUpdatesIndexConformanceStore) DeleteOrderJava(ctx context.Context,
 
 func (s *CountUpdatesIndexConformanceStore) ScanCountIndexGo(ctx context.Context) ([]CountIndexEntryResult, error) {
 	var results []CountIndexEntryResult
-	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
 		if err != nil {
@@ -133,7 +133,7 @@ func (s *CountUpdatesIndexConformanceStore) ScanCountIndexGo(ctx context.Context
 func (s *CountUpdatesIndexConformanceStore) ScanCountIndexJava(ctx context.Context) ([]CountIndexEntryResult, error) {
 	params := s.buildJavaParams()
 
-	var javaResults []map[string]interface{}
+	var javaResults []map[string]any
 	if err := s.java.InvokeAs(ctx, "scanCountUpdatesIndex", params, &javaResults); err != nil {
 		return nil, fmt.Errorf("java scanCountUpdatesIndex failed: %w", err)
 	}

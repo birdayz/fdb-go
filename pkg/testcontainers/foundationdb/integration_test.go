@@ -142,7 +142,7 @@ func TestMultipleContainersIsolation(t *testing.T) {
 }
 
 func writeTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, keyspace subspace.Subspace) error {
-	_, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
+	_, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(ctx).
 			SetMetaDataProvider(metaData).
@@ -170,7 +170,7 @@ func writeTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *r
 }
 
 func readTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *recordlayer.RecordMetaData, keyspace subspace.Subspace, orderID int64) (*gen.Order, error) {
-	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (interface{}, error) {
+	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(ctx).
 			SetMetaDataProvider(metaData).

@@ -154,7 +154,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer GinkgoRecover()
 				defer close(tx1Done)
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -178,7 +178,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer GinkgoRecover()
 				defer close(tx2Done)
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -307,7 +307,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Single transaction should be able to add conflict and operate without self-conflict
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -344,7 +344,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).
@@ -386,7 +386,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				defer wg.Done()
 				defer GinkgoRecover()
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -415,7 +415,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 				<-tx1Started
 
-				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+				_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					fdbStore, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).
 						SetMetaDataProvider(env.MetaData).
@@ -447,7 +447,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (interface{}, error) {
+			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 				fdbStore, err := recordlayer.NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(env.MetaData).

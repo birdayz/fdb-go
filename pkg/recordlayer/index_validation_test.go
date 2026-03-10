@@ -31,7 +31,7 @@ var _ = Describe("Index validation", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -71,7 +71,7 @@ var _ = Describe("Index validation", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -113,7 +113,7 @@ var _ = Describe("Index validation", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
@@ -155,7 +155,7 @@ var _ = Describe("Index validation", func() {
 
 			ss := specSubspace()
 
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (interface{}, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 				if err != nil {
