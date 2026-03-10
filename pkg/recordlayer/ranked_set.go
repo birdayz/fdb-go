@@ -361,6 +361,12 @@ func (rs *RankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 		}
 	}
 
+	// With CountDuplicates, a key's count at level 0 may exceed 1.
+	// When count > rank at level 0, we drilled down but there's no lower level.
+	// The key variable holds the answer. Matches Java's getNth() return path.
+	if len(key) > 0 {
+		return key, nil
+	}
 	return nil, nil
 }
 

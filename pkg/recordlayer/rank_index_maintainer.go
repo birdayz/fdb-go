@@ -137,8 +137,16 @@ func (m *RankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 		return m.Update(oldRecord, newRecord) // idempotent
 	}
 	// Non-idempotent: check range set before updating.
-	if newRecord != nil && m.store != nil {
-		inRange, err := m.store.isKeyInIndexBuildRange(m.index, newRecord.PrimaryKey)
+	// Use oldRecord's PK when available (for deletes), fall back to newRecord.
+	// Matches Java's RankIndexMaintainer.updateWriteOnlyByRecords().
+	var checkRecord *FDBStoredRecord[proto.Message]
+	if oldRecord != nil {
+		checkRecord = oldRecord
+	} else {
+		checkRecord = newRecord
+	}
+	if checkRecord != nil && m.store != nil {
+		inRange, err := m.store.isKeyInIndexBuildRange(m.index, checkRecord.PrimaryKey)
 		if err != nil {
 			return err
 		}
@@ -265,8 +273,14 @@ func (m *RankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		rankSubspace = m.secondarySubspace
 	}
 
-	lowRank := extractRankValue(groupPrefixSize, rankRange.Low)
-	highRank := extractRankValue(groupPrefixSize, rankRange.High)
+	lowRank, err := extractRankValue(groupPrefixSize, rankRange.Low)
+	if err != nil {
+		return nil, err
+	}
+	highRank, err := extractRankValue(groupPrefixSize, rankRange.High)
+	if err != nil {
+		return nil, err
+	}
 
 	startFromBeginning := lowRank == nil || *lowRank < 0
 	lowEndpoint := rankRange.LowEndpoint
@@ -425,22 +439,24 @@ func (m *RankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 
 // extractRankValue extracts the rank value from a scan range tuple.
 // The rank is at position groupPrefixSize (after the group prefix).
-func extractRankValue(groupPrefixSize int, maybeTuple tuple.Tuple) *int64 {
+// Returns error if the tuple has unexpected extra elements.
+// Matches Java's RankedSetIndexHelper.extractRank().
+func extractRankValue(groupPrefixSize int, maybeTuple tuple.Tuple) (*int64, error) {
 	if maybeTuple == nil {
-		return nil
+		return nil, nil
 	}
 	if len(maybeTuple) == groupPrefixSize+1 {
 		switch v := maybeTuple[groupPrefixSize].(type) {
 		case int64:
-			return &v
+			return &v, nil
 		case int:
 			r := int64(v)
-			return &r
+			return &r, nil
 		}
-		return nil
+		return nil, nil
 	}
 	if len(maybeTuple) <= groupPrefixSize {
-		return nil
+		return nil, nil
 	}
-	return nil
+	return nil, fmt.Errorf("ranked set range bound is not correct size: groupPrefixSize=%d, tuple=%v", groupPrefixSize, maybeTuple)
 }

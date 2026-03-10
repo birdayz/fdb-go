@@ -190,6 +190,19 @@ var _ = Describe("RankedSet", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank).To(Equal(int64(2)))
 
+			// GetNth with duplicates: rank 0 → "a", rank 1 → "a" (dup), rank 2 → "b"
+			nth, err := rs.GetNth(tx, 0)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nth).To(Equal([]byte("a")))
+
+			nth, err = rs.GetNth(tx, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nth).To(Equal([]byte("a"))) // duplicate — still "a"
+
+			nth, err = rs.GetNth(tx, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nth).To(Equal([]byte("b")))
+
 			// Remove one "a" — count should be 1
 			removed, err := rs.Remove(tx, []byte("a"))
 			Expect(err).NotTo(HaveOccurred())
@@ -996,6 +1009,187 @@ var _ = Describe("RankIndex", func() {
 			entries, err := AsList(ctx, store.ScanIndex(rankIdx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(BeEmpty())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("grouped rank index isolates groups", func() {
+		ks := specSubspace()
+
+		// Group by customer name, rank by customer_id (used as a "score")
+		// Expression: GroupBy(Field("customer_id"), Field("name"))
+		//   → wholeKey = Concat(name, customer_id), groupedCount = 1
+		//   → grouping columns = [name], grouped (score) = [customer_id]
+		rankIdx := NewRankIndex("rank_by_name_id", GroupBy(Field("customer_id"), Field("name")))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group "alice": ids 10, 30 → ranks 0, 1
+			// Group "bob":   ids 20, 40 → ranks 0, 1
+			for _, c := range []struct {
+				id   int64
+				name string
+			}{
+				{10, "alice"},
+				{20, "bob"},
+				{30, "alice"},
+				{40, "bob"},
+			} {
+				_, err = store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(c.id),
+					Name:       proto.String(c.name),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			maintainer := store.getIndexMaintainer(rankIdx).(*RankIndexMaintainer)
+
+			// In "alice" group: id 10 → rank 0, id 30 → rank 1
+			rank, err := maintainer.RankForScore(tuple.Tuple{"alice", int64(10)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			rank, err = maintainer.RankForScore(tuple.Tuple{"alice", int64(30)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(1)))
+
+			// In "bob" group: id 20 → rank 0, id 40 → rank 1
+			rank, err = maintainer.RankForScore(tuple.Tuple{"bob", int64(20)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			rank, err = maintainer.RankForScore(tuple.Tuple{"bob", int64(40)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(1)))
+
+			// ScoreForRank within alice group
+			score, err := maintainer.ScoreForRank(tuple.Tuple{"alice", int64(0)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(10)}))
+
+			score, err = maintainer.ScoreForRank(tuple.Tuple{"alice", int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(30)}))
+
+			// BY_RANK scan within "alice" group: ranks [0, 2)
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				rankIdx,
+				IndexScanByRank,
+				TupleRange{
+					Low:          tuple.Tuple{"alice", int64(0)},
+					High:         tuple.Tuple{"alice", int64(2)},
+					LowEndpoint:  EndpointTypeRangeInclusive,
+					HighEndpoint: EndpointTypeRangeExclusive,
+				},
+				nil,
+				ForwardScan(),
+			))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+			// Entries should have group prefix "alice" + score
+			Expect(entries[0].Key[0]).To(Equal("alice"))
+			Expect(entries[0].Key[1]).To(Equal(int64(10)))
+			Expect(entries[1].Key[0]).To(Equal("alice"))
+			Expect(entries[1].Key[1]).To(Equal(int64(30)))
+
+			// Delete alice id=10, verify rank shifts
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(10)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			maintainer = store.getIndexMaintainer(rankIdx).(*RankIndexMaintainer)
+
+			// Alice group: id 30 is now rank 0
+			rank, err = maintainer.RankForScore(tuple.Tuple{"alice", int64(30)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			// Bob group unchanged
+			rank, err = maintainer.RankForScore(tuple.Tuple{"bob", int64(20)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("count duplicates at index level", func() {
+		ks := specSubspace()
+
+		// RANK index with CountDuplicates=true
+		rankIdx := NewRankIndex("rank_by_price_dup", GroupBy(Field("price")))
+		rankIdx.Options[IndexOptionRankCountDuplicates] = "true"
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 3 orders: two with price=100, one with price=200
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.getIndexMaintainer(rankIdx).(*RankIndexMaintainer)
+
+			// With CountDuplicates, score 100 has count=2 in the ranked set.
+			// Rank of 100 = 0 (first entry)
+			rank, err := maintainer.RankForScore(tuple.Tuple{int64(100)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(0)))
+
+			// Rank of 200 = 2 (two 100s before it)
+			rank, err = maintainer.RankForScore(tuple.Tuple{int64(200)}, false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*rank).To(Equal(int64(2)))
+
+			// ScoreForRank(0) = 100, ScoreForRank(1) = 100 (duplicate), ScoreForRank(2) = 200
+			score, err := maintainer.ScoreForRank(tuple.Tuple{int64(0)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(100)}))
+
+			score, err = maintainer.ScoreForRank(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(100)}))
+
+			score, err = maintainer.ScoreForRank(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(200)}))
+
+			// BY_RANK scan [0, 3) — all three ranks
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				rankIdx,
+				IndexScanByRank,
+				TupleRange{
+					Low:          tuple.Tuple{int64(0)},
+					High:         tuple.Tuple{int64(3)},
+					LowEndpoint:  EndpointTypeRangeInclusive,
+					HighEndpoint: EndpointTypeRangeExclusive,
+				},
+				nil,
+				ForwardScan(),
+			))
+			Expect(err).NotTo(HaveOccurred())
+			// This scans the B-tree range [score(rank=0), score(rank=3))
+			// = [100, end) = all 3 entries
+			Expect(entries).To(HaveLen(3))
 
 			return nil, nil
 		})
