@@ -381,6 +381,85 @@ var _ = Describe("RecordVersioning", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("SaveRecord returns incomplete version on FDBStoredRecord", func() {
+		metaData := newMeta()
+		ks := specSubspace()
+
+		_, _, err := sharedDB.RunWithVersionstamp(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			stored, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stored.HasVersion()).To(BeTrue())
+			Expect(stored.Version.IsComplete()).To(BeFalse())
+			Expect(stored.Version.GetLocalVersion()).To(Equal(0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("LoadRecord returns complete version on FDBStoredRecord", func() {
+		metaData := newMeta()
+		ks := specSubspace()
+
+		_, vs, err := sharedDB.RunWithVersionstamp(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+			loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.HasVersion()).To(BeTrue())
+			Expect(loaded.Version.IsComplete()).To(BeTrue())
+			Expect(loaded.Version.GetGlobalVersion()).To(Equal(vs))
+			Expect(loaded.Version.GetLocalVersion()).To(Equal(0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("LoadRecord has no version when versioning disabled", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaData, buildErr := builder.Build()
+		Expect(buildErr).NotTo(HaveOccurred())
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			stored, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stored.HasVersion()).To(BeFalse())
+
+			loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.HasVersion()).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("VersionNotStoredWhenDisabled", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))

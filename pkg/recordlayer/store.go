@@ -114,7 +114,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		return nil, fmt.Errorf("failed to deserialize record: %w", err)
 	}
 
-	return &FDBStoredRecord[proto.Message]{
+	stored := &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
@@ -122,7 +122,19 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		ValueSize:  sizeInfo.ValueSize,
 		KeySize:    sizeInfo.KeySize,
 		Split:      sizeInfo.IsSplit,
-	}, nil
+	}
+
+	// Load version if versioning is enabled.
+	// Matches Java's loadTypedRecord which eagerly loads the version.
+	if store.metaData.IsStoreRecordVersions() {
+		ver, err := store.LoadRecordVersion(primaryKey, false)
+		if err != nil {
+			return nil, fmt.Errorf("load record version for %v: %w", primaryKey, err)
+		}
+		stored.Version = ver
+	}
+
+	return stored, nil
 }
 
 // SaveRecord saves a protobuf record to the store.
@@ -374,6 +386,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 	// Save version if versioning is enabled (handled separately from split helper
 	// because Go FDB bindings need context-level AddVersionMutation for versionstamps)
+	var savedVersion *FDBRecordVersion
 	if store.metaData.IsStoreRecordVersions() {
 		localVer := store.context.ClaimLocalVersion()
 		version, verErr := IncompleteVersion(localVer)
@@ -383,6 +396,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		if err := store.saveRecordVersion(primaryKey, version); err != nil {
 			return nil, err
 		}
+		savedVersion = version
 	}
 
 	// Only increment record count for new inserts (not updates).
@@ -396,6 +410,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     record,
+		Version:    savedVersion,
 		KeyCount:   newSizeInfo.KeyCount,
 		ValueSize:  newSizeInfo.ValueSize,
 		KeySize:    newSizeInfo.KeySize,
@@ -1298,6 +1313,10 @@ type FDBStoredRecord[M proto.Message] struct {
 	// Record is the actual record data
 	Record M
 
+	// Version is the record's version, if loaded.
+	// Matches Java's FDBStoredRecord.getVersion().
+	Version *FDBRecordVersion
+
 	// Storage size information
 	KeyCount  int
 	KeySize   int
@@ -1305,6 +1324,12 @@ type FDBStoredRecord[M proto.Message] struct {
 
 	// Whether the record is split across multiple keys
 	Split bool
+}
+
+// HasVersion returns whether this stored record has a version.
+// Matches Java's FDBStoredRecord.hasVersion().
+func (r *FDBStoredRecord[M]) HasVersion() bool {
+	return r.Version != nil
 }
 
 
