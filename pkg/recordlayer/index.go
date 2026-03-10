@@ -16,6 +16,7 @@ const (
 	IndexTypeMinEverLong  = "min_ever_long"
 	IndexTypeMaxEverTuple = "max_ever_tuple"
 	IndexTypeMinEverTuple = "min_ever_tuple"
+	IndexTypeRank         = "rank"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -172,6 +173,20 @@ func NewCountUpdatesIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeCountUpdates,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewRankIndex creates a RANK index with the given name and root key expression.
+// RANK indexes maintain a B-tree (like VALUE) plus a skip-list ranked set per group
+// for O(log n) rank/select queries.
+// Matches Java's new Index(name, rootExpression, IndexTypes.RANK).
+func NewRankIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeRank,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

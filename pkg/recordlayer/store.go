@@ -754,6 +754,13 @@ func (store *FDBRecordStore) indexSubspace(index *Index) subspace.Subspace {
 	return store.subspace.Sub(IndexKey, index.SubspaceTupleKey())
 }
 
+// indexSecondarySubspace returns the FDB subspace for a RANK index's secondary data (ranked sets).
+// Layout: [storeSubspace][IndexSecondarySpaceKey=3][indexSubspaceTupleKey]
+// Matches Java's FDBRecordStore.indexSecondarySubspace(Index).
+func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subspace {
+	return store.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey())
+}
+
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
 // Dispatches to CountIndexMaintainer for COUNT indexes, StandardIndexMaintainer otherwise.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
@@ -777,6 +784,9 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newMinMaxEverTupleIndexMaintainer(index, idxSubspace, tx, store, true)
 	case IndexTypeMinEverTuple:
 		return newMinMaxEverTupleIndexMaintainer(index, idxSubspace, tx, store, false)
+	case IndexTypeRank:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

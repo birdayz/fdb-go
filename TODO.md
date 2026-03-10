@@ -242,7 +242,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **MIN/MAX via VALUE index** — `EvaluateAggregateFunction` supports `FunctionNameMin`/`FunctionNameMax` via VALUE indexes. Scans 1 entry forward (MIN) or reverse (MAX). Unlike _EVER variants, reflects deletes. 4 tests.
 - [x] **CLEAR_WHEN_ZERO option** — `Index.SetClearWhenZero(true)` enables FDB `CompareAndClear(zero)` after every ADD decrement. Atomically removes entries when count/sum reaches zero. Works with COUNT, COUNT_NOT_NULL, SUM indexes. Matches Java's `IndexOptions.CLEAR_WHEN_ZERO`. 3 tests.
 - [x] **MIN_EVER_TUPLE / MAX_EVER_TUPLE index types** — `MinMaxEverTupleIndexMaintainer` using FDB BYTE_MIN/BYTE_MAX mutations with tuple-packed values. Unlike _LONG variants, supports any tuple-encodable type including negatives. Idempotent. Reuses `countKVCursor` with `tupleValues` flag for scanning. 8 tests.
-- [ ] **Index types beyond implemented** — Java has more types: RANK, TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
+- [x] **RANK index type** — `RankIndexMaintainer` with dual subspace (B-tree + RankedSet skip-list). Wire-compatible with Java's `RankedSet`. Supports BY_VALUE and BY_RANK scans, RankForScore/ScoreForRank queries, grouped and ungrouped modes, CountDuplicates option, JDK/CRC hash functions. 21 tests (6 RankedSet + 15 RankIndex).
+- [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 

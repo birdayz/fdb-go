@@ -18,6 +18,10 @@ type IndexScanType string
 const (
 	// IndexScanByValue scans a VALUE index by its indexed values.
 	IndexScanByValue IndexScanType = "BY_VALUE"
+	// IndexScanByRank scans a RANK index by rank position.
+	// The range bounds contain [group..., rank] where rank is an int64.
+	// Matches Java's IndexScanType.BY_RANK.
+	IndexScanByRank IndexScanType = "BY_RANK"
 )
 
 // TupleRange specifies a range of tuples for index scanning.
@@ -71,6 +75,26 @@ func TupleRangeBetweenInclusive(low, high tuple.Tuple) TupleRange {
 		High:         high,
 		LowEndpoint:  EndpointTypeRangeInclusive,
 		HighEndpoint: EndpointTypeRangeInclusive,
+	}
+}
+
+// Prepend prepends a tuple prefix to both Low and High bounds.
+// Matches Java's TupleRange.prepend(Tuple).
+func (r TupleRange) Prepend(prefix tuple.Tuple) TupleRange {
+	prependTuple := func(t tuple.Tuple) tuple.Tuple {
+		if t == nil {
+			return prefix
+		}
+		result := make(tuple.Tuple, 0, len(prefix)+len(t))
+		result = append(result, prefix...)
+		result = append(result, t...)
+		return result
+	}
+	return TupleRange{
+		Low:          prependTuple(r.Low),
+		High:         prependTuple(r.High),
+		LowEndpoint:  r.LowEndpoint,
+		HighEndpoint: r.HighEndpoint,
 	}
 }
 
@@ -155,6 +179,37 @@ func (store *FDBRecordStore) ScanIndex(
 	}
 	maintainer := store.getIndexMaintainer(index)
 	return maintainer.Scan(scanRange, continuation, scanProperties)
+}
+
+// ScanIndexByType scans a secondary index with an explicit scan type.
+// For BY_VALUE, delegates to the maintainer's Scan. For BY_RANK, converts rank
+// range to score range and scans the B-tree.
+// Matches Java's FDBRecordStore.scanIndex(index, scanType, range, ...).
+func (store *FDBRecordStore) ScanIndexByType(
+	index *Index,
+	scanType IndexScanType,
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	if !store.IsIndexScannable(index.Name) {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("%w: %s is %s", ErrIndexNotReadable, index.Name, store.GetIndexState(index.Name)),
+		}
+	}
+	maintainer := store.getIndexMaintainer(index)
+	switch scanType {
+	case IndexScanByRank:
+		rm, ok := maintainer.(*RankIndexMaintainer)
+		if !ok {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("index %q (type %s) does not support BY_RANK scan", index.Name, index.Type),
+			}
+		}
+		return rm.ScanByRank(scanRange, continuation, scanProperties)
+	default:
+		return maintainer.Scan(scanRange, continuation, scanProperties)
+	}
 }
 
 // indexCursor iterates key-value pairs from an index subspace and maps
