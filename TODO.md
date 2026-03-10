@@ -246,7 +246,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK conformance tests** — 11 specs: BY_VALUE Go→Java/Java→Go/mixed writes, delete cross-language, update cross-language, BY_RANK scan with rank ranges cross-validated, ranked set wire compatibility (Go writes→Java reads by rank, Java writes→Go reads by rank), delete updates ranked set. Cross-validated.
 
-- [ ] **RANK aggregate functions** — Java supports `RANK_FOR_SCORE`, `SCORE_FOR_RANK`, `SCORE_FOR_RANK_ELSE_SKIP`, `COUNT_DISTINCT` (when unique) as aggregate functions, and `RANK` as a record function. Go has raw `RankForScore`/`ScoreForRank` methods but no `EvaluateAggregateFunction` / `evaluateRecordFunction` integration. **MEDIUM**.
+- [x] **RANK aggregate functions** — `EvaluateAggregateFunction` integration for RANK indexes: `COUNT_DISTINCT` (ranked set size), `RANK_FOR_SCORE`, `SCORE_FOR_RANK`, `SCORE_FOR_RANK_ELSE_SKIP` (sentinel on OOB), `COUNT` (unique only). Auto-index-selection + `canEvaluateRankAggregate` + `expressionsEqual`. 7 tests. Record function `RANK` not yet integrated.
 
 - [ ] **RANK deleteWhere** — Java's `RankIndexMaintainer.deleteWhere()` clears the secondary subspace for a given prefix. Go has no per-prefix delete for ranked set data; `clearIndexData` handles full index clearing but `deleteRecordsWhere` would leave orphaned ranked set entries. **MEDIUM**.
 
