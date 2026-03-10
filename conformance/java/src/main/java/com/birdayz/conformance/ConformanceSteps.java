@@ -1421,4 +1421,154 @@ public class ConformanceSteps {
             return result;
         });
     }
+
+    // --- COUNT_NOT_NULL index conformance steps ---
+
+    private static RecordMetaData createCountNotNullIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.addIndex("Order", new Index("count_not_null_price",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.COUNT_NOT_NULL));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openCountNotNullIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createCountNotNullIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithCountNotNullIndex")
+    public void saveOrderWithCountNotNullIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCountNotNullIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithCountNotNullIndex")
+    public boolean deleteOrderWithCountNotNullIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCountNotNullIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanCountNotNullIndex")
+    public java.util.List<java.util.Map<String, Object>> scanCountNotNullIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createCountNotNullIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("count_not_null_price");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                map.put("count", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    // --- COUNT_UPDATES index conformance steps ---
+
+    private static RecordMetaData createCountUpdatesIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.addIndex("Order", new Index("count_updates_price",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 0),
+            IndexTypes.COUNT_UPDATES));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openCountUpdatesIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createCountUpdatesIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithCountUpdatesIndex")
+    public void saveOrderWithCountUpdatesIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCountUpdatesIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithCountUpdatesIndex")
+    public boolean deleteOrderWithCountUpdatesIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openCountUpdatesIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanCountUpdatesIndex")
+    public java.util.List<java.util.Map<String, Object>> scanCountUpdatesIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createCountUpdatesIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("count_updates_price");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                map.put("count", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
 }

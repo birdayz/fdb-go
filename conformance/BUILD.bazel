@@ -9,6 +9,8 @@ go_test(
         "continuation_conformance_test.go",
         "count_conformance_test.go",
         "count_index_conformance_test.go",
+        "count_not_null_index_conformance_test.go",
+        "count_updates_index_conformance_test.go",
         "crud_test.go",
         "customer_conformance_test.go",
         "delete_all_conformance_test.go",

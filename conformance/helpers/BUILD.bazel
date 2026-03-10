@@ -7,6 +7,8 @@ go_library(
         "conformance_store.go",
         "container.go",
         "count_index_conformance_store.go",
+        "count_not_null_index_conformance_store.go",
+        "count_updates_index_conformance_store.go",
         "customer_conformance_store.go",
         "fanout_index_conformance_store.go",
         "index_conformance_store.go",
