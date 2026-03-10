@@ -9,16 +9,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 var _ = Describe("RangeSet Wire Format Conformance", func() {
 	var (
 		ctx        context.Context
-		env        *helpers.TenantEnvironment
-		java       *helpers.JavaInvoker
+		env        *TenantEnvironment
+		java       *JavaInvoker
 		rsSubspace subspace.Subspace
 		db         *recordlayer.FDBDatabase
 	)
@@ -29,11 +27,11 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 		tenantName := fmt.Sprintf("rs_%s", uuid.New().String())
 
 		var err error
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
 		db = env.RecordDB
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 
 		// Use a unique subspace for the RangeSet within the tenant
 		ks := subspace.Sub(tuple.Tuple{})
@@ -49,7 +47,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"rsSubspace":  helpers.BytesToIntArray(rsSubspace.Bytes()),
+			"rsSubspace":  BytesToIntArray(rsSubspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -69,7 +67,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 
 			// Java: contains(0x50) should be true
 			params := buildJavaParams()
-			params["key"] = helpers.BytesToIntArray([]byte{0x50})
+			params["key"] = BytesToIntArray([]byte{0x50})
 			var contains bool
 			err = java.InvokeAs(ctx, "rangeSetContains", params, &contains)
 			Expect(err).NotTo(HaveOccurred())
@@ -88,8 +86,8 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 		It("should see the range as complete via Go", func() {
 			// Java inserts full range [0x00, 0xFF)
 			params := buildJavaParams()
-			params["begin"] = helpers.BytesToIntArray([]byte{0x00})
-			params["end"] = helpers.BytesToIntArray([]byte{0xff})
+			params["begin"] = BytesToIntArray([]byte{0x00})
+			params["end"] = BytesToIntArray([]byte{0xff})
 			var inserted bool
 			err := java.InvokeAs(ctx, "rangeSetInsert", params, &inserted)
 			Expect(err).NotTo(HaveOccurred())
@@ -125,7 +123,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 
 			// Java: contains(0x20) should be true (inside range)
 			params := buildJavaParams()
-			params["key"] = helpers.BytesToIntArray([]byte{0x20})
+			params["key"] = BytesToIntArray([]byte{0x20})
 			var contains bool
 			err = java.InvokeAs(ctx, "rangeSetContains", params, &contains)
 			Expect(err).NotTo(HaveOccurred())
@@ -133,7 +131,7 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 
 			// Java: contains(0x80) should be false (outside range)
 			params = buildJavaParams()
-			params["key"] = helpers.BytesToIntArray([]byte{0x80})
+			params["key"] = BytesToIntArray([]byte{0x80})
 			err = java.InvokeAs(ctx, "rangeSetContains", params, &contains)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(contains).To(BeFalse())
@@ -156,8 +154,8 @@ var _ = Describe("RangeSet Wire Format Conformance", func() {
 		It("should see the correct missing range via Go", func() {
 			// Java inserts [0x00, 0x50)
 			params := buildJavaParams()
-			params["begin"] = helpers.BytesToIntArray([]byte{0x00})
-			params["end"] = helpers.BytesToIntArray([]byte{0x50})
+			params["begin"] = BytesToIntArray([]byte{0x00})
+			params["end"] = BytesToIntArray([]byte{0x50})
 			var inserted bool
 			err := java.InvokeAs(ctx, "rangeSetInsert", params, &inserted)
 			Expect(err).NotTo(HaveOccurred())

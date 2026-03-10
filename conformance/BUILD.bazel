@@ -1,41 +1,47 @@
+load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_java//java:defs.bzl", "java_binary", "java_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+proto_library(
+    name = "demo_proto",
+    srcs = ["record_layer_demo.proto"],
+    strip_import_prefix = "/conformance",
+    deps = ["//proto/apple:apple_proto"],
+)
+
+java_proto_library(
+    name = "demo_java_proto",
+    deps = [":demo_proto"],
+)
+
+java_library(
+    name = "conformance_lib",
+    srcs = glob(["*.java"]),
+    javacopts = ["-parameters"],
+    deps = [
+        ":demo_java_proto",
+        "@maven//:com_google_code_gson_gson",
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:com_google_protobuf_protobuf_java_util",
+        "@maven//:org_foundationdb_fdb_extensions",
+        "@maven//:org_foundationdb_fdb_java",
+        "@maven//:org_foundationdb_fdb_record_layer_core",
+    ],
+)
+
+java_binary(
+    name = "conformance_server",
+    main_class = "com.birdayz.conformance.ConformanceServer",
+    visibility = ["//visibility:public"],
+    runtime_deps = [":conformance_lib"],
+)
 
 go_test(
     name = "conformance_test",
-    srcs = [
-        "clear_when_zero_conformance_test.go",
-        "composite_index_conformance_test.go",
-        "conflict_conformance_test.go",
-        "conformance_suite_test.go",
-        "continuation_conformance_test.go",
-        "count_conformance_test.go",
-        "count_index_conformance_test.go",
-        "count_not_null_index_conformance_test.go",
-        "count_updates_index_conformance_test.go",
-        "crud_test.go",
-        "customer_conformance_test.go",
-        "delete_all_conformance_test.go",
-        "delete_conformance_test.go",
-        "existence_check_conformance_test.go",
-        "fanout_index_conformance_test.go",
-        "index_conformance_test.go",
-        "index_state_conformance_test.go",
-        "isolation_conformance_test.go",
-        "min_max_ever_index_conformance_test.go",
-        "min_max_ever_tuple_index_conformance_test.go",
-        "rangeset_conformance_test.go",
-        "rebuild_index_conformance_test.go",
-        "reverse_scan_conformance_test.go",
-        "scan_conformance_test.go",
-        "split_conformance_test.go",
-        "store_header_conformance_test.go",
-        "store_lifecycle_conformance_test.go",
-        "sum_index_conformance_test.go",
-        "version_conformance_test.go",
-    ],
-    data = ["//conformance/java:conformance_server"],
+    srcs = glob(["*_test.go"]),
+    data = [":conformance_server"],
     deps = [
-        "//conformance/helpers",
         "//gen",
         "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb",
@@ -45,6 +51,8 @@ go_test(
         "@com_github_google_uuid//:uuid",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
     ],
 )

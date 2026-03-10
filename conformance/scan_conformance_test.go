@@ -8,8 +8,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -17,8 +15,8 @@ import (
 var _ = Describe("Scan Conformance", func() {
 	var (
 		ctx        context.Context
-		env        *helpers.TenantEnvironment
-		java       *helpers.JavaInvoker
+		env        *TenantEnvironment
+		java       *JavaInvoker
 	)
 
 	BeforeEach(func() {
@@ -26,10 +24,10 @@ var _ = Describe("Scan Conformance", func() {
 		var err error
 
 		tenantName := fmt.Sprintf("scan_%s", uuid.New().String())
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 	})
 
 	AfterEach(func() {
@@ -41,7 +39,7 @@ var _ = Describe("Scan Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
+			"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -135,7 +133,7 @@ var _ = Describe("Scan Conformance", func() {
 
 	Describe("Go writes, Java scans", func() {
 		It("should scan all records in order", func() {
-			orders := helpers.StandardOrders(1001, 5)
+			orders := StandardOrders(1001, 5)
 			saveOrdersWithGo(orders)
 
 			javaResults := scanOrdersWithJava(0)
@@ -149,7 +147,7 @@ var _ = Describe("Scan Conformance", func() {
 
 	Describe("Java writes, Go scans", func() {
 		It("should scan records written by Java", func() {
-			for _, order := range helpers.StandardOrders(2001, 5) {
+			for _, order := range StandardOrders(2001, 5) {
 				saveOrderWithJava(order)
 			}
 
@@ -164,7 +162,7 @@ var _ = Describe("Scan Conformance", func() {
 
 	Describe("Scan with limit", func() {
 		It("should respect row limit in both Go and Java", func() {
-			orders := helpers.StandardOrders(3001, 10)
+			orders := StandardOrders(3001, 10)
 			saveOrdersWithGo(orders)
 
 			// Java scan with limit=3
@@ -186,9 +184,9 @@ var _ = Describe("Scan Conformance", func() {
 	Describe("Cross-scan ordering", func() {
 		It("should return same order from Go and Java scans", func() {
 			orders := []*gen.Order{
-				helpers.NewOrder(5005).WithPrice(50).WithFlower("Rose", gen.Color_RED).Build(),
-				helpers.NewOrder(5001).WithPrice(10).WithFlower("Tulip", gen.Color_BLUE).Build(),
-				helpers.NewOrder(5003).WithPrice(30).WithFlower("Lily", gen.Color_YELLOW).Build(),
+				NewOrder(5005).WithPrice(50).WithFlower("Rose", gen.Color_RED).Build(),
+				NewOrder(5001).WithPrice(10).WithFlower("Tulip", gen.Color_BLUE).Build(),
+				NewOrder(5003).WithPrice(30).WithFlower("Lily", gen.Color_YELLOW).Build(),
 			}
 			saveOrdersWithGo(orders)
 
@@ -219,7 +217,7 @@ var _ = Describe("Scan Conformance", func() {
 
 	Describe("Scan with flower details cross-check", func() {
 		It("should preserve flower data in both directions", func() {
-			order := helpers.NewOrder(6001).
+			order := NewOrder(6001).
 				WithPrice(42).
 				WithFlower("Orchid", gen.Color_PINK).
 				Build()

@@ -8,9 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -18,8 +16,8 @@ import (
 var _ = Describe("Isolation Level Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.ConformanceStore
+		env   *TenantEnvironment
+		store *ConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -30,10 +28,10 @@ var _ = Describe("Isolation Level Conformance", func() {
 		tenantName := fmt.Sprintf("isolation_%s", uuid.New().String())
 
 		// Use shared container with tenant isolation
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
+		store = NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
@@ -73,7 +71,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Save the record
-				order := helpers.StandardOrder(orderID)
+				order := StandardOrder(orderID)
 				_, err = fdbStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -112,7 +110,6 @@ var _ = Describe("Isolation Level Conformance", func() {
 				exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSnapshot)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(exists).To(BeFalse(), "TX2 with SNAPSHOT should NOT see uncommitted write from TX1")
-
 
 				// TX2 is read-only, so we can just let it get garbage collected
 				// (no need to commit a read-only transaction)
@@ -155,7 +152,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 				Expect(exists).To(BeFalse())
 
 				// Save record
-				order := helpers.StandardOrder(orderID)
+				order := StandardOrder(orderID)
 				_, err = fdbStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -178,7 +175,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			orderID := int64(10003)
 
 			// First, create and commit a record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Channel to coordinate timing
@@ -248,7 +245,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			orderID := int64(20001)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx1CanCommit := make(chan struct{})
@@ -299,7 +296,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					// Update the record
-					order := helpers.NewOrder(orderID).WithPrice(999).Build()
+					order := NewOrder(orderID).WithPrice(999).Build()
 					_, err = fdbStore.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -321,7 +318,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 			orderID := int64(20002)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx1Started := make(chan struct{})
@@ -354,7 +351,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 
 				// CRITICAL: Must write something to be a read-write transaction
 				// Read-only transactions don't check for conflicts in FDB!
-				order := helpers.NewOrder(orderID).WithPrice(888).Build()
+				order := NewOrder(orderID).WithPrice(888).Build()
 				_, err = fdbStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -386,7 +383,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					// Update the record - this will conflict with TX1's read
-					order := helpers.NewOrder(orderID).WithPrice(777).Build()
+					order := NewOrder(orderID).WithPrice(777).Build()
 					_, err = fdbStore.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -406,7 +403,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 	Describe("Isolation Level API Validation", func() {
 		It("should accept both isolation levels for RecordExists", func() {
 			orderID := int64(30001)
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

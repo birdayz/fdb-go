@@ -9,16 +9,17 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 var _ = Describe("Split Record Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.SplitConformanceStore
+		env   *TenantEnvironment
+		store *SplitConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -27,10 +28,10 @@ var _ = Describe("Split Record Conformance", func() {
 		tenantName := fmt.Sprintf("split_%s", uuid.New().String())
 
 		var err error
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store, err = helpers.NewSplitConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		store, err = NewSplitConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -56,7 +57,7 @@ var _ = Describe("Split Record Conformance", func() {
 		It("should handle small record with split enabled (unsplit path)", func() {
 			// A record under 100KB should still work correctly when split is enabled.
 			// It goes through the unsplit path (suffix 0) instead of being chunked.
-			order := helpers.StandardOrder(2)
+			order := StandardOrder(2)
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -89,7 +90,7 @@ var _ = Describe("Split Record Conformance", func() {
 		})
 
 		It("should handle small record from Java with split enabled", func() {
-			order := helpers.NewOrder(11).
+			order := NewOrder(11).
 				WithPrice(33).
 				WithFlower("Daisy", gen.Color_YELLOW).
 				Build()
@@ -126,7 +127,7 @@ var _ = Describe("Split Record Conformance", func() {
 		})
 
 		It("should handle minimal order with split enabled", func() {
-			order := helpers.MinimalOrder(21)
+			order := MinimalOrder(21)
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -145,7 +146,7 @@ var _ = Describe("Split Record Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Overwrite with a small record — old split chunks must be cleared
-			small := helpers.NewOrder(30).
+			small := NewOrder(30).
 				WithPrice(1).
 				WithFlower("Tiny", gen.Color_BLUE).
 				Build()
@@ -155,7 +156,7 @@ var _ = Describe("Split Record Conformance", func() {
 
 		It("should handle overwriting a small record with a split record", func() {
 			// First write a small record
-			small := helpers.NewOrder(31).
+			small := NewOrder(31).
 				WithPrice(5).
 				WithFlower("Small", gen.Color_YELLOW).
 				Build()
@@ -174,3 +175,165 @@ var _ = Describe("Split Record Conformance", func() {
 		})
 	})
 })
+
+// SplitConformanceStore wraps split record operations and cross-validates with Java.
+// It uses split-enabled metadata on both Go and Java sides so that records >100KB
+// are stored as multiple FDB key-value pairs and can be read by either implementation.
+type SplitConformanceStore struct {
+	recordDB    *recordlayer.FDBDatabase
+	metaData    *recordlayer.RecordMetaData
+	keyspace    subspace.Subspace
+	java        *JavaInvoker
+	clusterFile string
+	tenantName  string
+}
+
+// NewSplitConformanceStore creates a split-enabled conformance store for cross-validation.
+func NewSplitConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*SplitConformanceStore, error) {
+	md, err := createSplitOrderMetaData()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create split metadata: %w", err)
+	}
+
+	return &SplitConformanceStore{
+		recordDB:    recordDB,
+		metaData:    md,
+		keyspace:    keyspace,
+		java:        NewJavaInvoker(),
+		clusterFile: clusterFile,
+		tenantName:  tenantName,
+	}, nil
+}
+
+// buildJavaParams builds base parameters for Java invocations.
+func (s *SplitConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
+		"clusterFile": s.clusterFile,
+		"subspace":    BytesToIntArray(s.keyspace.Bytes()),
+	}
+	if s.tenantName != "" {
+		params["tenantName"] = s.tenantName
+	}
+	return params
+}
+
+// SaveRecord saves a record with Go (split enabled), then has Java load it to verify
+// Java can read Go's split chunks. Also reads back with Go for sanity.
+func (s *SplitConformanceStore) SaveRecord(ctx context.Context, msg proto.Message) error {
+	order, ok := msg.(*gen.Order)
+	if !ok {
+		return fmt.Errorf("only Order records are supported in split conformance tests")
+	}
+
+	// 1. Save with Go (split-enabled metadata)
+	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(s.metaData).
+			SetSubspace(s.keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SaveRecord(msg)
+		return nil, err
+	})
+	if err != nil {
+		return fmt.Errorf("go save failed: %w", err)
+	}
+
+	// 2. Java loads what Go wrote (validates Java can read Go's split chunks)
+	var javaOrder gen.Order
+	params := s.buildJavaParams()
+	params["orderID"] = *order.OrderId
+	err = s.java.InvokeAs(ctx, "loadSplitOrder", params, &javaOrder)
+	if err != nil {
+		return fmt.Errorf("java cross-check read of Go-written split record failed: %w", err)
+	}
+
+	// 3. Go loads back its own data
+	goOrder, err := s.loadRecordWithGo(ctx, *order.OrderId)
+	if err != nil {
+		return fmt.Errorf("go cross-check read failed: %w", err)
+	}
+
+	// 4. Compare
+	if !proto.Equal(goOrder, &javaOrder) {
+		return fmt.Errorf("split conformance mismatch: Java read differs from Go read\nGo:   %+v\nJava: %+v", goOrder, &javaOrder)
+	}
+
+	return nil
+}
+
+// JavaSaveThenGoLoad has Java save a record (with split enabled), then Go loads it.
+// Validates Go can reassemble Java's split chunks.
+func (s *SplitConformanceStore) JavaSaveThenGoLoad(ctx context.Context, order *gen.Order) (*gen.Order, error) {
+	// 1. Java saves the record with split-enabled metadata
+	params := s.buildJavaParams()
+	params["order"] = order
+	err := s.java.InvokeAs(ctx, "saveSplitOrder", params, nil)
+	if err != nil {
+		return nil, fmt.Errorf("java save of split record failed: %w", err)
+	}
+
+	// 2. Go loads what Java wrote
+	goOrder, err := s.loadRecordWithGo(ctx, *order.OrderId)
+	if err != nil {
+		return nil, fmt.Errorf("go load of Java-written split record failed: %w", err)
+	}
+
+	// 3. Also verify Java can read its own data
+	var javaOrder gen.Order
+	params = s.buildJavaParams()
+	params["orderID"] = *order.OrderId
+	err = s.java.InvokeAs(ctx, "loadSplitOrder", params, &javaOrder)
+	if err != nil {
+		return nil, fmt.Errorf("java cross-check read of its own split record failed: %w", err)
+	}
+
+	// 4. Compare Go and Java reads
+	if !proto.Equal(goOrder, &javaOrder) {
+		return nil, fmt.Errorf("split conformance mismatch: Go read differs from Java read\nGo:   %+v\nJava: %+v", goOrder, &javaOrder)
+	}
+
+	return goOrder, nil
+}
+
+// loadRecordWithGo loads a record using only Go with split-enabled metadata.
+func (s *SplitConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) (*gen.Order, error) {
+	var order *gen.Order
+	_, err := s.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(s.metaData).
+			SetSubspace(s.keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		storedRecord, err := store.LoadRecord(tuple.Tuple{orderID})
+		if err != nil {
+			return nil, err
+		}
+
+		if storedRecord == nil {
+			return nil, fmt.Errorf("record not found: %d", orderID)
+		}
+
+		order = storedRecord.Record.(*gen.Order)
+		return nil, nil
+	})
+	return order, err
+}
+
+// createSplitOrderMetaData creates RecordMetaData with split long records enabled.
+// Must match the Java createSplitMetaData() configuration exactly.
+func createSplitOrderMetaData() (*recordlayer.RecordMetaData, error) {
+	builder := recordlayer.NewRecordMetaDataBuilder().
+		SetRecords(gen.File_record_layer_demo_proto).
+		SetSplitLongRecords(true)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	return builder.Build()
+}

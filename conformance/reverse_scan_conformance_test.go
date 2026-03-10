@@ -9,8 +9,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -18,8 +16,8 @@ import (
 var _ = Describe("Reverse Scan Conformance", func() {
 	var (
 		ctx  context.Context
-		env  *helpers.TenantEnvironment
-		java *helpers.JavaInvoker
+		env  *TenantEnvironment
+		java *JavaInvoker
 	)
 
 	BeforeEach(func() {
@@ -27,10 +25,10 @@ var _ = Describe("Reverse Scan Conformance", func() {
 		var err error
 
 		tenantName := fmt.Sprintf("rscan_%s", uuid.New().String())
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 	})
 
 	AfterEach(func() {
@@ -42,7 +40,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
+			"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -134,7 +132,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 
 	Describe("Go writes, both reverse scan", func() {
 		It("should return records in reverse primary key order from both Go and Java", func() {
-			orders := helpers.StandardOrders(1001, 5)
+			orders := StandardOrders(1001, 5)
 			saveOrdersWithGo(orders)
 
 			// Java reverse scan
@@ -155,7 +153,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 
 	Describe("Java writes, Go reverse scans", func() {
 		It("should return Java-written records in reverse order from Go", func() {
-			for _, order := range helpers.StandardOrders(2001, 5) {
+			for _, order := range StandardOrders(2001, 5) {
 				saveOrderWithJava(order)
 			}
 
@@ -169,7 +167,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 
 	Describe("Reverse scan with limit", func() {
 		It("should respect row limit in both Go and Java reverse scans", func() {
-			orders := helpers.StandardOrders(3001, 10)
+			orders := StandardOrders(3001, 10)
 			saveOrdersWithGo(orders)
 
 			// Java reverse with limit=3 → highest 3 PKs
@@ -191,9 +189,9 @@ var _ = Describe("Reverse Scan Conformance", func() {
 	Describe("Reverse scan mirrors forward scan", func() {
 		It("should return the exact reverse of forward scan", func() {
 			orders := []*gen.Order{
-				helpers.NewOrder(5005).WithPrice(50).Build(),
-				helpers.NewOrder(5001).WithPrice(10).Build(),
-				helpers.NewOrder(5003).WithPrice(30).Build(),
+				NewOrder(5005).WithPrice(50).Build(),
+				NewOrder(5001).WithPrice(10).Build(),
+				NewOrder(5003).WithPrice(30).Build(),
 			}
 			saveOrdersWithGo(orders)
 
@@ -227,7 +225,7 @@ var _ = Describe("Reverse Scan Conformance", func() {
 	Describe("Reverse scan with continuation cross-platform", func() {
 		It("should resume Go reverse scan with Java continuation", func() {
 			// Write 10 orders
-			orders := helpers.StandardOrders(4001, 10)
+			orders := StandardOrders(4001, 10)
 			saveOrdersWithGo(orders)
 
 			// Java reverse scan page 1 (limit=3)

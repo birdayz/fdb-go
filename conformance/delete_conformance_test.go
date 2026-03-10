@@ -7,16 +7,14 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
 var _ = Describe("Delete Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.ConformanceStore
+		env   *TenantEnvironment
+		store *ConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -27,11 +25,11 @@ var _ = Describe("Delete Conformance", func() {
 		tenantName := fmt.Sprintf("delete_%s", uuid.New().String())
 
 		// Use shared container with tenant isolation
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
 		// Create conformance store for automatic Go/Java validation
-		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
+		store = NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
@@ -43,7 +41,7 @@ var _ = Describe("Delete Conformance", func() {
 	Describe("Delete Operations", func() {
 		It("should delete existing records", func() {
 			// Create a record (automatically validated with Java)
-			order := helpers.StandardOrder(1001)
+			order := StandardOrder(1001)
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -78,7 +76,7 @@ var _ = Describe("Delete Conformance", func() {
 		It("should handle deleting multiple records", func() {
 			// Create multiple records (each validated with Java)
 			for i := int64(100); i < 110; i++ {
-				order := helpers.StandardOrder(i)
+				order := StandardOrder(i)
 				err := store.SaveRecord(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -106,7 +104,7 @@ var _ = Describe("Delete Conformance", func() {
 		It("should maintain consistency across multiple operations", func() {
 			// Create records (validated with Java)
 			for i := int64(200); i < 210; i++ {
-				order := helpers.StandardOrder(i)
+				order := StandardOrder(i)
 				err := store.SaveRecord(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -128,7 +126,7 @@ var _ = Describe("Delete Conformance", func() {
 
 		It("should handle deleting same record twice", func() {
 			// Create record
-			order := helpers.StandardOrder(300)
+			order := StandardOrder(300)
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -145,7 +143,7 @@ var _ = Describe("Delete Conformance", func() {
 
 		It("should handle delete after update", func() {
 			// Create record
-			order1 := helpers.NewOrder(400).
+			order1 := NewOrder(400).
 				WithPrice(100).
 				WithFlower("Rose", gen.Color_RED).
 				Build()
@@ -153,7 +151,7 @@ var _ = Describe("Delete Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update record
-			order2 := helpers.NewOrder(400).
+			order2 := NewOrder(400).
 				WithPrice(200).
 				WithFlower("Tulip", gen.Color_BLUE).
 				Build()
@@ -173,7 +171,7 @@ var _ = Describe("Delete Conformance", func() {
 
 		It("should allow re-insert after delete", func() {
 			// Create, delete, re-insert with different data
-			order1 := helpers.NewOrder(600).
+			order1 := NewOrder(600).
 				WithPrice(100).
 				WithFlower("Rose", gen.Color_RED).
 				Build()
@@ -186,7 +184,7 @@ var _ = Describe("Delete Conformance", func() {
 			Expect(deleted).To(BeTrue())
 
 			// Re-insert with different data (validated with Java)
-			order2 := helpers.NewOrder(600).
+			order2 := NewOrder(600).
 				WithPrice(999).
 				WithFlower("Tulip", gen.Color_BLUE).
 				Build()
@@ -203,7 +201,7 @@ var _ = Describe("Delete Conformance", func() {
 
 		It("should handle deleting minimal vs full orders", func() {
 			// Create and delete full order
-			fullOrder := helpers.StandardOrder(500)
+			fullOrder := StandardOrder(500)
 			err := store.SaveRecord(ctx, fullOrder)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -212,7 +210,7 @@ var _ = Describe("Delete Conformance", func() {
 			Expect(deleted).To(BeTrue())
 
 			// Create and delete minimal order
-			minOrder := helpers.MinimalOrder(501)
+			minOrder := MinimalOrder(501)
 			err = store.SaveRecord(ctx, minOrder)
 			Expect(err).NotTo(HaveOccurred())
 

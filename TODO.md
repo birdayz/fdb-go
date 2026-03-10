@@ -484,6 +484,15 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [ ] **KeySpace/KeySpacePath** — Enterprise key management. LOW priority.
 - [x] **ScanLimiter** — TimeScanLimiter, ByteScanLimiter, RecordScanLimiter all enforced in both `keyValueCursor` and `indexCursor`. Time limit uses free initial pass (first record always succeeds). Continuation returned for cross-transaction resumption.
 
+### HIGH — Conformance test restructure
+
+- [ ] **Remove Gradle, make conformance fully Bazel-native** — The conformance Java server currently lives in `conformance/java/` with its own Gradle build (`build.gradle`, `gradlew`, etc.) and the Go tests live in `conformance/`. The `helpers/` package has Go store-setup boilerplate. Restructure:
+  - Co-locate Go test + Java source per feature: e.g. `conformance/index_conformance_test.go` + `conformance/index_conformance_test.java` (or similar convention) in the same `conformance/` folder.
+  - Remove `conformance/java/` directory (Gradle build files, `gradlew`, `build.gradle`, `gradle/` wrapper). Bazel `rules_java` + `rules_jvm_external` already handle Java compilation and Maven deps.
+  - Remove `conformance/helpers/` — inline or fold the Go store-setup into test files or a minimal `_test.go` helper.
+  - Single `conformance/BUILD.bazel` that builds the Java binary and Go tests, with Go test targets depending on the Java build via `data = [":conformance_server"]`.
+  - Goal: `bazelisk test //conformance:...` builds everything (Java + Go) with zero external tooling. No Gradle, no helper package, just Bazel.
+
 ---
 
 ## Documentation cleanup

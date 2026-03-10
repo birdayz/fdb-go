@@ -10,8 +10,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -19,8 +17,8 @@ import (
 var _ = Describe("Store Lifecycle Conformance", func() {
 	var (
 		ctx      context.Context
-		env      *helpers.TenantEnvironment
-		java     *helpers.JavaInvoker
+		env      *TenantEnvironment
+		java     *JavaInvoker
 		db       *recordlayer.FDBDatabase
 		keyspace subspace.Subspace
 		priceIdx *recordlayer.Index
@@ -32,11 +30,11 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 		tenantName := fmt.Sprintf("lifecycle_%s", uuid.New().String())
 
 		var err error
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
 		db = env.RecordDB
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 		keyspace = subspace.Sub(tuple.Tuple{})
 
 		priceIdx = recordlayer.NewIndex("Order$price", recordlayer.Field("price"))
@@ -57,7 +55,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(keyspace.Bytes()),
+			"subspace":    BytesToIntArray(keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -80,7 +78,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Read header before delete
-			headerStore, err := helpers.NewStoreHeaderConformanceStore(db, keyspace, env.ClusterFile, env.TenantName)
+			headerStore, err := NewStoreHeaderConformanceStore(db, keyspace, env.ClusterFile, env.TenantName)
 			Expect(err).NotTo(HaveOccurred())
 			headerBefore, err := headerStore.GetStoreHeaderRawGo(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -150,7 +148,7 @@ var _ = Describe("Store Lifecycle Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Index state should still be WRITE_ONLY — Java reads raw
-			idxStore, err := helpers.NewIndexStateConformanceStore(db, keyspace, env.ClusterFile, env.TenantName)
+			idxStore, err := NewIndexStateConformanceStore(db, keyspace, env.ClusterFile, env.TenantName)
 			Expect(err).NotTo(HaveOccurred())
 
 			javaState, err := idxStore.GetIndexStateRawJava(ctx, "Order$price")

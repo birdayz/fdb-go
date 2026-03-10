@@ -9,9 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -29,8 +27,8 @@ type versionResult struct {
 var _ = Describe("Record Version Conformance", func() {
 	var (
 		ctx         context.Context
-		env         *helpers.TenantEnvironment
-		java        *helpers.JavaInvoker
+		env         *TenantEnvironment
+		java        *JavaInvoker
 		versionMeta *recordlayer.RecordMetaData
 	)
 
@@ -39,10 +37,10 @@ var _ = Describe("Record Version Conformance", func() {
 		var err error
 
 		tenantName := fmt.Sprintf("version_%s", uuid.New().String())
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 
 		// Create versioned metadata for Go side
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -62,7 +60,7 @@ var _ = Describe("Record Version Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
+			"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -126,7 +124,7 @@ var _ = Describe("Record Version Conformance", func() {
 
 	Describe("Go saves versioned, Java reads version", func() {
 		It("should store and read back version bytes", func() {
-			vs := saveOrderWithGoVersioned(helpers.StandardOrder(1))
+			vs := saveOrderWithGoVersioned(StandardOrder(1))
 			Expect(vs).NotTo(BeNil())
 			Expect(len(vs)).To(Equal(recordlayer.GlobalVersionBytes))
 
@@ -146,7 +144,7 @@ var _ = Describe("Record Version Conformance", func() {
 
 	Describe("Java saves versioned, Go reads version", func() {
 		It("should read version saved by Java", func() {
-			saveOrderWithJavaVersioned(helpers.StandardOrder(2))
+			saveOrderWithJavaVersioned(StandardOrder(2))
 
 			// Go reads the version
 			version := loadVersionWithGo(2)
@@ -179,7 +177,7 @@ var _ = Describe("Record Version Conformance", func() {
 					return nil, err
 				}
 				for i := int64(0); i < 3; i++ {
-					_, err = store.SaveRecord(helpers.StandardOrder(i))
+					_, err = store.SaveRecord(StandardOrder(i))
 					if err != nil {
 						return nil, err
 					}
@@ -211,10 +209,10 @@ var _ = Describe("Record Version Conformance", func() {
 
 	Describe("Version updated on re-save", func() {
 		It("should get new version when record is updated", func() {
-			vs1 := saveOrderWithGoVersioned(helpers.StandardOrder(10))
+			vs1 := saveOrderWithGoVersioned(StandardOrder(10))
 
 			// Update with new data
-			updated := helpers.NewOrder(10).WithPrice(999).WithFlower("Updated", gen.Color_BLUE).Build()
+			updated := NewOrder(10).WithPrice(999).WithFlower("Updated", gen.Color_BLUE).Build()
 			vs2 := saveOrderWithGoVersioned(updated)
 
 			// Versionstamps should differ (different transactions)

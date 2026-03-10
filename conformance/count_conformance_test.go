@@ -7,9 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -17,8 +15,8 @@ import (
 var _ = Describe("Record Count Conformance", func() {
 	var (
 		ctx        context.Context
-		env        *helpers.TenantEnvironment
-		java       *helpers.JavaInvoker
+		env        *TenantEnvironment
+		java       *JavaInvoker
 		countMeta  *recordlayer.RecordMetaData
 	)
 
@@ -27,10 +25,10 @@ var _ = Describe("Record Count Conformance", func() {
 		var err error
 
 		tenantName := fmt.Sprintf("count_%s", uuid.New().String())
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 
 		// Create counting-enabled metadata for Go side
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -50,7 +48,7 @@ var _ = Describe("Record Count Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
+			"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName
@@ -126,7 +124,7 @@ var _ = Describe("Record Count Conformance", func() {
 	Describe("Go saves, Java counts", func() {
 		It("should agree on count after Go saves", func() {
 			for i := int64(1); i <= 5; i++ {
-				saveOrderWithGoCounting(helpers.StandardOrder(i))
+				saveOrderWithGoCounting(StandardOrder(i))
 			}
 
 			goCount := getGoRecordCount()
@@ -139,7 +137,7 @@ var _ = Describe("Record Count Conformance", func() {
 	Describe("Java saves, Go counts", func() {
 		It("should agree on count after Java saves", func() {
 			for i := int64(1); i <= 3; i++ {
-				saveOrderWithJavaCounting(helpers.StandardOrder(i))
+				saveOrderWithJavaCounting(StandardOrder(i))
 			}
 
 			goCount := getGoRecordCount()
@@ -152,7 +150,7 @@ var _ = Describe("Record Count Conformance", func() {
 	Describe("Count after delete", func() {
 		It("should decrement count when Go deletes", func() {
 			for i := int64(1); i <= 3; i++ {
-				saveOrderWithGoCounting(helpers.StandardOrder(i))
+				saveOrderWithGoCounting(StandardOrder(i))
 			}
 			Expect(getJavaRecordCount()).To(Equal(int64(3)))
 
@@ -167,12 +165,12 @@ var _ = Describe("Record Count Conformance", func() {
 
 	Describe("Count not incremented on update", func() {
 		It("should not change count when saving existing record", func() {
-			saveOrderWithGoCounting(helpers.StandardOrder(1))
+			saveOrderWithGoCounting(StandardOrder(1))
 			Expect(getGoRecordCount()).To(Equal(int64(1)))
 			Expect(getJavaRecordCount()).To(Equal(int64(1)))
 
 			// Update the same record (same primary key, different data)
-			updated := helpers.NewOrder(1).WithPrice(999).WithFlower("UpdatedRose", gen.Color_BLUE).Build()
+			updated := NewOrder(1).WithPrice(999).WithFlower("UpdatedRose", gen.Color_BLUE).Build()
 			saveOrderWithGoCounting(updated)
 
 			// Count should still be 1
@@ -185,9 +183,9 @@ var _ = Describe("Record Count Conformance", func() {
 
 	Describe("Mixed Go/Java saves", func() {
 		It("should maintain correct count with interleaved saves", func() {
-			saveOrderWithGoCounting(helpers.StandardOrder(1))
-			saveOrderWithJavaCounting(helpers.StandardOrder(2))
-			saveOrderWithGoCounting(helpers.StandardOrder(3))
+			saveOrderWithGoCounting(StandardOrder(1))
+			saveOrderWithJavaCounting(StandardOrder(2))
+			saveOrderWithGoCounting(StandardOrder(3))
 
 			goCount := getGoRecordCount()
 			javaCount := getJavaRecordCount()

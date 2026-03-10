@@ -8,10 +8,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -20,8 +18,8 @@ import (
 var _ = Describe("Conflict Range Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.ConformanceStore
+		env   *TenantEnvironment
+		store *ConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -32,10 +30,10 @@ var _ = Describe("Conflict Range Conformance", func() {
 		tenantName := fmt.Sprintf("conflict_%s", uuid.New().String())
 
 		// Use shared container with tenant isolation
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
+		store = NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
@@ -52,7 +50,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID := int64(40001)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx1AddedConflict := make(chan struct{})
@@ -117,7 +115,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Write to the same key - this will conflict with TX1's read conflict
-				order := helpers.NewOrder(orderID).WithPrice(999).Build()
+				order := NewOrder(orderID).WithPrice(999).Build()
 				_, err = fdbStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -139,7 +137,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID := int64(40002)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			var wg sync.WaitGroup
@@ -213,9 +211,8 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID := int64(40003)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
-
 
 			tx1ReadDone := make(chan struct{})
 			tx2Committed := make(chan struct{})
@@ -303,7 +300,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID := int64(40004)
 
 			// Create initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Single transaction should be able to add conflict and operate without self-conflict
@@ -324,7 +321,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(exists).To(BeTrue())
 
 				// Should be able to write too
-				order := helpers.NewOrder(orderID).WithPrice(123).Build()
+				order := NewOrder(orderID).WithPrice(123).Build()
 				_, err = fdbStore.SaveRecord(order)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -341,7 +338,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 		It("should handle multiple conflicts on same key idempotently", func() {
 			orderID := int64(40005)
 
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -370,9 +367,9 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID1 := int64(40006)
 			orderID2 := int64(40007)
 
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID1))
+			err := store.SaveRecord(ctx, StandardOrder(orderID1))
 			Expect(err).NotTo(HaveOccurred())
-			err = store.SaveRecord(ctx, helpers.StandardOrder(orderID2))
+			err = store.SaveRecord(ctx, StandardOrder(orderID2))
 			Expect(err).NotTo(HaveOccurred())
 
 			tx1Started := make(chan struct{})
@@ -424,7 +421,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					// Write to orderID2 - should not conflict with orderID1
-					order := helpers.NewOrder(orderID2).WithPrice(888).Build()
+					order := NewOrder(orderID2).WithPrice(888).Build()
 					_, err = fdbStore.SaveRecord(order)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -444,7 +441,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 			//   low = pack(primaryKey)
 			//   high = pack(primaryKey) + 0xFF
 
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -477,7 +474,6 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 		It("should handle conflict when SaveRecord happens after AddRecordReadConflict", func() {
 			orderID := int64(50001)
-
 
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})
@@ -525,7 +521,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 				<-tx1Started
 
-				err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+				err := store.SaveRecord(ctx, StandardOrder(orderID))
 				Expect(err).NotTo(HaveOccurred())
 			}()
 
@@ -539,9 +535,8 @@ var _ = Describe("Conflict Range Conformance", func() {
 			orderID := int64(50002)
 
 			// Pre-create the record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
-
 
 			tx1Started := make(chan struct{})
 			tx2Done := make(chan struct{})

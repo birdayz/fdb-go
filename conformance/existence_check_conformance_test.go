@@ -8,8 +8,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -18,8 +16,8 @@ import (
 var _ = Describe("RecordExistenceCheck Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.ConformanceStore
+		env   *TenantEnvironment
+		store *ConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -30,10 +28,10 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		tenantName := fmt.Sprintf("existence_%s", uuid.New().String())
 
 		// Use shared container with tenant isolation
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store = helpers.NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
+		store = NewConformanceStoreWithTenant(env.RecordDB, env.MetaData, env.ClusterFile, env.TenantName)
 	})
 
 	AfterEach(func() {
@@ -49,7 +47,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should allow saving new record", func() {
 			orderID := int64(10001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -63,12 +61,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(10002)
 
 			// Save initial record
-			order1 := helpers.NewOrder(orderID).WithPrice(100).Build()
+			order1 := NewOrder(orderID).WithPrice(100).Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update with NONE - should succeed
-			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
+			order2 := NewOrder(orderID).WithPrice(200).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -82,12 +80,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(10003)
 
 			// Save initial order
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save again with NONE - should succeed (effectively an update)
-			order2 := helpers.NewOrder(orderID).WithPrice(999).Build()
+			order2 := NewOrder(orderID).WithPrice(999).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckNone)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -100,7 +98,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should succeed for new record", func() {
 			orderID := int64(20001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfExists)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -114,12 +112,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(20002)
 
 			// Save initial record
-			order1 := helpers.StandardOrder(orderID)
+			order1 := StandardOrder(orderID)
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to save again with ERROR_IF_EXISTS - should fail
-			order2 := helpers.NewOrder(orderID).WithPrice(999).Build()
+			order2 := NewOrder(orderID).WithPrice(999).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfExists)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordAlreadyExists)).To(BeTrue())
@@ -129,11 +127,11 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(20003)
 
 			// Save initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to save again
-			err = store.SaveRecordWithOptions(ctx, helpers.StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfExists)
+			err = store.SaveRecordWithOptions(ctx, StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfExists)
 			Expect(err).To(HaveOccurred())
 
 			// Check if error is the structured type
@@ -152,7 +150,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should fail for new record", func() {
 			orderID := int64(30001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordDoesNotExist)).To(BeTrue())
@@ -162,12 +160,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(30002)
 
 			// Save initial record
-			order1 := helpers.NewOrder(orderID).WithPrice(100).Build()
+			order1 := NewOrder(orderID).WithPrice(100).Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update with ERROR_IF_NOT_EXISTS - should succeed
-			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
+			order2 := NewOrder(orderID).WithPrice(200).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfNotExists)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -180,7 +178,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should return structured error with primary key", func() {
 			orderID := int64(30003)
 
-			err := store.SaveRecordWithOptions(ctx, helpers.StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfNotExists)
+			err := store.SaveRecordWithOptions(ctx, StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 
 			// Check if error is the structured type
@@ -199,7 +197,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should succeed for new record", func() {
 			orderID := int64(40001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -208,12 +206,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(40002)
 
 			// Save initial Order
-			order1 := helpers.NewOrder(orderID).WithPrice(100).Build()
+			order1 := NewOrder(orderID).WithPrice(100).Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update with same type - should succeed
-			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
+			order2 := NewOrder(orderID).WithPrice(200).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -236,7 +234,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should fail for new record", func() {
 			orderID := int64(50001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.SaveRecordWithOptions(ctx, order, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordDoesNotExist)).To(BeTrue())
@@ -246,12 +244,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(50002)
 
 			// Save initial record
-			order1 := helpers.NewOrder(orderID).WithPrice(100).Build()
+			order1 := NewOrder(orderID).WithPrice(100).Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update with same type - should succeed
-			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
+			order2 := NewOrder(orderID).WithPrice(200).Build()
 			err = store.SaveRecordWithOptions(ctx, order2, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -271,7 +269,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should succeed for new record", func() {
 			orderID := int64(60001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.InsertRecord(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -284,11 +282,11 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(60002)
 
 			// Save initial record
-			err := store.SaveRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.SaveRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to insert again - should fail
-			err = store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err = store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordAlreadyExists)).To(BeTrue())
 		})
@@ -301,7 +299,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should fail for new record", func() {
 			orderID := int64(70001)
 
-			order := helpers.StandardOrder(orderID)
+			order := StandardOrder(orderID)
 			err := store.UpdateRecord(ctx, order)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordDoesNotExist)).To(BeTrue())
@@ -311,12 +309,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(70002)
 
 			// Save initial record
-			order1 := helpers.NewOrder(orderID).WithPrice(100).Build()
+			order1 := NewOrder(orderID).WithPrice(100).Build()
 			err := store.SaveRecord(ctx, order1)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update - should succeed
-			order2 := helpers.NewOrder(orderID).WithPrice(200).Build()
+			order2 := NewOrder(orderID).WithPrice(200).Build()
 			err = store.UpdateRecord(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -330,12 +328,12 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(70003)
 
 			// Create initial record
-			err := store.InsertRecord(ctx, helpers.NewOrder(orderID).WithPrice(100).Build())
+			err := store.InsertRecord(ctx, NewOrder(orderID).WithPrice(100).Build())
 			Expect(err).NotTo(HaveOccurred())
 
 			// Multiple updates should succeed
 			for i := 0; i < 5; i++ {
-				order := helpers.NewOrder(orderID).WithPrice(int32(200 + i*10)).Build()
+				order := NewOrder(orderID).WithPrice(int32(200 + i*10)).Build()
 				err = store.UpdateRecord(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -398,17 +396,17 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(80001)
 
 			// Insert
-			err := store.InsertRecord(ctx, helpers.NewOrder(orderID).WithPrice(100).Build())
+			err := store.InsertRecord(ctx, NewOrder(orderID).WithPrice(100).Build())
 			Expect(err).NotTo(HaveOccurred())
 
 			// Multiple updates in sequence
 			for i := 0; i < 10; i++ {
-				err = store.UpdateRecord(ctx, helpers.NewOrder(orderID).WithPrice(int32(200 + i)).Build())
+				err = store.UpdateRecord(ctx, NewOrder(orderID).WithPrice(int32(200 + i)).Build())
 				Expect(err).NotTo(HaveOccurred())
 			}
 
 			// Insert should now fail
-			err = store.InsertRecord(ctx, helpers.NewOrder(orderID).WithPrice(999).Build())
+			err = store.InsertRecord(ctx, NewOrder(orderID).WithPrice(999).Build())
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -416,7 +414,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(80002)
 
 			// Insert
-			err := store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete
@@ -425,7 +423,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(deleted).To(BeTrue())
 
 			// Insert again - should succeed
-			err = store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err = store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -433,7 +431,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			orderID := int64(80003)
 
 			// Insert and delete
-			err := store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(ctx, orderID)
@@ -441,7 +439,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(deleted).To(BeTrue())
 
 			// Update should fail
-			err = store.UpdateRecord(ctx, helpers.StandardOrder(orderID))
+			err = store.UpdateRecord(ctx, StandardOrder(orderID))
 			Expect(err).To(HaveOccurred())
 			Expect(errors.Is(err, recordlayer.ErrRecordDoesNotExist)).To(BeTrue())
 		})
@@ -451,10 +449,10 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should include primary key in RecordAlreadyExists error", func() {
 			orderID := int64(90001)
 
-			err := store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.InsertRecord(ctx, helpers.StandardOrder(orderID))
+			err = store.InsertRecord(ctx, StandardOrder(orderID))
 			Expect(err).To(HaveOccurred())
 
 			errMsg := err.Error()
@@ -466,7 +464,7 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 		It("should include primary key in RecordDoesNotExist error", func() {
 			orderID := int64(90002)
 
-			err := store.UpdateRecord(ctx, helpers.StandardOrder(orderID))
+			err := store.UpdateRecord(ctx, StandardOrder(orderID))
 			Expect(err).To(HaveOccurred())
 
 			errMsg := err.Error()

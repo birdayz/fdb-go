@@ -10,8 +10,6 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -19,8 +17,8 @@ import (
 var _ = Describe("DeleteAllRecords Conformance", func() {
 	var (
 		ctx      context.Context
-		env      *helpers.TenantEnvironment
-		java     *helpers.JavaInvoker
+		env      *TenantEnvironment
+		java     *JavaInvoker
 		db       *recordlayer.FDBDatabase
 		keyspace subspace.Subspace
 		priceIdx *recordlayer.Index
@@ -33,11 +31,11 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 		tenantName := fmt.Sprintf("da_%s", uuid.New().String())
 
 		var err error
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
 		db = env.RecordDB
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 
 		keyspace = subspace.Sub(tuple.Tuple{})
 
@@ -60,7 +58,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(keyspace.Bytes()),
+			"subspace":    BytesToIntArray(keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName

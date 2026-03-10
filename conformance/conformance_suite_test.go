@@ -6,8 +6,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
@@ -41,7 +39,7 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	// Shut down Java conformance server before terminating FDB container,
 	// so it can perform graceful shutdown while FDB is still available.
-	helpers.CloseJavaInvoker()
+	CloseJavaInvoker()
 
 	if sharedContainer != nil {
 		GinkgoWriter.Println("🧹 Terminating shared FDB container...")

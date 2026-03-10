@@ -9,8 +9,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -18,8 +16,8 @@ import (
 var _ = Describe("Continuation Token Conformance", func() {
 	var (
 		ctx  context.Context
-		env  *helpers.TenantEnvironment
-		java *helpers.JavaInvoker
+		env  *TenantEnvironment
+		java *JavaInvoker
 	)
 
 	BeforeEach(func() {
@@ -27,10 +25,10 @@ var _ = Describe("Continuation Token Conformance", func() {
 		var err error
 
 		tenantName := fmt.Sprintf("cont_%s", uuid.New().String())
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		java = helpers.NewJavaInvoker()
+		java = NewJavaInvoker()
 
 		// Seed 10 orders with Go
 		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -43,7 +41,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 				return nil, err
 			}
 			for i := int64(1); i <= 10; i++ {
-				_, err = store.SaveRecord(helpers.StandardOrder(i))
+				_, err = store.SaveRecord(StandardOrder(i))
 				if err != nil {
 					return nil, err
 				}
@@ -62,7 +60,7 @@ var _ = Describe("Continuation Token Conformance", func() {
 	buildJavaParams := func() map[string]any {
 		params := map[string]any{
 			"clusterFile": env.ClusterFile,
-			"subspace":    helpers.BytesToIntArray(env.Keyspace.Bytes()),
+			"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
 		}
 		if env.TenantName != "" {
 			params["tenantName"] = env.TenantName

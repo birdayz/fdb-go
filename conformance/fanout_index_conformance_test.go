@@ -7,16 +7,17 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
-
-	"github.com/birdayz/fdb-record-layer-go/conformance/helpers"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 var _ = Describe("Fan-Out Index Conformance", func() {
 	var (
 		ctx   context.Context
-		env   *helpers.TenantEnvironment
-		store *helpers.FanOutIndexConformanceStore
+		env   *TenantEnvironment
+		store *FanOutIndexConformanceStore
 	)
 
 	BeforeEach(func() {
@@ -25,10 +26,10 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 		tenantName := fmt.Sprintf("fanout_%s", uuid.New().String())
 
 		var err error
-		env, err = helpers.SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
 		Expect(err).NotTo(HaveOccurred())
 
-		store, err = helpers.NewFanOutIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		store, err = NewFanOutIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -40,7 +41,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 
 	Describe("Go writes with fan-out index, Java scans", func() {
 		It("should produce one index entry per tag, visible to both Go and Java", func() {
-			order := helpers.NewOrder(1).WithPrice(100).WithTags("urgent", "wholesale", "premium").Build()
+			order := NewOrder(1).WithPrice(100).WithTags("urgent", "wholesale", "premium").Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -52,7 +53,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(HaveLen(3))
 
-			err = helpers.CompareIndexEntries(goEntries, javaEntries)
+			err = CompareIndexEntries(goEntries, javaEntries)
 			Expect(err).NotTo(HaveOccurred())
 
 			// All entries should point to PK=1
@@ -65,7 +66,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 
 	Describe("Java writes with fan-out index, Go scans", func() {
 		It("should produce identical fan-out entries visible to Go", func() {
-			order := helpers.NewOrder(2).WithPrice(200).WithTags("bulk", "discount").Build()
+			order := NewOrder(2).WithPrice(200).WithTags("bulk", "discount").Build()
 			err := store.SaveOrderJava(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -77,7 +78,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(HaveLen(2))
 
-			err = helpers.CompareIndexEntries(goEntries, javaEntries)
+			err = CompareIndexEntries(goEntries, javaEntries)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
@@ -86,9 +87,9 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 		It("should produce correct total entries across records", func() {
 			// Record 1: 2 tags, Record 2: 3 tags, Record 3: 1 tag = 6 total entries
 			orders := []*gen.Order{
-				helpers.NewOrder(10).WithPrice(100).WithTags("a", "b").Build(),
-				helpers.NewOrder(20).WithPrice(200).WithTags("c", "d", "e").Build(),
-				helpers.NewOrder(30).WithPrice(300).WithTags("f").Build(),
+				NewOrder(10).WithPrice(100).WithTags("a", "b").Build(),
+				NewOrder(20).WithPrice(200).WithTags("c", "d", "e").Build(),
+				NewOrder(30).WithPrice(300).WithTags("f").Build(),
 			}
 
 			for _, order := range orders {
@@ -104,14 +105,14 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(HaveLen(6))
 
-			err = helpers.CompareIndexEntries(goEntries, javaEntries)
+			err = CompareIndexEntries(goEntries, javaEntries)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 
 	Describe("Empty repeated field produces no entries", func() {
 		It("should produce zero index entries for a record with no tags", func() {
-			order := helpers.NewOrder(42).WithPrice(500).Build() // no tags
+			order := NewOrder(42).WithPrice(500).Build() // no tags
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -127,7 +128,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 
 	Describe("Delete removes all fan-out entries", func() {
 		It("should remove all index entries when record is deleted", func() {
-			order := helpers.NewOrder(99).WithPrice(999).WithTags("x", "y", "z").Build()
+			order := NewOrder(99).WithPrice(999).WithTags("x", "y", "z").Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -155,7 +156,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 	Describe("Update changes fan-out entries", func() {
 		It("should update index entries when tags change", func() {
 			// Save with 2 tags
-			order := helpers.NewOrder(50).WithPrice(100).WithTags("old1", "old2").Build()
+			order := NewOrder(50).WithPrice(100).WithTags("old1", "old2").Build()
 			err := store.SaveOrderGo(ctx, order)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -164,7 +165,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(goEntries).To(HaveLen(2))
 
 			// Update with 3 different tags
-			order2 := helpers.NewOrder(50).WithPrice(100).WithTags("new1", "new2", "new3").Build()
+			order2 := NewOrder(50).WithPrice(100).WithTags("new1", "new2", "new3").Build()
 			err = store.SaveOrderGo(ctx, order2)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -177,7 +178,7 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(HaveLen(3))
 
-			err = helpers.CompareIndexEntries(goEntries, javaEntries)
+			err = CompareIndexEntries(goEntries, javaEntries)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
@@ -185,12 +186,12 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 	Describe("Cross-write fan-out", func() {
 		It("should produce identical entries whether Go or Java writes", func() {
 			// Go writes record with tags
-			goOrder := helpers.NewOrder(100).WithPrice(100).WithTags("alpha", "beta").Build()
+			goOrder := NewOrder(100).WithPrice(100).WithTags("alpha", "beta").Build()
 			err := store.SaveOrderGo(ctx, goOrder)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Java writes record with tags
-			javaOrder := helpers.NewOrder(200).WithPrice(200).WithTags("gamma", "delta").Build()
+			javaOrder := NewOrder(200).WithPrice(200).WithTags("gamma", "delta").Build()
 			err = store.SaveOrderJava(ctx, javaOrder)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -203,8 +204,151 @@ var _ = Describe("Fan-Out Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(javaEntries).To(HaveLen(4))
 
-			err = helpers.CompareIndexEntries(goEntries, javaEntries)
+			err = CompareIndexEntries(goEntries, javaEntries)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })
+
+// FanOutIndexConformanceStore wraps record operations with a FanOut VALUE index on Order.tags
+// and provides methods to cross-validate index entries between Go and Java.
+type FanOutIndexConformanceStore struct {
+	RecordDB    *recordlayer.FDBDatabase
+	MetaData    *recordlayer.RecordMetaData
+	TagsIndex   *recordlayer.Index
+	Keyspace    subspace.Subspace
+	java        *JavaInvoker
+	clusterFile string
+	tenantName  string
+}
+
+// NewFanOutIndexConformanceStore creates a conformance store with a FanOut VALUE index on Order.tags.
+func NewFanOutIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*FanOutIndexConformanceStore, error) {
+	tagsIndex := recordlayer.NewIndex("Order$tags", recordlayer.FanOut("tags"))
+
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.AddIndex("Order", tagsIndex)
+	md, err := builder.Build()
+	if err != nil {
+		return nil, err
+	}
+
+	ks := keyspace
+	if tenantName != "" {
+		ks = subspace.Sub(tuple.Tuple{})
+	}
+
+	return &FanOutIndexConformanceStore{
+		RecordDB:    recordDB,
+		MetaData:    md,
+		TagsIndex:   tagsIndex,
+		Keyspace:    ks,
+		java:        NewJavaInvoker(),
+		clusterFile: clusterFile,
+		tenantName:  tenantName,
+	}, nil
+}
+
+func (s *FanOutIndexConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
+		"clusterFile": s.clusterFile,
+		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
+	}
+	if s.tenantName != "" {
+		params["tenantName"] = s.tenantName
+	}
+	return params
+}
+
+// SaveOrderGo saves an order with Go (with fan-out index maintenance).
+func (s *FanOutIndexConformanceStore) SaveOrderGo(ctx context.Context, order *gen.Order) error {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SaveRecord(order)
+		return nil, err
+	})
+	return err
+}
+
+// SaveOrderJava saves an order via Java (with fan-out index maintenance).
+func (s *FanOutIndexConformanceStore) SaveOrderJava(ctx context.Context, order *gen.Order) error {
+	params := s.buildJavaParams()
+	params["order"] = order
+	return s.java.InvokeAs(ctx, "saveOrderWithFanOutIndex", params, nil)
+}
+
+// DeleteOrderGo deletes an order with Go (with fan-out index maintenance).
+func (s *FanOutIndexConformanceStore) DeleteOrderGo(ctx context.Context, orderID int64) (bool, error) {
+	var deleted bool
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		deleted, err = store.DeleteRecord(tuple.Tuple{orderID})
+		return nil, err
+	})
+	return deleted, err
+}
+
+// DeleteOrderJava deletes an order via Java (with fan-out index maintenance).
+func (s *FanOutIndexConformanceStore) DeleteOrderJava(ctx context.Context, orderID int64) error {
+	params := s.buildJavaParams()
+	params["orderID"] = orderID
+	return s.java.InvokeAs(ctx, "deleteOrderWithFanOutIndex", params, nil)
+}
+
+// ScanIndexGo scans the tags fan-out index using Go and returns results.
+func (s *FanOutIndexConformanceStore) ScanIndexGo(ctx context.Context) ([]IndexEntryResult, error) {
+	var results []IndexEntryResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		entries, err := recordlayer.AsList(ctx, store.ScanIndex(s.TagsIndex, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			results = append(results, IndexEntryResult{
+				Key:        tupleToSlice(e.Key),
+				PrimaryKey: tupleToSlice(e.PrimaryKey()),
+			})
+		}
+		return nil, nil
+	})
+	return results, err
+}
+
+// ScanIndexJava scans the tags fan-out index using Java and returns results.
+func (s *FanOutIndexConformanceStore) ScanIndexJava(ctx context.Context) ([]IndexEntryResult, error) {
+	params := s.buildJavaParams()
+	params["indexName"] = "Order$tags"
+
+	var javaResults []map[string]any
+	if err := s.java.InvokeAs(ctx, "scanFanOutIndex", params, &javaResults); err != nil {
+		return nil, fmt.Errorf("java scanFanOutIndex failed: %w", err)
+	}
+
+	var results []IndexEntryResult
+	for _, m := range javaResults {
+		entry := IndexEntryResult{}
+		if keyRaw, ok := m["key"]; ok {
+			entry.Key = toInterfaceSlice(keyRaw)
+		}
+		if pkRaw, ok := m["primaryKey"]; ok {
+			entry.PrimaryKey = toInterfaceSlice(pkRaw)
+		}
+		results = append(results, entry)
+	}
+	return results, nil
+}
