@@ -514,12 +514,12 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Error path test coverage weak** — Only 5 error-specific specs in `save_error_test.go` (0.9% of total). Missing: validation failures, index update errors, scan limit edge cases, versionstamp flush errors.
+- [x] **Error path test coverage weak** — Added `error_path_test.go` with 41 specs covering: unique index violation errors (READABLE), IndexValueSizeError/IndexKeySizeError (was 0 tests), key expression validation errors (field not found, FanTypeNone on repeated, nil message, nesting into nil/nonexistent), RangeSet validation (empty key, key too large, inverted range, MissingRanges empty key), ErrRecordStoreStateNotLoaded (SetUserVersion/SetStoreLockState/UpdateRecordCountState), SaveRecord validation (all 5 existence check modes, lock precedence, unknown type, cross-type overwrite), store builder errors (reload non-existent), metadata build errors (missing PK, FormerIndex subspace reuse), error message format assertions, delete error paths. Total unit specs: 624 (was 583).
 - [ ] **Atomic index maintainer code duplication** — COUNT/SUM/COUNT_NOT_NULL/COUNT_UPDATES share ~40-50% boilerplate (`evaluateGroupingKeys`, `getGroupingCount`, `removeCommon*Keys`). Could extract shared `AtomicIndexMaintainer` base helpers.
 
 ### LOW
 
-- [ ] **`existence_check.go` only 1 of 4 enum values tested** — Only `RecordExistenceCheckNone` tested. Missing: ERROR_IF_EXISTS, ERROR_IF_NOT_EXISTS, ERROR_IF_NO_EXISTING_RECORD.
+- [x] **`existence_check.go` only 1 of 4 enum values tested** — Actually all 5 values were already tested in `existence_test.go` (ERROR_IF_EXISTS, ERROR_IF_NOT_EXISTS, ERROR_IF_TYPE_CHANGED, ERROR_IF_NOT_EXISTS_OR_TYPE_CHANGED). Additional coverage added in `error_path_test.go`.
 - [ ] **`indexing_range_set.go` no dedicated unit tests** — Only tested indirectly via `online_indexer_test.go`. Missing direct tests for `ContainsKey()`, `FirstMissingRange()`, boundary conditions.
 - [ ] **Scan limit boundary tests missing** — Byte limit exact boundary, time limit with slow iteration, multi-limit interaction (row + byte + time) not explicitly tested.
 - [ ] **cursor.go `NoNextReason` helpers not tested** — `IsOutOfBand`, `IsSourceExhausted`, `IsLimitReached` tested indirectly but no dedicated specs.

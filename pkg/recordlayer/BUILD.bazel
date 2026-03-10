@@ -79,6 +79,7 @@ go_test(
         "cursor_functions_test.go",
         "cursor_seq_test.go",
         "dedup_cursor_test.go",
+        "error_path_test.go",
         "existence_test.go",
         "fallback_cursor_test.go",
         "index_scan_test.go",
