@@ -1051,6 +1051,64 @@ public class ConformanceSteps {
         return result;
     }
 
+    // --- Store header conformance steps ---
+
+    /**
+     * Read the store header raw bytes from FDB and return parsed fields.
+     * Uses raw FDB read (no store open) to avoid any format version upgrade side effects.
+     */
+    @ConformanceStep("getStoreHeaderRaw")
+    public java.util.Map<String, Object> getStoreHeaderRaw(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            Subspace sub = new Subspace(subspace);
+            byte[] headerKey = sub.pack(Tuple.from(0L));
+            byte[] headerBytes = context.ensureActive().get(headerKey).join();
+            if (headerBytes == null) {
+                throw new RuntimeException("Store header not found at subspace key 0");
+            }
+            com.apple.foundationdb.record.RecordMetaDataProto.DataStoreInfo storeInfo;
+            try {
+                storeInfo = com.apple.foundationdb.record.RecordMetaDataProto.DataStoreInfo.parseFrom(headerBytes);
+            } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse store header proto: " + e.getMessage(), e);
+            }
+            java.util.Map<String, Object> result = new java.util.HashMap<>();
+            result.put("formatVersion", storeInfo.getFormatVersion());
+            result.put("metaDataVersion", storeInfo.getMetaDataversion());
+            result.put("userVersion", storeInfo.getUserVersion());
+            return result;
+        });
+    }
+
+    /**
+     * Create a store with a specific user version via a custom UserVersionChecker.
+     * Java sets user version during checkVersion() via UserVersionChecker callback.
+     */
+    @ConformanceStep("createStoreWithUserVersion")
+    public void createStoreWithUserVersion(String clusterFile, byte[] subspace, int userVersion, String tenantName) {
+        final int targetVersion = userVersion;
+        FDBRecordStoreBase.UserVersionChecker checker = new FDBRecordStoreBase.UserVersionChecker() {
+            @Override
+            public java.util.concurrent.CompletableFuture<Integer> checkUserVersion(
+                    int oldUserVersion, int oldMetaDataVersion, RecordMetaDataProvider metaData) {
+                return java.util.concurrent.CompletableFuture.completedFuture(targetVersion);
+            }
+            @Override
+            public IndexState needRebuildIndex(Index index, long recordCount, boolean indexOnNewRecordTypes) {
+                return IndexState.READABLE;
+            }
+        };
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore.newBuilder()
+                .setMetaDataProvider(createMetaData())
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(checker)
+                .createOrOpen();
+            return null;
+        });
+    }
+
     // --- SUM index conformance steps ---
 
     private static RecordMetaData createSumIndexedMetaData() {
