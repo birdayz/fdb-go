@@ -748,7 +748,7 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	cursor := store.ScanRecords(nil, scanProps)
 	maintainer := store.getIndexMaintainer(index)
 
-	for rec, err := range cursor.Seq2(store.context.ctx) {
+	for rec, err := range Seq2(cursor, store.context.ctx) {
 		if err != nil {
 			return fmt.Errorf("rebuild index %q: scan records: %w", index.Name, err)
 		}

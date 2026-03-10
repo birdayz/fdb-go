@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"iter"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -396,53 +395,4 @@ func (c *countKVCursor) makeContinuation(key fdb.Key) ([]byte, error) {
 func (c *countKVCursor) Close() error {
 	c.closed = true
 	return nil
-}
-
-func (c *countKVCursor) Seq(ctx context.Context) iter.Seq[*IndexEntry] {
-	return func(yield func(*IndexEntry) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *countKVCursor) Seq2(ctx context.Context) iter.Seq2[*IndexEntry, error] {
-	return func(yield func(*IndexEntry, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *countKVCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*IndexEntry, RecordCursorContinuation] {
-	return func(yield func(*IndexEntry, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

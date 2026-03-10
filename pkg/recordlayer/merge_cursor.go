@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"bytes"
 	"context"
-	"iter"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
@@ -275,55 +274,6 @@ func (c *unionCursor[T]) Close() error {
 	return nil
 }
 
-func (c *unionCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *unionCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *unionCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // --- IntersectionCursor ---
 
 // intersectionCursor merges multiple ordered cursors, returning only elements
@@ -500,53 +450,4 @@ func (c *intersectionCursor[T]) Close() error {
 		_ = child.cursor.Close()
 	}
 	return nil
-}
-
-func (c *intersectionCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *intersectionCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *intersectionCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

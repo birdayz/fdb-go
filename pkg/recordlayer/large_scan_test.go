@@ -84,7 +84,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 
 			expectedID := int64(0)
 			recordCount := 0
-			for record := range cursor.Seq(ctx) {
+			for record := range Seq(cursor, ctx) {
 				order, ok := record.Record.(*gen.Order)
 				if !ok {
 					return nil, fmt.Errorf("unexpected record type: %T", record.Record)
@@ -191,7 +191,7 @@ var _ = Describe("BasicContinuation", func() {
 				var lastContinuation RecordCursorContinuation
 
 				// Read this batch using SeqWithContinuation to get proper continuation
-				for record, cont := range cursor.SeqWithContinuation(ctx) {
+				for record, cont := range SeqWithContinuation(cursor, ctx) {
 					order, ok := record.Record.(*gen.Order)
 					if !ok {
 						return nil, fmt.Errorf("unexpected record type: %T", record.Record)

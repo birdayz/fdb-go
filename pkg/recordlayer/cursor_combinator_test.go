@@ -64,7 +64,7 @@ var _ = Describe("CursorCombinators", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 			// Filter where price > 1000 -- no such records
 			filtered := Filter(
-				cursor.Seq(ctx),
+				Seq(cursor, ctx),
 				func(rec *FDBStoredRecord[proto.Message]) bool {
 					return rec.Record.(*gen.Order).GetPrice() > 1000
 				},
@@ -97,7 +97,7 @@ var _ = Describe("CursorCombinators", func() {
 			chain := Limit(
 				Map(
 					Filter(
-						cursor.Seq(ctx),
+						Seq(cursor, ctx),
 						func(rec *FDBStoredRecord[proto.Message]) bool {
 							return rec.Record.(*gen.Order).GetPrice() > 30
 						},
@@ -129,7 +129,7 @@ var _ = Describe("CursorCombinators", func() {
 			}
 
 			cursor := store.ScanRecords(nil, ForwardScan())
-			limited := Limit(cursor.Seq(ctx), 0)
+			limited := Limit(Seq(cursor, ctx), 0)
 			results := slices.Collect(limited)
 			Expect(results).To(BeEmpty())
 
@@ -151,7 +151,7 @@ var _ = Describe("CursorCombinators", func() {
 
 			cursor := store.ScanRecords(nil, ForwardScan())
 			filtered := Filter2(
-				cursor.Seq2(ctx),
+				Seq2(cursor, ctx),
 				func(rec *FDBStoredRecord[proto.Message]) bool {
 					return false // eliminate everything
 				},
@@ -179,7 +179,7 @@ var _ = Describe("CursorCombinators", func() {
 
 		// Seq should produce nothing
 		count := 0
-		for range cursor.Seq(ctx) {
+		for range Seq(cursor, ctx) {
 			count++
 		}
 		Expect(count).To(Equal(0))

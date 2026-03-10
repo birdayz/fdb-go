@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"iter"
 	"testing"
 )
 
@@ -23,15 +22,6 @@ func (c *errorAfterNCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T],
 	return NewResultWithValue(val, &BytesContinuation{bytes: []byte{byte(c.pos)}}), nil
 }
 func (c *errorAfterNCursor[T]) Close() error { return nil }
-func (c *errorAfterNCursor[T]) Seq(_ context.Context) iter.Seq[T] {
-	return func(func(T) bool) {}
-}
-func (c *errorAfterNCursor[T]) Seq2(_ context.Context) iter.Seq2[T, error] {
-	return func(func(T, error) bool) {}
-}
-func (c *errorAfterNCursor[T]) SeqWithContinuation(_ context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(func(T, RecordCursorContinuation) bool) {}
-}
 
 func TestFallbackCursorNoError(t *testing.T) {
 	t.Parallel()
@@ -45,7 +35,7 @@ func TestFallbackCursorNoError(t *testing.T) {
 	})
 
 	var results []int
-	for v := range cursor.Seq(ctx) {
+	for v := range Seq(cursor, ctx) {
 		results = append(results, v)
 	}
 
@@ -70,7 +60,7 @@ func TestFallbackCursorImmediateError(t *testing.T) {
 	})
 
 	var results []int
-	for v := range cursor.Seq(ctx) {
+	for v := range Seq(cursor, ctx) {
 		results = append(results, v)
 	}
 
@@ -95,7 +85,7 @@ func TestFallbackCursorErrorAfterSomeResults(t *testing.T) {
 	})
 
 	var results []int
-	for v := range cursor.Seq(ctx) {
+	for v := range Seq(cursor, ctx) {
 		results = append(results, v)
 	}
 
@@ -143,7 +133,7 @@ func TestFallbackCursorSeq2Error(t *testing.T) {
 		return &errorCursor[int]{err: fmt.Errorf("fallback fail")}
 	})
 
-	for _, err := range cursor.Seq2(ctx) {
+	for _, err := range Seq2(cursor, ctx) {
 		if err != nil {
 			return // Expected
 		}

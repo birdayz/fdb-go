@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"iter"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -535,71 +534,4 @@ func (c *keyValueCursor) initIterator() error {
 func (c *keyValueCursor) Close() error {
 	c.closed = true
 	return nil
-}
-
-// Seq returns an iterator sequence over values only
-func (c *keyValueCursor) Seq(ctx context.Context) iter.Seq[*FDBStoredRecord[proto.Message]] {
-	return func(yield func(*FDBStoredRecord[proto.Message]) bool) {
-		defer func() { _ = c.Close() }()
-
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				return
-			}
-
-			if !result.HasNext() {
-				return
-			}
-
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-// Seq2 returns an iterator sequence over (value, error) pairs
-func (c *keyValueCursor) Seq2(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], error] {
-	return func(yield func(*FDBStoredRecord[proto.Message], error) bool) {
-		defer func() { _ = c.Close() }()
-
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-
-			if !result.HasNext() {
-				return
-			}
-
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs
-func (c *keyValueCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*FDBStoredRecord[proto.Message], RecordCursorContinuation] {
-	return func(yield func(*FDBStoredRecord[proto.Message], RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				return
-			}
-
-			if !result.HasNext() {
-				return
-			}
-
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

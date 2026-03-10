@@ -222,7 +222,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		maintainer := store.getIndexMaintainer(oi.index)
 		var lastPK tuple.Tuple
 
-		for rec, iterErr := range cursor.Seq2(ctx) {
+		for rec, iterErr := range Seq2(cursor, ctx) {
 			if iterErr != nil {
 				return nil, iterErr
 			}

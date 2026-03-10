@@ -69,7 +69,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			var orderIDs []int64
-			for record := range cursor.Seq(scanCtx) {
+			for record := range Seq(cursor, scanCtx) {
 				order := record.Record.(*gen.Order)
 				orderIDs = append(orderIDs, *order.OrderId)
 			}
@@ -93,7 +93,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			var orderIDs []int64
-			for record, err := range cursor.Seq2(scanCtx) {
+			for record, err := range Seq2(cursor, scanCtx) {
 				Expect(err).NotTo(HaveOccurred())
 				order := record.Record.(*gen.Order)
 				orderIDs = append(orderIDs, *order.OrderId)
@@ -116,13 +116,13 @@ var _ = Describe("CursorSeqInterface", func() {
 
 			// Test slices.Collect (Go 1.23+)
 			cursor := store.ScanRecords(nil, ForwardScan())
-			allRecords := slices.Collect(cursor.Seq(scanCtx))
+			allRecords := slices.Collect(Seq(cursor, scanCtx))
 			Expect(allRecords).To(HaveLen(3))
 
 			// Test manual counting
 			cursor2 := store.ScanRecords(nil, ForwardScan())
 			count := 0
-			for range cursor2.Seq(scanCtx) {
+			for range Seq(cursor2, scanCtx) {
 				count++
 			}
 			Expect(count).To(Equal(3))
@@ -131,7 +131,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor3 := store.ScanRecords(nil, ForwardScan())
 			var firstRecord *FDBStoredRecord[proto.Message]
 			var found bool
-			for record := range cursor3.Seq(scanCtx) {
+			for record := range Seq(cursor3, scanCtx) {
 				firstRecord = record
 				found = true
 				break
@@ -157,7 +157,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			expensiveOrders := Filter(
-				cursor.Seq(scanCtx),
+				Seq(cursor, scanCtx),
 				func(record *FDBStoredRecord[proto.Message]) bool {
 					order := record.Record.(*gen.Order)
 					return *order.Price > 20
@@ -189,7 +189,7 @@ var _ = Describe("CursorSeqInterface", func() {
 			cursor := store.ScanRecords(nil, ForwardScan())
 
 			limitedOrders := slices.Collect(
-				Limit(cursor.Seq(scanCtx), 2),
+				Limit(Seq(cursor, scanCtx), 2),
 			)
 
 			Expect(limitedOrders).To(HaveLen(2))

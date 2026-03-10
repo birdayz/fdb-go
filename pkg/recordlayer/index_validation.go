@@ -42,7 +42,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 	// Phase 1: Scan all records and compute expected index entries
 	expectedEntries := make(map[string]IndexValidationEntry)
 	cursor := store.ScanRecords(nil, ForwardScan())
-	for record, err := range cursor.Seq2(ctx) {
+	for record, err := range Seq2(cursor, ctx) {
 		if err != nil {
 			return nil, fmt.Errorf("scan records for validation: %w", err)
 		}

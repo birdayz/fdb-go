@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"iter"
 )
 
 // ChainedCursor iterates over values generated dynamically one at a time.
@@ -75,53 +74,4 @@ func (c *chainedCursor[T]) makeContinuation(val T) RecordCursorContinuation {
 func (c *chainedCursor[T]) Close() error {
 	c.closed = true
 	return nil
-}
-
-func (c *chainedCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *chainedCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *chainedCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"iter"
 
 	"google.golang.org/protobuf/proto"
 
@@ -145,53 +144,4 @@ func (c *dedupCursor[T]) Close() error {
 		return c.inner.Close()
 	}
 	return nil
-}
-
-func (c *dedupCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *dedupCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *dedupCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

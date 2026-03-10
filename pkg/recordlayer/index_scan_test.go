@@ -499,7 +499,7 @@ var _ = Describe("IndexScanning", func() {
 				insertOrders(store, 3)
 
 				var prices []int64
-				for entry := range store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()).Seq(ctx) {
+				for entry := range Seq(store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
 					prices = append(prices, entry.IndexValues()[0].(int64))
 				}
 				Expect(prices).To(Equal([]int64{100, 200, 300}))
@@ -522,7 +522,7 @@ var _ = Describe("IndexScanning", func() {
 				insertOrders(store, 3)
 
 				var count int
-				for _, scanErr := range store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()).Seq2(ctx) {
+				for _, scanErr := range Seq2(store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
 					Expect(scanErr).NotTo(HaveOccurred())
 					count++
 				}

@@ -97,7 +97,7 @@ var _ = Describe("Cursor standalone functions", func() {
 		It("works with Seq2", func() {
 			cursor := SkipCursor(FromList([]int{10, 20, 30, 40}), 2)
 			var items []int
-			for v, err := range cursor.Seq2(ctx) {
+			for v, err := range Seq2(cursor, ctx) {
 				Expect(err).NotTo(HaveOccurred())
 				items = append(items, v)
 			}
@@ -146,7 +146,7 @@ var _ = Describe("Cursor standalone functions", func() {
 		It("works with Seq2", func() {
 			cursor := LimitRowsCursor(FromList([]int{10, 20, 30, 40}), 2)
 			var items []int
-			for v, err := range cursor.Seq2(ctx) {
+			for v, err := range Seq2(cursor, ctx) {
 				Expect(err).NotTo(HaveOccurred())
 				items = append(items, v)
 			}

@@ -140,18 +140,62 @@ func (r RecordCursorResult[T]) HasStoppedBeforeEnd() bool {
 type RecordCursor[T any] interface {
 	// OnNext asynchronously returns the next result from this cursor
 	OnNext(ctx context.Context) (RecordCursorResult[T], error)
-	
+
 	// Close releases any resources held by this cursor
 	Close() error
-	
-	// Seq returns an iterator sequence over values only
-	Seq(ctx context.Context) iter.Seq[T]
-	
-	// Seq2 returns an iterator sequence over (value, error) pairs
-	Seq2(ctx context.Context) iter.Seq2[T, error]
-	
-	// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs
-	SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation]
+}
+
+// Seq returns an iterator sequence over values only.
+// Errors are silently dropped; use Seq2 if you need error handling.
+func Seq[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		defer func() { _ = cursor.Close() }()
+		for {
+			result, err := cursor.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue()) {
+				return
+			}
+		}
+	}
+}
+
+// Seq2 returns an iterator sequence over (value, error) pairs.
+func Seq2[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		defer func() { _ = cursor.Close() }()
+		for {
+			result, err := cursor.OnNext(ctx)
+			if err != nil {
+				yield(*new(T), err)
+				return
+			}
+			if !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), nil) {
+				return
+			}
+		}
+	}
+}
+
+// SeqWithContinuation returns an iterator sequence over (value, continuation) pairs.
+func SeqWithContinuation[T any](cursor RecordCursor[T], ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
+	return func(yield func(T, RecordCursorContinuation) bool) {
+		defer func() { _ = cursor.Close() }()
+		for {
+			result, err := cursor.OnNext(ctx)
+			if err != nil || !result.HasNext() {
+				return
+			}
+			if !yield(result.GetValue(), result.GetContinuation()) {
+				return
+			}
+		}
+	}
 }
 
 // emptyCursor is a cursor that immediately returns no results.
@@ -169,18 +213,6 @@ func (c *emptyCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error
 
 func (c *emptyCursor[T]) Close() error { return nil }
 
-func (c *emptyCursor[T]) Seq(_ context.Context) iter.Seq[T] {
-	return func(func(T) bool) {}
-}
-
-func (c *emptyCursor[T]) Seq2(_ context.Context) iter.Seq2[T, error] {
-	return func(func(T, error) bool) {}
-}
-
-func (c *emptyCursor[T]) SeqWithContinuation(_ context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(func(T, RecordCursorContinuation) bool) {}
-}
-
 // errorCursor is a cursor that immediately returns an error on every OnNext call.
 // Used when a cursor cannot be created (e.g., scanning a non-readable index).
 type errorCursor[T any] struct {
@@ -192,21 +224,6 @@ func (c *errorCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error
 }
 
 func (c *errorCursor[T]) Close() error { return nil }
-
-func (c *errorCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(func(T) bool) {}
-}
-
-func (c *errorCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		var zero T
-		yield(zero, c.err)
-	}
-}
-
-func (c *errorCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(func(T, RecordCursorContinuation) bool) {}
-}
 
 // listCursor wraps a slice as a cursor. Matches Java's RecordCursor.fromList().
 // Supports continuation via single-byte position encoding (up to 255 elements).
@@ -251,55 +268,6 @@ func (c *listCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error)
 func (c *listCursor[T]) Close() error {
 	c.closed = true
 	return nil
-}
-
-func (c *listCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *listCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *listCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }
 
 // ForEach applies a function to each record in the cursor
@@ -441,55 +409,6 @@ func (c *filterCursor[T]) Close() error {
 	return c.inner.Close()
 }
 
-func (c *filterCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *filterCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *filterCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // RecordCursorProto is a convenience type for cursors over protobuf messages
 type RecordCursorProto = RecordCursor[*FDBStoredRecord[proto.Message]]
 
@@ -575,55 +494,6 @@ func (c *skipCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], erro
 
 func (c *skipCursor[T]) Close() error { return c.inner.Close() }
 
-func (c *skipCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *skipCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *skipCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // LimitRowsCursor wraps a cursor and limits to at most n elements.
 // Matches Java's RecordCursor.limitRowsTo().
 func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
@@ -653,55 +523,6 @@ func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T],
 }
 
 func (c *limitRowsCursor[T]) Close() error { return c.inner.Close() }
-
-func (c *limitRowsCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *limitRowsCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *limitRowsCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
 
 // SkipThenLimit is a convenience that skips n elements then limits to m.
 // Matches Java's RecordCursor.skipThenLimit().
@@ -748,55 +569,6 @@ func (c *orElseCursor[T]) Close() error {
 		return c.active.Close()
 	}
 	return c.primary.Close()
-}
-
-func (c *orElseCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *orElseCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *orElseCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }
 
 // ConcatCursor concatenates two cursors: returns all results from the first cursor,
@@ -914,55 +686,6 @@ func (c *concatCursor[T]) Close() error {
 	return nil
 }
 
-func (c *concatCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *concatCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *concatCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // MapResultCursor applies a transformation function to each cursor result.
 // Unlike Map (which operates on iter.Seq), this operates at the RecordCursor level
 // and preserves continuations. Matches Java's MapResultCursor.
@@ -990,55 +713,6 @@ func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[
 }
 
 func (c *mapResultCursor[T, R]) Close() error { return c.inner.Close() }
-
-func (c *mapResultCursor[T, R]) Seq(ctx context.Context) iter.Seq[R] {
-	return func(yield func(R) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *mapResultCursor[T, R]) Seq2(ctx context.Context) iter.Seq2[R, error] {
-	return func(yield func(R, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(R), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *mapResultCursor[T, R]) SeqWithContinuation(ctx context.Context) iter.Seq2[R, RecordCursorContinuation] {
-	return func(yield func(R, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
 
 // flatMapCursor takes an outer cursor and, for each outer value, creates
 // an inner cursor via a function, flattening all inner results into a single stream.
@@ -1277,55 +951,6 @@ func (c *flatMapCursor[T, V]) Close() error {
 	return firstErr
 }
 
-func (c *flatMapCursor[T, V]) Seq(ctx context.Context) iter.Seq[V] {
-	return func(yield func(V) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *flatMapCursor[T, V]) Seq2(ctx context.Context) iter.Seq2[V, error] {
-	return func(yield func(V, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(V), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *flatMapCursor[T, V]) SeqWithContinuation(ctx context.Context) iter.Seq2[V, RecordCursorContinuation] {
-	return func(yield func(V, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // autoContinuingCursor wraps a cursor generator and automatically creates new
 // transactions when the inner cursor stops due to limits (time, scan, byte, row).
 // This enables seamless scanning of large datasets across FDB's 5-second transaction
@@ -1456,55 +1081,6 @@ func (c *autoContinuingCursor[T]) Close() error {
 		c.currentCtx = nil
 	}
 	return firstErr
-}
-
-func (c *autoContinuingCursor[T]) Seq(ctx context.Context) iter.Seq[T] {
-	return func(yield func(T) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *autoContinuingCursor[T]) Seq2(ctx context.Context) iter.Seq2[T, error] {
-	return func(yield func(T, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(*new(T), err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *autoContinuingCursor[T]) SeqWithContinuation(ctx context.Context) iter.Seq2[T, RecordCursorContinuation] {
-	return func(yield func(T, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }
 
 // Note: Most sequence utilities are available in Go 1.23+ standard library:

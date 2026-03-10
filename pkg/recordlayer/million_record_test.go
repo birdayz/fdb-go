@@ -137,7 +137,7 @@ var _ = Describe("MillionRecordScan", func() {
 				var lastContinuation RecordCursorContinuation
 
 				// Read this batch using SeqWithContinuation to get proper continuation
-				for record, cont := range cursor.SeqWithContinuation(ctx) {
+				for record, cont := range SeqWithContinuation(cursor, ctx) {
 					order, ok := record.Record.(*gen.Order)
 					if !ok {
 						return nil, fmt.Errorf("unexpected record type: %T", record.Record)
@@ -310,7 +310,7 @@ var _ = Describe("MillionRecordPerformance", func() {
 			cursor := store.ScanRecords(nil, unlimitedScan)
 			defer func() { _ = cursor.Close() }()
 
-			for range cursor.Seq(ctx) {
+			for range Seq(cursor, ctx) {
 				readCount++
 			}
 

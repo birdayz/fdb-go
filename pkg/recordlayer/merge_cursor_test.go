@@ -19,7 +19,7 @@ func TestUnionCursorBasic(t *testing.T) {
 	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 	var results []int
-	for v := range union.Seq(ctx) {
+	for v := range Seq(union, ctx) {
 		results = append(results, v)
 	}
 
@@ -43,7 +43,7 @@ func TestUnionCursorDuplicates(t *testing.T) {
 	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 	var results []int
-	for v := range union.Seq(ctx) {
+	for v := range Seq(union, ctx) {
 		results = append(results, v)
 	}
 
@@ -67,7 +67,7 @@ func TestUnionCursorReverse(t *testing.T) {
 	union := Union([]RecordCursor[int]{c1, c2}, intCompKey, true)
 
 	var results []int
-	for v := range union.Seq(ctx) {
+	for v := range Seq(union, ctx) {
 		results = append(results, v)
 	}
 
@@ -108,7 +108,7 @@ func TestUnionCursorEmptyCursors(t *testing.T) {
 		union := Union([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 		var results []int
-		for v := range union.Seq(ctx) {
+		for v := range Seq(union, ctx) {
 			results = append(results, v)
 		}
 
@@ -140,7 +140,7 @@ func TestUnionCursorThree(t *testing.T) {
 	union := Union([]RecordCursor[int]{c1, c2, c3}, intCompKey, false)
 
 	var results []int
-	for v := range union.Seq(ctx) {
+	for v := range Seq(union, ctx) {
 		results = append(results, v)
 	}
 
@@ -199,7 +199,7 @@ func TestIntersectionCursorBasic(t *testing.T) {
 	inter := Intersection([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 	var results []int
-	for v := range inter.Seq(ctx) {
+	for v := range Seq(inter, ctx) {
 		results = append(results, v)
 	}
 
@@ -223,7 +223,7 @@ func TestIntersectionCursorNoOverlap(t *testing.T) {
 	inter := Intersection([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 	var results []int
-	for v := range inter.Seq(ctx) {
+	for v := range Seq(inter, ctx) {
 		results = append(results, v)
 	}
 
@@ -241,7 +241,7 @@ func TestIntersectionCursorReverse(t *testing.T) {
 	inter := Intersection([]RecordCursor[int]{c1, c2}, intCompKey, true)
 
 	var results []int
-	for v := range inter.Seq(ctx) {
+	for v := range Seq(inter, ctx) {
 		results = append(results, v)
 	}
 
@@ -265,7 +265,7 @@ func TestIntersectionCursorAllMatch(t *testing.T) {
 	inter := Intersection([]RecordCursor[int]{c1, c2}, intCompKey, false)
 
 	var results []int
-	for v := range inter.Seq(ctx) {
+	for v := range Seq(inter, ctx) {
 		results = append(results, v)
 	}
 
@@ -285,7 +285,7 @@ func TestIntersectionCursorThree(t *testing.T) {
 	inter := Intersection([]RecordCursor[int]{c1, c2, c3}, intCompKey, false)
 
 	var results []int
-	for v := range inter.Seq(ctx) {
+	for v := range Seq(inter, ctx) {
 		results = append(results, v)
 	}
 

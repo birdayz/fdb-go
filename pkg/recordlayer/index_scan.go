@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"iter"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -387,58 +386,6 @@ func (c *indexCursor) Close() error {
 	return nil
 }
 
-// Seq returns an iterator sequence over IndexEntry values.
-func (c *indexCursor) Seq(ctx context.Context) iter.Seq[*IndexEntry] {
-	return func(yield func(*IndexEntry) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-// Seq2 returns an iterator sequence over (IndexEntry, error) pairs.
-func (c *indexCursor) Seq2(ctx context.Context) iter.Seq2[*IndexEntry, error] {
-	return func(yield func(*IndexEntry, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-// SeqWithContinuation returns an iterator sequence over (IndexEntry, continuation) pairs.
-func (c *indexCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*IndexEntry, RecordCursorContinuation] {
-	return func(yield func(*IndexEntry, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
-}
-
 // FDBIndexedRecord wraps a record that was found via an index scan.
 // Contains both the index entry used to locate the record and the record itself.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.FDBIndexedRecord.
@@ -513,53 +460,4 @@ func (c *indexRecordCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDB
 
 func (c *indexRecordCursor) Close() error {
 	return c.inner.Close()
-}
-
-func (c *indexRecordCursor) Seq(ctx context.Context) iter.Seq[*FDBIndexedRecord] {
-	return func(yield func(*FDBIndexedRecord) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue()) {
-				return
-			}
-		}
-	}
-}
-
-func (c *indexRecordCursor) Seq2(ctx context.Context) iter.Seq2[*FDBIndexedRecord, error] {
-	return func(yield func(*FDBIndexedRecord, error) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			if !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), nil) {
-				return
-			}
-		}
-	}
-}
-
-func (c *indexRecordCursor) SeqWithContinuation(ctx context.Context) iter.Seq2[*FDBIndexedRecord, RecordCursorContinuation] {
-	return func(yield func(*FDBIndexedRecord, RecordCursorContinuation) bool) {
-		defer func() { _ = c.Close() }()
-		for {
-			result, err := c.OnNext(ctx)
-			if err != nil || !result.HasNext() {
-				return
-			}
-			if !yield(result.GetValue(), result.GetContinuation()) {
-				return
-			}
-		}
-	}
 }

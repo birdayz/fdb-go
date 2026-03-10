@@ -41,7 +41,7 @@ func TestChainedCursorBasic(t *testing.T) {
 	)
 
 	var results []int64
-	for v := range cursor.Seq(ctx) {
+	for v := range Seq(cursor, ctx) {
 		results = append(results, v)
 	}
 
@@ -108,7 +108,7 @@ func TestChainedCursorContinuation(t *testing.T) {
 	cursor2 := Chained(gen, encodeInt64, decodeInt64, lastCont.ToBytes())
 
 	var results []int64
-	for v := range cursor2.Seq(ctx) {
+	for v := range Seq(cursor2, ctx) {
 		results = append(results, v)
 	}
 
@@ -161,7 +161,7 @@ func TestChainedCursorSeq2(t *testing.T) {
 	)
 
 	var results []int64
-	for v, err := range cursor.Seq2(ctx) {
+	for v, err := range Seq2(cursor, ctx) {
 		if err != nil {
 			t.Fatal(err)
 		}
