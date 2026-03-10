@@ -448,7 +448,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RecordCursor interface too wide (5 methods)** — Fixed: slimmed to 2 methods (`OnNext` + `Close`). `Seq`/`Seq2`/`SeqWithContinuation` are now package-level generic functions. Removed 63 identical method implementations across 21 cursor types. Net -900 lines.
 
-- [ ] **Panics in library code** — `FDBRecordVersion` has 5 panics (`GetGlobalVersion`, `GetDBVersion`, `Next`, `Prev`, `ToVersionstamp`). `RecordCursorResult.GetValue()` panics on `!HasNext()`. Library code should return errors, never panic.
+- [x] **Panics in library code** — Fixed: converted 5 `FDBRecordVersion` panics to error returns (`GetGlobalVersion`, `GetDBVersion`, `Next`, `Prev`, `ToVersionstamp`). `RecordCursorResult.GetValue()` kept as panic — programming error (matches Java's `IllegalResultValueAccessException`).
 
 ### MEDIUM
 
@@ -468,7 +468,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **Get prefix on ~30 trivial accessors** — `GetRecordType()`, `GetIndex()`, `GetValue()`, `GetContinuation()`, etc. Go convention: drop `Get` for simple field reads.
 
-- [ ] **interface{} → any** — ~15 uses of `interface{}` should use modern `any` alias.
+- [x] **interface{} → any** — Fixed: replaced all 524 occurrences of `interface{}` with `any` across 72 files.
 
 ---
 
