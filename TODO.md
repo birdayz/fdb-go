@@ -235,7 +235,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **COUNT_NOT_NULL index type** — `CountNotNullIndexMaintainer` using FDB atomic ADD. Like COUNT but skips entries where key expression fields are null (unset proto2 optional). Uses `keyExpressionHasNullField()` for proto field presence detection. Non-idempotent. 6 tests.
 - [x] **COUNT_UPDATES index type** — `CountUpdatesIndexMaintainer` using FDB atomic ADD. Like COUNT but deletes are no-ops (count never decrements) and `skipUpdateForUnchangedKeys=false` (always re-counts on update). Tracks total insert+update events. Non-idempotent. 6 tests.
 - [x] **MIN/MAX via VALUE index** — `EvaluateAggregateFunction` supports `FunctionNameMin`/`FunctionNameMax` via VALUE indexes. Scans 1 entry forward (MIN) or reverse (MAX). Unlike _EVER variants, reflects deletes. 4 tests.
-- [ ] **Index types beyond VALUE/COUNT/SUM/MIN_EVER/MAX_EVER/COUNT_NOT_NULL/COUNT_UPDATES** — Java has more types: CLEAR_WHEN_ZERO variants (COUNT, COUNT_NOT_NULL, SUM_LONG), MIN_EVER_TUPLE, MAX_EVER_TUPLE, RANK, TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
+- [x] **CLEAR_WHEN_ZERO option** — `Index.SetClearWhenZero(true)` enables FDB `CompareAndClear(zero)` after every ADD decrement. Atomically removes entries when count/sum reaches zero. Works with COUNT, COUNT_NOT_NULL, SUM indexes. Matches Java's `IndexOptions.CLEAR_WHEN_ZERO`. 3 tests.
+- [ ] **Index types beyond implemented** — Java has more types: MIN_EVER_TUPLE, MAX_EVER_TUPLE, RANK, TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 
