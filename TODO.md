@@ -456,7 +456,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Silent error swallowing in addRecordCount** — Fixed: `addRecordCount()` now returns `error` and callers propagate it. No more silent swallowing.
 
-- [x] **recover() catches all panics in key_value_cursor.go** — Investigated: FDB Go bindings have a real bug where `Advance()` returns true but `Get()` panics with index OOB. The `recover()` is necessary. Documented the bug.
+- [x] **recover() removed from key_value_cursor.go** — Root-caused FDB Go bindings bug: `RangeIterator.Advance()` returns true on empty batch (missing `ri.done = true`), causing `Get()` to panic with index OOB. Fixed upstream via Bazel patch (`patches/fdb-go-range-iterator-done.patch`). No workarounds in our code.
 
 - [x] **store.go too large (2004 lines)** — Split into `store.go` (1134, core CRUD/scanning/state), `store_builder.go` (549, builder/lifecycle/rebuild), `store_typed.go` (228, TypedFDBRecordStore), `store_version.go` (115, version management).
 

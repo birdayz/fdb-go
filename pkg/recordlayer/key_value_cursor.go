@@ -388,18 +388,7 @@ func (c *keyValueCursor) nextKV() (kv fdb.KeyValue, ok bool) {
 		return fdb.KeyValue{}, false
 	}
 
-	// Recover from FDB RangeIterator.Get() index-out-of-bounds panic.
-	// The Go bindings have a bug where Advance() returns true but the
-	// internal kvs slice is empty, causing Get() to panic at range.go:265.
-	// This only affects specific scan patterns (e.g. reverse split scans).
-	defer func() {
-		if r := recover(); r != nil {
-			ok = false
-		}
-	}()
-
-	var err error
-	kv, err = c.iterator.Get()
+	kv, err := c.iterator.Get()
 	if err != nil {
 		return fdb.KeyValue{}, false
 	}
