@@ -73,21 +73,7 @@ func (m *CountUpdatesIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord 
 	if newRecord == nil {
 		return nil
 	}
-
-	if m.store == nil {
-		return m.Update(oldRecord, newRecord)
-	}
-
-	inRange, err := m.store.isKeyInIndexBuildRange(m.index, newRecord.PrimaryKey)
-	if err != nil {
-		return fmt.Errorf("check index build range for COUNT_UPDATES index %q: %w", m.index.Name, err)
-	}
-
-	if !inRange {
-		return nil
-	}
-
-	return m.Update(oldRecord, newRecord)
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT_UPDATES", m.Update)
 }
 
 // Scan scans COUNT_UPDATES index entries within the given tuple range.
@@ -98,32 +84,7 @@ func (m *CountUpdatesIndexMaintainer) Scan(scanRange TupleRange, continuation []
 
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record.
 func (m *CountUpdatesIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
-		return nil, nil
-	}
-
-	tuples, err := m.index.RootExpression.Evaluate(record.Record)
-	if err != nil {
-		return nil, err
-	}
-
-	groupingCount := m.getGroupingCount()
-	result := make([]tuple.Tuple, 0, len(tuples))
-	for _, values := range tuples {
-		groupKey := make(tuple.Tuple, groupingCount)
-		for j := 0; j < groupingCount && j < len(values); j++ {
-			groupKey[j] = values[j]
-		}
-		result = append(result, groupKey)
-	}
-	return result, nil
-}
-
-func (m *CountUpdatesIndexMaintainer) getGroupingCount() int {
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		return g.GetGroupingCount()
-	}
-	return keyExpressionColumnSize(m.index.RootExpression)
+	return evaluateGroupingKeys(m.index, record)
 }
 
 var _ IndexMaintainer = (*CountUpdatesIndexMaintainer)(nil)

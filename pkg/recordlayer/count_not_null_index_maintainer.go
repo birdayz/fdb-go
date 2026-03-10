@@ -88,29 +88,7 @@ func (m *CountNotNullIndexMaintainer) Update(oldRecord, newRecord *FDBStoredReco
 // COUNT_NOT_NULL is non-idempotent — blindly updating would cause double-counting.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
 func (m *CountNotNullIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	var primaryKey tuple.Tuple
-	if oldRecord != nil {
-		primaryKey = oldRecord.PrimaryKey
-	} else if newRecord != nil {
-		primaryKey = newRecord.PrimaryKey
-	} else {
-		return nil
-	}
-
-	if m.store == nil {
-		return m.Update(oldRecord, newRecord)
-	}
-
-	inRange, err := m.store.isKeyInIndexBuildRange(m.index, primaryKey)
-	if err != nil {
-		return fmt.Errorf("check index build range for COUNT_NOT_NULL index %q: %w", m.index.Name, err)
-	}
-
-	if !inRange {
-		return nil
-	}
-
-	return m.Update(oldRecord, newRecord)
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT_NOT_NULL", m.Update)
 }
 
 // Scan scans COUNT_NOT_NULL index entries within the given tuple range.
@@ -124,31 +102,11 @@ func (m *CountNotNullIndexMaintainer) Scan(scanRange TupleRange, continuation []
 // Matches Java's COUNT_NOT_NULL behavior: getMutationParam() returns null
 // when entry.keyContainsNonUniqueNull() is true.
 func (m *CountNotNullIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
-		return nil, nil
-	}
-
-	// Check if the record has any null (unset) fields in the key expression.
-	// If so, skip this record entirely — matching Java's keyContainsNonUniqueNull().
+	// Check null fields first — matching Java's keyContainsNonUniqueNull().
 	if keyExpressionHasNullField(record.Record, m.index.RootExpression) {
 		return nil, nil
 	}
-
-	tuples, err := m.index.RootExpression.Evaluate(record.Record)
-	if err != nil {
-		return nil, err
-	}
-
-	groupingCount := m.getGroupingCount()
-	result := make([]tuple.Tuple, 0, len(tuples))
-	for _, values := range tuples {
-		groupKey := make(tuple.Tuple, groupingCount)
-		for j := 0; j < groupingCount && j < len(values); j++ {
-			groupKey[j] = values[j]
-		}
-		result = append(result, groupKey)
-	}
-	return result, nil
+	return evaluateGroupingKeys(m.index, record)
 }
 
 // keyExpressionHasNullField checks if evaluating a key expression against a message
@@ -187,11 +145,5 @@ func keyExpressionHasNullField(msg proto.Message, expr KeyExpression) bool {
 	}
 }
 
-func (m *CountNotNullIndexMaintainer) getGroupingCount() int {
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		return g.GetGroupingCount()
-	}
-	return keyExpressionColumnSize(m.index.RootExpression)
-}
 
 var _ IndexMaintainer = (*CountNotNullIndexMaintainer)(nil)

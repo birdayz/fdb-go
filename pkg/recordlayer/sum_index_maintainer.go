@@ -132,29 +132,7 @@ func removeCommonSumEntries(old, new []sumEntry) ([]sumEntry, []sumEntry) {
 // SUM is non-idempotent — blindly updating would double-count values.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
 func (m *SumIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	var primaryKey tuple.Tuple
-	if oldRecord != nil {
-		primaryKey = oldRecord.PrimaryKey
-	} else if newRecord != nil {
-		primaryKey = newRecord.PrimaryKey
-	} else {
-		return nil
-	}
-
-	if m.store == nil {
-		return m.Update(oldRecord, newRecord)
-	}
-
-	inRange, err := m.store.isKeyInIndexBuildRange(m.index, primaryKey)
-	if err != nil {
-		return fmt.Errorf("check index build range for SUM index %q: %w", m.index.Name, err)
-	}
-
-	if !inRange {
-		return nil
-	}
-
-	return m.Update(oldRecord, newRecord)
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "SUM", m.Update)
 }
 
 // Scan scans SUM index entries within the given tuple range.
@@ -178,7 +156,7 @@ func (m *SumIndexMaintainer) evaluateSumEntries(record *FDBStoredRecord[proto.Me
 		return nil, err
 	}
 
-	groupingCount := m.getGroupingCount()
+	groupingCount := indexGroupingCount(m.index.RootExpression)
 	var result []sumEntry
 	for _, values := range tuples {
 		// Extract grouping key (leading columns)
@@ -206,13 +184,6 @@ func (m *SumIndexMaintainer) evaluateSumEntries(record *FDBStoredRecord[proto.Me
 	return result, nil
 }
 
-// getGroupingCount returns the number of grouping columns in the index expression.
-func (m *SumIndexMaintainer) getGroupingCount() int {
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		return g.GetGroupingCount()
-	}
-	return keyExpressionColumnSize(m.index.RootExpression)
-}
 
 // toInt64 converts a numeric value (from proto field evaluation) to int64.
 // Handles int64, int32, float64, float32 matching Java's Number.longValue().

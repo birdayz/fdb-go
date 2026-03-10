@@ -4,6 +4,7 @@ go_library(
     name = "recordlayer",
     srcs = [
         "aggregate_function.go",
+        "atomic_index_helpers.go",
         "chained_cursor.go",
         "constants.go",
         "count_index_maintainer.go",

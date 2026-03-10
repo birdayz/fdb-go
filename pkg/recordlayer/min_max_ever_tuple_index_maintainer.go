@@ -100,7 +100,7 @@ func (m *MinMaxEverTupleIndexMaintainer) evaluateEntries(record *FDBStoredRecord
 		return nil, err
 	}
 
-	groupingCount := m.getGroupingCount()
+	groupingCount := indexGroupingCount(m.index.RootExpression)
 	var result []tupleEntry
 	for _, values := range tuples {
 		groupKey := make(tuple.Tuple, groupingCount)
@@ -136,11 +136,5 @@ func (m *MinMaxEverTupleIndexMaintainer) evaluateEntries(record *FDBStoredRecord
 	return result, nil
 }
 
-func (m *MinMaxEverTupleIndexMaintainer) getGroupingCount() int {
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		return g.GetGroupingCount()
-	}
-	return keyExpressionColumnSize(m.index.RootExpression)
-}
 
 var _ IndexMaintainer = (*MinMaxEverTupleIndexMaintainer)(nil)
