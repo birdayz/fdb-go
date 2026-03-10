@@ -129,10 +129,13 @@ func (s *mergeChildState[T]) advance(ctx context.Context) error {
 // from the first cursor is returned and others are consumed (deduplication).
 // Matches Java's UnionCursor.
 type unionCursor[T any] struct {
-	children []*mergeChildState[T]
-	reverse  bool
-	started  bool
-	closed   bool
+	children         []*mergeChildState[T]
+	reverse          bool
+	started          bool
+	closed           bool
+	stopped          bool                    // set when a child hit an out-of-band limit
+	stopReason       NoNextReason            // reason for stop
+	stopContinuation RecordCursorContinuation // continuation at stop point
 }
 
 // Union creates a merge-union cursor that combines multiple ordered cursors.
@@ -166,11 +169,17 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
 
+	// If a child previously hit an out-of-band limit, stop the union now.
+	// The previous call returned the last safe value; this call stops.
+	// Matches Java: UnionCursorBase.computeNextResultStates() stops the union
+	// when ANY child has !hasNext() && isLimitReached().
+	if c.stopped {
+		return NewResultNoNext[T](c.stopReason, c.stopContinuation), nil
+	}
+
 	// Advance all children that need it
 	for _, child := range c.children {
 		if !c.started || child.hasResult {
-			// Only advance children that have results (consumed ones) on first pass,
-			// or all children on initial start
 			if !c.started {
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
@@ -181,6 +190,14 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	if !c.started {
 		c.started = true
+	}
+
+	// Check if any child stopped for a non-exhaustion reason BEFORE selecting a winner.
+	// Matches Java: if ANY child has !hasNext() && isLimitReached(), return empty.
+	for _, child := range c.children {
+		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
+			return NewResultNoNext[T](child.result.GetNoNextReason(), c.buildContinuation()), nil
+		}
 	}
 
 	// Find minimum (or maximum for reverse) key across all children
@@ -222,12 +239,14 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		}
 	}
 
-	// Check if any child stopped for a non-exhaustion reason (limit hit)
-	// Union uses "strongest" stop reason: if any child hits an out-of-band limit,
-	// stop the whole union to prevent ordering anomalies.
+	// Check if any child stopped during dedup advance. If so, return this value
+	// but stop the union on the next call.
 	for _, child := range c.children {
 		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
-			return NewResultWithValue[T](result.GetValue(), c.buildContinuation()), nil
+			c.stopped = true
+			c.stopReason = child.result.GetNoNextReason()
+			c.stopContinuation = c.buildContinuation()
+			return NewResultWithValue[T](result.GetValue(), c.stopContinuation), nil
 		}
 	}
 
@@ -385,17 +404,30 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 // weakestNoNextReason returns the weakest reason among exhausted children.
 // Intersection uses weakest because if ANY child is exhausted, the intersection
 // can produce no more results.
+// weakestNoNextReason returns the weakest reason among stopped children.
+// Matches Java's IntersectionCursorBase.mergeNoNextReasons():
+//   - If ANY child is SourceExhausted, return SourceExhausted immediately
+//   - Otherwise, return the weakest non-exhaustion reason
+//   - If no stopped children, return SourceExhausted
 func (c *intersectionCursor[T]) weakestNoNextReason() NoNextReason {
-	weakest := SourceExhausted
+	found := false
+	weakest := TimeLimitReached // start with strongest, find weakest
 	for _, child := range c.children {
 		if !child.hasResult {
 			reason := child.result.GetNoNextReason()
-			if isWeaker(reason, weakest) {
+			if reason == SourceExhausted {
+				return SourceExhausted // intersection is done
+			}
+			if !found || isWeaker(reason, weakest) {
 				weakest = reason
+				found = true
 			}
 		}
 	}
-	return weakest
+	if found {
+		return weakest
+	}
+	return SourceExhausted
 }
 
 // isWeaker returns true if a is weaker than b.

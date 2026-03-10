@@ -224,7 +224,12 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 			continue
 		}
 
-		existingPK := tuple.Tuple(existingTuple[indexColCount:])
+		// Reconstruct full PK from the FDB entry key using getEntryPrimaryKey.
+		// The raw existingTuple[indexColCount:] is the TRIMMED PK (deduped
+		// components removed). Must use getEntryPrimaryKey to get full PK
+		// for correct comparison and violation entries.
+		// Matches Java's Index.getEntryPrimaryKey(indexEntry).
+		existingPK := m.index.getEntryPrimaryKey(existingTuple)
 		if tuplesEqual(existingPK, entry.primaryKey) {
 			continue // Our own record — not a violation
 		}

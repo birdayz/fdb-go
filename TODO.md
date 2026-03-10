@@ -520,9 +520,79 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### LOW
 
 - [x] **`existence_check.go` only 1 of 4 enum values tested** — Actually all 5 values were already tested in `existence_test.go` (ERROR_IF_EXISTS, ERROR_IF_NOT_EXISTS, ERROR_IF_TYPE_CHANGED, ERROR_IF_NOT_EXISTS_OR_TYPE_CHANGED). Additional coverage added in `error_path_test.go`.
-- [ ] **`indexing_range_set.go` no dedicated unit tests** — Only tested indirectly via `online_indexer_test.go`. Missing direct tests for `ContainsKey()`, `FirstMissingRange()`, boundary conditions.
+- [x] **`indexing_range_set.go` dedicated unit tests** — 10 specs in `indexing_range_set_test.go`: empty/full/contains/tuple-packed/first-missing/nil-when-complete/multiple-gaps/clear/requireEmpty-overlap/incremental-build-simulation.
 - [x] **Scan limit boundary tests** — 18 specs in `scan_limit_test.go`: byte limit (1-byte, partial, resume, no-limit), scanned records limit (exact, limit-of-1), row limit with SourceExhausted. Also fixed byte scan limit bug: was post-read (discarding boundary record), now pre-read matching Java's CursorLimitManager. Fixed in both keyValueCursor and indexCursor.
 - [x] **cursor.go `NoNextReason` helpers tested** — Dedicated specs for all 5 NoNextReason values testing IsOutOfBand/IsSourceExhausted/IsLimitReached, plus 6 specs for RecordCursorResult.HasStoppedBeforeEnd.
+
+---
+
+## Bugs found by edge-case audit (2026-03-10)
+
+All 27 bugs verified by dedicated subagents with reproducing tests (2026-03-10).
+Data loss bugs marked **[DATA LOSS 2x]**. Worktree paths relative to `.claude/worktrees/`.
+
+### Cursor combinators — verified in `agent-adb21082`, fixed
+
+- [x] **[DATA LOSS 2x] UnionCursor continues after child hits limit** — Fixed: stop union when any child has OOB limit. File: `merge_cursor.go`.
+- [x] **[DATA LOSS 2x] LimitRowsCursor returns EndContinuation (un-resumable)** — Fixed: preserve inner continuation on limit. File: `cursor.go`.
+- [x] **[DATA LOSS 2x] OrElseCursor switches to alternative on out-of-band limits** — Fixed: stay UNDECIDED on OOB limits. File: `cursor.go`.
+- [x] **[DATA LOSS 2x] IntersectionCursor.weakestNoNextReason() always returns SourceExhausted** — Fixed: proper NoNextReason comparison. File: `merge_cursor.go`.
+
+### Key expressions — verified in `agent-a9e81304`, fixed
+
+- [x] **[DATA LOSS 2x] FieldKeyExpression.Evaluate returns default for unset proto2 fields** — Fixed: check `m.Has(fd)` for proto2 optional, return nil. File: `key_expression.go`.
+- [x] **[DATA LOSS 2x] FieldKeyExpression nil message ignores FanType** — Fixed: FanOut returns empty, Concatenate returns `[[[]]]`. File: `key_expression.go`.
+- [x] **NestingKeyExpression.Evaluate panics on nil message** — Fixed: nil check returns `[[nil]]`. File: `key_expression.go`.
+- [x] **RecordTypeKeyExpression.Evaluate panics on nil message** — Fixed: nil check returns `[[nil]]`. File: `key_expression.go`.
+
+### Record version / context — verified in `agent-a28fc2d7`, fixed
+
+- [x] **FDBRecordVersion.Next()/Prev() no carry across 12 bytes** — Fixed: full 12-byte big-endian carry/borrow. File: `record_version.go`.
+- [x] **NewCompleteVersion accepts all-0xFF global version** — Fixed: reject incomplete marker bytes. File: `record_version.go`.
+- [x] **WithCommittedVersion on already-complete version** — Fixed: error on already-complete. File: `record_version.go`.
+- [x] **[DATA LOSS 2x] CommitWithVersionstamp skips pre-commit checks and post-commit hooks** — Fixed: run pre-commit checks + post-commit hooks. File: `database.go`.
+
+### Store CRUD / split records — verified in `agent-af7e30fd`, fixed
+
+- [x] **SaveRecordWithOptions swallows deserialization errors** — Fixed: propagate deser error in ErrorIfTypeChanged path. File: `store.go`.
+- [x] **[DATA LOSS 2x] DeleteRecord destroys data before deserialization check** — Fixed: deserialize BEFORE deleteSplit. File: `store.go`.
+- [x] **[DATA LOSS 2x] FDB row limit premature exhaustion with versioning** — Fixed: double FDB limit when IsStoreRecordVersions. File: `key_value_cursor.go`.
+- [x] **[DATA LOSS 2x] keyValueCursor exclusive low endpoint uses append(0x00)** — Fixed: use fdb.Strinc(). File: `key_value_cursor.go`.
+
+### Metadata / schema evolution — verified in `agent-a826ca49`, fixed
+
+- [x] **RemoveIndex doesn't increment version** — Fixed: pre-increment version before setting RemovedVersion. File: `metadata.go`.
+- [x] **[DATA LOSS 2x] checkPossiblyRebuild doesn't clean up former index data** — Fixed: removeFormerIndexData() clears 6 subspaces. File: `store_builder.go`, `index_state.go`.
+- [x] **MetaDataEvolutionValidator rejects index changes with allowIndexRebuilds=true** — Fixed: early return when allowIndexRebuilds && lastModifiedVersion changed. File: `metadata_evolution_validator.go`.
+- [x] **validateFormerIndexes: missing unconditional check + wrong operator** — Fixed: unconditional `>` check + conditional `!=`. File: `metadata_evolution_validator.go`.
+- [x] **createStoreHeader doesn't persist RecordCountKey** — Fixed: include RecordCountKey in header. File: `store_builder.go`.
+
+### Index maintainers — verified in `agent-a60827f1`, fixed
+
+- [x] **checkUniqueness compares trimmed PK with full PK** — Fixed: use getEntryPrimaryKey() for full PK reconstruction. File: `index_maintainer.go`.
+- [x] **[DATA LOSS 2x] checkUniqueness violation entries: double-trimmed PK** — Fixed: same getEntryPrimaryKey() fix resolves both issues. File: `index_maintainer.go`.
+- [x] **[DATA LOSS 2x] CountNotNull keyExpressionHasNullField missing NestingKeyExpression** — Fixed: added NestingKeyExpression case. File: `count_not_null_index_maintainer.go`.
+
+### OnlineIndexer — verified in `agent-a3134e5b`
+Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
+
+- [ ] **[DATA LOSS 2x] OnlineIndexer double-counts boundary records** — 9 records, limit=3 → COUNT index = 13 (not 9). Boundary records re-scanned at each chunk. Java uses one-ahead pattern with `limit+1`. File: `online_indexer.go:208,249-260`.
+- [ ] **[DATA LOSS 2x] OnlineIndexer skips records when type filter exhausts limit** — 10 Customers + 5 Orders, Order-only index, limit=5 → 0 entries (not 5). `lastPK == nil` marks everything done. File: `online_indexer.go:225-260`.
+
+### Bug hunt scoreboard
+
+27 bugs found, 25 fixed (2 OnlineIndexer bugs remaining). 16 classified as data loss (2x). 710 unit/integration specs pass, 230 conformance specs pass (940 total).
+
+| Agent | Worktree | Bugs | 1x | 2x | Award |
+|-------|----------|------|----|----|-------|
+| Cursor combinators | `agent-adb21082` | 4 | 0 | 4 | $800 |
+| Key expressions | `agent-a9e81304` | 4 | 2 | 2 | $600 |
+| Record version/context | `agent-a28fc2d7` | 4 | 3 | 1 | $500 |
+| Store CRUD/split | `agent-af7e30fd` | 4 | 1 | 3 | $700 |
+| Metadata evolution | `agent-a826ca49` | 5 | 4 | 1 | $600 |
+| Index maintainers | `agent-a60827f1` | 3 | 1 | 2 | $500 |
+| OnlineIndexer | `agent-a3134e5b` | 2 | 0 | 2 | $400 |
+| **Total** | | **27** | **11** | **16** | **$4,100** |
 
 ---
 

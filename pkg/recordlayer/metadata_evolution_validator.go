@@ -231,11 +231,6 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 				Message: fmt.Sprintf("index name changed (old=%q, new=%q)", oldIdx.Name, newIdx.Name),
 			}
 		}
-		if oldIdx.Type != newIdx.Type {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q type changed (old=%q, new=%q)", name, oldIdx.Type, newIdx.Type),
-			}
-		}
 		if oldIdx.AddedVersion != newIdx.AddedVersion {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("new index %q added version does not match old index added version (old=%d, new=%d)",
@@ -252,6 +247,19 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("old index %q has last-modified version newer than new index (old=%d, new=%d)",
 					name, oldIdx.LastModifiedVersion, newIdx.LastModifiedVersion),
+			}
+		}
+
+		// When allowIndexRebuilds is true and lastModifiedVersion changed,
+		// skip type/expression checks — the index will be rebuilt.
+		// Matches Java's MetaDataEvolutionValidator.validateIndex() lines 606-610.
+		if v.allowIndexRebuilds && oldIdx.LastModifiedVersion < newIdx.LastModifiedVersion {
+			continue
+		}
+
+		if oldIdx.Type != newIdx.Type {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q type changed (old=%q, new=%q)", name, oldIdx.Type, newIdx.Type),
 			}
 		}
 
@@ -338,9 +346,19 @@ func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaD
 						newFormer.FormerName, oldIdx.Name),
 				}
 			}
-			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion > oldIdx.AddedVersion {
+			// Unconditional check: former's addedVersion must NOT be > old index's addedVersion.
+			// Matches Java line 522: unconditional check before the conditional one.
+			if newFormer.AddedVersion > oldIdx.AddedVersion {
 				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index reports added version older than replacing index (former=%d, old=%d)",
+					Message: fmt.Sprintf("former index reports added version newer than old index (former=%d, old=%d)",
+						newFormer.AddedVersion, oldIdx.AddedVersion),
+				}
+			}
+			// Conditional check: when !allowOlder, former's addedVersion must equal old index's.
+			// Matches Java line 528: if (!allowOlder && newFormer.addedVersion != oldIndex.addedVersion)
+			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion != oldIdx.AddedVersion {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("former index reports added version different from old index (former=%d, old=%d)",
 						newFormer.AddedVersion, oldIdx.AddedVersion),
 				}
 			}

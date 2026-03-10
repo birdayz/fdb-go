@@ -451,7 +451,15 @@ func (c *keyValueCursor) initIterator() error {
 		begin = recordsSubspace.Pack(c.low)
 	case EndpointTypeRangeExclusive:
 		packedKey := recordsSubspace.Pack(c.low)
-		begin = append(fdb.Key(packedKey), 0x00) // exclusive: start AFTER this key
+		// Use Strinc to skip past ALL keys with this prefix.
+		// append(0x00) is wrong because pack(pk)\x00 < pack(pk, suffix)
+		// so the boundary record would still be included.
+		// Matches Java's ByteArrayUtil.strinc() for exclusive low endpoints.
+		strincKey, strincErr := fdb.Strinc(packedKey)
+		if strincErr != nil {
+			return fmt.Errorf("failed to compute strinc for exclusive low endpoint: %w", strincErr)
+		}
+		begin = strincKey
 	case EndpointTypeContinuation:
 		if c.continuation != nil {
 			innerContinuation := unwrapContinuation(c.continuation)
@@ -507,7 +515,15 @@ func (c *keyValueCursor) initIterator() error {
 	// Skip is added to the FDB limit so we have enough KVs to skip AND return.
 	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
 		skip := c.scanProperties.ExecuteProperties.Skip
-		options.Limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead + 1
+		recordLimit := c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead + 1
+		// When versioning is enabled, each record has 2 KV pairs
+		// (version at suffix -1, data at suffix 0). Double the FDB limit
+		// to account for version KVs.
+		// Matches Java's FDBRecordStore scanRecords which uses 2 * returnedRowLimit.
+		if c.store.metaData.IsStoreRecordVersions() {
+			recordLimit *= 2
+		}
+		options.Limit = recordLimit
 	}
 
 	// Create iterator

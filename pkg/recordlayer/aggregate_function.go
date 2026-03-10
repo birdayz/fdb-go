@@ -396,9 +396,9 @@ func evaluateRankAggregate(
 ) (tuple.Tuple, error) {
 	groupPrefixSize := rm.getGroupingCount()
 
-	// Extract the group prefix and the trailing value from the scan range.
+	// Extract the group prefix and the trailing values from the scan range.
 	// The scan range for RANK aggregates must be an "equals" range.
-	groupPrefix, trailingValue, err := splitEqualRangeForRank(scanRange, groupPrefixSize)
+	groupPrefix, trailingValues, err := splitEqualRangeForRank(scanRange, groupPrefixSize)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate %s: %w", fn.Name, err)
 	}
@@ -434,12 +434,12 @@ func evaluateRankAggregate(
 		return tuple.Tuple{size}, nil
 
 	case FunctionNameScoreForRank, FunctionNameScoreForRankElseSkip:
-		if trailingValue == nil {
+		if len(trailingValues) == 0 {
 			return nil, nil
 		}
-		rank, ok := trailingValue.(int64)
+		rank, ok := trailingValues[0].(int64)
 		if !ok {
-			return nil, fmt.Errorf("evaluate %s: rank must be int64, got %T", fn.Name, trailingValue)
+			return nil, fmt.Errorf("evaluate %s: rank must be int64, got %T", fn.Name, trailingValues[0])
 		}
 		scoreBytes, err := rankedSet.GetNth(rm.tx, rank)
 		if err != nil {
@@ -459,12 +459,13 @@ func evaluateRankAggregate(
 		return scoreTuple, nil
 
 	case FunctionNameRankForScore:
-		if trailingValue == nil {
+		if len(trailingValues) == 0 {
 			return nil, nil
 		}
-		// The trailing value is the score. Pack it as a single-element tuple.
-		scoreTuple := tuple.Tuple{trailingValue}
-		rankResult, err := rankedSet.Rank(rm.tx, scoreTuple.Pack(), false)
+		// The trailing values form the score tuple. Pack the full sub-tuple,
+		// matching Java's rankForScore(state, rankedSet, values, false)
+		// where values is the complete sub-tuple after group prefix.
+		rankResult, err := rankedSet.Rank(rm.tx, trailingValues.Pack(), false)
 		if err != nil {
 			return nil, err
 		}
@@ -478,17 +479,18 @@ func evaluateRankAggregate(
 	}
 }
 
-// splitEqualRangeForRank extracts group prefix and trailing value from a TupleRange
+// splitEqualRangeForRank extracts group prefix and trailing values from a TupleRange
 // that must be an "equals" range (Low == High). Returns the group prefix elements
-// and the trailing value element (rank or score), if any.
-func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, any, error) {
+// and the trailing values tuple (rank or score components), if any.
+// Matches Java's evaluateEqualRange which uses subTuple(values, groupingCount, size).
+func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, tuple.Tuple, error) {
 	if scanRange.Low == nil {
 		return nil, nil, nil
 	}
 
 	values := scanRange.Low
 	if len(values) <= groupPrefixSize {
-		// Only group prefix, no trailing value.
+		// Only group prefix, no trailing values.
 		groupPrefix := make([]any, len(values))
 		for i, v := range values {
 			groupPrefix[i] = v
@@ -500,8 +502,8 @@ func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, a
 	for i := range groupPrefixSize {
 		groupPrefix[i] = values[i]
 	}
-	trailingValue := values[groupPrefixSize]
-	return groupPrefix, trailingValue, nil
+	trailingValues := tuple.Tuple(values[groupPrefixSize:])
+	return groupPrefix, trailingValues, nil
 }
 
 // expressionsEqual checks if two key expressions are structurally equivalent.

@@ -1870,5 +1870,68 @@ var _ = Describe("RANK Record Functions", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("RANK_FOR_SCORE with composite score packs full sub-tuple", func() {
+		ks := specSubspace()
+
+		// RANK index on composite score (price, order_id) — no grouping.
+		// The ranked set key is Tuple{price, orderId}.Pack(), NOT just Tuple{price}.Pack().
+		rankIdx := NewRankIndex("rank_composite", GroupBy(Concat(Field("price"), Field("order_id"))))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert orders: (price=100, id=1), (price=200, id=2), (price=300, id=3)
+			for _, p := range []struct {
+				id    int64
+				price int32
+			}{
+				{1, 100},
+				{2, 200},
+				{3, 300},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(p.id),
+					Price:   proto.Int32(p.price),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// RANK_FOR_SCORE with composite score (100, 1) should return rank 0.
+			// Before the fix: splitEqualRangeForRank only took the first trailing
+			// element (100), packing Tuple{100} instead of Tuple{100, 1}. This
+			// caused a lookup miss in the ranked set because the stored key is
+			// Tuple{100, 1}.Pack().
+			result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{
+					Name:    FunctionNameRankForScore,
+					Operand: GroupBy(Concat(Field("price"), Field("order_id"))),
+				},
+				TupleRangeAllOf(tuple.Tuple{int64(100), int64(1)}),
+				IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(0)}))
+
+			// RANK_FOR_SCORE with composite score (300, 3) should return rank 2.
+			result, err = store.EvaluateAggregateFunction(ctx, []string{"Order"},
+				&IndexAggregateFunction{
+					Name:    FunctionNameRankForScore,
+					Operand: GroupBy(Concat(Field("price"), Field("order_id"))),
+				},
+				TupleRangeAllOf(tuple.Tuple{int64(300), int64(3)}),
+				IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 

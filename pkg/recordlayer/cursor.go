@@ -504,12 +504,18 @@ func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
 }
 
 type limitRowsCursor[T any] struct {
-	inner     RecordCursor[T]
-	remaining int
+	inner            RecordCursor[T]
+	remaining        int
+	lastContinuation RecordCursorContinuation // from last inner result
 }
 
 func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
 	if c.remaining <= 0 {
+		// Preserve inner continuation for resumability.
+		// Matches Java's RowLimitedCursor which uses nextResult.getContinuation().
+		if c.lastContinuation != nil {
+			return NewResultNoNext[T](ReturnLimitReached, c.lastContinuation), nil
+		}
 		return NewResultNoNext[T](ReturnLimitReached, &EndContinuation{}), nil
 	}
 	result, err := c.inner.OnNext(ctx)
@@ -518,6 +524,7 @@ func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T],
 	}
 	if result.HasNext() {
 		c.remaining--
+		c.lastContinuation = result.GetContinuation()
 	}
 	return result, nil
 }
@@ -546,17 +553,25 @@ type orElseCursor[T any] struct {
 
 func (c *orElseCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
 	if !c.started {
-		c.started = true
 		// Try the primary cursor first
 		result, err := c.primary.OnNext(ctx)
 		if err != nil {
 			return result, err
 		}
 		if result.HasNext() {
+			c.started = true
 			c.active = c.primary
 			return result, nil
 		}
-		// Primary exhausted immediately — switch to alternative
+		// Primary returned !hasNext. Check if it's an out-of-band reason.
+		// Matches Java's OrElseCursor 3-state model: stay UNDECIDED on OOB limits,
+		// propagate the result without switching to alternative.
+		if !result.GetNoNextReason().IsSourceExhausted() {
+			// Out-of-band limit — stay undecided (don't set c.started).
+			return result, nil
+		}
+		// Primary truly exhausted — switch to alternative
+		c.started = true
 		_ = c.primary.Close()
 		c.active = c.alternative()
 		return c.active.OnNext(ctx)

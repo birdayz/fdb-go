@@ -44,9 +44,8 @@ func FanOut(name string) KeyExpression {
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
 func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	if msg == nil {
-		// Nil message → null key component. Matches Java's behavior when
-		// evaluating a field on a null message (returns Key.Evaluated.NULL).
-		return [][]any{{nil}}, nil
+		// Nil message → result depends on FanType, matching Java's getNullResult().
+		return f.getNullResult(), nil
 	}
 	m := msg.ProtoReflect()
 
@@ -59,13 +58,34 @@ func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 		return f.evaluateRepeated(m, fd)
 	}
 
-	// Scalar field — FanType is ignored (matching Java behavior).
+	// Scalar field — check proto field presence before reading value.
+	// For proto2 optional fields, unset → nil (matching Java's hasField() check).
+	// For proto3 fields (no presence), always returns the value.
+	if fd.HasPresence() && !m.Has(fd) {
+		return [][]any{{nil}}, nil
+	}
 	value := m.Get(fd)
 	result, err := scalarToInterface(fd, value)
 	if err != nil {
 		return nil, err
 	}
 	return [][]any{{result}}, nil
+}
+
+// getNullResult returns the appropriate result for a nil message based on FanType.
+// Matches Java's FieldKeyExpression.getNullResult():
+//   - FanOut → empty (no index entries)
+//   - Concatenate → [[emptyList]]
+//   - None → [[nil]]
+func (f *FieldKeyExpression) getNullResult() [][]any {
+	switch f.fanType {
+	case FanTypeFanOut:
+		return nil // No entries — matching Java's Collections.emptyList()
+	case FanTypeConcatenate:
+		return [][]any{{[]any{}}} // One entry containing an empty list
+	default:
+		return [][]any{{nil}} // One entry with null
+	}
 }
 
 // evaluateRepeated handles repeated proto fields according to FanType.
@@ -171,6 +191,11 @@ func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
 // Matches Java's RecordTypeKeyExpression.evaluateMessage() which returns
 // record.getRecordType().getRecordTypeKey() — the union descriptor field number.
 func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+	if msg == nil {
+		// Nil message → null type key. Matches Java's null check:
+		// record != null ? scalar(record.getRecordType().getRecordTypeKey()) : Key.Evaluated.NULL
+		return [][]any{{nil}}, nil
+	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
 
 	// Look up the integer record type key (proto field number from union descriptor).
@@ -329,6 +354,15 @@ func NestFanOut(parentField string, child KeyExpression) KeyExpression {
 // Evaluate navigates into the parent message field and evaluates the child
 // expression on the sub-message(s).
 func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+	if msg == nil {
+		// Nil message → depends on FanType, matching Java's parent.evaluateMessage(null).
+		// FanOut parent on nil → empty (no repeated field to iterate).
+		// Non-FanOut parent on nil → child evaluates on nil sub-message.
+		if n.fanType == FanTypeFanOut {
+			return nil, nil
+		}
+		return n.child.Evaluate(nil)
+	}
 	m := msg.ProtoReflect()
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(n.parentField))
 	if fd == nil {

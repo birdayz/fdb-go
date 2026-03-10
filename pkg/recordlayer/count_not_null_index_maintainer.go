@@ -136,6 +136,22 @@ func keyExpressionHasNullField(msg proto.Message, expr KeyExpression) bool {
 			}
 		}
 		return false
+	case *NestingKeyExpression:
+		// Navigate into the nested message field, then check child expression.
+		// Matches Java's NestingKeyExpression null handling.
+		m := msg.ProtoReflect()
+		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.parentField))
+		if fd == nil {
+			return true // Field not in schema — treat as null
+		}
+		if fd.HasPresence() && !m.Has(fd) {
+			return true // Parent message field not set
+		}
+		if fd.Kind() == protoreflect.MessageKind {
+			nestedMsg := m.Get(fd).Message().Interface()
+			return keyExpressionHasNullField(nestedMsg, e.child)
+		}
+		return false
 	case *GroupingKeyExpression:
 		return keyExpressionHasNullField(msg, e.wholeKey)
 	case *EmptyKeyExpression:

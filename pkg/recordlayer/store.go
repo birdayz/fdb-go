@@ -173,6 +173,20 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		return false, err
 	}
 
+	// Deserialize old record BEFORE deleting — Java deserializes first
+	// (loadTypedRecord at line 1676), then deletes (deleteRecordSplits at line 1682).
+	// Must deserialize before delete so corrupt data errors don't cause data loss.
+	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
+	var oldRecordType *RecordType
+	var oldMsg proto.Message
+	if needDeserialize {
+		var deserErr error
+		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
+		if deserErr != nil {
+			return false, fmt.Errorf("failed to deserialize record for deletion: %w", deserErr)
+		}
+	}
+
 	// Check for inline version
 	if store.metaData.IsStoreRecordVersions() {
 		oldSizeInfo.VersionedInline = true
@@ -189,18 +203,6 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		versionKey := store.versionKey(primaryKey)
 		store.context.RemoveLocalVersion(versionKey)
 		store.context.RemoveVersionMutation(versionKey)
-	}
-
-	// Deserialize old record if needed for counting or index updates
-	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
-	var oldRecordType *RecordType
-	var oldMsg proto.Message
-	if needDeserialize {
-		var deserErr error
-		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
-		if deserErr != nil {
-			return false, fmt.Errorf("failed to deserialize record for deletion: %w", deserErr)
-		}
 	}
 
 	// Decrement record count
@@ -326,15 +328,18 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 		if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
 			_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
-			if deserErr == nil {
-				existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
-				if existingTypeName != recordTypeName {
-					return nil, &RecordTypeChangedError{
-						Message:      "record type changed",
-						PrimaryKey:   primaryKey,
-						ActualType:   existingTypeName,
-						ExpectedType: recordTypeName,
-					}
+			if deserErr != nil {
+				// Propagate deserialization error. Java's loadExistingRecord()
+				// deserializes before the type check — if deser fails, error propagates.
+				return nil, fmt.Errorf("failed to deserialize existing record for type check: %w", deserErr)
+			}
+			existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
+			if existingTypeName != recordTypeName {
+				return nil, &RecordTypeChangedError{
+					Message:      "record type changed",
+					PrimaryKey:   primaryKey,
+					ActualType:   existingTypeName,
+					ExpectedType: recordTypeName,
 				}
 			}
 		}

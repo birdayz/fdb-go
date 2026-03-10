@@ -103,15 +103,27 @@ var _ = Describe("FDBRecordVersion range methods", func() {
 			Expect(p.GetLocalVersion()).To(Equal(0xFFFE))
 		})
 
-		It("errors on Next at max", func() {
+		It("Next on LastInDBVersion carries to next DB version", func() {
 			v := LastInDBVersion(1)
-			_, err := v.Next()
+			next, err := v.Next()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next.Equal(FirstInDBVersion(2))).To(BeTrue())
+		})
+
+		It("Prev on FirstInDBVersion borrows from previous DB version", func() {
+			v := FirstInDBVersion(1)
+			prev, err := v.Prev()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(prev.Equal(LastInDBVersion(0))).To(BeTrue())
+		})
+
+		It("errors on Next at MaxVersion", func() {
+			_, err := MaxVersion().Next()
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("errors on Prev at min", func() {
-			v := FirstInDBVersion(1)
-			_, err := v.Prev()
+		It("errors on Prev at MinVersion", func() {
+			_, err := MinVersion().Prev()
 			Expect(err).To(HaveOccurred())
 		})
 

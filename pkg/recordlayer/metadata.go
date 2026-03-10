@@ -332,6 +332,9 @@ func (b *RecordMetaDataBuilder) RemoveIndex(indexName string) *RecordMetaDataBui
 		return b
 	}
 
+	// Pre-increment version before recording RemovedVersion.
+	// Matches Java: formerIndexes.add(new FormerIndex(..., ++version, name))
+	b.version++
 	former := &FormerIndex{
 		SubspaceKey:    idx.SubspaceTupleKey(),
 		AddedVersion:   idx.AddedVersion,

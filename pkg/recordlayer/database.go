@@ -355,11 +355,17 @@ func (rc *FDBRecordContext) HasVersionMutations() bool {
 	return len(rc.versionMutations) > 0
 }
 
-// CommitWithVersionstamp commits the transaction, first flushing all queued
-// SET_VERSIONSTAMPED_VALUE mutations. Returns the committed versionstamp
-// (10 bytes) or nil for read-only transactions / no versionstamp mutations.
-// Use this instead of Commit() when you need the versionstamp after commit.
+// CommitWithVersionstamp commits the transaction, first running pre-commit checks,
+// then flushing all queued SET_VERSIONSTAMPED_VALUE mutations. Returns the committed
+// versionstamp (10 bytes) or nil for read-only transactions / no versionstamp mutations.
+// Runs post-commit hooks after successful commit.
+// Matches Java's FDBRecordContext.commitAsync() which always runs checks and hooks.
 func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
+	// Run pre-commit checks before committing
+	if err := rc.runCommitChecks(); err != nil {
+		return nil, err
+	}
+
 	rc.flushVersionMutations()
 
 	// Get the versionstamp future BEFORE committing
@@ -369,6 +375,9 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	if err := rc.tx.Commit().Get(); err != nil {
 		return nil, err
 	}
+
+	// Run post-commit callbacks after successful commit
+	rc.runPostCommits()
 
 	// Retrieve the committed versionstamp
 	vs, err := vsFuture.Get()

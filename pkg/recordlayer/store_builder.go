@@ -115,6 +115,16 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return nil
 	}
 
+	// Clean up data for former indexes (dropped since old version).
+	// Matches Java's checkRebuild() which calls removeFormerIndex() for each,
+	// clearing INDEX_KEY, INDEX_SECONDARY_SPACE_KEY, INDEX_RANGE_SPACE_KEY,
+	// INDEX_STATE_SPACE_KEY, and INDEX_UNIQUENESS_VIOLATIONS_KEY subspaces.
+	for _, former := range store.metaData.GetFormerIndexes() {
+		if former.RemovedVersion > oldMetaDataVersion {
+			store.removeFormerIndexData(former)
+		}
+	}
+
 	// Find indexes added since the old version.
 	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
 	if len(indexesToBuild) > 0 {
@@ -277,18 +287,28 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 	return 0, nil
 }
 
-// createStoreHeader creates a DataStoreInfo header for a new record store
-func createStoreHeader(metaDataVersion int32) *gen.DataStoreInfo {
+// createStoreHeader creates a DataStoreInfo header for a new record store.
+// Includes RecordCountKey from metadata if present, matching Java's
+// checkPossiblyRebuildRecordCounts which sets it during store creation.
+func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData) *gen.DataStoreInfo {
 	formatVersion := int32(FormatVersionCurrent)
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(time.Now().UnixMilli())
 
-	return &gen.DataStoreInfo{
+	header := &gen.DataStoreInfo{
 		FormatVersion:   &formatVersion,
 		MetaDataversion: &metaDataVersion,
 		UserVersion:     &userVersion,
 		LastUpdateTime:  &lastUpdateTime,
 	}
+
+	// Persist RecordCountKey so checkPossiblyRebuildRecordCounts doesn't trigger
+	// an unnecessary full rebuild on the first reopen.
+	if metaData != nil && metaData.GetRecordCountKey() != nil {
+		header.RecordCountKey = metaData.GetRecordCountKey().ToKeyExpression()
+	}
+
+	return header
 }
 
 // checkStoreExists checks if a store exists and returns its state
@@ -446,7 +466,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	}
 
 	// Create and write store header
-	storeHeader := createStoreHeader(int32(b.metaData.Version()))
+	storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData)
 	if err := store.writeStoreHeader(storeHeader); err != nil {
 		return nil, err
 	}
@@ -513,7 +533,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader = createStoreHeader(int32(b.metaData.Version()))
+		storeHeader = createStoreHeader(int32(b.metaData.Version()), b.metaData)
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}

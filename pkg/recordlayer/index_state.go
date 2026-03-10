@@ -315,6 +315,38 @@ func (store *FDBRecordStore) clearIndexData(index *Index) {
 	store.context.Transaction().ClearRange(buildSubspace)
 }
 
+// removeFormerIndexData clears all FDB data for a former (dropped) index.
+// Matches Java's FDBRecordStore.removeFormerIndex() which clears:
+// INDEX_KEY, INDEX_SECONDARY_SPACE_KEY, INDEX_RANGE_SPACE_KEY,
+// INDEX_STATE_SPACE_KEY, and INDEX_UNIQUENESS_VIOLATIONS_KEY subspaces.
+func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) {
+	subKey := former.SubspaceKey
+
+	// Clear index entries
+	idxSubspace := store.subspace.Sub(IndexKey, subKey)
+	if pr, err := fdb.PrefixRange(idxSubspace.Bytes()); err == nil {
+		store.context.Transaction().ClearRange(pr)
+	} else {
+		store.context.Transaction().ClearRange(idxSubspace)
+	}
+
+	// Clear secondary space
+	store.context.Transaction().ClearRange(store.subspace.Sub(IndexSecondarySpaceKey, subKey))
+
+	// Clear uniqueness violations
+	store.context.Transaction().ClearRange(store.subspace.Sub(IndexUniquenessViolationsKey, subKey))
+
+	// Clear range set
+	store.context.Transaction().ClearRange(store.subspace.Sub(IndexRangeSpaceKey, subKey))
+
+	// Clear index state
+	stateKey := store.subspace.Sub(IndexStateSpaceKey).Pack(tuple.Tuple{subKey})
+	store.context.Transaction().Clear(fdb.Key(stateKey))
+
+	// Clear build space
+	store.context.Transaction().ClearRange(store.subspace.Sub(IndexBuildSpaceKey, subKey))
+}
+
 // shouldMaintainIndex returns true if the index should be updated on record changes.
 // DISABLED indexes are skipped entirely. READABLE, WRITE_ONLY, and READABLE_UNIQUE_PENDING
 // all receive updates.
