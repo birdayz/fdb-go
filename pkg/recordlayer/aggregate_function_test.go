@@ -294,6 +294,131 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 		})
 	})
 
+	Describe("MIN aggregate via VALUE index", func() {
+		It("evaluates ungrouped min", func() {
+			ks := specSubspace()
+
+			// VALUE index on price — can serve MIN by scanning 1 entry forward
+			valueIdx := NewIndex("price_idx", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", valueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i, price := range []int32{300, 50, 200} {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameMin, Operand: Field("price")},
+					TupleRangeAll, IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(tuple.Tuple{int64(50)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns nil for empty store", func() {
+			ks := specSubspace()
+
+			valueIdx := NewIndex("price_idx", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", valueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameMin, Operand: Field("price")},
+					TupleRangeAll, IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("MAX aggregate via VALUE index", func() {
+		It("evaluates ungrouped max", func() {
+			ks := specSubspace()
+
+			valueIdx := NewIndex("price_idx", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", valueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i, price := range []int32{100, 500, 200} {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameMax, Operand: Field("price")},
+					TupleRangeAll, IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(tuple.Tuple{int64(500)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("reflects deletes (unlike MAX_EVER)", func() {
+			ks := specSubspace()
+
+			valueIdx := NewIndex("price_idx", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", valueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(500)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Delete the max record
+				_, err = store.DeleteRecord(tuple.Tuple{int64(2)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// MAX now reflects the remaining record
+				result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameMax, Operand: Field("price")},
+					TupleRangeAll, IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(tuple.Tuple{int64(100)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("auto-select index", func() {
 		It("finds correct index among multiple", func() {
 			ks := specSubspace()
