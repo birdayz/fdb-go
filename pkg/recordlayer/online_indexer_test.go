@@ -403,6 +403,291 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 	})
 
+	Describe("BuildIndex on RANK index", func() {
+		It("builds a RANK index on pre-existing records", func() {
+			ks := specSubspace()
+
+			// Phase 1: Insert records WITHOUT any index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				prices := []int32{500, 100, 300, 200, 400}
+				for i, price := range prices {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Build RANK index online.
+			rankIndex := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", rankIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(rankIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 5))
+
+			// Phase 3: Verify BY_VALUE scan (sorted by price).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(store.IsIndexReadable("rank_by_price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(rankIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(5))
+
+				expectedPrices := []int64{100, 200, 300, 400, 500}
+				for i, entry := range entries {
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrices[i]}))
+				}
+
+				// Verify BY_RANK scan — rank 0 should be price 100, rank 4 should be price 500.
+				rankEntries, err := AsList(ctx, store.ScanIndexByType(rankIndex, IndexScanByRank,
+					TupleRangeBetween(tuple.Tuple{int64(0)}, tuple.Tuple{int64(5)}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rankEntries).To(HaveLen(5))
+				for i, entry := range rankEntries {
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrices[i]}))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("builds RANK index with small limit (chunked)", func() {
+			ks := specSubspace()
+
+			// Insert 15 records with various prices.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 15; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build with limit=3 to force multiple transactions.
+			rankIndex := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", rankIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(rankIndex).
+				SetSubspace(ks).
+				SetLimit(3).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 15))
+
+			// Verify all 15 entries present and ranked correctly.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				entries, err := AsList(ctx, store.ScanIndex(rankIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(15))
+
+				for i, entry := range entries {
+					expectedPrice := int64((i + 1) * 10)
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+				}
+
+				// BY_RANK: rank 0→price 10, rank 14→price 150.
+				rankEntries, err := AsList(ctx, store.ScanIndexByType(rankIndex, IndexScanByRank,
+					TupleRangeBetween(tuple.Tuple{int64(0)}, tuple.Tuple{int64(15)}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rankEntries).To(HaveLen(15))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("RANK index maintained after build (new records ranked correctly)", func() {
+			ks := specSubspace()
+
+			// Insert 3 records.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(500)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build RANK index.
+			rankIndex := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", rankIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(rankIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert new records — they should be ranked correctly.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Insert prices that interleave: 200 (rank 1), 400 (rank 3)
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(400)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// BY_RANK should now return: 100, 200, 300, 400, 500
+				rankEntries, err := AsList(ctx, store.ScanIndexByType(rankIndex, IndexScanByRank,
+					TupleRangeBetween(tuple.Tuple{int64(0)}, tuple.Tuple{int64(5)}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rankEntries).To(HaveLen(5))
+
+				expectedPrices := []int64{100, 200, 300, 400, 500}
+				for i, entry := range rankEntries {
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrices[i]}))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("builds RANK index with duplicate scores", func() {
+			ks := specSubspace()
+
+			// Insert records with duplicate prices.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// 3 records at price=100, 2 at price=200, 1 at price=300
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(6), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build RANK index.
+			rankIndex := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", rankIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(rankIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 6))
+
+			// Verify: B-tree has 6 entries (one per record), ranked set has 3 scores.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// BY_VALUE: 6 entries (3 at 100, 2 at 200, 1 at 300).
+				entries, err := AsList(ctx, store.ScanIndex(rankIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(6))
+
+				// BY_RANK: ranks [0,3) maps to scores [100,300+) → all 6 B-tree entries.
+				rankEntries, err := AsList(ctx, store.ScanIndexByType(rankIndex, IndexScanByRank,
+					TupleRangeBetween(tuple.Tuple{int64(0)}, tuple.Tuple{int64(3)}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rankEntries).To(HaveLen(6))
+
+				// Verify scores in order: 100, 100, 100, 200, 200, 300.
+				expectedPrices := []int64{100, 100, 100, 200, 200, 300}
+				for i, entry := range rankEntries {
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrices[i]}))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Builder validation", func() {
 		It("rejects missing database", func() {
 			_, err := NewOnlineIndexerBuilder().

@@ -252,7 +252,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **RANK preloadForLookup** — Java prefetches sparse upper skip-list levels into the RYW cache before `getNth`/`rank` calls, reducing FDB round trips. Go does sequential level-by-level reads. No correctness impact, but significant performance gap for deep ranked sets. **LOW**.
 
-- [ ] **RANK OnlineIndexer test coverage** — `OnlineIndexer.BuildIndex()` dispatches to `RankIndexMaintainer.Update` but `UpdateWhileWriteOnly` has special CountDuplicates logic (range set check) that is untested with online builds. Java has full `OnlineIndexerBuildRankIndexTest` (309 lines). **MEDIUM**.
+- [x] **RANK OnlineIndexer test coverage** — 4 tests: basic build, chunked build (limit=3), post-build maintenance, duplicate scores. Covers RANK index through OnlineIndexer path. **MEDIUM**.
 
 - [x] **RANK reverse BY_RANK scan** — tested, works correctly (rank→score conversion + reverse standard scan). **LOW**.
 
