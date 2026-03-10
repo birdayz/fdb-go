@@ -28,6 +28,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] Store state validation — StoreLockState.FORBID_RECORD_UPDATE check
 - [x] Split records — saveWithSplit/loadWithSplit/deleteSplit, 100KB chunks, cursor reassembly
 - [x] Secondary indexes (VALUE) — StandardIndexMaintainer, unique enforcement, common-entry skip
+- [x] Covering indexes (KeyWithValueExpression) — value columns stored in FDB value, 14 unit tests + 5 conformance specs
 - [x] Index maintenance — auto-update on Save/Delete/DeleteAllRecords
 - [x] Continuation token protobuf wrapping — magic number 6773487359078157740
 - [x] Bulk operations — DeleteAllRecords, GetRecordCount/GetSnapshotRecordCount
@@ -95,6 +96,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | MAX_EVER_TUPLE index | saveOrderWithMaxEverTupleIndex, deleteOrderWithMaxEverTupleIndex, scanMaxEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
 | MIN_EVER_TUPLE index | saveOrderWithMinEverTupleIndex, deleteOrderWithMinEverTupleIndex, scanMinEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
 | CLEAR_WHEN_ZERO | saveOrderWithCountCWZ, deleteOrderWithCountCWZ, scanCountCWZIndex | clear_when_zero_conformance_test.go | YES |
+| Covering index (KeyWithValue) | saveOrderWithCoveringIndex, scanCoveringIndex, deleteOrderWithCoveringIndex | covering_index_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -107,6 +109,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **Store delete+recreate lifecycle** — HIGH. 3 specs: header preserved across DeleteAllRecords, index state WRITE_ONLY survives DeleteAllRecords, Java deletes→Go re-creates and saves. Cross-validated.
 - [x] **MAX_EVER_LONG index conformance** — HIGH. 6 specs: Go writes→both scan, Java writes→both scan, mixed writes, delete irreversibility (Go deletes Java record, Java deletes Go record), update never decreases. Cross-validated.
 - [x] **MIN_EVER_LONG index conformance** — HIGH. 6 specs: Go writes→both scan, Java writes→both scan, mixed writes, delete irreversibility (Go deletes Java record, Java deletes Go record), update never increases. Cross-validated.
+- [x] **Covering index (KeyWithValueExpression) conformance** — HIGH. 5 specs: Go writes→both scan, Java writes→both scan, cross-language delete, update changes value consistently, mixed writes. Value portion (flower.type) cross-validated. 14 unit tests cover edge cases (splitPoint=0, splitPoint=len(inner), FanOut+covering, continuation).
 
 ---
 
@@ -504,6 +507,22 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### HIGH — Conformance test restructure
 
 - [x] **Remove Gradle, make conformance fully Bazel-native** — Killed Gradle, flattened `conformance/java/` and `conformance/helpers/` into single `conformance/` directory. Split monolithic ConformanceSteps.java into 22 per-feature step classes with `@ConformanceStep` annotation dispatch. Added auto-rebuild conformance tests exercising `checkPossiblyRebuild()` without `ALWAYS_READABLE_CHECKER`. Removed force-set of IDs after `mergeFrom` in load steps. 211 conformance specs, single BUILD.bazel, zero external tooling.
+
+---
+
+## Test quality gaps (identified 2026-03-10 audit)
+
+### MEDIUM
+
+- [ ] **Error path test coverage weak** — Only 5 error-specific specs in `save_error_test.go` (0.9% of total). Missing: validation failures, index update errors, scan limit edge cases, versionstamp flush errors.
+- [ ] **Atomic index maintainer code duplication** — COUNT/SUM/COUNT_NOT_NULL/COUNT_UPDATES share ~40-50% boilerplate (`evaluateGroupingKeys`, `getGroupingCount`, `removeCommon*Keys`). Could extract shared `AtomicIndexMaintainer` base helpers.
+
+### LOW
+
+- [ ] **`existence_check.go` only 1 of 4 enum values tested** — Only `RecordExistenceCheckNone` tested. Missing: ERROR_IF_EXISTS, ERROR_IF_NOT_EXISTS, ERROR_IF_NO_EXISTING_RECORD.
+- [ ] **`indexing_range_set.go` no dedicated unit tests** — Only tested indirectly via `online_indexer_test.go`. Missing direct tests for `ContainsKey()`, `FirstMissingRange()`, boundary conditions.
+- [ ] **Scan limit boundary tests missing** — Byte limit exact boundary, time limit with slow iteration, multi-limit interaction (row + byte + time) not explicitly tested.
+- [ ] **cursor.go `NoNextReason` helpers not tested** — `IsOutOfBand`, `IsSourceExhausted`, `IsLimitReached` tested indirectly but no dedicated specs.
 
 ---
 
