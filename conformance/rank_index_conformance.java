@@ -17,6 +17,13 @@ import com.apple.foundationdb.record.RecordLayerDemo.Order;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 
+import com.apple.foundationdb.record.EvaluationContext;
+import com.apple.foundationdb.record.FunctionNames;
+import com.apple.foundationdb.record.metadata.IndexRecordFunction;
+import com.apple.foundationdb.record.metadata.expressions.GroupingKeyExpression;
+import com.apple.foundationdb.record.provider.foundationdb.FDBRecord;
+import com.google.protobuf.Message;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -59,6 +66,31 @@ class RankIndexSteps extends ConformanceBase {
         return runInContext(clusterFile, tenantName, context -> {
             FDBRecordStore store = openRankIndexedStore(context, subspace);
             return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("rankForRecord")
+    public Long rankForRecord(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createRankIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            FDBRecord<Message> record = store.loadRecord(Tuple.from(orderID));
+            if (record == null) {
+                return null;
+            }
+
+            IndexRecordFunction<Long> rankFunction = new IndexRecordFunction<>(
+                FunctionNames.RANK,
+                new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+                null);
+
+            return store.evaluateRecordFunction(rankFunction, record).join();
         });
     }
 

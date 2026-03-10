@@ -383,6 +383,90 @@ var _ = Describe("RANK Index Conformance", func() {
 			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(300)))
 		})
 	})
+
+	Describe("EvaluateRecordFunction cross-validation", func() {
+		It("Go and Java agree on rank of records written by Go", func() {
+			prices := []int32{300, 100, 500, 200, 400}
+			for i, price := range prices {
+				err := store.SaveOrderGo(ctx, &gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(price),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Expected ranks: price=100→0, price=200→1, price=300→2, price=400→3, price=500→4
+			expectedRanks := map[int64]int64{1: 2, 2: 0, 3: 4, 4: 1, 5: 3}
+
+			for orderID, expectedRank := range expectedRanks {
+				goRank, err := store.RankForRecordGo(ctx, orderID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(goRank).NotTo(BeNil())
+				Expect(*goRank).To(Equal(expectedRank), "Go rank mismatch for orderID=%d", orderID)
+
+				javaRank, err := store.RankForRecordJava(ctx, orderID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(javaRank).NotTo(BeNil())
+				Expect(*javaRank).To(Equal(expectedRank), "Java rank mismatch for orderID=%d", orderID)
+			}
+		})
+
+		It("Go and Java agree on rank of records written by Java", func() {
+			prices := []int32{50, 150, 250}
+			for i, price := range prices {
+				err := store.SaveOrderJava(ctx, &gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(price),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// price=50→rank 0, price=150→rank 1, price=250→rank 2
+			for orderID := int64(1); orderID <= 3; orderID++ {
+				goRank, err := store.RankForRecordGo(ctx, orderID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(goRank).NotTo(BeNil())
+
+				javaRank, err := store.RankForRecordJava(ctx, orderID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(javaRank).NotTo(BeNil())
+
+				Expect(*goRank).To(Equal(*javaRank), "rank mismatch for orderID=%d: Go=%d Java=%d", orderID, *goRank, *javaRank)
+			}
+		})
+
+		It("ranks update consistently after cross-language delete", func() {
+			// Go writes 3 records
+			for i, price := range []int32{100, 200, 300} {
+				err := store.SaveOrderGo(ctx, &gen.Order{
+					OrderId: proto.Int64(int64(i + 1)),
+					Price:   proto.Int32(price),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Java deletes the middle record (price=200)
+			err := store.DeleteOrderJava(ctx, 2)
+			Expect(err).NotTo(HaveOccurred())
+
+			// After delete: price=100→rank 0, price=300→rank 1
+			goRank, err := store.RankForRecordGo(ctx, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*goRank).To(Equal(int64(1)))
+
+			javaRank, err := store.RankForRecordJava(ctx, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*javaRank).To(Equal(int64(1)))
+
+			goRank, err = store.RankForRecordGo(ctx, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*goRank).To(Equal(int64(0)))
+
+			javaRank, err = store.RankForRecordJava(ctx, 1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*javaRank).To(Equal(int64(0)))
+		})
+	})
 })
 
 // RankIndexConformanceStore wraps record operations with a RANK index on Order.price.
@@ -552,6 +636,48 @@ func (s *RankIndexConformanceStore) ScanRankIndexByRankGo(ctx context.Context, l
 		return nil, nil
 	})
 	return results, err
+}
+
+// RankForRecordGo evaluates the rank of a record's price using Go.
+func (s *RankIndexConformanceStore) RankForRecordGo(ctx context.Context, orderID int64) (*int64, error) {
+	var rank *int64
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		rec, err := store.LoadRecord(tuple.Tuple{orderID})
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			return nil, nil
+		}
+		fn := &recordlayer.IndexRecordFunction{
+			Name:    recordlayer.FunctionNameRank,
+			Operand: recordlayer.GroupBy(recordlayer.Field("price")),
+		}
+		rank, err = store.EvaluateRecordFunction(fn, rec)
+		return nil, err
+	})
+	return rank, err
+}
+
+// RankForRecordJava evaluates the rank of a record's price using Java.
+func (s *RankIndexConformanceStore) RankForRecordJava(ctx context.Context, orderID int64) (*int64, error) {
+	params := s.buildJavaParams()
+	params["orderID"] = orderID
+
+	var result *float64
+	if err := s.java.InvokeAs(ctx, "rankForRecord", params, &result); err != nil {
+		return nil, fmt.Errorf("java rankForRecord failed: %w", err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+	rank := int64(*result)
+	return &rank, nil
 }
 
 // ScanRankIndexByRankJava scans the RANK index BY_RANK using Java.
