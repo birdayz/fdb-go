@@ -67,9 +67,14 @@ func (m *SumIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.
 		oldEntries, newEntries = removeCommonSumEntries(oldEntries, newEntries)
 	}
 
+	clearWhenZero := m.index.IsClearWhenZero()
+
 	for _, e := range oldEntries {
 		fdbKey := m.indexSubspace.Pack(e.groupKey)
 		m.tx.Add(fdb.Key(fdbKey), encodeRecordCount(-e.sumValue))
+		if clearWhenZero {
+			m.tx.CompareAndClear(fdb.Key(fdbKey), littleEndianInt64Zero)
+		}
 	}
 
 	for _, e := range newEntries {

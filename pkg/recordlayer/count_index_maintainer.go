@@ -64,9 +64,14 @@ func (m *CountIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[prot
 		oldKeys, newKeys = removeCommonGroupingKeys(oldKeys, newKeys)
 	}
 
+	clearWhenZero := m.index.IsClearWhenZero()
+
 	for _, key := range oldKeys {
 		fdbKey := m.indexSubspace.Pack(key)
 		m.tx.Add(fdb.Key(fdbKey), littleEndianInt64MinusOne)
+		if clearWhenZero {
+			m.tx.CompareAndClear(fdb.Key(fdbKey), littleEndianInt64Zero)
+		}
 	}
 
 	for _, key := range newKeys {

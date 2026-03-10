@@ -18,7 +18,8 @@ const (
 
 // Index option keys matching Java's IndexOptions.
 const (
-	IndexOptionUnique = "unique"
+	IndexOptionUnique        = "unique"
+	IndexOptionClearWhenZero = "clearWhenZero"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.
@@ -164,6 +165,26 @@ func (idx *Index) SetSubspaceKey(key interface{}) *Index {
 func (idx *Index) IsUnique() bool {
 	v, ok := idx.Options[IndexOptionUnique]
 	return ok && v == "true"
+}
+
+// IsClearWhenZero returns whether this index should clear entries when values reach zero.
+// When true, atomic ADD mutations are followed by CompareAndClear(zero) to remove
+// stale zero-value entries. Applies to COUNT, COUNT_NOT_NULL, and SUM indexes.
+// Matches Java's IndexOptions.CLEAR_WHEN_ZERO.
+func (idx *Index) IsClearWhenZero() bool {
+	v, ok := idx.Options[IndexOptionClearWhenZero]
+	return ok && v == "true"
+}
+
+// SetClearWhenZero enables or disables the clear-when-zero behavior.
+// Matches Java's IndexOptions.CLEAR_WHEN_ZERO.
+func (idx *Index) SetClearWhenZero(clear bool) *Index {
+	if clear {
+		idx.Options[IndexOptionClearWhenZero] = "true"
+	} else {
+		delete(idx.Options, IndexOptionClearWhenZero)
+	}
+	return idx
 }
 
 // SetPredicate sets a filter predicate for sparse/filtered indexes.

@@ -16,6 +16,7 @@ import (
 var (
 	littleEndianInt64One      = encodeRecordCount(1)
 	littleEndianInt64MinusOne = encodeRecordCount(-1)
+	littleEndianInt64Zero     = encodeRecordCount(0)
 )
 
 // encodeRecordCount encodes a count as little-endian int64 bytes.

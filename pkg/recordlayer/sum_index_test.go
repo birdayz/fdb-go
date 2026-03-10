@@ -417,4 +417,36 @@ var _ = Describe("SumIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("clears entry when sum reaches zero with ClearWhenZero option", func() {
+		ks := specSubspace()
+
+		sumIdx := NewSumIndex("sum_price", Ungrouped(Field("price")))
+		sumIdx.SetClearWhenZero(true)
+		builder := baseMetaData()
+		builder.AddIndex("Order", sumIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert single order and delete it — sum goes to zero
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(42)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(sumIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Entry should be cleared (not left at sum=0)
+			Expect(entries).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

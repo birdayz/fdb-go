@@ -458,4 +458,77 @@ var _ = Describe("CountIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("clears entry when count reaches zero with ClearWhenZero option", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		countIdx.SetClearWhenZero(true)
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 2 orders with price=100, 1 with price=200
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete the only price=200 order — should clear the entry entirely
+			_, err = store.DeleteRecord(tuple.Tuple{int64(3)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only price=100 remains — price=200 entry was cleared (not left at 0)
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("without ClearWhenZero leaves zero-value entries", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+		// Default: no ClearWhenZero
+		builder := baseMetaData()
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Without ClearWhenZero, the entry with count=0 remains
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(200)}))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(0)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
