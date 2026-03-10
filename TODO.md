@@ -515,7 +515,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### MEDIUM
 
 - [x] **Error path test coverage weak** — Added `error_path_test.go` with 41 specs covering: unique index violation errors (READABLE), IndexValueSizeError/IndexKeySizeError (was 0 tests), key expression validation errors (field not found, FanTypeNone on repeated, nil message, nesting into nil/nonexistent), RangeSet validation (empty key, key too large, inverted range, MissingRanges empty key), ErrRecordStoreStateNotLoaded (SetUserVersion/SetStoreLockState/UpdateRecordCountState), SaveRecord validation (all 5 existence check modes, lock precedence, unknown type, cross-type overwrite), store builder errors (reload non-existent), metadata build errors (missing PK, FormerIndex subspace reuse), error message format assertions, delete error paths. Total unit specs: 624 (was 583).
-- [ ] **Atomic index maintainer code duplication** — COUNT/SUM/COUNT_NOT_NULL/COUNT_UPDATES share ~40-50% boilerplate (`evaluateGroupingKeys`, `getGroupingCount`, `removeCommon*Keys`). Could extract shared `AtomicIndexMaintainer` base helpers.
+- [x] **Atomic index maintainer code duplication** — Extracted `indexGroupingCount()`, `evaluateGroupingKeys()`, and `updateWhileWriteOnlyNonIdempotent()` into `atomic_index_helpers.go`. Removed 184 lines of identical code across 6 maintainer files. Remaining per-maintainer logic (mutation semantics, entry types) is genuinely unique.
 
 ### LOW
 

@@ -87,6 +87,7 @@ go_test(
         "index_state_test.go",
         "index_test.go",
         "index_validation_test.go",
+        "indexing_range_set_test.go",
         "key_expression_proto_test.go",
         "key_structure_test.go",
         "large_scan_test.go",
