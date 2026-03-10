@@ -203,4 +203,4 @@ Each continuation serializes cursor state to bytes for reconstruction across tra
 
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit), time/byte/record scan limits, MetaDataValidator, commit hooks, retry runner, store state management
-- **Key gaps**: aggregate index types beyond COUNT/SUM (MIN_EVER, MAX_EVER, RANK, etc.), schema evolution validation
+- **Key gaps**: RANK index, TEXT index, more key expression types, store state caching, timer/instrumentation
