@@ -106,10 +106,17 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Add new entries
-	valueBytes := tuple.Tuple{}.Pack() // VALUE index stores empty tuple
+	emptyValue := tuple.Tuple{}.Pack()
 	for i := range newEntries {
 		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
 		keyBytes := m.indexSubspace.Pack(entryTupleKey)
+
+		// For KeyWithValueExpression indexes, store the value portion in the FDB value.
+		// Otherwise, store empty tuple (standard VALUE index behavior).
+		valueBytes := emptyValue
+		if newEntries[i].value != nil {
+			valueBytes = newEntries[i].value.Pack()
+		}
 
 		if err := checkKeyValueSizes(m.index, newEntries[i].primaryKey, keyBytes, valueBytes); err != nil {
 			return err
@@ -138,6 +145,7 @@ func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte
 type indexEntry struct {
 	key        tuple.Tuple
 	primaryKey tuple.Tuple
+	value      tuple.Tuple // Non-nil for KeyWithValueExpression covering indexes
 }
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.
@@ -155,13 +163,29 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 		return nil, err
 	}
 
+	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
 	entries := make([]indexEntry, len(tuples))
 	for i, values := range tuples {
-		key := make(tuple.Tuple, len(values))
-		for j, v := range values {
-			key[j] = v
+		if isKeyWithValue {
+			// Split at splitPoint: key columns go in FDB key, value columns in FDB value.
+			// Matches Java's StandardIndexMaintainer.evaluateIndex() KeyWithValueExpression path.
+			keyPart, valuePart := kwv.SplitEvaluatedKey(values)
+			key := make(tuple.Tuple, len(keyPart))
+			for j, v := range keyPart {
+				key[j] = v
+			}
+			val := make(tuple.Tuple, len(valuePart))
+			for j, v := range valuePart {
+				val[j] = v
+			}
+			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey, value: val}
+		} else {
+			key := make(tuple.Tuple, len(values))
+			for j, v := range values {
+				key[j] = v
+			}
+			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
 		}
-		entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
 	}
 
 	return entries, nil
@@ -297,7 +321,13 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 // the indexed value. Matches Java's StandardIndexMaintainer.commonKeys optimization.
 func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry) {
 	packEntry := func(e indexEntry) string {
-		return string(indexEntryKey(idx, e.key, e.primaryKey).Pack())
+		// Include value in the comparison key for KeyWithValueExpression indexes.
+		// Matches Java's IndexEntry.equals() which compares both key and value.
+		s := string(indexEntryKey(idx, e.key, e.primaryKey).Pack())
+		if e.value != nil {
+			s += "|" + string(e.value.Pack())
+		}
+		return s
 	}
 
 	newSet := make(map[string]struct{}, len(new))

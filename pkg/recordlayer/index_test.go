@@ -578,3 +578,331 @@ var _ = Describe("SecondaryIndexes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+var _ = Describe("KeyWithValueExpression covering indexes", func() {
+	ctx := context.Background()
+
+	buildMetaWithIndex := func(indexes ...*Index) *RecordMetaData {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		for _, idx := range indexes {
+			builder.AddIndex("Order", idx)
+		}
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md
+	}
+
+	It("stores value columns in FDB value, key columns in FDB key", func() {
+		// Inner: Concat(price, order_id) = 2 columns. splitPoint=1: price in key, order_id in value.
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+			_, err = store.SaveRecord(order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify index entry: key should have [price=999, pk=42], value should have [order_id=42]
+			idxSubspace := store.subspace.Sub(IndexKey, coveringIndex.SubspaceTupleKey())
+			begin, end := idxSubspace.FDBRangeKeys()
+			kvs, err := rtx.Transaction().GetRange(
+				fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{},
+			).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kvs).To(HaveLen(1))
+
+			// Key: [price, order_id (pk)]
+			keyTuple, err := idxSubspace.Unpack(kvs[0].Key)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(keyTuple).To(HaveLen(2)) // 1 key column + 1 PK column
+			Expect(keyTuple[0]).To(Equal(int64(999)))
+			Expect(keyTuple[1]).To(Equal(int64(42)))
+
+			// Value: [order_id=42] (the value portion)
+			valueTuple, err := tuple.Unpack(kvs[0].Value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(valueTuple).To(HaveLen(1))
+			Expect(valueTuple[0]).To(Equal(int64(42)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndex returns IndexEntry with both key and value", func() {
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, o := range []*gen.Order{
+				{OrderId: proto.Int64(1), Price: proto.Int32(300)},
+				{OrderId: proto.Int64(2), Price: proto.Int32(100)},
+				{OrderId: proto.Int64(3), Price: proto.Int32(200)},
+			} {
+				_, err = store.SaveRecord(o)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan the index — entries should be sorted by price
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(3))
+
+			// Verify sorted by price ascending
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[1].Key[0]).To(Equal(int64(200)))
+			Expect(entries[2].Key[0]).To(Equal(int64(300)))
+
+			// Verify value portion is populated
+			Expect(entries[0].Value).To(HaveLen(1))
+			Expect(entries[0].Value[0]).To(Equal(int64(2))) // order_id=2 has price=100
+
+			// Verify PrimaryKey extraction still works
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(entries[1].PrimaryKey()).To(Equal(tuple.Tuple{int64(3)}))
+			Expect(entries[2].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete removes index entry and value", func() {
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(600)})
+			Expect(err).NotTo(HaveOccurred())
+
+			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("update changes value portion when indexed value changes", func() {
+		// Concat(price, order_id) split at 1: price in key, order_id in value.
+		// When we update price, the key changes and value stays same (both keyed on order_id).
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update: price changes from 100 to 200
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key[0]).To(Equal(int64(200))) // updated price
+			Expect(entries[0].Value[0]).To(Equal(int64(1))) // order_id unchanged
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("multi-column split: 2 key columns, 1 value column", func() {
+		// Concat(price, order_id, flower.type) with splitPoint=2
+		// Key: [price, order_id], Value: [flower.type]
+		coveringIndex := NewIndex("covering_multi",
+			KeyWithValue(Concat(Field("price"), Field("order_id"), Nest("flower", Field("type"))), 2))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100),
+				Flower: &gen.Flower{Type: proto.String("Rose")},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+			// Key has 2 key columns + PK
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[0].Key[1]).To(Equal(int64(1)))
+			// Value has flower type
+			Expect(entries[0].Value).To(HaveLen(1))
+			Expect(entries[0].Value[0]).To(Equal("Rose"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("common entry skip works: unchanged value doesn't write", func() {
+		// If both key and value are unchanged, the entry should be skipped.
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save record
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save exact same record again — should be a no-op for index
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("keyExpressionColumnSize returns splitPoint", func() {
+		expr := KeyWithValue(Concat(Field("a"), Field("b"), Field("c")), 2)
+		Expect(keyExpressionColumnSize(expr)).To(Equal(2))
+	})
+
+	It("proto roundtrip preserves KeyWithValueExpression", func() {
+		expr := KeyWithValue(Concat(Field("price"), Field("order_id")), 1)
+		p := expr.ToKeyExpression()
+
+		restored, err := KeyExpressionFromProto(p)
+		Expect(err).NotTo(HaveOccurred())
+
+		kwv, ok := restored.(*KeyWithValueExpression)
+		Expect(ok).To(BeTrue())
+		Expect(kwv.SplitPoint()).To(Equal(1))
+
+		// Inner key should be a CompositeKeyExpression with 2 children
+		inner, ok := kwv.InnerKey().(*CompositeKeyExpression)
+		Expect(ok).To(BeTrue())
+		Expect(inner.expressions).To(HaveLen(2))
+	})
+
+	It("IndexValues returns only key columns for covering index", func() {
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+
+			// IndexValues should return only key columns (1 = price), not PK
+			indexVals := entries[0].IndexValues()
+			Expect(indexVals).To(HaveLen(1))
+			Expect(indexVals[0]).To(Equal(int64(300)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("PK dedup works with covering index", func() {
+		// Index on (order_id, price) with splitPoint=1. order_id overlaps with PK.
+		// PK dedup should still work: order_id is in key[0], so PK is not appended.
+		coveringIndex := NewIndex("covering_pk_dedup",
+			KeyWithValue(Concat(Field("order_id"), Field("price")), 1))
+		metaData := buildMetaWithIndex(coveringIndex)
+
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entries []*IndexEntry
+			for result, err := range Seq2(store.ScanIndex(coveringIndex, TupleRangeAll, nil, ForwardScan()), ctx) {
+				Expect(err).NotTo(HaveOccurred())
+				entries = append(entries, result)
+			}
+			Expect(entries).To(HaveLen(1))
+
+			// Key should be [order_id=42] only (PK deduplicated)
+			Expect(entries[0].Key).To(HaveLen(1))
+			Expect(entries[0].Key[0]).To(Equal(int64(42)))
+
+			// Value should be [price=100]
+			Expect(entries[0].Value).To(HaveLen(1))
+			Expect(entries[0].Value[0]).To(Equal(int64(100)))
+
+			// PrimaryKey should reconstruct correctly
+			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(42)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

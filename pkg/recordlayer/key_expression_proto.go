@@ -152,6 +152,14 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		found++
 		root = Literal(valueFromProto(expr.Value))
 	}
+	if expr.KeyWithValue != nil {
+		found++
+		kwv, err := keyWithValueFromProto(expr.KeyWithValue)
+		if err != nil {
+			return nil, err
+		}
+		root = kwv
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -213,6 +221,15 @@ func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
 	}, nil
 }
 
+// keyWithValueFromProto reconstructs a KeyWithValueExpression from a proto KeyWithValue.
+func keyWithValueFromProto(kwv *gen.KeyWithValue) (*KeyWithValueExpression, error) {
+	inner, err := KeyExpressionFromProto(kwv.InnerKey)
+	if err != nil {
+		return nil, fmt.Errorf("key_with_value inner key: %w", err)
+	}
+	return KeyWithValue(inner, int(kwv.GetSplitPoint())), nil
+}
+
 // ToKeyExpression serializes GroupingKeyExpression to proto.
 // Matches Java's GroupingKeyExpression.toKeyExpression().
 func (g *GroupingKeyExpression) ToKeyExpression() *gen.KeyExpression {
@@ -231,5 +248,17 @@ func (l *LiteralKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	v, _ := valueToProto(l.value)
 	return &gen.KeyExpression{
 		Value: v,
+	}
+}
+
+// ToKeyExpression serializes KeyWithValueExpression to proto.
+// Matches Java's KeyWithValueExpression.toKeyExpression().
+func (k *KeyWithValueExpression) ToKeyExpression() *gen.KeyExpression {
+	sp := int32(k.splitPoint)
+	return &gen.KeyExpression{
+		KeyWithValue: &gen.KeyWithValue{
+			InnerKey:   k.innerKey.ToKeyExpression(),
+			SplitPoint: &sp,
+		},
 	}
 }

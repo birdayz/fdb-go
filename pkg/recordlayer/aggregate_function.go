@@ -532,5 +532,14 @@ func expressionsEqual(a, b KeyExpression) bool {
 	if aOk && bOk {
 		return aGrouping.groupedCount == bGrouping.groupedCount
 	}
+	// Check KeyWithValueExpression structure.
+	aKwv, aOk := a.(*KeyWithValueExpression)
+	bKwv, bOk := b.(*KeyWithValueExpression)
+	if aOk != bOk {
+		return false
+	}
+	if aOk && bOk {
+		return aKwv.splitPoint == bKwv.splitPoint
+	}
 	return true
 }

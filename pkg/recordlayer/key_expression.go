@@ -406,6 +406,8 @@ func createsDuplicates(expr KeyExpression) bool {
 			return createsDuplicates(e.nested)
 		}
 		return false
+	case *KeyWithValueExpression:
+		return createsDuplicates(e.innerKey)
 	default:
 		return false
 	}
@@ -435,6 +437,14 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 			}
 		}
 		return result
+	case *KeyWithValueExpression:
+		// Only normalize the key portion (first splitPoint columns). Value columns
+		// must not participate in PK dedup — they're in the FDB value, not the key.
+		allNorm := normalizeKeyForPositions(e.innerKey)
+		if e.splitPoint < len(allNorm) {
+			return allNorm[:e.splitPoint]
+		}
+		return allNorm
 	default:
 		return []KeyExpression{expr}
 	}
@@ -479,6 +489,10 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 		ap, _ := valueToProto(av.value)
 		bp, _ := valueToProto(bv.value)
 		return proto.Equal(ap, bp)
+	case *KeyWithValueExpression:
+		bv, ok := b.(*KeyWithValueExpression)
+		return ok && av.splitPoint == bv.splitPoint &&
+			keyExpressionEquals(av.innerKey, bv.innerKey)
 	default:
 		return false
 	}
@@ -617,4 +631,53 @@ func (l *LiteralKeyExpression) FieldNames() []string {
 // GetValue returns the constant value held by this expression.
 func (l *LiteralKeyExpression) GetValue() any {
 	return l.value
+}
+
+// KeyWithValueExpression wraps an inner key expression and splits its evaluated
+// columns into a "key" portion and a "value" portion. The key portion (columns
+// 0..splitPoint-1) is stored in the FDB key, and the value portion (columns
+// splitPoint..end) is stored in the FDB value. This enables "covering indexes"
+// where additional query-relevant columns can be read without fetching the record.
+// Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyWithValueExpression.
+type KeyWithValueExpression struct {
+	innerKey   KeyExpression
+	splitPoint int
+}
+
+// KeyWithValue creates a KeyWithValueExpression. splitPoint is the number of
+// leading columns that go into the FDB key; remaining columns go into the value.
+// Matches Java's Key.Expressions.keyWithValue(inner, splitPoint).
+func KeyWithValue(inner KeyExpression, splitPoint int) *KeyWithValueExpression {
+	return &KeyWithValueExpression{innerKey: inner, splitPoint: splitPoint}
+}
+
+// Evaluate delegates to the inner key expression. The key/value split is only
+// applied when writing/reading index entries, not during evaluation.
+func (k *KeyWithValueExpression) Evaluate(msg proto.Message) ([][]any, error) {
+	return k.innerKey.Evaluate(msg)
+}
+
+// FieldNames delegates to the inner key expression.
+func (k *KeyWithValueExpression) FieldNames() []string {
+	return k.innerKey.FieldNames()
+}
+
+// InnerKey returns the wrapped key expression.
+func (k *KeyWithValueExpression) InnerKey() KeyExpression {
+	return k.innerKey
+}
+
+// SplitPoint returns the number of leading columns that form the key portion.
+func (k *KeyWithValueExpression) SplitPoint() int {
+	return k.splitPoint
+}
+
+// SplitEvaluatedKey splits a full evaluated result into key and value portions.
+// key = columns[0:splitPoint], value = columns[splitPoint:].
+// Matches Java's KeyWithValueExpression.getKey() / getValue().
+func (k *KeyWithValueExpression) SplitEvaluatedKey(fullKey []any) (keyPart []any, valuePart []any) {
+	if k.splitPoint >= len(fullKey) {
+		return fullKey, nil
+	}
+	return fullKey[:k.splitPoint], fullKey[k.splitPoint:]
 }

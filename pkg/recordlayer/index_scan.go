@@ -157,6 +157,10 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 		return keyExpressionColumnSize(e.wholeKey)
 	case *LiteralKeyExpression:
 		return 1
+	case *KeyWithValueExpression:
+		// Only key columns count toward column size (not value columns).
+		// Matches Java's KeyWithValueExpression.getColumnSize() which returns splitPoint.
+		return e.splitPoint
 	default:
 		return 0
 	}
