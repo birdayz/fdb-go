@@ -192,7 +192,9 @@ func (m *CountIndexMaintainer) getGroupingCount() int {
 	return keyExpressionColumnSize(m.index.RootExpression)
 }
 
-// countKVCursor scans a COUNT index and returns IndexEntry with count values.
+// countKVCursor scans an aggregate index and returns IndexEntry values.
+// By default, decodes values as little-endian int64 (for COUNT/SUM/MIN_EVER_LONG/MAX_EVER_LONG).
+// Set tupleValues=true to decode values as tuple-packed bytes (for MIN_EVER_TUPLE/MAX_EVER_TUPLE).
 type countKVCursor struct {
 	index         *Index
 	indexSubspace subspace.Subspace
@@ -206,6 +208,7 @@ type countKVCursor struct {
 	returned     int
 	prefixLength int
 	lastCont     []byte
+	tupleValues  bool // if true, decode values as tuple-packed bytes
 }
 
 // newCountIndexCursor creates a cursor that scans a COUNT index.
@@ -221,6 +224,23 @@ func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.T
 		continuation:  continuation,
 		scanProps:     scanProperties,
 		prefixLength:  len(indexSubspace.FDBKey()),
+	}
+}
+
+// newTupleValueIndexCursor creates a cursor that scans an aggregate index with tuple-packed values.
+// Each entry's Value is decoded from tuple-packed bytes (for MIN_EVER_TUPLE/MAX_EVER_TUPLE).
+func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction,
+	scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+
+	return &countKVCursor{
+		index:         index,
+		indexSubspace: indexSubspace,
+		tx:            tx,
+		tupleRange:    scanRange,
+		continuation:  continuation,
+		scanProps:     scanProperties,
+		prefixLength:  len(indexSubspace.FDBKey()),
+		tupleValues:   true,
 	}
 }
 
@@ -326,16 +346,30 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack count index key: %w", err)
 	}
 
-	// Decode value as little-endian int64 count
-	count := int64(0)
-	if len(kv.Value) >= 8 {
-		count = int64(binary.LittleEndian.Uint64(kv.Value))
+	// Decode value based on index type
+	var valueTuple tuple.Tuple
+	if c.tupleValues {
+		// TUPLE variants: decode value as tuple-packed bytes
+		if len(kv.Value) > 0 {
+			var err2 error
+			valueTuple, err2 = tuple.Unpack(kv.Value)
+			if err2 != nil {
+				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack tuple value: %w", err2)
+			}
+		}
+	} else {
+		// COUNT/SUM/LONG variants: decode value as little-endian int64
+		count := int64(0)
+		if len(kv.Value) >= 8 {
+			count = int64(binary.LittleEndian.Uint64(kv.Value))
+		}
+		valueTuple = tuple.Tuple{count}
 	}
 
 	entry := &IndexEntry{
 		Index: c.index,
 		Key:   keyTuple,
-		Value: tuple.Tuple{count},
+		Value: valueTuple,
 	}
 
 	c.returned++

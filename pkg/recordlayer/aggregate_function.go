@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -131,6 +132,12 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 	case IndexTypeMinEverLong:
 		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverLong) &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeMaxEverTuple:
+		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverTuple) &&
+			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeMinEverTuple:
+		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverTuple) &&
+			isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeValue:
 		// VALUE indexes can serve MIN/MAX by scanning 1 entry forward/reverse.
 		// The operand's ungrouped part must be a prefix of the index expression.
@@ -245,7 +252,7 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			}
 			return tuple.Tuple{a + b}
 		}
-	case FunctionNameMaxEver, IndexTypeMaxEverLong:
+	case FunctionNameMaxEver, IndexTypeMaxEverLong, IndexTypeMaxEverTuple:
 		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
 			if accum == nil {
 				return entry
@@ -253,12 +260,12 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			if len(entry) == 0 {
 				return accum
 			}
-			if len(accum) == 0 || entry[0].(int64) > accum[0].(int64) {
+			if len(accum) == 0 || tupleGreater(entry, accum) {
 				return entry
 			}
 			return accum
 		}
-	case FunctionNameMinEver, IndexTypeMinEverLong:
+	case FunctionNameMinEver, IndexTypeMinEverLong, IndexTypeMinEverTuple:
 		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
 			if accum == nil {
 				return entry
@@ -266,7 +273,7 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			if len(entry) == 0 {
 				return accum
 			}
-			if len(accum) == 0 || entry[0].(int64) < accum[0].(int64) {
+			if len(accum) == 0 || tupleLess(entry, accum) {
 				return entry
 			}
 			return accum
@@ -328,4 +335,16 @@ func getGroupingColumns(expr KeyExpression) []string {
 	}
 	// Non-grouped expression: all columns are grouping
 	return expr.FieldNames()
+}
+
+// tupleGreater returns true if a > b using FDB tuple byte ordering.
+// Used for MAX_EVER aggregation on tuple-packed values.
+func tupleGreater(a, b tuple.Tuple) bool {
+	return bytes.Compare(a.Pack(), b.Pack()) > 0
+}
+
+// tupleLess returns true if a < b using FDB tuple byte ordering.
+// Used for MIN_EVER aggregation on tuple-packed values.
+func tupleLess(a, b tuple.Tuple) bool {
+	return bytes.Compare(a.Pack(), b.Pack()) < 0
 }

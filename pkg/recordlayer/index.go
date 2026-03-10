@@ -14,6 +14,8 @@ const (
 	IndexTypeSum          = "sum"
 	IndexTypeMaxEverLong  = "max_ever_long"
 	IndexTypeMinEverLong  = "min_ever_long"
+	IndexTypeMaxEverTuple = "max_ever_tuple"
+	IndexTypeMinEverTuple = "min_ever_tuple"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -113,6 +115,36 @@ func NewMinEverLongIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeMinEverLong,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMaxEverTupleIndex creates a MAX_EVER_TUPLE index with the given name and root key expression.
+// MAX_EVER_TUPLE indexes use FDB atomic BYTE_MAX to track the maximum tuple-packed value per grouping key.
+// Unlike MAX_EVER_LONG, accepts any tuple-encodable type and compares via byte ordering.
+// Deletes are no-ops (_EVER = irreversible). Idempotent.
+// Matches Java's new Index(name, rootExpression, IndexTypes.MAX_EVER_TUPLE).
+func NewMaxEverTupleIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMaxEverTuple,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMinEverTupleIndex creates a MIN_EVER_TUPLE index with the given name and root key expression.
+// MIN_EVER_TUPLE indexes use FDB atomic BYTE_MIN to track the minimum tuple-packed value per grouping key.
+// Unlike MIN_EVER_LONG, accepts any tuple-encodable type and compares via byte ordering.
+// Deletes are no-ops (_EVER = irreversible). Idempotent.
+// Matches Java's new Index(name, rootExpression, IndexTypes.MIN_EVER_TUPLE).
+func NewMinEverTupleIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMinEverTuple,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),
