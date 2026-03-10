@@ -24,6 +24,7 @@ go_test(
         "scan_conformance_test.go",
         "split_conformance_test.go",
         "store_header_conformance_test.go",
+        "store_lifecycle_conformance_test.go",
         "sum_index_conformance_test.go",
         "version_conformance_test.go",
     ],
