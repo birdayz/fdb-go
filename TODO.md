@@ -244,7 +244,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **MIN_EVER_TUPLE / MAX_EVER_TUPLE index types** — `MinMaxEverTupleIndexMaintainer` using FDB BYTE_MIN/BYTE_MAX mutations with tuple-packed values. Unlike _LONG variants, supports any tuple-encodable type including negatives. Idempotent. Reuses `countKVCursor` with `tupleValues` flag for scanning. 8 tests.
 - [x] **RANK index type** — `RankIndexMaintainer` with dual subspace (B-tree + RankedSet skip-list). Wire-compatible with Java's `RankedSet`. Supports BY_VALUE and BY_RANK scans, RankForScore/ScoreForRank queries, grouped and ungrouped modes, CountDuplicates option, JDK/CRC hash functions. 23 tests (6 RankedSet + 17 RankIndex).
 
-- [ ] **RANK conformance tests** — No Go↔Java cross-validation for RANK indexes. Needs Java conformance server steps for: Java writes RANK index → Go reads ranks/scores, Go writes → Java reads. **HIGH** priority — wire format verified by code audit but not runtime-tested cross-language.
+- [x] **RANK conformance tests** — 11 specs: BY_VALUE Go→Java/Java→Go/mixed writes, delete cross-language, update cross-language, BY_RANK scan with rank ranges cross-validated, ranked set wire compatibility (Go writes→Java reads by rank, Java writes→Go reads by rank), delete updates ranked set. Cross-validated.
 
 - [ ] **RANK aggregate functions** — Java supports `RANK_FOR_SCORE`, `SCORE_FOR_RANK`, `SCORE_FOR_RANK_ELSE_SKIP`, `COUNT_DISTINCT` (when unique) as aggregate functions, and `RANK` as a record function. Go has raw `RankForScore`/`ScoreForRank` methods but no `EvaluateAggregateFunction` / `evaluateRecordFunction` integration. **MEDIUM**.
 

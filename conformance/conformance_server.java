@@ -45,6 +45,7 @@ class ConformanceServer {
         new ClearWhenZeroSteps(),
         new CountNotNullIndexSteps(),
         new CountUpdatesIndexSteps(),
+        new RankIndexSteps(),
     };
 
     private static class StepEntry {
