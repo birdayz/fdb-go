@@ -438,13 +438,11 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 		}
 		return result
 	case *KeyWithValueExpression:
-		// Only normalize the key portion (first splitPoint columns). Value columns
-		// must not participate in PK dedup — they're in the FDB value, not the key.
-		allNorm := normalizeKeyForPositions(e.innerKey)
-		if e.splitPoint < len(allNorm) {
-			return allNorm[:e.splitPoint]
-		}
-		return allNorm
+		// Delegates to full inner key, matching Java's KeyWithValueExpression.normalizeKeyForPositions().
+		// NOTE: PK components must NOT be placed in the value portion (positions >= splitPoint).
+		// Doing so causes IndexOutOfBoundsException in Java and similar issues in Go, because
+		// getEntryPrimaryKey reads from the FDB key which only has splitPoint columns.
+		return normalizeKeyForPositions(e.innerKey)
 	default:
 		return []KeyExpression{expr}
 	}

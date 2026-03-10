@@ -46,6 +46,7 @@ class ConformanceServer {
         new CountNotNullIndexSteps(),
         new CountUpdatesIndexSteps(),
         new RankIndexSteps(),
+        new CoveringIndexSteps(),
     };
 
     private static class StepEntry {

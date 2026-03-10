@@ -595,8 +595,8 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	}
 
 	It("stores value columns in FDB value, key columns in FDB key", func() {
-		// Inner: Concat(price, order_id) = 2 columns. splitPoint=1: price in key, order_id in value.
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		// Inner: Concat(price, flower.type) = 2 columns. splitPoint=1: price in key, flower.type in value.
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -605,11 +605,14 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			order := &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)}
+			order := &gen.Order{
+				OrderId: proto.Int64(42), Price: proto.Int32(999),
+				Flower: &gen.Flower{Type: proto.String("Rose")},
+			}
 			_, err = store.SaveRecord(order)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify index entry: key should have [price=999, pk=42], value should have [order_id=42]
+			// Verify index entry: key should have [price=999, pk=42], value should have [flower.type="Rose"]
 			idxSubspace := store.subspace.Sub(IndexKey, coveringIndex.SubspaceTupleKey())
 			begin, end := idxSubspace.FDBRangeKeys()
 			kvs, err := rtx.Transaction().GetRange(
@@ -625,11 +628,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(keyTuple[0]).To(Equal(int64(999)))
 			Expect(keyTuple[1]).To(Equal(int64(42)))
 
-			// Value: [order_id=42] (the value portion)
+			// Value: [flower.type="Rose"] (the value portion)
 			valueTuple, err := tuple.Unpack(kvs[0].Value)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(valueTuple).To(HaveLen(1))
-			Expect(valueTuple[0]).To(Equal(int64(42)))
+			Expect(valueTuple[0]).To(Equal("Rose"))
 
 			return nil, nil
 		})
@@ -637,7 +640,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	})
 
 	It("ScanIndex returns IndexEntry with both key and value", func() {
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -647,9 +650,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, o := range []*gen.Order{
-				{OrderId: proto.Int64(1), Price: proto.Int32(300)},
-				{OrderId: proto.Int64(2), Price: proto.Int32(100)},
-				{OrderId: proto.Int64(3), Price: proto.Int32(200)},
+				{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &gen.Flower{Type: proto.String("Rose")}},
+				{OrderId: proto.Int64(2), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Tulip")}},
+				{OrderId: proto.Int64(3), Price: proto.Int32(200), Flower: &gen.Flower{Type: proto.String("Lily")}},
 			} {
 				_, err = store.SaveRecord(o)
 				Expect(err).NotTo(HaveOccurred())
@@ -670,7 +673,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 
 			// Verify value portion is populated
 			Expect(entries[0].Value).To(HaveLen(1))
-			Expect(entries[0].Value[0]).To(Equal(int64(2))) // order_id=2 has price=100
+			Expect(entries[0].Value[0]).To(Equal("Tulip")) // order_id=2 has price=100
 
 			// Verify PrimaryKey extraction still works
 			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
@@ -683,7 +686,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	})
 
 	It("delete removes index entry and value", func() {
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -692,9 +695,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(500), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(600)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(600), Flower: &gen.Flower{Type: proto.String("Tulip")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
@@ -708,6 +711,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			}
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(entries[0].Value[0]).To(Equal("Tulip"))
 
 			return nil, nil
 		})
@@ -715,9 +719,8 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	})
 
 	It("update changes value portion when indexed value changes", func() {
-		// Concat(price, order_id) split at 1: price in key, order_id in value.
-		// When we update price, the key changes and value stays same (both keyed on order_id).
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		// Concat(price, flower.type) split at 1: price in key, flower.type in value.
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -726,11 +729,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Update: price changes from 100 to 200
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+			// Update: price changes from 100 to 200, flower stays same
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -740,7 +743,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			}
 			Expect(entries).To(HaveLen(1))
 			Expect(entries[0].Key[0]).To(Equal(int64(200))) // updated price
-			Expect(entries[0].Value[0]).To(Equal(int64(1))) // order_id unchanged
+			Expect(entries[0].Value[0]).To(Equal("Rose"))   // flower type unchanged
 
 			return nil, nil
 		})
@@ -786,7 +789,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 
 	It("common entry skip works: unchanged value doesn't write", func() {
 		// If both key and value are unchanged, the entry should be skipped.
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -796,11 +799,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save record
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Save exact same record again — should be a no-op for index
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -821,7 +824,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	})
 
 	It("proto roundtrip preserves KeyWithValueExpression", func() {
-		expr := KeyWithValue(Concat(Field("price"), Field("order_id")), 1)
+		expr := KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1)
 		p := expr.ToKeyExpression()
 
 		restored, err := KeyExpressionFromProto(p)
@@ -838,7 +841,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 	})
 
 	It("IndexValues returns only key columns for covering index", func() {
-		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Field("order_id")), 1))
+		coveringIndex := NewIndex("covering_price", KeyWithValue(Concat(Field("price"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -847,7 +850,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300)})
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(300), Flower: &gen.Flower{Type: proto.String("Rose")}})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -867,11 +870,11 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("PK dedup works with covering index", func() {
-		// Index on (order_id, price) with splitPoint=1. order_id overlaps with PK.
+	It("PK dedup works with covering index when PK is in key portion", func() {
+		// Index on (order_id, flower.type) with splitPoint=1. order_id overlaps with PK.
 		// PK dedup should still work: order_id is in key[0], so PK is not appended.
 		coveringIndex := NewIndex("covering_pk_dedup",
-			KeyWithValue(Concat(Field("order_id"), Field("price")), 1))
+			KeyWithValue(Concat(Field("order_id"), Nest("flower", Field("type"))), 1))
 		metaData := buildMetaWithIndex(coveringIndex)
 
 		ks := specSubspace()
@@ -880,7 +883,10 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)})
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(42), Price: proto.Int32(100),
+				Flower:  &gen.Flower{Type: proto.String("Rose")},
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			var entries []*IndexEntry
@@ -894,9 +900,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 			Expect(entries[0].Key).To(HaveLen(1))
 			Expect(entries[0].Key[0]).To(Equal(int64(42)))
 
-			// Value should be [price=100]
+			// Value should be [flower_type="Rose"]
 			Expect(entries[0].Value).To(HaveLen(1))
-			Expect(entries[0].Value[0]).To(Equal(int64(100)))
+			Expect(entries[0].Value[0]).To(Equal("Rose"))
 
 			// PrimaryKey should reconstruct correctly
 			Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(42)}))

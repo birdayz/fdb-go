@@ -240,6 +240,7 @@ type IndexConformanceStore struct {
 type IndexEntryResult struct {
 	Key        []any // Full key tuple (indexed values + primary key)
 	PrimaryKey []any // Primary key extracted from the entry
+	Value      []any // Value tuple (non-empty for covering indexes with KeyWithValueExpression)
 }
 
 // NewIndexConformanceStore creates a conformance store with a VALUE index on Order.price.

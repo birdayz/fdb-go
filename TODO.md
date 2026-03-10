@@ -300,7 +300,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — 14+ types not in Go: VersionKeyExpression, FunctionKeyExpression, LongArithmeticFunctionKeyExpression, OrderFunctionKeyExpression, CollateFunctionKeyExpression, DimensionsKeyExpression, SplitKeyExpression, InvertibleFunctionKeyExpression, ListKeyExpression, etc. (GroupingKeyExpression, LiteralKeyExpression done.)
+- [ ] **Missing key expression types** — 12+ types not in Go: VersionKeyExpression, FunctionKeyExpression, LongArithmeticFunctionKeyExpression, OrderFunctionKeyExpression, CollateFunctionKeyExpression, DimensionsKeyExpression, SplitKeyExpression, InvertibleFunctionKeyExpression, ListKeyExpression, etc. (GroupingKeyExpression, LiteralKeyExpression, KeyWithValueExpression done.)
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
