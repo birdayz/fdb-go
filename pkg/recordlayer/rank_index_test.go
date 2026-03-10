@@ -1233,6 +1233,153 @@ var _ = Describe("RankIndex", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("BY_RANK scan with ReverseScan returns entries in descending score order", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			prices := []int32{500, 100, 300, 200, 400}
+			for i, p := range prices {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// BY_RANK [0, 5) reverse → 500, 400, 300, 200, 100
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				rankIdx,
+				IndexScanByRank,
+				TupleRange{
+					Low:          tuple.Tuple{int64(0)},
+					High:         tuple.Tuple{int64(5)},
+					LowEndpoint:  EndpointTypeRangeInclusive,
+					HighEndpoint: EndpointTypeRangeExclusive,
+				},
+				nil,
+				ReverseScan(),
+			))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(5))
+			Expect(entries[0].Key[0]).To(Equal(int64(500)))
+			Expect(entries[1].Key[0]).To(Equal(int64(400)))
+			Expect(entries[2].Key[0]).To(Equal(int64(300)))
+			Expect(entries[3].Key[0]).To(Equal(int64(200)))
+			Expect(entries[4].Key[0]).To(Equal(int64(100)))
+
+			// BY_RANK [1, 4) reverse → rank 1,2,3 = 200,300,400 → reversed = 400,300,200
+			entries, err = AsList(ctx, store.ScanIndexByType(
+				rankIdx,
+				IndexScanByRank,
+				TupleRange{
+					Low:          tuple.Tuple{int64(1)},
+					High:         tuple.Tuple{int64(4)},
+					LowEndpoint:  EndpointTypeRangeInclusive,
+					HighEndpoint: EndpointTypeRangeExclusive,
+				},
+				nil,
+				ReverseScan(),
+			))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+			Expect(entries[0].Key[0]).To(Equal(int64(400)))
+			Expect(entries[1].Key[0]).To(Equal(int64(300)))
+			Expect(entries[2].Key[0]).To(Equal(int64(200)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("BY_RANK scan with continuation tokens paginates correctly", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 5 records with distinct prices
+			for i, p := range []int32{500, 100, 300, 200, 400} {
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Page 1: first 2 entries (rank range [0,5), limit 2)
+			rankRange := TupleRange{
+				Low:          tuple.Tuple{int64(0)},
+				High:         tuple.Tuple{int64(5)},
+				LowEndpoint:  EndpointTypeRangeInclusive,
+				HighEndpoint: EndpointTypeRangeExclusive,
+			}
+			props := ScanProperties{
+				ExecuteProperties: ExecuteProperties{
+					ReturnedRowLimit: 2,
+					IsolationLevel:   IsolationLevelSerializable,
+				},
+			}
+
+			// Page 1: first 2 entries
+			cursor := store.ScanIndexByType(rankIdx, IndexScanByRank, rankRange, nil, props)
+			var page1 []*IndexEntry
+			var continuation []byte
+			for {
+				r, nextErr := cursor.OnNext(ctx)
+				Expect(nextErr).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					continuation = r.GetContinuation().ToBytes()
+					break
+				}
+				page1 = append(page1, r.GetValue())
+			}
+			Expect(cursor.Close()).To(Succeed())
+			Expect(page1).To(HaveLen(2))
+			Expect(page1[0].Key[0]).To(Equal(int64(100)))
+			Expect(page1[1].Key[0]).To(Equal(int64(200)))
+			Expect(continuation).NotTo(BeEmpty())
+
+			// Page 2: next 2 entries using continuation
+			cursor = store.ScanIndexByType(rankIdx, IndexScanByRank, rankRange, continuation, props)
+			var page2 []*IndexEntry
+			for {
+				r, nextErr := cursor.OnNext(ctx)
+				Expect(nextErr).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					continuation = r.GetContinuation().ToBytes()
+					break
+				}
+				page2 = append(page2, r.GetValue())
+			}
+			Expect(cursor.Close()).To(Succeed())
+			Expect(page2).To(HaveLen(2))
+			Expect(page2[0].Key[0]).To(Equal(int64(300)))
+			Expect(page2[1].Key[0]).To(Equal(int64(400)))
+			Expect(continuation).NotTo(BeEmpty())
+
+			// Page 3: last entry
+			page3, err := AsList(ctx, store.ScanIndexByType(rankIdx, IndexScanByRank, rankRange, continuation, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page3).To(HaveLen(1))
+			Expect(page3[0].Key[0]).To(Equal(int64(500)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("RANK Aggregate Functions", func() {

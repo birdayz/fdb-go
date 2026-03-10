@@ -254,9 +254,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **RANK OnlineIndexer test coverage** — `OnlineIndexer.BuildIndex()` dispatches to `RankIndexMaintainer.Update` but `UpdateWhileWriteOnly` has special CountDuplicates logic (range set check) that is untested with online builds. Java has full `OnlineIndexerBuildRankIndexTest` (309 lines). **MEDIUM**.
 
-- [ ] **RANK reverse BY_RANK scan** — BY_RANK scan with `ReverseScan()` is untested. Should work (rank→score conversion is direction-agnostic, then delegates to `StandardIndexMaintainer.Scan`), but unverified. **LOW**.
+- [x] **RANK reverse BY_RANK scan** — tested, works correctly (rank→score conversion + reverse standard scan). **LOW**.
 
-- [ ] **RANK continuation tokens** — BY_RANK scan with paginated continuations is untested. Java has `rankScanContinuation` test. Should work through standard cursor path, but unverified. **LOW**.
+- [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
 - [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
 
