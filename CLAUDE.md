@@ -199,8 +199,8 @@ Implemented: `KeyValueCursorContinuation`, `ConcatContinuation` (protobuf-wrappe
 
 Each continuation serializes cursor state to bytes for reconstruction across transaction boundaries. Our continuations must be wire-compatible with Java's.
 
-## Conformance status (updated 2026-03-09)
+## Conformance status (updated 2026-03-10)
 
 See `TODO.md` for full gap analysis. Summary:
-- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit), time/byte/record scan limits, MetaDataValidator, commit hooks, retry runner, store state management
-- **Key gaps**: RANK index, TEXT index, more key expression types, store state caching, timer/instrumentation
+- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, RANK indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit), time/byte/record scan limits, MetaDataValidator, commit hooks, retry runner, store state management
+- **Key gaps**: TEXT index, more key expression types, store state caching, timer/instrumentation
