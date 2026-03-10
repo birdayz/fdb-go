@@ -242,7 +242,22 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **MIN/MAX via VALUE index** — `EvaluateAggregateFunction` supports `FunctionNameMin`/`FunctionNameMax` via VALUE indexes. Scans 1 entry forward (MIN) or reverse (MAX). Unlike _EVER variants, reflects deletes. 4 tests.
 - [x] **CLEAR_WHEN_ZERO option** — `Index.SetClearWhenZero(true)` enables FDB `CompareAndClear(zero)` after every ADD decrement. Atomically removes entries when count/sum reaches zero. Works with COUNT, COUNT_NOT_NULL, SUM indexes. Matches Java's `IndexOptions.CLEAR_WHEN_ZERO`. 3 tests.
 - [x] **MIN_EVER_TUPLE / MAX_EVER_TUPLE index types** — `MinMaxEverTupleIndexMaintainer` using FDB BYTE_MIN/BYTE_MAX mutations with tuple-packed values. Unlike _LONG variants, supports any tuple-encodable type including negatives. Idempotent. Reuses `countKVCursor` with `tupleValues` flag for scanning. 8 tests.
-- [x] **RANK index type** — `RankIndexMaintainer` with dual subspace (B-tree + RankedSet skip-list). Wire-compatible with Java's `RankedSet`. Supports BY_VALUE and BY_RANK scans, RankForScore/ScoreForRank queries, grouped and ungrouped modes, CountDuplicates option, JDK/CRC hash functions. 21 tests (6 RankedSet + 15 RankIndex).
+- [x] **RANK index type** — `RankIndexMaintainer` with dual subspace (B-tree + RankedSet skip-list). Wire-compatible with Java's `RankedSet`. Supports BY_VALUE and BY_RANK scans, RankForScore/ScoreForRank queries, grouped and ungrouped modes, CountDuplicates option, JDK/CRC hash functions. 23 tests (6 RankedSet + 17 RankIndex).
+
+- [ ] **RANK conformance tests** — No Go↔Java cross-validation for RANK indexes. Needs Java conformance server steps for: Java writes RANK index → Go reads ranks/scores, Go writes → Java reads. **HIGH** priority — wire format verified by code audit but not runtime-tested cross-language.
+
+- [ ] **RANK aggregate functions** — Java supports `RANK_FOR_SCORE`, `SCORE_FOR_RANK`, `SCORE_FOR_RANK_ELSE_SKIP`, `COUNT_DISTINCT` (when unique) as aggregate functions, and `RANK` as a record function. Go has raw `RankForScore`/`ScoreForRank` methods but no `EvaluateAggregateFunction` / `evaluateRecordFunction` integration. **MEDIUM**.
+
+- [ ] **RANK deleteWhere** — Java's `RankIndexMaintainer.deleteWhere()` clears the secondary subspace for a given prefix. Go has no per-prefix delete for ranked set data; `clearIndexData` handles full index clearing but `deleteRecordsWhere` would leave orphaned ranked set entries. **MEDIUM**.
+
+- [ ] **RANK preloadForLookup** — Java prefetches sparse upper skip-list levels into the RYW cache before `getNth`/`rank` calls, reducing FDB round trips. Go does sequential level-by-level reads. No correctness impact, but significant performance gap for deep ranked sets. **LOW**.
+
+- [ ] **RANK OnlineIndexer test coverage** — `OnlineIndexer.BuildIndex()` dispatches to `RankIndexMaintainer.Update` but `UpdateWhileWriteOnly` has special CountDuplicates logic (range set check) that is untested with online builds. Java has full `OnlineIndexerBuildRankIndexTest` (309 lines). **MEDIUM**.
+
+- [ ] **RANK reverse BY_RANK scan** — BY_RANK scan with `ReverseScan()` is untested. Should work (rank→score conversion is direction-agnostic, then delegates to `StandardIndexMaintainer.Scan`), but unverified. **LOW**.
+
+- [ ] **RANK continuation tokens** — BY_RANK scan with paginated continuations is untested. Java has `rankScanContinuation` test. Should work through standard cursor path, but unverified. **LOW**.
+
 - [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
