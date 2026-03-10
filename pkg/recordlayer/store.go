@@ -1,11 +1,12 @@
 package recordlayer
 
 import (
-	"context"
-	"fmt"
-	"errors"
-	"time"
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -1136,14 +1137,6 @@ func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot 
 	return unpackVersion(value)
 }
 
-// deleteRecordVersion clears the version key for a record.
-func (store *FDBRecordStore) deleteRecordVersion(primaryKey tuple.Tuple) {
-	versionKey := store.versionKey(primaryKey)
-	store.context.Transaction().Clear(fdb.Key(versionKey))
-	store.context.RemoveLocalVersion(versionKey)
-	store.context.RemoveVersionMutation(versionKey)
-}
-
 // versionKey returns the FDB key for storing a record's version.
 // Uses the new inline format: recordsSubspace.pack(primaryKey, RecordVersionSuffix).
 // Matches Java's SplitHelper.RECORD_VERSION = -1L for format version >= 6.
@@ -1361,9 +1354,7 @@ type RecordStoreState struct {
 // Matches Java's FDBRecordStore.getRecordStoreState().
 func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 	states := make(map[string]IndexState, len(store.indexStates))
-	for k, v := range store.indexStates {
-		states[k] = v
-	}
+	maps.Copy(states, store.indexStates)
 	return &RecordStoreState{
 		StoreHeader: store.storeHeader,
 		IndexStates: states,

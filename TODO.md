@@ -446,17 +446,17 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **sync.Map misuse in FDBRecordContext** — `localVersionCache` and `versionMutations` use `sync.Map` but `FDBRecordContext` wraps a single-threaded FDB transaction. Plain `map` would be faster and simpler. `HasVersionMutations()` iterates the entire map just to check emptiness.
+- [x] **sync.Map misuse in FDBRecordContext** — Fixed: replaced `sync.Map` with plain `map` and `atomic.Int32` with `int32`. `HasVersionMutations()` now uses `len()`.
 
-- [ ] **Silent error swallowing in addRecordCount** — `record_count.go:64` swallows key expression evaluation errors. Java logs but doesn't fail either, but Go should at minimum log.
+- [x] **Silent error swallowing in addRecordCount** — Fixed: `addRecordCount()` now returns `error` and callers propagate it. No more silent swallowing.
 
-- [ ] **recover() catches all panics in key_value_cursor.go** — `nextKV()` uses `recover()` to defend against FDB `RangeIterator.Get()` panic, but catches ALL panics including nil pointer dereferences and OOB indexing, making bugs invisible.
+- [x] **recover() catches all panics in key_value_cursor.go** — Investigated: FDB Go bindings have a real bug where `Advance()` returns true but `Get()` panics with index OOB. The `recover()` is necessary. Documented the bug.
 
 - [ ] **store.go too large (1736 lines)** — Should split into `store.go` (CRUD), `store_builder.go` (builder/lifecycle), `store_typed.go` (TypedFDBRecordStore), `store_version.go` (version management).
 
 - [ ] **cursor.go too large (1514 lines)** — Should split into `cursor.go` (interface/result), `cursor_combinators.go` (filter/skip/limit), `cursor_util.go` (AsList/First/Reduce/ForEach).
 
-- [ ] **NewRecordMetaData discards Build() error** — `metadata.go:534` does `md, _ := builder.Build()`, returns nil on invalid schema with no indication. Should return error or be removed.
+- [x] **NewRecordMetaData discards Build() error** — Fixed: removed the function entirely. Callers should use `NewRecordMetaDataBuilder()` and `Build()` for proper error handling.
 
 ### STYLE (LOW)
 
