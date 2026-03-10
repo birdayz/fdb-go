@@ -536,14 +536,6 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key interface{}) *RecordTypeBuild
 	return rtb
 }
 
-// NewRecordMetaData creates metadata from a protobuf file descriptor.
-// This is a convenience function that matches the Java pattern.
-// Note: This will return nil if any record type has no primary key set.
-// Prefer using NewRecordMetaDataBuilder() and Build() directly for proper error handling.
-func NewRecordMetaData(fd protoreflect.FileDescriptor) *RecordMetaData {
-	md, _ := NewRecordMetaDataBuilder().SetRecords(fd).Build()
-	return md
-}
 
 // GetRecordType returns the record type for the given name
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {
