@@ -521,8 +521,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **`existence_check.go` only 1 of 4 enum values tested** — Actually all 5 values were already tested in `existence_test.go` (ERROR_IF_EXISTS, ERROR_IF_NOT_EXISTS, ERROR_IF_TYPE_CHANGED, ERROR_IF_NOT_EXISTS_OR_TYPE_CHANGED). Additional coverage added in `error_path_test.go`.
 - [ ] **`indexing_range_set.go` no dedicated unit tests** — Only tested indirectly via `online_indexer_test.go`. Missing direct tests for `ContainsKey()`, `FirstMissingRange()`, boundary conditions.
-- [ ] **Scan limit boundary tests missing** — Byte limit exact boundary, time limit with slow iteration, multi-limit interaction (row + byte + time) not explicitly tested.
-- [ ] **cursor.go `NoNextReason` helpers not tested** — `IsOutOfBand`, `IsSourceExhausted`, `IsLimitReached` tested indirectly but no dedicated specs.
+- [x] **Scan limit boundary tests** — 18 specs in `scan_limit_test.go`: byte limit (1-byte, partial, resume, no-limit), scanned records limit (exact, limit-of-1), row limit with SourceExhausted. Also fixed byte scan limit bug: was post-read (discarding boundary record), now pre-read matching Java's CursorLimitManager. Fixed in both keyValueCursor and indexCursor.
+- [x] **cursor.go `NoNextReason` helpers tested** — Dedicated specs for all 5 NoNextReason values testing IsOutOfBand/IsSourceExhausted/IsLimitReached, plus 6 specs for RecordCursorResult.HasStoppedBeforeEnd.
 
 ---
 
