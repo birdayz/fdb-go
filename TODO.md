@@ -486,12 +486,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### HIGH — Conformance test restructure
 
-- [ ] **Remove Gradle, make conformance fully Bazel-native** — The conformance Java server currently lives in `conformance/java/` with its own Gradle build (`build.gradle`, `gradlew`, etc.) and the Go tests live in `conformance/`. The `helpers/` package has Go store-setup boilerplate. Restructure:
-  - Co-locate Go test + Java source per feature: e.g. `conformance/index_conformance_test.go` + `conformance/index_conformance_test.java` (or similar convention) in the same `conformance/` folder.
-  - Remove `conformance/java/` directory (Gradle build files, `gradlew`, `build.gradle`, `gradle/` wrapper). Bazel `rules_java` + `rules_jvm_external` already handle Java compilation and Maven deps.
-  - Remove `conformance/helpers/` — inline or fold the Go store-setup into test files or a minimal `_test.go` helper.
-  - Single `conformance/BUILD.bazel` that builds the Java binary and Go tests, with Go test targets depending on the Java build via `data = [":conformance_server"]`.
-  - Goal: `bazelisk test //conformance:...` builds everything (Java + Go) with zero external tooling. No Gradle, no helper package, just Bazel.
+- [x] **Remove Gradle, make conformance fully Bazel-native** — Killed Gradle, flattened `conformance/java/` and `conformance/helpers/` into single `conformance/` directory. Split monolithic ConformanceSteps.java into 22 per-feature step classes with `@ConformanceStep` annotation dispatch. Added auto-rebuild conformance tests exercising `checkPossiblyRebuild()` without `ALWAYS_READABLE_CHECKER`. Removed force-set of IDs after `mergeFrom` in load steps. 211 conformance specs, single BUILD.bazel, zero external tooling.
 
 ---
 
