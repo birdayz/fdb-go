@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "recordlayer",
     srcs = [
+        "aggregate_function.go",
         "chained_cursor.go",
         "constants.go",
         "count_index_maintainer.go",
@@ -54,6 +55,7 @@ go_test(
     name = "recordlayer_test",
     timeout = "long",
     srcs = [
+        "aggregate_function_test.go",
         "chained_cursor_test.go",
         "collision_test.go",
         "commit_hooks_test.go",

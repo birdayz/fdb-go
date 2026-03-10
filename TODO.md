@@ -242,7 +242,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Bulk index delete** — `DeleteIndexEntries()` clears all entries for a given index. `DeleteIndexEntriesInRange()` clears entries within a tuple range.
 
-- [ ] **Aggregate functions via indexes** — Java has `canEvaluateAggregateFunction()`/`evaluateAggregateFunction()` for COUNT, MIN, MAX, SUM via index maintainers. Go's COUNT is via store atomic mutations, not indexes.
+- [x] **Aggregate functions via indexes** — `EvaluateAggregateFunction()` on store with auto-index-selection. Supports COUNT, SUM, MIN_EVER, MAX_EVER via atomic mutation indexes. `IndexAggregateFunction` type with name, operand, optional explicit index. `canEvaluateAggregate()` / `isGroupPrefix()` for index matching. Function name constants: `FunctionNameCount`, `FunctionNameSum`, `FunctionNameMinEver`, `FunctionNameMaxEver`, `FunctionNameMin`, `FunctionNameMax`. 11 tests.
 
 ---
 
