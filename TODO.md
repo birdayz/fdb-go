@@ -256,7 +256,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **FormerIndex tracking** — `FormerIndex` struct with `SubspaceKey`, `AddedVersion`, `RemovedVersion`, `FormerName`. `RemoveIndex()` on builder creates FormerIndex and removes from all record types. `Build()` validates no subspace key reuse. `GetFormerIndexes()` on metadata.
 
-- [ ] **Schema evolution validation** — Java has `MetaDataEvolutionValidator` for old→new schema changes (field drops, type changes, index changes). Go has `MetaDataValidator` checks at Build time (duplicate type keys, duplicate subspace keys, PK fan-out, former index version ordering) but no evolution validation.
+- [x] **Schema evolution validation** — `MetaDataEvolutionValidator` with builder pattern matching Java's. Validates: version ordering, split record changes, record type preservation (PK immutability, type key immutability), index lifecycle (type/expression/version immutability, FormerIndex tracking), message descriptor evolution (field removal, rename, type change, cardinality change, enum value removal, safe int32→int64 promotion), new required field rejection. 7 configurable options (allowNoVersionChange, allowIndexRebuilds, allowUnsplitToSplit, etc.). 23 tests.
 
 ### MEDIUM
 
@@ -331,7 +331,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Store state management** — `GetRecordStoreState()` returns store header + index states. `SetStoreLockState()` persists lock state to header. `ReloadRecordStoreState()` forces reload from FDB.
 
-- [ ] **Query execution methods** — Java has `evaluateIndexRecordFunction()`, `evaluateStoreFunction()`, `evaluateAggregateFunction()`. Go has none.
+- [ ] **Query execution methods** — Java has `evaluateIndexRecordFunction()`, `evaluateStoreFunction()`. Go has `EvaluateAggregateFunction()` (done) but not the other two.
   - [x] `CountRecords(ctx, low, high, lowEndpoint, highEndpoint, continuation, scanProperties)` — scan-based record count (not atomic counter). Matches Java's `FDBRecordStore.countRecords()`.
 
 - [x] **Per-type record count** — `GetSnapshotRecordCountForRecordType(recordTypeName)` added. Requires `RecordTypeKeyExpression` as count key. Matches Java's `getSnapshotRecordCountForRecordType()`.
