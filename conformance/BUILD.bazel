@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "conformance_test",
     srcs = [
+        "clear_when_zero_conformance_test.go",
         "composite_index_conformance_test.go",
         "conflict_conformance_test.go",
         "conformance_suite_test.go",
