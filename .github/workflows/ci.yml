@@ -14,12 +14,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+
       - name: Cache Bazel
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/bazel
-            ~/.cache/bazelisk
+          path: ~/.cache/bazel
           key: ${{ runner.os }}-bazel-build-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '**/*.go', 'go.sum') }}
           restore-keys: |
             ${{ runner.os }}-bazel-build-
@@ -30,8 +31,7 @@ jobs:
           sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Build all targets (includes nogo lint)
-        run: |
-          USE_BAZEL_VERSION=8.2.1 npx @aspect-build/bazelisk build //...
+        run: bazelisk build //...
 
   test:
     name: Unit Tests
@@ -40,12 +40,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Bazelisk
+        uses: bazelbuild/setup-bazelisk@v3
+
       - name: Cache Bazel
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/bazel
-            ~/.cache/bazelisk
+          path: ~/.cache/bazel
           key: ${{ runner.os }}-bazel-test-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '**/*.go', 'go.sum') }}
           restore-keys: |
             ${{ runner.os }}-bazel-test-
@@ -57,5 +58,4 @@ jobs:
           sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Run tests
-        run: |
-          USE_BAZEL_VERSION=8.2.1 npx @aspect-build/bazelisk test //...
+        run: bazelisk test //...
