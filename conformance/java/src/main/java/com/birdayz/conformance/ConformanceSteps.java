@@ -1422,6 +1422,162 @@ public class ConformanceSteps {
         });
     }
 
+    // ========== MAX_EVER_TUPLE index ==========
+
+    private static RecordMetaData createMaxEverTupleIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        // Ungrouped MAX_EVER_TUPLE of price: field("price").ungrouped()
+        // = new GroupingKeyExpression(field("price"), 1)
+        metaDataBuilder.addIndex("Order", new Index("max_ever_price_tuple",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.MAX_EVER_TUPLE));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openMaxEverTupleIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createMaxEverTupleIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithMaxEverTupleIndex")
+    public void saveOrderWithMaxEverTupleIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMaxEverTupleIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithMaxEverTupleIndex")
+    public boolean deleteOrderWithMaxEverTupleIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMaxEverTupleIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanMaxEverTupleIndex")
+    public java.util.List<java.util.Map<String, Object>> scanMaxEverTupleIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createMaxEverTupleIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("max_ever_price_tuple");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                // TUPLE variant: value is a Tuple element, get(0) returns Long for int fields
+                map.put("value", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    // ========== MIN_EVER_TUPLE index ==========
+
+    private static RecordMetaData createMinEverTupleIndexedMetaData() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        // Ungrouped MIN_EVER_TUPLE of price: field("price").ungrouped()
+        // = new GroupingKeyExpression(field("price"), 1)
+        metaDataBuilder.addIndex("Order", new Index("min_ever_price_tuple",
+            new GroupingKeyExpression(Key.Expressions.field("price"), 1),
+            IndexTypes.MIN_EVER_TUPLE));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openMinEverTupleIndexedStore(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createMinEverTupleIndexedMetaData())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithMinEverTupleIndex")
+    public void saveOrderWithMinEverTupleIndex(String clusterFile, byte[] subspace, Order order, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMinEverTupleIndexedStore(context, subspace);
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("deleteOrderWithMinEverTupleIndex")
+    public boolean deleteOrderWithMinEverTupleIndex(String clusterFile, byte[] subspace, long orderID, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openMinEverTupleIndexedStore(context, subspace);
+            return store.deleteRecord(Tuple.from(orderID));
+        });
+    }
+
+    @ConformanceStep("scanMinEverTupleIndex")
+    public java.util.List<java.util.Map<String, Object>> scanMinEverTupleIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createMinEverTupleIndexedMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("min_ever_price_tuple");
+            java.util.List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_GROUP, TupleRange.ALL, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            java.util.List<java.util.Map<String, Object>> result = new java.util.ArrayList<>();
+            for (IndexEntry entry : entries) {
+                java.util.Map<String, Object> map = new java.util.HashMap<>();
+
+                java.util.List<Object> keyValues = new java.util.ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                // TUPLE variant: value is a Tuple element, get(0) returns Long for int fields
+                map.put("value", entry.getValue().getLong(0));
+
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
     // --- COUNT CLEAR_WHEN_ZERO conformance steps ---
 
     private static RecordMetaData createCountClearWhenZeroMetaData() {
