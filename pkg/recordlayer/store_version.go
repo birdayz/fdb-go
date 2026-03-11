@@ -30,7 +30,7 @@ func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *
 		if err != nil {
 			return fmt.Errorf("failed to build versionstamped value: %w", err)
 		}
-		store.context.AddVersionMutation(versionKey, packed)
+		store.context.AddVersionMutation(MutationTypeSetVersionstampedValue, versionKey, packed)
 	}
 	return nil
 }

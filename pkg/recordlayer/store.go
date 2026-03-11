@@ -192,6 +192,19 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		oldSizeInfo.VersionedInline = true
 	}
 
+	// Load old record's version BEFORE deleteSplit clears the FDB keys and
+	// BEFORE we clean up the local version cache. We need the old version to
+	// remove the old VERSION index entry.
+	// Matches Java's loadExistingRecord which returns the full record including version.
+	var oldRecordVersion *FDBRecordVersion
+	if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+		ver, verErr := store.LoadRecordVersion(primaryKey, false)
+		if verErr != nil {
+			return false, fmt.Errorf("load old record version for index update: %w", verErr)
+		}
+		oldRecordVersion = ver
+	}
+
 	// Delete all KV pairs for this record
 	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldSizeInfo)
 
@@ -218,6 +231,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 			PrimaryKey: primaryKey,
 			RecordType: oldRecordType,
 			Record:     oldMsg,
+			Version:    oldRecordVersion,
 		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
 			return false, err
@@ -364,6 +378,19 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		return nil, fmt.Errorf("failed to marshal union record: %w", err)
 	}
 
+	// Load old record's version BEFORE saveWithSplit clears the version key
+	// and BEFORE saveRecordVersion overwrites the local version cache. We need
+	// the old version to remove the old VERSION index entry on update.
+	// Matches Java's loadExistingRecord which returns the full record including version.
+	var oldRecordVersion *FDBRecordVersion
+	if oldRecordExists && store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {
+		ver, verErr := store.LoadRecordVersion(primaryKey, false)
+		if verErr != nil {
+			return nil, fmt.Errorf("load old record version for index update: %w", verErr)
+		}
+		oldRecordVersion = ver
+	}
+
 	// If versioning is enabled, mark old record as having inline version for proper cleanup
 	if store.metaData.IsStoreRecordVersions() && oldRecordExists {
 		oldSizeInfo.VersionedInline = true
@@ -433,6 +460,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 				PrimaryKey: primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				Version:    oldRecordVersion,
 			}
 		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord); err != nil {
@@ -502,6 +530,17 @@ func (store *FDBRecordStore) AddRecordWriteConflict(primaryKey tuple.Tuple) {
 //   - Begin: recordsSubspace.pack(primaryKey)
 //   - End: recordsSubspace.pack(primaryKey) + 0xFF
 //
+// hasVersionIndex returns true if any index uses IndexTypeVersion.
+// Used to decide whether old record versions need to be loaded for index maintenance.
+func (store *FDBRecordStore) hasVersionIndex() bool {
+	for _, idx := range store.metaData.GetAllIndexes() {
+		if idx.Type == IndexTypeVersion {
+			return true
+		}
+	}
+	return false
+}
+
 // This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
 // The range covers all keys that start with the primary key tuple (e.g., {orderID, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
@@ -595,6 +634,26 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 			tx.ClearRange(pr)
 		} else {
 			tx.ClearRange(sub)
+		}
+	}
+
+	// Remove pending version mutations and local version cache entries for
+	// the cleared subspaces. Without this, orphaned SET_VERSIONSTAMPED_VALUE
+	// mutations (for record versions) and SET_VERSIONSTAMPED_KEY mutations
+	// (for VERSION index entries) would be flushed at commit, writing version
+	// data for records that no longer exist.
+	// Matches Java's context.clear(Range) → removeVersionMutationRange() + removeLocalVersionRange().
+	for _, key := range []int{
+		RecordKey,              // inline record versions live under records subspace
+		IndexKey,               // VERSION index entries live under index subspace
+		IndexSecondarySpaceKey, // secondary index data
+		RecordVersionKey,       // explicit record version subspace
+	} {
+		sub := store.subspace.Sub(key)
+		if pr, err := fdb.PrefixRange(sub.Bytes()); err == nil {
+			begin, end := pr.FDBRangeKeys()
+			store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+			store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
 		}
 	}
 
@@ -792,6 +851,8 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 	case IndexTypeRank:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
+	case IndexTypeVersion:
+		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

@@ -17,6 +17,7 @@ const (
 	IndexTypeMaxEverTuple = "max_ever_tuple"
 	IndexTypeMinEverTuple = "min_ever_tuple"
 	IndexTypeRank         = "rank"
+	IndexTypeVersion      = "version"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -187,6 +188,20 @@ func NewRankIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeRank,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewVersionIndex creates a VERSION index with the given name and root key expression.
+// VERSION indexes store the record's commit version in the index key for version-ordered queries.
+// The root expression should include a VersionKeyExpression (typically via Concat with other fields).
+// Matches Java's new Index(name, rootExpression, IndexTypes.VERSION).
+func NewVersionIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeVersion,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

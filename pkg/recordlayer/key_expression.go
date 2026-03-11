@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"fmt"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -442,6 +443,8 @@ func createsDuplicates(expr KeyExpression) bool {
 		return false
 	case *KeyWithValueExpression:
 		return createsDuplicates(e.innerKey)
+	case *VersionKeyExpression:
+		return false
 	default:
 		return false
 	}
@@ -477,6 +480,8 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 		// Doing so causes IndexOutOfBoundsException in Java and similar issues in Go, because
 		// getEntryPrimaryKey reads from the FDB key which only has splitPoint columns.
 		return normalizeKeyForPositions(e.innerKey)
+	case *VersionKeyExpression:
+		return []KeyExpression{expr}
 	default:
 		return []KeyExpression{expr}
 	}
@@ -525,6 +530,9 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 		bv, ok := b.(*KeyWithValueExpression)
 		return ok && av.splitPoint == bv.splitPoint &&
 			keyExpressionEquals(av.innerKey, bv.innerKey)
+	case *VersionKeyExpression:
+		_, ok := b.(*VersionKeyExpression)
+		return ok
 	default:
 		return false
 	}
@@ -712,4 +720,39 @@ func (k *KeyWithValueExpression) SplitEvaluatedKey(fullKey []any) (keyPart []any
 		return fullKey, nil
 	}
 	return fullKey[:k.splitPoint], fullKey[k.splitPoint:]
+}
+
+// VersionKeyExpression extracts the record version as a Versionstamp tuple element.
+// Used by VERSION indexes to index records by their commit version.
+// Matches Java's com.apple.foundationdb.record.metadata.expressions.VersionKeyExpression.
+type VersionKeyExpression struct{}
+
+// VersionKey creates a key expression that evaluates to the record's version.
+// Matches Java's Key.Expressions.version().
+func VersionKey() *VersionKeyExpression {
+	return &VersionKeyExpression{}
+}
+
+// Evaluate returns the record's version as a Versionstamp.
+// For complete versions, returns a complete tuple.Versionstamp.
+// For incomplete versions, returns an incomplete tuple.Versionstamp (with placeholder bytes).
+// If record or version is nil, returns [[nil]].
+// Matches Java's VersionKeyExpression.evaluateMessage().
+func (v *VersionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
+	if record == nil || record.Version == nil {
+		return [][]any{{nil}}, nil
+	}
+
+	ver := record.Version
+	vs := tuple.Versionstamp{
+		UserVersion: uint16(ver.GetLocalVersion()),
+	}
+	copy(vs.TransactionVersion[:], ver.ToBytes()[:GlobalVersionBytes])
+
+	return [][]any{{vs}}, nil
+}
+
+// FieldNames returns an empty slice — version expressions don't access proto fields.
+func (v *VersionKeyExpression) FieldNames() []string {
+	return nil
 }

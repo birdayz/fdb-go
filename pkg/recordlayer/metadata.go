@@ -450,6 +450,27 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Validate VERSION indexes.
+	// Matches Java's VersionIndexMaintainerFactory.getIndexValidator() which calls:
+	//   validateNotGrouping(), validateStoresRecordVersions(), validateVersionKey(), validateNotUnique().
+	for _, idx := range indexes {
+		if idx.Type != IndexTypeVersion {
+			continue
+		}
+		if !b.storeRecordVersions {
+			return nil, fmt.Errorf("VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)
+		}
+		if idx.IsUnique() {
+			return nil, fmt.Errorf("VERSION index %q does not support unique", idx.Name)
+		}
+		if _, ok := idx.RootExpression.(*GroupingKeyExpression); ok {
+			return nil, fmt.Errorf("VERSION index %q does not support grouping", idx.Name)
+		}
+		if countVersionColumns(idx.RootExpression) != 1 {
+			return nil, fmt.Errorf("VERSION index %q: there must be exactly 1 version entry in index", idx.Name)
+		}
+	}
+
 	// Build type keys map (message name → record type key as int64) and bind
 	// all RecordTypeKeyExpression instances so they evaluate to the correct
 	// integer type key instead of the string name. Matches Java's
@@ -674,4 +695,36 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 		return ok
 	}
 	return false
+}
+
+// countVersionColumns returns the number of VersionKeyExpression columns in a
+// key expression tree. Matches Java's KeyExpression.versionColumns() which
+// defaults to 0 and sums through composite/grouping/nesting/keyWithValue.
+func countVersionColumns(expr KeyExpression) int {
+	if expr == nil {
+		return 0
+	}
+	switch e := expr.(type) {
+	case *VersionKeyExpression:
+		return 1
+	case *CompositeKeyExpression:
+		total := 0
+		for _, child := range e.expressions {
+			total += countVersionColumns(child)
+		}
+		return total
+	case *GroupingKeyExpression:
+		return countVersionColumns(e.wholeKey)
+	case *KeyWithValueExpression:
+		return countVersionColumns(e.innerKey)
+	case *NestingKeyExpression:
+		return countVersionColumns(e.child)
+	case *RecordTypeKeyExpression:
+		if e.nested != nil {
+			return countVersionColumns(e.nested)
+		}
+		return 0
+	default:
+		return 0
+	}
 }

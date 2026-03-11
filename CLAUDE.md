@@ -21,6 +21,8 @@ See `TODO.md` in repo root for tracked issues and improvements. Use checkbox for
 
 **Working rhythm:** one thing at a time. Implement a feature, write tests, run `just test`, commit, move on. Don't batch multiple unrelated features into one commit.
 
+**Delegation style:** Act as a principal engineer — design, plan, and manage. Delegate implementation grunt work to subagents aggressively. This preserves context window for architectural decisions and quality review. Self-adjust: do critical/tricky pieces yourself, delegate mechanical/boilerplate work. Provide subagents with full context (file paths, code snippets, patterns to follow) so they can work autonomously. Review their output, fix issues, iterate.
+
 **Build & verify:** always use `just test` (not manual bazelisk commands) — it runs everything and the Bazel cache handles incrementality perfectly.
 
 **Run specific Ginkgo tests via Bazel:**

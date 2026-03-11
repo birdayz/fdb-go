@@ -160,6 +160,10 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		}
 		root = kwv
 	}
+	if expr.Version != nil {
+		found++
+		root = VersionKey()
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -260,5 +264,13 @@ func (k *KeyWithValueExpression) ToKeyExpression() *gen.KeyExpression {
 			InnerKey:   k.innerKey.ToKeyExpression(),
 			SplitPoint: &sp,
 		},
+	}
+}
+
+// ToKeyExpression serializes a VersionKeyExpression to proto.
+// Matches Java's VersionKeyExpression.toKeyExpression().
+func (v *VersionKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	return &gen.KeyExpression{
+		Version: &gen.Version{},
 	}
 }

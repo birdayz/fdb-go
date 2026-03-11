@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -40,7 +41,7 @@ func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
 }
 
 // Run executes a function within a transaction with automatic retry handling.
-// Before committing, flushes any queued SET_VERSIONSTAMPED_VALUE mutations.
+// Before committing, flushes any queued versionstamp mutations.
 // Matches Java's FDBRecordContext.commitAsync() behavior.
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
@@ -169,6 +170,23 @@ type CommitCheckFunc func() error
 // Matches Java's PostCommit interface.
 type PostCommitFunc func()
 
+// VersionMutationType represents the type of versionstamp mutation.
+// Matches Java's MutationType used in FDBRecordContext.addVersionMutation().
+type VersionMutationType int
+
+const (
+	// MutationTypeSetVersionstampedValue queues a SET_VERSIONSTAMPED_VALUE mutation.
+	MutationTypeSetVersionstampedValue VersionMutationType = iota
+	// MutationTypeSetVersionstampedKey queues a SET_VERSIONSTAMPED_KEY mutation.
+	MutationTypeSetVersionstampedKey
+)
+
+// versionMutation holds a queued versionstamp mutation with its type and value.
+type versionMutation struct {
+	mutationType VersionMutationType
+	value        []byte
+}
+
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
 // Matches Java's FDBRecordContext.
@@ -177,9 +195,9 @@ type FDBRecordContext struct {
 	ctx context.Context
 
 	// Version management — matches Java's FDBRecordContext
-	localVersion      int32             // per-transaction local version counter
-	localVersionCache map[string]int    // key (string) → local version (int)
-	versionMutations  map[string][]byte // key (string) → value for SET_VERSIONSTAMPED_VALUE
+	localVersion      int32                      // per-transaction local version counter
+	localVersionCache map[string]int             // key (string) → local version (int)
+	versionMutations  map[string]versionMutation // key (string) → mutation (type + value)
 
 	// Commit hooks — matches Java's CommitCheckAsync / PostCommit
 	commitChecks []CommitCheckFunc
@@ -247,14 +265,18 @@ func (rc *FDBRecordContext) RemoveLocalVersion(versionKey []byte) {
 	delete(rc.localVersionCache, string(versionKey))
 }
 
-// AddVersionMutation queues a SET_VERSIONSTAMPED_VALUE mutation to be applied at commit.
-// The value must include the versionstamp placeholder bytes.
-// Matches Java's FDBRecordContext.addVersionMutation().
-func (rc *FDBRecordContext) AddVersionMutation(versionKey []byte, value []byte) {
+// AddVersionMutation queues a versionstamp mutation to be applied at commit.
+// mutationType selects SET_VERSIONSTAMPED_KEY or SET_VERSIONSTAMPED_VALUE.
+// The key or value (depending on type) must include the versionstamp placeholder bytes.
+// Matches Java's FDBRecordContext.addVersionMutation(MutationType, key, value).
+func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) {
 	if rc.versionMutations == nil {
-		rc.versionMutations = make(map[string][]byte)
+		rc.versionMutations = make(map[string]versionMutation)
 	}
-	rc.versionMutations[string(versionKey)] = value
+	rc.versionMutations[string(versionKey)] = versionMutation{
+		mutationType: mutationType,
+		value:        value,
+	}
 }
 
 // RemoveVersionMutation removes a queued version mutation.
@@ -262,11 +284,39 @@ func (rc *FDBRecordContext) RemoveVersionMutation(versionKey []byte) {
 	delete(rc.versionMutations, string(versionKey))
 }
 
-// flushVersionMutations applies all queued SET_VERSIONSTAMPED_VALUE mutations
+// RemoveVersionMutationsInRange removes all queued version mutations whose key
+// falls in [begin, end). Matches Java's FDBRecordContext.removeVersionMutationRange().
+func (rc *FDBRecordContext) RemoveVersionMutationsInRange(begin, end fdb.Key) {
+	for k := range rc.versionMutations {
+		kb := []byte(k)
+		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
+			delete(rc.versionMutations, k)
+		}
+	}
+}
+
+// RemoveLocalVersionsInRange removes all cached local versions whose key
+// falls in [begin, end). Matches Java's FDBRecordContext.removeLocalVersionRange().
+func (rc *FDBRecordContext) RemoveLocalVersionsInRange(begin, end fdb.Key) {
+	for k := range rc.localVersionCache {
+		kb := []byte(k)
+		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
+			delete(rc.localVersionCache, k)
+		}
+	}
+}
+
+// flushVersionMutations applies all queued versionstamp mutations
 // to the underlying FDB transaction. Called before commit.
+// Dispatches to SetVersionstampedKey or SetVersionstampedValue based on mutation type.
 func (rc *FDBRecordContext) flushVersionMutations() {
-	for key, value := range rc.versionMutations {
-		rc.tx.SetVersionstampedValue(fdb.Key(key), value)
+	for key, mut := range rc.versionMutations {
+		switch mut.mutationType {
+		case MutationTypeSetVersionstampedKey:
+			rc.tx.SetVersionstampedKey(fdb.Key(key), mut.value)
+		case MutationTypeSetVersionstampedValue:
+			rc.tx.SetVersionstampedValue(fdb.Key(key), mut.value)
+		}
 	}
 }
 
@@ -356,7 +406,7 @@ func (rc *FDBRecordContext) HasVersionMutations() bool {
 }
 
 // CommitWithVersionstamp commits the transaction, first running pre-commit checks,
-// then flushing all queued SET_VERSIONSTAMPED_VALUE mutations. Returns the committed
+// then flushing all queued versionstamp mutations. Returns the committed
 // versionstamp (10 bytes) or nil for read-only transactions / no versionstamp mutations.
 // Runs post-commit hooks after successful commit.
 // Matches Java's FDBRecordContext.commitAsync() which always runs checks and hooks.

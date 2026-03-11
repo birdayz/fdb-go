@@ -88,6 +88,13 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		clearPrefixRange(tx, store.subspace.Sub(RecordVersionKey), prefix)
 	}
 
+	// Remove pending version mutations and local version cache entries for
+	// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
+	// mutations for deleted records' version keys would still be flushed
+	// at commit. Matches Java's context.clear → removeVersionMutationRange().
+	store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordKey), prefix)
+	store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordVersionKey), prefix)
+
 	// Clear record counts.
 	countKeyExpr := store.metaData.GetRecordCountKey()
 	if countKeyExpr != nil && !store.isRecordCountDisabled() {
@@ -109,9 +116,24 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	for _, action := range actions {
 		maintainer := store.getIndexMaintainer(action.index)
 		maintainer.DeleteWhere(action.prefix)
+
+		// Also clear version mutations/cache for the index subspace range.
+		idxSub := store.indexSubspace(action.index)
+		store.removeVersionDataInPrefixRange(idxSub, action.prefix)
 	}
 
 	return nil
+}
+
+// removeVersionDataInPrefixRange removes pending version mutations and local
+// version cache entries whose key falls within the PrefixRange of sub.Pack(prefix).
+func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspace, prefix tuple.Tuple) {
+	key := sub.Pack(prefix)
+	if pr, err := fdb.PrefixRange(key); err == nil {
+		begin, end := pr.FDBRangeKeys()
+		store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+		store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
+	}
 }
 
 // findMatchingRecordTypes returns names of record types whose PK has

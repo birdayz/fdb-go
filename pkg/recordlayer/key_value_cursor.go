@@ -72,6 +72,12 @@ type keyValueCursor struct {
 	// When collecting split chunks, we may read the first KV of the next record.
 	// That KV is buffered here for the next OnNext() call.
 	bufferedKV *fdb.KeyValue
+
+	// pendingVersion holds a version captured from a RecordVersionSuffix key
+	// that hasn't been attached to a record yet. In forward scans, the version
+	// key (suffix -1) appears before the record data (suffix 0 or 1+), so we
+	// store it here until the record is read.
+	pendingVersion *FDBRecordVersion
 }
 
 // OnNext returns the next record or indicates why iteration stopped
@@ -230,7 +236,12 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 
 		switch {
 		case suffix == RecordVersionSuffix:
-			// Skip version keys, continue to next KV
+			// Capture version data for the next record.
+			// In forward scan, version key (suffix -1) appears before record data.
+			// Matches Java's KeyValueUnsplitter which reads version inline.
+			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
+				c.pendingVersion = ver
+			}
 			continue
 
 		case suffix == UnsplitRecord:
@@ -239,10 +250,23 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			if deserErr != nil {
 				return nil, nil, fmt.Errorf("failed to deserialize record: %w", deserErr)
 			}
+			// Attach version: from pendingVersion (forward scan) or peek ahead (reverse scan)
+			version := c.takePendingVersion()
+			if version == nil {
+				version = c.peekVersionKey(recordsSubspace, primaryKey)
+			}
+			// Fallback: check local version cache for records saved but not yet
+			// committed in this transaction. The version key is a pending
+			// SET_VERSIONSTAMPED_VALUE mutation, not in FDB yet.
+			// Matches Java's SplitHelper.KeyValueUnsplitter (line 890-899).
+			if version == nil {
+				version = c.localVersionFallback(primaryKey)
+			}
 			return &FDBStoredRecord[proto.Message]{
 				PrimaryKey: primaryKey,
 				RecordType: recordType,
 				Record:     protoMessage,
+				Version:    version,
 				KeyCount:   1,
 				ValueSize:  len(kv.Value),
 				KeySize:    len(kv.Key),
@@ -258,6 +282,72 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			continue
 		}
 	}
+}
+
+// takePendingVersion returns and clears the pending version. In forward scans,
+// the version key (suffix -1) appears before the record data, so pendingVersion
+// is set before the record is read. In reverse scans for split records,
+// readSplitRecord captures the version while collecting chunks. Keys are sorted
+// by PK then suffix, so the pending version always belongs to the current record.
+func (c *keyValueCursor) takePendingVersion() *FDBRecordVersion {
+	if c.pendingVersion != nil {
+		ver := c.pendingVersion
+		c.pendingVersion = nil
+		return ver
+	}
+	return nil
+}
+
+// peekVersionKey peeks at the next KV to check if it's a version key for the
+// same primary key. Used in reverse scans where the version key (suffix -1)
+// appears after the record data. If found, returns the version and consumes the
+// KV. Otherwise, buffers the peeked KV for the next call.
+func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple) *FDBRecordVersion {
+	kv, ok := c.nextKV()
+	if !ok {
+		return nil
+	}
+	keyTuple, err := recordsSubspace.Unpack(kv.Key)
+	if err != nil || len(keyTuple) < 2 {
+		c.bufferedKV = &kv
+		return nil
+	}
+	suffix, ok := keyTuple[len(keyTuple)-1].(int64)
+	if !ok {
+		c.bufferedKV = &kv
+		return nil
+	}
+	kvPK := keyTuple[:len(keyTuple)-1]
+	if suffix == RecordVersionSuffix && sameTuple(kvPK, primaryKey) {
+		ver, verErr := unpackVersion(kv.Value)
+		if verErr != nil {
+			return nil
+		}
+		return ver
+	}
+	c.bufferedKV = &kv
+	return nil
+}
+
+// localVersionFallback checks the local version cache for records saved in the
+// current transaction whose version key hasn't been committed yet (it's a pending
+// SET_VERSIONSTAMPED_VALUE mutation). Returns an incomplete version if found.
+// Matches Java's SplitHelper.KeyValueUnsplitter which checks context.getLocalVersion()
+// after assembling each record.
+func (c *keyValueCursor) localVersionFallback(primaryKey tuple.Tuple) *FDBRecordVersion {
+	if !c.store.metaData.IsStoreRecordVersions() {
+		return nil
+	}
+	versionKey := c.store.versionKey(primaryKey)
+	localVer, ok := c.store.context.GetLocalVersion(versionKey)
+	if !ok {
+		return nil
+	}
+	ver, err := IncompleteVersion(localVer)
+	if err != nil {
+		return nil
+	}
+	return ver
 }
 
 // splitChunk holds a split record chunk with its suffix index for proper ordering.
@@ -309,8 +399,12 @@ func (c *keyValueCursor) readSplitRecord(
 			break
 		}
 
-		// Skip version keys within this primary key
+		// Capture version key within this primary key (for reverse scans,
+		// version at suffix -1 appears after split chunks)
 		if suffix == RecordVersionSuffix {
+			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
+				c.pendingVersion = ver
+			}
 			continue
 		}
 
@@ -353,10 +447,17 @@ func (c *keyValueCursor) readSplitRecord(
 		return nil, nil, fmt.Errorf("failed to deserialize split record: %w", err)
 	}
 
+	// Attach version captured during chunk collection (forward or reverse scan)
+	version := c.takePendingVersion()
+	if version == nil {
+		version = c.localVersionFallback(primaryKey)
+	}
+
 	return &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		Version:    version,
 		KeyCount:   len(chunks),
 		ValueSize:  totalValueSize,
 		KeySize:    totalKeySize,

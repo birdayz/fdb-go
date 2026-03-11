@@ -275,12 +275,13 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] All 957 existing tests pass unchanged
 
   **Phase 2: VersionKeyExpression + VERSION index maintainer**
-  - [ ] `VersionKeyExpression` type: `Evaluate()` reads `record.Version` → returns `FDBRecordVersion` as key component
-  - [ ] `VersionIndexMaintainer`: manages VERSION index entries (version as key component)
-  - [ ] `SaveRecord` update path: load version for old record when VERSION index exists
-  - [ ] Wire format: version stored as Versionstamp in tuple-encoded key (matches Java)
-  - [ ] Proto serialization: `Version` message in `KeyExpression` proto
-  - [ ] Tests + conformance
+  - [x] `VersionKeyExpression` type: `Evaluate()` reads `record.Version` → returns `tuple.Versionstamp` as key component
+  - [x] `VersionIndexMaintainer`: incomplete versionstamps use `SET_VERSIONSTAMPED_KEY` mutation, complete use normal `set()`. Delete: incomplete → `RemoveVersionMutation`, complete → `Clear`.
+  - [x] `AddVersionMutation` extended with `VersionMutationType` (KEY vs VALUE) matching Java's `FDBRecordContext.addVersionMutation(MutationType, key, value)`
+  - [x] `SaveRecord`/`DeleteRecord` update path: load version for old record when VERSION index exists via `hasVersionIndex()` check
+  - [x] Wire format: version stored as Versionstamp in tuple-encoded key (matches Java)
+  - [x] Proto serialization: `Version` message in `KeyExpression` proto (roundtrip tested)
+  - [ ] Conformance tests (VERSION index Go↔Java cross-validation)
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 
@@ -322,7 +323,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — 12+ types not in Go: VersionKeyExpression, FunctionKeyExpression, LongArithmeticFunctionKeyExpression, OrderFunctionKeyExpression, CollateFunctionKeyExpression, DimensionsKeyExpression, SplitKeyExpression, InvertibleFunctionKeyExpression, ListKeyExpression, etc. (GroupingKeyExpression, LiteralKeyExpression, KeyWithValueExpression done.)
+- [ ] **Missing key expression types** — 11+ types not in Go: FunctionKeyExpression, LongArithmeticFunctionKeyExpression, OrderFunctionKeyExpression, CollateFunctionKeyExpression, DimensionsKeyExpression, SplitKeyExpression, InvertibleFunctionKeyExpression, ListKeyExpression, etc. (GroupingKeyExpression, LiteralKeyExpression, KeyWithValueExpression, VersionKeyExpression done.)
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
@@ -625,7 +626,11 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 **C. Polish** — Timer/instrumentation, store state caching, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 
-**Next high-value target**: VERSION index (Option A). Requires widening `KeyExpression.Evaluate()` to accept record context (version). Architectural challenge but unblocks a real, commonly-used index type.
+**Next high-value target**: VERSION index — DONE (Phase 1 + Phase 2). Conformance tests remaining.
+
+**D. Build tooling**
+- [ ] **Add stdlib nogo analyzers** — zero-dep, just add to BUILD.bazel + nogo_config.json: `shadow` (variable shadowing), `nilness` (always-nil comparisons), `stringintconv` (string(int) codepoint), `errorsas` (errors.As targets), `defers` (common defer mistakes), `directive` (//go: directives), `sortslice` (sort.Slice closures), `timeformat` (non-2006 format strings)
+- [ ] **Add staticcheck to nogo** — Direct dep on `github.com/dominikh/go-tools`, wire SA analyzers into nogo. Start with high-value checks: SA4006 (unused assignments), SA1019 (deprecated API), SA4010 (dead code). Bzlmod approach (no wrapper lib).
 
 ---
 
