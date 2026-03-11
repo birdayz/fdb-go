@@ -1,4 +1,9 @@
 {
+  "appends": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
   "asmdecl": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
@@ -34,7 +39,32 @@
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
   },
+  "deepequalerrors": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "defers": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "directive": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "errorsas": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
   "httpresponse": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "ifaceassert": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
@@ -54,7 +84,17 @@
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
   },
+  "nilness": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
   "printf": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "shadow": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
@@ -64,7 +104,22 @@
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
   },
+  "sigchanyzer": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "sortslice": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
   "stdmethods": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "stringintconv": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
@@ -75,6 +130,11 @@
     }
   },
   "tests": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "timeformat": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }
@@ -95,6 +155,11 @@
     }
   },
   "unusedresult": {
+    "only_files": {
+      "github\\.com/birdayz/fdb-record-layer-go/": ""
+    }
+  },
+  "waitgroup": {
     "only_files": {
       "github\\.com/birdayz/fdb-record-layer-go/": ""
     }

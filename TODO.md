@@ -629,7 +629,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 **Next high-value target**: VERSION index — DONE (Phase 1 + Phase 2). Conformance tests remaining.
 
 **D. Build tooling**
-- [ ] **Add stdlib nogo analyzers** — zero-dep, just add to BUILD.bazel + nogo_config.json: `shadow` (variable shadowing), `nilness` (always-nil comparisons), `stringintconv` (string(int) codepoint), `errorsas` (errors.As targets), `defers` (common defer mistakes), `directive` (//go: directives), `sortslice` (sort.Slice closures), `timeformat` (non-2006 format strings)
+- [x] **Add stdlib nogo analyzers** — Added 13 new analyzers (appends, deepequalerrors, defers, directive, errorsas, ifaceassert, nilness, shadow, sigchanyzer, sortslice, stringintconv, timeformat, waitgroup). 20 → 33 total. Zero new findings — codebase was already clean.
 - [ ] **Add staticcheck to nogo** — Direct dep on `github.com/dominikh/go-tools`, wire SA analyzers into nogo. Start with high-value checks: SA4006 (unused assignments), SA1019 (deprecated API), SA4010 (dead code). Bzlmod approach (no wrapper lib).
 
 ---
