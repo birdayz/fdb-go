@@ -57,11 +57,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				lockState := &gen.DataStoreInfo_StoreLockState{
-					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
-					Reason:    strPtr("test lock"),
-				}
-				return nil, store.SetStoreLockState(lockState)
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -82,7 +78,7 @@ var _ = Describe("Store state management", func() {
 			Expect(err).To(BeAssignableToTypeOf(lockErr))
 		})
 
-		It("unlocks store by setting nil lock state", func() {
+		It("unlocks store by clearing lock state", func() {
 			ss := specSubspace()
 
 			// Create and lock
@@ -92,10 +88,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				lockState := &gen.DataStoreInfo_StoreLockState{
-					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
-				}
-				return nil, store.SetStoreLockState(lockState)
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -106,7 +99,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetStoreLockState(nil)
+				return nil, store.ClearStoreLockState()
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -126,6 +119,154 @@ var _ = Describe("Store state management", func() {
 		})
 	})
 
+	Describe("FULL_STORE lock state", func() {
+		It("prevents Open", func() {
+			ss := specSubspace()
+
+			// Create store and set FULL_STORE lock
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to Open — should get StoreIsFullyLockedError
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				return nil, err
+			})
+			Expect(err).To(HaveOccurred())
+			var fullErr *StoreIsFullyLockedError
+			Expect(errors.As(err, &fullErr)).To(BeTrue(),
+				"expected StoreIsFullyLockedError, got: %v", err)
+		})
+
+		It("prevents CreateOrOpen", func() {
+			ss := specSubspace()
+
+			// Create store and set FULL_STORE lock
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to CreateOrOpen — should get StoreIsFullyLockedError
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				return nil, err
+			})
+			Expect(err).To(HaveOccurred())
+			var fullErr *StoreIsFullyLockedError
+			Expect(errors.As(err, &fullErr)).To(BeTrue(),
+				"expected StoreIsFullyLockedError, got: %v", err)
+		})
+
+		It("bypass with matching reason succeeds", func() {
+			ss := specSubspace()
+
+			// Create store and set FULL_STORE lock with reason "maintenance"
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open with matching bypass reason — should succeed
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).
+					SetBypassFullStoreLockReason("maintenance").Open()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store).NotTo(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("bypass with wrong reason fails", func() {
+			ss := specSubspace()
+
+			// Create store and set FULL_STORE lock with reason "maintenance"
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open with wrong bypass reason — should get StoreIsFullyLockedError
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).
+					SetBypassFullStoreLockReason("wrong-reason").Open()
+				return nil, err
+			})
+			Expect(err).To(HaveOccurred())
+			var fullErr *StoreIsFullyLockedError
+			Expect(errors.As(err, &fullErr)).To(BeTrue(),
+				"expected StoreIsFullyLockedError, got: %v", err)
+		})
+
+		It("ClearStoreLockState removes FULL_STORE lock", func() {
+			ss := specSubspace()
+
+			// Create store and set FULL_STORE lock
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FULL_STORE, "maintenance")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Bypass-open, clear lock, commit
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).
+					SetBypassFullStoreLockReason("maintenance").Open()
+				if err != nil {
+					return nil, err
+				}
+				return nil, store.ClearStoreLockState()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open normally without bypass — should succeed
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store).NotTo(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("validateRecordUpdateAllowed error precedence", func() {
 		It("existence error takes priority over lock error on save", func() {
 			ss := specSubspace()
@@ -137,10 +278,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				lockState := &gen.DataStoreInfo_StoreLockState{
-					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
-				}
-				return nil, store.SetStoreLockState(lockState)
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -175,10 +313,7 @@ var _ = Describe("Store state management", func() {
 				if err != nil {
 					return nil, err
 				}
-				lockState := &gen.DataStoreInfo_StoreLockState{
-					LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
-				}
-				return nil, store.SetStoreLockState(lockState)
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -374,5 +509,3 @@ var _ = Describe("Store state management", func() {
 		})
 	})
 })
-
-func strPtr(s string) *string { return &s }

@@ -338,10 +338,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			lockState := &gen.DataStoreInfo_StoreLockState{
-				LockState: gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE.Enum(),
-			}
-			return nil, store.SetStoreLockState(lockState)
+			return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 		})
 		Expect(err).NotTo(HaveOccurred())
 

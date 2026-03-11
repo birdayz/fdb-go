@@ -63,8 +63,8 @@ var _ = Describe("Store Header Format Conformance", func() {
 			Expect(javaHeader.UserVersion).To(Equal(goHeader.UserVersion),
 				"user version mismatch: go=%d java=%d", goHeader.UserVersion, javaHeader.UserVersion)
 
-			// Go creates with format version 9, user version 0
-			Expect(goHeader.FormatVersion).To(Equal(int32(9)))
+			// Go creates with format version 14, user version 0
+			Expect(goHeader.FormatVersion).To(Equal(int32(14)))
 			Expect(goHeader.UserVersion).To(Equal(int32(0)))
 			Expect(goHeader.MetaDataVersion).To(BeNumerically(">=", 0))
 		})

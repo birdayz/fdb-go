@@ -291,3 +291,5 @@ var _ = Describe("StoreBugVerify", func() {
 		})
 	})
 })
+
+func strPtr(s string) *string { return &s }

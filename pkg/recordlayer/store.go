@@ -16,13 +16,22 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
-// Record Layer format versions - should match Java FormatVersion
+// Record Layer format versions - should match Java FormatVersion enum.
+// See FormatVersion.java for the full list.
 const (
-	FormatVersionCurrent = 9 // Current format version for compatibility
+	FormatVersionHeaderUserFields          = 8  // User-defined key→bytes map in store header
+	FormatVersionReadableUniquePending     = 9  // READABLE_UNIQUE_PENDING index state
+	FormatVersionCheckIndexBuildType       = 10 // Non-idempotent index build-from-source validation
+	FormatVersionRecordCountState          = 11 // RecordCountState enum (READABLE/WRITE_ONLY/DISABLED)
+	FormatVersionStoreLockState            = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
+	FormatVersionIncarnation               = 13 // Incarnation counter for cross-cluster migration
+	FormatVersionFullStoreLock             = 14 // Unknown lock states prevent store opening
+	FormatVersionCurrent                   = FormatVersionFullStoreLock
 )
 
-// StoreIsLockedForRecordUpdatesError is thrown when attempting to modify records in a locked store
-// Matches Java's com.apple.foundationdb.record.StoreIsLockedForRecordUpdates
+// StoreIsLockedForRecordUpdatesError is returned when attempting to modify records
+// in a store with FORBID_RECORD_UPDATE lock state.
+// Matches Java's com.apple.foundationdb.record.StoreIsLockedForRecordUpdates.
 type StoreIsLockedForRecordUpdatesError struct {
 	Reason    string
 	Timestamp int64
@@ -30,6 +39,30 @@ type StoreIsLockedForRecordUpdatesError struct {
 
 func (e *StoreIsLockedForRecordUpdatesError) Error() string {
 	return fmt.Sprintf("Record Store is locked for record updates: %s (timestamp: %d)", e.Reason, e.Timestamp)
+}
+
+// StoreIsFullyLockedError is returned when attempting to open a store with
+// FULL_STORE lock state without providing the correct bypass reason.
+// Matches Java's com.apple.foundationdb.record.StoreIsFullyLockedException.
+type StoreIsFullyLockedError struct {
+	Reason    string
+	Timestamp int64
+}
+
+func (e *StoreIsFullyLockedError) Error() string {
+	return fmt.Sprintf("Record Store is fully locked and cannot be opened: %s (timestamp: %d)", e.Reason, e.Timestamp)
+}
+
+// UnknownStoreLockStateError is returned when a store has an unrecognized lock state
+// at FormatVersion >= FULL_STORE_LOCK (14). This prevents opening stores with
+// lock states added by newer versions that we don't understand.
+// Matches Java's com.apple.foundationdb.record.UnknownStoreLockStateException.
+type UnknownStoreLockStateError struct {
+	LockStateValue int32
+}
+
+func (e *UnknownStoreLockStateError) Error() string {
+	return fmt.Sprintf("Store has unknown lock state: %d", e.LockStateValue)
 }
 
 // ErrRecordStoreStateNotLoaded indicates that the record store state needs to be loaded before operations
@@ -83,6 +116,40 @@ func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
 			Timestamp: lockState.GetTimestamp(),
 		}
 	}
+	return nil
+}
+
+// validateStoreLockState checks lock state during store open.
+// FULL_STORE prevents opening unless bypass reason matches exactly.
+// At FormatVersion >= FULL_STORE_LOCK (14), unknown/unspecified states also prevent opening.
+// Matches Java's FDBRecordStore.validateStoreLockState().
+func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockReason string) error {
+	lockState := storeHeader.GetStoreLockState()
+	if lockState == nil {
+		return nil
+	}
+
+	state := lockState.GetLockState()
+
+	// FULL_STORE: blocked unless bypass reason matches exactly
+	if state == gen.DataStoreInfo_StoreLockState_FULL_STORE {
+		if bypassFullStoreLockReason != "" && bypassFullStoreLockReason == lockState.GetReason() {
+			return nil // bypass successful
+		}
+		return &StoreIsFullyLockedError{
+			Reason:    lockState.GetReason(),
+			Timestamp: lockState.GetTimestamp(),
+		}
+	}
+
+	// At FormatVersion >= FULL_STORE_LOCK, reject unknown/unspecified states.
+	// FORBID_RECORD_UPDATE is known and handled at mutation time, so skip it here.
+	if storeHeader.GetFormatVersion() >= FormatVersionFullStoreLock {
+		if state != gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
+			return &UnknownStoreLockStateError{LockStateValue: int32(state)}
+		}
+	}
+
 	return nil
 }
 
@@ -1018,6 +1085,85 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 	return 0
 }
 
+// GetIncarnation returns the incarnation counter from the store header.
+// Used for cross-cluster data migration versioning.
+// Matches Java's FDBRecordStore.getIncarnation().
+func (store *FDBRecordStore) GetIncarnation() int32 {
+	if store.storeHeader != nil {
+		return store.storeHeader.GetIncarnation()
+	}
+	return 0
+}
+
+// UpdateIncarnation atomically updates the incarnation counter using the provided
+// function. The new value must be strictly greater than the current value.
+// Matches Java's FDBRecordStore.updateIncarnation().
+func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	current := store.storeHeader.GetIncarnation()
+	newVal := updater(current)
+	if newVal <= current {
+		return fmt.Errorf("incarnation must increase: current %d, new %d", current, newVal)
+	}
+	store.storeHeader.Incarnation = &newVal
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// GetHeaderUserField returns a user-defined field from the store header.
+// Returns nil if the field is not set.
+// Matches Java's FDBRecordStore.getHeaderUserField().
+func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+	if store.storeHeader == nil {
+		return nil
+	}
+	for _, entry := range store.storeHeader.GetUserField() {
+		if entry.GetKey() == key {
+			return entry.GetValue()
+		}
+	}
+	return nil
+}
+
+// SetHeaderUserField sets a user-defined field in the store header.
+// The value is persisted immediately. Keep values small since the entire
+// header is loaded on every store open.
+// Matches Java's FDBRecordStore.setHeaderUserField().
+func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	// Update existing entry or append new one
+	for _, entry := range store.storeHeader.UserField {
+		if entry.GetKey() == key {
+			entry.Value = value
+			return store.writeStoreHeader(store.storeHeader)
+		}
+	}
+	store.storeHeader.UserField = append(store.storeHeader.UserField, &gen.DataStoreInfo_UserFieldEntry{
+		Key:   &key,
+		Value: value,
+	})
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// ClearHeaderUserField removes a user-defined field from the store header.
+// Matches Java's FDBRecordStore.clearHeaderUserField().
+func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	fields := store.storeHeader.UserField
+	for i, entry := range fields {
+		if entry.GetKey() == key {
+			store.storeHeader.UserField = append(fields[:i], fields[i+1:]...)
+			return store.writeStoreHeader(store.storeHeader)
+		}
+	}
+	return nil // not found, no-op
+}
+
 // RecordStoreState captures the mutable state of a record store at a point in time.
 // Matches Java's RecordStoreState.
 type RecordStoreState struct {
@@ -1037,13 +1183,29 @@ func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 }
 
 // SetStoreLockState sets the store lock state in the header and persists it.
-// Use FORBID_RECORD_UPDATE to prevent record mutations.
+// Use FORBID_RECORD_UPDATE to prevent record mutations, or FULL_STORE to
+// prevent the store from being opened entirely.
 // Matches Java's FDBRecordStore.setStoreLockStateAsync().
-func (store *FDBRecordStore) SetStoreLockState(lockState *gen.DataStoreInfo_StoreLockState) error {
+func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLockState_State, reason string) error {
 	if store.storeHeader == nil {
 		return ErrRecordStoreStateNotLoaded
 	}
-	store.storeHeader.StoreLockState = lockState
+	ts := time.Now().UnixMilli()
+	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
+		LockState: &state,
+		Reason:    &reason,
+		Timestamp: &ts,
+	}
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// ClearStoreLockState removes the lock state from the store header.
+// Matches Java's FDBRecordStore.clearStoreLockStateAsync().
+func (store *FDBRecordStore) ClearStoreLockState() error {
+	if store.storeHeader == nil {
+		return ErrRecordStoreStateNotLoaded
+	}
+	store.storeHeader.StoreLockState = nil
 	return store.writeStoreHeader(store.storeHeader)
 }
 

@@ -11,31 +11,180 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## 4.10.6.0 upgrade assessment
 
-Upgraded from 4.2.6.0 → 4.10.6.0 (2026-03-11). All 1012 conformance+unit tests pass unchanged. Below are changes between versions that affect or may affect our Go port.
+Upgraded from 4.2.6.0 → 4.10.6.0 (2026-03-11). 548 commits across 8 minor versions. All 1012 conformance+unit tests pass unchanged. All 15 proto files synced from Java source. Below is a thorough analysis of all changes, organized by priority.
 
-### Wire format changes (must address)
+### 1. Wire format / storage changes (MUST address for compatibility)
 
-- [ ] **FULL_STORE lock state** — New `StoreLockState.FULL_STORE = 2` in `DataStoreInfo` proto. Store cannot be opened without explicit lock override. Our `validateRecordUpdateAllowed()` only checks `FORBID_RECORD_UPDATE`. Should reject opens when `FULL_STORE` is set. **HIGH**.
-- [ ] **Store incarnation field** — New `DataStoreInfo.incarnation` (int32, field 11). For cross-cluster data migration: combined with `version()` in indexes to maintain ordering across clusters. Read/write support needed. **MEDIUM**.
-- [ ] **Continuation serialization updates** — 4.5.x updated `KeyValueCursorBaseContinuation` and aggregate cursor continuation formats. Our TO_OLD format still works (confirmed by conformance tests), but we should verify we handle any new continuation fields gracefully. **LOW** (passing tests suggest no issue).
+#### 1a. New FormatVersions (8–14)
 
-### New features added in Java (not yet ported)
+Java added 7 new format versions. We must handle them correctly on open/create:
 
-- [ ] **Vector/HNSW indexes** (4.8-4.9) — Entirely new index type for semantic search. `VectorIndexMaintainer`, HNSW backing, cosine/euclidean metrics. Large scope. **LOW** (specialized use case).
-- [ ] **SQL views** (4.7+) — `PView` message added to `MetaData` proto. Named query definitions. **LOW**.
-- [ ] **CAST operator / type coercion** (4.7+) — SQL-layer feature. **LOW**.
-- [ ] **Recursive CTE support** (4.4+) — PREORDER/POSTORDER traversal. Query planner feature. **LOW**.
-- [ ] **Composite aggregates** (4.5+) — Multiple aggregations in single scan. **LOW**.
-- [ ] **KeySpacePath export/import** (4.5-4.7) — Data migration utilities. **LOW**.
+| FmtVer | Name | Feature | Priority |
+|--------|------|---------|----------|
+| 8 | HEADER_USER_FIELDS | `DataStoreInfo.user_field` — user-defined key→bytes map in store header | **MEDIUM** |
+| 9 | READABLE_UNIQUE_PENDING | New `IndexState` for unique indexes with pending violations | **HIGH** |
+| 10 | CHECK_INDEX_BUILD_TYPE_DURING_UPDATE | Non-idempotent index build-from-source validation | **LOW** |
+| 11 | RECORD_COUNT_STATE | `DataStoreInfo.record_count_state` enum (READABLE/WRITE_ONLY/DISABLED) | **DONE** (already implemented) |
+| 12 | STORE_LOCK_STATE | `DataStoreInfo.store_lock_state` with FORBID_RECORD_UPDATE + FULL_STORE | **HIGH** |
+| 13 | INCARNATION | `DataStoreInfo.incarnation` (int32) for cross-cluster migration | **MEDIUM** |
+| 14 | FULL_STORE_LOCK | Unknown lock states now prevent store opening (stricter validation) | **HIGH** |
 
-### API/behavioral changes (informational, no action needed)
+- [x] **FULL_STORE lock state + stricter validation (FormatVersion 12+14)** — Implemented: `validateStoreLockState()` on open, `StoreIsFullyLockedError`, `UnknownStoreLockStateError`, `SetBypassFullStoreLockReason()` on builder. `FormatVersionCurrent` bumped to 14. 5 new tests (prevents Open/CreateOrOpen, bypass with matching/wrong reason, clear lock). **HIGH**.
+- [ ] **READABLE_UNIQUE_PENDING index state (FormatVersion 9)** — New 4th state (`IndexState = 3L`). Unique index is fully indexed but has existing violations. Readable for queries but uniqueness not enforced. Need to add the state constant and handle it in `MarkIndexReadableOrUniquePending()` (already partially implemented). **HIGH**.
+- [x] **Store incarnation field (FormatVersion 13)** — Implemented: `GetIncarnation()`, `UpdateIncarnation(updater)` (must strictly increase). `get_versionstamp_incarnation()` function requires `FunctionKeyExpression` (deferred). **MEDIUM**.
+- [x] **Header user fields (FormatVersion 8)** — Implemented: `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
+- [ ] **Continuation serialization evolution** — 4.5.x enabled proto-wrapped `AggregateCursorContinuation`. 4.8.x enabled new `KeyValueCursorBaseContinuation` serialization. Our TO_OLD format still works (confirmed by conformance tests). No action needed unless we add aggregate cursors. **LOW**.
+
+#### 1b. Store header proto changes (DataStoreInfo)
+
+New fields in wire format (all optional, safe to round-trip via protobuf):
+- `omit_unsplit_record_suffix` (field 6, bool) — already respected in our split logic
+- `cacheable` (field 7, bool) — for `MetaDataVersionStampStoreStateCache`
+- `user_field` (field 8, repeated UserFieldEntry) — see above
+- `record_count_state` (field 9, enum) — **DONE**
+- `store_lock_state` (field 10, StoreLockState) — see above
+- `incarnation` (field 11, int32) — see above
+
+#### 1c. Subspace layout
+
+**UNCHANGED.** Still 10 subspaces (0–9). No new subspace constants added.
+
+#### 1d. Split records / index entries
+
+**UNCHANGED.** SPLIT_RECORD_SIZE=100KB, UNSPLIT_RECORD=0, START_SPLIT_RECORD=1, RECORD_VERSION=-1. Index entry format unchanged (key=[indexValues..., trimmedPK...], value=empty tuple or tuple-packed for covering).
+
+### 2. New index types (not yet in Go)
+
+| Type | Maintainer | Mutation/Storage | Priority | Notes |
+|------|-----------|-----------------|----------|-------|
+| TEXT | `TextIndexMaintainer` | BunchedMap token storage | **LOW** | Full-text search with pluggable tokenizers |
+| BITMAP_VALUE | `BitmapValueIndexMaintainer` | Position bitmaps (10K–250K bits per entry) | **LOW** | Sparse position indexing |
+| PERMUTED_MIN | `PermutedMinMaxIndexMaintainer` | Permuted grouping columns for value-ordered min | **LOW** | Enumerate extrema by value, not group |
+| PERMUTED_MAX | `PermutedMinMaxIndexMaintainer` | Same, max variant | **LOW** | Same as above |
+| MAX_EVER_VERSION | `AtomicMutationIndexMaintainer` | SET_VERSIONSTAMPED_VALUE | **MEDIUM** | Like MAX_EVER_TUPLE but version-aware |
+| MULTIDIMENSIONAL | `MultidimensionalIndexMaintainer` | Hilbert R-tree spatial indexing | **LOW** | Specialized spatial use case |
+| VECTOR | `VectorIndexMaintainer` | HNSW graph for similarity search | **LOW** | Large subsystem (4.8–4.9) |
+| TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **LOW** | 12+ classes, entire subsystem |
+
+- [ ] **MAX_EVER_VERSION index** — FDB `SET_VERSIONSTAMPED_VALUE` for incomplete versions, `BYTE_MAX` for complete. Special handling in `AtomicMutationIndexMaintainer`. **MEDIUM** — small implementation, extends existing atomic mutation infra.
+- [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, 5+ query modes (containsAll/Any/Phrase/Prefix). **LOW** — large scope, specialized.
+- [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
+- [ ] **PERMUTED_MIN/MAX indexes** — Permuted grouping column ordering for value-enumerable min/max. **LOW**.
+- [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree with configurable node sizes. **LOW**.
+- [ ] **VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization, configurable M/ef parameters). Very large. **LOW**.
+- [ ] **TIME_WINDOW_LEADERBOARD index** — Sliding time window score tracking. 12+ Java classes. **LOW**.
+
+### 3. New key expression types
+
+| Expression | Proto Message | Purpose | Priority |
+|-----------|--------------|---------|----------|
+| DimensionsKeyExpression | `Dimensions` | Multidimensional indexing (prefix_size + dimensions_size) | **LOW** |
+| LiteralKeyExpression | `Value` | Static literal values (double/float/int64/bool/string/bytes) | **LOW** (already impl'd) |
+| FunctionKeyExpression | `Function` | Named function with arguments | **LOW** |
+| SplitKeyExpression | `Split` | Split repeated values into groups | **LOW** |
+| ListKeyExpression | `List` | Homogeneous expression list (preserving boundaries) | **LOW** |
+| AtomKeyExpression | (Java class) | Atom-level expressions | **LOW** |
+| CollateFunctionKeyExpression | (Java class) | Locale-aware string sorting | **LOW** |
+| OrderFunctionKeyExpression | (Java class) | Custom sort order functions (2024) | **LOW** |
+| LongArithmethicFunctionKeyExpression | (Java class) | Arithmetic operations on longs (2024) | **LOW** |
+| InvertibleFunctionKeyExpression | (interface) | Bidirectionally invertible functions | **LOW** |
+
+- [ ] **FunctionKeyExpression** — Required for `get_versionstamp_incarnation()` and other functional index expressions. **MEDIUM** (needed for incarnation support).
+- [ ] **Other expression types** — DimensionsKE, SplitKE, ListKE, CollateFunctionKE, OrderFunctionKE, LongArithmeticKE. **LOW** — only needed for specialized index types.
+
+### 4. New store APIs
+
+- [x] **Store locking APIs** — `SetStoreLockState(state, reason)`, `ClearStoreLockState()`. **HIGH**. (`OverrideLockSaveRecord()` not yet added — needs use case).
+- [x] **Header user fields** — `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
+- [ ] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation, `SetStateCacheability()` API. **MEDIUM** (performance optimization).
+- [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.
+- [ ] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot=true)` with snapshot isolation option. **LOW** (optimization).
+- [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
+- [ ] **Index build state tracking** — `GetIndexBuildState(index)` for progress reporting. **LOW**.
+- [ ] **DryRunSaveRecord** — Validation without writes. **LOW**.
+
+### 5. Metadata & schema evolution changes
+
+- [ ] **Index predicates (IndexPredicate)** — Sparse/filtered indexes with boolean conditions. `shouldIndexThisRecord()` evaluation. We have a simple function-based predicate; Java has a full predicate hierarchy (And/Or/Not/Constant/Value). **LOW** (our function-based approach works, full predicate tree is query-planner level).
+- [ ] **Index replacement lifecycle** — `REPLACED_BY_OPTION_PREFIX` in index options. `getReplacedByIndexNames()` for old→new migration. MetaDataValidator checks no circular replacements. **LOW**.
+- [ ] **Synthetic record types** — `JoinedRecordType` (equi-join with outer join support), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. **LOW** (large feature, experimental API).
+- [ ] **Views** — `PView` in MetaData proto (field 15). Name + SQL definition text. **LOW**.
+- [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). Macro or SQL functions. **LOW**.
+- [ ] **MetaDataEvolutionValidator enhancements** — New validation: proto syntax/edition match, `hasPresence` consistency, `allowUnsplitToSplit` option. **LOW** (our validator already covers critical rules).
+- [ ] **MetaDataValidator enhancements** — New: predicate validation, index replacement circular dependency check, subspaceKey uniqueness with former indexes. **LOW**.
+
+### 6. New cursor types
+
+- [ ] **AggregateCursor** — Accumulator-based aggregation over cursor results. New continuation format (4.4–4.5). **LOW** (needed for query planner, not basic CRUD).
+- [ ] **ComparatorCursor** — Custom comparator ordering. **LOW**.
+- [ ] **UnorderedUnionCursor** — Union without order preservation. **LOW**.
+- [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking during group operations. **LOW**.
+- [ ] **BloomFilterCursorContinuation** — Bloom filter optimization for large result sets. **LOW**.
+
+### 7. New index scan types
+
+- `BY_TEXT_TOKEN` — TEXT index token searches. **LOW**.
+- `BY_DISTANCE` — VECTOR index similarity search. **LOW**.
+- `BY_TIME_WINDOW` — TIME_WINDOW_LEADERBOARD. **LOW**.
+
+### 8. New aggregate functions
+
+- [ ] **MAX_EVER_VERSION** — via MAX_EVER_VERSION index type. **MEDIUM**.
+- [ ] **BITMAP_VALUE, BITMAP_BIT_POSITION, BITMAP_BUCKET_OFFSET** — for BITMAP_VALUE indexes. **LOW**.
+- [ ] **TIME_WINDOW_RANK, TIME_WINDOW_COUNT** — for leaderboard indexes. **LOW**.
+
+### 9. SQL / Relational layer
+
+Java has 6 separate modules for SQL: `fdb-relational-api`, `fdb-relational-core`, `fdb-relational-jdbc`, `fdb-relational-grpc`, `fdb-relational-server`, `fdb-relational-cli`. Features include: SQL views (`PView`), user-defined functions (`PUserDefinedFunction`), CAST/type coercion, recursive CTEs (PREORDER/POSTORDER), BETWEEN/CASE expressions, COPY command for data import/export, composite aggregates, JOIN with ORDER BY. All built on top of `fdb-record-layer-core`.
+
+**Not a priority until core is flawless.** The SQL layer sits entirely above the record layer — it uses the same store, indexes, cursors, and metadata we're porting. Once core is complete and conformant, SQL becomes a natural extension. No wire format impact from ignoring it now.
+
+Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via Lucene), `fdb-record-layer-spatial` (R-tree spatial), `fdb-record-layer-icu` (Unicode collation).
+
+### 10. API/behavioral changes (informational, no action needed unless noted)
 
 - FormatVersion transitioned from constants to enum (4.3) — internal, no wire impact
 - Index maintainer factory API customization (4.4) — we don't expose factory API
-- OnlineIndexer heartbeat replaced synchronized runner (4.6-4.10) — our Go impl is independent
+- OnlineIndexer heartbeat replaced synchronized runner (4.6–4.10) — our Go impl is independent
 - Deprecated synchronized indexing APIs removed (4.10) — doesn't affect Go
 - URI parsing tightened (4.10) — relational layer, not record layer core
 - `PUserDefinedFunction` oneof field renamed (4.10) — same proto field numbers, wire-compatible
+- `__ROW_VERSION` pseudo-field (4.8–4.10) — query planner only, doesn't affect storage
+- Plan serialization incompatible between 4.8↔4.10 — we don't serialize plans
+- Java 21 compatibility (`this-escape` warnings) — Java-only
+- AutoCommit support (4.5) — transaction management feature, informational
+- Lucene improvements (4.4–4.10) — separate module, not in core record layer
+
+### 11. Version-by-version wire format breaking changes
+
+| Versions | Change | Impact on Go |
+|----------|--------|-------------|
+| 4.3→4.5 | AggregateCursorContinuation proto format | No impact (we don't have aggregate cursors) |
+| 4.5→4.6 | Lucene serialization changes | No impact (we don't have Lucene) |
+| 4.7→4.8 | KeyValueCursorBaseContinuation format | No impact (conformance tests pass with TO_OLD) |
+| 4.9→4.10 | `__ROW_VERSION` replaces `VersionValue` in plans | No impact (query planner only) |
+
+### 12. Priority summary
+
+**HIGH (wire compat / correctness):**
+1. ~~FULL_STORE lock + FormatVersion 14 stricter validation~~ **DONE**
+2. READABLE_UNIQUE_PENDING index state (partially done — constant exists, needs behavioral verification)
+3. ~~Store locking APIs (set/clear/override)~~ **DONE**
+
+**MEDIUM (feature completeness):**
+4. ~~Store incarnation field + APIs~~ **DONE**
+5. ~~Header user fields~~ **DONE**
+6. MAX_EVER_VERSION index type
+7. FunctionKeyExpression (for incarnation)
+8. Store state caching
+
+**LOW (specialized / future):**
+9. All new index types (TEXT, BITMAP, PERMUTED, MULTIDIMENSIONAL, VECTOR, LEADERBOARD)
+10. All new key expression types (Dimensions, Split, List, Collate, Order, LongArithmetic)
+11. Synthetic record types (JoinedRecordType, UnnestedRecordType)
+12. Views, UDFs
+13. New cursor types (Aggregate, Comparator, UnorderedUnion)
+14. Query planner features (not ported)
 
 ---
 
@@ -297,7 +446,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
+- [ ] **Index types beyond implemented** — Java has more types: TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MAX_EVER_VERSION, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. See 4.10.6.0 upgrade assessment §2 for full details.
 
 - [ ] **VERSION index type** — HIGH. Two phases:
 
@@ -358,7 +507,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — 11+ types not in Go: FunctionKeyExpression, LongArithmeticFunctionKeyExpression, OrderFunctionKeyExpression, CollateFunctionKeyExpression, DimensionsKeyExpression, SplitKeyExpression, InvertibleFunctionKeyExpression, ListKeyExpression, etc. (GroupingKeyExpression, LiteralKeyExpression, KeyWithValueExpression, VersionKeyExpression done.)
+- [ ] **Missing key expression types** — 10+ types not in Go: FunctionKeyExpression (MEDIUM — needed for incarnation), DimensionsKeyExpression, SplitKeyExpression, ListKeyExpression, AtomKeyExpression, CollateFunctionKeyExpression, OrderFunctionKeyExpression, LongArithmeticFunctionKeyExpression, InvertibleFunctionKeyExpression. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 

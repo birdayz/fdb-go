@@ -291,10 +291,14 @@ var _ = Describe("StoreStateNotLoaded_ErrorPaths", func() {
 
 	It("SetStoreLockStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
-		lockState := gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE
-		err := store.SetStoreLockState(&gen.DataStoreInfo_StoreLockState{
-			LockState: &lockState,
-		})
+		err := store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
+	})
+
+	It("ClearStoreLockStateWithoutHeader", func() {
+		store := &FDBRecordStore{}
+		err := store.ClearStoreLockState()
 		Expect(err).To(HaveOccurred())
 		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
 	})

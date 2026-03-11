@@ -382,10 +382,11 @@ func AlwaysRebuildPolicy(_ *Index, _ int64, _ bool) IndexState {
 // StoreBuilder builds an FDBRecordStore with configuration options.
 // This follows the builder pattern from Java exactly.
 type StoreBuilder struct {
-	context            *FDBRecordContext
-	metaData           *RecordMetaData
-	subspace           subspace.Subspace
-	indexRebuildPolicy IndexRebuildPolicy
+	context                    *FDBRecordContext
+	metaData                   *RecordMetaData
+	subspace                   subspace.Subspace
+	indexRebuildPolicy         IndexRebuildPolicy
+	bypassFullStoreLockReason  string
 }
 
 // NewStoreBuilder creates a new store builder
@@ -417,6 +418,15 @@ func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 // Matches Java's FDBRecordStore.newBuilder().setUserVersionChecker().
 func (b *StoreBuilder) SetIndexRebuildPolicy(policy IndexRebuildPolicy) *StoreBuilder {
 	b.indexRebuildPolicy = policy
+	return b
+}
+
+// SetBypassFullStoreLockReason sets a reason string that, if it matches the
+// stored FULL_STORE lock reason exactly, allows the store to be opened despite
+// the lock. This is intended for recovery operations.
+// Matches Java's FDBRecordStore.Builder.setBypassFullStoreLockReason().
+func (b *StoreBuilder) SetBypassFullStoreLockReason(reason string) *StoreBuilder {
+	b.bypassFullStoreLockReason = reason
 	return b
 }
 
@@ -502,6 +512,12 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
+	// Validate store lock state (FULL_STORE blocks open unless bypassed).
+	// Matches Java's FDBRecordStore.validateStoreLockState().
+	if err := validateStoreLockState(storeHeader, b.bypassFullStoreLockReason); err != nil {
+		return nil, err
+	}
+
 	if err := store.loadIndexStates(); err != nil {
 		return nil, err
 	}
@@ -541,6 +557,10 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 	} else {
 		// Validate format version is supported.
 		if err := store.validateFormatVersion(storeHeader); err != nil {
+			return nil, err
+		}
+		// Validate store lock state (FULL_STORE blocks open unless bypassed).
+		if err := validateStoreLockState(storeHeader, b.bypassFullStoreLockReason); err != nil {
 			return nil, err
 		}
 		if err := store.loadIndexStates(); err != nil {
