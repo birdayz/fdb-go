@@ -38,6 +38,7 @@ class ConformanceServer {
         new DeleteAllSteps(),
         new RangeSetSteps(),
         new StoreHeaderSteps(),
+        new StoreHeaderV2Steps(),
         new IndexStateSteps(),
         new SumIndexSteps(),
         new MinMaxEverIndexSteps(),
