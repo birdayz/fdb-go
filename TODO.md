@@ -30,7 +30,7 @@ Java added 7 new format versions. We must handle them correctly on open/create:
 | 14 | FULL_STORE_LOCK | Unknown lock states now prevent store opening (stricter validation) | **HIGH** |
 
 - [x] **FULL_STORE lock state + stricter validation (FormatVersion 12+14)** — Implemented: `validateStoreLockState()` on open, `StoreIsFullyLockedError`, `UnknownStoreLockStateError`, `SetBypassFullStoreLockReason()` on builder. `FormatVersionCurrent` bumped to 14. 5 new tests (prevents Open/CreateOrOpen, bypass with matching/wrong reason, clear lock). **HIGH**.
-- [ ] **READABLE_UNIQUE_PENDING index state (FormatVersion 9)** — New 4th state (`IndexState = 3L`). Unique index is fully indexed but has existing violations. Readable for queries but uniqueness not enforced. Need to add the state constant and handle it in `MarkIndexReadableOrUniquePending()` (already partially implemented). **HIGH**.
+- [x] **READABLE_UNIQUE_PENDING index state (FormatVersion 9)** — Full behavioral parity with Java: `MarkIndexReadable` checks `firstUnbuiltRange` + rejects unique violations, `MarkIndexReadableOrUniquePending` transitions to READABLE_UNIQUE_PENDING when violations exist, `OnlineIndexer` uses the unique-pending variant, build data cleared on READABLE but retained for READABLE_UNIQUE_PENDING. 15 new tests. **HIGH**.
 - [x] **Store incarnation field (FormatVersion 13)** — Implemented: `GetIncarnation()`, `UpdateIncarnation(updater)` (must strictly increase). `get_versionstamp_incarnation()` function requires `FunctionKeyExpression` (deferred). **MEDIUM**.
 - [x] **Header user fields (FormatVersion 8)** — Implemented: `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
 - [ ] **Continuation serialization evolution** — 4.5.x enabled proto-wrapped `AggregateCursorContinuation`. 4.8.x enabled new `KeyValueCursorBaseContinuation` serialization. Our TO_OLD format still works (confirmed by conformance tests). No action needed unless we add aggregate cursors. **LOW**.
@@ -66,7 +66,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | VECTOR | `VectorIndexMaintainer` | HNSW graph for similarity search | **LOW** | Large subsystem (4.8–4.9) |
 | TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **LOW** | 12+ classes, entire subsystem |
 
-- [ ] **MAX_EVER_VERSION index** — FDB `SET_VERSIONSTAMPED_VALUE` for incomplete versions, `BYTE_MAX` for complete. Special handling in `AtomicMutationIndexMaintainer`. **MEDIUM** — small implementation, extends existing atomic mutation infra.
+- [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
 - [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, 5+ query modes (containsAll/Any/Phrase/Prefix). **LOW** — large scope, specialized.
 - [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
 - [ ] **PERMUTED_MIN/MAX indexes** — Permuted grouping column ordering for value-enumerable min/max. **LOW**.
@@ -129,7 +129,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 ### 8. New aggregate functions
 
-- [ ] **MAX_EVER_VERSION** — via MAX_EVER_VERSION index type. **MEDIUM**.
+- [x] **MAX_EVER_VERSION** — via MAX_EVER_VERSION index type. Aggregate support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. **MEDIUM**.
 - [ ] **BITMAP_VALUE, BITMAP_BIT_POSITION, BITMAP_BUCKET_OFFSET** — for BITMAP_VALUE indexes. **LOW**.
 - [ ] **TIME_WINDOW_RANK, TIME_WINDOW_COUNT** — for leaderboard indexes. **LOW**.
 
@@ -168,13 +168,13 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 
 **HIGH (wire compat / correctness):**
 1. ~~FULL_STORE lock + FormatVersion 14 stricter validation~~ **DONE**
-2. READABLE_UNIQUE_PENDING index state (partially done — constant exists, needs behavioral verification)
+2. ~~READABLE_UNIQUE_PENDING index state~~ **DONE**
 3. ~~Store locking APIs (set/clear/override)~~ **DONE**
 
 **MEDIUM (feature completeness):**
 4. ~~Store incarnation field + APIs~~ **DONE**
 5. ~~Header user fields~~ **DONE**
-6. MAX_EVER_VERSION index type
+6. ~~MAX_EVER_VERSION index type~~ **DONE**
 7. FunctionKeyExpression (for incarnation)
 8. Store state caching
 

@@ -279,6 +279,28 @@ func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType,
 	}
 }
 
+// UpdateVersionMutation queues or updates a versionstamp mutation with a merge function.
+// If a mutation for the same key already exists, the merge function decides which value to keep.
+// Matches Java's FDBRecordContext.updateVersionMutation(MutationType, key, value, BiFunction).
+func (rc *FDBRecordContext) UpdateVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte, merge func(oldValue, newValue []byte) []byte) {
+	if rc.versionMutations == nil {
+		rc.versionMutations = make(map[string]versionMutation)
+	}
+	key := string(versionKey)
+	if existing, ok := rc.versionMutations[key]; ok && merge != nil {
+		merged := merge(existing.value, value)
+		rc.versionMutations[key] = versionMutation{
+			mutationType: mutationType,
+			value:        merged,
+		}
+	} else {
+		rc.versionMutations[key] = versionMutation{
+			mutationType: mutationType,
+			value:        value,
+		}
+	}
+}
+
 // RemoveVersionMutation removes a queued version mutation.
 func (rc *FDBRecordContext) RemoveVersionMutation(versionKey []byte) {
 	delete(rc.versionMutations, string(versionKey))

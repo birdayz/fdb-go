@@ -16,8 +16,9 @@ const (
 	IndexTypeMinEverLong  = "min_ever_long"
 	IndexTypeMaxEverTuple = "max_ever_tuple"
 	IndexTypeMinEverTuple = "min_ever_tuple"
-	IndexTypeRank         = "rank"
-	IndexTypeVersion      = "version"
+	IndexTypeRank             = "rank"
+	IndexTypeVersion          = "version"
+	IndexTypeMaxEverVersion   = "max_ever_version"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -202,6 +203,20 @@ func NewVersionIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeVersion,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMaxEverVersionIndex creates a MAX_EVER_VERSION index that tracks the maximum
+// version ever written per grouping key. The root expression must be a GroupingKeyExpression
+// with exactly 1 VersionKeyExpression in the grouped (aggregated) portion.
+// Matches Java's new Index(name, rootExpression, IndexTypes.MAX_EVER_VERSION).
+func NewMaxEverVersionIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMaxEverVersion,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

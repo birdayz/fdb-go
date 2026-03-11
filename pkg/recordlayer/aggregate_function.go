@@ -141,6 +141,9 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 	case IndexTypeMaxEverTuple:
 		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverTuple) &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeMaxEverVersion:
+		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverVersion) &&
+			isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeMinEverTuple:
 		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverTuple) &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
@@ -265,7 +268,7 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			}
 			return tuple.Tuple{a + b}
 		}
-	case FunctionNameMaxEver, IndexTypeMaxEverLong, IndexTypeMaxEverTuple:
+	case FunctionNameMaxEver, IndexTypeMaxEverLong, IndexTypeMaxEverTuple, IndexTypeMaxEverVersion:
 		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
 			if accum == nil {
 				return entry

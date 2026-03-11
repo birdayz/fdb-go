@@ -920,6 +920,8 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	case IndexTypeVersion:
 		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
+	case IndexTypeMaxEverVersion:
+		return newMaxEverVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

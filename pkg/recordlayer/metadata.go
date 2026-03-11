@@ -471,6 +471,40 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Validate MAX_EVER_VERSION indexes.
+	// Matches Java's AtomicMutationIndexMaintainerFactory validator:
+	//   validateGrouping(1), validateVersionInGroupedKeys(), validateStoresRecordVersions().
+	// Must have exactly 1 version column in the grouped (aggregated) portion,
+	// no version columns in the grouping portion, and storeRecordVersions enabled.
+	for _, idx := range indexes {
+		if idx.Type != IndexTypeMaxEverVersion {
+			continue
+		}
+		if !b.storeRecordVersions {
+			return nil, fmt.Errorf("MAX_EVER_VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)
+		}
+		gke, ok := idx.RootExpression.(*GroupingKeyExpression)
+		if !ok {
+			return nil, fmt.Errorf("MAX_EVER_VERSION index %q must use a GroupingKeyExpression", idx.Name)
+		}
+		// Check version columns in grouping vs grouped portions by examining the
+		// child expressions of the whole key's composite. The first groupingCount
+		// columns are grouping; the rest are grouped.
+		groupingCount := gke.GetGroupingCount()
+		groupedCount := gke.GetGroupedCount()
+		if groupedCount < 1 {
+			return nil, fmt.Errorf("MAX_EVER_VERSION index %q must have at least 1 grouped column", idx.Name)
+		}
+		// Count version columns in grouping vs grouped portions.
+		groupingVersionCount, groupedVersionCount := countVersionColumnsInGroupParts(gke.wholeKey, groupingCount)
+		if groupingVersionCount != 0 {
+			return nil, fmt.Errorf("MAX_EVER_VERSION index %q: there must be no version entries in grouping key", idx.Name)
+		}
+		if groupedVersionCount != 1 {
+			return nil, fmt.Errorf("MAX_EVER_VERSION index %q: there must be exactly 1 version entry in grouped key", idx.Name)
+		}
+	}
+
 	// Build type keys map (message name → record type key as int64) and bind
 	// all RecordTypeKeyExpression instances so they evaluate to the correct
 	// integer type key instead of the string name. Matches Java's
@@ -695,6 +729,37 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 		return ok
 	}
 	return false
+}
+
+// countVersionColumnsInGroupParts counts version columns in the grouping
+// (first groupingCount columns) and grouped (remaining) portions of a key expression.
+// Used by MAX_EVER_VERSION validation. Works by walking composite children left-to-right,
+// accumulating column sizes.
+func countVersionColumnsInGroupParts(expr KeyExpression, groupingCount int) (groupingVersions, groupedVersions int) {
+	if comp, ok := expr.(*CompositeKeyExpression); ok {
+		colsSoFar := 0
+		for _, child := range comp.expressions {
+			childCols := keyExpressionColumnSize(child)
+			childVersions := countVersionColumns(child)
+			if colsSoFar+childCols <= groupingCount {
+				groupingVersions += childVersions
+			} else if colsSoFar >= groupingCount {
+				groupedVersions += childVersions
+			} else {
+				// Child spans the boundary — shouldn't happen with well-formed
+				// expressions, but handle conservatively.
+				groupingVersions += childVersions
+			}
+			colsSoFar += childCols
+		}
+		return
+	}
+	// Non-composite: if groupingCount > 0, all columns are grouping
+	totalVersions := countVersionColumns(expr)
+	if groupingCount > 0 {
+		return totalVersions, 0
+	}
+	return 0, totalVersions
 }
 
 // countVersionColumns returns the number of VersionKeyExpression columns in a
