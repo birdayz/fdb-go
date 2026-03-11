@@ -1,12 +1,8 @@
 # fdb-record-layer-go
 
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
-Wire-compatible with the Java implementation — Go and Java applications can read and write
-the same data on a shared FDB cluster.
-
-```
-go get github.com/birdayz/fdb-record-layer-go
-```
+Wire-compatible with Java Record Layer 4.10.6.0 — Go and Java applications can read
+and write the same data on a shared FDB cluster.
 
 ## Why
 
@@ -18,10 +14,10 @@ that to Go without sacrificing interoperability with existing Java deployments.
 
 ```go
 db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-    store, err := recordlayer.NewFDBRecordStoreBuilder().
-        SetMetaData(metadata).
+    store, err := recordlayer.NewStoreBuilder().
+        SetMetaDataProvider(metadata).
         SetContext(rtx).
-        SetKeySpacePath(path).
+        SetSubspace(keyspace).
         CreateOrOpen()
     if err != nil {
         return nil, err
@@ -40,29 +36,39 @@ order, err := typed.LoadRecord(ctx, primaryKey)
 
 ## What works
 
-Records, indexes, and all the plumbing needed to share data with Java:
+Records, indexes, cursors, and all the plumbing needed to share data with Java:
 
 - **CRUD** — save, load, delete, scan, existence checks, typed stores
-- **Indexes** — VALUE, COUNT, SUM; scan, rebuild, online build (BY_RECORDS)
+- **Indexes** — VALUE, VERSION, RANK, COUNT, SUM, MIN_EVER, MAX_EVER, MAX_EVER_VERSION, COUNT_NOT_NULL, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX
+- **Covering indexes** — KeyWithValueExpression (value columns stored in FDB value)
+- **Index operations** — scan (BY_VALUE, BY_RANK, BY_GROUP), rebuild, online build (BY_RECORDS), state management (READABLE/WRITE_ONLY/DISABLED/READABLE_UNIQUE_PENDING)
 - **Split records** — automatic chunking at 100KB, transparent reassembly
 - **Record versioning** — 12-byte versions (10 global versionstamp + 2 local)
-- **Continuations** — cross-platform cursor resume tokens
-- **Transactions** — configurable retry, commit hooks, conflict reporting
+- **Cursors** — concat, map, filter, skip, limit, union, intersection, dedup, flatmap, chained, auto-continuing, fallback
+- **Continuations** — cross-platform cursor resume tokens (record and index level)
+- **Scan limits** — time, byte, and record scan limits
+- **Transactions** — configurable retry with exponential backoff, commit hooks, conflict reporting
+- **Schema evolution** — MetaDataValidator, MetaDataEvolutionValidator
+- **Bulk operations** — DeleteAllRecords, DeleteRecordsWhere, record counting (atomic)
+- **Aggregate functions** — EvaluateAggregateFunction (COUNT, SUM, MIN, MAX, RANK functions)
+- **Store management** — format version 14, store locking (FORBID_RECORD_UPDATE, FULL_STORE), incarnation, header user fields
+- **Key expressions** — Field, RecordType, Empty, Composite (Then), Nesting, FanOut, Grouping, FunctionKey, KeyWithValue, Version
 
 ## What doesn't (yet)
 
-- Most index types (RANK, TEXT, MIN_EVER, MAX_EVER, BITMAP, VECTOR, ...)
-- Schema evolution validation (`MetaDataEvolutionValidator`)
-- Bulk conditional delete (`deleteRecordsWhereAsync`)
-- Index build progress tracking / crash resume
-- Store state caching, timer instrumentation
+- TEXT index (full-text with tokenizers)
+- BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD indexes
+- Store state caching
+- Timer/instrumentation
+- Synthetic record types (JoinedRecordType, UnnestedRecordType)
 
 Full gap analysis in [TODO.md](TODO.md).
 
 ## Conformance
 
 Wire compatibility is verified by a conformance suite that runs both Go and Java
-against the same FDB instance, cross-validating reads and writes bidirectionally.
+(Record Layer 4.10.6.0) against the same FDB instance, cross-validating reads and
+writes bidirectionally.
 
 ### Wire format
 
@@ -73,7 +79,7 @@ All 10 keyspace constants match the Java implementation:
 | `StoreInfoKey` | 0 | Store header (format version, metadata) |
 | `RecordKey` | 1 | Record data |
 | `IndexKey` | 2 | Index entries |
-| `IndexSecondarySpaceKey` | 3 | Secondary index data |
+| `IndexSecondarySpaceKey` | 3 | Secondary index data (RANK, PERMUTED) |
 | `RecordCountKey` | 4 | Atomic record counts |
 | `IndexStateSpaceKey` | 5 | Index lifecycle state |
 | `IndexRangeSpaceKey` | 6 | Index build range tracking |
@@ -82,35 +88,35 @@ All 10 keyspace constants match the Java implementation:
 | `IndexBuildSpaceKey` | 9 | Index build metadata |
 
 Tuple encoding, split record layout, continuation token format, and index entry
-structure are all verified against Java. Details in [reports/subspace_wire_compat.md](reports/subspace_wire_compat.md).
+structure are all verified against Java.
 
 ### Test coverage
 
-149 conformance specs (Go↔Java cross-validation) across 18 test files,
-plus 460 unit/integration specs against real FDB via testcontainers.
+283 conformance specs (Go↔Java cross-validation) and 832 unit/integration specs
+against real FDB via testcontainers. **1115 total specs.**
 
 | Area | Conformance specs |
 |------|------------------:|
-| CRUD + existence checks | 49 |
-| Multi-type records | 15 |
-| Split records | 10 |
-| Scanning (forward, reverse, limits) | 18 |
-| Continuation tokens | 3 |
-| Indexes (VALUE, COUNT, fan-out, composite, rebuild) | 25 |
+| CRUD + existence + isolation + conflicts | 49 |
+| Multi-type records (Customer) | 12 |
+| Split records | 9 |
+| Scanning (forward, reverse, limits) | 12 |
+| Continuation tokens (record + index level) | 6 |
+| VALUE indexes (single, composite, fan-out, covering) | 22 |
+| COUNT/SUM/MIN_EVER/MAX_EVER indexes | 38 |
+| COUNT_NOT_NULL/COUNT_UPDATES/CLEAR_WHEN_ZERO | 12 |
+| MAX_EVER_VERSION index | 7 |
+| PERMUTED_MIN/MAX indexes | 10 |
+| VERSION index | varies |
+| RANK index | 14 |
 | Record versioning | 4 |
 | Record counting | 6 |
-| Isolation + conflicts | 17 |
-| Delete operations | 8 |
+| RangeSet wire format | 4 |
+| Store header (v1 + v2), index state, lifecycle | 25 |
+| DeleteAllRecords / DeleteRecordsWhere | 11 |
+| OnlineIndexer | 7 |
 
-Open conformance gaps tracked in [TODO.md](TODO.md): SUM index, RangeSet wire
-format, DeleteAllRecords, store header, index state persistence, FormerIndex.
-
-See [reports/feature_completeness.md](reports/feature_completeness.md) for a
-method-by-method comparison against Java's `FDBRecordStore`.
-
-## Contributing
-
-### Building
+## Building
 
 Requires Bazel 8+ (via bazelisk) and Docker (for testcontainers).
 
@@ -127,8 +133,7 @@ just generate   # buf proto codegen
 pkg/recordlayer/    Main implementation
 gen/                Generated protobuf Go code
 proto/apple/        Apple's original proto definitions
-conformance/        Go↔Java cross-validation tests
-reports/            Audit reports (wire compat, coverage, completeness)
+conformance/        Go↔Java cross-validation tests + Java conformance server
 ```
 
 ### Running specific tests
