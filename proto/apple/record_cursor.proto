@@ -20,10 +20,10 @@
 syntax = "proto2";
 
 package com.apple.foundationdb.record;
+import "google/protobuf/descriptor.proto";
+import "record_query_runtime.proto";
 
 option java_outer_classname = "RecordCursorProto";
-
-// All field numbers MUST match Java's record_cursor.proto for wire compatibility.
 
 message FlatMapContinuation {
     optional bytes outer_continuation = 1;
@@ -31,15 +31,8 @@ message FlatMapContinuation {
     optional bytes check_value = 3;
 }
 
-message ConcatContinuation {
-    optional bool second = 1;
-    optional bytes continuation = 3;
-}
-
-message KeyValueCursorContinuation {
-    optional bytes inner_continuation = 1;
-    optional sfixed64 magic_number = 2;
-}
+// For backwards compatibility reasons, the union and intersection continuations differentiate
+// between the first two children and all other children.
 
 message IntersectionContinuation {
     message CursorState {
@@ -65,7 +58,140 @@ message UnionContinuation {
     repeated CursorState other_child_state = 5;
 }
 
+message ProbableIntersectionContinuation {
+    message CursorState {
+        optional bytes continuation = 1;
+        optional bool exhausted = 2;
+        optional bytes bloom_filter = 3;
+    }
+    repeated CursorState child_state = 1;
+}
+
+message ConcatContinuation {
+    optional bool second = 1; //true if the continuation applies to second cursor
+    optional bytes continuation = 3;
+}
+
 message DedupContinuation {
     required bytes innerContinuation = 1;
     optional bytes lastValue = 2;
+}
+
+message SizeStatisticsContinuation {
+    optional bytes continuation = 1;
+    optional SizeStatisticsPartialResults partialResults = 2;
+}
+
+message SizeStatisticsGroupingContinuation {
+    // A marker for when the continuation is used to indicate that the cursor is done and this is the last result
+    optional bool lastResultContinuation = 1;
+    optional bytes underlyingContinuation = 2;
+    optional SizeStatisticsPartialResults partialResults = 3;
+    optional bytes currentGroupingKey = 4;
+}
+
+message SizeStatisticsPartialResults {
+    optional uint64 keyCount = 1;
+    optional uint64 keySize = 2;
+    optional uint64 maxKeySize = 3;
+    optional uint64 valueSize = 4;
+    optional uint64 maxValueSize = 5;
+    repeated uint64 sizeBuckets = 6 [packed = true];
+}
+
+message OrElseContinuation {
+    enum State {
+        UNDECIDED = 0;
+        USE_INNER = 1;
+        USE_OTHER = 2;
+    };
+    optional State state = 1;
+    optional bytes continuation = 2;
+}
+
+message ComposedBitmapIndexContinuation {
+    message CursorState {
+        optional bytes continuation = 1;
+        optional bool exhausted = 2;
+    }
+    repeated CursorState child_state = 1;
+}
+
+message SelectorPlanContinuation {
+    optional uint64 selected_plan = 1; // The selected plan executing from the list of optional plans
+    optional bytes inner_continuation = 2; // The selected plan's continuation
+}
+
+message ComparatorContinuation {
+    message CursorState {
+        optional bytes continuation = 1;
+        optional bool started = 2;
+    }
+    repeated CursorState child_state = 1;
+}
+
+message MultidimensionalIndexScanContinuation {
+    optional bytes lastHilbertValue = 1;
+    optional bytes lastKey = 2;
+}
+
+message VectorIndexScanContinuation {
+    message IndexEntry {
+        optional bytes key = 1;
+        optional bytes value = 2;
+    }
+    repeated IndexEntry indexEntries = 1;
+    optional bytes inner_continuation = 2;
+}
+
+message TempTableInsertContinuation {
+    optional bytes child_continuation = 1;
+    optional planprotos.PTempTable tempTable = 2;
+}
+
+message RecursiveCursorContinuation {
+    optional bool isInitialState = 1;
+    optional planprotos.PTempTable tempTable = 2;
+    optional bytes activeStateContinuation = 3;
+}
+
+message AggregateCursorContinuation {
+    optional bytes continuation = 1;
+    optional PartialAggregationResult partial_aggregation_results = 2;
+}
+
+message PartialAggregationResult {
+  optional bytes group_key = 1;
+  repeated AccumulatorState accumulator_states = 2;
+}
+
+message AccumulatorState {
+  repeated OneOfTypedState state = 1; // 2 for avg
+}
+
+message OneOfTypedState {
+  oneof state {
+    int32 int32_state = 1;
+    int64 int64_state = 2;
+    float float_state = 3;
+    double double_state = 4;
+    bytes bytes_state = 5;
+  }
+}
+
+message RangeCursorContinuation {
+    optional int64 nextPosition = 1;
+}
+
+message KeyValueCursorContinuation {
+    optional bytes inner_continuation = 1;
+    optional sfixed64 magic_number = 2;
+}
+
+message RecursiveContinuation {
+    message LevelCursor {
+        optional bytes continuation = 1;
+        optional bytes check_value = 2;
+    }
+    repeated LevelCursor levels = 1;
 }

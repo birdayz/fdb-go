@@ -1,0 +1,57 @@
+/*
+  * index_metadata.proto
+  *
+  * This source file is part of the FoundationDB open source project
+  *
+  * Copyright 2015-2021 Apple Inc. and the FoundationDB project authors
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+  * You may obtain a copy of the License at
+  *
+  *     http://www.apache.org/licenses/LICENSE-2.0
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+
+syntax = "proto2";
+
+package com.apple.foundationdb.record;
+option java_outer_classname = "IndexBuildProto";
+
+// This stamp indicates an ongoing indexing process. It will be used to assure a coherent indexing
+// continuation - which continued by another process.
+
+message IndexBuildIndexingStamp {
+  enum Method {
+    INVALID      = 0;  // let zero be invalid
+    BY_RECORDS   = 1;  // indexing by records - scanning all records in a record store
+    BY_INDEX     = 2;  // indexing by a source index. When source index points to all possible records of the target index.
+    SCRUB_REPAIR = 3;  // while readable, verify index validity. Repair if needed.
+    MULTI_TARGET_BY_RECORDS = 4; // scan records, build multiple target indexes
+    MUTUAL_BY_RECORDS = 5; // scan records, build multiple target indexes, while allowing multiple indexer processes
+    NONE = 6; // return this stamp in query when null - never to be written in the DB
+  };
+  optional Method method = 1;
+  optional bytes source_index_subspace_key = 2; // relevant only with BY_INDEX method
+  optional int32 source_index_last_modified_version = 3; // only with BY_INDEX method
+  repeated string targetIndex = 4; // (Only with MULTI_TARGET & MUTUAL) list of target indexes sorted alphabetically
+                                   // the first item is used as the primary index
+  optional bool block = 5; // if true and unexpired, indexing may not be continued
+  optional uint64 blockExpireEpochMilliSeconds = 6; // if non zero, the block expiration time in milliseconds since epoch
+  optional string blockID = 7; // optional, a short string that describes the reason for the block.
+ }
+
+// An heartbeat is maintained by an OnlineIndexer at every transaction during the indexing iteration, to ensure there
+// aren't too many concurrent processes trying to build an index
+message IndexBuildHeartbeat {
+    optional string info = 1; // general information about the indexing session. This can be useful when querying the heartbeats.
+    optional int64 createTimeMilliseconds = 2; // indexer's creation time (since epoch)
+    optional int64 heartbeatTimeMilliseconds = 3; // last heartbeat's time (since epoch). This is the only heartbeat value that changes during online indexing.
+ }
+
+
