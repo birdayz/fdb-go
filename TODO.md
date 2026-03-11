@@ -283,6 +283,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | OnlineIndexer | saveOrderForOnlineBuild, scanIndexAfterOnlineBuild, isIndexReadableAfterBuild | online_indexer_conformance_test.go | YES |
 | PERMUTED_MAX index | saveOrderWithPermutedMaxIndex, deleteOrderWithPermutedMaxIndex, scanPermutedMaxByValue, scanPermutedMaxByGroup | permuted_min_max_index_conformance_test.go | YES |
 | PERMUTED_MIN index | saveOrderWithPermutedMinIndex, deleteOrderWithPermutedMinIndex, scanPermutedMinByValue, scanPermutedMinByGroup | permuted_min_max_index_conformance_test.go | YES |
+| Index scan continuations | scanIndexWithContinuation, saveOrderForIndexContinuation | index_continuation_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -307,7 +308,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **PERMUTED_MIN/MAX conformance** — CRITICAL. 10 specs: Go writes/both scan BY_VALUE+BY_GROUP, Java writes/both scan, mixed writes, Go deletes max written by Java (re-fetch), Java deletes max written by Go (re-fetch), non-extremum delete unchanged, PERMUTED_MIN Go writes/both scan, Java writes/both scan, delete min re-fetch, non-extremum insert unchanged. Dual subspace wire format cross-validated.
 
 **P1 — strengthens confidence:**
-- [ ] **Index scan continuation cross-language resume** — HIGH. VALUE index paged scan (Go scans page 1 → Java resumes page 2, and vice versa). Currently only record-level scan continuations are cross-validated, not index scan continuations.
+- [x] **Index scan continuation cross-language resume** — HIGH. 3 specs: Go→Java resume, Java→Go resume, alternating Go/Java. VALUE index paged scan with 10 entries, limit=3/2 page sizes. Continuation token wire format cross-validated (Go TO_OLD ↔ Java proto-wrapped).
 - [ ] **RecordMetaData proto serialization cross-language roundtrip** — HIGH. Go `ToProto()` → bytes → Java deserialize → validate all fields match. Currently only Go→Go roundtrip tested (11 unit tests). KeyExpression proto roundtrip also not cross-validated.
 
 **P2 — edge cases:**
