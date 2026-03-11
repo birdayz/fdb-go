@@ -340,6 +340,9 @@ var _ = Describe("SumIndex", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(7), Price: proto.Int32(999)})
 			Expect(err).NotTo(HaveOccurred())
 
+			// Complete the range set so checkIndexBuilt passes, then mark readable.
+			_, err = irs.InsertRange(rtx.Transaction(), pk5, nil, false)
+			Expect(err).NotTo(HaveOccurred())
 			_, err = store.MarkIndexReadable(sumIdx.Name)
 			Expect(err).NotTo(HaveOccurred())
 

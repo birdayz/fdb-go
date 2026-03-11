@@ -204,6 +204,7 @@ func (s *IndexStateConformanceStore) MarkIndexDisabledGo(ctx context.Context, in
 }
 
 // MarkIndexReadableGo marks an index as READABLE using Go.
+// Inserts the full range set first so that checkIndexBuilt passes.
 func (s *IndexStateConformanceStore) MarkIndexReadableGo(ctx context.Context, indexName string) error {
 	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
@@ -211,6 +212,14 @@ func (s *IndexStateConformanceStore) MarkIndexReadableGo(ctx context.Context, in
 			SetIndexRebuildPolicy(recordlayer.AlwaysRebuildPolicy).CreateOrOpen()
 		if err != nil {
 			return nil, err
+		}
+		// Mark the range set as complete so checkIndexBuilt passes.
+		idx := s.MetaData.GetIndex(indexName)
+		if idx != nil {
+			rangeSet := recordlayer.NewIndexingRangeSet(s.Keyspace, idx)
+			if _, err := rangeSet.InsertRange(rtx.Transaction(), nil, nil, false); err != nil {
+				return nil, err
+			}
 		}
 		_, err = store.MarkIndexReadable(indexName)
 		return nil, err

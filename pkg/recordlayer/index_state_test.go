@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
+
+// markRangeSetComplete inserts the full range into the IndexingRangeSet so that
+// checkIndexBuilt passes. This simulates the range set being fully built.
+func markRangeSetComplete(store *FDBRecordStore, index *Index) {
+	rangeSet := NewIndexingRangeSet(store.subspace, index)
+	_, err := rangeSet.InsertRange(store.context.Transaction(), nil, nil, false)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+}
 
 var _ = Describe("IndexState", func() {
 	var (
@@ -129,10 +138,10 @@ var _ = Describe("IndexState", func() {
 	})
 
 	Describe("MarkIndexReadable", func() {
-		It("transitions from disabled back to readable", func() {
+		It("transitions from disabled back to readable when range set is complete", func() {
 			ss := specSubspace()
 
-			// Disable
+			// Disable and mark range set complete
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
@@ -140,7 +149,12 @@ var _ = Describe("IndexState", func() {
 					return nil, err
 				}
 				_, err = store.MarkIndexDisabled("Order$price")
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
+				// Mark range set as complete so checkIndexBuilt passes.
+				markRangeSetComplete(store, md.GetIndex("Order$price"))
+				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -170,6 +184,105 @@ var _ = Describe("IndexState", func() {
 					return nil, err
 				}
 				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("fails when range set is not complete", func() {
+			ss := specSubspace()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.MarkIndexDisabled("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Do NOT mark range set complete.
+				_, err = store.MarkIndexReadable("Order$price")
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, ErrIndexNotBuilt)).To(BeTrue())
+				Expect(store.IsIndexDisabled("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("fails on unique index with violations", func() {
+			ss := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.AddIndex("Order", uniqueIdx)
+			mdWithUnique, buildErr := builder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				// Set up: disable index, mark range complete, add violations
+				_, err = store.MarkIndexDisabled("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := mdWithUnique.GetIndex("Order$unique_price")
+				markRangeSetComplete(store, idx)
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+
+				// MarkIndexReadable should fail due to violations
+				_, err = store.MarkIndexReadable("Order$unique_price")
+				Expect(err).To(HaveOccurred())
+				var violationErr *RecordIndexUniquenessViolationError
+				Expect(errors.As(err, &violationErr)).To(BeTrue())
+				Expect(violationErr.IndexName).To(Equal("Order$unique_price"))
+
+				// Index state should remain unchanged
+				Expect(store.IsIndexDisabled("Order$unique_price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("clears build data on successful transition to READABLE", func() {
+			ss := specSubspace()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.MarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$price")
+				markRangeSetComplete(store, idx)
+
+				// Verify range set is complete before MarkIndexReadable
+				rangeSet := NewIndexingRangeSet(store.subspace, idx)
+				complete, err := rangeSet.IsComplete(rtx.Transaction())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(complete).To(BeTrue())
+
+				changed, err := store.MarkIndexReadable("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+
+				// Build data should be cleared after transition
+				complete, err = rangeSet.IsComplete(rtx.Transaction())
+				Expect(err).NotTo(HaveOccurred())
+				// After clearing, FirstMissingRange returns non-nil (whole range is missing)
+				// so IsComplete returns false.
+				Expect(complete).To(BeFalse())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -227,13 +340,16 @@ var _ = Describe("IndexState", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Mark readable and verify index is empty (data was cleared)
+			// Mark readable (with range set complete) and verify index is empty (data was cleared)
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
 					return nil, err
 				}
+				// Mark range set as complete so checkIndexBuilt passes.
+				markRangeSetComplete(store, md.GetIndex("Order$price"))
+
 				_, err = store.MarkIndexReadable("Order$price")
 				if err != nil {
 					return nil, err
@@ -280,13 +396,16 @@ var _ = Describe("IndexState", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Re-enable index and scan — should be empty (no entries were created)
+			// Re-enable index (with range set complete) and scan — should be empty
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 				if err != nil {
 					return nil, err
 				}
+				// Mark range set as complete so checkIndexBuilt passes.
+				markRangeSetComplete(store, md.GetIndex("Order$price"))
+
 				_, err = store.MarkIndexReadable("Order$price")
 				if err != nil {
 					return nil, err
@@ -366,7 +485,7 @@ var _ = Describe("IndexState", func() {
 	})
 
 	Describe("MarkIndexReadableOrUniquePending", func() {
-		It("marks non-unique index as READABLE", func() {
+		It("marks non-unique index as READABLE when range set is complete", func() {
 			ss := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().
@@ -377,10 +496,35 @@ var _ = Describe("IndexState", func() {
 				// Disable first, then mark readable-or-unique-pending
 				_, err = store.MarkIndexDisabled("Order$price")
 				Expect(err).NotTo(HaveOccurred())
+
+				// Mark range set as complete so checkIndexBuilt passes.
+				markRangeSetComplete(store, md.GetIndex("Order$price"))
+
 				changed, err := store.MarkIndexReadableOrUniquePending("Order$price")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
 				Expect(store.GetIndexState("Order$price")).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("fails when range set is not complete", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.MarkIndexDisabled("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Do NOT mark range set complete.
+				_, err = store.MarkIndexReadableOrUniquePending("Order$price")
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, ErrIndexNotBuilt)).To(BeTrue())
+				Expect(store.IsIndexDisabled("Order$price")).To(BeTrue())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -408,9 +552,17 @@ var _ = Describe("IndexState", func() {
 				if err != nil {
 					return nil, err
 				}
+
+				// Move to WRITE_ONLY first (simulates online index build in progress)
+				_, err = store.MarkIndexWriteOnly("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+
 				// Manually add a uniqueness violation entry
 				idx := mdWithUnique.GetIndex("Order$unique_price")
 				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+
+				// Mark range set as complete so checkIndexBuilt passes.
+				markRangeSetComplete(store, idx)
 
 				// Now mark it — should be READABLE_UNIQUE_PENDING
 				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
@@ -452,10 +604,57 @@ var _ = Describe("IndexState", func() {
 				// Disable then re-mark
 				_, err = store.MarkIndexDisabled("Order$unique_price")
 				Expect(err).NotTo(HaveOccurred())
+
+				// Mark range set as complete so checkIndexBuilt passes.
+				idx := mdWithUnique.GetIndex("Order$unique_price")
+				markRangeSetComplete(store, idx)
+
 				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(changed).To(BeTrue())
 				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("clears build data on READABLE but not on READABLE_UNIQUE_PENDING", func() {
+			ss := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.AddIndex("Order", uniqueIdx)
+			mdWithUnique, buildErr := builder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			// Test READABLE_UNIQUE_PENDING: build data NOT cleared
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				_, err = store.MarkIndexWriteOnly("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := mdWithUnique.GetIndex("Order$unique_price")
+				markRangeSetComplete(store, idx)
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+
+				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadableUniquePending))
+
+				// Build data should NOT be cleared for READABLE_UNIQUE_PENDING
+				rangeSet := NewIndexingRangeSet(store.subspace, idx)
+				complete, err := rangeSet.IsComplete(rtx.Transaction())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(complete).To(BeTrue())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -468,6 +667,229 @@ var _ = Describe("IndexState", func() {
 			Expect(IndexStateWriteOnly.String()).To(Equal("WRITE_ONLY"))
 			Expect(IndexStateDisabled.String()).To(Equal("DISABLED"))
 			Expect(IndexStateReadableUniquePending.String()).To(Equal("READABLE_UNIQUE_PENDING"))
+		})
+	})
+
+	Describe("OnlineIndexer READABLE_UNIQUE_PENDING end-to-end", func() {
+		It("builds unique index with violations into READABLE_UNIQUE_PENDING", func() {
+			ss := specSubspace()
+
+			// Phase 1: Insert records with duplicate prices (no unique index yet).
+			_, builder := func() (*RecordMetaData, *RecordMetaDataBuilder) {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				return nil, b
+			}()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Two orders with same price = uniqueness violation
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100)})
+				if err != nil {
+					return nil, err
+				}
+				// One order with distinct price
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Add unique index and build online.
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			_, builder2 := func() (*RecordMetaData, *RecordMetaDataBuilder) {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				return nil, b
+			}()
+			builder2.AddIndex("Order", uniqueIdx)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(uniqueIdx).
+				SetSubspace(ss).
+				SetLimit(10).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 3))
+
+			// Phase 3: Verify index is READABLE_UNIQUE_PENDING (not READABLE).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadableUniquePending))
+				Expect(store.IsIndexScannable("Order$unique_price")).To(BeTrue())
+
+				// Index should be scannable even in READABLE_UNIQUE_PENDING.
+				idx := mdWithIndex.GetIndex("Order$unique_price")
+				entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(3))
+
+				// Violations should exist.
+				violations, err := store.ScanUniquenessViolations(idx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).NotTo(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("builds unique index without violations into READABLE", func() {
+			ss := specSubspace()
+
+			// Phase 1: Insert records with distinct prices.
+			_, builder := func() (*RecordMetaData, *RecordMetaDataBuilder) {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				return nil, b
+			}()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Build unique index online — no violations.
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			_, builder2 := func() (*RecordMetaData, *RecordMetaDataBuilder) {
+				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				return nil, b
+			}()
+			builder2.AddIndex("Order", uniqueIdx)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(uniqueIdx).
+				SetSubspace(ss).
+				SetLimit(10).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 3))
+
+			// Phase 3: Verify index is READABLE (not READABLE_UNIQUE_PENDING).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadable))
+				Expect(store.IsIndexReadable("Order$unique_price")).To(BeTrue())
+
+				// Build data should be cleared for READABLE indexes.
+				idx := mdWithIndex.GetIndex("Order$unique_price")
+				rangeSet := NewIndexingRangeSet(store.subspace, idx)
+				complete, err := rangeSet.IsComplete(rtx.Transaction())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(complete).To(BeFalse()) // cleared
+
+				// No violations.
+				violations, err := store.ScanUniquenessViolations(idx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("READABLE_UNIQUE_PENDING state persists across transactions", func() {
+			ss := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_price", Field("price"))
+			uniqueIdx.SetUnique()
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.AddIndex("Order", uniqueIdx)
+			mdWithUnique, buildErr := builder.Build()
+			Expect(buildErr).NotTo(HaveOccurred())
+
+			// Set up: WRITE_ONLY with violations, transition to READABLE_UNIQUE_PENDING
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.MarkIndexWriteOnly("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := mdWithUnique.GetIndex("Order$unique_price")
+				markRangeSetComplete(store, idx)
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+
+				_, err = store.MarkIndexReadableOrUniquePending("Order$unique_price")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadableUniquePending))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify state persists in a new transaction.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithUnique).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store.GetIndexState("Order$unique_price")).To(Equal(IndexStateReadableUniquePending))
+				Expect(store.IsIndexScannable("Order$unique_price")).To(BeTrue())
+				Expect(store.IsIndexReadable("Order$unique_price")).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
 		})
 	})
 })

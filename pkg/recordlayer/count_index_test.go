@@ -260,7 +260,9 @@ var _ = Describe("CountIndex", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Mark readable to scan.
+			// Complete the range set so checkIndexBuilt passes, then mark readable.
+			_, err = irs.InsertRange(rtx.Transaction(), pk5, nil, false)
+			Expect(err).NotTo(HaveOccurred())
 			_, err = store.MarkIndexReadable(countIdx.Name)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -402,6 +404,9 @@ var _ = Describe("CountIndex", func() {
 			_, err = store.DeleteRecord(tuple.Tuple{int64(7)})
 			Expect(err).NotTo(HaveOccurred())
 
+			// Complete the range set so checkIndexBuilt passes, then mark readable.
+			_, err = irs.InsertRange(rtx.Transaction(), pk5, nil, false)
+			Expect(err).NotTo(HaveOccurred())
 			_, err = store.MarkIndexReadable(countIdx.Name)
 			Expect(err).NotTo(HaveOccurred())
 

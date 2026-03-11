@@ -73,6 +73,9 @@ var ErrIndexNotReadable = fmt.Errorf("index is not readable")
 // ErrIndexNotFound is returned when an index name is not in the metadata.
 var ErrIndexNotFound = fmt.Errorf("index not found in metadata")
 
+// ErrIndexNotBuilt is returned when trying to mark a non-fully-built index as readable.
+var ErrIndexNotBuilt = fmt.Errorf("index is not built")
+
 // GetIndexState returns the state of the given index. Returns READABLE if no
 // explicit state is stored (matching Java's default behavior).
 func (store *FDBRecordStore) GetIndexState(indexName string) IndexState {
@@ -108,16 +111,43 @@ func (store *FDBRecordStore) IsIndexScannable(indexName string) bool {
 
 // MarkIndexReadable transitions an index to READABLE state.
 // Returns true if the state was changed, false if already READABLE.
-// Matches Java's FDBRecordStore.markIndexReadable().
+// Returns an error if the index is not fully built or if a unique index has violations.
+// Matches Java's FDBRecordStore.markIndexReadable(index, allowUniquePending=false).
 func (store *FDBRecordStore) MarkIndexReadable(indexName string) (bool, error) {
-	if store.metaData.GetIndex(indexName) == nil {
+	idx := store.metaData.GetIndex(indexName)
+	if idx == nil {
 		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
 	}
 	current := store.GetIndexState(indexName)
 	if current == IndexStateReadable {
 		return false, nil
 	}
+
+	// Verify the index is fully built before marking readable.
+	// Matches Java's checkAndUpdateBuiltIndexState -> firstUnbuiltRange check.
+	if err := store.checkIndexBuilt(idx); err != nil {
+		return false, err
+	}
+
+	// For unique indexes, check for uniqueness violations.
+	// Matches Java's markIndexReadable(index, allowUniquePending=false) which throws
+	// RecordIndexUniquenessViolation if violations exist.
+	if idx.IsUnique() {
+		violations, err := store.ScanUniquenessViolations(idx)
+		if err != nil {
+			return false, fmt.Errorf("check uniqueness violations for index %q: %w", indexName, err)
+		}
+		if len(violations) > 0 {
+			return false, &RecordIndexUniquenessViolationError{
+				IndexName:  indexName,
+				IndexKey:   violations[0].IndexKey,
+				PrimaryKey: violations[0].PrimaryKey,
+			}
+		}
+	}
+
 	store.setIndexState(indexName, IndexStateReadable)
+	store.clearReadableIndexBuildData(idx)
 	return true, nil
 }
 
@@ -125,11 +155,23 @@ func (store *FDBRecordStore) MarkIndexReadable(indexName string) (bool, error) {
 // no uniqueness violations, or to READABLE_UNIQUE_PENDING if violations exist.
 // For non-unique indexes, always transitions to READABLE.
 // Returns true if the state was changed.
-// Matches Java's FDBRecordStore.markIndexReadable() with uniqueness check.
+// Returns an error if the index is not fully built.
+// Matches Java's FDBRecordStore.markIndexReadableOrUniquePending().
 func (store *FDBRecordStore) MarkIndexReadableOrUniquePending(indexName string) (bool, error) {
 	idx := store.metaData.GetIndex(indexName)
 	if idx == nil {
 		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+	}
+
+	current := store.GetIndexState(indexName)
+	if current == IndexStateReadable {
+		return false, nil
+	}
+
+	// Verify the index is fully built before marking readable.
+	// Matches Java's checkAndUpdateBuiltIndexState -> firstUnbuiltRange check.
+	if err := store.checkIndexBuilt(idx); err != nil {
+		return false, err
 	}
 
 	targetState := IndexStateReadable
@@ -143,11 +185,17 @@ func (store *FDBRecordStore) MarkIndexReadableOrUniquePending(indexName string) 
 		}
 	}
 
-	current := store.GetIndexState(indexName)
 	if current == targetState {
 		return false, nil
 	}
+
 	store.setIndexState(indexName, targetState)
+	if targetState == IndexStateReadable {
+		// Clear build data only when transitioning to READABLE.
+		// READABLE_UNIQUE_PENDING keeps build data until violations are resolved.
+		// Matches Java's clearReadableIndexBuildData().
+		store.clearReadableIndexBuildData(idx)
+	}
 	return true, nil
 }
 
@@ -352,4 +400,26 @@ func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) {
 // all receive updates.
 func (store *FDBRecordStore) shouldMaintainIndex(indexName string) bool {
 	return !store.GetIndexState(indexName).IsDisabled()
+}
+
+// checkIndexBuilt verifies that the index range set is complete (no unbuilt ranges).
+// Matches Java's firstUnbuiltRange check in checkAndUpdateBuiltIndexState.
+func (store *FDBRecordStore) checkIndexBuilt(index *Index) error {
+	rangeSet := NewIndexingRangeSet(store.subspace, index)
+	missing, err := rangeSet.FirstMissingRange(store.context.Transaction())
+	if err != nil {
+		return fmt.Errorf("check index %q built state: %w", index.Name, err)
+	}
+	if missing != nil {
+		return fmt.Errorf("%w: index %q has unbuilt ranges", ErrIndexNotBuilt, index.Name)
+	}
+	return nil
+}
+
+// clearReadableIndexBuildData clears build tracking data (range set) for an index
+// that has transitioned to READABLE state.
+// Matches Java's FDBRecordStore.clearReadableIndexBuildData().
+func (store *FDBRecordStore) clearReadableIndexBuildData(index *Index) {
+	rangeSet := NewIndexingRangeSet(store.subspace, index)
+	rangeSet.Clear(store.context.Transaction())
 }

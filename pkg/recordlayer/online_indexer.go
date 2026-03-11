@@ -137,7 +137,10 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 	return err
 }
 
-// markReadable transitions the index to READABLE state after verifying completion.
+// markReadable transitions the index to READABLE (or READABLE_UNIQUE_PENDING for
+// unique indexes with violations) after the build completes.
+// Matches Java's IndexingBase.markIndexReadable() which calls
+// store.markIndexReadableOrUniquePending() when the policy allows.
 func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
@@ -145,17 +148,7 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 			return nil, err
 		}
 
-		// Verify the range set is complete.
-		rangeSet := NewIndexingRangeSet(store.subspace, oi.index)
-		complete, err := rangeSet.IsComplete(rtx.Transaction())
-		if err != nil {
-			return nil, err
-		}
-		if !complete {
-			return nil, fmt.Errorf("index %q build is not complete", oi.index.Name)
-		}
-
-		_, err = store.MarkIndexReadable(oi.index.Name)
+		_, err = store.MarkIndexReadableOrUniquePending(oi.index.Name)
 		return nil, err
 	})
 	return err

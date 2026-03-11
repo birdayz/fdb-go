@@ -205,11 +205,13 @@ var _ = Describe("RebuildIndex", func() {
 			err = store.RebuildIndex(priceIndex)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify the range set is complete.
+			// After a successful rebuild that transitions to READABLE, the build
+			// tracking data (range set) is cleared by clearReadableIndexBuildData.
+			// This matches Java's FDBRecordStore.clearReadableIndexBuildData().
 			rangeSet := NewIndexingRangeSet(store.subspace, priceIndex)
 			complete, err := rangeSet.IsComplete(rtx.Transaction())
 			Expect(err).NotTo(HaveOccurred())
-			Expect(complete).To(BeTrue())
+			Expect(complete).To(BeFalse())
 
 			return nil, nil
 		})
