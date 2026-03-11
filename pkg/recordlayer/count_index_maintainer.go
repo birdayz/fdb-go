@@ -122,6 +122,11 @@ func (m *CountIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBSto
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT", m.Update)
 }
 
+// DeleteWhere clears all COUNT index entries whose key starts with the given prefix.
+func (m *CountIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
+	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+}
+
 // Scan scans count index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = count as tuple.
 // Matches Java's StandardIndexMaintainer.scan() with BY_GROUP semantics.

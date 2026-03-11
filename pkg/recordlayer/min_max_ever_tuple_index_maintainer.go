@@ -76,6 +76,11 @@ func (m *MinMaxEverTupleIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newReco
 	return m.Update(oldRecord, newRecord)
 }
 
+// DeleteWhere clears all MIN/MAX_EVER_TUPLE index entries whose key starts with the given prefix.
+func (m *MinMaxEverTupleIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
+	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+}
+
 // Scan scans MIN/MAX_EVER_TUPLE index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = tuple-decoded value.
 // Uses a dedicated cursor that decodes tuple-packed values (unlike countKVCursor which decodes int64).

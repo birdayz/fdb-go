@@ -66,6 +66,18 @@ func parseRankedSetConfig(index *Index) RankedSetConfig {
 	return config
 }
 
+// DeleteWhere clears both the primary B-tree and secondary ranked set entries
+// for the given prefix. Matches Java's RankIndexMaintainer.deleteWhere().
+func (m *RankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
+	// Clear primary (B-tree) entries.
+	m.StandardIndexMaintainer.DeleteWhere(prefix)
+	// Clear secondary (ranked set) entries.
+	key := m.secondarySubspace.Pack(prefix)
+	if pr, err := fdb.PrefixRange(key); err == nil {
+		m.tx.ClearRange(pr)
+	}
+}
+
 // Update handles insert/delete/update for the RANK index.
 // Maintains both the primary B-tree and the secondary ranked set.
 // Matches Java's RankIndexMaintainer.updateIndexKeys().

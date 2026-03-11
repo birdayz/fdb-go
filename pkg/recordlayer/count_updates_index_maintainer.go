@@ -76,6 +76,11 @@ func (m *CountUpdatesIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord 
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT_UPDATES", m.Update)
 }
 
+// DeleteWhere clears all COUNT_UPDATES index entries whose key starts with the given prefix.
+func (m *CountUpdatesIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
+	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+}
+
 // Scan scans COUNT_UPDATES index entries within the given tuple range.
 // Reuses countKVCursor — identical wire format (little-endian int64 values).
 func (m *CountUpdatesIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
