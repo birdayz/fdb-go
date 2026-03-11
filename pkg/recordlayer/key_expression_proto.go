@@ -164,6 +164,14 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		found++
 		root = VersionKey()
 	}
+	if expr.Function != nil {
+		found++
+		fn, err := functionFromProto(expr.Function)
+		if err != nil {
+			return nil, err
+		}
+		root = fn
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -273,4 +281,24 @@ func (v *VersionKeyExpression) ToKeyExpression() *gen.KeyExpression {
 	return &gen.KeyExpression{
 		Version: &gen.Version{},
 	}
+}
+
+// ToKeyExpression serializes a FunctionKeyExpression to proto.
+// Matches Java's FunctionKeyExpression.toKeyExpression().
+func (f *FunctionKeyExpression) ToKeyExpression() *gen.KeyExpression {
+	return &gen.KeyExpression{
+		Function: &gen.Function{
+			Name:      &f.name,
+			Arguments: f.arguments.ToKeyExpression(),
+		},
+	}
+}
+
+// functionFromProto reconstructs a FunctionKeyExpression from a proto Function.
+func functionFromProto(fn *gen.Function) (*FunctionKeyExpression, error) {
+	args, err := KeyExpressionFromProto(fn.Arguments)
+	if err != nil {
+		return nil, fmt.Errorf("function arguments: %w", err)
+	}
+	return FunctionExpr(fn.GetName(), args), nil
 }

@@ -789,6 +789,8 @@ func countVersionColumns(expr KeyExpression) int {
 			return countVersionColumns(e.nested)
 		}
 		return 0
+	case *FunctionKeyExpression:
+		return countVersionColumns(e.arguments)
 	default:
 		return 0
 	}

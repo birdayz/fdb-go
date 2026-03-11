@@ -118,6 +118,7 @@ func (ts *TypedFDBRecordStore[T]) LoadRecord(primaryKey tuple.Tuple) (*FDBStored
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     typedRecord,
+		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
 		KeySize:    storedRecord.KeySize,
 		ValueSize:  storedRecord.ValueSize,
@@ -137,6 +138,7 @@ func (ts *TypedFDBRecordStore[T]) SaveRecord(record T) (*FDBStoredRecord[T], err
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     record, // Return the original typed record
+		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
 		KeySize:    storedRecord.KeySize,
 		ValueSize:  storedRecord.ValueSize,
@@ -170,6 +172,7 @@ func (ts *TypedFDBRecordStore[T]) SaveRecordWithOptions(
 		PrimaryKey: storedRecord.PrimaryKey,
 		RecordType: storedRecord.RecordType,
 		Record:     record, // Return the original typed record
+		Store:      storedRecord.Store,
 		KeyCount:   storedRecord.KeyCount,
 		KeySize:    storedRecord.KeySize,
 		ValueSize:  storedRecord.ValueSize,

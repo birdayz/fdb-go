@@ -163,6 +163,9 @@ func keyExpressionColumnSize(expr KeyExpression) int {
 		return e.splitPoint
 	case *VersionKeyExpression:
 		return 1
+	case *FunctionKeyExpression:
+		// Most functions produce a single column. Matches Java's typical behavior.
+		return 1
 	default:
 		return 0
 	}

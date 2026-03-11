@@ -184,6 +184,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		Store:      store,
 		KeyCount:   sizeInfo.KeyCount,
 		ValueSize:  sizeInfo.ValueSize,
 		KeySize:    sizeInfo.KeySize,
@@ -299,6 +300,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 			RecordType: oldRecordType,
 			Record:     oldMsg,
 			Version:    oldRecordVersion,
+			Store:      store,
 		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
 			return false, err
@@ -509,6 +511,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		RecordType: recordType,
 		Record:     record,
 		Version:    savedVersion,
+		Store:      store,
 		KeyCount:   newSizeInfo.KeyCount,
 		ValueSize:  newSizeInfo.ValueSize,
 		KeySize:    newSizeInfo.KeySize,
@@ -528,6 +531,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 				RecordType: oldRT,
 				Record:     oldMsg,
 				Version:    oldRecordVersion,
+				Store:      store,
 			}
 		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord); err != nil {
@@ -1033,6 +1037,11 @@ type FDBStoredRecord[M proto.Message] struct {
 	// Version is the record's version, if loaded.
 	// Matches Java's FDBStoredRecord.getVersion().
 	Version *FDBRecordVersion
+
+	// Store is the record store this record belongs to.
+	// Used by FunctionKeyExpression (e.g. get_versionstamp_incarnation) to access store state.
+	// Matches Java's FDBRecord.getStore().
+	Store *FDBRecordStore
 
 	// Storage size information
 	KeyCount  int

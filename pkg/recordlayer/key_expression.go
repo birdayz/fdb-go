@@ -445,6 +445,10 @@ func createsDuplicates(expr KeyExpression) bool {
 		return createsDuplicates(e.innerKey)
 	case *VersionKeyExpression:
 		return false
+	case *FunctionKeyExpression:
+		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.
+		// Functions can potentially produce multiple values.
+		return true
 	default:
 		return false
 	}
@@ -481,6 +485,8 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 		// getEntryPrimaryKey reads from the FDB key which only has splitPoint columns.
 		return normalizeKeyForPositions(e.innerKey)
 	case *VersionKeyExpression:
+		return []KeyExpression{expr}
+	case *FunctionKeyExpression:
 		return []KeyExpression{expr}
 	default:
 		return []KeyExpression{expr}
@@ -533,6 +539,9 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 	case *VersionKeyExpression:
 		_, ok := b.(*VersionKeyExpression)
 		return ok
+	case *FunctionKeyExpression:
+		bv, ok := b.(*FunctionKeyExpression)
+		return ok && av.name == bv.name && keyExpressionEquals(av.arguments, bv.arguments)
 	default:
 		return false
 	}
@@ -755,4 +764,77 @@ func (v *VersionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 // FieldNames returns an empty slice — version expressions don't access proto fields.
 func (v *VersionKeyExpression) FieldNames() []string {
 	return nil
+}
+
+// FunctionEvaluator evaluates a named function on a record.
+// Arguments are the pre-evaluated argument tuples from the arguments expression.
+type FunctionEvaluator func(record *FDBStoredRecord[proto.Message], msg proto.Message, arguments [][]any) ([][]any, error)
+
+// globalFunctionRegistry maps function names to their evaluators.
+// Matches Java's FunctionKeyExpression.Registry.
+var globalFunctionRegistry = map[string]FunctionEvaluator{
+	"get_versionstamp_incarnation": evaluateGetVersionstampIncarnation,
+}
+
+// RegisterFunction registers a named function evaluator in the global registry.
+// Call this before building metadata that uses the function.
+func RegisterFunction(name string, evaluator FunctionEvaluator) {
+	globalFunctionRegistry[name] = evaluator
+}
+
+// FunctionKeyExpression evaluates a named function on records to produce index
+// key values. The function is resolved from the global registry by name.
+// Matches Java's FunctionKeyExpression abstract class.
+type FunctionKeyExpression struct {
+	name      string
+	arguments KeyExpression
+}
+
+// FunctionExpr creates a FunctionKeyExpression with the given name and arguments.
+// The function must be registered in the global registry before evaluation.
+// Matches Java's FunctionKeyExpression.create(name, arguments).
+func FunctionExpr(name string, arguments KeyExpression) *FunctionKeyExpression {
+	return &FunctionKeyExpression{name: name, arguments: arguments}
+}
+
+// Evaluate resolves the named function from the registry, evaluates arguments,
+// and applies the function. Matches Java's FunctionKeyExpression.evaluateMessage().
+func (f *FunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
+	evaluator, ok := globalFunctionRegistry[f.name]
+	if !ok {
+		return nil, fmt.Errorf("unknown function key expression: %s", f.name)
+	}
+
+	argTuples, err := f.arguments.Evaluate(record, msg)
+	if err != nil {
+		return nil, fmt.Errorf("evaluating arguments for function %s: %w", f.name, err)
+	}
+
+	return evaluator(record, msg, argTuples)
+}
+
+// FieldNames returns field names from the arguments expression.
+func (f *FunctionKeyExpression) FieldNames() []string {
+	return f.arguments.FieldNames()
+}
+
+// Name returns the function name.
+func (f *FunctionKeyExpression) Name() string {
+	return f.name
+}
+
+// Arguments returns the arguments key expression.
+func (f *FunctionKeyExpression) Arguments() KeyExpression {
+	return f.arguments
+}
+
+// evaluateGetVersionstampIncarnation implements the get_versionstamp_incarnation function.
+// Returns the store's incarnation value as a single int64 tuple element.
+// Requires record.Store to be set (non-nil).
+// Matches Java's GetVersionstampIncarnationFn.
+func evaluateGetVersionstampIncarnation(record *FDBStoredRecord[proto.Message], _ proto.Message, _ [][]any) ([][]any, error) {
+	if record == nil || record.Store == nil {
+		return nil, fmt.Errorf("get_versionstamp_incarnation requires store context on record")
+	}
+	return [][]any{{int64(record.Store.GetIncarnation())}}, nil
 }

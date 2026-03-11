@@ -31,7 +31,7 @@ Java added 7 new format versions. We must handle them correctly on open/create:
 
 - [x] **FULL_STORE lock state + stricter validation (FormatVersion 12+14)** — Implemented: `validateStoreLockState()` on open, `StoreIsFullyLockedError`, `UnknownStoreLockStateError`, `SetBypassFullStoreLockReason()` on builder. `FormatVersionCurrent` bumped to 14. 5 new tests (prevents Open/CreateOrOpen, bypass with matching/wrong reason, clear lock). **HIGH**.
 - [x] **READABLE_UNIQUE_PENDING index state (FormatVersion 9)** — Full behavioral parity with Java: `MarkIndexReadable` checks `firstUnbuiltRange` + rejects unique violations, `MarkIndexReadableOrUniquePending` transitions to READABLE_UNIQUE_PENDING when violations exist, `OnlineIndexer` uses the unique-pending variant, build data cleared on READABLE but retained for READABLE_UNIQUE_PENDING. 15 new tests. **HIGH**.
-- [x] **Store incarnation field (FormatVersion 13)** — Implemented: `GetIncarnation()`, `UpdateIncarnation(updater)` (must strictly increase). `get_versionstamp_incarnation()` function requires `FunctionKeyExpression` (deferred). **MEDIUM**.
+- [x] **Store incarnation field (FormatVersion 13)** — Implemented: `GetIncarnation()`, `UpdateIncarnation(updater)` (must strictly increase). `get_versionstamp_incarnation()` now available via `FunctionKeyExpression`. **MEDIUM**.
 - [x] **Header user fields (FormatVersion 8)** — Implemented: `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
 - [ ] **Continuation serialization evolution** — 4.5.x enabled proto-wrapped `AggregateCursorContinuation`. 4.8.x enabled new `KeyValueCursorBaseContinuation` serialization. Our TO_OLD format still works (confirmed by conformance tests). No action needed unless we add aggregate cursors. **LOW**.
 
@@ -89,7 +89,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | LongArithmethicFunctionKeyExpression | (Java class) | Arithmetic operations on longs (2024) | **LOW** |
 | InvertibleFunctionKeyExpression | (interface) | Bidirectionally invertible functions | **LOW** |
 
-- [ ] **FunctionKeyExpression** — Required for `get_versionstamp_incarnation()` and other functional index expressions. **MEDIUM** (needed for incarnation support).
+- [x] **FunctionKeyExpression** — Implemented with global registry, proto round-trip, `get_versionstamp_incarnation` built-in. `FDBStoredRecord.Store` field added (matches Java's `FDBRecord.getStore()`). 25 unit tests.
 - [ ] **Other expression types** — DimensionsKE, SplitKE, ListKE, CollateFunctionKE, OrderFunctionKE, LongArithmeticKE. **LOW** — only needed for specialized index types.
 
 ### 4. New store APIs
@@ -175,7 +175,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 4. ~~Store incarnation field + APIs~~ **DONE**
 5. ~~Header user fields~~ **DONE**
 6. ~~MAX_EVER_VERSION index type~~ **DONE**
-7. FunctionKeyExpression (for incarnation)
+7. ~~FunctionKeyExpression (for incarnation)~~ **DONE**
 8. Store state caching
 
 **LOW (specialized / future):**
@@ -507,7 +507,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — 10+ types not in Go: FunctionKeyExpression (MEDIUM — needed for incarnation), DimensionsKeyExpression, SplitKeyExpression, ListKeyExpression, AtomKeyExpression, CollateFunctionKeyExpression, OrderFunctionKeyExpression, LongArithmeticFunctionKeyExpression, InvertibleFunctionKeyExpression. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE. See 4.10.6.0 upgrade assessment §3.
+- [ ] **Missing key expression types** — 9+ types not in Go: DimensionsKeyExpression, SplitKeyExpression, ListKeyExpression, AtomKeyExpression, CollateFunctionKeyExpression, OrderFunctionKeyExpression, LongArithmeticFunctionKeyExpression, InvertibleFunctionKeyExpression. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
