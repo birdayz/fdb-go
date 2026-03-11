@@ -147,6 +147,10 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 	case IndexTypeMinEverTuple:
 		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverTuple) &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypePermutedMin:
+		return fn.Name == FunctionNameMin && isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypePermutedMax:
+		return fn.Name == FunctionNameMax && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeValue:
 		// VALUE indexes can serve MIN/MAX by scanning 1 entry forward/reverse.
 		// The operand's ungrouped part must be a prefix of the index expression.
@@ -167,6 +171,12 @@ func evaluateAggregate(
 	scanRange TupleRange,
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
+	// For PERMUTED_MIN/MAX indexes: delegate to permuted-specific evaluation.
+	// Must check before the generic MIN/MAX path which assumes a plain VALUE index.
+	if pm, ok := maintainer.(*permutedMinMaxIndexMaintainer); ok {
+		return evaluatePermutedMinMaxAggregate(ctx, fn, pm, scanRange, isolationLevel)
+	}
+
 	// For VALUE indexes doing MIN/MAX: scan 1 entry
 	if fn.Name == FunctionNameMin || fn.Name == FunctionNameMax {
 		return evaluateMinMaxFromValueIndex(ctx, fn, maintainer, scanRange, isolationLevel)

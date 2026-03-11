@@ -926,6 +926,12 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
 	case IndexTypeMaxEverVersion:
 		return newMaxEverVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
+	case IndexTypePermutedMin:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, false)
+	case IndexTypePermutedMax:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

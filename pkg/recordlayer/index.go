@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"strconv"
+
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
@@ -19,6 +21,8 @@ const (
 	IndexTypeRank             = "rank"
 	IndexTypeVersion          = "version"
 	IndexTypeMaxEverVersion   = "max_ever_version"
+	IndexTypePermutedMin      = "permuted_min"
+	IndexTypePermutedMax      = "permuted_max"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -220,6 +224,38 @@ func NewMaxEverVersionIndex(name string, rootExpression KeyExpression) *Index {
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),
+	}
+}
+
+// NewPermutedMaxIndex creates a PERMUTED_MAX index with the given name, root key expression,
+// and permuted size. The permuted size specifies how many trailing grouping columns are
+// permuted to after the value in the secondary subspace, enabling value-ordered scans.
+// Matches Java's new Index(name, rootExpression, IndexTypes.PERMUTED_MAX) with PERMUTED_SIZE_OPTION.
+func NewPermutedMaxIndex(name string, rootExpression KeyExpression, permutedSize int) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypePermutedMax,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options: map[string]string{
+			IndexOptionPermutedSize: strconv.Itoa(permutedSize),
+		},
+	}
+}
+
+// NewPermutedMinIndex creates a PERMUTED_MIN index with the given name, root key expression,
+// and permuted size. The permuted size specifies how many trailing grouping columns are
+// permuted to after the value in the secondary subspace, enabling value-ordered scans.
+// Matches Java's new Index(name, rootExpression, IndexTypes.PERMUTED_MIN) with PERMUTED_SIZE_OPTION.
+func NewPermutedMinIndex(name string, rootExpression KeyExpression, permutedSize int) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypePermutedMin,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options: map[string]string{
+			IndexOptionPermutedSize: strconv.Itoa(permutedSize),
+		},
 	}
 }
 

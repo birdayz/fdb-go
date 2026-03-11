@@ -22,6 +22,12 @@ const (
 	// The range bounds contain [group..., rank] where rank is an int64.
 	// Matches Java's IndexScanType.BY_RANK.
 	IndexScanByRank IndexScanType = "BY_RANK"
+
+	// IndexScanByGroup scans a PERMUTED_MIN/MAX index by group in the
+	// secondary (permuted) subspace. Returns one entry per group with the
+	// extremum value, ordered by [groupPrefix, value, groupSuffix].
+	// Matches Java's IndexScanType.BY_GROUP.
+	IndexScanByGroup IndexScanType = "BY_GROUP"
 )
 
 // TupleRange specifies a range of tuples for index scanning.
@@ -216,6 +222,14 @@ func (store *FDBRecordStore) ScanIndexByType(
 			}
 		}
 		return rm.ScanByRank(scanRange, continuation, scanProperties)
+	case IndexScanByGroup:
+		pm, ok := maintainer.(*permutedMinMaxIndexMaintainer)
+		if !ok {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type),
+			}
+		}
+		return pm.ScanByGroup(scanRange, continuation, scanProperties)
 	default:
 		return maintainer.Scan(scanRange, continuation, scanProperties)
 	}
