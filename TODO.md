@@ -281,6 +281,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | DeleteRecordsWhere | saveOrderTypePrefixed, saveCustomerTypePrefixed, deleteRecordsWhereType, countRecordsTypePrefixed, loadOrderTypePrefixed, loadCustomerTypePrefixed, scanIndexTypePrefixed | delete_records_where_conformance_test.go | YES |
 | VERSION index | saveOrderWithVersionIndex, deleteOrderWithVersionIndex, scanVersionIndex | version_index_conformance_test.go | YES |
 | OnlineIndexer | saveOrderForOnlineBuild, scanIndexAfterOnlineBuild, isIndexReadableAfterBuild | online_indexer_conformance_test.go | YES |
+| PERMUTED_MAX index | saveOrderWithPermutedMaxIndex, deleteOrderWithPermutedMaxIndex, scanPermutedMaxByValue, scanPermutedMaxByGroup | permuted_min_max_index_conformance_test.go | YES |
+| PERMUTED_MIN index | saveOrderWithPermutedMinIndex, deleteOrderWithPermutedMinIndex, scanPermutedMinByValue, scanPermutedMinByGroup | permuted_min_max_index_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -302,7 +304,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### Wire compat review gaps (identified 2026-03-11)
 
 **P0 — wire format at risk:**
-- [ ] **PERMUTED_MIN/MAX conformance** — CRITICAL. Dual subspace with column reordering in secondary index never validated against Java. Need Java steps (`saveOrderWithPermutedMinIndex`, `scanPermutedIndex` BY_VALUE + BY_GROUP, `deleteOrderWithPermutedIndex`) and Go↔Java cross-validation specs. Deletion extremum re-fetch path especially risky.
+- [x] **PERMUTED_MIN/MAX conformance** — CRITICAL. 10 specs: Go writes/both scan BY_VALUE+BY_GROUP, Java writes/both scan, mixed writes, Go deletes max written by Java (re-fetch), Java deletes max written by Go (re-fetch), non-extremum delete unchanged, PERMUTED_MIN Go writes/both scan, Java writes/both scan, delete min re-fetch, non-extremum insert unchanged. Dual subspace wire format cross-validated.
 
 **P1 — strengthens confidence:**
 - [ ] **Index scan continuation cross-language resume** — HIGH. VALUE index paged scan (Go scans page 1 → Java resumes page 2, and vice versa). Currently only record-level scan continuations are cross-validated, not index scan continuations.
