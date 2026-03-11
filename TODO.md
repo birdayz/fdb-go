@@ -299,6 +299,20 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **MAX_EVER_VERSION index conformance** — HIGH. 7 specs: Go writes/both scan, Java writes/both scan, mixed writes, _EVER delete semantics, later write updates max, cross-language delete persistence, wire format versionstamp bytes match. SET_VERSIONSTAMPED_VALUE dual mutation path cross-validated.
 - [ ] ~~**FunctionKeyExpression conformance**~~ — N/A. `get_versionstamp_incarnation` is Go-specific (not a Java built-in). Function registry is local to each implementation.
 
+### Wire compat review gaps (identified 2026-03-11)
+
+**P0 — wire format at risk:**
+- [ ] **PERMUTED_MIN/MAX conformance** — CRITICAL. Dual subspace with column reordering in secondary index never validated against Java. Need Java steps (`saveOrderWithPermutedMinIndex`, `scanPermutedIndex` BY_VALUE + BY_GROUP, `deleteOrderWithPermutedIndex`) and Go↔Java cross-validation specs. Deletion extremum re-fetch path especially risky.
+
+**P1 — strengthens confidence:**
+- [ ] **Index scan continuation cross-language resume** — HIGH. VALUE index paged scan (Go scans page 1 → Java resumes page 2, and vice versa). Currently only record-level scan continuations are cross-validated, not index scan continuations.
+- [ ] **RecordMetaData proto serialization cross-language roundtrip** — HIGH. Go `ToProto()` → bytes → Java deserialize → validate all fields match. Currently only Go→Go roundtrip tested (11 unit tests). KeyExpression proto roundtrip also not cross-validated.
+
+**P2 — edge cases:**
+- [ ] **Proto field type diversity in test schema** — MEDIUM. Current schema only covers int64, int32, string, enum, nested message, repeated string. Missing: float, double, bool, bytes, repeated message, map, oneof. Would need richer test proto.
+- [ ] **Store lock + delete operation interaction** — MEDIUM. FORBID_RECORD_UPDATE tested with save but not with deleteRecord, deleteAllRecords, deleteWhere. Cross-language validation needed.
+- [ ] **Index build state wire format (subspace 9)** — MEDIUM. No cross-language validation of IndexBuildSpaceKey contents. If Go and Java write different build state formats, mid-build language switch could corrupt state.
+
 ---
 
 ## Bugs (found in conformance audit)
