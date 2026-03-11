@@ -31,6 +31,8 @@ class CoveringIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         // Covering index: key = [price], value = [flower.type]
         metaDataBuilder.addIndex("Order", new Index("covering_price",
             new KeyWithValueExpression(

@@ -54,6 +54,7 @@ class ConformanceServer {
         new MaxEverVersionIndexSteps(),
         new PermutedMinMaxIndexSteps(),
         new IndexContinuationSteps(),
+        new TypedRecordSteps(),
     };
 
     private static class StepEntry {

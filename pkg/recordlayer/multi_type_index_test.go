@@ -26,6 +26,7 @@ var _ = Describe("Multi-type indexes", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			// Price is only on Order, but we test multi-type registration
 			builder.AddMultiTypeIndex([]string{"Order"}, priceIndex)
 			md, err := builder.Build()
@@ -45,6 +46,7 @@ var _ = Describe("Multi-type indexes", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddMultiTypeIndex(nil, priceIndex)
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
@@ -60,6 +62,7 @@ var _ = Describe("Multi-type indexes", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddMultiTypeIndex([]string{"Order"}, priceIndex)
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
@@ -81,6 +84,7 @@ var _ = Describe("Multi-type indexes", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			// Register as multi-type for Order and Customer
 			// Only Order saves will actually produce entries (Customer has no price field)
 			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, priceIndex)

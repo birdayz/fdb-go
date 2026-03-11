@@ -17,6 +17,8 @@ class CountSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         builder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         builder.setRecordCountKey(Key.Expressions.empty());
         return builder.build();
     }

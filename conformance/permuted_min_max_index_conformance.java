@@ -34,6 +34,8 @@ class PermutedMinMaxIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("Order$maxOrderByPrice",
             new GroupingKeyExpression(Key.Expressions.concatenateFields("price", "order_id"), 1),
             IndexTypes.PERMUTED_MAX,
@@ -138,6 +140,8 @@ class PermutedMinMaxIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("Order$minOrderByPrice",
             new GroupingKeyExpression(Key.Expressions.concatenateFields("price", "order_id"), 1),
             IndexTypes.PERMUTED_MIN,

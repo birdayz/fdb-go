@@ -120,7 +120,7 @@ class ConformanceBase {
         }
     }
 
-    /** Basic metadata: Order(order_id), Customer(customer_id). */
+    /** Basic metadata: Order(order_id), Customer(customer_id), TypedRecord(id). */
     static RecordMetaData createMetaData() {
         RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
             .setRecords(RecordLayerDemo.getDescriptor());
@@ -128,6 +128,8 @@ class ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         return metaDataBuilder.build();
     }
 
@@ -139,6 +141,8 @@ class ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("Order$price", Key.Expressions.field("price"), IndexTypes.VALUE));
         return metaDataBuilder.build();
     }

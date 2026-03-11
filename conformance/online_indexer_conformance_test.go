@@ -254,6 +254,7 @@ func NewOnlineIndexerConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderNoIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderNoIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	mdNoIdx, err := builderNoIdx.Build()
 	if err != nil {
 		return nil, err
@@ -264,6 +265,7 @@ func NewOnlineIndexerConformanceStore(recordDB *recordlayer.FDBDatabase, keyspac
 	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builderIdx.AddIndex("Order", priceIndex)
 	mdIdx, err := builderIdx.Build()
 	if err != nil {

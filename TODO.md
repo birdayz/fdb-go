@@ -111,6 +111,9 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [ ] **Views** — `PView` in MetaData proto (field 15). Name + SQL definition text. **LOW**.
 - [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). Macro or SQL functions. **LOW**.
 - [ ] **MetaDataEvolutionValidator enhancements** — New validation: proto syntax/edition match, `hasPresence` consistency, `allowUnsplitToSplit` option. **LOW** (our validator already covers critical rules).
+- [ ] **MetaDataEvolutionValidator: missing `allowNoSinceVersion` validation** — Java (lines 378-397) validates that new record types must have `SinceVersion` set, errors if missing unless `allowNoSinceVersion=true`. Also validates `SinceVersion > oldMetaData.Version()`. Go has no `SetAllowNoSinceVersion()` builder option and doesn't validate `SinceVersion` on new record types at all. Risk: Go accepts schema changes Java would reject. **HIGH**.
+- [ ] **MetaDataEvolutionValidator: missing `SinceVersion` immutability check** — Java (line 361) validates `SinceVersion` cannot change on existing record types. Go doesn't check. Risk: allows record type metadata mutation that Java rejects. **MEDIUM**.
+- [ ] **MetaDataEvolutionValidator: missing `primaryKeyComponentPositions` validation** — Java (lines 649-667) validates that index `primaryKeyComponentPositions` cannot change between versions (has→doesn't, doesn't→has, or value differs). Go doesn't check. Risk: silent PK dedup incompatibility in index entries. **MEDIUM**.
 - [ ] **MetaDataValidator enhancements** — New: predicate validation, index replacement circular dependency check, subspaceKey uniqueness with former indexes. **LOW**.
 
 ### 6. New cursor types

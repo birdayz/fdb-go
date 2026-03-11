@@ -30,6 +30,8 @@ class SumIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("sum_price",
             new GroupingKeyExpression(Key.Expressions.field("price"), 1),
             IndexTypes.SUM));

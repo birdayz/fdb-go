@@ -30,6 +30,8 @@ class OnlineIndexerSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         builder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         return builder.build();
     }
 

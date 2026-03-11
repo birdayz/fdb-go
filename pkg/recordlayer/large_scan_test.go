@@ -21,6 +21,7 @@ var _ = Describe("LargeScanSequentialAccess", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 		testSubspace := specSubspace()
@@ -119,6 +120,7 @@ var _ = Describe("BasicContinuation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 		testSubspace := specSubspace()
@@ -268,6 +270,7 @@ var _ = Describe("TimeLimitScan", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		return builder
 	}
 

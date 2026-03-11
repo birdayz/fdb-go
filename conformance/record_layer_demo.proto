@@ -31,8 +31,29 @@ enum Color {
     PINK = 4;
 }
 
+// TypedRecord exercises every proto field type that Java Record Layer supports
+// for cross-language FDB tuple encoding conformance.
+// NOTE: Java rejects unsigned types (uint32, uint64, fixed32, fixed64) at
+// metadata validation time, so they are intentionally excluded.
+message TypedRecord {
+    optional int64 id = 1;
+    optional int32 val_int32 = 2;
+    optional int64 val_int64 = 3;
+    optional sint32 val_sint32 = 4;
+    optional sint64 val_sint64 = 5;
+    optional sfixed32 val_sfixed32 = 6;
+    optional sfixed64 val_sfixed64 = 7;
+    optional float val_float = 8;
+    optional double val_double = 9;
+    optional bool val_bool = 10;
+    optional string val_string = 11;
+    optional bytes val_bytes = 12;
+    optional Color val_enum = 13;
+}
+
 message UnionDescriptor {
     option (com.apple.foundationdb.record.record).usage = UNION;
     optional Order _Order = 1;
     optional Customer _Customer = 2;
+    optional TypedRecord _TypedRecord = 3;
 }

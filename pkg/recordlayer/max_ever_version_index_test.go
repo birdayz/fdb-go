@@ -18,6 +18,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		for _, idx := range indexes {
 			builder.AddIndex("Order", idx)
@@ -662,6 +663,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		// NOT calling SetStoreRecordVersions(true)
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", Ungrouped(VersionKey())))
 		_, err := builder.Build()
@@ -676,6 +678,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		// Using raw VersionKey() without GroupBy/Ungrouped wrapper
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", VersionKey()))
@@ -691,6 +694,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		// GroupAll puts everything in grouping, nothing in grouped.
 		// VersionKey is 1 column; GroupAll → groupedCount=0 → "at least 1 grouped column" error
@@ -704,6 +708,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		// GroupBy(Field("price"), VersionKey())
 		// → wholeKey = Concat(VersionKey, price), groupingCount = 1 (version column size)
@@ -726,6 +731,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		// GroupBy(Field("price"), Field("order_id"))
 		// → grouped = [price], grouping = [order_id], 0 version columns
@@ -740,6 +746,7 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetStoreRecordVersions(true)
 		// GroupBy(Concat(VersionKey(), VersionKey()), Field("price"))
 		// → grouped = [version, version] (count=2), grouping = [price]

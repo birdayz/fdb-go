@@ -13,6 +13,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		if configure != nil {
 			configure(builder)
 		}
@@ -149,6 +150,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			idx := NewIndex("price_idx", Field("price"))
 			idx.AddedVersion = oldIdx.AddedVersion
 			idx.LastModifiedVersion = oldIdx.LastModifiedVersion
@@ -220,6 +222,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			idx := NewIndex("price_idx", Field("price"))
 			idx.LastModifiedVersion = 3 // Older than old metadata version
 			builder.AddIndex("Order", idx)
@@ -237,6 +240,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			oldIdx := NewIndex("price_idx", Field("price"))
 			oldIdx.AddedVersion = 2
 			oldIdx.LastModifiedVersion = 5
@@ -249,6 +253,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			newIdx := NewIndex("price_idx", Field("price"))
 			newIdx.AddedVersion = 2
 			newIdx.LastModifiedVersion = 3 // Less than old's 5
@@ -285,6 +290,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder1.AddIndex("Order", NewIndex("price_idx", Field("price")))
 			builder1.RemoveIndex("price_idx")
 			builder1.SetVersion(3)
@@ -304,6 +310,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder1.AddIndex("Order", NewIndex("price_idx", Field("price")))
 			builder1.RemoveIndex("price_idx")
 			builder1.SetVersion(3)
@@ -314,6 +321,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder2.AddIndex("Order", NewIndex("price_idx", Field("price")))
 			builder2.RemoveIndex("price_idx")
 			builder2.SetVersion(5)

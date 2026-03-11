@@ -20,6 +20,7 @@ var _ = Describe("PrimaryKeyCollision", func() {
 		// Set primary keys WITHOUT record type prefix - can collide!
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -74,6 +75,7 @@ var _ = Describe("PrimaryKeyNoCollision", func() {
 		// Primary key - record type index prevents collisions automatically
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -148,6 +150,7 @@ var _ = Describe("JavaCompatibilityBothModes", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKeyExpr)
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			metaData, buildErr := builder.Build()
 			Expect(buildErr).NotTo(HaveOccurred())
 

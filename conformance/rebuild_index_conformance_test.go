@@ -326,6 +326,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	builderNoIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderNoIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderNoIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	mdNoIdx, err := builderNoIdx.Build()
 	if err != nil {
 		return nil, err
@@ -336,6 +337,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	builderIdx := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderIdx.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdx.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderIdx.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builderIdx.AddIndex("Order", priceIndex)
 	mdIdx, err := builderIdx.Build()
 	if err != nil {
@@ -346,6 +348,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	builderNoIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderNoIdxCounting.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderNoIdxCounting.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderNoIdxCounting.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builderNoIdxCounting.SetRecordCountKey(&recordlayer.EmptyKeyExpression{})
 	mdNoIdxCounting, err := builderNoIdxCounting.Build()
 	if err != nil {
@@ -357,6 +360,7 @@ func NewRebuildIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace
 	builderIdxCounting := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builderIdxCounting.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builderIdxCounting.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builderIdxCounting.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builderIdxCounting.SetRecordCountKey(&recordlayer.EmptyKeyExpression{})
 	builderIdxCounting.AddIndex("Order", priceIndexCounting)
 	mdIdxCounting, err := builderIdxCounting.Build()

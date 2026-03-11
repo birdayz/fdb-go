@@ -43,6 +43,10 @@ class DeleteRecordsWhereSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.concat(
                 Key.Expressions.recordType(),
                 Key.Expressions.field("customer_id")));
+        b.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.concat(
+                Key.Expressions.recordType(),
+                Key.Expressions.field("id")));
         b.addIndex("Order", new Index("Order$price_tp",
             Key.Expressions.field("price"), IndexTypes.VALUE));
         return b.build();

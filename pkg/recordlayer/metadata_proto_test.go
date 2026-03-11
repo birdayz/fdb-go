@@ -173,6 +173,7 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey( Concat(Field("order_id"), Field("order_no")))
 	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 	builder.SetStoreRecordVersions(true)
 	builder.SetSplitLongRecords(true)
 	builder.SetRecordCountKey(EmptyKey())
@@ -206,8 +207,8 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	if mdProto.GetVersion() != 5 {
 		t.Fatalf("version: got %d, want 5", mdProto.GetVersion())
 	}
-	if len(mdProto.RecordTypes) != 2 {
-		t.Fatalf("record types: got %d, want 2", len(mdProto.RecordTypes))
+	if len(mdProto.RecordTypes) != 3 {
+		t.Fatalf("record types: got %d, want 3", len(mdProto.RecordTypes))
 	}
 	if len(mdProto.Indexes) != 1 {
 		t.Fatalf("indexes: got %d, want 1", len(mdProto.Indexes))
@@ -290,6 +291,7 @@ func TestMetaDataToProtoWithFormerIndexes(t *testing.T) {
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey( Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 
 	// Add and then remove an index
 	idx := NewIndex("by_name", Field("order_no"))
@@ -329,6 +331,7 @@ func TestMetaDataToProtoUniversalIndex(t *testing.T) {
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
 	builder.GetRecordType("Order").SetPrimaryKey( Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 
 	idx := NewIndex("global_idx", Field("order_no"))
 	builder.AddUniversalIndex(idx)

@@ -22,6 +22,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -170,6 +171,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -266,6 +268,7 @@ var _ = Describe("InsertRecord", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -362,6 +365,7 @@ var _ = Describe("UpdateRecord", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -484,6 +488,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())

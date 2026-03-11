@@ -18,6 +18,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
 		for _, idx := range indexes {
 			builder.AddIndex("Order", idx)
 		}
@@ -183,6 +184,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
 		builder.SetStoreRecordVersions(true)
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
@@ -248,6 +250,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
 		builder.AddUniversalIndex(NewIndex("univ_price", Field("price")))
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
@@ -272,6 +275,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
 		univIdx := NewIndex("univ_type", RecordTypeKey())
 		builder.AddUniversalIndex(univIdx)
 		md, err := builder.Build()

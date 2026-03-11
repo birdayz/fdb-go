@@ -44,6 +44,7 @@ var _ = Describe("DeleteAllRecords Conformance", func() {
 		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 		builder.AddIndex("Order", priceIdx)
 		md, err = builder.Build()
 		Expect(err).NotTo(HaveOccurred())

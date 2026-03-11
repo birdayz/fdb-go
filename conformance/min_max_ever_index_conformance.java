@@ -32,6 +32,8 @@ class MinMaxEverIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("max_ever_price",
             new GroupingKeyExpression(Key.Expressions.field("price"), 1),
             IndexTypes.MAX_EVER_LONG));
@@ -105,6 +107,8 @@ class MinMaxEverIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("min_ever_price",
             new GroupingKeyExpression(Key.Expressions.field("price"), 1),
             IndexTypes.MIN_EVER_LONG));

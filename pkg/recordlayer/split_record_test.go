@@ -32,6 +32,7 @@ func splitMetadata() *RecordMetaData {
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	md, err := builder.Build()
 	if err != nil {
 		panic(fmt.Sprintf("splitMetadata: %v", err))
@@ -124,6 +125,7 @@ var _ = Describe("SplitRecords", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 		ks := specSubspace()

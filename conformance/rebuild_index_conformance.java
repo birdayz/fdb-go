@@ -29,6 +29,8 @@ class RebuildIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         builder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         builder.setRecordCountKey(Key.Expressions.empty());
         return builder.build();
     }
@@ -41,6 +43,8 @@ class RebuildIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         builder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        builder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         builder.setRecordCountKey(Key.Expressions.empty());
         builder.addIndex("Order", new Index("Order$price", Key.Expressions.field("price"), IndexTypes.VALUE));
         return builder.build();

@@ -19,6 +19,8 @@ class SplitSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.setSplitLongRecords(true);
         return metaDataBuilder.build();
     }

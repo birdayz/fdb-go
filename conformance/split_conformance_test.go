@@ -335,5 +335,6 @@ func createSplitOrderMetaData() (*recordlayer.RecordMetaData, error) {
 		SetSplitLongRecords(true)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	return builder.Build()
 }

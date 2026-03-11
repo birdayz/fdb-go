@@ -316,6 +316,7 @@ func NewSumIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace sub
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", sumIdx)
 	md, err := builder.Build()
 	if err != nil {

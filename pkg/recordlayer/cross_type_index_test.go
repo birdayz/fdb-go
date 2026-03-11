@@ -22,6 +22,7 @@ var _ = Describe("CrossTypeIndexCleanup", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 		priceIdx := NewIndex("order_price_idx", Field("price"))
 		builder.AddIndex("Order", priceIdx)

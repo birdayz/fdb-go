@@ -16,6 +16,7 @@ var _ = Describe("StoreBuilder_Validation", func() {
 	validBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	validBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	validBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	validBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	metaData, _ := validBuilder.Build()
 	ks := subspace.FromBytes(tuple.Tuple{"builder_validation"}.Pack())
 
@@ -68,6 +69,7 @@ var _ = Describe("StoreBuilder_CreateOpenSemantics", func() {
 	semanticsBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	semanticsBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	semanticsBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	semanticsBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	metaData, _ := semanticsBuilder.Build()
 
 	It("OpenNonExistentStore", func() {
@@ -209,6 +211,7 @@ var _ = Describe("StoreLockState", func() {
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	metaData, _ := builder.Build()
 
 	It("SaveBlockedByLock", func() {

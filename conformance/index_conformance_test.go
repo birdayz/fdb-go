@@ -3,6 +3,7 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"math"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -251,6 +252,7 @@ func NewIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspa
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", priceIndex)
 	md, err := builder.Build()
 	if err != nil {
@@ -444,6 +446,14 @@ func sliceEqualNormalized(a, b []any) bool {
 }
 
 func normalizedEqual(a, b any) bool {
+	// Handle nil comparison (e.g., nil bytes from proto2 optional fields)
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+
 	// Handle string comparison (e.g., fan-out index on string fields)
 	aStr, aIsStr := a.(string)
 	bStr, bIsStr := b.(string)
@@ -453,7 +463,83 @@ func normalizedEqual(a, b any) bool {
 	if aIsStr != bIsStr {
 		return false
 	}
-	return toInt64(a) == toInt64(b)
+
+	// Handle boolean comparison
+	aBool, aIsBool := a.(bool)
+	bBool, bIsBool := b.(bool)
+	if aIsBool && bIsBool {
+		return aBool == bBool
+	}
+	if aIsBool || bIsBool {
+		return false
+	}
+
+	// Handle byte slice comparison (Go: []byte, Java via JSON: []any of float64)
+	aBytes, aIsBytes := a.([]byte)
+	if aIsBytes {
+		return bytesEqualJSON(aBytes, b)
+	}
+	bBytes, bIsBytes := b.([]byte)
+	if bIsBytes {
+		return bytesEqualJSON(bBytes, a)
+	}
+
+	// Numeric comparison: normalize to float64 to handle both float32↔float64
+	// and int64↔float64 (JSON always sends numbers as float64).
+	// Using float64 avoids overflow when int64 values lose precision in JSON.
+	af, bf := toFloat64(a), toFloat64(b)
+	if math.IsNaN(af) || math.IsNaN(bf) {
+		return false
+	}
+	// For exact values (integers, simple fractions), exact comparison works.
+	// For floats that went through JSON serialization, small precision artifacts
+	// can appear (e.g. float32→Gson→JSON→float64 vs float32→float64 directly).
+	// Use relative tolerance for safety.
+	if af == bf {
+		return true
+	}
+	diff := math.Abs(af - bf)
+	mag := math.Max(math.Abs(af), math.Abs(bf))
+	if mag == 0 {
+		return diff == 0
+	}
+	return diff/mag < 1e-9
+}
+
+// toFloat64 converts any numeric type to float64 for comparison.
+func toFloat64(v any) float64 {
+	switch n := v.(type) {
+	case int64:
+		return float64(n)
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int32:
+		return float64(n)
+	default:
+		return math.NaN()
+	}
+}
+
+// bytesEqualJSON compares a Go []byte against a JSON-deserialized []any of float64.
+func bytesEqualJSON(goBytes []byte, jsonVal any) bool {
+	jsonArr, ok := jsonVal.([]any)
+	if !ok {
+		return false
+	}
+	if len(goBytes) != len(jsonArr) {
+		return false
+	}
+	for i, b := range goBytes {
+		jf, ok := jsonArr[i].(float64)
+		if !ok || byte(jf) != b {
+			return false
+		}
+	}
+	return true
 }
 
 func tupleToSlice(t tuple.Tuple) []any {

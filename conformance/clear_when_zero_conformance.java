@@ -30,6 +30,8 @@ class ClearWhenZeroSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         Map<String, String> options = new HashMap<>();
         options.put("clearWhenZero", "true");
         metaDataBuilder.addIndex("Order", new Index("count_cwz_price",

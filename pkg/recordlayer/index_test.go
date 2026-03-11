@@ -19,6 +19,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		for _, idx := range indexes {
 			builder.AddIndex("Order", idx)
 		}
@@ -348,6 +349,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.AddIndex("Order", priceIndex)
 		builder.AddIndex("Order", idIndex)
 		metaData, buildErr := builder.Build()
@@ -385,6 +387,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.AddIndex("Customer", nameIndex)
 		metaData, buildErr := builder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -503,6 +506,7 @@ var _ = Describe("SecondaryIndexes", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetRecordCountKey(EmptyKey())
 		builder.AddIndex("Order", priceIndex)
 		metaData, buildErr := builder.Build()
@@ -586,6 +590,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		for _, idx := range indexes {
 			builder.AddIndex("Order", idx)
 		}

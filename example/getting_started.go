@@ -32,6 +32,7 @@ func main() {
 	// Set primary keys for record types - equivalent to Java's setPrimaryKey(Key.Expressions.field("order_id"))
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 
 	// Build the metadata
 	recordMetaData, err := metaDataBuilder.Build()

@@ -21,6 +21,7 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		idx := NewIndex("order_price_unique", Field("price"))
 		idx.SetUnique()
 		builder.AddIndex("Order", idx)
@@ -63,6 +64,7 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		idx := NewIndex("flower_type_unique", Nest("flower", Field("type")))
 		idx.SetUnique()
 		builder.AddIndex("Order", idx)
@@ -319,6 +321,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var err error
 		metaData, err = builder.Build()
 		Expect(err).NotTo(HaveOccurred())
@@ -481,6 +484,7 @@ var _ = Describe("StoreBuilder_ErrorPaths", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -506,6 +510,7 @@ var _ = Describe("MetadataBuild_ErrorPaths", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		// Deliberately don't set primary key for Order
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("primary key"))
@@ -515,6 +520,7 @@ var _ = Describe("MetadataBuild_ErrorPaths", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 		idx := NewIndex("price_idx", Field("price"))
 		builder.AddIndex("Order", idx)
@@ -632,6 +638,7 @@ var _ = Describe("IndexValueSizeError_Integration", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		idx := NewIndex("tags_idx", FanOut("tags"))
 		builder.AddIndex("Order", idx)
 		metaData, err := builder.Build()
@@ -669,6 +676,7 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		metaData, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -691,6 +699,7 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		metaData, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 

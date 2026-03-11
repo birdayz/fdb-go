@@ -23,6 +23,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -99,6 +100,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -173,6 +175,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		recordMetaData, buildErr := metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
 
@@ -221,6 +224,7 @@ var _ = Describe("UnionDescriptor_Validation", func() {
 		metaDataBuilder := NewRecordMetaDataBuilder().SetRecords(fileDesc)
 		metaDataBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		var buildErr error
 		recordMetaData, buildErr = metaDataBuilder.Build()
 		Expect(buildErr).NotTo(HaveOccurred())
@@ -302,6 +306,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(md).NotTo(BeNil())
@@ -313,6 +318,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(FanOut("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
@@ -323,6 +329,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		// Set both types to the same record type key
 		builder.GetRecordType("Order").SetRecordTypeKey(42)
 		builder.GetRecordType("Customer").SetRecordTypeKey(42)
@@ -336,6 +343,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		idx1 := NewIndex("idx_price", Field("price"))
 		idx1.SetSubspaceKey(int64(99))
 		idx2 := NewIndex("idx_order_id", Field("order_id"))
@@ -352,6 +360,7 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		// Add then remove an index to create a FormerIndex
 		idx := NewIndex("temp_idx", Field("price"))
 		builder.AddIndex("Order", idx)

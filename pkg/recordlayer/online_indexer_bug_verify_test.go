@@ -29,6 +29,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			mdNoIndex, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -51,6 +52,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder2.AddIndex("Order", countIdx)
 			mdWithIndex, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
@@ -108,6 +110,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			mdNoIndex, err := builder1.Build()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -133,6 +136,7 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder2.AddIndex("Order", priceIndex)
 			mdWithIndex, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())

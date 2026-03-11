@@ -20,6 +20,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.SetVersion(1)
 
 			priceIndex := NewIndex("Order$price", Field("price"))
@@ -37,6 +38,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.SetVersion(5)
 
 			idx := NewIndex("Order$price", Field("price"))
@@ -62,6 +64,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder1.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder1.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder1.AddIndex("Order", priceIndex)
 			builder1.SetVersion(1)
 			md1, err := builder1.Build()
@@ -98,6 +101,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			idx2 := NewIndex("Order$price", Field("price"))
 			idx2.SetSubspaceKey(priceIndex.SubspaceTupleKey())
 			builder2.AddIndex("Order", idx2)
@@ -240,6 +244,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.SetRecordCountKey(EmptyKey())
 			builder.SetVersion(1)
 			md, err := builder.Build()
@@ -276,6 +281,7 @@ func buildMetaDataForBugTest(version int, configure func(b *RecordMetaDataBuilde
 	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	if configure != nil {
 		configure(builder)
 	}

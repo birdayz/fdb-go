@@ -55,6 +55,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	metaDataBuilder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fileDesc)
 	metaDataBuilder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	metaDataBuilder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	metaDataBuilder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	recordMetaData, err := metaDataBuilder.Build()
 	if err != nil {
 		t.Fatalf("Failed to build metadata: %v", err)

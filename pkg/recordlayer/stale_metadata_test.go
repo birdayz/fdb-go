@@ -16,6 +16,7 @@ var _ = Describe("StaleMetaDataVersion", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		builder.SetVersion(version)
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())

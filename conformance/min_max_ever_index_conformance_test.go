@@ -470,6 +470,7 @@ func NewMaxEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keys
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", maxIdx)
 	md, err := builder.Build()
 	if err != nil {
@@ -611,6 +612,7 @@ func NewMinEverLongIndexConformanceStore(recordDB *recordlayer.FDBDatabase, keys
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", minIdx)
 	md, err := builder.Build()
 	if err != nil {

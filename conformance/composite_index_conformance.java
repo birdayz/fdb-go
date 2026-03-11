@@ -29,6 +29,8 @@ class CompositeIndexSteps extends ConformanceBase {
             .setPrimaryKey(Key.Expressions.field("order_id"));
         metaDataBuilder.getRecordType("Customer")
             .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
         metaDataBuilder.addIndex("Order", new Index("Order$price_id",
             Key.Expressions.concatenateFields("price", "order_id"), IndexTypes.VALUE));
         return metaDataBuilder.build();

@@ -51,6 +51,8 @@ var _ = Describe("DeleteRecordsWhere Conformance", func() {
 			recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
 		builder.GetRecordType("Customer").SetPrimaryKey(
 			recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(
+			recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))
 		builder.AddIndex("Order", priceIdx)
 		md, err = builder.Build()
 		Expect(err).NotTo(HaveOccurred())
