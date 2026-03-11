@@ -99,6 +99,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Covering index (KeyWithValue) | saveOrderWithCoveringIndex, scanCoveringIndex, deleteOrderWithCoveringIndex | covering_index_conformance_test.go | YES |
 | DeleteRecordsWhere | saveOrderTypePrefixed, saveCustomerTypePrefixed, deleteRecordsWhereType, countRecordsTypePrefixed, loadOrderTypePrefixed, loadCustomerTypePrefixed, scanIndexTypePrefixed | delete_records_where_conformance_test.go | YES |
 | VERSION index | saveOrderWithVersionIndex, deleteOrderWithVersionIndex, scanVersionIndex | version_index_conformance_test.go | YES |
+| OnlineIndexer | saveOrderForOnlineBuild, scanIndexAfterOnlineBuild, isIndexReadableAfterBuild | online_indexer_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -112,6 +113,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **MAX_EVER_LONG index conformance** — HIGH. 6 specs: Go writes→both scan, Java writes→both scan, mixed writes, delete irreversibility (Go deletes Java record, Java deletes Go record), update never decreases. Cross-validated.
 - [x] **MIN_EVER_LONG index conformance** — HIGH. 6 specs: Go writes→both scan, Java writes→both scan, mixed writes, delete irreversibility (Go deletes Java record, Java deletes Go record), update never increases. Cross-validated.
 - [x] **Covering index (KeyWithValueExpression) conformance** — HIGH. 5 specs: Go writes→both scan, Java writes→both scan, cross-language delete, update changes value consistently, mixed writes. Value portion (flower.type) cross-validated. 14 unit tests cover edge cases (splitPoint=0, splitPoint=len(inner), FanOut+covering, continuation).
+- [x] **OnlineIndexer conformance** — HIGH. 7 specs: Go saves→Go builds→Java scans, Java saves→Go builds→both scan, chunked build (limit=3), Go online-build vs Java rebuild identical, index state READABLE cross-validated (Java+Go), mixed writes then Go build. Note: Java's OnlineIndexer doesn't support FDB tenants in Maven 4.2.6.0, so Java-builds-index tests skipped.
 
 ---
 
