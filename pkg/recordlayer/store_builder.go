@@ -246,7 +246,7 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 			break
 		}
 		rec := result.GetValue()
-		subkeys, err := countKey.Evaluate(rec.Record)
+		subkeys, err := countKey.Evaluate(rec, rec.Record)
 		if err != nil || len(subkeys) != 1 {
 			continue
 		}

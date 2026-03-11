@@ -260,7 +260,7 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 	t.Run("constant_value", func(t *testing.T) {
 		t.Parallel()
 		expr := Literal(int64(99))
-		result, err := expr.Evaluate(nil)
+		result, err := expr.Evaluate(nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -275,7 +275,7 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 	t.Run("nil_value", func(t *testing.T) {
 		t.Parallel()
 		expr := Literal(nil)
-		result, err := expr.Evaluate(nil)
+		result, err := expr.Evaluate(nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -288,7 +288,7 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 		t.Parallel()
 		// Literal should return the same value regardless of what message is passed
 		expr := Literal("fixed")
-		result, err := expr.Evaluate(nil)
+		result, err := expr.Evaluate(nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

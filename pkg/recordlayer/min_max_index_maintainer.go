@@ -106,7 +106,7 @@ func (m *MinMaxEverIndexMaintainer) evaluateEntries(record *FDBStoredRecord[prot
 		return nil, nil
 	}
 
-	tuples, err := m.index.RootExpression.Evaluate(record.Record)
+	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}

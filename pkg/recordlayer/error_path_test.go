@@ -162,7 +162,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 	It("FieldNotFound", func() {
 		order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 		expr := Field("nonexistent_field")
-		_, err := expr.Evaluate(order)
+		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("field nonexistent_field not found"))
 	})
@@ -174,14 +174,14 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 		}
 		// Field("tags") with default FanTypeNone on a repeated field → error
 		expr := Field("tags")
-		_, err := expr.Evaluate(order)
+		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("is repeated with FanType.None"))
 	})
 
 	It("NilMessageReturnsNullKeyComponent", func() {
 		expr := Field("order_id")
-		result, err := expr.Evaluate(nil)
+		result, err := expr.Evaluate(nil, nil)
 		Expect(err).NotTo(HaveOccurred())
 		// Matches Java's Key.Evaluated.NULL — returns [[nil]]
 		Expect(result).To(HaveLen(1))
@@ -193,7 +193,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 		// Order without flower field set → NestingKeyExpression should return nil key component
 		order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
 		expr := Nest("flower", Field("type"))
-		result, err := expr.Evaluate(order)
+		result, err := expr.Evaluate(nil, order)
 		Expect(err).NotTo(HaveOccurred())
 		// Should produce [[nil]] — null key component
 		Expect(result).To(HaveLen(1))
@@ -204,7 +204,7 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 	It("NestingFieldNotFoundInParent", func() {
 		order := &gen.Order{OrderId: proto.Int64(1)}
 		expr := Nest("nonexistent_parent", Field("type"))
-		_, err := expr.Evaluate(order)
+		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("not found"))
 	})

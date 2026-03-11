@@ -276,7 +276,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 	// Extract primary key values using the key expression.
 	// Primary keys must evaluate to exactly one tuple.
-	keyTuples, err := recordType.PrimaryKey.Evaluate(record)
+	keyTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}

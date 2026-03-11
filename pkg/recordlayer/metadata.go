@@ -100,8 +100,13 @@ type KeyExpression interface {
 	// Returns a list of key tuples (each tuple is a []any).
 	// Single-valued expressions return one tuple; fan-out expressions
 	// (e.g. repeated fields) return multiple tuples.
-	// Matches Java's KeyExpression.evaluateMessage() -> List<Key.Evaluated>.
-	Evaluate(msg proto.Message) ([][]any, error)
+	//
+	// record is the top-level stored record context (provides version, PK, etc.).
+	// msg is the current message being evaluated (changes during nesting into sub-messages).
+	// Either or both may be nil.
+	//
+	// Matches Java's KeyExpression.evaluateMessage(FDBRecord, Message) -> List<Key.Evaluated>.
+	Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error)
 
 	// FieldNames returns the field names this expression accesses
 	FieldNames() []string

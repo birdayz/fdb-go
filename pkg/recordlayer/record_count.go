@@ -63,7 +63,7 @@ func (store *FDBRecordStore) addRecordCount(record proto.Message, increment []by
 
 	// Evaluate the count key expression against the record.
 	// Count keys should produce exactly one tuple.
-	subkeys, err := countKey.Evaluate(record)
+	subkeys, err := countKey.Evaluate(nil, record)
 	if err != nil {
 		return fmt.Errorf("record count key evaluation failed: %w", err)
 	}

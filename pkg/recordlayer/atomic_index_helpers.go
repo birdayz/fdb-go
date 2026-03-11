@@ -29,7 +29,7 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 		return nil, nil
 	}
 
-	tuples, err := index.RootExpression.Evaluate(record.Record)
+	tuples, err := index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}

@@ -262,7 +262,25 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, VERSION, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
+- [ ] **Index types beyond implemented** — Java has more types: TIME_WINDOW_LEADERBOARD, TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR.
+
+- [ ] **VERSION index type** — HIGH. Two phases:
+
+  **Phase 1: Widen `KeyExpression.Evaluate()` signature** (prerequisite)
+  - [x] Change `Evaluate(proto.Message)` → `Evaluate(*FDBStoredRecord[proto.Message], proto.Message)` across all expression types
+  - Decision: Option 1 (match Java's `evaluateMessage(FDBRecord, Message)` exactly — two params). `record` = top-level context (version etc), `msg` = current message (changes during nesting).
+  - [x] Update all call sites: index maintainers pass `(record, record.Record)`, message-only callers pass `(nil, msg)`
+  - [x] NestingKeyExpression preserves `record` context while changing `msg` to sub-message (matching Java)
+  - [x] All 8 expression types updated: `FieldKeyExpression`, `RecordTypeKeyExpression`, `EmptyKeyExpression`, `CompositeKeyExpression`, `NestingKeyExpression`, `GroupingKeyExpression`, `LiteralKeyExpression`, `KeyWithValueExpression`
+  - [x] All 957 existing tests pass unchanged
+
+  **Phase 2: VersionKeyExpression + VERSION index maintainer**
+  - [ ] `VersionKeyExpression` type: `Evaluate()` reads `record.Version` → returns `FDBRecordVersion` as key component
+  - [ ] `VersionIndexMaintainer`: manages VERSION index entries (version as key component)
+  - [ ] `SaveRecord` update path: load version for old record when VERSION index exists
+  - [ ] Wire format: version stored as Versionstamp in tuple-encoded key (matches Java)
+  - [ ] Proto serialization: `Version` message in `KeyExpression` proto
+  - [ ] Tests + conformance
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 
@@ -596,6 +614,18 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 | Index maintainers | `agent-a60827f1` | 3 | 1 | 2 | $500 |
 | OnlineIndexer | `agent-a3134e5b` | 2 | 0 | 2 | $400 |
 | **Total** | | **27** | **11** | **16** | **$4,100** |
+
+---
+
+## Remaining work buckets (2026-03-11 assessment)
+
+**A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.
+
+**B. Niche index types** — BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Not needed day one.
+
+**C. Polish** — Timer/instrumentation, store state caching, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
+
+**Next high-value target**: VERSION index (Option A). Requires widening `KeyExpression.Evaluate()` to accept record context (version). Architectural challenge but unblocks a real, commonly-used index type.
 
 ---
 

@@ -122,7 +122,7 @@ func (m *RankIndexMaintainer) EvaluateRecordFunction(
 
 	// Evaluate the index key expression against the record to get the score.
 	// Matches Java's IndexFunctionHelper.recordFunctionIndexEntry() → evaluateSingleton().
-	tuples, err := m.index.RootExpression.Evaluate(record.Record)
+	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}

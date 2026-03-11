@@ -156,7 +156,7 @@ func (m *SumIndexMaintainer) evaluateSumEntries(record *FDBStoredRecord[proto.Me
 		return nil, nil
 	}
 
-	tuples, err := m.index.RootExpression.Evaluate(record.Record)
+	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}

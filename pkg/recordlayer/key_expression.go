@@ -42,7 +42,7 @@ func FanOut(name string) KeyExpression {
 // For non-repeated fields, returns one tuple with the single value.
 // For repeated fields with FanOut, returns one tuple per value.
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
-func (f *FieldKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
 		// Nil message → result depends on FanType, matching Java's getNullResult().
 		return f.getNullResult(), nil
@@ -190,7 +190,7 @@ func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
 // Evaluate returns the record type key (integer), optionally followed by nested values.
 // Matches Java's RecordTypeKeyExpression.evaluateMessage() which returns
 // record.getRecordType().getRecordTypeKey() — the union descriptor field number.
-func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
 		// Nil message → null type key. Matches Java's null check:
 		// record != null ? scalar(record.getRecordType().getRecordTypeKey()) : Key.Evaluated.NULL
@@ -214,7 +214,7 @@ func (r *RecordTypeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 		return [][]any{{typeKey}}, nil
 	}
 
-	nestedTuples, err := r.nested.Evaluate(msg)
+	nestedTuples, err := r.nested.Evaluate(record, msg)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func EmptyKey() KeyExpression {
 }
 
 // Evaluate returns one empty tuple (no key components).
-func (e *EmptyKeyExpression) Evaluate(_ proto.Message) ([][]any, error) {
+func (e *EmptyKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
 	return [][]any{{}}, nil
 }
 
@@ -290,12 +290,12 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 // For the common case where each child returns exactly one tuple, the result
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
-func (c *CompositeKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	// Start with a single empty tuple
 	result := [][]any{{}}
 
 	for _, expr := range c.expressions {
-		childTuples, err := expr.Evaluate(msg)
+		childTuples, err := expr.Evaluate(record, msg)
 		if err != nil {
 			return nil, err
 		}
@@ -353,7 +353,7 @@ func NestFanOut(parentField string, child KeyExpression) KeyExpression {
 
 // Evaluate navigates into the parent message field and evaluates the child
 // expression on the sub-message(s).
-func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
+func (n *NestingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
 		// Nil message → depends on FanType, matching Java's parent.evaluateMessage(null).
 		// FanOut parent on nil → empty (no repeated field to iterate).
@@ -361,7 +361,7 @@ func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 		if n.fanType == FanTypeFanOut {
 			return nil, nil
 		}
-		return n.child.Evaluate(nil)
+		return n.child.Evaluate(record, nil)
 	}
 	m := msg.ProtoReflect()
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(n.parentField))
@@ -373,21 +373,21 @@ func (n *NestingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
 	}
 
 	if fd.IsList() {
-		return n.evaluateRepeated(m, fd)
+		return n.evaluateRepeated(record, m, fd)
 	}
 
 	// Scalar message field — get the sub-message and evaluate child on it.
 	if !m.Has(fd) {
 		// Unset message field → evaluate child on nil (returns null-like results).
 		// Match Java: evaluates child on null message → returns null key components.
-		return n.child.Evaluate(nil)
+		return n.child.Evaluate(record, nil)
 	}
 	subMsg := m.Get(fd).Message().Interface()
-	return n.child.Evaluate(subMsg)
+	return n.child.Evaluate(record, subMsg)
 }
 
 // evaluateRepeated handles repeated message fields.
-func (n *NestingKeyExpression) evaluateRepeated(m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
+func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Message], m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
 	if n.fanType != FanTypeFanOut {
 		return nil, fmt.Errorf("field %s is repeated, must use NestFanOut", n.parentField)
 	}
@@ -401,7 +401,7 @@ func (n *NestingKeyExpression) evaluateRepeated(m protoreflect.Message, fd proto
 	var result [][]any
 	for i := 0; i < count; i++ {
 		subMsg := list.Get(i).Message().Interface()
-		childTuples, err := n.child.Evaluate(subMsg)
+		childTuples, err := n.child.Evaluate(record, subMsg)
 		if err != nil {
 			return nil, err
 		}
@@ -609,8 +609,8 @@ func GroupAll(expr KeyExpression) *GroupingKeyExpression {
 
 // Evaluate delegates to the whole key expression.
 // The grouping/grouped split is metadata, not evaluation logic.
-func (g *GroupingKeyExpression) Evaluate(msg proto.Message) ([][]any, error) {
-	return g.wholeKey.Evaluate(msg)
+func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
+	return g.wholeKey.Evaluate(record, msg)
 }
 
 // FieldNames returns field names from the whole key.
@@ -651,7 +651,7 @@ func Literal(value any) *LiteralKeyExpression {
 
 // Evaluate returns the constant value regardless of the record.
 // Matches Java's LiteralKeyExpression.evaluateMessage() which ignores the record parameter.
-func (l *LiteralKeyExpression) Evaluate(_ proto.Message) ([][]any, error) {
+func (l *LiteralKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
 	return [][]any{{l.value}}, nil
 }
 
@@ -685,8 +685,8 @@ func KeyWithValue(inner KeyExpression, splitPoint int) *KeyWithValueExpression {
 
 // Evaluate delegates to the inner key expression. The key/value split is only
 // applied when writing/reading index entries, not during evaluation.
-func (k *KeyWithValueExpression) Evaluate(msg proto.Message) ([][]any, error) {
-	return k.innerKey.Evaluate(msg)
+func (k *KeyWithValueExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
+	return k.innerKey.Evaluate(record, msg)
 }
 
 // FieldNames delegates to the inner key expression.

@@ -53,7 +53,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 			continue
 		}
 
-		tuples, err := index.RootExpression.Evaluate(record.Record)
+		tuples, err := index.RootExpression.Evaluate(record, record.Record)
 		if err != nil {
 			continue // Skip records that can't be evaluated (e.g., missing field)
 		}

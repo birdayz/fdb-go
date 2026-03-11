@@ -14,7 +14,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		It("unset optional int64 field returns nil", func() {
 			order := &gen.Order{} // order_id is nil (unset)
 			expr := Field("order_id")
-			result, err := expr.Evaluate(order)
+			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
@@ -22,7 +22,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		It("unset optional string field returns nil", func() {
 			customer := &gen.Customer{} // name is nil (unset)
 			expr := Field("name")
-			result, err := expr.Evaluate(customer)
+			result, err := expr.Evaluate(nil, customer)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
@@ -30,7 +30,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		It("set field returns actual value", func() {
 			order := &gen.Order{OrderId: proto.Int64(42)}
 			expr := Field("order_id")
-			result, err := expr.Evaluate(order)
+			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{int64(42)}}))
 		})
@@ -41,21 +41,21 @@ var _ = Describe("KeyExprBugVerify", func() {
 	Describe("Bug2: nil message respects FanType", func() {
 		It("FanType.None on nil returns [[nil]]", func() {
 			expr := Field("order_id")
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
 
 		It("FanType.FanOut on nil returns empty", func() {
 			expr := FanOut("tags")
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
 
 		It("FanType.Concatenate on nil returns [[emptyList]]", func() {
 			expr := &FieldKeyExpression{fieldName: "tags", fanType: FanTypeConcatenate}
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result[0]).To(HaveLen(1))
@@ -69,14 +69,14 @@ var _ = Describe("KeyExprBugVerify", func() {
 	Describe("Bug3: NestingKeyExpression nil message", func() {
 		It("Nest on nil message returns [[nil]]", func() {
 			expr := Nest("flower", Field("type"))
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
 
 		It("NestFanOut on nil message returns empty", func() {
 			expr := NestFanOut("items", Field("name"))
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
@@ -84,7 +84,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		It("nested chain with unset outer message field returns [[nil]]", func() {
 			order := &gen.Order{OrderId: proto.Int64(1)} // flower is nil
 			expr := Nest("flower", Field("type"))
-			result, err := expr.Evaluate(order)
+			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
@@ -94,7 +94,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 	Describe("Bug4: RecordTypeKeyExpression nil message", func() {
 		It("returns [[nil]] on nil message", func() {
 			expr := RecordTypeKey()
-			result, err := expr.Evaluate(nil)
+			result, err := expr.Evaluate(nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal([][]any{{nil}}))
 		})
@@ -102,7 +102,7 @@ var _ = Describe("KeyExprBugVerify", func() {
 		It("works on non-nil message", func() {
 			order := &gen.Order{OrderId: proto.Int64(1)}
 			expr := RecordTypeKey()
-			result, err := expr.Evaluate(order)
+			result, err := expr.Evaluate(nil, order)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(HaveLen(1))
 			Expect(result[0]).To(HaveLen(1))
