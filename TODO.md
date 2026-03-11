@@ -98,6 +98,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | CLEAR_WHEN_ZERO | saveOrderWithCountCWZ, deleteOrderWithCountCWZ, scanCountCWZIndex | clear_when_zero_conformance_test.go | YES |
 | Covering index (KeyWithValue) | saveOrderWithCoveringIndex, scanCoveringIndex, deleteOrderWithCoveringIndex | covering_index_conformance_test.go | YES |
 | DeleteRecordsWhere | saveOrderTypePrefixed, saveCustomerTypePrefixed, deleteRecordsWhereType, countRecordsTypePrefixed, loadOrderTypePrefixed, loadCustomerTypePrefixed, scanIndexTypePrefixed | delete_records_where_conformance_test.go | YES |
+| VERSION index | saveOrderWithVersionIndex, deleteOrderWithVersionIndex, scanVersionIndex | version_index_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -281,7 +282,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `SaveRecord`/`DeleteRecord` update path: load version for old record when VERSION index exists via `hasVersionIndex()` check
   - [x] Wire format: version stored as Versionstamp in tuple-encoded key (matches Java)
   - [x] Proto serialization: `Version` message in `KeyExpression` proto (roundtrip tested)
-  - [ ] Conformance tests (VERSION index Go↔Java cross-validation)
+  - [x] Conformance tests (VERSION index Go↔Java cross-validation) — 7 specs: Go writes/both scan, Java writes/both scan, mixed writes, cross-language delete (2 specs), cross-language update, same-tx local versions. Uses hex-encoded versionstamp bytes for wire comparison.
 
 - [x] **Uniqueness violation tracking** — `ScanUniquenessViolations()` scans `IndexUniquenessViolationsKey` (7) subspace. `ResolveUniquenessViolation()` removes a single entry. Violations written on unique index save failure.
 

@@ -48,6 +48,7 @@ class ConformanceServer {
         new RankIndexSteps(),
         new CoveringIndexSteps(),
         new DeleteRecordsWhereSteps(),
+        new VersionIndexSteps(),
     };
 
     private static class StepEntry {
