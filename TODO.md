@@ -576,12 +576,12 @@ Data loss bugs marked **[DATA LOSS 2x]**. Worktree paths relative to `.claude/wo
 ### OnlineIndexer — verified in `agent-a3134e5b`
 Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
-- [ ] **[DATA LOSS 2x] OnlineIndexer double-counts boundary records** — 9 records, limit=3 → COUNT index = 13 (not 9). Boundary records re-scanned at each chunk. Java uses one-ahead pattern with `limit+1`. File: `online_indexer.go:208,249-260`.
-- [ ] **[DATA LOSS 2x] OnlineIndexer skips records when type filter exhausts limit** — 10 Customers + 5 Orders, Order-only index, limit=5 → 0 entries (not 5). `lastPK == nil` marks everything done. File: `online_indexer.go:225-260`.
+- [x] **[DATA LOSS 2x] OnlineIndexer double-counts boundary records** — Fixed: use Java's `limit+1` look-ahead pattern. Request limit+1 records, index only the first limit, use the (limit+1)th record's PK as the exclusive range boundary. Boundary records never re-scanned. File: `online_indexer.go`.
+- [x] **[DATA LOSS 2x] OnlineIndexer skips records when type filter exhausts limit** — Fixed: track `scannedCount` across ALL records (not just indexed ones). Type-filtered records still advance the scan position via the limit+1 look-ahead. File: `online_indexer.go`.
 
 ### Bug hunt scoreboard
 
-27 bugs found, 25 fixed (2 OnlineIndexer bugs remaining). 16 classified as data loss (2x). 710 unit/integration specs pass, 230 conformance specs pass (940 total).
+27 bugs found, 27 fixed. 16 classified as data loss (2x). 712 unit/integration specs pass, 230 conformance specs pass (942 total).
 
 | Agent | Worktree | Bugs | 1x | 2x | Award |
 |-------|----------|------|----|----|-------|

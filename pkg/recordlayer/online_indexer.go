@@ -163,7 +163,15 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 
 // buildRange processes one chunk of records in a single transaction.
 // Returns (recordsProcessed, hasMore, error).
-// Matches Java's IndexingMultiTargetByRecords.buildRangeOnly().
+//
+// Uses Java's limit+1 look-ahead pattern (IndexingBase.scanPropertiesWithLimits):
+// requests limit+1 records, indexes only the first limit, and uses the (limit+1)th
+// record's PK as the exclusive range boundary. This prevents boundary records from
+// being re-scanned in the next chunk — critical for non-idempotent indexes (COUNT, SUM).
+//
+// Also tracks lastScannedPK across ALL records (not just indexed ones), so type-filtered
+// records still advance the scan position and don't cause the build to incorrectly
+// mark the entire remaining range as complete.
 func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 	var recordsProcessed int64
 	var hasMore bool
@@ -203,9 +211,10 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			}
 		}
 
-		// Scan records in this range.
+		// Scan limit+1 records: process up to limit, use the extra as continuation.
+		// Matches Java's IndexingBase.scanPropertiesWithLimits().
 		scanProps := ForwardScan()
-		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit
+		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit + 1
 
 		lowEp := EndpointTypeRangeInclusive
 		highEp := EndpointTypeRangeExclusive
@@ -219,12 +228,24 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
 
 		// Process each record: evaluate index and write entries.
+		// Track scannedCount across ALL records (including type-filtered ones)
+		// so that filtered-out records still advance the scan position.
 		maintainer := store.getIndexMaintainer(oi.index)
-		var lastPK tuple.Tuple
+		var scannedCount int
+		var extraPK tuple.Tuple // PK of the (limit+1)th record (look-ahead, not indexed)
 
 		for rec, iterErr := range Seq2(cursor, ctx) {
 			if iterErr != nil {
 				return nil, iterErr
+			}
+
+			scannedCount++
+
+			if scannedCount > oi.limit {
+				// This is the extra look-ahead record — don't index it.
+				// Its PK becomes the exclusive range boundary.
+				extraPK = rec.PrimaryKey
+				break
 			}
 
 			if !oi.shouldIndexRecord(rec) {
@@ -236,7 +257,6 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 				return nil, fmt.Errorf("index record pk=%v: %w", rec.PrimaryKey, err)
 			}
 
-			lastPK = rec.PrimaryKey
 			recordsProcessed++
 		}
 
@@ -246,16 +266,16 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			rangeBeginBytes = rangeStart.Pack()
 		}
 
-		if lastPK != nil && recordsProcessed >= int64(oi.limit) {
-			// More records likely remain — mark up to last processed PK.
-			rangeEndBytes = lastPK.Pack()
+		if extraPK != nil {
+			// Got limit+1 records — more remain. Mark up to (exclusive) the
+			// look-ahead record's PK. It will be the start of the next chunk.
+			rangeEndBytes = extraPK.Pack()
 			hasMore = true
 		} else {
-			// Exhausted this range — mark the full range.
+			// Cursor returned < limit+1 records — source exhausted in this range.
 			if rangeEnd != nil {
 				rangeEndBytes = rangeEnd.Pack()
 			}
-			// Check if there are more missing ranges beyond this one.
 			hasMore = !isRangeSetFinalKey(missing.End)
 		}
 
