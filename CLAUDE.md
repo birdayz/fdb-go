@@ -126,6 +126,7 @@ When builds unexpectedly recompile instead of using the cache:
 | `FDBRecordVersion` | `FDBRecordVersion` | 12-byte version (10 global versionstamp + 2 local) |
 | `Index` | `Index` | Index definition (name, type, root expression, subspace key) |
 | `StandardIndexMaintainer` | `StandardIndexMaintainer` | VALUE index maintenance (insert/update/delete/scan entries) |
+| `VersionIndexMaintainer` | `VersionIndexMaintainer` | VERSION index maintenance (SET_VERSIONSTAMPED_KEY for incomplete) |
 | `IndexEntry` | `IndexEntry` | Single entry from index scan (key, value, primary key extraction) |
 | `TupleRange` | `TupleRange` | Range specification for index scans (ALL, AllOf, Between) |
 | `SizeInfo` | `SplitHelper.SizeInfo` | Track key count/size, value size, split/version flags |
@@ -180,6 +181,7 @@ Java source at `fdb-record-layer/` in repo root (gitignored). Key files:
 - `KeyValueCursorBase.java` — continuation token format
 - `FDBRecordVersion.java` — version structure
 - `StandardIndexMaintainer.java` — VALUE index maintenance
+- `VersionIndexMaintainer.java` — VERSION index maintenance
 - `RecordMetaData.java` / `RecordMetaDataBuilder.java` — metadata
 
 ## Design principles
@@ -204,6 +206,6 @@ Each continuation serializes cursor state to bytes for reconstruction across tra
 ## Conformance status (updated 2026-03-10)
 
 See `TODO.md` for full gap analysis. Summary:
-- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/COUNT_NOT_NULL/COUNT_UPDATES indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
-- **Key gaps**: TEXT/VERSION index, more key expression types, store state caching, timer/instrumentation
-- **Test counts**: 722 unit/integration specs, 235 conformance specs (957 total)
+- **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/COUNT_NOT_NULL/COUNT_UPDATES indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
+- **Key gaps**: TEXT index, more key expression types, store state caching, timer/instrumentation
+- **Test counts**: 763 unit/integration specs, 230 conformance specs (993 total)
