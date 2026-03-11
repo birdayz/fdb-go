@@ -51,6 +51,7 @@ class ConformanceServer {
         new DeleteRecordsWhereSteps(),
         new VersionIndexSteps(),
         new OnlineIndexerSteps(),
+        new MaxEverVersionIndexSteps(),
     };
 
     private static class StepEntry {
