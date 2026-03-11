@@ -5,6 +5,38 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1012 specs pass. Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+
+---
+
+## 4.10.6.0 upgrade assessment
+
+Upgraded from 4.2.6.0 → 4.10.6.0 (2026-03-11). All 1012 conformance+unit tests pass unchanged. Below are changes between versions that affect or may affect our Go port.
+
+### Wire format changes (must address)
+
+- [ ] **FULL_STORE lock state** — New `StoreLockState.FULL_STORE = 2` in `DataStoreInfo` proto. Store cannot be opened without explicit lock override. Our `validateRecordUpdateAllowed()` only checks `FORBID_RECORD_UPDATE`. Should reject opens when `FULL_STORE` is set. **HIGH**.
+- [ ] **Store incarnation field** — New `DataStoreInfo.incarnation` (int32, field 11). For cross-cluster data migration: combined with `version()` in indexes to maintain ordering across clusters. Read/write support needed. **MEDIUM**.
+- [ ] **Continuation serialization updates** — 4.5.x updated `KeyValueCursorBaseContinuation` and aggregate cursor continuation formats. Our TO_OLD format still works (confirmed by conformance tests), but we should verify we handle any new continuation fields gracefully. **LOW** (passing tests suggest no issue).
+
+### New features added in Java (not yet ported)
+
+- [ ] **Vector/HNSW indexes** (4.8-4.9) — Entirely new index type for semantic search. `VectorIndexMaintainer`, HNSW backing, cosine/euclidean metrics. Large scope. **LOW** (specialized use case).
+- [ ] **SQL views** (4.7+) — `PView` message added to `MetaData` proto. Named query definitions. **LOW**.
+- [ ] **CAST operator / type coercion** (4.7+) — SQL-layer feature. **LOW**.
+- [ ] **Recursive CTE support** (4.4+) — PREORDER/POSTORDER traversal. Query planner feature. **LOW**.
+- [ ] **Composite aggregates** (4.5+) — Multiple aggregations in single scan. **LOW**.
+- [ ] **KeySpacePath export/import** (4.5-4.7) — Data migration utilities. **LOW**.
+
+### API/behavioral changes (informational, no action needed)
+
+- FormatVersion transitioned from constants to enum (4.3) — internal, no wire impact
+- Index maintainer factory API customization (4.4) — we don't expose factory API
+- OnlineIndexer heartbeat replaced synchronized runner (4.6-4.10) — our Go impl is independent
+- Deprecated synchronized indexing APIs removed (4.10) — doesn't affect Go
+- URI parsing tightened (4.10) — relational layer, not record layer core
+- `PUserDefinedFunction` oneof field renamed (4.10) — same proto field numbers, wire-compatible
+
 ---
 
 ## Completed (for reference)
@@ -25,7 +57,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] Large dataset scanning — 10K sequential + 1K continuation + 1M stress
 - [x] Record versioning — FDBRecordVersion (12-byte), inline storage at pk + -1 suffix
 - [x] Record counting — atomic ADD mutations, per-type via RecordTypeKeyExpression
-- [x] Store state validation — StoreLockState.FORBID_RECORD_UPDATE check
+- [x] Store state validation — StoreLockState.FORBID_RECORD_UPDATE check (note: FULL_STORE lock state added in 4.10.6.0, see upgrade assessment)
 - [x] Split records — saveWithSplit/loadWithSplit/deleteSplit, 100KB chunks, cursor reassembly
 - [x] Secondary indexes (VALUE) — StandardIndexMaintainer, unique enforcement, common-entry skip
 - [x] Covering indexes (KeyWithValueExpression) — value columns stored in FDB value, 14 unit tests + 5 conformance specs
@@ -373,7 +405,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### LOW
 
 - [ ] **Visitor pattern** — Java has `RecordCursorVisitor` interface for cursor inspection/instrumentation.
-- [x] **Continuation SerializationMode** — Go uses TO_OLD (raw bytes) for writing, accepts both TO_OLD and TO_NEW (proto-wrapped) for reading. Matches Java Record Layer 4.2.6.0 which only supports TO_OLD.
+- [x] **Continuation SerializationMode** — Go uses TO_OLD (raw bytes) for writing, accepts both TO_OLD and TO_NEW (proto-wrapped) for reading. Confirmed working with Java Record Layer 4.10.6.0 (all conformance tests pass).
 
 ---
 
