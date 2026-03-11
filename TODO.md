@@ -97,6 +97,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | MIN_EVER_TUPLE index | saveOrderWithMinEverTupleIndex, deleteOrderWithMinEverTupleIndex, scanMinEverTupleIndex | min_max_ever_tuple_index_conformance_test.go | YES |
 | CLEAR_WHEN_ZERO | saveOrderWithCountCWZ, deleteOrderWithCountCWZ, scanCountCWZIndex | clear_when_zero_conformance_test.go | YES |
 | Covering index (KeyWithValue) | saveOrderWithCoveringIndex, scanCoveringIndex, deleteOrderWithCoveringIndex | covering_index_conformance_test.go | YES |
+| DeleteRecordsWhere | saveOrderTypePrefixed, saveCustomerTypePrefixed, deleteRecordsWhereType, countRecordsTypePrefixed, loadOrderTypePrefixed, loadCustomerTypePrefixed, scanIndexTypePrefixed | delete_records_where_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -251,7 +252,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK aggregate functions** — `EvaluateAggregateFunction` integration for RANK indexes: `COUNT_DISTINCT` (ranked set size), `RANK_FOR_SCORE`, `SCORE_FOR_RANK`, `SCORE_FOR_RANK_ELSE_SKIP` (sentinel on OOB), `COUNT` (unique only). Auto-index-selection + `canEvaluateRankAggregate` + `expressionsEqual`. 7 tests. Record function `RANK` not yet integrated.
 
-- [ ] **RANK deleteWhere** — Java's `RankIndexMaintainer.deleteWhere()` clears the secondary subspace for a given prefix. Go has no per-prefix delete for ranked set data; `clearIndexData` handles full index clearing but `deleteRecordsWhere` would leave orphaned ranked set entries. **MEDIUM**.
+- [x] **RANK deleteWhere** — Fixed: `RankIndexMaintainer.DeleteWhere(prefix)` clears both B-tree (primary) and ranked set (secondary) subspaces. Implemented as part of `DeleteRecordsWhere`. **MEDIUM**.
 
 - [ ] **RANK preloadForLookup** — Java prefetches sparse upper skip-list levels into the RYW cache before `getNth`/`rank` calls, reducing FDB round trips. Go does sequential level-by-level reads. No correctness impact, but significant performance gap for deep ranked sets. **LOW**.
 
@@ -360,7 +361,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Store state management** — `GetRecordStoreState()` returns store header + index states. `SetStoreLockState()` persists lock state to header. `ReloadRecordStoreState()` forces reload from FDB.
 
-- [x] **DeleteRecordsWhere** — `DeleteRecordsWhere(prefix)` bulk-deletes all records with a PK prefix via range clears (no scanning). Clears records, versions, record counts, and all index entries. Type-specific indexes cleared entirely; universal indexes require aligned leading expression. `DeleteWhere(prefix)` on `IndexMaintainer` interface. RANK indexes clear both B-tree and ranked set subspaces. 10 tests.
+- [x] **DeleteRecordsWhere** — `DeleteRecordsWhere(prefix)` bulk-deletes all records with a PK prefix via range clears (no scanning). Clears records, versions, record counts, and all index entries. Type-specific indexes cleared entirely; universal indexes require aligned leading expression. `DeleteWhere(prefix)` on `IndexMaintainer` interface. RANK indexes clear both B-tree and ranked set subspaces. 10 unit tests + 5 conformance specs (Go deletes/Java verifies, Java deletes/Go verifies, mixed writes, delete+reinsert, Java-written records).
 
 - [ ] **Query execution methods** — Java has `evaluateStoreFunction()`. Go has `EvaluateAggregateFunction()` and `EvaluateRecordFunction()` (done) but not `evaluateStoreFunction()`.
   - [x] `CountRecords(ctx, low, high, lowEndpoint, highEndpoint, continuation, scanProperties)` — scan-based record count (not atomic counter). Matches Java's `FDBRecordStore.countRecords()`.
@@ -583,7 +584,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 ### Bug hunt scoreboard
 
-27 bugs found, 27 fixed. 16 classified as data loss (2x). 712 unit/integration specs pass, 230 conformance specs pass (942 total).
+27 bugs found, 27 fixed. 16 classified as data loss (2x). 722 unit/integration specs pass, 235 conformance specs pass (957 total).
 
 | Agent | Worktree | Bugs | 1x | 2x | Award |
 |-------|----------|------|----|----|-------|
