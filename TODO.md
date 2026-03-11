@@ -630,7 +630,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 **D. Build tooling**
 - [x] **Add stdlib nogo analyzers** — Added 13 new analyzers (appends, deepequalerrors, defers, directive, errorsas, ifaceassert, nilness, shadow, sigchanyzer, sortslice, stringintconv, timeformat, waitgroup). 20 → 33 total. Zero new findings — codebase was already clean.
-- [ ] **Add staticcheck to nogo** — Direct dep on `github.com/dominikh/go-tools`, wire SA analyzers into nogo. Start with high-value checks: SA4006 (unused assignments), SA1019 (deprecated API), SA4010 (dead code). Bzlmod approach (no wrapper lib).
+- [x] **Add staticcheck to nogo** — All 90 SA analyzers wired into nogo via individual deps on `honnef.co/go/tools` v0.6.1. Uses `_base` config with `only_files` for workspace packages. Disabled: `shadow` (noisy, err shadowing is idiomatic Go), `loopclosure` (Go 1.22+ fixed). Excluded: SA1019 on `metadata_proto.go` (intentional deprecated field use), SA5011 on test files (doesn't understand t.Fatal guards). Fixed: 2 tautological nil comparisons (cursor.go), 6 unused assignments (test files).
 
 ---
 

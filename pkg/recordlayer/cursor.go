@@ -954,9 +954,7 @@ func (c *flatMapCursor[T, V]) Close() error {
 	c.closed = true
 	var firstErr error
 	if c.inner != nil {
-		if err := c.inner.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		firstErr = c.inner.Close()
 	}
 	if c.outer != nil {
 		if err := c.outer.Close(); err != nil && firstErr == nil {
@@ -1086,9 +1084,7 @@ func (c *autoContinuingCursor[T]) Close() error {
 	c.closed = true
 	var firstErr error
 	if c.currentCursor != nil {
-		if err := c.currentCursor.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		firstErr = c.currentCursor.Close()
 		c.currentCursor = nil
 	}
 	if c.currentCtx != nil {

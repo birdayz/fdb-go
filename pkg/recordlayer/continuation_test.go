@@ -78,7 +78,6 @@ var _ = Describe("ContinuationToken", func() {
 				}
 				order := result.GetValue().Record.(*gen.Order)
 				firstBatch = append(firstBatch, order.GetOrderId())
-				continuation = result.GetContinuation()
 			}
 			_ = cursor.Close()
 
@@ -153,7 +152,6 @@ var _ = Describe("ContinuationToken", func() {
 				}
 				order := result.GetValue().Record.(*gen.Order)
 				ids = append(ids, order.GetOrderId())
-				lastCont = result.GetContinuation()
 			}
 
 			var contBytes []byte
@@ -248,7 +246,6 @@ var _ = Describe("ContinuationToken", func() {
 					}
 					order := result.GetValue().Record.(*gen.Order)
 					ids = append(ids, order.GetOrderId())
-					lastCont = result.GetContinuation()
 				}
 
 				var contBytes []byte

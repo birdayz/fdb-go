@@ -155,7 +155,7 @@ var _ = Describe("VersionBugVerify", func() {
 
 			tx.Set(fdb.Key(specSubspace().Pack(tuple.Tuple{"bug4-test"})), []byte("val"))
 
-			_, err = rtx.CommitWithVersionstamp()
+			_, _ = rtx.CommitWithVersionstamp()
 			// May or may not error (read-only versionstamp), but hooks should have run
 			Expect(checkRan).To(BeTrue(), "CommitWithVersionstamp must run pre-commit checks")
 			Expect(postCommitRan).To(BeTrue(), "CommitWithVersionstamp must run post-commit hooks")

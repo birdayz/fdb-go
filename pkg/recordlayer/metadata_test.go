@@ -145,7 +145,7 @@ var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Now try to load this record - should not panic
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, _ = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
@@ -192,7 +192,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// RecordExists should handle invalid type index gracefully (not panic)
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, _ = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(recordMetaData).
