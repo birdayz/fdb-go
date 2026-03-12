@@ -91,7 +91,7 @@ var _ = Describe("RangeSet", func() {
 			rs := newRangeSet()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.Contains(rtx.Transaction(), []byte{})
-				Expect(err).To(MatchError(errRangeSetEmptyKey))
+				Expect(err).To(BeAssignableToTypeOf(&RangeSetEmptyKeyError{}))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -101,7 +101,7 @@ var _ = Describe("RangeSet", func() {
 			rs := newRangeSet()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.Contains(rtx.Transaction(), []byte{0xff})
-				Expect(err).To(MatchError(errRangeSetKeyTooLarge))
+				Expect(err).To(BeAssignableToTypeOf(&RangeSetKeyTooLargeError{}))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -207,7 +207,7 @@ var _ = Describe("RangeSet", func() {
 			rs := newRangeSet()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				_, err := rs.InsertRange(rtx.Transaction(), []byte{0x50}, []byte{0x10}, false)
-				Expect(err).To(MatchError(errRangeSetInvertedRange))
+				Expect(err).To(BeAssignableToTypeOf(&RangeSetInvertedRangeError{}))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

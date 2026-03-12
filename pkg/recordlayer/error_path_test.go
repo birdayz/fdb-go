@@ -262,7 +262,7 @@ var _ = Describe("RangeSet_ValidationErrors", func() {
 			rs := NewRangeSet(specSubspace())
 			_, err := rs.InsertRange(rtx.Transaction(), []byte{0x80}, []byte{0x20}, false)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("begin must be <= end"))
+			Expect(err).To(BeAssignableToTypeOf(&RangeSetInvertedRangeError{}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

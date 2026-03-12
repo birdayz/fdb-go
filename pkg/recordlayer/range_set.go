@@ -2,7 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
-	"errors"
+	"fmt"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -22,11 +22,31 @@ var (
 	RangeSetFirstKey = []byte{0x00}
 	// RangeSetFinalKey is the exclusive upper bound sentinel.
 	RangeSetFinalKey = []byte{0xff}
-
-	errRangeSetEmptyKey      = errors.New("rangeset: key must be non-empty")
-	errRangeSetKeyTooLarge   = errors.New("rangeset: key must be less than \\xff")
-	errRangeSetInvertedRange = errors.New("rangeset: begin must be <= end")
 )
+
+// RangeSetEmptyKeyError is returned when a RangeSet operation receives an empty key.
+type RangeSetEmptyKeyError struct{}
+
+func (e *RangeSetEmptyKeyError) Error() string { return "rangeset: key must be non-empty" }
+
+// RangeSetKeyTooLargeError is returned when a key is >= \xff.
+type RangeSetKeyTooLargeError struct {
+	Key []byte
+}
+
+func (e *RangeSetKeyTooLargeError) Error() string {
+	return fmt.Sprintf("rangeset: key %x must be less than \\xff", e.Key)
+}
+
+// RangeSetInvertedRangeError is returned when begin > end in a range operation.
+type RangeSetInvertedRangeError struct {
+	Begin []byte
+	End   []byte
+}
+
+func (e *RangeSetInvertedRangeError) Error() string {
+	return fmt.Sprintf("rangeset: begin %x must be <= end %x", e.Begin, e.End)
+}
 
 // RangeSetRange represents a gap (missing range) as [Begin, End).
 type RangeSetRange struct {
@@ -47,10 +67,10 @@ func NewRangeSet(ss subspace.Subspace) *RangeSet {
 
 func rangeSetCheckKey(key []byte) error {
 	if len(key) == 0 {
-		return errRangeSetEmptyKey
+		return &RangeSetEmptyKeyError{}
 	}
 	if bytes.Compare(key, RangeSetFinalKey) >= 0 {
-		return errRangeSetKeyTooLarge
+		return &RangeSetKeyTooLargeError{Key: key}
 	}
 	return nil
 }
@@ -112,7 +132,7 @@ func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEm
 		return false, err
 	}
 	if bytes.Compare(beginNonNull, endNonNull) > 0 {
-		return false, errRangeSetInvertedRange
+		return false, &RangeSetInvertedRangeError{Begin: beginNonNull, End: endNonNull}
 	}
 
 	// Empty range: no-op.
@@ -251,7 +271,7 @@ func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit i
 		return nil, err
 	}
 	if bytes.Compare(beginNonNull, endNonNull) > 0 {
-		return nil, errRangeSetInvertedRange
+		return nil, &RangeSetInvertedRangeError{Begin: beginNonNull, End: endNonNull}
 	}
 
 	if bytes.Equal(beginNonNull, endNonNull) {
