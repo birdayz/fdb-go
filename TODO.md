@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1012 specs pass. Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1138 specs pass (832 unit/integration + 306 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -810,7 +810,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 ### Bug hunt scoreboard
 
-27 bugs found, 27 fixed. 16 classified as data loss (2x). 722 unit/integration specs pass, 235 conformance specs pass (957 total).
+27 bugs found, 27 fixed. 16 classified as data loss (2x). 832 unit/integration specs pass, 306 conformance specs pass (1138 total).
 
 | Agent | Worktree | Bugs | 1x | 2x | Award |
 |-------|----------|------|----|----|-------|
