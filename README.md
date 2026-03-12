@@ -126,6 +126,8 @@ against real FDB via testcontainers. **1150 total specs.**
 | Store header (v1 + v2), index state, lifecycle | 25 |
 | DeleteAllRecords / DeleteRecordsWhere | 11 |
 | OnlineIndexer | 7 |
+| RecordMetaData proto serialization | 18 |
+| TypedRecord cross-language encoding | 11 |
 
 ## Building
 

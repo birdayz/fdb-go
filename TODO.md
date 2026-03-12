@@ -313,7 +313,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 **P1 — strengthens confidence:**
 - [x] **Index scan continuation cross-language resume** — HIGH. 3 specs: Go→Java resume, Java→Go resume, alternating Go/Java. VALUE index paged scan with 10 entries, limit=3/2 page sizes. Continuation token wire format cross-validated (Go TO_OLD ↔ Java proto-wrapped).
-- [x] **RecordMetaData proto serialization cross-language roundtrip** — 12 specs (4 configs × 3 directions). Go→Java, Java→Go, Go→Java→Go roundtrip. Fixed: `collectDependencies()` now matches Java's `defaultExcludedDependencies` (excludes Apple protos, includes google protos). Java side uses `ExtensionRegistry` for `(record).usage=UNION` option resolution.
+- [x] **RecordMetaData proto serialization cross-language roundtrip** — 18 specs (6 configs × 3 directions). Configs: basic, with_indexes, with_former_indexes, full, with_universal_index, with_record_count. Go→Java, Java→Go, Go→Java→Go roundtrip. `clearProto2Defaults` normalizes proto2 field presence across Go/Java. Java side uses `ExtensionRegistry` for `(record).usage=UNION` option resolution.
 
 **P2 — edge cases:**
 - [ ] **Proto field type diversity in test schema** — MEDIUM. Current schema only covers int64, int32, string, enum, nested message, repeated string. Missing: float, double, bool, bytes, repeated message, map, oneof. Would need richer test proto.
