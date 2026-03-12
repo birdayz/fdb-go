@@ -18,6 +18,7 @@ message Customer {
     optional int64 customer_id = 1;
     optional string name = 2;
     optional string email = 3;
+    optional int32 price = 4;
 }
 
 message Flower {
@@ -50,6 +51,7 @@ message TypedRecord {
     optional string val_string = 11;
     optional bytes val_bytes = 12;
     optional Color val_enum = 13;
+    optional int32 price = 14;
 }
 
 message UnionDescriptor {

@@ -176,7 +176,7 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 				Name:                 recordTypeName,
 				Descriptor:           recordMsgDesc,
 				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         1,
+				SinceVersion:         0,   // Matches Java's null default
 				RecordTypeIndex:      int(field.Number()),
 				UnionFieldDescriptor: field, // Store the union field for reflection
 			}
@@ -199,7 +199,7 @@ func (b *RecordMetaDataBuilder) setRecordsWithoutUnion(fd protoreflect.FileDescr
 				Name:                 string(msg.Name()),
 				Descriptor:           msg,
 				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         1,
+				SinceVersion:         0,   // Matches Java's null default
 				RecordTypeIndex:      recordTypeIndex,
 				UnionFieldDescriptor: nil, // No union field
 			}

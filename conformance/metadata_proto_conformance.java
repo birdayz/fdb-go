@@ -12,6 +12,7 @@ import com.apple.foundationdb.record.metadata.RecordType;
 import com.apple.foundationdb.record.metadata.expressions.KeyExpression;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.util.JsonFormat;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -84,6 +85,7 @@ class MetaDataProtoSteps extends ConformanceBase {
 
             Map<String, Object> result = new HashMap<>();
             result.put("protoBytes", intArray);
+            result.put("summary", extractMetaDataSummary(metaData));
             return result;
         } catch (InvalidProtocolBufferException e) {
             throw new RuntimeException("Failed to parse metadata proto: " + e.getMessage(), e);
@@ -128,6 +130,12 @@ class MetaDataProtoSteps extends ConformanceBase {
                 builder.setSplitLongRecords(true);
                 builder.setStoreRecordVersions(true);
                 break;
+            case "with_universal_index":
+                builder.addUniversalIndex(new Index("global_price", Key.Expressions.field("price"), IndexTypes.VALUE));
+                break;
+            case "with_record_count":
+                builder.setRecordCountKey(Key.Expressions.empty());
+                break;
             default:
                 throw new RuntimeException("Unknown config: " + config);
         }
@@ -168,6 +176,13 @@ class MetaDataProtoSteps extends ConformanceBase {
             idxMap.put("name", idx.getName());
             idxMap.put("type", idx.getType());
             idxMap.put("subspaceKey", idx.getSubspaceKey().toString());
+            try {
+                idxMap.put("rootExpression", JsonFormat.printer()
+                    .omittingInsignificantWhitespace()
+                    .print(idx.getRootExpression().toKeyExpression()));
+            } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+                idxMap.put("rootExpression", idx.getRootExpression().toString());
+            }
             idxMap.put("addedVersion", idx.getAddedVersion());
             idxMap.put("lastModifiedVersion", idx.getLastModifiedVersion());
             indexes.add(idxMap);
@@ -185,6 +200,16 @@ class MetaDataProtoSteps extends ConformanceBase {
             formerIndexes.add(fiMap);
         }
         summary.put("formerIndexes", formerIndexes);
+
+        if (metaData.getRecordCountKey() != null) {
+            try {
+                summary.put("recordCountKey", JsonFormat.printer()
+                    .omittingInsignificantWhitespace()
+                    .print(metaData.getRecordCountKey().toKeyExpression()));
+            } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+                summary.put("recordCountKey", metaData.getRecordCountKey().toString());
+            }
+        }
 
         return summary;
     }

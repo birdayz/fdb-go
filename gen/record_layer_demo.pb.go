@@ -164,6 +164,7 @@ type Customer struct {
 	CustomerId    *int64                 `protobuf:"varint,1,opt,name=customer_id,json=customerId" json:"customer_id,omitempty"`
 	Name          *string                `protobuf:"bytes,2,opt,name=name" json:"name,omitempty"`
 	Email         *string                `protobuf:"bytes,3,opt,name=email" json:"email,omitempty"`
+	Price         *int32                 `protobuf:"varint,4,opt,name=price" json:"price,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -217,6 +218,13 @@ func (x *Customer) GetEmail() string {
 		return *x.Email
 	}
 	return ""
+}
+
+func (x *Customer) GetPrice() int32 {
+	if x != nil && x.Price != nil {
+		return *x.Price
+	}
+	return 0
 }
 
 type Flower struct {
@@ -290,6 +298,7 @@ type TypedRecord struct {
 	ValString     *string                `protobuf:"bytes,11,opt,name=val_string,json=valString" json:"val_string,omitempty"`
 	ValBytes      []byte                 `protobuf:"bytes,12,opt,name=val_bytes,json=valBytes" json:"val_bytes,omitempty"`
 	ValEnum       *Color                 `protobuf:"varint,13,opt,name=val_enum,json=valEnum,enum=com.apple.foundationdb.record.Color" json:"val_enum,omitempty"`
+	Price         *int32                 `protobuf:"varint,14,opt,name=price" json:"price,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -415,6 +424,13 @@ func (x *TypedRecord) GetValEnum() Color {
 	return Color_RED
 }
 
+func (x *TypedRecord) GetPrice() int32 {
+	if x != nil && x.Price != nil {
+		return *x.Price
+	}
+	return 0
+}
+
 type UnionDescriptor struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	XOrder        *Order                 `protobuf:"bytes,1,opt,name=_Order,json=Order" json:"_Order,omitempty"`
@@ -485,15 +501,16 @@ const file_record_layer_demo_proto_rawDesc = "" +
 	"\x06flower\x18\x02 \x01(\v2%.com.apple.foundationdb.record.FlowerR\x06flower\x12\x14\n" +
 	"\x05price\x18\x03 \x01(\x05R\x05price\x12\x12\n" +
 	"\x04tags\x18\x04 \x03(\tR\x04tags\x12\x1a\n" +
-	"\bquantity\x18\x05 \x01(\x05R\bquantity\"U\n" +
+	"\bquantity\x18\x05 \x01(\x05R\bquantity\"k\n" +
 	"\bCustomer\x12\x1f\n" +
 	"\vcustomer_id\x18\x01 \x01(\x03R\n" +
 	"customerId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
-	"\x05email\x18\x03 \x01(\tR\x05email\"X\n" +
+	"\x05email\x18\x03 \x01(\tR\x05email\x12\x14\n" +
+	"\x05price\x18\x04 \x01(\x05R\x05price\"X\n" +
 	"\x06Flower\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12:\n" +
-	"\x05color\x18\x02 \x01(\x0e2$.com.apple.foundationdb.record.ColorR\x05color\"\xaf\x03\n" +
+	"\x05color\x18\x02 \x01(\x0e2$.com.apple.foundationdb.record.ColorR\x05color\"\xc5\x03\n" +
 	"\vTypedRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1b\n" +
 	"\tval_int32\x18\x02 \x01(\x05R\bvalInt32\x12\x1b\n" +
@@ -512,7 +529,8 @@ const file_record_layer_demo_proto_rawDesc = "" +
 	"\n" +
 	"val_string\x18\v \x01(\tR\tvalString\x12\x1b\n" +
 	"\tval_bytes\x18\f \x01(\fR\bvalBytes\x12?\n" +
-	"\bval_enum\x18\r \x01(\x0e2$.com.apple.foundationdb.record.ColorR\avalEnum\"\xea\x01\n" +
+	"\bval_enum\x18\r \x01(\x0e2$.com.apple.foundationdb.record.ColorR\avalEnum\x12\x14\n" +
+	"\x05price\x18\x0e \x01(\x05R\x05price\"\xea\x01\n" +
 	"\x0fUnionDescriptor\x12;\n" +
 	"\x06_Order\x18\x01 \x01(\v2$.com.apple.foundationdb.record.OrderR\x05Order\x12D\n" +
 	"\t_Customer\x18\x02 \x01(\v2'.com.apple.foundationdb.record.CustomerR\bCustomer\x12M\n" +
