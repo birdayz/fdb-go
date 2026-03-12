@@ -689,6 +689,333 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 	})
 
+	Describe("BY_INDEX strategy", func() {
+		It("builds using BY_INDEX from existing readable source index", func() {
+			ks := specSubspace()
+
+			// Phase 1: Insert records WITH source index already present and READABLE.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			// DON'T add target index yet.
+			mdSrc, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 10; i++ {
+					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
+					_, err = store.SaveRecord(order)
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Add target index to metadata, build BY_INDEX.
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex) // source must still be in metadata
+			builder2.AddIndex("Order", qtyIndex)   // target
+			mdBoth, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdBoth).
+				SetIndex(qtyIndex).
+				SetSourceIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 10))
+
+			// Phase 3: Verify target index entries.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$qty")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(qtyIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(10))
+
+				// Verify sorted by quantity: 1, 2, ..., 10.
+				for i, entry := range entries {
+					expectedQty := int64(i + 1)
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedQty}))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("builds BY_INDEX with chunked transactions via SetLimit", func() {
+			ks := specSubspace()
+
+			// Phase 1: Insert 20 records with source index.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			mdSrc, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 20; i++ {
+					order := &gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))}
+					_, err = store.SaveRecord(order)
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Build target index BY_INDEX with limit=3.
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			builder2.AddIndex("Order", qtyIndex)
+			mdBoth, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdBoth).
+				SetIndex(qtyIndex).
+				SetSourceIndex(priceIndex).
+				SetSubspace(ks).
+				SetLimit(3).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 20))
+
+			// Verify all 20 entries present.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				entries, err := AsList(ctx, store.ScanIndex(qtyIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(20))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("saves BY_INDEX indexing type stamp with source metadata", func() {
+			ks := specSubspace()
+
+			// Insert records with source index.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			mdSrc, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build target BY_INDEX.
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			builder2.AddIndex("Order", qtyIndex)
+			mdBoth, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdBoth).
+				SetIndex(qtyIndex).
+				SetSourceIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Load the stamp and verify fields.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				stamp, err := store.LoadIndexingTypeStamp(qtyIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stamp).NotTo(BeNil())
+				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_INDEX))
+
+				// SourceIndexSubspaceKey should be the tuple-packed subspace key of the source index.
+				expectedSubspaceKey := tuple.Tuple{priceIndex.SubspaceTupleKey()}.Pack()
+				Expect(stamp.GetSourceIndexSubspaceKey()).To(Equal(expectedSubspaceKey))
+
+				// SourceIndexLastModifiedVersion should match the source index's version.
+				Expect(stamp.GetSourceIndexLastModifiedVersion()).To(Equal(int32(priceIndex.LastModifiedVersion)))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects source index that is not VALUE type", func() {
+			ks := specSubspace()
+
+			countIndex := NewCountIndex("Order$count", GroupBy(Field("price")))
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", countIndex)
+			builder.AddIndex("Order", qtyIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(qtyIndex).
+				SetSourceIndex(countIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("must be a VALUE index"))
+		})
+
+		It("rejects source index whose root expression creates duplicates", func() {
+			ks := specSubspace()
+
+			fanOutIndex := NewIndex("Order$tags", FanOut("tags"))
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", fanOutIndex)
+			builder.AddIndex("Order", qtyIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(qtyIndex).
+				SetSourceIndex(fanOutIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("creates duplicates"))
+		})
+
+		It("rejects source and target on different record types", func() {
+			ks := specSubspace()
+
+			// Source on Customer, target on Order.
+			nameIndex := NewIndex("Customer$name", Field("name"))
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Customer", nameIndex)
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSourceIndex(nameIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does not cover source index type"))
+		})
+
+		It("maintains target index after BY_INDEX build when new records are inserted", func() {
+			ks := specSubspace()
+
+			// Phase 1: Insert records with source index.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			mdSrc, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdSrc).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Build target BY_INDEX.
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			builder2.AddIndex("Order", qtyIndex)
+			mdBoth, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdBoth).
+				SetIndex(qtyIndex).
+				SetSourceIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Insert new records and verify target index is maintained.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdBoth).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(6); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100)), Quantity: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// All 10 entries should be in the target index.
+				entries, err := AsList(ctx, store.ScanIndex(qtyIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(10))
+
+				// Verify sorted by quantity: 1..10.
+				for i, entry := range entries {
+					expectedQty := int64(i + 1)
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedQty}))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Builder validation", func() {
 		It("rejects missing database", func() {
 			_, err := NewOnlineIndexerBuilder().

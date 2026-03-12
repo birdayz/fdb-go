@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1221 specs pass (894 unit/integration + 327 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1290 specs pass (949 unit/integration + 341 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -459,11 +459,12 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] `addIndexCommon()` on builder: sets `LastModifiedVersion` and `AddedVersion` matching Java's `RecordMetaDataBuilder.addIndexCommon()`. Bumps builder version on each index add.
    - [x] 7 additional tests: version tracking on AddIndex, pre-set version preserved, GetIndexesToBuildSince, auto-rebuild single index, no rebuild on same version, store header version updated, multi-index auto-rebuild.
 
-6. **OnlineIndexer — BY_INDEX strategy** (MEDIUM — optimization, not essential)
-   - [ ] Build new index from existing readable index instead of scanning all records.
-   - [ ] Uses source index's `ScanIndexRecords` → update target index.
-   - [ ] Range tracking uses source index entry keys instead of primary keys.
-   - [ ] Validation: source must be READABLE VALUE index, no duplicates.
+6. **OnlineIndexer — BY_INDEX strategy** (MEDIUM — optimization, not essential) ✅
+   - [x] Build new index from existing readable index instead of scanning all records. `SetSourceIndex(index)` on builder.
+   - [x] Uses source index's `ScanIndexRecords` → update target index.
+   - [x] Range tracking uses source index entry keys instead of primary keys.
+   - [x] Validation: source must be READABLE VALUE index, no duplicates, single record type.
+   - [x] BY_INDEX stamp with `SourceIndexSubspaceKey` + `SourceIndexLastModifiedVersion`. 7 tests.
 
 7. **Multi-target index building** (LOW — optimization for bulk schema changes)
    - [ ] Build multiple WRITE_ONLY indexes in a single record scan pass.
@@ -861,7 +862,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 ### Bug hunt scoreboard
 
-27 bugs found, 27 fixed. 16 classified as data loss (2x). Current: 942 unit/integration specs, 341 conformance specs (1283 total).
+27 bugs found, 27 fixed. 16 classified as data loss (2x). Current: 949 unit/integration specs, 341 conformance specs (1290 total).
 
 | Agent | Worktree | Bugs | 1x | 2x | Award |
 |-------|----------|------|----|----|-------|
