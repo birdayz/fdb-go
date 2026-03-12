@@ -4,6 +4,17 @@ Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/f
 Wire-compatible with Java Record Layer 4.10.6.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.
 
+## Target versions
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| **FoundationDB** | **7.3.69** | Client library + headers. Go bindings pinned to `release-7.3` branch. |
+| **Java Record Layer** | **4.10.6.0** | Wire compatibility target. Conformance tests run against this version. |
+| **Go** | **1.26.1** | Minimum Go version. |
+| **Bazel** | **9.0.1** | Build system. Pinned in `.bazelversion`. |
+
+FDB 8.0 is not yet released. When it ships, the Go bindings and client library should be upgraded together.
+
 ## Why
 
 The Record Layer gives you structured records, secondary indexes, and transactional
@@ -92,8 +103,8 @@ structure are all verified against Java.
 
 ### Test coverage
 
-283 conformance specs (Go↔Java cross-validation) and 832 unit/integration specs
-against real FDB via testcontainers. **1115 total specs.**
+312 conformance specs (Go↔Java cross-validation) and 838 unit/integration specs
+against real FDB via testcontainers. **1150 total specs.**
 
 | Area | Conformance specs |
 |------|------------------:|
@@ -118,7 +129,7 @@ against real FDB via testcontainers. **1115 total specs.**
 
 ## Building
 
-Requires Bazel 8+ (via bazelisk) and Docker (for testcontainers).
+Requires Bazel 9+ (via bazelisk) and Docker (for testcontainers).
 
 ```sh
 just build      # compile + nogo lint (20 analyzers)
