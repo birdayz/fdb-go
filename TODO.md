@@ -450,7 +450,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Record type filtering: `shouldIndexRecord()` checks if record type has this index defined.
    - [x] 8 integration tests: basic build, composite index with PK dedup, empty store, post-build maintenance, small limit chunking, unique index, record type filtering, builder validation.
    - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned. Not yet implemented (optimization, not wire-format critical).
-   - [ ] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. Not yet implemented.
+   - [x] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. `SaveIndexingTypeStamp`/`LoadIndexingTypeStamp` + BY_RECORDS/BY_INDEX methods.
 
 5. **rebuildIndex on store** (HIGH — needed for store.Open with new indexes) ✅
    - [x] `FDBRecordStore.RebuildIndex(index)` — clears index data, marks WRITE_ONLY, pre-marks full range in RangeSet, scans all records inline, re-indexes, marks READABLE. Single-transaction path matching Java's `IndexingBase.rebuildIndexAsync()`.
