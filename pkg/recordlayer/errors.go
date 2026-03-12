@@ -117,10 +117,14 @@ func (e *RecordSerializationError) Unwrap() error {
 // RecordDeserializationError is returned when a record fails to deserialize (unmarshal) from protobuf.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.RecordDeserializationException.
 type RecordDeserializationError struct {
-	Cause error
+	PrimaryKey any // tuple.Tuple, but using any to avoid import cycle
+	Cause      error
 }
 
 func (e *RecordDeserializationError) Error() string {
+	if e.PrimaryKey != nil {
+		return fmt.Sprintf("failed to deserialize record %v: %v", e.PrimaryKey, e.Cause)
+	}
 	return fmt.Sprintf("failed to deserialize record: %v", e.Cause)
 }
 

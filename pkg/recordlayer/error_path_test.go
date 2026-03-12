@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -719,6 +720,159 @@ var _ = Describe("DeleteRecord_ErrorPaths", func() {
 			deleted, err := store.DeleteRecord(tuple.Tuple{int64(999)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(deleted).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+// Phase2ErrorTypes tests error types introduced in Phase 2 via errors.As().
+var _ = Describe("Phase 2 error types", func() {
+	var metaData *RecordMetaData
+
+	BeforeEach(func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		var err error
+		metaData, err = builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UnsupportedFormatVersionError on future format version", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			// Create a valid store first so the subspace has a proper header.
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Create()
+			Expect(err).NotTo(HaveOccurred())
+			_ = store
+
+			// Now overwrite the store header with format version 999.
+			futureVersion := int32(999)
+			header := &gen.DataStoreInfo{
+				FormatVersion: &futureVersion,
+			}
+			headerBytes, err := proto.Marshal(header)
+			Expect(err).NotTo(HaveOccurred())
+			storeInfoKey := ss.Pack(tuple.Tuple{StoreInfoKey})
+			rtx.Transaction().Set(storeInfoKey, headerBytes)
+
+			// Try to Open the same store — should fail with UnsupportedFormatVersionError.
+			_, err = NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
+			Expect(err).To(HaveOccurred())
+
+			var fmtErr *UnsupportedFormatVersionError
+			Expect(errors.As(err, &fmtErr)).To(BeTrue())
+			Expect(fmtErr.Version).To(Equal(int32(999)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(FormatVersionCurrent)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RecordDeserializationError on corrupt record data", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Write garbage bytes directly at the record key for PK=42.
+			// Key format: [subspace][RecordKey][pk...][UnsplitRecord=0]
+			pk := tuple.Tuple{int64(42)}
+			recordKey := ss.Sub(RecordKey).Pack(append(pk, UnsplitRecord))
+			rtx.Transaction().Set(recordKey, []byte{0xDE, 0xAD, 0xBE, 0xEF})
+
+			// LoadRecord should fail with RecordDeserializationError.
+			_, err = store.LoadRecord(pk)
+			Expect(err).To(HaveOccurred())
+
+			var deserErr *RecordDeserializationError
+			Expect(errors.As(err, &deserErr)).To(BeTrue())
+			Expect(deserErr.PrimaryKey).To(Equal(pk))
+			Expect(deserErr.Cause).NotTo(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RecordSerializationError type and Unwrap", func() {
+		cause := fmt.Errorf("test cause")
+		err := &RecordSerializationError{Cause: cause}
+
+		var serErr *RecordSerializationError
+		Expect(errors.As(err, &serErr)).To(BeTrue())
+		Expect(serErr.Cause).To(Equal(cause))
+
+		// Unwrap should return the cause, enabling errors.Is on wrapped error.
+		Expect(errors.Is(err, cause)).To(BeTrue())
+		Expect(err.Error()).To(ContainSubstring("test cause"))
+	})
+
+	It("MetaDataError on missing primary key", func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		// Deliberately set only two of three record types — Order has no primary key.
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+
+		_, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+
+		var metaErr *MetaDataError
+		Expect(errors.As(err, &metaErr)).To(BeTrue())
+		Expect(metaErr.Message).To(ContainSubstring("has no primary key"))
+	})
+
+	It("RecordStoreNoInfoButNotEmptyError on headerless store", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			// Write some data into the store's subspace at the RecordKey position,
+			// but do NOT write a store header at StoreInfoKey. The first key found
+			// will not be at StoreInfoKey, triggering the error.
+			garbageKey := ss.Pack(tuple.Tuple{RecordKey, int64(1), UnsplitRecord})
+			rtx.Transaction().Set(garbageKey, []byte{0x01, 0x02, 0x03})
+
+			// Try to Open — should fail because there's data but no header.
+			_, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
+			Expect(err).To(HaveOccurred())
+
+			var noInfoErr *RecordStoreNoInfoButNotEmptyError
+			Expect(errors.As(err, &noInfoErr)).To(BeTrue())
+			Expect(noInfoErr.FirstKey).NotTo(BeEmpty())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("IndexNotFoundError on non-existent index", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.MarkIndexReadable("nonexistent_index")
+			Expect(err).To(HaveOccurred())
+
+			var notFoundErr *IndexNotFoundError
+			Expect(errors.As(err, &notFoundErr)).To(BeTrue())
+			Expect(notFoundErr.IndexName).To(Equal("nonexistent_index"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

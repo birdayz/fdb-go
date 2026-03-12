@@ -395,10 +395,10 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Matches Java's MetaDataValidator.validatePrimaryKey().
 	for name, rt := range b.recordTypes {
 		if rt.PrimaryKey == nil {
-			return nil, fmt.Errorf("record type %q has no primary key set", name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has no primary key set", name)}
 		}
 		if createsDuplicates(rt.PrimaryKey) {
-			return nil, fmt.Errorf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)}
 		}
 	}
 
@@ -408,7 +408,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for name, rt := range b.recordTypes {
 		key := rt.GetRecordTypeKey()
 		if prevName, exists := typeKeySeen[key]; exists {
-			return nil, fmt.Errorf("record types %q and %q have the same record type key %v", prevName, name, key)
+			return nil, &MetaDataError{Message: fmt.Sprintf("record types %q and %q have the same record type key %v", prevName, name, key)}
 		}
 		typeKeySeen[key] = name
 	}
@@ -428,7 +428,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for _, idx := range indexes {
 		sk := idx.SubspaceTupleKey()
 		if prevName, exists := indexSubspaceKeySeen[sk]; exists {
-			return nil, fmt.Errorf("indexes %q and %q have the same subspace key %v", prevName, idx.Name, sk)
+			return nil, &MetaDataError{Message: fmt.Sprintf("indexes %q and %q have the same subspace key %v", prevName, idx.Name, sk)}
 		}
 		indexSubspaceKeySeen[sk] = idx.Name
 	}
@@ -437,7 +437,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for _, fi := range b.formerIndexes {
 		for _, idx := range indexes {
 			if fi.SubspaceKey == idx.SubspaceTupleKey() {
-				return nil, fmt.Errorf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)
+				return nil, &MetaDataError{Message: fmt.Sprintf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)}
 			}
 		}
 	}
@@ -446,7 +446,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Matches Java's MetaDataValidator: addedVersion ≤ removedVersion, both ≤ metadata version.
 	for _, fi := range b.formerIndexes {
 		if fi.AddedVersion > fi.RemovedVersion {
-			return nil, fmt.Errorf("former index %q has addedVersion (%d) > removedVersion (%d)", fi.FormerName, fi.AddedVersion, fi.RemovedVersion)
+			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has addedVersion (%d) > removedVersion (%d)", fi.FormerName, fi.AddedVersion, fi.RemovedVersion)}
 		}
 	}
 
@@ -458,16 +458,16 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 			continue
 		}
 		if !b.storeRecordVersions {
-			return nil, fmt.Errorf("VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)}
 		}
 		if idx.IsUnique() {
-			return nil, fmt.Errorf("VERSION index %q does not support unique", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q does not support unique", idx.Name)}
 		}
 		if _, ok := idx.RootExpression.(*GroupingKeyExpression); ok {
-			return nil, fmt.Errorf("VERSION index %q does not support grouping", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q does not support grouping", idx.Name)}
 		}
 		if countVersionColumns(idx.RootExpression) != 1 {
-			return nil, fmt.Errorf("VERSION index %q: there must be exactly 1 version entry in index", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q: there must be exactly 1 version entry in index", idx.Name)}
 		}
 	}
 
@@ -481,11 +481,11 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 			continue
 		}
 		if !b.storeRecordVersions {
-			return nil, fmt.Errorf("MAX_EVER_VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)}
 		}
 		gke, ok := idx.RootExpression.(*GroupingKeyExpression)
 		if !ok {
-			return nil, fmt.Errorf("MAX_EVER_VERSION index %q must use a GroupingKeyExpression", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q must use a GroupingKeyExpression", idx.Name)}
 		}
 		// Check version columns in grouping vs grouped portions by examining the
 		// child expressions of the whole key's composite. The first groupingCount
@@ -493,15 +493,15 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		groupingCount := gke.GetGroupingCount()
 		groupedCount := gke.GetGroupedCount()
 		if groupedCount < 1 {
-			return nil, fmt.Errorf("MAX_EVER_VERSION index %q must have at least 1 grouped column", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q must have at least 1 grouped column", idx.Name)}
 		}
 		// Count version columns in grouping vs grouped portions.
 		groupingVersionCount, groupedVersionCount := countVersionColumnsInGroupParts(gke.wholeKey, groupingCount)
 		if groupingVersionCount != 0 {
-			return nil, fmt.Errorf("MAX_EVER_VERSION index %q: there must be no version entries in grouping key", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q: there must be no version entries in grouping key", idx.Name)}
 		}
 		if groupedVersionCount != 1 {
-			return nil, fmt.Errorf("MAX_EVER_VERSION index %q: there must be exactly 1 version entry in grouped key", idx.Name)
+			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q: there must be exactly 1 version entry in grouped key", idx.Name)}
 		}
 	}
 

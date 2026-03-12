@@ -172,7 +172,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 	// Discover which record type is stored by inspecting the UnionDescriptor
 	recordType, protoMessage, err := store.deserializeAndDiscover(value)
 	if err != nil {
-		return nil, &RecordDeserializationError{Cause: err}
+		return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
 
 	stored := &FDBStoredRecord[proto.Message]{
@@ -246,7 +246,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		var deserErr error
 		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
 		if deserErr != nil {
-			return false, &RecordDeserializationError{Cause: deserErr}
+			return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 		}
 	}
 
@@ -409,7 +409,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 			if deserErr != nil {
 				// Propagate deserialization error. Java's loadExistingRecord()
 				// deserializes before the type check — if deser fails, error propagates.
-				return nil, &RecordDeserializationError{Cause: deserErr}
+				return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 			}
 			existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
 			if existingTypeName != recordTypeName {
@@ -519,7 +519,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		if oldRecordExists {
 			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
 			if deserErr != nil {
-				return nil, &RecordDeserializationError{Cause: deserErr}
+				return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 			}
 			oldStoredRecord = &FDBStoredRecord[proto.Message]{
 				PrimaryKey: primaryKey,
