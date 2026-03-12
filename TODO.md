@@ -335,6 +335,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Index scan continuations | scanIndexWithContinuation, saveOrderForIndexContinuation | index_continuation_conformance_test.go | YES |
 | Error paths | insertDuplicateOrder, updateNonExistentOrder, openNonExistentStore, createExistingStore, scanNonReadableIndex, saveLocked | error_conformance_test.go | YES |
 | Index build state (stamp) | loadIndexingTypeStamp, saveIndexingTypeStampByRecords | index_build_state_conformance_test.go | YES |
+| EvaluateAggregateFunction | evaluateCountAggregate, evaluateSumAggregate, evaluateMinAggregate, evaluateMaxAggregate, evaluateMinEverAggregate, evaluateMaxEverAggregate | aggregate_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -860,7 +861,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 ### Bug hunt scoreboard
 
-27 bugs found, 27 fixed. 16 classified as data loss (2x). 832 unit/integration specs pass, 306 conformance specs pass (1138 total).
+27 bugs found, 27 fixed. 16 classified as data loss (2x). Current: 942 unit/integration specs, 341 conformance specs (1283 total).
 
 | Agent | Worktree | Bugs | 1x | 2x | Award |
 |-------|----------|------|----|----|-------|
@@ -879,7 +880,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 **A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.
 
-**B. Niche index types** — BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Not needed day one.
+**B. Niche index types** — BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~ done.)
 
 **C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 

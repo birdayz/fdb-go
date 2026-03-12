@@ -58,6 +58,7 @@ class ConformanceServer {
         new MetaDataProtoSteps(),
         new ErrorSteps(),
         new IndexBuildStateSteps(),
+        new AggregateSteps(),
     };
 
     private static class StepEntry {
