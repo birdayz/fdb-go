@@ -878,3 +878,171 @@ var _ = Describe("Phase 2 error types", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// Error type coverage gaps — tests for error types with zero or weak coverage.
+var _ = Describe("Error type coverage gaps", func() {
+	var metaData *RecordMetaData
+
+	BeforeEach(func() {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		var err error
+		metaData, err = builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UnknownStoreLockStateError on unrecognized lock state at format version 14", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			// Create a valid store first so the subspace exists.
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Create()
+			Expect(err).NotTo(HaveOccurred())
+			_ = store
+
+			// Overwrite the store header with FormatVersion=14 and an unknown lock state (999).
+			// Proto enums in Go accept arbitrary int32 values, so this is valid wire data.
+			fmtVersion := int32(FormatVersionFullStoreLock)
+			unknownState := gen.DataStoreInfo_StoreLockState_State(999)
+			header := &gen.DataStoreInfo{
+				FormatVersion: &fmtVersion,
+				StoreLockState: &gen.DataStoreInfo_StoreLockState{
+					LockState: &unknownState,
+				},
+			}
+			headerBytes, err := proto.Marshal(header)
+			Expect(err).NotTo(HaveOccurred())
+			storeInfoKey := ss.Pack(tuple.Tuple{StoreInfoKey})
+			rtx.Transaction().Set(storeInfoKey, headerBytes)
+
+			// Try to Open — should fail with UnknownStoreLockStateError.
+			_, err = NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
+			Expect(err).To(HaveOccurred())
+
+			var unknownErr *UnknownStoreLockStateError
+			Expect(errors.As(err, &unknownErr)).To(BeTrue())
+			Expect(unknownErr.LockStateValue).To(Equal(int32(999)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("UnknownStoreLockStateError includes correct error message", func() {
+		err := &UnknownStoreLockStateError{LockStateValue: 42}
+		Expect(err.Error()).To(ContainSubstring("unknown lock state"))
+		Expect(err.Error()).To(ContainSubstring("42"))
+	})
+
+	It("IndexNotReadableError via errors.As on WRITE_ONLY index scan", func() {
+		ctx := context.Background()
+
+		// Build metadata with an index.
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		idx := NewIndex("Order$price", Field("price"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark the index as WRITE_ONLY so it's not scannable.
+			_, err = store.MarkIndexWriteOnly("Order$price")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+
+			// Try to scan — the returned cursor should yield IndexNotReadableError.
+			resolvedIdx := md.GetIndex("Order$price")
+			Expect(resolvedIdx).NotTo(BeNil())
+			_, err = AsList(ctx, store.ScanIndex(resolvedIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).To(HaveOccurred())
+
+			var notReadableErr *IndexNotReadableError
+			Expect(errors.As(err, &notReadableErr)).To(BeTrue())
+			Expect(notReadableErr.IndexName).To(Equal("Order$price"))
+			Expect(notReadableErr.CurrentState).To(Equal(IndexStateWriteOnly))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("IndexNotReadableError via errors.As on DISABLED index scan", func() {
+		ctx := context.Background()
+
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		idx := NewIndex("Order$price", Field("price"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.MarkIndexDisabled("Order$price")
+			Expect(err).NotTo(HaveOccurred())
+
+			resolvedIdx := md.GetIndex("Order$price")
+			_, err = AsList(ctx, store.ScanIndex(resolvedIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).To(HaveOccurred())
+
+			var notReadableErr *IndexNotReadableError
+			Expect(errors.As(err, &notReadableErr)).To(BeTrue())
+			Expect(notReadableErr.IndexName).To(Equal("Order$price"))
+			Expect(notReadableErr.CurrentState).To(Equal(IndexStateDisabled))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("IndexNotBuiltError field verification on MarkIndexReadable", func() {
+		ctx := context.Background()
+
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		idx := NewIndex("Order$price", Field("price"))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark WRITE_ONLY (but do NOT build the range set).
+			_, err = store.MarkIndexWriteOnly("Order$price")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to mark readable — should fail because range set is incomplete.
+			_, err = store.MarkIndexReadable("Order$price")
+			Expect(err).To(HaveOccurred())
+
+			var notBuiltErr *IndexNotBuiltError
+			Expect(errors.As(err, &notBuiltErr)).To(BeTrue())
+			Expect(notBuiltErr.IndexName).To(Equal("Order$price"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

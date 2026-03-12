@@ -345,11 +345,11 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, fmt.Errorf("unknown record type: %s", recordTypeName)
+		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
 	}
 
 	if recordType.PrimaryKey == nil {
-		return nil, fmt.Errorf("no primary key defined for record type: %s", recordTypeName)
+		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 
 	// Extract primary key values using the key expression.
