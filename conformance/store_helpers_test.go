@@ -333,3 +333,23 @@ func (c *ConformanceStore) loadRecordWithGo(ctx context.Context, orderID int64) 
 	})
 	return order, err
 }
+
+// RunRaw runs a function with direct store access (no cross-check). Useful for
+// testing error paths where cross-language validation doesn't apply.
+func (c *ConformanceStore) RunRaw(ctx context.Context, fn func(st *recordlayer.FDBRecordStore) (any, error)) (any, error) {
+	return c.recordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(c.metaData).
+			SetSubspace(c.keyspace).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		return fn(store)
+	})
+}
+
+func stringPtr(s string) *string {
+	return &s
+}

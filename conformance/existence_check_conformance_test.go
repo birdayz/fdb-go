@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/google/uuid"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -221,8 +222,25 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(*loaded.Price).To(Equal(int32(200)))
 		})
 
-		// Note: To test type change, we would need a multi-type schema (Order + Customer)
-		// This is deferred to multi-type schema tests
+		It("should fail for existing record with different type", func() {
+			// Save an Order at PK=42
+			orderID := int64(40003)
+			order := StandardOrder(orderID)
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to save a Customer at the same PK with ERROR_IF_RECORD_TYPE_CHANGED
+			customer := &gen.Customer{CustomerId: &orderID, Name: stringPtr("Alice")}
+			_, saveErr := store.RunRaw(ctx, func(st *recordlayer.FDBRecordStore) (any, error) {
+				return st.SaveRecordWithOptions(customer, recordlayer.RecordExistenceCheckErrorIfTypeChanged)
+			})
+			Expect(saveErr).To(HaveOccurred())
+			var typeChangedErr *recordlayer.RecordTypeChangedError
+			Expect(errors.As(saveErr, &typeChangedErr)).To(BeTrue(),
+				"expected RecordTypeChangedError, got: %v", saveErr)
+			Expect(typeChangedErr.ActualType).To(Equal("Order"))
+			Expect(typeChangedErr.ExpectedType).To(Equal("Customer"))
+		})
 	})
 
 	Describe("ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED Mode", func() {
@@ -259,7 +277,25 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			Expect(*loaded.Price).To(Equal(int32(200)))
 		})
 
-		// Note: Type change test requires multi-type schema
+		It("should fail for existing record with different type", func() {
+			// Save an Order at PK=42
+			orderID := int64(50003)
+			order := StandardOrder(orderID)
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to save a Customer at the same PK with ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED
+			customer := &gen.Customer{CustomerId: &orderID, Name: stringPtr("Bob")}
+			_, saveErr := store.RunRaw(ctx, func(st *recordlayer.FDBRecordStore) (any, error) {
+				return st.SaveRecordWithOptions(customer, recordlayer.RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
+			})
+			Expect(saveErr).To(HaveOccurred())
+			var typeChangedErr *recordlayer.RecordTypeChangedError
+			Expect(errors.As(saveErr, &typeChangedErr)).To(BeTrue(),
+				"expected RecordTypeChangedError, got: %v", saveErr)
+			Expect(typeChangedErr.ActualType).To(Equal("Order"))
+			Expect(typeChangedErr.ExpectedType).To(Equal("Customer"))
+		})
 	})
 
 	Describe("InsertRecord Convenience Method", func() {
