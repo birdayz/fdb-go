@@ -28,7 +28,7 @@ use_repo(
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
-go_sdk.download(version = "1.26.1")
+go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.nogo(nogo = "//:nogo")
 
 # Proto (codegen stays with buf generate)
