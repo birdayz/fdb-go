@@ -540,30 +540,47 @@ var _ = Describe("Store State Cache", func() {
 			Expect(count2).To(Equal(0))
 		})
 
-		It("multiple stores in same cache are independent", func() {
+		It("multiple stores in same cache are independently cached", func() {
 			ss1 := subspace.FromBytes(tuple.Tuple{CurrentSpecReport().FullText(), "store1"}.Pack())
 			ss2 := subspace.FromBytes(tuple.Tuple{CurrentSpecReport().FullText(), "store2"}.Pack())
 			cache := NewMetaDataVersionStampStoreStateCache()
 
-			// Create two cacheable stores.
-			for _, ss := range []subspace.Subspace{ss1, ss2} {
-				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-					store, err := NewStoreBuilder().
-						SetContext(rtx).
-						SetMetaDataProvider(md).
-						SetSubspace(ss).
-						SetStoreStateCache(cache).
-						CreateOrOpen()
-					if err != nil {
-						return nil, err
-					}
-					_, err = store.SetStateCacheability(true)
+			// Create two cacheable stores with different user fields.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(md).
+					SetSubspace(ss1).
+					SetStoreStateCache(cache).
+					CreateOrOpen()
+				if err != nil {
 					return nil, err
-				})
-				Expect(err).NotTo(HaveOccurred())
-			}
+				}
+				if _, err := store.SetStateCacheability(true); err != nil {
+					return nil, err
+				}
+				return nil, store.SetHeaderUserField("s1-key", []byte("s1-val"))
+			})
+			Expect(err).NotTo(HaveOccurred())
 
-			// Open both to populate cache.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).
+					SetMetaDataProvider(md).
+					SetSubspace(ss2).
+					SetStoreStateCache(cache).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				if _, err := store.SetStateCacheability(true); err != nil {
+					return nil, err
+				}
+				return nil, store.SetHeaderUserField("s2-key", []byte("s2-val"))
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open both to populate cache (cache miss, then cached).
 			for _, ss := range []subspace.Subspace{ss1, ss2} {
 				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					_, err := NewStoreBuilder().
@@ -577,15 +594,16 @@ var _ = Describe("Store State Cache", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			// Verify both are cached.
+			// Verify both are cached with distinct entries.
 			cache.mu.Lock()
-			entryCount := len(cache.entries)
+			Expect(len(cache.entries)).To(Equal(2))
 			cache.mu.Unlock()
-			Expect(entryCount).To(Equal(2))
 
-			// Mutate store1's header only.
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
+			// Open both again — should both work and have correct data.
+			// Note: \xff/metadataVersion is a GLOBAL key, so a mutation to either store
+			// invalidates ALL cache entries. But with no mutations, both should hit cache.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store1, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(md).
 					SetSubspace(ss1).
@@ -594,13 +612,10 @@ var _ = Describe("Store State Cache", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, store.SetHeaderUserField("s1-key", []byte("s1-val"))
-			})
-			Expect(err).NotTo(HaveOccurred())
+				Expect(store1.GetHeaderUserField("s1-key")).To(Equal([]byte("s1-val")))
+				Expect(store1.GetHeaderUserField("s2-key")).To(BeNil())
 
-			// Open store2 — should still get cache hit (its state unchanged).
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
+				store2, err := NewStoreBuilder().
 					SetContext(rtx).
 					SetMetaDataProvider(md).
 					SetSubspace(ss2).
@@ -609,29 +624,8 @@ var _ = Describe("Store State Cache", func() {
 				if err != nil {
 					return nil, err
 				}
-				Expect(store.storeHeader).NotTo(BeNil())
-				return nil, nil
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Open store1 — cache miss, reload should have the user field.
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).
-					SetMetaDataProvider(md).
-					SetSubspace(ss1).
-					SetStoreStateCache(cache).
-					Open()
-				if err != nil {
-					return nil, err
-				}
-				var found bool
-				for _, uf := range store.storeHeader.UserField {
-					if uf.GetKey() == "s1-key" {
-						found = true
-					}
-				}
-				Expect(found).To(BeTrue())
+				Expect(store2.GetHeaderUserField("s2-key")).To(Equal([]byte("s2-val")))
+				Expect(store2.GetHeaderUserField("s1-key")).To(BeNil())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

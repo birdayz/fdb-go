@@ -280,19 +280,20 @@ func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
 	}
 }
 
-// loadIndexStates reads all index states from the IndexStateSpaceKey subspace.
+// readIndexStates reads all index states from the IndexStateSpaceKey subspace.
 // Only non-READABLE states are stored; absent entries default to READABLE.
+// This is a standalone function that does not mutate any store fields.
 // Matches Java's FDBRecordStore.loadIndexStatesAsync().
-func (store *FDBRecordStore) loadIndexStates() error {
-	isSubspace := store.indexStateSubspace()
+func readIndexStates(tx fdb.Transaction, ss subspace.Subspace) (map[string]IndexState, error) {
+	isSubspace := ss.Sub(IndexStateSpaceKey)
 	begin, end := isSubspace.FDBRangeKeys()
 
-	kvs, err := store.context.Transaction().Snapshot().GetRange(
+	kvs, err := tx.Snapshot().GetRange(
 		fdb.KeyRange{Begin: begin, End: end},
 		fdb.RangeOptions{},
 	).GetSliceWithError()
 	if err != nil {
-		return fmt.Errorf("failed to load index states: %w", err)
+		return nil, fmt.Errorf("failed to load index states: %w", err)
 	}
 
 	states := make(map[string]IndexState)
@@ -300,7 +301,7 @@ func (store *FDBRecordStore) loadIndexStates() error {
 		// Unpack key to get index name
 		t, err := isSubspace.Unpack(kv.Key)
 		if err != nil {
-			return fmt.Errorf("failed to unpack index state key: %w", err)
+			return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 		}
 		if len(t) == 0 {
 			continue
@@ -313,7 +314,7 @@ func (store *FDBRecordStore) loadIndexStates() error {
 		// Unpack value to get state code
 		valueTuple, err := tuple.Unpack(kv.Value)
 		if err != nil {
-			return fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
+			return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
 		}
 		if len(valueTuple) == 0 {
 			continue
@@ -325,11 +326,21 @@ func (store *FDBRecordStore) loadIndexStates() error {
 
 		state, err := indexStateFromCode(code)
 		if err != nil {
-			return fmt.Errorf("invalid index state for %q: %w", indexName, err)
+			return nil, fmt.Errorf("invalid index state for %q: %w", indexName, err)
 		}
 		states[indexName] = state
 	}
 
+	return states, nil
+}
+
+// loadIndexStates reads all index states and sets them on the store.
+// Convenience wrapper around readIndexStates.
+func (store *FDBRecordStore) loadIndexStates() error {
+	states, err := readIndexStates(store.context.Transaction(), store.subspace)
+	if err != nil {
+		return err
+	}
 	store.indexStates = states
 	return nil
 }

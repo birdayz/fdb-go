@@ -1266,8 +1266,14 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 		return err
 	}
 
-	store.storeHeader = entry.GetRecordStoreState().StoreHeader
-	store.indexStates = entry.GetRecordStoreState().IndexStates
+	// Clone cached state so store mutations don't corrupt the cache entry.
+	// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
+	cachedState := entry.GetRecordStoreState()
+	store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
+	store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
+	for k, v := range cachedState.IndexStates {
+		store.indexStates[k] = v
+	}
 	return nil
 }
 

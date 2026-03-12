@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -467,7 +468,8 @@ func (rc *FDBRecordContext) SetDirtyStoreState(dirty bool) {
 // + 4 bytes for the little-endian offset (0). FDB replaces the first 10 bytes with
 // the commit versionstamp when SET_VERSIONSTAMPED_VALUE is used.
 // Matches Java's FDBRecordContext.META_DATA_VERSION_STAMP_VALUE.
-var metaDataVersionStampValue = make([]byte, 14)
+// Using an array (not slice) to prevent accidental mutation.
+var metaDataVersionStampValue [14]byte
 
 // metaDataVersionKey is the FDB system key used to track metadata version changes.
 // Matches Java's SystemKeyspace.METADATA_VERSION_KEY = \xff/metadataVersion.
@@ -479,19 +481,29 @@ var metaDataVersionKey = append([]byte{0xFF}, []byte("/metadataVersion")...)
 // Matches Java's FDBRecordContext.setMetaDataVersionStamp().
 func (rc *FDBRecordContext) SetMetaDataVersionStamp() {
 	rc.dirtyMetaDataVersionStamp = true
-	rc.tx.SetVersionstampedValue(fdb.Key(metaDataVersionKey), metaDataVersionStampValue)
+	rc.tx.SetVersionstampedValue(fdb.Key(metaDataVersionKey), metaDataVersionStampValue[:])
 }
 
 // GetMetaDataVersionStamp reads the metadata version stamp at snapshot isolation.
 // Returns nil if the stamp was written in this transaction (dirty) or doesn't exist.
-// Matches Java's FDBRecordContext.getMetaDataVersionStampAsync().
+// On ACCESSED_UNREADABLE errors (FDB code 1036), marks the stamp as dirty and returns nil.
+// Propagates all other errors. Matches Java's FDBRecordContext.getMetaDataVersionStampAsync().
 func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
 	if rc.dirtyMetaDataVersionStamp {
 		return nil, nil
 	}
 	val, err := rc.tx.Snapshot().Get(fdb.Key(metaDataVersionKey)).Get()
 	if err != nil {
-		return nil, nil // Key doesn't exist or unreadable → treat as nil
+		// Check for ACCESSED_UNREADABLE (1036) — the versionstamped value was
+		// written in this transaction and can't be read back yet.
+		// Matches Java's handle() which catches this specific error code.
+		var fdbErr fdb.Error
+		if errors.As(err, &fdbErr) && fdbErr.Code == 1036 {
+			rc.dirtyMetaDataVersionStamp = true
+			return nil, nil
+		}
+		// For genuine errors (network, transaction_too_old, etc.), propagate.
+		return nil, err
 	}
 	if val == nil {
 		return nil, nil

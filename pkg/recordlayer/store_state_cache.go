@@ -99,6 +99,8 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 }
 
 // loadRecordStoreState reads store header + index states from FDB.
+// This is a pure function — it does NOT mutate store fields.
+// The caller is responsible for setting store.storeHeader and store.indexStates.
 func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
 	exists, header, err := store.checkStoreExists()
 	if err != nil {
@@ -109,18 +111,15 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 		return nil, err
 	}
 
-	// Temporarily set header so loadIndexStates works.
-	store.storeHeader = header
-
 	var indexStates map[string]IndexState
 	if exists {
-		if err := store.loadIndexStates(); err != nil {
+		var err error
+		indexStates, err = readIndexStates(store.context.Transaction(), store.subspace)
+		if err != nil {
 			return nil, err
 		}
-		indexStates = store.indexStates
 	} else {
 		indexStates = make(map[string]IndexState)
-		store.indexStates = indexStates
 	}
 
 	return &RecordStoreState{
