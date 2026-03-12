@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1138 specs pass (832 unit/integration + 306 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1144 specs pass (832 unit/integration + 312 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -217,6 +217,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 - [x] Continuation token protobuf wrapping — magic number 6773487359078157740
 - [x] Bulk operations — DeleteAllRecords, GetRecordCount/GetSnapshotRecordCount
 - [x] Bazel 8 migration — MODULE.bazel, gazelle, nogo (20 analyzers)
+- [ ] **Bazel 9 upgrade** — upgrade from Bazel 8.2.1 to Bazel 9.0.1. Check rules_go, gazelle, rules_jvm_external compatibility. **HIGH**
 - [x] CI pipeline — GitHub Actions with Bazel build + test
 - [x] Subspace constants verified — all 10 match Java exactly (0-9)
 

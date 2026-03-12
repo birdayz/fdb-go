@@ -21,7 +21,6 @@ use_repo(
     "com_github_google_uuid",
     "com_github_onsi_ginkgo_v2",
     "com_github_onsi_gomega",
-    "com_github_stretchr_testify",
     "com_github_testcontainers_testcontainers_go",
     "com_github_testcontainers_testcontainers_go_modules_socat",
     "org_golang_google_protobuf",
@@ -34,17 +33,18 @@ go_sdk.nogo(nogo = "//:nogo")
 
 # Proto (codegen stays with buf generate)
 bazel_dep(name = "protobuf", version = "34.0.bcr.1")
-bazel_dep(name = "rules_proto", version = "7.1.0")
 
 # Java (conformance server)
-bazel_dep(name = "rules_java", version = "8.13.0")
+bazel_dep(name = "rules_java", version = "9.6.1")
 bazel_dep(name = "rules_jvm_external", version = "6.10")
+bazel_dep(name = "rules_android", version = "0.7.1")  # Override transitive dep for Bazel 9 compat
 
 maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
 maven.install(
     artifacts = [
         "org.foundationdb:fdb-record-layer-core:4.10.6.0",
         "com.google.code.gson:gson:2.10.1",
+        "com.google.protobuf:protobuf-java-util:4.29.3",
     ],
     known_contributing_modules = [
         "bazel_worker_java",

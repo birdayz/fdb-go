@@ -294,11 +294,10 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 	It("Build returns error when one record type lacks primary key", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-		// Customer primary key intentionally not set
+		// Customer and TypedRecord primary keys intentionally not set
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("Customer"))
 		Expect(err.Error()).To(ContainSubstring("has no primary key set"))
 	})
 
