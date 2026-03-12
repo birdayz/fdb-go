@@ -979,6 +979,7 @@ func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tup
 // For reverse scans, continuation sets the high endpoint (end before last returned key).
 // Matches Java's KeyValueCursorBase behavior.
 func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	startTime := time.Now()
 	lowEndpoint := EndpointTypeTreeStart
 	highEndpoint := EndpointTypeTreeEnd
 	if continuation != nil {
@@ -988,7 +989,9 @@ func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties Sca
 			lowEndpoint = EndpointTypeContinuation
 		}
 	}
-	return store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
+	cursor := store.ScanRecordsInRange(nil, nil, lowEndpoint, highEndpoint, continuation, scanProperties)
+	store.context.Timer().RecordSince(EventScanRecords, startTime)
+	return cursor
 }
 
 // ScanRecordsByType scans records filtered to a specific record type.

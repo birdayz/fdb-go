@@ -187,13 +187,16 @@ func (store *FDBRecordStore) ScanIndex(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	startTime := time.Now()
 	if !store.IsIndexScannable(index.Name) {
 		return &errorCursor[*IndexEntry]{
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
 	maintainer := store.getIndexMaintainer(index)
-	return maintainer.Scan(scanRange, continuation, scanProperties)
+	cursor := maintainer.Scan(scanRange, continuation, scanProperties)
+	store.context.Timer().RecordSince(EventScanIndex, startTime)
+	return cursor
 }
 
 // ScanIndexByType scans a secondary index with an explicit scan type.

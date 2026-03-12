@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -406,7 +407,10 @@ func (rc *FDBRecordContext) runPostCommits() {
 // GetReadVersion returns the transaction's read version.
 // Matches Java's FDBRecordContext.getReadVersion().
 func (rc *FDBRecordContext) GetReadVersion() (int64, error) {
-	return rc.tx.GetReadVersion().Get()
+	startTime := time.Now()
+	v, err := rc.tx.GetReadVersion().Get()
+	rc.Timer().RecordSince(EventGetReadVersion, startTime)
+	return v, err
 }
 
 // SetReadVersion sets the transaction's read version explicitly.
@@ -543,10 +547,13 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	// Get the versionstamp future BEFORE committing
 	vsFuture := rc.tx.GetVersionstamp()
 
-	// Commit the transaction
+	// Commit the transaction — timed as EventCommit
+	commitStart := time.Now()
 	if err := rc.tx.Commit().Get(); err != nil {
+		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
+	rc.Timer().RecordSince(EventCommit, commitStart)
 
 	// Run post-commit callbacks after successful commit
 	rc.runPostCommits()

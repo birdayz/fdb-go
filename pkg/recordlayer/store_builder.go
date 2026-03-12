@@ -25,6 +25,9 @@ import (
 // Matches Java's FDBRecordStore.rebuildIndex() which delegates to
 // IndexingBase.rebuildIndexAsync() for the in-transaction path.
 func (store *FDBRecordStore) RebuildIndex(index *Index) error {
+	startTime := time.Now()
+	defer func() { store.context.Timer().RecordSince(EventRebuildIndex, startTime) }()
+
 	// Step 1: Clear index data and mark WRITE_ONLY.
 	// Matches Java: clearAndMarkIndexWriteOnly(index)
 	if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
