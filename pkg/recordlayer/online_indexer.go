@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -287,13 +288,13 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		// Convert byte boundaries to TupleRange for record scanning.
 		// Java: Tuple.fromBytes(range.begin) unless isFirstKey/isFinalKey.
 		var rangeStart, rangeEnd tuple.Tuple
-		if !isRangeSetFirstKey(missing.Begin) {
+		if !bytes.Equal(missing.Begin, RangeSetFirstKey) {
 			rangeStart, err = tuple.Unpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
-		if !isRangeSetFinalKey(missing.End) {
+		if !bytes.Equal(missing.End, RangeSetFinalKey) {
 			rangeEnd, err = tuple.Unpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
@@ -365,7 +366,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			if rangeEnd != nil {
 				rangeEndBytes = rangeEnd.Pack()
 			}
-			hasMore = !isRangeSetFinalKey(missing.End)
+			hasMore = !bytes.Equal(missing.End, RangeSetFinalKey)
 		}
 
 		_, err = rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true)
@@ -430,13 +431,13 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		// Convert byte boundaries to TupleRange for source index scanning.
 		// These are source index entry keys, not primary keys.
 		var rangeStart, rangeEnd tuple.Tuple
-		if !isRangeSetFirstKey(missing.Begin) {
+		if !bytes.Equal(missing.Begin, RangeSetFirstKey) {
 			rangeStart, err = tuple.Unpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
-		if !isRangeSetFinalKey(missing.End) {
+		if !bytes.Equal(missing.End, RangeSetFinalKey) {
 			rangeEnd, err = tuple.Unpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
@@ -508,7 +509,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			if rangeEnd != nil {
 				rangeEndBytes = rangeEnd.Pack()
 			}
-			hasMore = !isRangeSetFinalKey(missing.End)
+			hasMore = !bytes.Equal(missing.End, RangeSetFinalKey)
 		}
 
 		_, err = rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true)
@@ -556,10 +557,3 @@ func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, erro
 		Open()
 }
 
-func isRangeSetFirstKey(key []byte) bool {
-	return len(key) == 1 && key[0] == 0x00
-}
-
-func isRangeSetFinalKey(key []byte) bool {
-	return len(key) == 1 && key[0] == 0xff
-}
