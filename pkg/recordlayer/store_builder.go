@@ -512,6 +512,7 @@ func (b *StoreBuilder) validateBuilder() error {
 
 // Create creates a new record store, fails if store already exists
 func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
+	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
 	}
@@ -535,6 +536,8 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	store.storeHeader = storeHeader
 	store.indexStates = make(map[string]IndexState)
 
+	b.context.Timer().RecordSince(EventOpenStore, startTime)
+
 	return store, nil
 }
 
@@ -542,6 +545,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 // When the current metadata version is higher than the stored version,
 // new indexes are automatically rebuilt inline (matching Java's checkVersion flow).
 func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
+	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
 	}
@@ -569,6 +573,8 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		return nil, err
 	}
 
+	b.context.Timer().RecordSince(EventOpenStore, startTime)
+
 	return store, nil
 }
 
@@ -577,6 +583,7 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 // current metadata, new indexes are automatically rebuilt inline.
 // Matches Java's FDBRecordStore.checkPossiblyRebuild().
 func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
+	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
 	}
@@ -615,6 +622,8 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 			return nil, err
 		}
 	}
+
+	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil
 }

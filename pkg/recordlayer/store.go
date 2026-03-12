@@ -154,6 +154,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // Handles both unsplit (suffix 0) and split (suffixes 1, 2, ...) records
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
+	startTime := time.Now()
 	recordsSubspace := store.subspace.Sub(RecordKey)
 
 	var sizeInfo SizeInfo
@@ -198,6 +199,8 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		stored.Version = ver
 	}
 
+	store.context.Timer().RecordSince(EventLoadRecord, startTime)
+
 	return stored, nil
 }
 
@@ -213,6 +216,7 @@ func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[
 // Handles both split and unsplit records via SplitHelper.
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
+	startTime := time.Now()
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
@@ -304,6 +308,12 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		}
 	}
 
+	// Record instrumentation
+	timer := store.context.Timer()
+	timer.RecordSince(EventDeleteRecord, startTime)
+	timer.Increment(CountDeleteRecordKey)
+	timer.IncrementBy(CountDeleteRecordKeyBytes, int64(oldSizeInfo.KeySize))
+
 	return true, nil
 }
 
@@ -343,6 +353,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
+	startTime := time.Now()
 	// Extract the primary key from the record
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
@@ -535,6 +546,13 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 			return nil, err
 		}
 	}
+
+	// Record instrumentation
+	timer := store.context.Timer()
+	timer.RecordSince(EventSaveRecord, startTime)
+	timer.Increment(CountSaveRecordKey)
+	timer.IncrementBy(CountSaveRecordKeyBytes, int64(newSizeInfo.KeySize))
+	timer.IncrementBy(CountSaveRecordValueBytes, int64(newSizeInfo.ValueSize))
 
 	return newStoredRecord, nil
 }

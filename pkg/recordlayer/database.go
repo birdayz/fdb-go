@@ -229,6 +229,10 @@ type FDBRecordContext struct {
 	// Store state cache invalidation tracking — matches Java's FDBRecordContext
 	dirtyStoreState            bool // set when any store header or index state is modified
 	dirtyMetaDataVersionStamp  bool // set when SetMetaDataVersionStamp() is called
+
+	// Instrumentation timer — matches Java's FDBRecordContext.timer field.
+	// Nil means no instrumentation (all timer methods are nil-safe no-ops).
+	timer *StoreTimer
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
@@ -449,6 +453,18 @@ func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
 // HasVersionMutations returns true if there are pending version mutations.
 func (rc *FDBRecordContext) HasVersionMutations() bool {
 	return len(rc.versionMutations) > 0
+}
+
+// Timer returns the instrumentation timer for this context, or nil if not set.
+// Matches Java's FDBRecordContext.getTimer().
+func (rc *FDBRecordContext) Timer() *StoreTimer {
+	return rc.timer
+}
+
+// SetTimer sets the instrumentation timer for this context.
+// Matches Java's FDBRecordContext.setTimer().
+func (rc *FDBRecordContext) SetTimer(timer *StoreTimer) {
+	rc.timer = timer
 }
 
 // HasDirtyStoreState returns true if any store state was modified in this transaction.

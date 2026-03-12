@@ -98,7 +98,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **Header user fields** — `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
 - [x] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation (LRU+TTL, \xff/metadataVersion invalidation), `SetStateCacheability()` API, dirty state tracking on context, read conflict on cache hit. 2.2x speedup on store open. 40 tests. **MEDIUM**.
 - [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.
-- [ ] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot=true)` with snapshot isolation option. **LOW** (optimization).
+- [x] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot)` already implemented in `store_version.go`. **LOW**.
 - [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
 - [ ] **Index build state tracking** — `GetIndexBuildState(index)` for progress reporting. **LOW**.
 - [ ] **DryRunSaveRecord** — Validation without writes. **LOW**.
@@ -653,7 +653,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Serializer access** — `GetMetaData()`, `GetIndexMaintainer()` on store. `Context()` and `Subspace()` already exposed.
 
-- [ ] **Conformance test for type-changed existence check** — `conformance/existence_check_conformance_test.go` covers 4 of 5 modes. Add Java cross-validation for `ERROR_IF_RECORD_TYPE_CHANGED`.
+- [x] **Conformance test for type-changed existence check** — All 5 modes tested including cross-type Order→Customer tests for `ERROR_IF_RECORD_TYPE_CHANGED` and `ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED`.
 
 ### LOW
 
@@ -675,7 +675,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Timer / instrumentation** — Java has comprehensive `FDBStoreTimer` with event counters and timing throughout all operations. Go has no instrumentation.
+- [x] **Timer / instrumentation** — `StoreTimer` with `Event`/`Counter`/`CounterSnapshot` types, nil-safe, goroutine-safe (atomic counters + sync.Map). 9 timed events (Save/Load/Delete/Commit/OpenStore/etc) + 9 count events (key/byte counts). Wired into `FDBRecordContext.Timer()`, `SaveRecordWithOptions`, `LoadRecord`, `DeleteRecord`, `Create/Open/CreateOrOpen`. 32 specs (unit + integration).
 
 - [x] **Transaction priority** — `TransactionPriority` type with `PriorityDefault`, `PriorityBatch`, `PrioritySystemImmediate`. `SetTransactionPriority()` on `FDBRecordContext`.
 
@@ -881,7 +881,7 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 **B. Niche index types** — BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Not needed day one.
 
-**C. Polish** — Timer/instrumentation, ~~store state caching~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
+**C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 
 - [x] **[MEDIUM] Store state caching** — `MetaDataVersionStampStoreStateCache` + `PassThroughRecordStoreStateCache`. Validates via `\xff/metadataVersion` versionstamp, handles dirty state, read conflicts on cache hit, proto.Clone on cache-hit path, LRU+TTL eviction. 40 specs, 2.2x benchmark speedup. Files: `store_state_cache.go`, `store_state_cache_test.go`.
 - [ ] **[LOW] `FDBDatabase.storeStateCache` field unsynchronized** — Interface field on `FDBDatabase` is not protected by mutex or `atomic.Value`. Safe as long as it's set-once-at-startup before any transactions. If runtime reconfiguration is needed, wrap in `atomic.Value`.
