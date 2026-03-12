@@ -16,7 +16,7 @@ import (
 func GetTypedRecordStore[T proto.Message](store *FDBRecordStore, recordTypeName string) (*TypedFDBRecordStore[T], error) {
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, fmt.Errorf("record type '%s' not found in metadata", recordTypeName)
+		return nil, &MetaDataError{Message: fmt.Sprintf("record type '%s' not found in metadata", recordTypeName)}
 	}
 
 	// Use reflection to create the wrap/unwrap functions automatically

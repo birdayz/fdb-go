@@ -234,21 +234,28 @@ if errors.As(err, &e) {
 
 | Java Exception | Go Error Type | Context Fields |
 |---|---|---|
-| `RecordAlreadyExistsException` | `RecordAlreadyExistsError` | `PrimaryKey` |
-| `RecordDoesNotExistException` | `RecordDoesNotExistError` | `PrimaryKey` |
-| `RecordTypeChangedException` | `RecordTypeChangedError` | `PrimaryKey`, `ActualType`, `ExpectedType` |
-| `RecordStoreAlreadyExistsException` | `RecordStoreAlreadyExistsError` | (subspace context) |
-| `RecordStoreDoesNotExistException` | `RecordStoreDoesNotExistError` | (subspace context) |
-| `RecordStoreNoInfoAndNotEmptyException` | `RecordStoreNoInfoButNotEmptyError` | (subspace context, first key) |
-| `ScanNonReadableIndexException` | `IndexNotReadableError` | `IndexName` |
+| `RecordAlreadyExistsException` | `RecordAlreadyExistsError` | `Message`, `PrimaryKey` |
+| `RecordDoesNotExistException` | `RecordDoesNotExistError` | `Message`, `PrimaryKey` |
+| `RecordTypeChangedException` | `RecordTypeChangedError` | `Message`, `PrimaryKey`, `ActualType`, `ExpectedType` |
+| `RecordStoreAlreadyExistsException` | `RecordStoreAlreadyExistsError` | (none) |
+| `RecordStoreDoesNotExistException` | `RecordStoreDoesNotExistError` | (none) |
+| `RecordStoreNoInfoAndNotEmptyException` | `RecordStoreNoInfoButNotEmptyError` | `FirstKey` |
+| `UninitializedRecordStoreException` | `RecordStoreStateNotLoadedError` | (none) |
+| `ScanNonReadableIndexException` | `IndexNotReadableError` | `IndexName`, `CurrentState` |
+| `StoreIsLockedForRecordUpdates` | `StoreIsLockedForRecordUpdatesError` | `Reason`, `Timestamp` |
 | `StoreIsFullyLockedException` | `StoreIsFullyLockedError` | `Reason`, `Timestamp` |
 | `UnknownStoreLockStateException` | `UnknownStoreLockStateError` | `LockStateValue` |
 | `StaleMetaDataVersionException` | `StaleMetaDataVersionError` | `LocalVersion`, `StoredVersion` |
 | `MetaDataException` | `MetaDataError` | `Message` |
-| `UnsupportedFormatVersionException` | `UnsupportedFormatVersionError` | `Version` |
+| `MetaDataEvolutionValidatorException` | `MetaDataEvolutionError` | `Message` |
+| `UnsupportedFormatVersionException` | `UnsupportedFormatVersionError` | `Version`, `MaxVersion` |
+| `RecordSerializationException` | `RecordSerializationError` | `Cause` (with `Unwrap()`) |
+| `RecordDeserializationException` | `RecordDeserializationError` | `PrimaryKey`, `Cause` (with `Unwrap()`) |
 | `RecordIndexUniquenessViolation` | `RecordIndexUniquenessViolationError` | `IndexName`, `IndexKey`, `PrimaryKey`, `ExistingKey` |
 | `IndexKeySizeException` | `IndexKeySizeError` | `IndexName`, `PrimaryKey`, `KeySize`, `Limit` |
 | `IndexValueSizeException` | `IndexValueSizeError` | `IndexName`, `PrimaryKey`, `ValueSize`, `Limit` |
+| (no Java equivalent) | `IndexNotFoundError` | `IndexName` |
+| (no Java equivalent) | `IndexNotBuiltError` | `IndexName` |
 
 ## Proto definitions
 
