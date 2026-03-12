@@ -125,6 +125,31 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("rejects since version change on existing type", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.GetRecordType("Order").recordType.SinceVersion = 1
+			})
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.GetRecordType("Order").recordType.SinceVersion = 2
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("since version changed"))
+		})
+
+		It("allows same since version on existing type", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.GetRecordType("Order").recordType.SinceVersion = 3
+			})
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				b.GetRecordType("Order").recordType.SinceVersion = 3
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("index validation", func() {
@@ -283,6 +308,116 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := v.Validate(old, new)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("rejects changed primary key component positions", func() {
+			// Build old with a composite index that overlaps the PK (order_id).
+			// Concat(Field("price"), Field("order_id")) with PK = Field("order_id")
+			// produces primaryKeyComponentPositions = [1] (PK component at index position 1).
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("composite_idx", Concat(Field("price"), Field("order_id"))))
+			})
+			oldIdx := old.GetIndex("composite_idx")
+			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeTrue())
+			Expect(oldIdx.PrimaryKeyComponentPositions()).To(Equal([]int{1}))
+
+			// Build new with same index name/type/expression but manually set
+			// different primaryKeyComponentPositions.
+			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			newIdx := NewIndex("composite_idx", Concat(Field("price"), Field("order_id")))
+			newIdx.AddedVersion = oldIdx.AddedVersion
+			newIdx.LastModifiedVersion = oldIdx.LastModifiedVersion
+			// Force different positions by setting them manually before Build()
+			// which won't overwrite non-nil positions.
+			newIdx.primaryKeyComponentPositions = []int{0}
+			builder2.AddIndex("Order", newIdx)
+			builder2.SetVersion(3)
+			new, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = ValidateEvolution(old, new)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("changes primary key component positions"))
+		})
+
+		It("rejects adding primary key component positions", func() {
+			// Old: non-overlapping index → nil positions (Field("price") with PK=Field("order_id"))
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			})
+			oldIdx := old.GetIndex("price_idx")
+			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeFalse())
+
+			// New: same expression but pre-set non-nil positions before Build().
+			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			newIdx := NewIndex("price_idx", Field("price"))
+			newIdx.AddedVersion = oldIdx.AddedVersion
+			newIdx.LastModifiedVersion = oldIdx.LastModifiedVersion
+			newIdx.primaryKeyComponentPositions = []int{-1} // Force non-nil; Build() won't overwrite
+			builder2.AddIndex("Order", newIdx)
+			builder2.SetVersion(3)
+			new, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = ValidateEvolution(old, new)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("adds primary key component positions"))
+		})
+
+		It("accepts unchanged primary key component positions", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("composite_idx", Concat(Field("price"), Field("order_id"))))
+			})
+			oldIdx := old.GetIndex("composite_idx")
+			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeTrue())
+
+			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			newIdx := NewIndex("composite_idx", Concat(Field("price"), Field("order_id")))
+			newIdx.AddedVersion = oldIdx.AddedVersion
+			newIdx.LastModifiedVersion = oldIdx.LastModifiedVersion
+			builder2.AddIndex("Order", newIdx)
+			builder2.SetVersion(3)
+			new, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("skips primary key component positions check when index is rebuilt", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("composite_idx", Concat(Field("price"), Field("order_id"))))
+			})
+			oldIdx := old.GetIndex("composite_idx")
+			Expect(oldIdx.HasPrimaryKeyComponentPositions()).To(BeTrue())
+
+			// New index: same expression but different positions + higher lastModifiedVersion.
+			builder2 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder2.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder2.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder2.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			newIdx := NewIndex("composite_idx", Concat(Field("price"), Field("order_id")))
+			newIdx.AddedVersion = oldIdx.AddedVersion
+			newIdx.LastModifiedVersion = oldIdx.LastModifiedVersion + 1
+			newIdx.primaryKeyComponentPositions = []int{0} // Different positions
+			builder2.AddIndex("Order", newIdx)
+			builder2.SetVersion(3)
+			new, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// With allowIndexRebuilds, the positions check is skipped.
+			v := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(true).Build()
+			err = v.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("former index validation", func() {
@@ -350,6 +485,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(v.allowIndexRebuilds).To(BeFalse())
 			Expect(v.allowUnsplitToSplit).To(BeFalse())
 			Expect(v.disallowTypeRenames).To(BeFalse())
+			Expect(v.allowNoSinceVersion).To(BeFalse())
 		})
 	})
 

@@ -307,6 +307,18 @@ func (idx *Index) SetPredicate(p IndexPredicate) *Index {
 	return idx
 }
 
+// PrimaryKeyComponentPositions returns the overlap mapping between index key and primary key.
+// nil means no overlap was computed. Matches Java's Index.getPrimaryKeyComponentPositions().
+func (idx *Index) PrimaryKeyComponentPositions() []int {
+	return idx.primaryKeyComponentPositions
+}
+
+// HasPrimaryKeyComponentPositions returns true if the index has computed PK component positions.
+// Matches Java's Index.hasPrimaryKeyComponentPositions().
+func (idx *Index) HasPrimaryKeyComponentPositions() bool {
+	return idx.primaryKeyComponentPositions != nil
+}
+
 // SetUnique marks this index as enforcing uniqueness.
 func (idx *Index) SetUnique() *Index {
 	idx.Options[IndexOptionUnique] = "true"

@@ -19,6 +19,7 @@ type MetaDataEvolutionValidator struct {
 	allowOlderFormerIndexAddedVersion bool
 	allowMissingFormerIndexNames      bool
 	disallowTypeRenames               bool
+	allowNoSinceVersion               bool
 }
 
 // MetaDataEvolutionValidatorBuilder builds a MetaDataEvolutionValidator with custom options.
@@ -64,6 +65,11 @@ func (b *MetaDataEvolutionValidatorBuilder) SetAllowOlderFormerIndexAddedVersion
 
 func (b *MetaDataEvolutionValidatorBuilder) SetAllowMissingFormerIndexNames(v bool) *MetaDataEvolutionValidatorBuilder {
 	b.v.allowMissingFormerIndexNames = v
+	return b
+}
+
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowNoSinceVersion(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowNoSinceVersion = v
 	return b
 }
 
@@ -180,6 +186,49 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 					name, oldRT.GetRecordTypeKey(), newRT.GetRecordTypeKey()),
 			}
 		}
+
+		// SinceVersion must not change on existing record types.
+		// Matches Java's MetaDataEvolutionValidator line 361.
+		if oldRT.SinceVersion != newRT.SinceVersion {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type %q since version changed (old=%d, new=%d)",
+					name, oldRT.SinceVersion, newRT.SinceVersion),
+			}
+		}
+	}
+
+	// Build set of old record type names, accounting for renames via type key.
+	olderNames := make(map[string]bool, len(old.RecordTypes()))
+	for name, oldRT := range old.RecordTypes() {
+		// If this type was renamed, map old name to the new name
+		renamed := name
+		for newName, newRT := range new.RecordTypes() {
+			if fmt.Sprint(newRT.GetRecordTypeKey()) == fmt.Sprint(oldRT.GetRecordTypeKey()) {
+				renamed = newName
+				break
+			}
+		}
+		olderNames[renamed] = true
+	}
+
+	// Validate new record types have SinceVersion set.
+	// Matches Java's MetaDataEvolutionValidator lines 365-380.
+	for name, newRT := range new.RecordTypes() {
+		if olderNames[name] {
+			continue // Existing type, already validated above
+		}
+		if newRT.SinceVersion == 0 {
+			if !v.allowNoSinceVersion {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("new record type %q is missing since version", name),
+				}
+			}
+		} else if newRT.SinceVersion <= old.Version() {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new record type %q has since version older than old meta-data (since=%d, old=%d)",
+					name, newRT.SinceVersion, old.Version()),
+			}
+		}
 	}
 
 	return nil
@@ -269,6 +318,37 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 		if !proto.Equal(oldExpr, newExpr) {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("index %q key expression changed", name),
+			}
+		}
+
+		// primaryKeyComponentPositions must not change.
+		// Matches Java's MetaDataEvolutionValidator lines 649-667.
+		oldHasPositions := oldIdx.HasPrimaryKeyComponentPositions()
+		newHasPositions := newIdx.HasPrimaryKeyComponentPositions()
+		if oldHasPositions && !newHasPositions {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new index %q drops primary key component positions", name),
+			}
+		}
+		if !oldHasPositions && newHasPositions {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new index %q adds primary key component positions", name),
+			}
+		}
+		if oldHasPositions && newHasPositions {
+			oldPos := oldIdx.PrimaryKeyComponentPositions()
+			newPos := newIdx.PrimaryKeyComponentPositions()
+			if len(oldPos) != len(newPos) {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("new index %q changes primary key component positions", name),
+				}
+			}
+			for i := range oldPos {
+				if oldPos[i] != newPos[i] {
+					return &MetaDataEvolutionError{
+						Message: fmt.Sprintf("new index %q changes primary key component positions", name),
+					}
+				}
 			}
 		}
 	}
