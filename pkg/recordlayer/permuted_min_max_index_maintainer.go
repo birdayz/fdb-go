@@ -115,8 +115,7 @@ func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 		}
 
 		entryPerGroup := m.extremumEntriesByGroup(oldEntries, groupPrefixSize, totalSize)
-		for groupKeyStr, entry := range entryPerGroup {
-			_ = groupKeyStr
+		for _, entry := range entryPerGroup {
 			groupKey := entry.key[:groupPrefixSize]
 			value := entry.key[groupPrefixSize:totalSize]
 			groupPrefix := groupKey[:permutePosition]
