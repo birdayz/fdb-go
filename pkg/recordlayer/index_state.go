@@ -6,6 +6,8 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 // IndexState represents the state of a secondary index.
@@ -340,6 +342,48 @@ func (store *FDBRecordStore) loadIndexStates() error {
 // indexStateSubspace returns the FDB subspace for index state storage.
 func (store *FDBRecordStore) indexStateSubspace() subspace.Subspace {
 	return store.subspace.Sub(IndexStateSpaceKey)
+}
+
+// Index build subspace sub-keys matching Java's IndexingSubspaces.
+const (
+	indexBuildTypeVersionSubKey = int64(2) // IndexBuildIndexingStamp proto
+)
+
+// indexBuildTypeSubspace returns the subspace for the index build type stamp.
+// Matches Java's IndexingSubspaces.indexBuildTypeSubspace().
+func (store *FDBRecordStore) indexBuildTypeSubspace(index *Index) subspace.Subspace {
+	return store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey(), indexBuildTypeVersionSubKey)
+}
+
+// SaveIndexingTypeStamp persists the indexing method stamp for an index.
+// Matches Java's FDBRecordStore.saveIndexingTypeStamp().
+func (store *FDBRecordStore) SaveIndexingTypeStamp(index *Index, stamp *gen.IndexBuildIndexingStamp) error {
+	data, err := proto.Marshal(stamp)
+	if err != nil {
+		return fmt.Errorf("marshal indexing type stamp: %w", err)
+	}
+	stampKey := store.indexBuildTypeSubspace(index).Bytes()
+	store.context.Transaction().Set(fdb.Key(stampKey), data)
+	return nil
+}
+
+// LoadIndexingTypeStamp loads the indexing method stamp for an index.
+// Returns nil if no stamp exists.
+// Matches Java's FDBRecordStore.loadIndexingTypeStampAsync().
+func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuildIndexingStamp, error) {
+	stampKey := store.indexBuildTypeSubspace(index).Bytes()
+	data, err := store.context.Transaction().Get(fdb.Key(stampKey)).Get()
+	if err != nil {
+		return nil, fmt.Errorf("load indexing type stamp: %w", err)
+	}
+	if data == nil {
+		return nil, nil
+	}
+	stamp := &gen.IndexBuildIndexingStamp{}
+	if err := proto.Unmarshal(data, stamp); err != nil {
+		return nil, fmt.Errorf("unmarshal indexing type stamp: %w", err)
+	}
+	return stamp, nil
 }
 
 // clearIndexData removes all FDB data for an index.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -124,7 +125,9 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	return totalRecords, nil
 }
 
-// markWriteOnly transitions the index to WRITE_ONLY state.
+// markWriteOnly transitions the index to WRITE_ONLY state and saves the
+// BY_RECORDS indexing type stamp. Matches Java's IndexingBase.handleIndexingState()
+// which calls clearAndMarkIndexWriteOnly + setIndexingTypeOrThrow.
 func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
@@ -132,7 +135,16 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 			return nil, err
 		}
 		_, err = store.ClearAndMarkIndexWriteOnly(oi.index.Name)
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
+		// Save the BY_RECORDS stamp. clearAndMarkIndexWriteOnly already cleared
+		// any existing stamp (via clearIndexData), so this is always a fresh write.
+		// Matches Java's compileSingleTargetLegacyIndexingTypeStamp().
+		stamp := &gen.IndexBuildIndexingStamp{
+			Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+		}
+		return nil, store.SaveIndexingTypeStamp(oi.index, stamp)
 	})
 	return err
 }

@@ -57,6 +57,7 @@ class ConformanceServer {
         new TypedRecordSteps(),
         new MetaDataProtoSteps(),
         new ErrorSteps(),
+        new IndexBuildStateSteps(),
     };
 
     private static class StepEntry {
