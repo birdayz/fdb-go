@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1216 specs pass (894 unit/integration + 322 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1221 specs pass (894 unit/integration + 327 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -334,6 +334,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | PERMUTED_MIN index | saveOrderWithPermutedMinIndex, deleteOrderWithPermutedMinIndex, scanPermutedMinByValue, scanPermutedMinByGroup | permuted_min_max_index_conformance_test.go | YES |
 | Index scan continuations | scanIndexWithContinuation, saveOrderForIndexContinuation | index_continuation_conformance_test.go | YES |
 | Error paths | insertDuplicateOrder, updateNonExistentOrder, openNonExistentStore, createExistingStore, scanNonReadableIndex, saveLocked | error_conformance_test.go | YES |
+| Index build state (stamp) | loadIndexingTypeStamp, saveIndexingTypeStampByRecords | index_build_state_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
@@ -366,7 +367,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **Metadata conformance: explicit record type key config** — Added `with_explicit_type_key` config (int64(42) / 42L). 7 configs × 3 directions = 21 specs now (was 18).
 - [x] **Proto field type diversity in test schema** — DONE. `field_type_index_test.go` (16 specs): VALUE indexes on every TypedRecord field type (int32, sint32, sint64, sfixed32, sfixed64, float, double, bool, string, bytes, enum). Tests null handling, composite multi-type indexes, save/delete/scan roundtrip, float special values (±Inf, ±0.0), int32 boundary values (MaxInt32, MinInt32). Cross-language conformance already covered by `typed_record_conformance_test.go` (11 specs). Remaining untested: map (Java rejects), oneof (transparent to storage), repeated message (covered by NestFanOut tests).
 - [x] **Store lock + delete operation interaction** — DONE (already implemented). Go has `validateRecordUpdateAllowed()` in all 4 mutation paths (SaveRecord, DeleteRecord, DeleteAllRecords, DeleteRecordsWhere) matching Java exactly. Unit tests cover: DeleteBlockedByLock, DeleteAllBlockedByLock, DeleteRecordsWhere blocked, error precedence (non-existent delete returns false, not lock error). Lock wire format cross-validated by store header conformance tests (14 specs).
-- [ ] **Index build state wire format (subspace 9)** — MEDIUM. No cross-language validation of IndexBuildSpaceKey contents. If Go and Java write different build state formats, mid-build language switch could corrupt state.
+- [x] **Index build state wire format (subspace 9)** — MEDIUM. `SaveIndexingTypeStamp`/`LoadIndexingTypeStamp` on store. OnlineIndexer saves BY_RECORDS stamp at `[9][indexSubspaceKey][2]` matching Java's `IndexingBase.setIndexingTypeOrThrow()`. 5 conformance specs: Go→Java, Java→Go, no stamp, persists after READABLE, cleared on rebuild.
 
 ---
 
@@ -518,9 +519,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: TEXT, BITMAP_VALUE, PERMUTED_MIN/MAX, MAX_EVER_VERSION, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. See 4.10.6.0 upgrade assessment §2 for full details.
+- [ ] **Index types beyond implemented** — Java has more types: TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX and MAX_EVER_VERSION done.) See 4.10.6.0 upgrade assessment §2.
 
-- [ ] **VERSION index type** — HIGH. Two phases:
+- [x] **VERSION index type** — HIGH. Two phases:
 
   **Phase 1: Widen `KeyExpression.Evaluate()` signature** (prerequisite)
   - [x] Change `Evaluate(proto.Message)` → `Evaluate(*FDBStoredRecord[proto.Message], proto.Message)` across all expression types
@@ -678,7 +679,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Transaction priority** — `TransactionPriority` type with `PriorityDefault`, `PriorityBatch`, `PrioritySystemImmediate`. `SetTransactionPriority()` on `FDBRecordContext`.
 
-- [ ] **Store state caching** — Java has `FDBRecordStoreStateCache` to avoid redundant header reads. Go loads state on demand without caching.
+- [x] **Store state caching** — `MetaDataVersionStampStoreStateCache` + `PassThroughRecordStoreStateCache`. LRU+TTL, `\xff/metadataVersion` invalidation. 40 specs, 2.2x speedup.
 
 - [x] **Read/write version management** — `GetReadVersion()`, `SetReadVersion()` on `FDBRecordContext`. Wraps FDB transaction read version.
 
