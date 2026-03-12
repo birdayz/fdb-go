@@ -139,9 +139,8 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		}
 
 		for _, index := range indexesToBuild {
-			// TODO: detect indexOnNewRecordTypes (index covers only record types
-			// added in this same version bump). For now, conservatively false.
-			desiredState := store.indexRebuildPolicy(index, recordCount, false)
+			indexOnNewRecordTypes := store.areAllRecordTypesSince(index, oldMetaDataVersion)
+			desiredState := store.indexRebuildPolicy(index, recordCount, indexOnNewRecordTypes)
 
 			switch desiredState {
 			case IndexStateReadable:
@@ -174,6 +173,44 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	}
 
 	return nil
+}
+
+// areAllRecordTypesSince returns true if every record type associated with
+// the given index was added after oldMetaDataVersion (i.e. all have
+// SinceVersion > oldMetaDataVersion). For universal indexes, checks all
+// record types. Matches Java's FDBRecordStore.areAllRecordTypesSince().
+func (store *FDBRecordStore) areAllRecordTypesSince(index *Index, oldMetaDataVersion int) bool {
+	// Universal indexes apply to all record types.
+	isUniversal := false
+	for _, uIdx := range store.metaData.GetUniversalIndexes() {
+		if uIdx.Name == index.Name {
+			isUniversal = true
+			break
+		}
+	}
+
+	if isUniversal {
+		for _, rt := range store.metaData.RecordTypes() {
+			if rt.SinceVersion == 0 || rt.SinceVersion <= oldMetaDataVersion {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Type-specific index: find which record types have it.
+	found := false
+	for _, rt := range store.metaData.RecordTypes() {
+		for _, rtIdx := range store.metaData.GetIndexesForRecordType(rt.Name) {
+			if rtIdx.Name == index.Name {
+				found = true
+				if rt.SinceVersion == 0 || rt.SinceVersion <= oldMetaDataVersion {
+					return false
+				}
+			}
+		}
+	}
+	return found
 }
 
 // checkPossiblyRebuildRecordCounts detects when the record count key expression
