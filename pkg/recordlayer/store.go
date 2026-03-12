@@ -717,11 +717,11 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		IndexBuildSpaceKey,           // 9 - index build state
 	} {
 		sub := store.subspace.Sub(key)
-		if pr, err := fdb.PrefixRange(sub.Bytes()); err == nil {
-			tx.ClearRange(pr)
-		} else {
-			tx.ClearRange(sub)
+		pr, err := fdb.PrefixRange(sub.Bytes())
+		if err != nil {
+			return fmt.Errorf("delete all records prefix range for key %d: %w", key, err)
 		}
+		tx.ClearRange(pr)
 	}
 
 	// Remove pending version mutations and local version cache entries for

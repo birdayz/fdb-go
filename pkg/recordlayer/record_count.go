@@ -172,11 +172,11 @@ func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_R
 	// are stored at countSubspace.Pack(tuple.Tuple{}) which equals the prefix.
 	if toDisabled {
 		countSubspace := store.subspace.Sub(RecordCountKey)
-		if pr, err := fdb.PrefixRange(countSubspace.Bytes()); err == nil {
-			store.context.Transaction().ClearRange(pr)
-		} else {
-			store.context.Transaction().ClearRange(countSubspace)
+		pr, err := fdb.PrefixRange(countSubspace.Bytes())
+		if err != nil {
+			return fmt.Errorf("record count prefix range: %w", err)
 		}
+		store.context.Transaction().ClearRange(pr)
 	}
 
 	store.storeHeader.RecordCountState = &newState

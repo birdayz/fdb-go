@@ -221,7 +221,9 @@ func (store *FDBRecordStore) MarkIndexDisabled(indexName string) (bool, error) {
 		return false, nil
 	}
 	store.setIndexState(indexName, IndexStateDisabled)
-	store.clearIndexData(idx)
+	if err := store.clearIndexData(idx); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -233,7 +235,9 @@ func (store *FDBRecordStore) ClearAndMarkIndexWriteOnly(indexName string) (bool,
 	if idx == nil {
 		return false, &IndexNotFoundError{IndexName: indexName}
 	}
-	store.clearIndexData(idx)
+	if err := store.clearIndexData(idx); err != nil {
+		return false, err
+	}
 	current := store.GetIndexState(indexName)
 	changed := current != IndexStateWriteOnly
 	store.setIndexState(indexName, IndexStateWriteOnly)
@@ -388,7 +392,7 @@ func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuil
 
 // clearIndexData removes all FDB data for an index.
 // Matches Java's FDBRecordStore.clearIndexData().
-func (store *FDBRecordStore) clearIndexData(index *Index) {
+func (store *FDBRecordStore) clearIndexData(index *Index) error {
 	// Clear index entries using PrefixRange (not subspace.Range) to include
 	// the exact prefix key. Ungrouped aggregate indexes (COUNT/SUM) store
 	// data at the subspace prefix itself, which subspace.Range() excludes.
@@ -396,12 +400,10 @@ func (store *FDBRecordStore) clearIndexData(index *Index) {
 	// FDBRecordStore.clearIndexData: "startsWith to handle ungrouped aggregate indexes".
 	idxSubspace := store.indexSubspace(index)
 	idxPrefixRange, err := fdb.PrefixRange(idxSubspace.Bytes())
-	if err == nil {
-		store.context.Transaction().ClearRange(idxPrefixRange)
-	} else {
-		// Fallback: should never happen for valid subspace prefixes
-		store.context.Transaction().ClearRange(idxSubspace)
+	if err != nil {
+		return fmt.Errorf("clear index data prefix range: %w", err)
 	}
+	store.context.Transaction().ClearRange(idxPrefixRange)
 
 	// Clear secondary space
 	secSubspace := store.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey())
@@ -418,22 +420,24 @@ func (store *FDBRecordStore) clearIndexData(index *Index) {
 	// Clear build space
 	buildSubspace := store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey())
 	store.context.Transaction().ClearRange(buildSubspace)
+
+	return nil
 }
 
 // removeFormerIndexData clears all FDB data for a former (dropped) index.
 // Matches Java's FDBRecordStore.removeFormerIndex() which clears:
 // INDEX_KEY, INDEX_SECONDARY_SPACE_KEY, INDEX_RANGE_SPACE_KEY,
 // INDEX_STATE_SPACE_KEY, and INDEX_UNIQUENESS_VIOLATIONS_KEY subspaces.
-func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) {
+func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) error {
 	subKey := former.SubspaceKey
 
 	// Clear index entries
 	idxSubspace := store.subspace.Sub(IndexKey, subKey)
-	if pr, err := fdb.PrefixRange(idxSubspace.Bytes()); err == nil {
-		store.context.Transaction().ClearRange(pr)
-	} else {
-		store.context.Transaction().ClearRange(idxSubspace)
+	pr, err := fdb.PrefixRange(idxSubspace.Bytes())
+	if err != nil {
+		return fmt.Errorf("remove former index prefix range: %w", err)
 	}
+	store.context.Transaction().ClearRange(pr)
 
 	// Clear secondary space
 	store.context.Transaction().ClearRange(store.subspace.Sub(IndexSecondarySpaceKey, subKey))
@@ -450,6 +454,8 @@ func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) {
 
 	// Clear build space
 	store.context.Transaction().ClearRange(store.subspace.Sub(IndexBuildSpaceKey, subKey))
+
+	return nil
 }
 
 // shouldMaintainIndex returns true if the index should be updated on record changes.

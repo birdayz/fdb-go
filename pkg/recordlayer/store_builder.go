@@ -125,7 +125,9 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// INDEX_STATE_SPACE_KEY, and INDEX_UNIQUENESS_VIOLATIONS_KEY subspaces.
 	for _, former := range store.metaData.GetFormerIndexes() {
 		if former.RemovedVersion > oldMetaDataVersion {
-			store.removeFormerIndexData(former)
+			if err := store.removeFormerIndexData(former); err != nil {
+				return err
+			}
 		}
 	}
 
