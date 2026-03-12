@@ -278,7 +278,7 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 	keyMap := make(map[string]tuple.Tuple) // packed → tuple (for FDB writes)
 
 	cursor := store.ScanRecords(nil, ForwardScan())
-	defer cursor.Close()
+	defer func() { _ = cursor.Close() }()
 
 	for {
 		result, err := cursor.OnNext(ctx)

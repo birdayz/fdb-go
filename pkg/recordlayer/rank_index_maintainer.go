@@ -435,10 +435,18 @@ func (m *RankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	if groupPrefixSize > 0 && groupPrefixSize < len(groupAndRank) {
 		prefix := tuple.Tuple(groupAndRank[:groupPrefixSize])
 		rankSubspace = m.secondarySubspace.Sub(prefix...)
-		rank = groupAndRank[groupPrefixSize].(int64)
+		rankVal, ok := groupAndRank[groupPrefixSize].(int64)
+		if !ok {
+			return nil, fmt.Errorf("rank index: expected int64 rank, got %T", groupAndRank[groupPrefixSize])
+		}
+		rank = rankVal
 	} else if len(groupAndRank) > 0 {
 		rankSubspace = m.secondarySubspace
-		rank = groupAndRank[0].(int64)
+		rankVal, ok := groupAndRank[0].(int64)
+		if !ok {
+			return nil, fmt.Errorf("rank index: expected int64 rank, got %T", groupAndRank[0])
+		}
+		rank = rankVal
 	} else {
 		return nil, fmt.Errorf("rank index: empty group and rank tuple")
 	}

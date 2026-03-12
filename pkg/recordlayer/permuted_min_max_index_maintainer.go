@@ -238,7 +238,7 @@ func (m *permutedMinMaxIndexMaintainer) getExtremum(groupKey tuple.Tuple) (tuple
 	}
 
 	cursor := m.StandardIndexMaintainer.Scan(scanRange, nil, props)
-	defer cursor.Close()
+	defer func() { _ = cursor.Close() }()
 
 	result, err := cursor.OnNext(context.Background())
 	if err != nil {
@@ -310,7 +310,7 @@ func evaluatePermutedMinMaxAggregate(
 	// Trim range to unpermuted prefix (permuted columns can't be range-filtered directly).
 	unpermutedRange := trimToUnpermutedPrefix(scanRange, groupPrefixSize-m.permutedSize)
 	cursor := m.ScanByGroup(unpermutedRange, nil, props)
-	defer cursor.Close()
+	defer func() { _ = cursor.Close() }()
 
 	needsFilter := !tupleRangesEqual(unpermutedRange, scanRange)
 

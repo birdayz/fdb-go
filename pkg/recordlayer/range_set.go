@@ -227,7 +227,11 @@ func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEm
 			if unpackErr != nil {
 				return false, unpackErr
 			}
-			tr.Set(fdb.Key(lastSeen), unpackedKey[0].([]byte))
+			keyBytes, ok := unpackedKey[0].([]byte)
+			if !ok {
+				return false, fmt.Errorf("rangeset: unexpected tuple element type %T, expected []byte", unpackedKey[0])
+			}
+			tr.Set(fdb.Key(lastSeen), keyBytes)
 			if err := tr.AddWriteConflictRange(fdb.KeyRange{
 				Begin: fdb.Key(lastSeen),
 				End:   fdb.Key(kv.Key),
@@ -327,7 +331,10 @@ func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit i
 		if unpackErr != nil {
 			return nil, unpackErr
 		}
-		nextBegin := unpackedKey[0].([]byte)
+		nextBegin, ok := unpackedKey[0].([]byte)
+		if !ok {
+			return nil, fmt.Errorf("rangeset: unexpected tuple element type %T, expected []byte", unpackedKey[0])
+		}
 
 		if bytes.Compare(currBegin, nextBegin) < 0 {
 			results = append(results, RangeSetRange{Begin: currBegin, End: nextBegin})

@@ -11,6 +11,11 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
+// RankedSetEmptyKeyError is returned when a RankedSet operation receives an empty key.
+type RankedSetEmptyKeyError struct{}
+
+func (e *RankedSetEmptyKeyError) Error() string { return "ranked set: empty key not allowed" }
+
 // RankedSet is a persistent skip-list that supports efficient retrieval of elements by rank.
 // Wire-compatible with Java's com.apple.foundationdb.async.RankedSet.
 //
@@ -121,7 +126,7 @@ func (rs *RankedSet) InitNeeded(tx fdb.ReadTransaction) (bool, error) {
 // Matches Java's RankedSet.add().
 func (rs *RankedSet) Add(tx fdb.Transaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, fmt.Errorf("ranked set: empty key not allowed")
+		return false, &RankedSetEmptyKeyError{}
 	}
 
 	keyHash := rs.config.HashFunction(key)
@@ -190,7 +195,7 @@ func (rs *RankedSet) addInsertLevelKey(tx fdb.Transaction, key []byte, level int
 // Matches Java's RankedSet.remove().
 func (rs *RankedSet) Remove(tx fdb.Transaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, fmt.Errorf("ranked set: empty key not allowed")
+		return false, &RankedSetEmptyKeyError{}
 	}
 
 	count, err := rs.countCheckedKey(tx, key)
@@ -253,7 +258,7 @@ func (rs *RankedSet) Remove(tx fdb.Transaction, key []byte) (bool, error) {
 // Matches Java's RankedSet.rank().
 func (rs *RankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool) (*int64, error) {
 	if len(key) == 0 {
-		return nil, fmt.Errorf("ranked set: empty key not allowed")
+		return nil, &RankedSetEmptyKeyError{}
 	}
 
 	if nullIfMissing {
@@ -373,7 +378,7 @@ func (rs *RankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 // Contains checks if key is present in the set.
 func (rs *RankedSet) Contains(tx fdb.ReadTransaction, key []byte) (bool, error) {
 	if len(key) == 0 {
-		return false, fmt.Errorf("ranked set: empty key not allowed")
+		return false, &RankedSetEmptyKeyError{}
 	}
 	count, err := rs.countCheckedKey(tx, key)
 	if err != nil {
@@ -386,7 +391,7 @@ func (rs *RankedSet) Contains(tx fdb.ReadTransaction, key []byte) (bool, error) 
 // or more if CountDuplicates is enabled).
 func (rs *RankedSet) Count(tx fdb.ReadTransaction, key []byte) (int64, error) {
 	if len(key) == 0 {
-		return 0, fmt.Errorf("ranked set: empty key not allowed")
+		return 0, &RankedSetEmptyKeyError{}
 	}
 	count, err := rs.countCheckedKey(tx, key)
 	if err != nil {
