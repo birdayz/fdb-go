@@ -78,7 +78,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Add read conflict on the key FIRST
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// CRITICAL: TX1 must write SOMETHING to be a read-write transaction
 				// Read-only transactions don't check for conflicts in FDB!
@@ -160,7 +160,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 						CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
 
-					fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+					Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 					// Wait for TX2 to complete
 					<-tx2Done
@@ -277,7 +277,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Add write conflict - this is like "writing" to the key
-				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// Must write something to be a read-write transaction
 				rtx.Transaction().Set(fdb.Key("tx2_marker"), []byte("tx2"))
@@ -313,7 +313,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Add write conflict
-				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// Should still be able to operate on same key in same transaction
 				exists, err := fdbStore.RecordExists(tuple.Tuple{orderID}, recordlayer.IsolationLevelSerializable)
@@ -350,13 +350,13 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Adding multiple read conflicts should be idempotent
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// Adding multiple write conflicts should be idempotent
-				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
-				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
+				Expect(fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				return nil, nil
 			})
@@ -392,7 +392,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					// Add read conflict only on orderID1
-					fdbStore.AddRecordReadConflict(tuple.Tuple{orderID1})
+					Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID1})).NotTo(HaveOccurred())
 
 					close(tx1Started)
 
@@ -453,8 +453,8 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Add both types of conflicts - tests range calculation
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
-				fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
+				Expect(fdbStore.AddRecordWriteConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// If ranges were wrong, this would likely error or cause issues
 				// The fact that we can still operate is a good sign
@@ -499,7 +499,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Add read conflict first
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// CRITICAL: Must write something to be a read-write transaction
 				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))
@@ -561,7 +561,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 					CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})
+				Expect(fdbStore.AddRecordReadConflict(tuple.Tuple{orderID})).NotTo(HaveOccurred())
 
 				// CRITICAL: Must write something to be a read-write transaction
 				rtx.Transaction().Set(fdb.Key("tx1_marker"), []byte("tx1"))

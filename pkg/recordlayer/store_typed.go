@@ -191,13 +191,13 @@ func (ts *TypedFDBRecordStore[T]) UpdateRecord(record T) (*FDBStoredRecord[T], e
 }
 
 // AddRecordReadConflict adds a read conflict range for the given primary key
-func (ts *TypedFDBRecordStore[T]) AddRecordReadConflict(primaryKey tuple.Tuple) {
-	ts.baseStore.AddRecordReadConflict(primaryKey)
+func (ts *TypedFDBRecordStore[T]) AddRecordReadConflict(primaryKey tuple.Tuple) error {
+	return ts.baseStore.AddRecordReadConflict(primaryKey)
 }
 
 // AddRecordWriteConflict adds a write conflict range for the given primary key
-func (ts *TypedFDBRecordStore[T]) AddRecordWriteConflict(primaryKey tuple.Tuple) {
-	ts.baseStore.AddRecordWriteConflict(primaryKey)
+func (ts *TypedFDBRecordStore[T]) AddRecordWriteConflict(primaryKey tuple.Tuple) error {
+	return ts.baseStore.AddRecordWriteConflict(primaryKey)
 }
 
 // Context returns the record context this store is using
