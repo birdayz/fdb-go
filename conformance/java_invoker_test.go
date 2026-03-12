@@ -174,9 +174,23 @@ type Request struct {
 
 // Response is the JSON structure returned from Java
 type Response struct {
-	Success bool            `json:"success"`
-	Result  json.RawMessage `json:"result"`
-	Error   string          `json:"error,omitempty"`
+	Success            bool            `json:"success"`
+	Result             json.RawMessage `json:"result"`
+	Error              string          `json:"error,omitempty"`
+	ExceptionClass     string          `json:"exceptionClass,omitempty"`
+	ExceptionFullClass string          `json:"exceptionFullClass,omitempty"`
+}
+
+// JavaError represents a structured error from the Java conformance server.
+// It includes the Java exception class name for cross-language error type verification.
+type JavaError struct {
+	Message            string
+	ExceptionClass     string // Simple class name, e.g. "RecordAlreadyExistsException"
+	ExceptionFullClass string // Fully qualified, e.g. "com.apple.foundationdb.record.provider.foundationdb.RecordAlreadyExistsException"
+}
+
+func (e *JavaError) Error() string {
+	return fmt.Sprintf("java %s: %s", e.ExceptionClass, e.Message)
 }
 
 // Invoke calls a Java conformance step via HTTP POST
@@ -220,6 +234,13 @@ func (j *JavaInvoker) Invoke(ctx context.Context, stepName string, params map[st
 	}
 
 	if !resp.Success {
+		if resp.ExceptionClass != "" {
+			return nil, &JavaError{
+				Message:            resp.Error,
+				ExceptionClass:     resp.ExceptionClass,
+				ExceptionFullClass: resp.ExceptionFullClass,
+			}
+		}
 		return nil, fmt.Errorf("java error: %s", resp.Error)
 	}
 

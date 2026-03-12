@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1209 specs pass (894 unit/integration + 315 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1216 specs pass (894 unit/integration + 322 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -223,12 +223,16 @@ Architectural decision: Java exception class = Go error struct. Use `errors.As()
 - [x] **`RecordDeserializationError`** — wraps proto unmarshal failures with `Unwrap()`. 6 return sites migrated (store + cursor).
 - [ ] **`StaleUserVersionError`** — Java's `RecordStoreStaleUserVersionException` (not thrown in 4.10.6.0 but type exists). Deferred — no throw sites exist.
 
-### Phase 3: Conformance tests for error paths — **MEDIUM**
+### Phase 3: Conformance tests for error paths — **DONE**
 
-- [ ] **Unique index violation cross-language** — Go saves dup → error, Java saves dup → error, verify both reject.
-- [ ] **Store lock state cross-language** — Go sets FORBID_RECORD_UPDATE, Java tries save → error (and vice versa).
-- [ ] **Schema validation cross-language** — Java validates metadata, Go validates same metadata, errors match.
-- [ ] **Improve Java conformance server** — return structured error responses `{errorType, message}` instead of generic HTTP 500. Enables type-level error conformance testing.
+- [x] **Improve Java conformance server** — catch block now returns structured error JSON with `exceptionClass` and `exceptionFullClass` fields. Go `JavaError` type for type-level assertions. HTTP 200 for step errors (not 500).
+- [x] **Record existence errors cross-language** — RecordAlreadyExistsException, RecordDoesNotExistException verified both Go and Java throw equivalent errors.
+- [x] **Store lifecycle errors cross-language** — RecordStoreAlreadyExistsException, RecordStoreDoesNotExistException verified both Go and Java.
+- [x] **Index scan errors cross-language** — ScanNonReadableIndexException verified on write-only index scan.
+- [x] **Store lock errors cross-language** — FORBID_RECORD_UPDATE prevents save in both Go and Java.
+- [x] **Cross-language error propagation** — Go creates record, Java insert duplicate gets RecordAlreadyExistsException.
+- [ ] **Unique index violation cross-language** — deferred (requires commit-check semantics alignment).
+- [ ] **Schema validation cross-language** — deferred (MetaDataValidator gaps need to be addressed first).
 
 ---
 
@@ -329,6 +333,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | PERMUTED_MAX index | saveOrderWithPermutedMaxIndex, deleteOrderWithPermutedMaxIndex, scanPermutedMaxByValue, scanPermutedMaxByGroup | permuted_min_max_index_conformance_test.go | YES |
 | PERMUTED_MIN index | saveOrderWithPermutedMinIndex, deleteOrderWithPermutedMinIndex, scanPermutedMinByValue, scanPermutedMinByGroup | permuted_min_max_index_conformance_test.go | YES |
 | Index scan continuations | scanIndexWithContinuation, saveOrderForIndexContinuation | index_continuation_conformance_test.go | YES |
+| Error paths | insertDuplicateOrder, updateNonExistentOrder, openNonExistentStore, createExistingStore, scanNonReadableIndex, saveLocked | error_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 

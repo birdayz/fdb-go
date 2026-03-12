@@ -56,6 +56,7 @@ class ConformanceServer {
         new IndexContinuationSteps(),
         new TypedRecordSteps(),
         new MetaDataProtoSteps(),
+        new ErrorSteps(),
     };
 
     private static class StepEntry {
@@ -181,11 +182,27 @@ class ConformanceServer {
 
         } catch (Exception e) {
             e.printStackTrace();
-            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-            if (e.getCause() != null) {
-                errorMsg += " (caused by: " + e.getCause() + ")";
+            // Find root cause — the actual Record Layer exception (unwrap InvocationTargetException and other wrappers)
+            Throwable root = e;
+            while (root.getCause() != null) {
+                root = root.getCause();
             }
-            sendError(exchange, 500, "Error invoking step: " + errorMsg);
+            String errorMsg = root.getMessage() != null ? root.getMessage() : root.getClass().getName();
+
+            // Build structured error response with exception class info
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("success", false);
+            errorResponse.put("error", errorMsg);
+            errorResponse.put("exceptionClass", root.getClass().getSimpleName());
+            errorResponse.put("exceptionFullClass", root.getClass().getName());
+
+            String responseBody = gson.toJson(errorResponse);
+            byte[] responseBytes = responseBody.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
+            }
         }
     }
 
