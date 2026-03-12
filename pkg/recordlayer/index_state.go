@@ -67,14 +67,6 @@ func indexStateFromCode(code int64) (IndexState, error) {
 	}
 }
 
-// ErrIndexNotReadable is returned when trying to scan a non-readable index.
-var ErrIndexNotReadable = fmt.Errorf("index is not readable")
-
-// ErrIndexNotFound is returned when an index name is not in the metadata.
-var ErrIndexNotFound = fmt.Errorf("index not found in metadata")
-
-// ErrIndexNotBuilt is returned when trying to mark a non-fully-built index as readable.
-var ErrIndexNotBuilt = fmt.Errorf("index is not built")
 
 // GetIndexState returns the state of the given index. Returns READABLE if no
 // explicit state is stored (matching Java's default behavior).
@@ -116,7 +108,7 @@ func (store *FDBRecordStore) IsIndexScannable(indexName string) bool {
 func (store *FDBRecordStore) MarkIndexReadable(indexName string) (bool, error) {
 	idx := store.metaData.GetIndex(indexName)
 	if idx == nil {
-		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+		return false, &IndexNotFoundError{IndexName: indexName}
 	}
 	current := store.GetIndexState(indexName)
 	if current == IndexStateReadable {
@@ -160,7 +152,7 @@ func (store *FDBRecordStore) MarkIndexReadable(indexName string) (bool, error) {
 func (store *FDBRecordStore) MarkIndexReadableOrUniquePending(indexName string) (bool, error) {
 	idx := store.metaData.GetIndex(indexName)
 	if idx == nil {
-		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+		return false, &IndexNotFoundError{IndexName: indexName}
 	}
 
 	current := store.GetIndexState(indexName)
@@ -204,7 +196,7 @@ func (store *FDBRecordStore) MarkIndexReadableOrUniquePending(indexName string) 
 // Matches Java's FDBRecordStore.markIndexWriteOnly().
 func (store *FDBRecordStore) MarkIndexWriteOnly(indexName string) (bool, error) {
 	if store.metaData.GetIndex(indexName) == nil {
-		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+		return false, &IndexNotFoundError{IndexName: indexName}
 	}
 	current := store.GetIndexState(indexName)
 	if current == IndexStateWriteOnly {
@@ -220,7 +212,7 @@ func (store *FDBRecordStore) MarkIndexWriteOnly(indexName string) (bool, error) 
 func (store *FDBRecordStore) MarkIndexDisabled(indexName string) (bool, error) {
 	idx := store.metaData.GetIndex(indexName)
 	if idx == nil {
-		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+		return false, &IndexNotFoundError{IndexName: indexName}
 	}
 	current := store.GetIndexState(indexName)
 	if current == IndexStateDisabled {
@@ -237,7 +229,7 @@ func (store *FDBRecordStore) MarkIndexDisabled(indexName string) (bool, error) {
 func (store *FDBRecordStore) ClearAndMarkIndexWriteOnly(indexName string) (bool, error) {
 	idx := store.metaData.GetIndex(indexName)
 	if idx == nil {
-		return false, fmt.Errorf("%w: %s", ErrIndexNotFound, indexName)
+		return false, &IndexNotFoundError{IndexName: indexName}
 	}
 	store.clearIndexData(idx)
 	current := store.GetIndexState(indexName)
@@ -432,7 +424,7 @@ func (store *FDBRecordStore) checkIndexBuilt(index *Index) error {
 		return fmt.Errorf("check index %q built state: %w", index.Name, err)
 	}
 	if missing != nil {
-		return fmt.Errorf("%w: index %q has unbuilt ranges", ErrIndexNotBuilt, index.Name)
+		return &IndexNotBuiltError{IndexName: index.Name}
 	}
 	return nil
 }

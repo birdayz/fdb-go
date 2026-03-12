@@ -248,7 +248,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			// Unsplit record — single KV
 			recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
 			if deserErr != nil {
-				return nil, nil, fmt.Errorf("failed to deserialize record: %w", deserErr)
+				return nil, nil, &RecordDeserializationError{Cause: deserErr}
 			}
 			// Attach version: from pendingVersion (forward scan) or peek ahead (reverse scan)
 			version := c.takePendingVersion()
@@ -445,7 +445,7 @@ func (c *keyValueCursor) readSplitRecord(
 
 	recordType, protoMessage, err := c.store.deserializeAndDiscover(data)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to deserialize split record: %w", err)
+		return nil, nil, &RecordDeserializationError{Cause: err}
 	}
 
 	// Attach version captured during chunk collection (forward or reverse scan)

@@ -192,6 +192,63 @@ Java source at `fdb-record-layer/` in repo root (gitignored), checked out at tag
 4. **Simple code** — no unnecessary abstraction. Three similar lines > premature abstraction
 5. **Proto fidelity** — respect protobuf semantics (open enums, field presence, wire compat)
 6. **Test hard** — t.Parallel() where possible, cover edge cases, test Java interop
+7. **Error types, not sentinels** — see Error handling section below
+
+## Error handling
+
+**Architecture: Java exception class = Go error struct. Always.**
+
+Every Java exception class that we handle maps to a Go `struct` implementing `error`. Use `errors.As()` for matching (Go equivalent of `catch (SpecificException e)`). Never use bare `var ErrFoo = errors.New("...")` sentinel errors.
+
+**Why:** Java exceptions carry structured context at throw sites (primary key, index name, subspace, etc. via `addLogInfo()`). Sentinel errors can't carry context. `errors.As()` is the idiomatic Go mechanism for type-matching + data extraction.
+
+**Pattern:**
+```go
+// Define: one type per Java exception class
+type RecordAlreadyExistsError struct {
+    PrimaryKey tuple.Tuple  // matches Java's LogMessageKeys.PRIMARY_KEY
+}
+
+func (e *RecordAlreadyExistsError) Error() string {
+    return fmt.Sprintf("record already exists: %v", e.PrimaryKey)
+}
+
+// Return: always with context
+return &RecordAlreadyExistsError{PrimaryKey: pk}
+
+// Match: errors.As() — equivalent of catch (RecordAlreadyExistsException e)
+var e *RecordAlreadyExistsError
+if errors.As(err, &e) {
+    log.Printf("duplicate at PK %v", e.PrimaryKey)
+}
+```
+
+**Rules:**
+- Every error type struct carries the same context fields as the Java exception's `addLogInfo()` keys
+- Error message in `Error()` should be descriptive (include context values), but callers must NOT string-match — use `errors.As()` only
+- No sentinel `var ErrFoo` variables — they lose context and encourage `errors.Is()` string matching
+- For errors that are genuinely message-only (like `MetaDataException` in Java), use a `MetaDataError{Message string}` type — still a struct, still matchable via `errors.As()`
+- Wrap with `fmt.Errorf("context: %w", err)` to add call-site context while preserving `errors.As()` unwrapping
+
+**Java → Go exception mapping reference:**
+
+| Java Exception | Go Error Type | Context Fields |
+|---|---|---|
+| `RecordAlreadyExistsException` | `RecordAlreadyExistsError` | `PrimaryKey` |
+| `RecordDoesNotExistException` | `RecordDoesNotExistError` | `PrimaryKey` |
+| `RecordTypeChangedException` | `RecordTypeChangedError` | `PrimaryKey`, `ActualType`, `ExpectedType` |
+| `RecordStoreAlreadyExistsException` | `RecordStoreAlreadyExistsError` | (subspace context) |
+| `RecordStoreDoesNotExistException` | `RecordStoreDoesNotExistError` | (subspace context) |
+| `RecordStoreNoInfoAndNotEmptyException` | `RecordStoreNoInfoButNotEmptyError` | (subspace context, first key) |
+| `ScanNonReadableIndexException` | `IndexNotReadableError` | `IndexName` |
+| `StoreIsFullyLockedException` | `StoreIsFullyLockedError` | `Reason`, `Timestamp` |
+| `UnknownStoreLockStateException` | `UnknownStoreLockStateError` | `LockStateValue` |
+| `StaleMetaDataVersionException` | `StaleMetaDataVersionError` | `LocalVersion`, `StoredVersion` |
+| `MetaDataException` | `MetaDataError` | `Message` |
+| `UnsupportedFormatVersionException` | `UnsupportedFormatVersionError` | `Version` |
+| `RecordIndexUniquenessViolation` | `RecordIndexUniquenessViolationError` | `IndexName`, `IndexKey`, `PrimaryKey`, `ExistingKey` |
+| `IndexKeySizeException` | `IndexKeySizeError` | `IndexName`, `PrimaryKey`, `KeySize`, `Limit` |
+| `IndexValueSizeException` | `IndexValueSizeError` | `IndexName`, `PrimaryKey`, `ValueSize`, `Limit` |
 
 ## Proto definitions
 
@@ -207,5 +264,5 @@ Each continuation serializes cursor state to bytes for reconstruction across tra
 
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/MAX_EVER_VERSION/COUNT_NOT_NULL/COUNT_UPDATES/PERMUTED_MIN/PERMUTED_MAX indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
-- **Key gaps**: TEXT index, more key expression types, store state caching, timer/instrumentation
-- **Test counts**: 854 unit/integration specs, 315 conformance specs (1169 total)
+- **Key gaps**: TEXT index, more key expression types, timer/instrumentation
+- **Test counts**: 894 unit/integration specs, 315 conformance specs (1209 total)

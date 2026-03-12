@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -65,15 +64,6 @@ func (e *UnknownStoreLockStateError) Error() string {
 	return fmt.Sprintf("Store has unknown lock state: %d", e.LockStateValue)
 }
 
-// ErrRecordStoreStateNotLoaded indicates that the record store state needs to be loaded before operations
-var ErrRecordStoreStateNotLoaded = errors.New("record store state not loaded")
-
-// Store creation/existence errors
-var (
-	ErrRecordStoreAlreadyExists    = errors.New("record store already exists")
-	ErrRecordStoreDoesNotExist     = errors.New("record store does not exist")
-	ErrRecordStoreNoInfoButNotEmpty = errors.New("record store has no info but is not empty")
-)
 
 // FormatVersionCacheableState is the minimum format version required for
 // store state cacheability. Matches Java's FormatVersion.CACHEABLE_STATE.
@@ -182,7 +172,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 	// Discover which record type is stored by inspecting the UnionDescriptor
 	recordType, protoMessage, err := store.deserializeAndDiscover(value)
 	if err != nil {
-		return nil, fmt.Errorf("failed to deserialize record: %w", err)
+		return nil, &RecordDeserializationError{Cause: err}
 	}
 
 	stored := &FDBStoredRecord[proto.Message]{
@@ -256,7 +246,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 		var deserErr error
 		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
 		if deserErr != nil {
-			return false, fmt.Errorf("failed to deserialize record for deletion: %w", deserErr)
+			return false, &RecordDeserializationError{Cause: deserErr}
 		}
 	}
 
@@ -344,7 +334,7 @@ func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel
 //
 // Returns:
 //   - *FDBStoredRecord: The saved record with metadata
-//   - error: ErrRecordAlreadyExists, ErrRecordDoesNotExist, or ErrRecordTypeChanged based on existenceCheck
+//   - error: RecordAlreadyExistsError, RecordDoesNotExistError, or RecordTypeChangedError based on existenceCheck
 //
 // Note: Version and versionstamp support will be added in Phase 2
 func (store *FDBRecordStore) SaveRecordWithOptions(
@@ -419,7 +409,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 			if deserErr != nil {
 				// Propagate deserialization error. Java's loadExistingRecord()
 				// deserializes before the type check — if deser fails, error propagates.
-				return nil, fmt.Errorf("failed to deserialize existing record for type check: %w", deserErr)
+				return nil, &RecordDeserializationError{Cause: deserErr}
 			}
 			existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
 			if existingTypeName != recordTypeName {
@@ -449,7 +439,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	// Serialize the union message
 	data, err := proto.Marshal(unionRecord)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal union record: %w", err)
+		return nil, &RecordSerializationError{Cause: err}
 	}
 
 	// Load old record's version BEFORE saveWithSplit clears the version key
@@ -529,7 +519,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		if oldRecordExists {
 			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
 			if deserErr != nil {
-				return nil, fmt.Errorf("failed to deserialize old record for index update: %w", deserErr)
+				return nil, &RecordDeserializationError{Cause: deserErr}
 			}
 			oldStoredRecord = &FDBStoredRecord[proto.Message]{
 				PrimaryKey: primaryKey,
@@ -555,7 +545,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 //
 // Returns:
 //   - *FDBStoredRecord: The saved record with metadata
-//   - error: ErrRecordAlreadyExists if a record with the same primary key already exists
+//   - error: RecordAlreadyExistsError if a record with the same primary key already exists
 func (store *FDBRecordStore) InsertRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
 	return store.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfExists)
 }
@@ -568,8 +558,8 @@ func (store *FDBRecordStore) InsertRecord(record proto.Message) (*FDBStoredRecor
 //
 // Returns:
 //   - *FDBStoredRecord: The saved record with metadata
-//   - error: ErrRecordDoesNotExist if no record exists with this primary key
-//   - error: ErrRecordTypeChanged if an existing record has a different type
+//   - error: RecordDoesNotExistError if no record exists with this primary key
+//   - error: RecordTypeChangedError if an existing record has a different type
 func (store *FDBRecordStore) UpdateRecord(record proto.Message) (*FDBStoredRecord[proto.Message], error) {
 	return store.SaveRecordWithOptions(record, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 }
@@ -1091,7 +1081,7 @@ func (store *FDBRecordStore) GetUserVersion() int32 {
 // Matches Java's FDBRecordStore.setUserVersion().
 func (store *FDBRecordStore) SetUserVersion(version int32) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	store.storeHeader.UserVersion = &version
 	lastUpdateTime := uint64(time.Now().UnixMilli())
@@ -1122,7 +1112,7 @@ func (store *FDBRecordStore) GetIncarnation() int32 {
 // Matches Java's FDBRecordStore.updateIncarnation().
 func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	current := store.storeHeader.GetIncarnation()
 	newVal := updater(current)
@@ -1154,7 +1144,7 @@ func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
 // Matches Java's FDBRecordStore.setHeaderUserField().
 func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	// Update existing entry or append new one
 	for _, entry := range store.storeHeader.UserField {
@@ -1174,7 +1164,7 @@ func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error 
 // Matches Java's FDBRecordStore.clearHeaderUserField().
 func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	fields := store.storeHeader.UserField
 	for i, entry := range fields {
@@ -1210,7 +1200,7 @@ func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 // Matches Java's FDBRecordStore.setStoreLockStateAsync().
 func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLockState_State, reason string) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	ts := time.Now().UnixMilli()
 	store.storeHeader.StoreLockState = &gen.DataStoreInfo_StoreLockState{
@@ -1225,7 +1215,7 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 // Matches Java's FDBRecordStore.clearStoreLockStateAsync().
 func (store *FDBRecordStore) ClearStoreLockState() error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 	store.storeHeader.StoreLockState = nil
 	return store.writeStoreHeader(store.storeHeader)
@@ -1240,7 +1230,7 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 		return err
 	}
 	if !exists {
-		return ErrRecordStoreDoesNotExist
+		return &RecordStoreDoesNotExistError{}
 	}
 	store.storeHeader = header
 	return store.loadIndexStates()
@@ -1284,7 +1274,7 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 // Matches Java's FDBRecordStore.setStateCacheabilityAsync().
 func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) {
 	if store.storeHeader == nil {
-		return false, ErrRecordStoreStateNotLoaded
+		return false, &RecordStoreStateNotLoadedError{}
 	}
 	if store.storeHeader.GetFormatVersion() < FormatVersionCacheableState {
 		return false, fmt.Errorf("store format version %d does not support cacheability (requires >= %d)",

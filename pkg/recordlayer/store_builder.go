@@ -73,7 +73,7 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
 	storedVersion := storeHeader.GetFormatVersion()
 	if storedVersion > FormatVersionCurrent {
-		return fmt.Errorf("unsupported format version %d (max supported: %d)", storedVersion, FormatVersionCurrent)
+		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(FormatVersionCurrent)}
 	}
 	return nil
 }
@@ -332,7 +332,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 
 	if !bytes.Equal(firstKV.Key, expectedStoreInfoKey) {
 		// Store has data but no proper header - matches Java error
-		return false, nil, ErrRecordStoreNoInfoButNotEmpty
+		return false, nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: firstKV.Key}
 	}
 
 	// Parse the store header
@@ -352,7 +352,7 @@ func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) erro
 
 	headerBytes, err := proto.Marshal(storeInfo)
 	if err != nil {
-		return fmt.Errorf("failed to marshal store header: %v", err)
+		return &RecordSerializationError{Cause: err}
 	}
 
 	storeInfoKey := store.subspace.Pack(tuple.Tuple{StoreInfoKey})
@@ -523,7 +523,7 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 		return nil, err
 	}
 	if exists {
-		return nil, ErrRecordStoreAlreadyExists
+		return nil, &RecordStoreAlreadyExistsError{}
 	}
 
 	// Create and write store header

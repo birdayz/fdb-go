@@ -133,11 +133,11 @@ func checkStoreHeaderExistence(header *gen.DataStoreInfo, check StoreExistenceCh
 	switch check {
 	case ExistenceCheckErrorIfExists:
 		if header != nil {
-			return ErrRecordStoreAlreadyExists
+			return &RecordStoreAlreadyExistsError{}
 		}
 	case ExistenceCheckErrorIfNotExists:
 		if header == nil {
-			return ErrRecordStoreDoesNotExist
+			return &RecordStoreDoesNotExistError{}
 		}
 	}
 	return nil

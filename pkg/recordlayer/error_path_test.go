@@ -288,28 +288,28 @@ var _ = Describe("StoreStateNotLoaded_ErrorPaths", func() {
 		store := &FDBRecordStore{}
 		err := store.SetUserVersion(42)
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
+		var stateErr *RecordStoreStateNotLoadedError; Expect(errors.As(err, &stateErr)).To(BeTrue())
 	})
 
 	It("SetStoreLockStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
 		err := store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "")
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
+		var stateErr *RecordStoreStateNotLoadedError; Expect(errors.As(err, &stateErr)).To(BeTrue())
 	})
 
 	It("ClearStoreLockStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
 		err := store.ClearStoreLockState()
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
+		var stateErr *RecordStoreStateNotLoadedError; Expect(errors.As(err, &stateErr)).To(BeTrue())
 	})
 
 	It("UpdateRecordCountStateWithoutHeader", func() {
 		store := &FDBRecordStore{}
 		err := store.UpdateRecordCountState(gen.DataStoreInfo_DISABLED)
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreStateNotLoaded)).To(BeTrue())
+		var stateErr *RecordStoreStateNotLoadedError; Expect(errors.As(err, &stateErr)).To(BeTrue())
 	})
 })
 
@@ -421,7 +421,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			order := &gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(100)}
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
-			Expect(errors.Is(err, ErrRecordDoesNotExist)).To(BeTrue())
+			var notExistErr *RecordDoesNotExistError; Expect(errors.As(err, &notExistErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -441,7 +441,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			customer := &gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("Bob")}
 			_, err = store.SaveRecordWithOptions(customer, RecordExistenceCheckErrorIfNotExistsOrTypeChanged)
 			Expect(err).To(HaveOccurred())
-			Expect(errors.Is(err, ErrRecordTypeChanged)).To(BeTrue())
+			var typeErr *RecordTypeChangedError; Expect(errors.As(err, &typeErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -468,7 +468,7 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 			// DoesNotExist error takes precedence over lock error
-			Expect(errors.Is(err, ErrRecordDoesNotExist)).To(BeTrue())
+			var notExistErr *RecordDoesNotExistError; Expect(errors.As(err, &notExistErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -497,7 +497,7 @@ var _ = Describe("StoreBuilder_ErrorPaths", func() {
 
 			err = store.ReloadRecordStoreState()
 			Expect(err).To(HaveOccurred())
-			Expect(errors.Is(err, ErrRecordStoreDoesNotExist)).To(BeTrue())
+			var storeErr *RecordStoreDoesNotExistError; Expect(errors.As(err, &storeErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -546,7 +546,7 @@ var _ = Describe("ErrorMessageFormat", func() {
 			PrimaryKey: tuple.Tuple{int64(42)},
 		}
 		Expect(err.Error()).To(Equal("record already exists"))
-		Expect(errors.Is(err, ErrRecordAlreadyExists)).To(BeTrue())
+		var existsErr *RecordAlreadyExistsError; Expect(errors.As(err, &existsErr)).To(BeTrue())
 	})
 
 	It("RecordDoesNotExistError", func() {
@@ -555,7 +555,7 @@ var _ = Describe("ErrorMessageFormat", func() {
 			PrimaryKey: tuple.Tuple{int64(99)},
 		}
 		Expect(err.Error()).To(Equal("record does not exist"))
-		Expect(errors.Is(err, ErrRecordDoesNotExist)).To(BeTrue())
+		var notExistErr *RecordDoesNotExistError; Expect(errors.As(err, &notExistErr)).To(BeTrue())
 	})
 
 	It("RecordTypeChangedError", func() {
@@ -566,7 +566,7 @@ var _ = Describe("ErrorMessageFormat", func() {
 			ExpectedType: "Customer",
 		}
 		Expect(err.Error()).To(Equal("record type changed"))
-		Expect(errors.Is(err, ErrRecordTypeChanged)).To(BeTrue())
+		var typeErr *RecordTypeChangedError; Expect(errors.As(err, &typeErr)).To(BeTrue())
 	})
 
 	It("StoreIsLockedForRecordUpdatesError", func() {

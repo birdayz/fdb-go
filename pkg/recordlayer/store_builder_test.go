@@ -85,7 +85,7 @@ var _ = Describe("StoreBuilder_CreateOpenSemantics", func() {
 		})
 
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreDoesNotExist)).To(BeTrue())
+		var storeErr *RecordStoreDoesNotExistError; Expect(errors.As(err, &storeErr)).To(BeTrue())
 	})
 
 	It("CreateAlreadyExistingStore", func() {
@@ -112,7 +112,7 @@ var _ = Describe("StoreBuilder_CreateOpenSemantics", func() {
 			return nil, err
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(errors.Is(err, ErrRecordStoreAlreadyExists)).To(BeTrue())
+		var storeErr *RecordStoreAlreadyExistsError; Expect(errors.As(err, &storeErr)).To(BeTrue())
 	})
 
 	It("CreateOrOpenExistingStore", func() {

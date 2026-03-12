@@ -17,29 +17,29 @@ const (
 	// RecordExistenceCheckErrorIfExists throws an error if the record already exists.
 	// This corresponds to InsertRecord behavior.
 	//
-	// Returns: ErrRecordAlreadyExists if record exists
+	// Returns: RecordAlreadyExistsError if record exists
 	// Java equivalent: ERROR_IF_EXISTS
 	RecordExistenceCheckErrorIfExists
 
 	// RecordExistenceCheckErrorIfNotExists throws an error if the record does not exist.
 	// Use this for update-only operations where the record must pre-exist.
 	//
-	// Returns: ErrRecordDoesNotExist if record doesn't exist
+	// Returns: RecordDoesNotExistError if record doesn't exist
 	// Java equivalent: ERROR_IF_NOT_EXISTS
 	RecordExistenceCheckErrorIfNotExists
 
 	// RecordExistenceCheckErrorIfTypeChanged throws an error if an existing record has a different type.
 	// Use this to prevent accidentally overwriting a record of a different type with the same primary key.
 	//
-	// Returns: ErrRecordTypeChanged if existing record has different type
+	// Returns: RecordTypeChangedError if existing record has different type
 	// Java equivalent: ERROR_IF_RECORD_TYPE_CHANGED
 	RecordExistenceCheckErrorIfTypeChanged
 
 	// RecordExistenceCheckErrorIfNotExistsOrTypeChanged combines ERROR_IF_NOT_EXISTS and ERROR_IF_RECORD_TYPE_CHANGED.
 	// This corresponds to UpdateRecord behavior - the record must exist and must have the same type.
 	//
-	// Returns: ErrRecordDoesNotExist if record doesn't exist
-	// Returns: ErrRecordTypeChanged if existing record has different type
+	// Returns: RecordDoesNotExistError if record doesn't exist
+	// Returns: RecordTypeChangedError if existing record has different type
 	// Java equivalent: ERROR_IF_NOT_EXISTS_OR_RECORD_TYPE_CHANGED
 	RecordExistenceCheckErrorIfNotExistsOrTypeChanged
 )
@@ -100,12 +100,6 @@ func (e *RecordAlreadyExistsError) Error() string {
 	return e.Message
 }
 
-// Is implements error matching for errors.Is()
-func (e *RecordAlreadyExistsError) Is(target error) bool {
-	_, ok := target.(*RecordAlreadyExistsError)
-	return ok
-}
-
 // RecordDoesNotExistError is returned when attempting to update a record that does not exist.
 // Includes structured context matching Java's RecordDoesNotExistException.
 //
@@ -119,12 +113,6 @@ type RecordDoesNotExistError struct {
 
 func (e *RecordDoesNotExistError) Error() string {
 	return e.Message
-}
-
-// Is implements error matching for errors.Is()
-func (e *RecordDoesNotExistError) Is(target error) bool {
-	_, ok := target.(*RecordDoesNotExistError)
-	return ok
 }
 
 // RecordTypeChangedError is returned when attempting to update a record but its type has changed.
@@ -144,24 +132,3 @@ func (e *RecordTypeChangedError) Error() string {
 	return e.Message
 }
 
-// Is implements error matching for errors.Is()
-func (e *RecordTypeChangedError) Is(target error) bool {
-	_, ok := target.(*RecordTypeChangedError)
-	return ok
-}
-
-// Sentinel errors for backwards compatibility with existing code using errors.Is()
-// These can be compared with errors.Is() for simple error checking
-var (
-	// ErrRecordAlreadyExists is a sentinel error for backwards compatibility.
-	// Prefer using RecordAlreadyExistsError for structured context.
-	ErrRecordAlreadyExists = &RecordAlreadyExistsError{Message: "record already exists"}
-
-	// ErrRecordDoesNotExist is a sentinel error for backwards compatibility.
-	// Prefer using RecordDoesNotExistError for structured context.
-	ErrRecordDoesNotExist = &RecordDoesNotExistError{Message: "record does not exist"}
-
-	// ErrRecordTypeChanged is a sentinel error for backwards compatibility.
-	// Prefer using RecordTypeChangedError for structured context.
-	ErrRecordTypeChanged = &RecordTypeChangedError{Message: "record type changed"}
-)

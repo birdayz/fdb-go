@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1169 specs pass (854 unit/integration + 315 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1209 specs pass (894 unit/integration + 315 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -96,7 +96,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 - [x] **Store locking APIs** — `SetStoreLockState(state, reason)`, `ClearStoreLockState()`. **HIGH**. (`OverrideLockSaveRecord()` not yet added — needs use case).
 - [x] **Header user fields** — `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
-- [ ] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation, `SetStateCacheability()` API. **MEDIUM** (performance optimization).
+- [x] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation (LRU+TTL, \xff/metadataVersion invalidation), `SetStateCacheability()` API, dirty state tracking on context, read conflict on cache hit. 2.2x speedup on store open. 40 tests. **MEDIUM**.
 - [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.
 - [ ] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot=true)` with snapshot isolation option. **LOW** (optimization).
 - [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
@@ -179,7 +179,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 5. ~~Header user fields~~ **DONE**
 6. ~~MAX_EVER_VERSION index type~~ **DONE**
 7. ~~FunctionKeyExpression (for incarnation)~~ **DONE**
-8. Store state caching
+8. ~~Store state caching~~ **DONE**
 
 **LOW (specialized / future):**
 9. All new index types (TEXT, BITMAP, PERMUTED, MULTIDIMENSIONAL, VECTOR, LEADERBOARD)
@@ -188,6 +188,47 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 12. Views, UDFs
 13. New cursor types (Aggregate, Comparator, UnorderedUnion)
 14. Query planner features (not ported)
+
+---
+
+## Error handling alignment (2026-03-12 QA audit)
+
+Architectural decision: Java exception class = Go error struct. Use `errors.As()` for matching. No bare sentinels. See CLAUDE.md "Error handling" section for full pattern.
+
+**Naming convention:** Java `FooBarException` → Go `FooBarError` struct. Drop the `Exception` suffix, replace with `Error`. Examples:
+- `RecordAlreadyExistsException` → `RecordAlreadyExistsError`
+- `ScanNonReadableIndexException` → `IndexNotReadableError` (simplified where Java name is awkward)
+- `RecordStoreNoInfoAndNotEmptyException` → `RecordStoreNoInfoButNotEmptyError`
+
+**Pattern:** Always a `type FooError struct { ... }` with context fields matching Java's `addLogInfo()` keys. Never `var ErrFoo = errors.New("...")`. Callers match with `errors.As(err, &e)`, never `errors.Is(err, ErrFoo)`.
+
+### Phase 1: Convert existing sentinels to error types — **DONE**
+
+- [x] **`ErrRecordStoreAlreadyExists`** → `RecordStoreAlreadyExistsError` struct. All return sites migrated.
+- [x] **`ErrRecordStoreDoesNotExist`** → `RecordStoreDoesNotExistError` struct. All return sites migrated.
+- [x] **`ErrRecordStoreNoInfoButNotEmpty`** → `RecordStoreNoInfoButNotEmptyError` struct with `FirstKey` field.
+- [x] **`ErrRecordStoreStateNotLoaded`** → `RecordStoreStateNotLoadedError` struct. 8 return sites migrated.
+- [x] **`ErrIndexNotReadable`** → `IndexNotReadableError` struct with `IndexName` + `CurrentState`.
+- [x] **`ErrIndexNotFound`** → `IndexNotFoundError` struct with `IndexName`. 5 return sites migrated.
+- [x] **`ErrIndexNotBuilt`** → `IndexNotBuiltError` struct with `IndexName`.
+- [x] Removed old `ErrRecordAlreadyExists` / `ErrRecordDoesNotExist` / `ErrRecordTypeChanged` sentinel variables and `Is()` methods.
+- [x] Updated all call sites: `errors.Is(err, ErrFoo)` → `errors.As(err, &fooErr)`.
+- [x] Updated all tests (unit + conformance) to use `errors.As()` pattern.
+
+### Phase 2: Add missing error types for implemented features — **DONE**
+
+- [x] **`MetaDataError`** — defined in `errors.go`. Message-only, matchable via `errors.As()`.
+- [x] **`UnsupportedFormatVersionError`** — carries `Version` + `MaxVersion`. Store builder `validateFormatVersion` migrated.
+- [x] **`RecordSerializationError`** — wraps proto marshal failures with `Unwrap()`. 2 return sites migrated.
+- [x] **`RecordDeserializationError`** — wraps proto unmarshal failures with `Unwrap()`. 6 return sites migrated (store + cursor).
+- [ ] **`StaleUserVersionError`** — Java's `RecordStoreStaleUserVersionException` (not thrown in 4.10.6.0 but type exists). Deferred — no throw sites exist.
+
+### Phase 3: Conformance tests for error paths — **MEDIUM**
+
+- [ ] **Unique index violation cross-language** — Go saves dup → error, Java saves dup → error, verify both reject.
+- [ ] **Store lock state cross-language** — Go sets FORBID_RECORD_UPDATE, Java tries save → error (and vice versa).
+- [ ] **Schema validation cross-language** — Java validates metadata, Go validates same metadata, errors match.
+- [ ] **Improve Java conformance server** — return structured error responses `{errorType, message}` instead of generic HTTP 500. Enables type-level error conformance testing.
 
 ---
 
@@ -834,7 +875,12 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 **B. Niche index types** — BITMAP_VALUE, PERMUTED_MIN/MAX, MULTIDIMENSIONAL, VECTOR. Not needed day one.
 
-**C. Polish** — Timer/instrumentation, store state caching, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
+**C. Polish** — Timer/instrumentation, ~~store state caching~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
+
+- [x] **[MEDIUM] Store state caching** — `MetaDataVersionStampStoreStateCache` + `PassThroughRecordStoreStateCache`. Validates via `\xff/metadataVersion` versionstamp, handles dirty state, read conflicts on cache hit, proto.Clone on cache-hit path, LRU+TTL eviction. 40 specs, 2.2x benchmark speedup. Files: `store_state_cache.go`, `store_state_cache_test.go`.
+- [ ] **[LOW] `FDBDatabase.storeStateCache` field unsynchronized** — Interface field on `FDBDatabase` is not protected by mutex or `atomic.Value`. Safe as long as it's set-once-at-startup before any transactions. If runtime reconfiguration is needed, wrap in `atomic.Value`.
+- [ ] **[LOW] TOCTOU duplicate FDB reads on concurrent cache miss** — Two goroutines can miss the cache simultaneously and both load from FDB. Same behavior as Java (Guava cache). Harmless — both writes are idempotent and `addToCache` keeps the newer versionstamp.
+- [ ] **[LOW] O(n) LRU eviction scan in store state cache** — `evictIfNeeded()` iterates all entries under mutex. Max 500 entries (default), so bounded. Replace with container/heap if profiling shows contention.
 
 **Next high-value target**: VERSION index — DONE (Phase 1 + Phase 2). Conformance tests remaining.
 

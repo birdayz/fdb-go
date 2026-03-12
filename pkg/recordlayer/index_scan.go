@@ -189,7 +189,7 @@ func (store *FDBRecordStore) ScanIndex(
 ) RecordCursor[*IndexEntry] {
 	if !store.IsIndexScannable(index.Name) {
 		return &errorCursor[*IndexEntry]{
-			err: fmt.Errorf("%w: %s is %s", ErrIndexNotReadable, index.Name, store.GetIndexState(index.Name)),
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
 	maintainer := store.getIndexMaintainer(index)
@@ -209,7 +209,7 @@ func (store *FDBRecordStore) ScanIndexByType(
 ) RecordCursor[*IndexEntry] {
 	if !store.IsIndexScannable(index.Name) {
 		return &errorCursor[*IndexEntry]{
-			err: fmt.Errorf("%w: %s is %s", ErrIndexNotReadable, index.Name, store.GetIndexState(index.Name)),
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
 	maintainer := store.getIndexMaintainer(index)

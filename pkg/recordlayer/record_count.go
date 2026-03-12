@@ -144,7 +144,7 @@ func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName 
 // Matches Java's FDBRecordStore.updateRecordCountStateAsync().
 func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_RecordCountState) error {
 	if store.storeHeader == nil {
-		return ErrRecordStoreStateNotLoaded
+		return &RecordStoreStateNotLoadedError{}
 	}
 
 	existing := store.storeHeader.GetRecordCountState()
