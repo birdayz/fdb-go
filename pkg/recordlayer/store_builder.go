@@ -344,8 +344,12 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 	return true, storeInfo, nil
 }
 
-// writeStoreHeader writes the store header to FDB
+// writeStoreHeader writes the store header to FDB and handles cache invalidation.
+// When the store is cacheable, bumps the metadata version stamp so other transactions
+// will see the change. Matches Java's FDBRecordStore.updateStoreHeaderAsync().
 func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
+	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()
+
 	headerBytes, err := proto.Marshal(storeInfo)
 	if err != nil {
 		return fmt.Errorf("failed to marshal store header: %v", err)
@@ -353,6 +357,25 @@ func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) erro
 
 	storeInfoKey := store.subspace.Pack(tuple.Tuple{StoreInfoKey})
 	store.context.Transaction().Set(storeInfoKey, headerBytes)
+
+	// Mark store state as dirty in this transaction.
+	// Matches Java: context.setDirtyStoreState(true) in updateStoreHeaderAsync().
+	store.context.SetDirtyStoreState(true)
+
+	// Bump metadata version stamp when appropriate.
+	// Matches Java's updateStoreHeaderAsync() cache invalidation logic.
+	newCacheable := storeInfo.GetCacheable()
+	if oldCacheable {
+		// Old header was cacheable → always bump to invalidate cached entries.
+		store.context.SetMetaDataVersionStamp()
+	} else if newCacheable {
+		// Transitioning to cacheable → initialize stamp if not yet set.
+		stamp, _ := store.context.GetMetaDataVersionStamp()
+		if stamp == nil {
+			store.context.SetMetaDataVersionStamp()
+		}
+	}
+
 	return nil
 }
 
@@ -387,6 +410,8 @@ type StoreBuilder struct {
 	subspace                   subspace.Subspace
 	indexRebuildPolicy         IndexRebuildPolicy
 	bypassFullStoreLockReason  string
+	storeStateCache            FDBRecordStoreStateCache // per-store override; nil = use db cache
+	database                   *FDBDatabase             // for inheriting cache
 }
 
 // NewStoreBuilder creates a new store builder
@@ -430,6 +455,31 @@ func (b *StoreBuilder) SetBypassFullStoreLockReason(reason string) *StoreBuilder
 	return b
 }
 
+// SetStoreStateCache sets a per-store cache override. If not set, the database's
+// cache is used. Matches Java's FDBRecordStore.Builder.setStoreStateCache().
+func (b *StoreBuilder) SetStoreStateCache(cache FDBRecordStoreStateCache) *StoreBuilder {
+	b.storeStateCache = cache
+	return b
+}
+
+// SetDatabase sets the database for inheriting the store state cache.
+// Matches Java's FDBRecordStore.Builder.setDatabase().
+func (b *StoreBuilder) SetDatabase(db *FDBDatabase) *StoreBuilder {
+	b.database = db
+	return b
+}
+
+// resolveCache returns the cache to use: per-store override > database cache > pass-through.
+func (b *StoreBuilder) resolveCache() FDBRecordStoreStateCache {
+	if b.storeStateCache != nil {
+		return b.storeStateCache
+	}
+	if b.database != nil && b.database.storeStateCache != nil {
+		return b.database.storeStateCache
+	}
+	return PassThroughStoreStateCache()
+}
+
 // newStore creates an FDBRecordStore from the builder's settings.
 func (b *StoreBuilder) newStore() *FDBRecordStore {
 	policy := b.indexRebuildPolicy
@@ -441,6 +491,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		metaData:           b.metaData,
 		subspace:           b.subspace,
 		indexRebuildPolicy: policy,
+		storeStateCache:    b.resolveCache(),
 	}
 }
 
@@ -496,34 +547,24 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 
 	store := b.newStore()
 
-	// Verify store exists and has proper header
-	exists, storeHeader, err := store.checkStoreExists()
-	if err != nil {
+	// Load store state via cache (or direct if bypassing locks).
+	// Matches Java's checkVersion() which bypasses cache on full store lock bypass.
+	if err := store.loadStoreState(ExistenceCheckErrorIfNotExists, b.bypassFullStoreLockReason); err != nil {
 		return nil, err
 	}
-	if !exists {
-		return nil, ErrRecordStoreDoesNotExist
-	}
-	store.storeHeader = storeHeader
 
 	// Validate format version is supported.
-	// Matches Java's FormatVersion.validateFormatVersion().
-	if err := store.validateFormatVersion(storeHeader); err != nil {
+	if err := store.validateFormatVersion(store.storeHeader); err != nil {
 		return nil, err
 	}
 
 	// Validate store lock state (FULL_STORE blocks open unless bypassed).
-	// Matches Java's FDBRecordStore.validateStoreLockState().
-	if err := validateStoreLockState(storeHeader, b.bypassFullStoreLockReason); err != nil {
-		return nil, err
-	}
-
-	if err := store.loadIndexStates(); err != nil {
+	if err := validateStoreLockState(store.storeHeader, b.bypassFullStoreLockReason); err != nil {
 		return nil, err
 	}
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
-	if err := store.checkPossiblyRebuild(storeHeader); err != nil {
+	if err := store.checkPossiblyRebuild(store.storeHeader); err != nil {
 		return nil, err
 	}
 
@@ -541,37 +582,35 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 
 	store := b.newStore()
 
-	// Check if store exists
-	exists, storeHeader, err := store.checkStoreExists()
-	if err != nil {
+	// Load store state via cache (or direct).
+	if err := store.loadStoreState(ExistenceCheckNone, b.bypassFullStoreLockReason); err != nil {
 		return nil, err
 	}
 
+	exists := store.storeHeader != nil
+
 	if !exists {
 		// Create store header if it doesn't exist
-		storeHeader = createStoreHeader(int32(b.metaData.Version()), b.metaData)
+		storeHeader := createStoreHeader(int32(b.metaData.Version()), b.metaData)
 		if err := store.writeStoreHeader(storeHeader); err != nil {
 			return nil, err
 		}
+		store.storeHeader = storeHeader
 		store.indexStates = make(map[string]IndexState)
 	} else {
 		// Validate format version is supported.
-		if err := store.validateFormatVersion(storeHeader); err != nil {
+		if err := store.validateFormatVersion(store.storeHeader); err != nil {
 			return nil, err
 		}
 		// Validate store lock state (FULL_STORE blocks open unless bypassed).
-		if err := validateStoreLockState(storeHeader, b.bypassFullStoreLockReason); err != nil {
-			return nil, err
-		}
-		if err := store.loadIndexStates(); err != nil {
+		if err := validateStoreLockState(store.storeHeader, b.bypassFullStoreLockReason); err != nil {
 			return nil, err
 		}
 	}
-	store.storeHeader = storeHeader
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
 	if exists {
-		if err := store.checkPossiblyRebuild(storeHeader); err != nil {
+		if err := store.checkPossiblyRebuild(store.storeHeader); err != nil {
 			return nil, err
 		}
 	}

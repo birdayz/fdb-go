@@ -249,6 +249,8 @@ func (store *FDBRecordStore) ClearAndMarkIndexWriteOnly(indexName string) (bool,
 // setIndexState persists an index state to FDB and updates the in-memory cache.
 // Key format: subspace[IndexStateSpaceKey][indexName]
 // Value format: tuple.Tuple{int64(state)}.Pack() — matches Java's Tuple.from(state.code()).pack()
+// Also handles cache invalidation: sets dirty store state and bumps metadata version
+// stamp when the store is cacheable. Matches Java's FDBRecordStore.updateIndexState().
 func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
 	key := store.indexStateSubspace().Pack(tuple.Tuple{indexName})
 
@@ -267,6 +269,14 @@ func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
 		delete(store.indexStates, indexName)
 	} else {
 		store.indexStates[indexName] = state
+	}
+
+	// Cache invalidation: mark dirty and bump version stamp if cacheable.
+	// Matches Java's updateIndexState() which calls setDirtyStoreState(true)
+	// and setMetaDataVersionStamp() when the store header is cacheable.
+	store.context.SetDirtyStoreState(true)
+	if store.storeHeader != nil && store.storeHeader.GetCacheable() {
+		store.context.SetMetaDataVersionStamp()
 	}
 }
 

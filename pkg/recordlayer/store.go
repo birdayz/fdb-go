@@ -75,6 +75,10 @@ var (
 	ErrRecordStoreNoInfoButNotEmpty = errors.New("record store has no info but is not empty")
 )
 
+// FormatVersionCacheableState is the minimum format version required for
+// store state cacheability. Matches Java's FormatVersion.CACHEABLE_STATE.
+const FormatVersionCacheableState = 7
+
 // StaleMetaDataVersionError is returned when the stored metadata version is
 // newer than the local metadata version, meaning another instance already
 // evolved the schema. Matches Java's RecordStoreStaleMetaDataVersionException.
@@ -96,6 +100,7 @@ type FDBRecordStore struct {
 	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create
 	indexStates        map[string]IndexState  // Cached index states, loaded on Open/Create
 	indexRebuildPolicy IndexRebuildPolicy     // Policy for rebuilding indexes on metadata version change
+	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
@@ -1239,6 +1244,59 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 	}
 	store.storeHeader = header
 	return store.loadIndexStates()
+}
+
+// loadStoreState loads store state via the cache or directly from FDB.
+// When bypassFullStoreLockReason is set, the cache is bypassed entirely
+// (matching Java's checkVersion which skips cache on lock bypass).
+func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason string) error {
+	if bypassReason != "" {
+		// Bypass cache when using lock bypass — need fresh state to validate lock.
+		state, err := loadRecordStoreState(store, existenceCheck)
+		if err != nil {
+			return err
+		}
+		store.storeHeader = state.StoreHeader
+		store.indexStates = state.IndexStates
+		return nil
+	}
+
+	entry, err := store.storeStateCache.Get(store, existenceCheck)
+	if err != nil {
+		return err
+	}
+
+	store.storeHeader = entry.GetRecordStoreState().StoreHeader
+	store.indexStates = entry.GetRecordStoreState().IndexStates
+	return nil
+}
+
+// SetStateCacheability sets whether this store's state can be cached across
+// transactions. When enabled, the metadata version stamp is initialized so
+// cache invalidation can work. Requires FormatVersion >= CACHEABLE_STATE (7).
+// Returns true if the cacheability was changed, false if already at the desired state.
+// Matches Java's FDBRecordStore.setStateCacheabilityAsync().
+func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) {
+	if store.storeHeader == nil {
+		return false, ErrRecordStoreStateNotLoaded
+	}
+	if store.storeHeader.GetFormatVersion() < FormatVersionCacheableState {
+		return false, fmt.Errorf("store format version %d does not support cacheability (requires >= %d)",
+			store.storeHeader.GetFormatVersion(), FormatVersionCacheableState)
+	}
+	if store.storeHeader.GetCacheable() == cacheable {
+		return false, nil
+	}
+	store.storeHeader.Cacheable = &cacheable
+	if err := store.writeStoreHeader(store.storeHeader); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// IsStateCacheable returns whether this store's state is currently cacheable.
+func (store *FDBRecordStore) IsStateCacheable() bool {
+	return store.storeHeader != nil && store.storeHeader.GetCacheable()
 }
 
 // EstimateStoreSize returns the estimated byte size of the entire store subspace.

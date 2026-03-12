@@ -21,13 +21,19 @@ type FDBDatabase struct {
 	// Keep original db/tenant for CreateTransaction which isn't on Transactor interface
 	db     fdb.Database
 	tenant fdb.Tenant
+
+	// storeStateCache caches store state across transactions.
+	// Default: PassThroughRecordStoreStateCache (no caching).
+	// Matches Java's FDBDatabase.storeStateCache field.
+	storeStateCache FDBRecordStoreStateCache
 }
 
 // NewFDBDatabase creates a new FDBDatabase wrapping the core FDB database
 func NewFDBDatabase(db fdb.Database) *FDBDatabase {
 	return &FDBDatabase{
-		transactor: db,
-		db:         db,
+		transactor:      db,
+		db:              db,
+		storeStateCache: PassThroughStoreStateCache(),
 	}
 }
 
@@ -35,9 +41,22 @@ func NewFDBDatabase(db fdb.Database) *FDBDatabase {
 // for tenant-isolated operations. All operations will be scoped to the tenant's keyspace.
 func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
 	return &FDBDatabase{
-		transactor: tenant,
-		tenant:     tenant,
+		transactor:      tenant,
+		tenant:          tenant,
+		storeStateCache: PassThroughStoreStateCache(),
 	}
+}
+
+// SetStoreStateCache sets the cache used for store state across transactions.
+// Matches Java's FDBDatabase.setStoreStateCache().
+func (d *FDBDatabase) SetStoreStateCache(cache FDBRecordStoreStateCache) {
+	d.storeStateCache = cache
+}
+
+// GetStoreStateCache returns the current store state cache.
+// Matches Java's FDBDatabase.getStoreStateCache().
+func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
+	return d.storeStateCache
 }
 
 // Run executes a function within a transaction with automatic retry handling.
@@ -205,6 +224,10 @@ type FDBRecordContext struct {
 
 	// Diagnostic: tracked read conflict ranges for debugging
 	conflictRanges []fdb.KeyRange
+
+	// Store state cache invalidation tracking — matches Java's FDBRecordContext
+	dirtyStoreState            bool // set when any store header or index state is modified
+	dirtyMetaDataVersionStamp  bool // set when SetMetaDataVersionStamp() is called
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
@@ -425,6 +448,55 @@ func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
 // HasVersionMutations returns true if there are pending version mutations.
 func (rc *FDBRecordContext) HasVersionMutations() bool {
 	return len(rc.versionMutations) > 0
+}
+
+// HasDirtyStoreState returns true if any store state was modified in this transaction.
+// When true, cached store state should not be used.
+// Matches Java's FDBRecordContext.hasDirtyStoreState().
+func (rc *FDBRecordContext) HasDirtyStoreState() bool {
+	return rc.dirtyStoreState
+}
+
+// SetDirtyStoreState marks that store state was modified in this transaction.
+// Matches Java's FDBRecordContext.setDirtyStoreState().
+func (rc *FDBRecordContext) SetDirtyStoreState(dirty bool) {
+	rc.dirtyStoreState = dirty
+}
+
+// metaDataVersionStampValue is 14 zero bytes: 10 bytes for the global versionstamp
+// + 4 bytes for the little-endian offset (0). FDB replaces the first 10 bytes with
+// the commit versionstamp when SET_VERSIONSTAMPED_VALUE is used.
+// Matches Java's FDBRecordContext.META_DATA_VERSION_STAMP_VALUE.
+var metaDataVersionStampValue = make([]byte, 14)
+
+// metaDataVersionKey is the FDB system key used to track metadata version changes.
+// Matches Java's SystemKeyspace.METADATA_VERSION_KEY = \xff/metadataVersion.
+var metaDataVersionKey = append([]byte{0xFF}, []byte("/metadataVersion")...)
+
+// SetMetaDataVersionStamp schedules a SET_VERSIONSTAMPED_VALUE mutation on the
+// metadata version key. After commit, this key will contain the commit versionstamp,
+// which invalidates any cached store state entries with older stamps.
+// Matches Java's FDBRecordContext.setMetaDataVersionStamp().
+func (rc *FDBRecordContext) SetMetaDataVersionStamp() {
+	rc.dirtyMetaDataVersionStamp = true
+	rc.tx.SetVersionstampedValue(fdb.Key(metaDataVersionKey), metaDataVersionStampValue)
+}
+
+// GetMetaDataVersionStamp reads the metadata version stamp at snapshot isolation.
+// Returns nil if the stamp was written in this transaction (dirty) or doesn't exist.
+// Matches Java's FDBRecordContext.getMetaDataVersionStampAsync().
+func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
+	if rc.dirtyMetaDataVersionStamp {
+		return nil, nil
+	}
+	val, err := rc.tx.Snapshot().Get(fdb.Key(metaDataVersionKey)).Get()
+	if err != nil {
+		return nil, nil // Key doesn't exist or unreadable → treat as nil
+	}
+	if val == nil {
+		return nil, nil
+	}
+	return val, nil
 }
 
 // CommitWithVersionstamp commits the transaction, first running pre-commit checks,
