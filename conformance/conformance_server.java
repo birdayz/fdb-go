@@ -55,6 +55,7 @@ class ConformanceServer {
         new PermutedMinMaxIndexSteps(),
         new IndexContinuationSteps(),
         new TypedRecordSteps(),
+        new MetaDataProtoSteps(),
     };
 
     private static class StepEntry {

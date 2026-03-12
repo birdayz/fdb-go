@@ -393,8 +393,18 @@ func valueFromProto(p *gen.Value) any {
 	return nil
 }
 
+// defaultExcludedDependencies matches Java's RecordMetaData.defaultExcludedDependencies.
+// These are Apple Record Layer protos that Java resolves from its classpath at build time,
+// so they must not be included in serialized metadata.
+var defaultExcludedDependencies = map[string]bool{
+	"record_metadata.proto":         true,
+	"record_metadata_options.proto": true,
+	"tuple_fields.proto":            true,
+}
+
 // collectDependencies returns all transitive file descriptor dependencies,
-// excluding well-known proto files (descriptor.proto etc.).
+// excluding Apple Record Layer protos (matching Java's defaultExcludedDependencies).
+// Excluded protos and their transitive deps are skipped, matching Java's getDependencies().
 func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDescriptor {
 	seen := make(map[string]bool)
 	var deps []protoreflect.FileDescriptor
@@ -408,8 +418,8 @@ func collectDependencies(fd protoreflect.FileDescriptor) []protoreflect.FileDesc
 			if seen[name] {
 				continue
 			}
-			// Skip well-known protos (google/protobuf/*)
-			if len(name) > 16 && name[:16] == "google/protobuf/" {
+			// Skip excluded protos and don't recurse into them (matches Java)
+			if defaultExcludedDependencies[name] {
 				continue
 			}
 			seen[name] = true
