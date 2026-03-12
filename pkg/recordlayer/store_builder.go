@@ -69,10 +69,11 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 }
 
 // validateFormatVersion checks that the stored format version is supported.
+// Rejects versions below FormatVersionMinimum (1) and above FormatVersionCurrent.
 // Matches Java's FormatVersion.validateFormatVersion().
 func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
 	storedVersion := storeHeader.GetFormatVersion()
-	if storedVersion > FormatVersionCurrent {
+	if storedVersion < FormatVersionMinimum || storedVersion > FormatVersionCurrent {
 		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(FormatVersionCurrent)}
 	}
 	return nil

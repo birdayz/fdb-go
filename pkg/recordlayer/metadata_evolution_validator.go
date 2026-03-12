@@ -101,6 +101,11 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 		return err
 	}
 
+	// 2b. Union descriptor validation (splits, merges, removals)
+	if err := v.validateUnion(oldMetaData, newMetaData); err != nil {
+		return err
+	}
+
 	// 3. Record type validation
 	if err := v.validateRecordTypes(oldMetaData, newMetaData); err != nil {
 		return err
@@ -146,6 +151,83 @@ func (v *MetaDataEvolutionValidator) validateSplitLongRecords(old, new *RecordMe
 		}
 	}
 	return nil
+}
+
+// validateUnion checks the union descriptor for record type splits, merges, and removals.
+// Ensures a one-to-one mapping between old and new record types in the union.
+// Matches Java's MetaDataEvolutionValidator.validateUnion().
+func (v *MetaDataEvolutionValidator) validateUnion(old, new *RecordMetaData) error {
+	oldUnion := getUnionDescriptor(old)
+	newUnion := getUnionDescriptor(new)
+	if oldUnion == nil || newUnion == nil {
+		return nil // No union descriptor — skip validation
+	}
+	if oldUnion.FullName() == newUnion.FullName() && oldUnion == newUnion {
+		return nil // Same descriptor — no changes
+	}
+
+	// Track bidirectional mapping: oldMsgFullName ↔ newMsgFullName
+	// Forward: old message → new message
+	// Reverse: new message → old message
+	oldToNew := make(map[protoreflect.FullName]protoreflect.FullName)
+	newToOld := make(map[protoreflect.FullName]protoreflect.FullName)
+
+	oldFields := oldUnion.Fields()
+	newFields := newUnion.Fields()
+
+	for i := 0; i < oldFields.Len(); i++ {
+		oldField := oldFields.Get(i)
+		if oldField.Kind() != protoreflect.MessageKind {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("field in union is not a message type: %s", oldField.Name()),
+			}
+		}
+
+		// Find corresponding field in new union by field number
+		newField := newFields.ByNumber(oldField.Number())
+		if newField == nil {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type removed from union: %s", oldField.Message().Name()),
+			}
+		}
+		if newField.Kind() != protoreflect.MessageKind {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("field in new union is not a message type: %s", newField.Name()),
+			}
+		}
+
+		oldMsgName := oldField.Message().FullName()
+		newMsgName := newField.Message().FullName()
+
+		// Check for split: old message already mapped to a different new message
+		if prev, ok := oldToNew[oldMsgName]; ok && prev != newMsgName {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type corresponds to multiple types in new meta-data: %s",
+					oldField.Message().Name()),
+			}
+		}
+
+		// Check for merge: new message already mapped from a different old message
+		if prev, ok := newToOld[newMsgName]; ok && prev != oldMsgName {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type corresponds to multiple types in old meta-data: %s",
+					newField.Message().Name()),
+			}
+		}
+
+		oldToNew[oldMsgName] = newMsgName
+		newToOld[newMsgName] = oldMsgName
+	}
+
+	return nil
+}
+
+// getUnionDescriptor returns the UnionDescriptor message from the metadata's file descriptor.
+func getUnionDescriptor(m *RecordMetaData) protoreflect.MessageDescriptor {
+	if m.fileDescriptor == nil {
+		return nil
+	}
+	return m.fileDescriptor.Messages().ByName("UnionDescriptor")
 }
 
 func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData) error {

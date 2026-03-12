@@ -776,6 +776,42 @@ var _ = Describe("Phase 2 error types", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("UnsupportedFormatVersionError on format version below minimum", func() {
+		ctx := context.Background()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			ss := specSubspace()
+
+			// Create a valid store first so the subspace has a proper header.
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Create()
+			Expect(err).NotTo(HaveOccurred())
+			_ = store
+
+			// Now overwrite the store header with format version 0 (below FormatVersionMinimum=1).
+			zeroVersion := int32(0)
+			header := &gen.DataStoreInfo{
+				FormatVersion: &zeroVersion,
+			}
+			headerBytes, err := proto.Marshal(header)
+			Expect(err).NotTo(HaveOccurred())
+			storeInfoKey := ss.Pack(tuple.Tuple{StoreInfoKey})
+			rtx.Transaction().Set(storeInfoKey, headerBytes)
+
+			// Try to Open the same store — should fail with UnsupportedFormatVersionError.
+			_, err = NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
+			Expect(err).To(HaveOccurred())
+
+			var fmtErr *UnsupportedFormatVersionError
+			Expect(errors.As(err, &fmtErr)).To(BeTrue())
+			Expect(fmtErr.Version).To(Equal(int32(0)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(FormatVersionCurrent)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("RecordDeserializationError on corrupt record data", func() {
 		ctx := context.Background()
 

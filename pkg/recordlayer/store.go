@@ -18,6 +18,7 @@ import (
 // Record Layer format versions - should match Java FormatVersion enum.
 // See FormatVersion.java for the full list.
 const (
+	FormatVersionInfoAdded                 = 1  // Minimum version (INFO_ADDED in Java)
 	FormatVersionHeaderUserFields          = 8  // User-defined key→bytes map in store header
 	FormatVersionReadableUniquePending     = 9  // READABLE_UNIQUE_PENDING index state
 	FormatVersionCheckIndexBuildType       = 10 // Non-idempotent index build-from-source validation
@@ -26,6 +27,7 @@ const (
 	FormatVersionIncarnation               = 13 // Incarnation counter for cross-cluster migration
 	FormatVersionFullStoreLock             = 14 // Unknown lock states prevent store opening
 	FormatVersionCurrent                   = FormatVersionFullStoreLock
+	FormatVersionMinimum                   = FormatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
 )
 
 // StoreIsLockedForRecordUpdatesError is returned when attempting to modify records

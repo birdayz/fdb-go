@@ -4,6 +4,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 var _ = Describe("MetaDataEvolutionValidator", func() {
@@ -464,6 +465,57 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("union validation", func() {
+		It("passes when old and new use the same proto file", func() {
+			// Same file descriptor → same union descriptor object → early return
+			old := buildMetaData(1, nil)
+			new := buildMetaData(2, nil)
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("getUnionDescriptor returns the UnionDescriptor message", func() {
+			md := buildMetaData(1, nil)
+			union := getUnionDescriptor(md)
+			Expect(union).NotTo(BeNil())
+			Expect(string(union.FullName())).To(ContainSubstring("UnionDescriptor"))
+
+			// The union should have fields for Order, Customer, TypedRecord
+			fields := union.Fields()
+			Expect(fields.Len()).To(BeNumerically(">=", 3))
+
+			// Verify all fields are message kind
+			for i := 0; i < fields.Len(); i++ {
+				f := fields.Get(i)
+				Expect(f.Kind()).To(Equal(protoreflect.MessageKind))
+			}
+		})
+
+		It("getUnionDescriptor returns nil for metadata with nil file descriptor", func() {
+			// Build a metadata with nil fileDescriptor to test the nil guard
+			md := &RecordMetaData{}
+			union := getUnionDescriptor(md)
+			Expect(union).To(BeNil())
+		})
+
+		It("validateUnion skips when either union is nil", func() {
+			// If old has no file descriptor, validateUnion returns nil (skip)
+			old := &RecordMetaData{version: 1}
+			new := buildMetaData(2, nil)
+
+			v := DefaultMetaDataEvolutionValidator()
+			err := v.validateUnion(old, new)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Same for new having no file descriptor
+			old2 := buildMetaData(1, nil)
+			new2 := &RecordMetaData{version: 2}
+			err = v.validateUnion(old2, new2)
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
