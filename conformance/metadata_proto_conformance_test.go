@@ -76,6 +76,12 @@ func clearProto2Defaults(m protoreflect.Message) {
 			for i := 0; i < list.Len(); i++ {
 				clearProto2Defaults(list.Get(i).Message())
 			}
+		case fd.IsMap() && fd.MapValue().Kind() == protoreflect.MessageKind:
+			// Recurse into message values in map fields
+			v.Map().Range(func(k protoreflect.MapKey, mv protoreflect.Value) bool {
+				clearProto2Defaults(mv.Message())
+				return true
+			})
 		case fd.IsList(), fd.IsMap():
 			// skip non-message collections
 		case fd.Kind() == protoreflect.MessageKind:
@@ -184,6 +190,8 @@ func buildGoMetaData(config string) *recordlayer.RecordMetaData {
 		builder.AddUniversalIndex(recordlayer.NewIndex("global_price", recordlayer.Field("price")))
 	case "with_record_count":
 		builder.SetRecordCountKey(recordlayer.EmptyKey())
+	case "with_explicit_type_key":
+		builder.GetRecordType("Order").SetRecordTypeKey(int64(42))
 	default:
 		panic("unknown config: " + config)
 	}
@@ -275,7 +283,7 @@ var _ = Describe("RecordMetaData Proto Serialization Conformance", func() {
 		java = NewJavaInvoker()
 	})
 
-	configs := []string{"basic", "with_indexes", "with_former_indexes", "full", "with_universal_index", "with_record_count"}
+	configs := []string{"basic", "with_indexes", "with_former_indexes", "full", "with_universal_index", "with_record_count", "with_explicit_type_key"}
 	for _, cfg := range configs {
 		config := cfg // capture loop variable
 

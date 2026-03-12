@@ -103,8 +103,8 @@ structure are all verified against Java.
 
 ### Test coverage
 
-312 conformance specs (Go↔Java cross-validation) and 838 unit/integration specs
-against real FDB via testcontainers. **1150 total specs.**
+315 conformance specs (Go↔Java cross-validation) and 838 unit/integration specs
+against real FDB via testcontainers. **1153 total specs.**
 
 | Area | Conformance specs |
 |------|------------------:|
@@ -126,7 +126,7 @@ against real FDB via testcontainers. **1150 total specs.**
 | Store header (v1 + v2), index state, lifecycle | 25 |
 | DeleteAllRecords / DeleteRecordsWhere | 11 |
 | OnlineIndexer | 7 |
-| RecordMetaData proto serialization | 18 |
+| RecordMetaData proto serialization | 21 |
 | TypedRecord cross-language encoding | 11 |
 
 ## Building

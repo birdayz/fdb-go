@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1144 specs pass (832 unit/integration + 312 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1153 specs pass (838 unit/integration + 315 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -313,9 +313,11 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 **P1 — strengthens confidence:**
 - [x] **Index scan continuation cross-language resume** — HIGH. 3 specs: Go→Java resume, Java→Go resume, alternating Go/Java. VALUE index paged scan with 10 entries, limit=3/2 page sizes. Continuation token wire format cross-validated (Go TO_OLD ↔ Java proto-wrapped).
-- [x] **RecordMetaData proto serialization cross-language roundtrip** — 18 specs (6 configs × 3 directions). Configs: basic, with_indexes, with_former_indexes, full, with_universal_index, with_record_count. Go→Java, Java→Go, Go→Java→Go roundtrip. `clearProto2Defaults` normalizes proto2 field presence across Go/Java. Java side uses `ExtensionRegistry` for `(record).usage=UNION` option resolution.
+- [x] **RecordMetaData proto serialization cross-language roundtrip** — 21 specs (7 configs × 3 directions). Configs: basic, with_indexes, with_former_indexes, full, with_universal_index, with_record_count, with_explicit_type_key. Go→Java, Java→Go, Go→Java→Go roundtrip. `clearProto2Defaults` normalizes proto2 field presence across Go/Java (including map message values). Java side uses `ExtensionRegistry` for `(record).usage=UNION` option resolution.
 
 **P2 — edge cases:**
+- [x] **clearProto2Defaults missing map<K, Message> recursion** — Fixed: added `fd.IsMap() && fd.MapValue().Kind() == protoreflect.MessageKind` case to recurse into map message values.
+- [x] **Metadata conformance: explicit record type key config** — Added `with_explicit_type_key` config (int64(42) / 42L). 7 configs × 3 directions = 21 specs now (was 18).
 - [ ] **Proto field type diversity in test schema** — MEDIUM. Current schema only covers int64, int32, string, enum, nested message, repeated string. Missing: float, double, bool, bytes, repeated message, map, oneof. Would need richer test proto.
 - [ ] **Store lock + delete operation interaction** — MEDIUM. FORBID_RECORD_UPDATE tested with save but not with deleteRecord, deleteAllRecords, deleteWhere. Cross-language validation needed.
 - [ ] **Index build state wire format (subspace 9)** — MEDIUM. No cross-language validation of IndexBuildSpaceKey contents. If Go and Java write different build state formats, mid-build language switch could corrupt state.

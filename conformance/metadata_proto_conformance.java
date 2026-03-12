@@ -136,6 +136,9 @@ class MetaDataProtoSteps extends ConformanceBase {
             case "with_record_count":
                 builder.setRecordCountKey(Key.Expressions.empty());
                 break;
+            case "with_explicit_type_key":
+                builder.getRecordType("Order").setRecordTypeKey(42L);
+                break;
             default:
                 throw new RuntimeException("Unknown config: " + config);
         }
