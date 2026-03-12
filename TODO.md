@@ -217,7 +217,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 - [x] Continuation token protobuf wrapping — magic number 6773487359078157740
 - [x] Bulk operations — DeleteAllRecords, GetRecordCount/GetSnapshotRecordCount
 - [x] Bazel 8 migration — MODULE.bazel, gazelle, nogo (20 analyzers)
-- [ ] **Bazel 9 upgrade** — upgrade from Bazel 8.2.1 to Bazel 9.0.1. Check rules_go, gazelle, rules_jvm_external compatibility. **HIGH**
+- [x] **Bazel 9 upgrade** — upgraded from 8.2.1 to 9.0.1. Bumped rules_java 8→9.6.1, added rules_android 0.7.1, removed archived rules_proto, added explicit protobuf-java-util Maven dep. All 1150 specs pass.
 - [x] CI pipeline — GitHub Actions with Bazel build + test
 - [x] Subspace constants verified — all 10 match Java exactly (0-9)
 

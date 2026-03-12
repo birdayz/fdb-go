@@ -41,7 +41,7 @@ Use `--ginkgo.focus=<regex>` to target a specific `Describe`/`It` block. Multipl
 - **Database**: FoundationDB via `github.com/apple/foundationdb/bindings/go`
 - **Serialization**: Protocol Buffers (Apple's original proto definitions)
 - **Proto codegen**: buf — use `just generate` to regenerate
-- **Build system**: Bazel 8 (via bazelisk), MODULE.bazel + gazelle for BUILD files
+- **Build system**: Bazel 9 (via bazelisk), MODULE.bazel + gazelle for BUILD files
 - **Go linting**: nogo (runs during Bazel compilation — lint errors are build errors)
 - **Task runner**: just (thin wrappers around bazel commands)
 - **Testing**: testcontainers-go (real FDB per test, no mocks)
@@ -56,7 +56,7 @@ Use `--ginkgo.focus=<regex>` to target a specific `Describe`/`It` block. Multipl
 ```
 MODULE.bazel                        # Bazel module config (Go + Java deps)
 BUILD.bazel                         # Root: gazelle + nogo
-.bazelversion                       # Pins Bazel 8
+.bazelversion                       # Pins Bazel 9
 .bazelrc                            # Bazel settings
 nogo_config.json                    # nogo analyzer config (lint = build errors)
 go.mod                              # github.com/birdayz/fdb-record-layer-go
@@ -208,4 +208,4 @@ Each continuation serializes cursor state to bytes for reconstruction across tra
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/MAX_EVER_VERSION/COUNT_NOT_NULL/COUNT_UPDATES/PERMUTED_MIN/PERMUTED_MAX indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
 - **Key gaps**: TEXT index, more key expression types, store state caching, timer/instrumentation
-- **Test counts**: 832 unit/integration specs, 306 conformance specs (1138 total)
+- **Test counts**: 838 unit/integration specs, 312 conformance specs (1150 total)
