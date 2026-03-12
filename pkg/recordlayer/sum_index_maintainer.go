@@ -138,8 +138,8 @@ func (m *SumIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStore
 // Scan scans SUM index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = sum as tuple.
 // DeleteWhere clears all SUM index entries whose key starts with the given prefix.
-func (m *SumIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *SumIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Matches Java's AtomicMutationIndexMaintainer.scan() with BY_GROUP semantics.

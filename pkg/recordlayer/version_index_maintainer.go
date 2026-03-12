@@ -128,8 +128,8 @@ func (m *VersionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte,
 }
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
-func (m *VersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *VersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.

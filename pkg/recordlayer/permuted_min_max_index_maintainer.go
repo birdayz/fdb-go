@@ -217,9 +217,11 @@ func (m *permutedMinMaxIndexMaintainer) ScanByGroup(scanRange TupleRange, contin
 
 // DeleteWhere clears both primary and secondary subspaces.
 // Matches Java's PermutedMinMaxIndexMaintainer.deleteWhere().
-func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	m.StandardIndexMaintainer.DeleteWhere(prefix)
-	deleteWhereRange(m.tx, m.secondarySubspace, prefix)
+func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	if err := m.StandardIndexMaintainer.DeleteWhere(prefix); err != nil {
+		return err
+	}
+	return deleteWhereRange(m.tx, m.secondarySubspace, prefix)
 }
 
 // getExtremum finds the current min/max entry for a given group key by scanning

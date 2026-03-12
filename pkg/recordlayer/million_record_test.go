@@ -174,7 +174,9 @@ var _ = Describe("MillionRecordScan", func() {
 					"continuation": []byte(nil),
 				}
 				if lastContinuation != nil && !lastContinuation.IsEnd() {
-					result["continuation"] = lastContinuation.ToBytes()
+					contBytes, contErr := lastContinuation.ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
+					result["continuation"] = contBytes
 				}
 
 				return result, nil

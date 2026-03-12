@@ -1066,7 +1066,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 				r, nextErr := cursor.OnNext(ctx)
 				Expect(nextErr).NotTo(HaveOccurred())
 				if !r.HasNext() {
-					continuation = r.GetContinuation().ToBytes()
+					var contErr error
+					continuation, contErr = r.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
 				firstBatch = append(firstBatch, r.GetValue())

@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
@@ -196,7 +197,11 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 	// Matches Java: if ANY child has !hasNext() && isLimitReached(), return empty.
 	for _, child := range c.children {
 		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
-			return NewResultNoNext[T](child.result.GetNoNextReason(), c.buildContinuation()), nil
+			cont, contErr := c.buildContinuation()
+			if contErr != nil {
+				return RecordCursorResult[T]{}, contErr
+			}
+			return NewResultNoNext[T](child.result.GetNoNextReason(), cont), nil
 		}
 	}
 
@@ -224,7 +229,11 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// No children have results → exhausted
 	if minIdx == -1 {
-		return NewResultNoNext[T](SourceExhausted, c.buildContinuation()), nil
+		cont, contErr := c.buildContinuation()
+		if contErr != nil {
+			return RecordCursorResult[T]{}, contErr
+		}
+		return NewResultNoNext[T](SourceExhausted, cont), nil
 	}
 
 	// Get the result from the winning child
@@ -245,24 +254,40 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		if !child.hasResult && !child.result.GetNoNextReason().IsSourceExhausted() {
 			c.stopped = true
 			c.stopReason = child.result.GetNoNextReason()
-			c.stopContinuation = c.buildContinuation()
+			var contErr error
+			c.stopContinuation, contErr = c.buildContinuation()
+			if contErr != nil {
+				return RecordCursorResult[T]{}, contErr
+			}
 			return NewResultWithValue[T](result.GetValue(), c.stopContinuation), nil
 		}
 	}
 
-	return NewResultWithValue[T](result.GetValue(), c.buildContinuation()), nil
+	cont, contErr := c.buildContinuation()
+	if contErr != nil {
+		return RecordCursorResult[T]{}, contErr
+	}
+	return NewResultWithValue[T](result.GetValue(), cont), nil
 }
 
-func (c *unionCursor[T]) buildContinuation() RecordCursorContinuation {
+func (c *unionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
 	cont := &gen.UnionContinuation{}
 	for i, child := range c.children {
 		var contBytes []byte
 		exhausted := false
 		if child.hasResult {
-			contBytes = child.result.GetContinuation().ToBytes()
+			var err error
+			contBytes, err = child.result.GetContinuation().ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
+			}
 		} else {
 			exhausted = child.result.GetNoNextReason().IsSourceExhausted()
-			contBytes = child.result.GetContinuation().ToBytes()
+			var err error
+			contBytes, err = child.result.GetContinuation().ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("union continuation child %d: %w", i, err)
+			}
 		}
 
 		if i == 0 {
@@ -280,9 +305,9 @@ func (c *unionCursor[T]) buildContinuation() RecordCursorContinuation {
 	}
 	data, err := proto.Marshal(cont)
 	if err != nil {
-		return &EndContinuation{}
+		return nil, fmt.Errorf("union continuation marshal: %w", err)
 	}
-	return &BytesContinuation{bytes: data}
+	return &BytesContinuation{bytes: data}, nil
 }
 
 func (c *unionCursor[T]) Close() error {
@@ -351,9 +376,13 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Check if any child is exhausted
 		for _, child := range c.children {
 			if !child.hasResult {
+				cont, contErr := c.buildContinuation()
+				if contErr != nil {
+					return RecordCursorResult[T]{}, contErr
+				}
 				return NewResultNoNext[T](
 					c.weakestNoNextReason(),
-					c.buildContinuation(),
+					cont,
 				), nil
 			}
 		}
@@ -387,7 +416,11 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 				}
 			}
-			return NewResultWithValue[T](result.GetValue(), c.buildContinuation()), nil
+			cont, contErr := c.buildContinuation()
+			if contErr != nil {
+				return RecordCursorResult[T]{}, contErr
+			}
+			return NewResultWithValue[T](result.GetValue(), cont), nil
 		}
 
 		// Advance all non-maximal children
@@ -447,13 +480,17 @@ func strength(r NoNextReason) int {
 	}
 }
 
-func (c *intersectionCursor[T]) buildContinuation() RecordCursorContinuation {
+func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
 	cont := &gen.IntersectionContinuation{}
 	for i, child := range c.children {
 		var contBytes []byte
 		started := child.hasResult || c.started
 		if child.hasResult || !child.result.GetNoNextReason().IsSourceExhausted() {
-			contBytes = child.result.GetContinuation().ToBytes()
+			var err error
+			contBytes, err = child.result.GetContinuation().ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("intersection continuation child %d: %w", i, err)
+			}
 		}
 
 		if i == 0 {
@@ -471,9 +508,9 @@ func (c *intersectionCursor[T]) buildContinuation() RecordCursorContinuation {
 	}
 	data, err := proto.Marshal(cont)
 	if err != nil {
-		return &EndContinuation{}
+		return nil, fmt.Errorf("intersection continuation marshal: %w", err)
 	}
-	return &BytesContinuation{bytes: data}
+	return &BytesContinuation{bytes: data}, nil
 }
 
 func (c *intersectionCursor[T]) Close() error {

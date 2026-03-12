@@ -98,8 +98,8 @@ func (m *MaxEverVersionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecor
 }
 
 // DeleteWhere clears all MAX_EVER_VERSION index entries whose key starts with the given prefix.
-func (m *MaxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *MaxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans MAX_EVER_VERSION index entries within the given tuple range.

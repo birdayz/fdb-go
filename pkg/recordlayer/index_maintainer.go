@@ -29,7 +29,7 @@ type IndexMaintainer interface {
 	// DeleteWhere clears all index entries whose key starts with the given prefix.
 	// Uses FDB range clears — no scanning. Called by DeleteRecordsWhere.
 	// Matches Java's IndexMaintainer.deleteWhere().
-	DeleteWhere(prefix tuple.Tuple)
+	DeleteWhere(prefix tuple.Tuple) error
 }
 
 // indexStoreContext provides the store methods needed by index maintainers.
@@ -150,17 +150,20 @@ func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte
 // in the specified subspace. Uses FDB PrefixRange to include the exact prefix key
 // (important for ungrouped aggregate indexes).
 // Shared implementation for all index maintainer types.
-func deleteWhereRange(tx fdb.Transaction, indexSubspace subspace.Subspace, prefix tuple.Tuple) {
+func deleteWhereRange(tx fdb.Transaction, indexSubspace subspace.Subspace, prefix tuple.Tuple) error {
 	key := indexSubspace.Pack(prefix)
-	if pr, err := fdb.PrefixRange(key); err == nil {
-		tx.ClearRange(pr)
+	pr, err := fdb.PrefixRange(key)
+	if err != nil {
+		return fmt.Errorf("deleteWhereRange: PrefixRange(%x): %w", key, err)
 	}
+	tx.ClearRange(pr)
+	return nil
 }
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 // Matches Java's StandardIndexMaintainer.deleteWhere().
-func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // indexEntry represents a single index entry (indexed values + record primary key).

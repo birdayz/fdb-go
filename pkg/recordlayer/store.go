@@ -678,14 +678,15 @@ func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
 // DeleteIndexEntriesInRange clears index entries matching the given tuple prefix.
 // For example, passing tuple.Tuple{"alice"} clears all entries where the first
 // indexed value is "alice".
-func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tuple.Tuple) {
+func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tuple.Tuple) error {
 	indexSub := store.indexSubspace(index)
 	prefixKey := indexSub.Pack(prefix)
 	r, err := fdb.PrefixRange(prefixKey)
 	if err != nil {
-		return // Invalid prefix, nothing to clear
+		return fmt.Errorf("DeleteIndexEntriesInRange: PrefixRange(%x): %w", prefixKey, err)
 	}
 	store.context.Transaction().ClearRange(r)
+	return nil
 }
 
 // DeleteAllRecords deletes all records from the store.
@@ -736,11 +737,13 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		RecordVersionKey,       // explicit record version subspace
 	} {
 		sub := store.subspace.Sub(key)
-		if pr, err := fdb.PrefixRange(sub.Bytes()); err == nil {
-			begin, end := pr.FDBRangeKeys()
-			store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
-			store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
+		pr, err := fdb.PrefixRange(sub.Bytes())
+		if err != nil {
+			return fmt.Errorf("DeleteAllRecords: PrefixRange for subspace %d: %w", key, err)
 		}
+		begin, end := pr.FDBRangeKeys()
+		store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+		store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
 	}
 
 	// Reset record count to 0. ClearRange alone doesn't override pending atomic

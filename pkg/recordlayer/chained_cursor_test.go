@@ -105,7 +105,11 @@ func TestChainedCursorContinuation(t *testing.T) {
 	}
 
 	// Resume from continuation
-	cursor2 := Chained(gen, encodeInt64, decodeInt64, lastCont.ToBytes())
+	contBytes, contBytesErr := lastCont.ToBytes()
+	if contBytesErr != nil {
+		t.Fatalf("lastCont.ToBytes() error: %v", contBytesErr)
+	}
+	cursor2 := Chained(gen, encodeInt64, decodeInt64, contBytes)
 
 	var results []int64
 	for v := range Seq(cursor2, ctx) {

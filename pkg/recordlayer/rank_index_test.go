@@ -1342,7 +1342,9 @@ var _ = Describe("RankIndex", func() {
 				r, nextErr := cursor.OnNext(ctx)
 				Expect(nextErr).NotTo(HaveOccurred())
 				if !r.HasNext() {
-					continuation = r.GetContinuation().ToBytes()
+					var contErr error
+					continuation, contErr = r.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
 				page1 = append(page1, r.GetValue())
@@ -1360,7 +1362,9 @@ var _ = Describe("RankIndex", func() {
 				r, nextErr := cursor.OnNext(ctx)
 				Expect(nextErr).NotTo(HaveOccurred())
 				if !r.HasNext() {
-					continuation = r.GetContinuation().ToBytes()
+					var contErr error
+					continuation, contErr = r.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
 				page2 = append(page2, r.GetValue())

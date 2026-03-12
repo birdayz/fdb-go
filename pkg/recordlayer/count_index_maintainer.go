@@ -123,8 +123,8 @@ func (m *CountIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBSto
 }
 
 // DeleteWhere clears all COUNT index entries whose key starts with the given prefix.
-func (m *CountIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *CountIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans count index entries within the given tuple range.

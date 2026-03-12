@@ -185,7 +185,11 @@ func TestUnionCursorContinuation(t *testing.T) {
 	if cont == nil || cont.IsEnd() {
 		t.Fatal("continuation should not be end")
 	}
-	if len(cont.ToBytes()) == 0 {
+	contBytes, contBytesErr := cont.ToBytes()
+	if contBytesErr != nil {
+		t.Fatalf("cont.ToBytes() error: %v", contBytesErr)
+	}
+	if len(contBytes) == 0 {
 		t.Fatal("continuation bytes should not be empty")
 	}
 }

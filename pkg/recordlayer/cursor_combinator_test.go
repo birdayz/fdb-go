@@ -548,7 +548,8 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(cursor.Close()).To(Succeed())
 
 		// Continue from continuation — should get 21, 30, 31
-		contBytes := lastCont.ToBytes()
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(contBytes).NotTo(BeEmpty())
 
 		cursor2 := FlatMapPipelined(makeOuter, makeInner, contBytes, 1)
@@ -578,7 +579,8 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(r.HasNext()).To(BeTrue())
 		Expect(r.GetValue()).To(Equal(10))
 
-		contBytes := r.GetContinuation().ToBytes()
+		contBytes, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
 		Expect(cursor.Close()).To(Succeed())
 
 		// Resume — check value should match, inner cursor picks up
@@ -706,7 +708,9 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(cursor.Close()).To(Succeed())
 
 		// Resume from continuation — should get 30, 40, 50
-		cursor2 := FromListWithContinuation(items, lastCont.ToBytes())
+		contBytes, err := lastCont.ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+		cursor2 := FromListWithContinuation(items, contBytes)
 		result, err := AsList(ctx, cursor2)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal([]int{30, 40, 50}))

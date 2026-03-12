@@ -229,7 +229,9 @@ var _ = Describe("BasicContinuation", func() {
 					"continuation": []byte(nil),
 				}
 				if lastContinuation != nil && !lastContinuation.IsEnd() {
-					result["continuation"] = lastContinuation.ToBytes()
+					contBytes, contErr := lastContinuation.ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
+					result["continuation"] = contBytes
 				}
 
 				return result, nil
@@ -447,14 +449,18 @@ var _ = Describe("TimeLimitScan", func() {
 						}
 						cont := result.GetContinuation()
 						if cont != nil {
-							continuation = cont.ToBytes()
+							var contErr error
+							continuation, contErr = cont.ToBytes()
+							Expect(contErr).NotTo(HaveOccurred())
 						}
 						break
 					}
 					batchCount++
 					cont := result.GetContinuation()
 					if cont != nil {
-						continuation = cont.ToBytes()
+						var contErr error
+						continuation, contErr = cont.ToBytes()
+						Expect(contErr).NotTo(HaveOccurred())
 					}
 				}
 				return nil, nil

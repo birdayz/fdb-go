@@ -91,7 +91,9 @@ var _ = Describe("ContinuationToken", func() {
 			Expect(continuation.IsEnd()).To(BeFalse())
 
 			// Second batch: records 5-9
-			cursor2 := store.ScanRecords(continuation.ToBytes(), props)
+			contBytes, err := continuation.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			cursor2 := store.ScanRecords(contBytes, props)
 			var secondBatch []int64
 			for {
 				result, err := cursor2.OnNext(ctx)
@@ -157,7 +159,8 @@ var _ = Describe("ContinuationToken", func() {
 
 			var contBytes []byte
 			if lastCont != nil && !lastCont.IsEnd() {
-				contBytes = lastCont.ToBytes()
+				contBytes, err = lastCont.ToBytes()
+				Expect(err).NotTo(HaveOccurred())
 			}
 			return &batchResult{ids: ids, continuation: contBytes}, nil
 		})
@@ -251,7 +254,8 @@ var _ = Describe("ContinuationToken", func() {
 
 				var contBytes []byte
 				if lastCont != nil && !lastCont.IsEnd() {
-					contBytes = lastCont.ToBytes()
+					contBytes, err = lastCont.ToBytes()
+					Expect(err).NotTo(HaveOccurred())
 				}
 				return &struct {
 					ids  []int64
@@ -396,7 +400,8 @@ var _ = Describe("ContinuationToken", func() {
 			_ = cursor.Close()
 
 			// Serialize continuation to bytes
-			contBytes := cont.ToBytes()
+			contBytes, err := cont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
 			Expect(contBytes).NotTo(BeNil())
 
 			// Resume with the raw bytes

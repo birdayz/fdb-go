@@ -77,8 +77,8 @@ func (m *MinMaxEverTupleIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newReco
 }
 
 // DeleteWhere clears all MIN/MAX_EVER_TUPLE index entries whose key starts with the given prefix.
-func (m *MinMaxEverTupleIndexMaintainer) DeleteWhere(prefix tuple.Tuple) {
-	deleteWhereRange(m.tx, m.indexSubspace, prefix)
+func (m *MinMaxEverTupleIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans MIN/MAX_EVER_TUPLE index entries within the given tuple range.

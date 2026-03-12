@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
@@ -82,7 +83,10 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		if !result.HasNext() {
 			// Inner exhausted or stopped — pass through with wrapped continuation
 			innerCont := result.GetContinuation()
-			wrapped := c.wrapContinuation(innerCont)
+			wrapped, wrapErr := c.wrapContinuation(innerCont)
+			if wrapErr != nil {
+				return RecordCursorResult[T]{}, wrapErr
+			}
 			return NewResultNoNext[T](result.GetNoNextReason(), wrapped), nil
 		}
 
@@ -98,19 +102,26 @@ func (c *dedupCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		c.hasLast = true
 
 		innerCont := result.GetContinuation()
-		wrapped := c.wrapContinuation(innerCont)
+		wrapped, wrapErr := c.wrapContinuation(innerCont)
+		if wrapErr != nil {
+			return RecordCursorResult[T]{}, wrapErr
+		}
 		return NewResultWithValue(val, wrapped), nil
 	}
 }
 
-func (c *dedupCursor[T]) wrapContinuation(inner RecordCursorContinuation) RecordCursorContinuation {
+func (c *dedupCursor[T]) wrapContinuation(inner RecordCursorContinuation) (RecordCursorContinuation, error) {
 	if inner == nil || inner.IsEnd() {
-		return &EndContinuation{}
+		return &EndContinuation{}, nil
+	}
+	innerBytes, err := inner.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("dedup continuation: %w", err)
 	}
 	return &dedupContinuationWrapper[T]{
-		inner:    inner.ToBytes(),
+		inner:    innerBytes,
 		lastPack: c.packLast(),
-	}
+	}, nil
 }
 
 func (c *dedupCursor[T]) packLast() []byte {
@@ -125,13 +136,12 @@ type dedupContinuationWrapper[T any] struct {
 	lastPack []byte
 }
 
-func (d *dedupContinuationWrapper[T]) ToBytes() []byte {
+func (d *dedupContinuationWrapper[T]) ToBytes() ([]byte, error) {
 	cont := &gen.DedupContinuation{
 		InnerContinuation: d.inner,
 		LastValue:         d.lastPack,
 	}
-	data, _ := proto.Marshal(cont)
-	return data
+	return proto.Marshal(cont)
 }
 
 func (d *dedupContinuationWrapper[T]) IsEnd() bool {

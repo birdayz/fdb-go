@@ -81,19 +81,27 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	}
 
 	// Clear records subspace.
-	clearPrefixRange(tx, store.subspace.Sub(RecordKey), prefix)
+	if err := clearPrefixRange(tx, store.subspace.Sub(RecordKey), prefix); err != nil {
+		return err
+	}
 
 	// Clear record versions (if storing versions).
 	if store.metaData.IsStoreRecordVersions() {
-		clearPrefixRange(tx, store.subspace.Sub(RecordVersionKey), prefix)
+		if err := clearPrefixRange(tx, store.subspace.Sub(RecordVersionKey), prefix); err != nil {
+			return err
+		}
 	}
 
 	// Remove pending version mutations and local version cache entries for
 	// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
 	// mutations for deleted records' version keys would still be flushed
 	// at commit. Matches Java's context.clear → removeVersionMutationRange().
-	store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordKey), prefix)
-	store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordVersionKey), prefix)
+	if err := store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordKey), prefix); err != nil {
+		return err
+	}
+	if err := store.removeVersionDataInPrefixRange(store.subspace.Sub(RecordVersionKey), prefix); err != nil {
+		return err
+	}
 
 	// Clear record counts.
 	countKeyExpr := store.metaData.GetRecordCountKey()
@@ -105,7 +113,9 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			tx.Clear(fdb.Key(countSub.Pack(prefix)))
 		} else if len(prefix) < countColSize {
 			// Delete range of count entries under this prefix.
-			clearPrefixRange(tx, countSub, prefix)
+			if err := clearPrefixRange(tx, countSub, prefix); err != nil {
+				return err
+			}
 		}
 		// If prefix > countColSize, the count key is coarser than the
 		// prefix — we can't adjust it. This matches Java which simply
@@ -115,11 +125,15 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	// Delete index entries via each maintainer.
 	for _, action := range actions {
 		maintainer := store.getIndexMaintainer(action.index)
-		maintainer.DeleteWhere(action.prefix)
+		if err := maintainer.DeleteWhere(action.prefix); err != nil {
+			return err
+		}
 
 		// Also clear version mutations/cache for the index subspace range.
 		idxSub := store.indexSubspace(action.index)
-		store.removeVersionDataInPrefixRange(idxSub, action.prefix)
+		if err := store.removeVersionDataInPrefixRange(idxSub, action.prefix); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -127,13 +141,16 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 
 // removeVersionDataInPrefixRange removes pending version mutations and local
 // version cache entries whose key falls within the PrefixRange of sub.Pack(prefix).
-func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspace, prefix tuple.Tuple) {
+func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspace, prefix tuple.Tuple) error {
 	key := sub.Pack(prefix)
-	if pr, err := fdb.PrefixRange(key); err == nil {
-		begin, end := pr.FDBRangeKeys()
-		store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
-		store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
+	pr, err := fdb.PrefixRange(key)
+	if err != nil {
+		return fmt.Errorf("removeVersionDataInPrefixRange: PrefixRange(%x): %w", key, err)
 	}
+	begin, end := pr.FDBRangeKeys()
+	store.context.RemoveVersionMutationsInRange(begin.FDBKey(), end.FDBKey())
+	store.context.RemoveLocalVersionsInRange(begin.FDBKey(), end.FDBKey())
+	return nil
 }
 
 // findMatchingRecordTypes returns names of record types whose PK has
@@ -213,9 +230,12 @@ func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData
 
 // clearPrefixRange clears all keys under sub.Pack(prefix) using PrefixRange
 // to include the prefix key itself (important for ungrouped aggregate data).
-func clearPrefixRange(tx fdb.Transaction, sub subspace.Subspace, prefix tuple.Tuple) {
+func clearPrefixRange(tx fdb.Transaction, sub subspace.Subspace, prefix tuple.Tuple) error {
 	key := sub.Pack(prefix)
-	if pr, err := fdb.PrefixRange(key); err == nil {
-		tx.ClearRange(pr)
+	pr, err := fdb.PrefixRange(key)
+	if err != nil {
+		return fmt.Errorf("clearPrefixRange: PrefixRange(%x): %w", key, err)
 	}
+	tx.ClearRange(pr)
+	return nil
 }

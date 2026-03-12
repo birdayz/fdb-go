@@ -244,7 +244,7 @@ var _ = Describe("Bulk index operations", func() {
 			}
 
 			// Delete entries with price = 200
-			store.DeleteIndexEntriesInRange(priceIndex, tuple.Tuple{int64(200)})
+			Expect(store.DeleteIndexEntriesInRange(priceIndex, tuple.Tuple{int64(200)})).To(Succeed())
 
 			entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())

@@ -138,7 +138,9 @@ var _ = Describe("ByteScanLimit", func() {
 			Expect(result.HasNext()).To(BeFalse())
 			Expect(result.GetNoNextReason()).To(Equal(ByteLimitReached))
 			Expect(result.HasStoppedBeforeEnd()).To(BeTrue())
-			Expect(result.GetContinuation().ToBytes()).NotTo(BeNil())
+			contBytes, contErr := result.GetContinuation().ToBytes()
+			Expect(contErr).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeNil())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -192,7 +194,9 @@ var _ = Describe("ByteScanLimit", func() {
 			Expect(count).To(BeNumerically("<", 10))
 			Expect(lastResult.GetNoNextReason()).To(Equal(ByteLimitReached))
 			Expect(lastResult.HasStoppedBeforeEnd()).To(BeTrue())
-			Expect(lastResult.GetContinuation().ToBytes()).NotTo(BeNil())
+			contBytes, contErr := lastResult.GetContinuation().ToBytes()
+			Expect(contErr).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeNil())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -236,7 +240,9 @@ var _ = Describe("ByteScanLimit", func() {
 				result, err := cursor.OnNext(rtx.ctx)
 				Expect(err).NotTo(HaveOccurred())
 				if !result.HasNext() {
-					contBytes = result.GetContinuation().ToBytes()
+					var contErr error
+					contBytes, contErr = result.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					firstReason = result.GetNoNextReason()
 					break
 				}

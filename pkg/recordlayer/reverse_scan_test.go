@@ -279,7 +279,9 @@ var _ = Describe("ReverseScan", func() {
 						if cont.IsEnd() {
 							continuation = nil
 						} else {
-							continuation = cont.ToBytes()
+							var contErr error
+							continuation, contErr = cont.ToBytes()
+							Expect(contErr).NotTo(HaveOccurred())
 						}
 						break
 					}

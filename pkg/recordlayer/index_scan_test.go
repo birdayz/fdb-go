@@ -144,7 +144,9 @@ var _ = Describe("IndexScanning", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(r3.HasNext()).To(BeFalse())
 				Expect(r3.GetNoNextReason()).To(Equal(ReturnLimitReached))
-				Expect(r3.GetContinuation().ToBytes()).NotTo(BeNil())
+				contBytes, contErr := r3.GetContinuation().ToBytes()
+				Expect(contErr).NotTo(HaveOccurred())
+				Expect(contBytes).NotTo(BeNil())
 
 				Expect(cursor.Close()).To(Succeed())
 				return nil, nil
@@ -182,7 +184,9 @@ var _ = Describe("IndexScanning", func() {
 					r, nextErr := cursor.OnNext(ctx)
 					Expect(nextErr).NotTo(HaveOccurred())
 					if !r.HasNext() {
-						continuation = r.GetContinuation().ToBytes()
+						var contErr error
+						continuation, contErr = r.GetContinuation().ToBytes()
+						Expect(contErr).NotTo(HaveOccurred())
 						break
 					}
 				}
@@ -198,7 +202,9 @@ var _ = Describe("IndexScanning", func() {
 					r, nextErr := cursor2.OnNext(ctx)
 					Expect(nextErr).NotTo(HaveOccurred())
 					if !r.HasNext() {
-						continuation = r.GetContinuation().ToBytes()
+						var contErr error
+						continuation, contErr = r.GetContinuation().ToBytes()
+						Expect(contErr).NotTo(HaveOccurred())
 						break
 					}
 					page2 = append(page2, r.GetValue())
@@ -243,7 +249,9 @@ var _ = Describe("IndexScanning", func() {
 					r, nextErr := cursor.OnNext(ctx)
 					Expect(nextErr).NotTo(HaveOccurred())
 					if !r.HasNext() {
-						continuation = r.GetContinuation().ToBytes()
+						var contErr error
+						continuation, contErr = r.GetContinuation().ToBytes()
+						Expect(contErr).NotTo(HaveOccurred())
 						break
 					}
 					page1 = append(page1, r.GetValue())

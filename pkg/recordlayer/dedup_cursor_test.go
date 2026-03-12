@@ -162,11 +162,15 @@ func TestDedupCursorContinuation(t *testing.T) {
 	}
 
 	// Resume from continuation
+	contBytes, contBytesErr := cont.ToBytes()
+	if contBytesErr != nil {
+		t.Fatalf("cont.ToBytes() error: %v", contBytesErr)
+	}
 	cursor2 := Dedup(
 		func(c []byte) RecordCursor[int] {
 			return FromListWithContinuation(data, c)
 		},
-		intEqual, packInt, unpackInt, cont.ToBytes(),
+		intEqual, packInt, unpackInt, contBytes,
 	)
 
 	r3, err := cursor2.OnNext(ctx)

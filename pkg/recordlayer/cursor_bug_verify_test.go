@@ -112,7 +112,9 @@ var _ = Describe("CursorBugVerify", func() {
 			cont := r3.GetContinuation()
 			Expect(cont).NotTo(BeNil())
 			Expect(cont.IsEnd()).To(BeFalse(), "continuation must be resumable, not EndContinuation")
-			Expect(cont.ToBytes()).NotTo(BeNil(), "continuation bytes must not be nil")
+			contBytes, contBytesErr := cont.ToBytes()
+			Expect(contBytesErr).NotTo(HaveOccurred())
+			Expect(contBytes).NotTo(BeNil(), "continuation bytes must not be nil")
 		})
 	})
 

@@ -116,7 +116,11 @@ var _ = Describe("Continuation Token Conformance", func() {
 					return nil, err
 				}
 				if !result.HasNext() {
-					nextCont = result.GetContinuation().ToBytes()
+					var contErr error
+					nextCont, contErr = result.GetContinuation().ToBytes()
+					if contErr != nil {
+						return nil, contErr
+					}
 					sourceExhausted = result.GetNoNextReason().IsSourceExhausted()
 					break
 				}

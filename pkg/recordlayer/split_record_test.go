@@ -372,7 +372,9 @@ var _ = Describe("SplitRecords", func() {
 				Expect(scanErr).NotTo(HaveOccurred())
 				if !result.HasNext() {
 					Expect(result.GetNoNextReason()).To(Equal(ReturnLimitReached))
-					continuation = result.GetContinuation().ToBytes()
+					var contErr error
+					continuation, contErr = result.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
 				order, ok := result.GetValue().Record.(*gen.Order)
@@ -392,7 +394,9 @@ var _ = Describe("SplitRecords", func() {
 				result, scanErr := cursor2.OnNext(scanCtx)
 				Expect(scanErr).NotTo(HaveOccurred())
 				if !result.HasNext() {
-					continuation = result.GetContinuation().ToBytes()
+					var contErr error
+					continuation, contErr = result.GetContinuation().ToBytes()
+					Expect(contErr).NotTo(HaveOccurred())
 					break
 				}
 				order, ok := result.GetValue().Record.(*gen.Order)

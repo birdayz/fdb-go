@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 	"iter"
 
 	"google.golang.org/protobuf/proto"
@@ -43,10 +44,10 @@ func (r NoNextReason) IsLimitReached() bool {
 
 // RecordCursorContinuation represents the position of a cursor for resumption
 type RecordCursorContinuation interface {
-	// ToBytes serializes this continuation to a byte array
-	// Returns nil if this is an end continuation
-	ToBytes() []byte
-	
+	// ToBytes serializes this continuation to a byte array.
+	// Returns (nil, nil) if this is an end continuation.
+	ToBytes() ([]byte, error)
+
 	// IsEnd returns true if this represents the end of iteration
 	IsEnd() bool
 }
@@ -57,8 +58,8 @@ type BytesContinuation struct {
 }
 
 // ToBytes returns the continuation bytes
-func (c *BytesContinuation) ToBytes() []byte {
-	return c.bytes
+func (c *BytesContinuation) ToBytes() ([]byte, error) {
+	return c.bytes, nil
 }
 
 // IsEnd returns true if this is an end continuation
@@ -70,8 +71,8 @@ func (c *BytesContinuation) IsEnd() bool {
 type EndContinuation struct{}
 
 // ToBytes always returns nil for end continuations
-func (c *EndContinuation) ToBytes() []byte {
-	return nil
+func (c *EndContinuation) ToBytes() ([]byte, error) {
+	return nil, nil
 }
 
 // IsEnd always returns true for end continuations
@@ -645,7 +646,10 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 	if result.HasNext() {
 		// Wrap the inner continuation with ConcatContinuation
 		innerCont := result.GetContinuation()
-		wrapped := c.wrapContinuation(innerCont)
+		wrapped, wrapErr := c.wrapContinuation(innerCont)
+		if wrapErr != nil {
+			return RecordCursorResult[T]{}, wrapErr
+		}
 		return NewResultWithValue(result.GetValue(), wrapped), nil
 	}
 
@@ -660,19 +664,26 @@ func (c *concatCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], er
 
 	// Second cursor done or first stopped for non-exhaustion reason
 	innerCont := result.GetContinuation()
-	wrapped := c.wrapContinuation(innerCont)
+	wrapped, wrapErr := c.wrapContinuation(innerCont)
+	if wrapErr != nil {
+		return RecordCursorResult[T]{}, wrapErr
+	}
 	return NewResultNoNext[T](result.GetNoNextReason(), wrapped), nil
 }
 
-func (c *concatCursor[T]) wrapContinuation(inner RecordCursorContinuation) RecordCursorContinuation {
+func (c *concatCursor[T]) wrapContinuation(inner RecordCursorContinuation) (RecordCursorContinuation, error) {
 	if inner == nil || inner.IsEnd() {
 		if c.onSecond {
-			return &EndContinuation{}
+			return &EndContinuation{}, nil
 		}
 		// First cursor at end but haven't switched yet
-		return &concatContinuationWrapper{onSecond: false, inner: nil}
+		return &concatContinuationWrapper{onSecond: false, inner: nil}, nil
 	}
-	return &concatContinuationWrapper{onSecond: c.onSecond, inner: inner.ToBytes()}
+	innerBytes, err := inner.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("concat continuation: %w", err)
+	}
+	return &concatContinuationWrapper{onSecond: c.onSecond, inner: innerBytes}, nil
 }
 
 type concatContinuationWrapper struct {
@@ -680,13 +691,12 @@ type concatContinuationWrapper struct {
 	inner    []byte
 }
 
-func (c *concatContinuationWrapper) ToBytes() []byte {
+func (c *concatContinuationWrapper) ToBytes() ([]byte, error) {
 	cont := &gen.ConcatContinuation{
 		Second:       proto.Bool(c.onSecond),
 		Continuation: c.inner,
 	}
-	data, _ := proto.Marshal(cont)
-	return data
+	return proto.Marshal(cont)
 }
 
 func (c *concatContinuationWrapper) IsEnd() bool {
@@ -851,7 +861,10 @@ func (c *flatMapCursor[T, V]) OnNext(ctx context.Context) (RecordCursorResult[V]
 				return NewResultNoNext[V](SourceExhausted, &EndContinuation{}), nil
 			}
 			// Outer stopped for non-exhaustion reason
-			wrapped := c.wrapOuterStopContinuation(outerResult.GetContinuation())
+			wrapped, wrapErr := c.wrapOuterStopContinuation(outerResult.GetContinuation())
+			if wrapErr != nil {
+				return RecordCursorResult[V]{}, wrapErr
+			}
 			return NewResultNoNext[V](outerResult.GetNoNextReason(), wrapped), nil
 		}
 
@@ -907,12 +920,19 @@ func (c *flatMapCursor[T, V]) wrapContinuation(innerCont RecordCursorContinuatio
 	}
 }
 
-func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorContinuation) RecordCursorContinuation {
-	fm := &gen.FlatMapContinuation{
-		OuterContinuation: outerCont.ToBytes(),
+func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorContinuation) (RecordCursorContinuation, error) {
+	outerBytes, err := outerCont.ToBytes()
+	if err != nil {
+		return nil, fmt.Errorf("flatmap outer stop continuation: %w", err)
 	}
-	data, _ := proto.Marshal(fm)
-	return &BytesContinuation{bytes: data}
+	fm := &gen.FlatMapContinuation{
+		OuterContinuation: outerBytes,
+	}
+	data, err := proto.Marshal(fm)
+	if err != nil {
+		return nil, fmt.Errorf("flatmap outer stop continuation marshal: %w", err)
+	}
+	return &BytesContinuation{bytes: data}, nil
 }
 
 type flatMapContinuationWrapper[T any] struct {
@@ -923,27 +943,38 @@ type flatMapContinuationWrapper[T any] struct {
 	checkValueFunc func(T) []byte
 }
 
-func (w *flatMapContinuationWrapper[T]) ToBytes() []byte {
+func (w *flatMapContinuationWrapper[T]) ToBytes() ([]byte, error) {
 	fm := &gen.FlatMapContinuation{}
 
 	if w.innerCont == nil || w.innerCont.IsEnd() {
 		// Inner cursor exhausted — resume from outer's current position (after this value)
 		if w.outerCont != nil {
-			fm.OuterContinuation = w.outerCont.ToBytes()
+			outerBytes, err := w.outerCont.ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("flatmap continuation outer: %w", err)
+			}
+			fm.OuterContinuation = outerBytes
 		}
 	} else {
 		// Inner cursor NOT exhausted — resume from prior outer position + inner position
 		if w.priorOuterCont != nil {
-			fm.OuterContinuation = w.priorOuterCont.ToBytes()
+			priorBytes, err := w.priorOuterCont.ToBytes()
+			if err != nil {
+				return nil, fmt.Errorf("flatmap continuation prior outer: %w", err)
+			}
+			fm.OuterContinuation = priorBytes
 		}
-		fm.InnerContinuation = w.innerCont.ToBytes()
+		innerBytes, err := w.innerCont.ToBytes()
+		if err != nil {
+			return nil, fmt.Errorf("flatmap continuation inner: %w", err)
+		}
+		fm.InnerContinuation = innerBytes
 		if w.checkValueFunc != nil && w.outerValue != nil {
 			fm.CheckValue = w.checkValueFunc(*w.outerValue)
 		}
 	}
 
-	data, _ := proto.Marshal(fm)
-	return data
+	return proto.Marshal(fm)
 }
 
 func (w *flatMapContinuationWrapper[T]) IsEnd() bool {
@@ -1015,7 +1046,10 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 
 		if result.HasStoppedBeforeEnd() {
 			// Inner cursor stopped due to a limit — create new transaction and continue
-			contBytes := result.GetContinuation().ToBytes()
+			contBytes, contErr := result.GetContinuation().ToBytes()
+			if contErr != nil {
+				return RecordCursorResult[T]{}, fmt.Errorf("auto-continuing cursor continuation: %w", contErr)
+			}
 			if err := c.openContextAndGenerateCursor(ctx, contBytes); err != nil {
 				return RecordCursorResult[T]{}, err
 			}
@@ -1032,7 +1066,11 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 
 func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt int) (RecordCursorResult[T], error) {
 	if c.currentCursor == nil {
-		if err := c.openContextAndGenerateCursor(ctx, c.lastContinuation()); err != nil {
+		cont, contErr := c.lastContinuation()
+		if contErr != nil {
+			return RecordCursorResult[T]{}, contErr
+		}
+		if err := c.openContextAndGenerateCursor(ctx, cont); err != nil {
 			return RecordCursorResult[T]{}, err
 		}
 	}
@@ -1043,7 +1081,11 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 			return RecordCursorResult[T]{}, err
 		}
 		// Retryable error — create new cursor from last successful position
-		if openErr := c.openContextAndGenerateCursor(ctx, c.lastContinuation()); openErr != nil {
+		cont, contErr := c.lastContinuation()
+		if contErr != nil {
+			return RecordCursorResult[T]{}, contErr
+		}
+		if openErr := c.openContextAndGenerateCursor(ctx, cont); openErr != nil {
 			return RecordCursorResult[T]{}, openErr
 		}
 		return c.onNextWithRetry(ctx, attempt+1)
@@ -1052,9 +1094,9 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 	return result, nil
 }
 
-func (c *autoContinuingCursor[T]) lastContinuation() []byte {
+func (c *autoContinuingCursor[T]) lastContinuation() ([]byte, error) {
 	if c.lastResult == nil {
-		return nil
+		return nil, nil
 	}
 	return c.lastResult.GetContinuation().ToBytes()
 }
