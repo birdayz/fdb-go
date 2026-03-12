@@ -88,6 +88,7 @@ go_test(
         "error_path_test.go",
         "existence_test.go",
         "fallback_cursor_test.go",
+        "field_type_index_test.go",
         "function_key_expression_test.go",
         "index_bug_verify_test.go",
         "index_scan_test.go",
