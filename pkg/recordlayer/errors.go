@@ -28,6 +28,9 @@ type RecordStoreNoInfoButNotEmptyError struct {
 }
 
 func (e *RecordStoreNoInfoButNotEmptyError) Error() string {
+	if e.FirstKey != nil {
+		return fmt.Sprintf("record store has no info but is not empty (first key: %x)", e.FirstKey)
+	}
 	return "record store has no info but is not empty"
 }
 

@@ -49,10 +49,10 @@ func (store *FDBRecordStore) findIndexForRecordFunction(
 	if fn.Index != "" {
 		idx := store.metaData.GetIndex(fn.Index)
 		if idx == nil {
-			return nil, fmt.Errorf("record function %q: index %q not found", fn.Name, fn.Index)
+			return nil, fmt.Errorf("record function %q: %w", fn.Name, &IndexNotFoundError{IndexName: fn.Index})
 		}
 		if !store.IsIndexReadable(idx.Name) {
-			return nil, fmt.Errorf("record function %q: index %q is not readable", fn.Name, fn.Index)
+			return nil, fmt.Errorf("record function %q: %w", fn.Name, &IndexNotReadableError{IndexName: idx.Name, CurrentState: store.GetIndexState(idx.Name)})
 		}
 		return idx, nil
 	}

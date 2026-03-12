@@ -76,7 +76,7 @@ var _ = Describe("Store state management", func() {
 			})
 			Expect(err).To(HaveOccurred())
 			var lockErr *StoreIsLockedForRecordUpdatesError
-			Expect(err).To(BeAssignableToTypeOf(lockErr))
+			Expect(errors.As(err, &lockErr)).To(BeTrue())
 		})
 
 		It("unlocks store by clearing lock state", func() {

@@ -491,7 +491,7 @@ func (store *FDBRecordStore) ScanIndexRecords(
 	index := store.metaData.GetIndex(indexName)
 	if index == nil {
 		return &errorCursor[*FDBIndexedRecord]{
-			err: fmt.Errorf("index %q not found", indexName),
+			err: &IndexNotFoundError{IndexName: indexName},
 		}
 	}
 

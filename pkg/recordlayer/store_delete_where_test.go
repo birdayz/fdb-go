@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -355,7 +356,7 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		})
 		Expect(err).To(HaveOccurred())
 		var lockErr *StoreIsLockedForRecordUpdatesError
-		Expect(err).To(BeAssignableToTypeOf(lockErr))
+		Expect(errors.As(err, &lockErr)).To(BeTrue())
 	})
 
 	It("can save new records after deleteRecordsWhere", func() {

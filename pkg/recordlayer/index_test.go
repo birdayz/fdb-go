@@ -219,7 +219,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			Expect(err).To(HaveOccurred())
 
 			var violation *RecordIndexUniquenessViolationError
-			Expect(err).To(BeAssignableToTypeOf(violation))
+			Expect(errors.As(err, &violation)).To(BeTrue())
 
 			return nil, nil
 		})
@@ -493,7 +493,7 @@ var _ = Describe("SecondaryIndexes", func() {
 			_, err = store.SaveRecord(order4)
 			Expect(err).To(HaveOccurred())
 			var violation *RecordIndexUniquenessViolationError
-			Expect(err).To(BeAssignableToTypeOf(violation))
+			Expect(errors.As(err, &violation)).To(BeTrue())
 
 			return nil, nil
 		})
