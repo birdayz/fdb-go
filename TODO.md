@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1315 specs pass (968 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1326 specs pass (979 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -476,10 +476,12 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [ ] Multiple OnlineIndexer processes build different ranges concurrently.
    - [ ] Heartbeat tracking at `[9, indexSubspaceKey, 7, uuid]`.
    - [ ] `requireEmpty=true` prevents double-processing of ranges.
-   - [ ] **Blocked stamps** — `block`/`blockExpireEpochMilliSeconds`/`blockID` fields on `IndexBuildIndexingStamp`. `isTypeStampBlocked()` prevents builds when another process has locked the index.
-   - [ ] **`areSimilar()` stamp comparison** — Java considers stamps "similar" if they differ only in block fields. Our `proto.Equal()` is strict.
-   - [ ] **`forceStampOverwrite` policy** — Java's `IndexingPolicy` can force stamp overwrite on mismatch when no records scanned. Requires policy system.
-   - [ ] **Method conversion on resume** — `shouldAllowTypeConversionContinue()` allows switching build methods (e.g. BY_INDEX → BY_RECORDS) mid-build.
+   - [x] **Blocked stamps** — `isTypeStampBlocked()` with permanent and time-expiring blocks via `block`/`blockExpireEpochMilliSeconds`/`blockID` proto fields. `BlockIndex()`/`UnblockIndex()` on OnlineIndexer. `PartlyBuiltError` on blocked stamp. 4 tests.
+   - [x] **`areSimilar()` stamp comparison** — `areSimilarStamps()` compares stamps ignoring block fields via `blocklessStampOf()`. Allows resume when only block state differs. 1 test.
+   - [x] **`forceStampOverwrite` policy** — `IndexingPolicy.ForceStampOverwrite` forces stamp write on fresh builds, allows overwrite on continued builds when no records scanned. `setIndexingTypeOrThrow()` implements full Java decision tree. 2 tests.
+   - [x] **Method conversion on resume** — `ShouldAllowTypeConversionContinue()` on `IndexingPolicy` with `TakeoverType` enum (MultiTargetToSingle, MutualToSingle, ByRecordsToMutual). Matches Java's `IndexingPolicy.shouldAllowTypeConversionContinue()`.
+   - [x] **`QueryIndexingStamps`** — Returns stamp map for all target indexes. Nil stamps returned as NONE method. 1 test.
+   - [x] **`IndexBuildState`** — Status reporting: index state + records scanned (from build progress counter) + total records (from COUNT index). `LoadIndexBuildState()` on store. 2 tests.
 
 9. **Conformance tests** (CRITICAL — must validate wire compat)
    - [x] Go saves records + Go rebuilds index → Java scans → entries match.
