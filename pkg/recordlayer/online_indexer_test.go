@@ -2860,4 +2860,149 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(errors.As(err, &pbe)).To(BeTrue(), "expected PartlyBuiltError, got %v", err)
 		})
 	})
+
+	Describe("MarkReadableIfBuilt", func() {
+		It("returns true and marks READABLE when the index is fully built", func() {
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert some records without the index.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build the index fully.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				SetIndex(priceIndex).SetSubspace(ks).SetLimit(100).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// MarkReadableIfBuilt should return true (already readable).
+			allReady, err := indexer.MarkReadableIfBuilt(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allReady).To(BeTrue())
+		})
+
+		It("returns false when the index is not fully built", func() {
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert records without the index.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Mark WRITE_ONLY but don't build anything.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				SetIndex(priceIndex).SetSubspace(ks).SetLimit(100).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// MarkReadableIfBuilt should return false (range set is empty).
+			allReady, err := indexer.MarkReadableIfBuilt(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allReady).To(BeFalse())
+
+			// Index should still be WRITE_ONLY.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("marks a partially-built multi-target build correctly", func() {
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			qtyIndex := NewIndex("Order$qty", Field("quantity"))
+			builder.AddIndex("Order", priceIndex)
+			builder.AddIndex("Order", qtyIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert records without indexes.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+						Quantity: proto.Int32(int32(i)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build both indexes via multi-target.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				AddTargetIndex(priceIndex).AddTargetIndex(qtyIndex).
+				SetSubspace(ks).SetLimit(100).Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Both should already be readable; MarkReadableIfBuilt is idempotent.
+			allReady, err := indexer.MarkReadableIfBuilt(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allReady).To(BeTrue())
+		})
+	})
 })

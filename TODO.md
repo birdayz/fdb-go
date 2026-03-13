@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1341 specs pass (994 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1346 specs pass (999 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -94,7 +94,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 ### 4. New store APIs
 
-- [x] **Store locking APIs** — `SetStoreLockState(state, reason)`, `ClearStoreLockState()`. **HIGH**. (`OverrideLockSaveRecord()` not yet added — needs use case).
+- [x] **Store locking APIs** — `SetStoreLockState(state, reason)`, `ClearStoreLockState()`, `OverrideLockSaveRecord()` (skips FORBID_RECORD_UPDATE lock). **HIGH**.
 - [x] **Header user fields** — `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
 - [x] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation (LRU+TTL, \xff/metadataVersion invalidation), `SetStateCacheability()` API, dirty state tracking on context, read conflict on cache hit. 2.2x speedup on store open. 40 tests. **MEDIUM**.
 - [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.

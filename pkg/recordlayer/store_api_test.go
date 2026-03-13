@@ -630,4 +630,88 @@ var _ = Describe("FDBRecordStore API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("OverrideLockSaveRecord", func() {
+		It("saves a record even when the store is locked for record updates", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store and lock it.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Normal save should fail; OverrideLockSaveRecord should succeed.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Normal save fails.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).To(HaveOccurred())
+				var lockErr *StoreIsLockedForRecordUpdatesError
+				Expect(errors.As(err, &lockErr)).To(BeTrue())
+
+				// Override lock save succeeds.
+				saved, err := store.OverrideLockSaveRecord(
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					RecordExistenceCheckNone,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(saved).NotTo(BeNil())
+				Expect(saved.PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
+
+				// Normal save still fails (overrideLock flag was reset).
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				Expect(err).To(HaveOccurred())
+				Expect(errors.As(err, &lockErr)).To(BeTrue())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("passes through existence checks correctly", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store, insert a record, then lock.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: OverrideLockSaveRecord with ERROR_IF_EXISTS should fail on duplicate.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.OverrideLockSaveRecord(
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
+					RecordExistenceCheckErrorIfExists,
+				)
+				Expect(err).To(HaveOccurred())
+				var existsErr *RecordAlreadyExistsError
+				Expect(errors.As(err, &existsErr)).To(BeTrue())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

@@ -1042,6 +1042,43 @@ func (oi *OnlineIndexer) UnblockIndex(ctx context.Context, blockID string) error
 	return err
 }
 
+// MarkReadableIfBuilt checks each target index and marks it READABLE if fully built.
+// Returns true if all target indexes are now READABLE.
+// This is an idempotent operation — safe to call repeatedly.
+// Matches Java's IndexingBase.markReadableIfBuilt().
+func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) {
+	allReadable := true
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		for _, idx := range oi.targetIndexes {
+			if store.IsIndexReadable(idx.Name) {
+				continue
+			}
+			rangeSet := NewIndexingRangeSet(store.subspace, idx)
+			missing, err := rangeSet.FirstMissingRange(rtx.Transaction())
+			if err != nil {
+				return nil, err
+			}
+			if missing != nil {
+				allReadable = false
+				continue
+			}
+			// Index is fully built — mark readable.
+			if _, err := store.MarkIndexReadable(idx.Name); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return allReadable, nil
+}
+
 // QueryIndexingStamps returns the indexing stamps for all target indexes.
 // Returns a map of index name → stamp. Nil stamps are returned as a NONE method stamp.
 // Matches Java's IndexingBase.performIndexingStampOperation(QUERY, ...).

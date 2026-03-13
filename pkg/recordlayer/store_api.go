@@ -141,3 +141,16 @@ func (store *FDBRecordStore) GetAllIndexStatesMap() map[string]IndexState {
 	}
 	return maps.Clone(store.indexStates)
 }
+
+// OverrideLockSaveRecord saves a record even when the store is locked for record updates
+// (FORBID_RECORD_UPDATE). This is used by the OnlineIndexer to write index maintenance
+// records while the store is locked.
+// Matches Java's FDBRecordStore.overrideLockSaveRecordAsync().
+func (store *FDBRecordStore) OverrideLockSaveRecord(
+	record proto.Message,
+	existenceCheck RecordExistenceCheck,
+) (*FDBStoredRecord[proto.Message], error) {
+	store.overrideLock = true
+	defer func() { store.overrideLock = false }()
+	return store.SaveRecordWithOptions(record, existenceCheck)
+}

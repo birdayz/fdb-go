@@ -93,6 +93,7 @@ type FDBRecordStore struct {
 	indexStates        map[string]IndexState  // Cached index states, loaded on Open/Create
 	indexRebuildPolicy IndexRebuildPolicy     // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
+	overrideLock       bool                   // When true, skip validateRecordUpdateAllowed (for OverrideLockSaveRecord)
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
@@ -100,6 +101,9 @@ type FDBRecordStore struct {
 // StoreLockState set to FORBID_RECORD_UPDATE.
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
+	if store.overrideLock {
+		return nil
+	}
 	if store.storeHeader == nil {
 		return nil
 	}
