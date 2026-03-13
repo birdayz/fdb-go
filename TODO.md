@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1290 specs pass (949 unit/integration + 341 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1296 specs pass (949 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -231,7 +231,7 @@ Architectural decision: Java exception class = Go error struct. Use `errors.As()
 - [x] **Index scan errors cross-language** — ScanNonReadableIndexException verified on write-only index scan.
 - [x] **Store lock errors cross-language** — FORBID_RECORD_UPDATE prevents save in both Go and Java.
 - [x] **Cross-language error propagation** — Go creates record, Java insert duplicate gets RecordAlreadyExistsException.
-- [ ] **Unique index violation cross-language** — deferred (requires commit-check semantics alignment).
+- [x] **Unique index violation cross-language** — 6 conformance specs: READABLE violation detection (Go→Java, Java→Go), index entry scanning, WRITE_ONLY violation wire format with existingKey.
 - [ ] **Schema validation cross-language** — deferred (MetaDataValidator gaps need to be addressed first).
 
 ---
@@ -336,6 +336,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 | Error paths | insertDuplicateOrder, updateNonExistentOrder, openNonExistentStore, createExistingStore, scanNonReadableIndex, saveLocked | error_conformance_test.go | YES |
 | Index build state (stamp) | loadIndexingTypeStamp, saveIndexingTypeStampByRecords | index_build_state_conformance_test.go | YES |
 | EvaluateAggregateFunction | evaluateCountAggregate, evaluateSumAggregate, evaluateMinAggregate, evaluateMaxAggregate, evaluateMinEverAggregate, evaluateMaxEverAggregate | aggregate_conformance_test.go | YES |
+| Unique violations | saveWithUniqueIndex, deleteWithUniqueIndex, scanUniqueIndex, saveDuplicateWithUniqueIndex, markUniqueIndexWriteOnly, saveWithUniqueIndexDuringWriteOnly, scanUniquenessViolations, getUniqueIndexState | unique_violation_conformance_test.go | YES |
 
 ### NEW — conformance gaps identified 2026-03-09
 
