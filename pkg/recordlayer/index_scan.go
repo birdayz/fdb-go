@@ -104,6 +104,45 @@ func (r TupleRange) Prepend(prefix tuple.Tuple) TupleRange {
 	}
 }
 
+// ToFDBRange converts this TupleRange to an fdb.KeyRange relative to a subspace.
+// Matches Java's TupleRange.toRange(Subspace).
+func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
+	var begin, end fdb.Key
+
+	switch r.LowEndpoint {
+	case EndpointTypeTreeStart:
+		begin = ss.FDBKey()
+	case EndpointTypeRangeInclusive:
+		begin = ss.Pack(r.Low)
+	case EndpointTypeRangeExclusive:
+		packed := ss.Pack(r.Low)
+		inc, err := fdb.Strinc(packed)
+		if err != nil {
+			begin = ss.FDBKey()
+		} else {
+			begin = inc
+		}
+	default:
+		begin = ss.FDBKey()
+	}
+
+	switch r.HighEndpoint {
+	case EndpointTypeTreeEnd:
+		_, endKey := ss.FDBRangeKeys()
+		end = endKey.(fdb.Key)
+	case EndpointTypeRangeInclusive:
+		packed := ss.Pack(r.High)
+		end = append(packed, 0xFF)
+	case EndpointTypeRangeExclusive:
+		end = ss.Pack(r.High)
+	default:
+		_, endKey := ss.FDBRangeKeys()
+		end = endKey.(fdb.Key)
+	}
+
+	return fdb.KeyRange{Begin: begin, End: end}
+}
+
 // IndexEntry represents a single entry from an index scan.
 // Matches Java's com.apple.foundationdb.record.IndexEntry.
 type IndexEntry struct {

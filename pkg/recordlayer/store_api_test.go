@@ -1475,6 +1475,132 @@ var _ = Describe("FDBRecordStore API", func() {
 		})
 	})
 
+	Describe("EstimateRecordsSizeInRange", func() {
+		It("returns non-negative size for a store with records", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				size, err := store.EstimateRecordsSizeInRange(TupleRangeAll)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(size).To(BeNumerically(">=", 0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns non-negative size for a prefix range", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Estimate for a specific PK prefix.
+				size, err := store.EstimateRecordsSizeInRange(TupleRangeAllOf(tuple.Tuple{int64(3)}))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(size).To(BeNumerically(">=", 0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns non-negative size for empty store", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				size, err := store.EstimateRecordsSizeInRange(TupleRangeAll)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(size).To(BeNumerically(">=", 0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("EstimateIndexSize", func() {
+		It("returns non-negative size for a VALUE index with entries", func() {
+			ks := specSubspace()
+			priceIdx := NewIndex("Order$price", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", priceIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				idx := md.GetIndex("Order$price")
+				size, err := store.EstimateIndexSize(idx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(size).To(BeNumerically(">=", 0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns non-negative size for an empty index", func() {
+			ks := specSubspace()
+			priceIdx := NewIndex("Order$price", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", priceIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$price")
+				size, err := store.EstimateIndexSize(idx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(size).To(BeNumerically(">=", 0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("ScanUniquenessViolationsForValue", func() {
 		It("returns violations matching the given value key", func() {
 			ks := specSubspace()

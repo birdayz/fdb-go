@@ -255,6 +255,14 @@ func (rc *FDBRecordContext) Context() context.Context {
 	return rc.ctx
 }
 
+// GetApproximateTransactionSize returns the approximate size in bytes of the
+// transaction's mutations so far. Useful for monitoring proximity to FDB's
+// 10MB transaction size limit.
+// Matches Java's FDBRecordContext.getApproximateTransactionSize().
+func (rc *FDBRecordContext) GetApproximateTransactionSize() (int64, error) {
+	return rc.tx.GetApproximateSize().Get()
+}
+
 // Commit commits the transaction
 func (rc *FDBRecordContext) Commit() error {
 	return rc.tx.Commit().Get()

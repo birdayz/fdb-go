@@ -1,8 +1,11 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
@@ -1054,6 +1057,135 @@ var _ = Describe("IndexScanning", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("TupleRange.ToFDBRange", func() {
+		It("TupleRangeAll covers entire subspace range", func() {
+			ss := subspace.Sub("test")
+
+			kr := TupleRangeAll.ToFDBRange(ss)
+
+			// Begin should be the subspace key itself (TreeStart).
+			Expect([]byte(kr.Begin.(fdb.Key))).To(Equal([]byte(ss.FDBKey())))
+
+			// End should be the subspace end key from FDBRangeKeys.
+			_, expectedEnd := ss.FDBRangeKeys()
+			Expect([]byte(kr.End.(fdb.Key))).To(Equal([]byte(expectedEnd.(fdb.Key))))
+		})
+
+		It("TupleRangeAllOf covers prefix range", func() {
+			ss := subspace.Sub("test")
+			prefix := tuple.Tuple{"alice"}
+
+			kr := TupleRangeAllOf(prefix).ToFDBRange(ss)
+
+			// Low is inclusive: begin = ss.Pack(prefix)
+			expectedBegin := ss.Pack(prefix)
+			Expect([]byte(kr.Begin.(fdb.Key))).To(Equal([]byte(expectedBegin)))
+
+			// High is inclusive: end = ss.Pack(prefix) + 0xFF
+			expectedEnd := append([]byte(nil), ss.Pack(prefix)...)
+			expectedEnd = append(expectedEnd, 0xFF)
+			Expect([]byte(kr.End.(fdb.Key))).To(Equal(expectedEnd))
+		})
+
+		It("TupleRangeBetween has inclusive low and exclusive high", func() {
+			ss := subspace.Sub("test")
+			low := tuple.Tuple{int64(100)}
+			high := tuple.Tuple{int64(300)}
+
+			kr := TupleRangeBetween(low, high).ToFDBRange(ss)
+
+			// Low inclusive: begin = ss.Pack(low)
+			Expect([]byte(kr.Begin.(fdb.Key))).To(Equal([]byte(ss.Pack(low))))
+
+			// High exclusive: end = ss.Pack(high) (exact, not +0xFF)
+			Expect([]byte(kr.End.(fdb.Key))).To(Equal([]byte(ss.Pack(high))))
+		})
+
+		It("TupleRangeBetweenInclusive has both inclusive endpoints", func() {
+			ss := subspace.Sub("test")
+			low := tuple.Tuple{int64(100)}
+			high := tuple.Tuple{int64(300)}
+
+			kr := TupleRangeBetweenInclusive(low, high).ToFDBRange(ss)
+
+			// Low inclusive: begin = ss.Pack(low)
+			Expect([]byte(kr.Begin.(fdb.Key))).To(Equal([]byte(ss.Pack(low))))
+
+			// High inclusive: end = ss.Pack(high) + 0xFF
+			expectedEnd := append([]byte(nil), ss.Pack(high)...)
+			expectedEnd = append(expectedEnd, 0xFF)
+			Expect([]byte(kr.End.(fdb.Key))).To(Equal(expectedEnd))
+		})
+
+		It("exclusive low uses strinc", func() {
+			ss := subspace.Sub("test")
+			low := tuple.Tuple{int64(200)}
+			high := tuple.Tuple{int64(500)}
+
+			r := TupleRange{
+				Low:          low,
+				High:         high,
+				LowEndpoint:  EndpointTypeRangeExclusive,
+				HighEndpoint: EndpointTypeRangeInclusive,
+			}
+			kr := r.ToFDBRange(ss)
+
+			// Low exclusive: begin = strinc(ss.Pack(low))
+			packed := ss.Pack(low)
+			expectedBegin, err := fdb.Strinc(packed)
+			Expect(err).NotTo(HaveOccurred())
+			Expect([]byte(kr.Begin.(fdb.Key))).To(Equal([]byte(expectedBegin)))
+
+			// High inclusive: end = ss.Pack(high) + 0xFF
+			expectedEnd := append([]byte(nil), ss.Pack(high)...)
+			expectedEnd = append(expectedEnd, 0xFF)
+			Expect([]byte(kr.End.(fdb.Key))).To(Equal(expectedEnd))
+		})
+
+		It("begin is before end for all range types", func() {
+			ss := subspace.Sub("ordering")
+
+			// TupleRangeAll
+			kr := TupleRangeAll.ToFDBRange(ss)
+			Expect(bytes.Compare(kr.Begin.(fdb.Key), kr.End.(fdb.Key))).To(BeNumerically("<", 0))
+
+			// TupleRangeAllOf
+			kr = TupleRangeAllOf(tuple.Tuple{"x"}).ToFDBRange(ss)
+			Expect(bytes.Compare(kr.Begin.(fdb.Key), kr.End.(fdb.Key))).To(BeNumerically("<", 0))
+
+			// TupleRangeBetween
+			kr = TupleRangeBetween(tuple.Tuple{int64(1)}, tuple.Tuple{int64(100)}).ToFDBRange(ss)
+			Expect(bytes.Compare(kr.Begin.(fdb.Key), kr.End.(fdb.Key))).To(BeNumerically("<", 0))
+
+			// TupleRangeBetweenInclusive
+			kr = TupleRangeBetweenInclusive(tuple.Tuple{int64(1)}, tuple.Tuple{int64(100)}).ToFDBRange(ss)
+			Expect(bytes.Compare(kr.Begin.(fdb.Key), kr.End.(fdb.Key))).To(BeNumerically("<", 0))
+		})
+
+		It("all ranges are properly scoped to the subspace", func() {
+			ss := subspace.Sub("scoped")
+			ssPrefix := []byte(ss.FDBKey())
+
+			ranges := []TupleRange{
+				TupleRangeAll,
+				TupleRangeAllOf(tuple.Tuple{"val"}),
+				TupleRangeBetween(tuple.Tuple{int64(1)}, tuple.Tuple{int64(10)}),
+				TupleRangeBetweenInclusive(tuple.Tuple{int64(1)}, tuple.Tuple{int64(10)}),
+			}
+
+			for _, r := range ranges {
+				kr := r.ToFDBRange(ss)
+				beginKey := []byte(kr.Begin.(fdb.Key))
+				endKey := []byte(kr.End.(fdb.Key))
+
+				Expect(bytes.HasPrefix(beginKey, ssPrefix)).To(BeTrue(),
+					"begin key should be within subspace")
+				Expect(bytes.HasPrefix(endKey, ssPrefix)).To(BeTrue(),
+					"end key should be within subspace")
+			}
 		})
 	})
 })

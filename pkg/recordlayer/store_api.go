@@ -420,6 +420,31 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 	return violations, nil
 }
 
+// EstimateRecordsSizeInRange returns the estimated size in bytes of records within
+// the given tuple range. Uses FDB's native GetEstimatedRangeSizeBytes.
+// Matches Java's FDBRecordStore.estimateRecordsSizeAsync(TupleRange).
+func (store *FDBRecordStore) EstimateRecordsSizeInRange(tupleRange TupleRange) (int64, error) {
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	fdbRange := tupleRange.ToFDBRange(recordsSubspace)
+	return store.context.Transaction().GetEstimatedRangeSizeBytes(fdbRange).Get()
+}
+
+// EstimateIndexSize returns the estimated size in bytes of a specific index.
+// Uses FDB's native GetEstimatedRangeSizeBytes on the index's subspace.
+func (store *FDBRecordStore) EstimateIndexSize(index *Index) (int64, error) {
+	indexSub := store.indexSubspace(index)
+	return store.context.Transaction().GetEstimatedRangeSizeBytes(indexSub).Get()
+}
+
+// GetRangeSplitPoints returns split points that divide the store's records subspace
+// into approximately equal-sized chunks of the given byte size. Useful for
+// parallelizing scans across multiple transactions.
+// Uses FDB's native GetRangeSplitPoints which is efficient for large datasets.
+func (store *FDBRecordStore) GetRangeSplitPoints(chunkSize int64) ([]fdb.Key, error) {
+	recordsSub := store.subspace.Sub(RecordKey)
+	return store.context.Transaction().GetRangeSplitPoints(recordsSub, chunkSize).Get()
+}
+
 // ScanRecordKeys scans only the primary keys of records without deserializing
 // record data. This is significantly faster than ScanRecords when you only need
 // the keys (avoids protobuf deserialization overhead).
