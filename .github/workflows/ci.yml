@@ -58,4 +58,4 @@ jobs:
           sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
 
       - name: Run tests
-        run: bazelisk test //...
+        run: bazelisk test //... --test_summary=detailed

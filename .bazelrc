@@ -2,6 +2,7 @@
 build --incompatible_strict_action_env
 
 test --test_output=errors
+test --test_summary=terse
 
 # Testcontainers need Docker socket and HOME for config
 test --test_env=HOME
