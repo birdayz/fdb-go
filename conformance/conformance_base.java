@@ -21,6 +21,7 @@ import com.apple.foundationdb.Transaction;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.lang.ref.Reference;
 import java.lang.reflect.Constructor;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
@@ -72,8 +73,17 @@ class ConformanceBase {
                 context.commitAsync().join();
                 return result;
             } catch (Exception e) {
-                tx.cancel();
+                try {
+                    tx.cancel();
+                } catch (IllegalStateException ignored) {
+                    // Transaction may already be closed (e.g. after commit failure)
+                }
                 throw e;
+            } finally {
+                // Prevent JVM from GC'ing the tenant/database native objects
+                // while the transaction is still in flight.
+                Reference.reachabilityFence(tenant);
+                Reference.reachabilityFence(nativeDb);
             }
         } else {
             return db.run(context -> action.execute(context));

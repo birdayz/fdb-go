@@ -37,7 +37,7 @@ type IndexMaintainer interface {
 type indexStoreContext interface {
 	isIndexWriteOnly(index *Index) bool
 	isIndexReadableUniquePending(index *Index) bool
-	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
+	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple)
 	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
 	// isKeyInIndexBuildRange checks if a primary key is in the already-built range
 	// of an index being built online. Used by non-idempotent index maintainers
@@ -263,8 +263,8 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		// Matches Java's StandardIndexMaintainer.checkUniqueness() which
 		// calls addUniquenessViolation() for both conflicting PKs.
 		if m.store != nil && m.store.isIndexWriteOnly(m.index) {
-			m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey)
-			m.store.addUniquenessViolation(m.index, entry.key, existingPK)
+			m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK)
+			m.store.addUniquenessViolation(m.index, entry.key, existingPK, entry.primaryKey)
 			return nil
 		}
 		return &RecordIndexUniquenessViolationError{

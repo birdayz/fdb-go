@@ -59,6 +59,7 @@ class ConformanceServer {
         new ErrorSteps(),
         new IndexBuildStateSteps(),
         new AggregateSteps(),
+        new UniqueViolationSteps(),
     };
 
     private static class StepEntry {

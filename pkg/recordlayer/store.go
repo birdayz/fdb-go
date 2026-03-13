@@ -964,8 +964,8 @@ func (store *FDBRecordStore) isIndexReadableUniquePending(index *Index) bool {
 	return store.GetIndexState(index.Name) == IndexStateReadableUniquePending
 }
 
-func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
-	store.AddUniquenessViolation(index, indexKey, primaryKey)
+func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) {
+	store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, existingKey)
 }
 
 func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
@@ -1342,9 +1342,10 @@ func (store *FDBRecordStore) EstimateRecordsSize() (int64, error) {
 // UniquenessViolation represents a recorded uniqueness violation entry.
 // Matches Java's RecordIndexUniquenessViolation.
 type UniquenessViolation struct {
-	IndexName  string
-	IndexKey   tuple.Tuple
-	PrimaryKey tuple.Tuple
+	IndexName   string
+	IndexKey    tuple.Tuple
+	PrimaryKey  tuple.Tuple
+	ExistingKey tuple.Tuple // Conflicting PK stored by the other side (may be nil)
 }
 
 // ScanUniquenessViolations returns all uniqueness violations recorded for the given index.
@@ -1369,11 +1370,20 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 		// Key format: [indexKey..., primaryKey...]
 		colCount := keyExpressionColumnSize(index.RootExpression)
 		if len(t) > colCount {
-			violations = append(violations, UniquenessViolation{
+			v := UniquenessViolation{
 				IndexName:  index.Name,
 				IndexKey:   tuple.Tuple(t[:colCount]),
 				PrimaryKey: tuple.Tuple(t[colCount:]),
-			})
+			}
+			// Value contains the conflicting PK (matching Java's wire format).
+			// Empty value means no cross-reference was stored.
+			if len(kv.Value) > 0 {
+				existingKey, err := tuple.Unpack(kv.Value)
+				if err == nil {
+					v.ExistingKey = existingKey
+				}
+			}
+			violations = append(violations, v)
 		}
 	}
 	return violations, nil
@@ -1390,10 +1400,24 @@ func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey t
 
 // AddUniquenessViolation records a uniqueness violation for the given index.
 // Used during WRITE_ONLY index builds when a uniqueness conflict is detected.
+// Stores empty bytes as the value (no cross-reference to conflicting PK).
+// Use AddUniquenessViolationWithExisting to store the conflicting PK in the value.
 func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, nil)
+}
+
+// AddUniquenessViolationWithExisting records a uniqueness violation with the conflicting PK.
+// Matches Java's StandardIndexMaintainer.addUniquenessViolation(valueKey, primaryKey, existingKey).
+// When existingKey is non-nil, its packed bytes are stored as the FDB value.
+// When existingKey is nil, empty bytes are stored.
+func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) {
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
 	entryKey := indexEntryKey(index, indexKey, primaryKey)
-	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), tuple.Tuple{}.Pack())
+	var value []byte
+	if existingKey != nil {
+		value = existingKey.Pack()
+	}
+	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), value)
 }
 
 // wrapInUnion wraps a record message in a UnionDescriptor for storage compatibility with Java
