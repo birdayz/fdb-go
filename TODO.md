@@ -914,6 +914,17 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 
 ---
 
+## Production readiness
+
+### HIGH
+
+- [ ] **API surface polish** — Review exported types, functions, and method signatures for consistency and ergonomics. Hide internal helpers. Ensure naming follows Go conventions (`NewX`, `WithOption`, receiver names). Stabilize the public API before external consumers depend on it.
+- [ ] **Performance testing under real workloads** — Benchmark key operations (bulk inserts, index-heavy saves, large scans with continuations, split record read/write, OnlineIndexer throughput) under realistic data volumes. Profile hotspots. Compare with Java Record Layer on equivalent workloads where possible.
+- [ ] **Edge case hardening** — Systematic audit of behaviors at boundaries: max key/value sizes, transaction size limits (10MB), 5-second transaction timeout under load, empty stores, nil/zero-value inputs, corrupt or truncated data, concurrent schema evolution, partial failures mid-commit. The kind of bugs that only surface in production.
+- [ ] **Chaos testing** — Inject failures at the FDB layer: killed transactions mid-commit, network partitions (simulated via FDB fault injection or testcontainer restarts), read/write conflicts under contention, clock skew for versionstamps, OOM during large scans, index builds interrupted and resumed. Verify correctness and recovery, not just absence of panics.
+
+---
+
 ## Documentation cleanup
 
 ### LOW
