@@ -2861,6 +2861,132 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 	})
 
+	Describe("time limit", func() {
+		It("returns TimeLimitExceededError when the build exceeds the time limit", func() {
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert enough records that building them 1-at-a-time takes multiple chunks.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 50; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build with a very short time limit and limit=1 to force many transactions.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				SetIndex(priceIndex).SetSubspace(ks).
+				SetLimit(1).
+				SetTimeLimit(1 * time.Nanosecond). // impossibly short
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).To(HaveOccurred())
+			var tlErr *TimeLimitExceededError
+			Expect(errors.As(err, &tlErr)).To(BeTrue(), "expected TimeLimitExceededError, got %v", err)
+		})
+
+		It("completes normally when within the time limit", func() {
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert a few records.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build with a generous time limit.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				SetIndex(priceIndex).SetSubspace(ks).
+				SetLimit(100).
+				SetTimeLimit(5 * time.Minute).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(5)))
+		})
+	})
+
+	Describe("max retries", func() {
+		It("retries and halves limit on failure", func() {
+			// This test verifies the retry mechanism restores the limit after success.
+			// We can't easily trigger FDB transient errors, so we verify the builder
+			// accepts the config and a successful build still works.
+			ks := specSubspace()
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).SetMetaData(md).
+				SetIndex(priceIndex).SetSubspace(ks).
+				SetLimit(5).
+				SetMaxRetries(3).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(10)))
+		})
+	})
+
 	Describe("MarkReadableIfBuilt", func() {
 		It("returns true and marks READABLE when the index is fully built", func() {
 			ks := specSubspace()

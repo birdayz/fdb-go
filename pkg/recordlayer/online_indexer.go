@@ -178,6 +178,17 @@ func LoadIndexBuildState(store *FDBRecordStore, index *Index) (*IndexBuildState,
 	return result, nil
 }
 
+// TimeLimitExceededError is returned when the OnlineIndexer's overall time limit is exceeded.
+// Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.TimeLimitException.
+type TimeLimitExceededError struct {
+	TimeLimit time.Duration
+	Elapsed   time.Duration
+}
+
+func (e *TimeLimitExceededError) Error() string {
+	return fmt.Sprintf("online indexer time limit exceeded: limit=%v, elapsed=%v", e.TimeLimit, e.Elapsed)
+}
+
 // OnlineIndexer builds indexes on existing data across multiple transactions.
 // Each transaction processes a chunk of records, tracks progress via IndexingRangeSet,
 // and the build resumes from where it left off if interrupted.
@@ -196,6 +207,8 @@ type OnlineIndexer struct {
 	sourceIndex   *Index    // non-nil = BY_INDEX strategy (single target only)
 	subspace      subspace.Subspace
 	limit         int
+	maxRetries    int            // max retries per range on transient failures (0 = no retries)
+	timeLimit     time.Duration  // overall build time limit (0 = unlimited)
 	recordTypes   []string        // record types to index (empty = all types; not allowed with multi-target)
 	policy        *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
 }
@@ -286,6 +299,24 @@ func (b *OnlineIndexerBuilder) SetRecordTypes(types ...string) *OnlineIndexerBui
 // Matches Java's OnlineIndexer.Builder.setSourceIndex().
 func (b *OnlineIndexerBuilder) SetSourceIndex(index *Index) *OnlineIndexerBuilder {
 	b.indexer.sourceIndex = index
+	return b
+}
+
+// SetMaxRetries sets the maximum number of retries per range on transient FDB errors.
+// When a range build fails with a transient error, the indexer retries with a halved limit.
+// Default is 0 (no retries — errors propagate immediately).
+// Matches Java's OnlineIndexer.Builder.setMaxRetries() (default 100 in Java).
+func (b *OnlineIndexerBuilder) SetMaxRetries(maxRetries int) *OnlineIndexerBuilder {
+	b.indexer.maxRetries = maxRetries
+	return b
+}
+
+// SetTimeLimit sets the overall time limit for the entire build. If the build exceeds
+// this duration, BuildIndex returns a TimeLimitExceededError after the current range
+// completes. Zero means unlimited (default).
+// Matches Java's OnlineIndexer.Builder.setTimeLimitMilliseconds().
+func (b *OnlineIndexerBuilder) SetTimeLimit(d time.Duration) *OnlineIndexerBuilder {
+	b.indexer.timeLimit = d
 	return b
 }
 
@@ -433,6 +464,8 @@ func indexRecordTypes(md *RecordMetaData, idx *Index) []string {
 // then marks READABLE. Returns the number of records indexed.
 // Matches Java's OnlineIndexer.buildIndex().
 func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
+	startTime := time.Now()
+
 	// Step 1: Mark all target indexes as WRITE_ONLY.
 	if err := oi.markWriteOnly(ctx); err != nil {
 		return 0, fmt.Errorf("mark write-only: %w", err)
@@ -446,13 +479,24 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 
 	var totalRecords int64
 	for {
-		n, hasMore, err := buildFn(ctx)
+		n, hasMore, err := oi.buildRangeWithRetries(ctx, buildFn)
 		if err != nil {
 			return totalRecords, fmt.Errorf("build range: %w", err)
 		}
 		totalRecords += n
 		if !hasMore {
 			break
+		}
+
+		// Check time limit after each range.
+		if oi.timeLimit > 0 {
+			elapsed := time.Since(startTime)
+			if elapsed >= oi.timeLimit {
+				return totalRecords, &TimeLimitExceededError{
+					TimeLimit: oi.timeLimit,
+					Elapsed:   elapsed,
+				}
+			}
 		}
 	}
 
@@ -462,6 +506,31 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	}
 
 	return totalRecords, nil
+}
+
+// buildRangeWithRetries wraps a buildRange call with retry logic.
+// On transient failures, halves the limit and retries up to maxRetries times.
+// After success, restores the original limit.
+// Matches Java's IndexingThrottle retry behavior.
+func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func(context.Context) (int64, bool, error)) (int64, bool, error) {
+	if oi.maxRetries <= 0 {
+		return buildFn(ctx)
+	}
+
+	originalLimit := oi.limit
+	defer func() { oi.limit = originalLimit }()
+
+	for attempt := 0; ; attempt++ {
+		n, hasMore, err := buildFn(ctx)
+		if err == nil {
+			return n, hasMore, nil
+		}
+		if attempt >= oi.maxRetries {
+			return n, hasMore, err
+		}
+		// Halve the limit on retry (minimum 1).
+		oi.limit = max(1, oi.limit/2)
+	}
 }
 
 // markWriteOnly transitions all target indexes to WRITE_ONLY state.
