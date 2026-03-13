@@ -101,7 +101,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot)` already implemented in `store_version.go`. **LOW**.
 - [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
 - [x] **Index build state tracking** — `AddBuildProgress`/`LoadBuildProgress` at `[9][indexSubspaceKey][1]` (atomic ADD). Wired into `buildRange`/`buildRangeByIndex`. 4 tests. **LOW**.
-- [ ] **DryRunSaveRecord** — Validation without writes. **LOW**.
+- [x] **DryRunSaveRecord** — Validation (existence, type, lock) without writes. Returns computed record with size info. 4 tests. **LOW**.
 
 ### 5. Metadata & schema evolution changes
 

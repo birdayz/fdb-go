@@ -6,6 +6,7 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -153,4 +154,125 @@ func (store *FDBRecordStore) OverrideLockSaveRecord(
 	store.overrideLock = true
 	defer func() { store.overrideLock = false }()
 	return store.SaveRecordWithOptions(record, existenceCheck)
+}
+
+// GetRecordMetaData returns the metadata associated with this store.
+// Matches Java's FDBRecordStore.getRecordMetaData().
+func (store *FDBRecordStore) GetRecordMetaData() *RecordMetaData {
+	return store.metaData
+}
+
+// GetContext returns the record context (transaction wrapper) for this store.
+// Matches Java's FDBRecordStore.getRecordContext().
+func (store *FDBRecordStore) GetContext() *FDBRecordContext {
+	return store.context
+}
+
+// GetSubspace returns the FDB subspace for this store.
+// Matches Java's FDBRecordStore.getSubspace().
+func (store *FDBRecordStore) GetSubspace() subspace.Subspace {
+	return store.subspace
+}
+
+// DryRunSaveRecord performs all save validation (existence checks, type checks,
+// lock state) without actually writing data. Returns what the stored record
+// would look like if saved, or an error if validation fails.
+// Matches Java's FDBRecordStore.dryRunSaveRecordAsync().
+func (store *FDBRecordStore) DryRunSaveRecord(
+	record proto.Message,
+	existenceCheck RecordExistenceCheck,
+) (*FDBStoredRecord[proto.Message], error) {
+	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
+	recordType := store.metaData.GetRecordType(recordTypeName)
+	if recordType == nil {
+		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+	}
+
+	if recordType.PrimaryKey == nil {
+		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
+	}
+
+	pkTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate primary key: %w", err)
+	}
+	if len(pkTuples) != 1 {
+		return nil, &MetaDataError{Message: fmt.Sprintf("primary key must evaluate to exactly one tuple, got %d", len(pkTuples))}
+	}
+	keyValues := pkTuples[0]
+	primaryKey := make(tuple.Tuple, len(keyValues))
+	for i, v := range keyValues {
+		primaryKey[i] = v
+	}
+
+	// Load existing record for existence/type validation.
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	splitEnabled := store.metaData.IsSplitLongRecords()
+	var oldSizeInfo SizeInfo
+	oldValue, err := loadWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		splitEnabled,
+		&oldSizeInfo,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load existing record: %w", err)
+	}
+	oldRecordExists := oldValue != nil
+
+	if existenceCheck.ErrorIfExists() && oldRecordExists {
+		return nil, &RecordAlreadyExistsError{
+			Message:    "record already exists",
+			PrimaryKey: primaryKey,
+		}
+	}
+
+	if existenceCheck.ErrorIfNotExists() && !oldRecordExists {
+		return nil, &RecordDoesNotExistError{
+			Message:    "record does not exist",
+			PrimaryKey: primaryKey,
+		}
+	}
+
+	if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
+		_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+		if deserErr != nil {
+			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+		}
+		existingTypeName := string(oldMsg.ProtoReflect().Descriptor().Name())
+		if existingTypeName != recordTypeName {
+			return nil, &RecordTypeChangedError{
+				Message:      "record type changed",
+				PrimaryKey:   primaryKey,
+				ActualType:   existingTypeName,
+				ExpectedType: recordTypeName,
+			}
+		}
+	}
+
+	if err := store.validateRecordUpdateAllowed(); err != nil {
+		return nil, err
+	}
+
+	// Compute what the record would look like.
+	unionRecord, err := store.wrapInUnion(record, recordType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
+	}
+
+	data, err := proto.Marshal(unionRecord)
+	if err != nil {
+		return nil, &RecordSerializationError{Cause: err}
+	}
+
+	return &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		Record:     record,
+		RecordType: recordType,
+		KeyCount:   1,
+		KeySize:    len(store.subspace.Sub(RecordKey).Pack(primaryKey)),
+		ValueSize:  len(data),
+		Split:      splitEnabled && len(data) > SplitRecordSize,
+	}, nil
 }

@@ -631,6 +631,131 @@ var _ = Describe("FDBRecordStore API", func() {
 		})
 	})
 
+	Describe("GetRecordMetaData / GetContext / GetSubspace", func() {
+		It("returns the store's metadata, context, and subspace", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(store.GetRecordMetaData()).To(Equal(md))
+				Expect(store.GetContext()).To(Equal(rtx))
+				Expect(store.GetSubspace().Bytes()).To(Equal(ks.Bytes()))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("DryRunSaveRecord", func() {
+		It("validates and returns computed record without writing", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// DryRun should succeed and return a record.
+				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)}
+				result, err := store.DryRunSaveRecord(order, RecordExistenceCheckNone)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
+				Expect(result.RecordType.Name).To(Equal("Order"))
+				Expect(result.ValueSize).To(BeNumerically(">", 0))
+				Expect(result.KeySize).To(BeNumerically(">", 0))
+
+				// Verify no data was actually written.
+				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("detects existence errors without writing", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// First, actually save a record.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// DryRun with ERROR_IF_EXISTS should fail.
+				_, err = store.DryRunSaveRecord(
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)},
+					RecordExistenceCheckErrorIfExists,
+				)
+				Expect(err).To(HaveOccurred())
+				var existsErr *RecordAlreadyExistsError
+				Expect(errors.As(err, &existsErr)).To(BeTrue())
+
+				// DryRun with ERROR_IF_NOT_EXISTS on non-existent record should fail.
+				_, err = store.DryRunSaveRecord(
+					&gen.Order{OrderId: proto.Int64(999), Price: proto.Int32(200)},
+					RecordExistenceCheckErrorIfNotExists,
+				)
+				Expect(err).To(HaveOccurred())
+				var notExistsErr *RecordDoesNotExistError
+				Expect(errors.As(err, &notExistsErr)).To(BeTrue())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("detects lock state without writing", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create and lock the store.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// DryRun should fail with lock error.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.DryRunSaveRecord(
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
+					RecordExistenceCheckNone,
+				)
+				return nil, err
+			})
+			Expect(err).To(HaveOccurred())
+			var lockErr *StoreIsLockedForRecordUpdatesError
+			Expect(errors.As(err, &lockErr)).To(BeTrue())
+		})
+	})
+
 	Describe("OverrideLockSaveRecord", func() {
 		It("saves a record even when the store is locked for record updates", func() {
 			ks := specSubspace()
