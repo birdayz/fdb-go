@@ -476,6 +476,10 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [ ] Multiple OnlineIndexer processes build different ranges concurrently.
    - [ ] Heartbeat tracking at `[9, indexSubspaceKey, 7, uuid]`.
    - [ ] `requireEmpty=true` prevents double-processing of ranges.
+   - [ ] **Blocked stamps** — `block`/`blockExpireEpochMilliSeconds`/`blockID` fields on `IndexBuildIndexingStamp`. `isTypeStampBlocked()` prevents builds when another process has locked the index.
+   - [ ] **`areSimilar()` stamp comparison** — Java considers stamps "similar" if they differ only in block fields. Our `proto.Equal()` is strict.
+   - [ ] **`forceStampOverwrite` policy** — Java's `IndexingPolicy` can force stamp overwrite on mismatch when no records scanned. Requires policy system.
+   - [ ] **Method conversion on resume** — `shouldAllowTypeConversionContinue()` allows switching build methods (e.g. BY_INDEX → BY_RECORDS) mid-build.
 
 9. **Conformance tests** (CRITICAL — must validate wire compat)
    - [x] Go saves records + Go rebuilds index → Java scans → entries match.
