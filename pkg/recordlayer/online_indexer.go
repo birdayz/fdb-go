@@ -5,12 +5,178 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
+
+// TakeoverType represents allowed build method conversions when resuming an index build
+// that was started by a different indexing method.
+// Matches Java's OnlineIndexer.IndexingPolicy.TakeoverTypes.
+type TakeoverType int
+
+const (
+	// TakeoverMultiTargetToSingle allows a single-target BY_RECORDS build to continue
+	// a MULTI_TARGET_BY_RECORDS build.
+	TakeoverMultiTargetToSingle TakeoverType = iota
+	// TakeoverMutualToSingle allows a single-target BY_RECORDS build to continue
+	// a MUTUAL_BY_RECORDS build.
+	TakeoverMutualToSingle
+	// TakeoverByRecordsToMutual allows a MUTUAL_BY_RECORDS build to continue
+	// a BY_RECORDS or MULTI_TARGET_BY_RECORDS build.
+	TakeoverByRecordsToMutual
+)
+
+// IndexingPolicy configures how the OnlineIndexer handles stamp conflicts,
+// blocked stamps, and build method conversions.
+// Matches Java's OnlineIndexer.IndexingPolicy.
+type IndexingPolicy struct {
+	// ForceStampOverwrite forces writing the stamp without conflict checks on
+	// fresh (non-continued) builds, or allows overwriting on continued builds
+	// when no records have been scanned. Used internally during rebuild.
+	ForceStampOverwrite bool
+
+	// AllowUnblock permits unblocking a blocked stamp during resume.
+	AllowUnblock bool
+
+	// AllowUnblockID restricts unblocking to stamps with a matching blockID.
+	// Empty string means any blockID is accepted (when AllowUnblock is true).
+	AllowUnblockID string
+
+	// AllowedTakeovers is the set of allowed build method conversions.
+	AllowedTakeovers map[TakeoverType]bool
+}
+
+// ShouldAllowUnblock returns true if the policy allows unblocking a stamp with the given blockID.
+// Matches Java's IndexingPolicy.shouldAllowUnblock().
+func (p *IndexingPolicy) ShouldAllowUnblock(stampBlockID string) bool {
+	if p == nil || !p.AllowUnblock {
+		return false
+	}
+	return p.AllowUnblockID == "" || p.AllowUnblockID == stampBlockID
+}
+
+// ShouldAllowTypeConversionContinue returns true if switching from savedStamp's method
+// to newStamp's method is permitted by the policy.
+// Matches Java's IndexingPolicy.shouldAllowTypeConversionContinue().
+func (p *IndexingPolicy) ShouldAllowTypeConversionContinue(newStamp, savedStamp *gen.IndexBuildIndexingStamp) bool {
+	if p == nil || len(p.AllowedTakeovers) == 0 {
+		return false
+	}
+	newMethod := newStamp.GetMethod()
+	oldMethod := savedStamp.GetMethod()
+
+	if newMethod == gen.IndexBuildIndexingStamp_BY_RECORDS {
+		if oldMethod == gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
+			return p.AllowedTakeovers[TakeoverMultiTargetToSingle]
+		}
+		if oldMethod == gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
+			return p.AllowedTakeovers[TakeoverMutualToSingle]
+		}
+	}
+
+	if newMethod == gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS {
+		if !p.AllowedTakeovers[TakeoverByRecordsToMutual] {
+			return false
+		}
+		if oldMethod == gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS {
+			// Allow if same set of targets or single target.
+			if len(newStamp.GetTargetIndex()) == 1 {
+				return true
+			}
+			newTargets := newStamp.GetTargetIndex()
+			oldTargets := savedStamp.GetTargetIndex()
+			if len(newTargets) != len(oldTargets) {
+				return false
+			}
+			oldSet := make(map[string]bool, len(oldTargets))
+			for _, t := range oldTargets {
+				oldSet[t] = true
+			}
+			for _, t := range newTargets {
+				if !oldSet[t] {
+					return false
+				}
+			}
+			return true
+		}
+		if oldMethod == gen.IndexBuildIndexingStamp_BY_RECORDS {
+			return len(newStamp.GetTargetIndex()) == 1
+		}
+	}
+	return false
+}
+
+// isTypeStampBlocked returns true if the stamp has an active block.
+// Matches Java's IndexingBase.isTypeStampBlocked().
+func isTypeStampBlocked(stamp *gen.IndexBuildIndexingStamp) bool {
+	if !stamp.GetBlock() {
+		return false
+	}
+	expiry := stamp.GetBlockExpireEpochMilliSeconds()
+	if expiry == 0 {
+		return true // permanent block
+	}
+	return expiry > uint64(time.Now().UnixMilli())
+}
+
+// areSimilarStamps returns true if two stamps differ only in block-related fields.
+// Matches Java's IndexingBase.areSimilar().
+func areSimilarStamps(a, b *gen.IndexBuildIndexingStamp) bool {
+	if proto.Equal(a, b) {
+		return true
+	}
+	return proto.Equal(blocklessStampOf(a), blocklessStampOf(b))
+}
+
+// blocklessStampOf returns a copy of the stamp with all block fields cleared.
+// Matches Java's IndexingBase.blocklessStampOf().
+func blocklessStampOf(stamp *gen.IndexBuildIndexingStamp) *gen.IndexBuildIndexingStamp {
+	clone := proto.Clone(stamp).(*gen.IndexBuildIndexingStamp)
+	clone.Block = nil
+	clone.BlockID = nil
+	clone.BlockExpireEpochMilliSeconds = nil
+	return clone
+}
+
+// IndexBuildState reports the current state of an index build.
+// Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexBuildState.
+type IndexBuildState struct {
+	State          IndexState
+	RecordsScanned *int64 // nil if not WRITE_ONLY or not tracked
+	RecordsInTotal *int64 // nil if no COUNT index available
+}
+
+// LoadIndexBuildState loads the build state for an index within an open store.
+// Matches Java's IndexBuildState.loadIndexBuildStateAsync().
+func LoadIndexBuildState(store *FDBRecordStore, index *Index) (*IndexBuildState, error) {
+	state := store.GetIndexState(index.Name)
+	if state != IndexStateWriteOnly {
+		return &IndexBuildState{State: state}, nil
+	}
+
+	scanned, err := store.LoadBuildProgress(index)
+	if err != nil {
+		return nil, fmt.Errorf("load build state: %w", err)
+	}
+
+	result := &IndexBuildState{
+		State:          state,
+		RecordsScanned: &scanned,
+	}
+
+	// Try to get total record count (requires a COUNT index).
+	total, err := store.GetRecordCount()
+	if err == nil {
+		result.RecordsInTotal = &total
+	}
+	// If no COUNT index, RecordsInTotal stays nil (matching Java).
+
+	return result, nil
+}
 
 // OnlineIndexer builds indexes on existing data across multiple transactions.
 // Each transaction processes a chunk of records, tracks progress via IndexingRangeSet,
@@ -30,7 +196,8 @@ type OnlineIndexer struct {
 	sourceIndex   *Index    // non-nil = BY_INDEX strategy (single target only)
 	subspace      subspace.Subspace
 	limit         int
-	recordTypes   []string // record types to index (empty = all types; not allowed with multi-target)
+	recordTypes   []string        // record types to index (empty = all types; not allowed with multi-target)
+	policy        *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -119,6 +286,13 @@ func (b *OnlineIndexerBuilder) SetRecordTypes(types ...string) *OnlineIndexerBui
 // Matches Java's OnlineIndexer.Builder.setSourceIndex().
 func (b *OnlineIndexerBuilder) SetSourceIndex(index *Index) *OnlineIndexerBuilder {
 	b.indexer.sourceIndex = index
+	return b
+}
+
+// SetPolicy sets the indexing policy for stamp conflict resolution.
+// Matches Java's OnlineIndexer.Builder.setIndexingPolicy().
+func (b *OnlineIndexerBuilder) SetPolicy(policy *IndexingPolicy) *OnlineIndexerBuilder {
+	b.indexer.policy = policy
 	return b
 }
 
@@ -310,82 +484,138 @@ func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 
 		newStamp := oi.buildIndexingStamp()
 		primary := oi.primaryIndex()
+		continuedBuild := store.IsIndexWriteOnly(primary.Name)
 
-		// Try to resume if primary is already WRITE_ONLY.
-		if store.IsIndexWriteOnly(primary.Name) {
-			resumed, err := oi.tryResumeWriteOnly(store, rtx, newStamp)
-			if err != nil {
-				return nil, err
-			}
-			if resumed {
-				return nil, nil
+		if !continuedBuild {
+			// Fresh start: clear all target indexes and mark WRITE_ONLY.
+			// Java's enforceStampOverwrite() is unnecessary here because
+			// clearIndexData removes the stamp, so setIndexingTypeOrThrow
+			// will write unconditionally (savedStamp=nil, continuedBuild=false).
+			for _, idx := range oi.targetIndexes {
+				if _, err := store.ClearAndMarkIndexWriteOnly(idx.Name); err != nil {
+					return nil, err
+				}
 			}
 		}
 
-		// Fresh start: clear all target indexes and mark WRITE_ONLY.
-		for _, idx := range oi.targetIndexes {
-			if _, err := store.ClearAndMarkIndexWriteOnly(idx.Name); err != nil {
-				return nil, err
-			}
-			if err := store.SaveIndexingTypeStamp(idx, newStamp); err != nil {
-				return nil, err
-			}
-		}
-		return nil, nil
+		// For continued builds: validates stamp compatibility and resumes.
+		// For fresh starts: writes the new stamp (no saved stamp after clear).
+		return nil, oi.setIndexingTypeOrThrow(store, continuedBuild, newStamp)
 	})
 	return err
 }
 
-// tryResumeWriteOnly attempts to resume a build when the primary index is
-// already WRITE_ONLY. Returns true if resume succeeded, false if a fresh
-// start is needed.
-func (oi *OnlineIndexer) tryResumeWriteOnly(store *FDBRecordStore, rtx *FDBRecordContext, newStamp *gen.IndexBuildIndexingStamp) (bool, error) {
-	primary := oi.primaryIndex()
+// setIndexingTypeOrThrow implements Java's IndexingBase.setIndexingTypeOrThrow().
+// It validates whether the new stamp can be written, considering the saved stamp,
+// block state, policy, and build method conversion rules.
+func (oi *OnlineIndexer) setIndexingTypeOrThrow(store *FDBRecordStore, continuedBuild bool, newStamp *gen.IndexBuildIndexingStamp) error {
+	for _, idx := range oi.targetIndexes {
+		if err := oi.setIndexingTypeOrThrowForIndex(store, continuedBuild, idx, newStamp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	savedStamp, err := store.LoadIndexingTypeStamp(primary)
+// setIndexingTypeOrThrowForIndex is the per-index stamp resolution logic.
+// Matches Java's IndexingBase.setIndexingTypeOrThrow(store, continuedBuild, index, newStamp).
+func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, continuedBuild bool, index *Index, newStamp *gen.IndexBuildIndexingStamp) error {
+	policy := oi.policy
+
+	// Step 1: forceStampOverwrite + fresh session = no questions asked.
+	if policy != nil && policy.ForceStampOverwrite && !continuedBuild {
+		return store.SaveIndexingTypeStamp(index, newStamp)
+	}
+
+	// Step 2: Load saved stamp.
+	savedStamp, err := store.LoadIndexingTypeStamp(index)
 	if err != nil {
-		return false, err
+		return err
 	}
 
-	if savedStamp != nil && proto.Equal(savedStamp, newStamp) {
-		// Matching stamp on primary. For multi-target, validate all secondary
-		// targets are also WRITE_ONLY (matching Java's state consistency check).
-		for _, idx := range oi.targetIndexes[1:] {
-			if !store.IsIndexWriteOnly(idx.Name) {
-				return false, nil // Inconsistent — need fresh start.
-			}
-		}
-		return true, nil // Resume.
-	}
-
+	// Step 3: No saved stamp.
 	if savedStamp == nil {
-		// No stamp — check if any records have been scanned.
-		rangeSet := NewIndexingRangeSet(store.subspace, primary)
-		empty, err := rangeSet.rangeSet.IsEmpty(rtx.Transaction())
-		if err != nil {
-			return false, err
+		if continuedBuild && newStamp.GetMethod() != gen.IndexBuildIndexingStamp_BY_RECORDS {
+			// Backward compatibility: maybe continuing an old BY_RECORDS session that
+			// didn't write stamps. Check if any records have been scanned.
+			if !isWriteOnlyButNoRecordScanned(store, store.context, index) {
+				// There is no type stamp, but records were scanned. Treat as BY_RECORDS.
+				return store.SaveIndexingTypeStamp(index, newStamp)
+			}
 		}
-		if empty {
-			// No records scanned. Save stamp on all targets and ensure
-			// secondary targets are WRITE_ONLY.
-			for _, idx := range oi.targetIndexes {
-				if err := store.SaveIndexingTypeStamp(idx, newStamp); err != nil {
-					return false, err
-				}
-			}
-			for _, idx := range oi.targetIndexes[1:] {
-				if !store.IsIndexWriteOnly(idx.Name) {
-					if _, err := store.ClearAndMarkIndexWriteOnly(idx.Name); err != nil {
-						return false, err
-					}
-				}
-			}
-			return true, nil
+		// Fresh session or BY_RECORDS: write stamp.
+		return store.SaveIndexingTypeStamp(index, newStamp)
+	}
+
+	// Step 4: Exact match — nothing to do.
+	if proto.Equal(savedStamp, newStamp) {
+		return nil
+	}
+
+	// Step 5: Check if blocked.
+	if isTypeStampBlocked(savedStamp) {
+		if policy == nil || !policy.ShouldAllowUnblock(savedStamp.GetBlockID()) {
+			return oi.newPartlyBuiltError(savedStamp, newStamp, index,
+				"this index was partly built, and blocked")
 		}
 	}
 
-	// Stamp mismatch or partially built with different method — need fresh start.
-	return false, nil
+	// Step 6: Similar stamps (differ only in block fields).
+	if areSimilarStamps(newStamp, savedStamp) {
+		return store.SaveIndexingTypeStamp(index, newStamp)
+	}
+
+	// Step 7: Type conversion allowed?
+	if continuedBuild && policy != nil && policy.ShouldAllowTypeConversionContinue(newStamp, savedStamp) {
+		return store.SaveIndexingTypeStamp(index, newStamp)
+	}
+
+	// Step 8: forceStampOverwrite + continued build — allow if no records scanned.
+	if policy != nil && policy.ForceStampOverwrite {
+		if isWriteOnlyButNoRecordScanned(store, store.context, index) {
+			return store.SaveIndexingTypeStamp(index, newStamp)
+		}
+		return oi.newPartlyBuiltError(savedStamp, newStamp, index,
+			"this index was partly built by another method")
+	}
+
+	// Step 9: Fall through — mismatch, not allowed.
+	return oi.newPartlyBuiltError(savedStamp, newStamp, index,
+		"this index was partly built by another method")
+}
+
+// isWriteOnlyButNoRecordScanned returns true if the index is WRITE_ONLY with a
+// completely empty range set (no records have been scanned yet).
+// Matches Java's IndexingBase.isWriteOnlyButNoRecordScanned().
+func isWriteOnlyButNoRecordScanned(store *FDBRecordStore, rtx *FDBRecordContext, index *Index) bool {
+	rangeSet := NewIndexingRangeSet(store.subspace, index)
+	missing, err := rangeSet.FirstMissingRange(rtx.Transaction())
+	if err != nil {
+		return false
+	}
+	if missing == nil {
+		return false // fully built — no missing ranges
+	}
+	// Empty if the first missing range spans the entire key space.
+	return bytes.Equal(missing.Begin, RangeSetFirstKey) && bytes.Equal(missing.End, RangeSetFinalKey)
+}
+
+// newPartlyBuiltError creates a PartlyBuiltError with stamp descriptions.
+func (oi *OnlineIndexer) newPartlyBuiltError(savedStamp, expectedStamp *gen.IndexBuildIndexingStamp, index *Index, msg string) *PartlyBuiltError {
+	return &PartlyBuiltError{
+		IndexName:     index.Name,
+		SavedStamp:    stampToString(savedStamp),
+		ExpectedStamp: stampToString(expectedStamp),
+		Message:       msg,
+	}
+}
+
+// stampToString returns a human-readable representation of a stamp.
+func stampToString(stamp *gen.IndexBuildIndexingStamp) string {
+	if stamp == nil {
+		return "<nil>"
+	}
+	return stamp.GetMethod().String()
 }
 
 // markReadable transitions all target indexes to READABLE (or READABLE_UNIQUE_PENDING
@@ -741,4 +971,103 @@ func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, erro
 		SetMetaDataProvider(oi.metaData).
 		SetSubspace(oi.subspace).
 		Open()
+}
+
+// BlockIndex sets the block flag on the indexing stamp for all target indexes.
+// A blocked stamp prevents other indexers from continuing the build.
+// blockID is an optional identifier for the block reason.
+// ttl is the time-to-live for the block; zero means permanent.
+// Matches Java's IndexingBase.performIndexingStampOperation(BLOCK, ...).
+func (oi *OnlineIndexer) BlockIndex(ctx context.Context, blockID string, ttl time.Duration) error {
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		for _, idx := range oi.targetIndexes {
+			stamp, err := store.LoadIndexingTypeStamp(idx)
+			if err != nil {
+				return nil, err
+			}
+			if stamp == nil {
+				continue
+			}
+			stamp.Block = proto.Bool(true)
+			if blockID != "" {
+				stamp.BlockID = proto.String(blockID)
+			} else {
+				stamp.BlockID = proto.String("")
+			}
+			if ttl > 0 {
+				stamp.BlockExpireEpochMilliSeconds = proto.Uint64(uint64(time.Now().Add(ttl).UnixMilli()))
+			} else {
+				stamp.BlockExpireEpochMilliSeconds = nil
+			}
+			if err := store.SaveIndexingTypeStamp(idx, stamp); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
+// UnblockIndex clears the block flag on the indexing stamp for all target indexes.
+// If blockID is non-empty, only unblocks stamps with a matching blockID.
+// Matches Java's IndexingBase.performIndexingStampOperation(UNBLOCK, ...).
+func (oi *OnlineIndexer) UnblockIndex(ctx context.Context, blockID string) error {
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		for _, idx := range oi.targetIndexes {
+			stamp, err := store.LoadIndexingTypeStamp(idx)
+			if err != nil {
+				return nil, err
+			}
+			if stamp == nil || !stamp.GetBlock() {
+				continue
+			}
+			if blockID != "" && stamp.GetBlockID() != blockID {
+				continue // ID mismatch — don't unblock
+			}
+			stamp.Block = proto.Bool(false)
+			if err := store.SaveIndexingTypeStamp(idx, stamp); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
+// QueryIndexingStamps returns the indexing stamps for all target indexes.
+// Returns a map of index name → stamp. Nil stamps are returned as a NONE method stamp.
+// Matches Java's IndexingBase.performIndexingStampOperation(QUERY, ...).
+func (oi *OnlineIndexer) QueryIndexingStamps(ctx context.Context) (map[string]*gen.IndexBuildIndexingStamp, error) {
+	stamps := make(map[string]*gen.IndexBuildIndexingStamp, len(oi.targetIndexes))
+	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		for _, idx := range oi.targetIndexes {
+			stamp, err := store.LoadIndexingTypeStamp(idx)
+			if err != nil {
+				return nil, err
+			}
+			if stamp == nil {
+				stamp = &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_NONE.Enum(),
+				}
+			}
+			stamps[idx.Name] = stamp
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stamps, nil
 }

@@ -131,3 +131,18 @@ func (e *RecordDeserializationError) Error() string {
 func (e *RecordDeserializationError) Unwrap() error {
 	return e.Cause
 }
+
+// PartlyBuiltError is returned when an OnlineIndexer encounters an index that was
+// partly built by another method or is blocked from continuing.
+// Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.PartlyBuiltException.
+type PartlyBuiltError struct {
+	IndexName     string
+	SavedStamp    string // string representation of the saved stamp
+	ExpectedStamp string // string representation of the expected stamp
+	Message       string
+}
+
+func (e *PartlyBuiltError) Error() string {
+	return fmt.Sprintf("index %q: %s (saved=%s, expected=%s)",
+		e.IndexName, e.Message, e.SavedStamp, e.ExpectedStamp)
+}
