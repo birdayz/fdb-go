@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1376 specs pass (1029 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1388 specs pass (1041 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -633,6 +633,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [ ] **Aggregation**: `AggregateCursor` with accumulator states
   - [x] `AutoContinuingCursor` — auto-creates new transactions on scan/time/byte/row limits for seamless large-dataset scanning across tx boundaries. Includes retry logic for transient errors.
   - [x] `FallbackCursor` — primary cursor with automatic failover on error. One-shot fallback, passes last successful result to factory.
+  - [x] `MapErrCursor` — fallible transform combinator (fn returns (R, error)). 3 tests.
+  - [x] `AsListWithContinuation` — pagination helper: drains cursor to slice, returns continuation bytes. 3 tests.
 
 - [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
 
@@ -661,7 +663,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [x] **Store statistics** — `EstimateStoreSize()` and `EstimateRecordsSize()` using FDB `GetEstimatedRangeSizeBytes()`.
+- [x] **Store statistics** — `EstimateStoreSize()`, `EstimateRecordsSize()`, `EstimateRecordsSizeInRange(TupleRange)`, `EstimateIndexSize(*Index)`, `GetRangeSplitPoints(chunkSize)` using FDB native operations. `TupleRange.ToFDBRange(subspace)` conversion. `FDBRecordContext.GetApproximateTransactionSize()` for 10MB limit monitoring. 12 tests.
 
 - [x] **Format version / user version access** — `GetFormatVersion()`, `GetUserVersion()`, `SetUserVersion()`, `GetMetaDataVersion()`. Persisted in store header.
 
@@ -672,7 +674,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### LOW
 
 - [x] **Store API surface expansion** — 13 new public methods matching Java: `RecordsSubspace`, `IndexSubspace`, `IndexSecondarySubspace`, `GetReadableIndexes`, `GetEnabledIndexes`, `GetAllIndexStates`, `RebuildAllIndexes`, `VacuumReadableIndexesBuildData`, `DeleteStore`, `FirstUnbuiltRange`, `IsCacheable`, `GetStoreHeader`, `GetAllIndexStatesMap`. 15 tests.
-- [ ] **Advanced store operations** — Java has `dryRunSaveRecordAsync()`, `preloadRecordAsync()`, `repairRecordKeys()`. Go has none.
+- [x] **Advanced store operations** — `DryRunSaveRecord`, `DryRunDeleteRecord`, `ScanRecordKeys`, `IsIndexReadableUniquePending`, `GetWriteOnlyIndexes`, `GetDisabledIndexes`, `GetIndexesToBuildSince`, `ResolveUniquenessViolationByDeletion`, `ScanUniquenessViolationsForValue`. 24 tests.
+- [ ] **Remaining advanced store operations** — Java has `preloadRecordAsync()`, `repairRecordKeys()`. Not yet ported.
 
 - [ ] **Synthetic records** — Java has `loadSyntheticRecord()`. Large feature tied to synthetic record types.
 
