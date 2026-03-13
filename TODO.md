@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1311 specs pass (964 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1315 specs pass (968 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -100,7 +100,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.
 - [x] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot)` already implemented in `store_version.go`. **LOW**.
 - [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
-- [ ] **Index build state tracking** — `GetIndexBuildState(index)` for progress reporting. **LOW**.
+- [x] **Index build state tracking** — `AddBuildProgress`/`LoadBuildProgress` at `[9][indexSubspaceKey][1]` (atomic ADD). Wired into `buildRange`/`buildRangeByIndex`. 4 tests. **LOW**.
 - [ ] **DryRunSaveRecord** — Validation without writes. **LOW**.
 
 ### 5. Metadata & schema evolution changes
