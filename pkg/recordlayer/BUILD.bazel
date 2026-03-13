@@ -40,6 +40,7 @@ go_library(
         "ranked_set.go",
         "record_count.go",
         "record_function.go",
+        "record_key_cursor.go",
         "record_version.go",
         "runner.go",
         "scan_properties.go",

@@ -839,4 +839,776 @@ var _ = Describe("FDBRecordStore API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("DryRunDeleteRecord", func() {
+		It("returns true for an existing record without deleting it", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save a record.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// DryRun should return true.
+				exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue())
+
+				// Record should still be there.
+				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns false for a non-existent record", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(999)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeFalse())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns true after save and false after real delete", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(999)})
+				Expect(err).NotTo(HaveOccurred())
+
+				exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(42)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue())
+
+				// Actually delete it.
+				_, err = store.DeleteRecord(tuple.Tuple{int64(42)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Now DryRun should return false.
+				exists, err = store.DryRunDeleteRecord(tuple.Tuple{int64(42)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeFalse())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("IsIndexReadableUniquePending", func() {
+		It("returns false for a READABLE index", func() {
+			ks := specSubspace()
+			priceIdx := NewIndex("Order$price", Field("price"))
+			builder := baseMetaData()
+			builder.AddIndex("Order", priceIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Default state is READABLE.
+				Expect(store.IsIndexReadableUniquePending("Order$price")).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns true for a READABLE_UNIQUE_PENDING index", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save a record so the index has data.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Mark WRITE_ONLY, add violation, mark complete, then READABLE_UNIQUE_PENDING.
+				_, err = store.MarkIndexWriteOnly("Order$unique_qty")
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
+				markRangeSetComplete(store, idx)
+
+				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_qty")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(changed).To(BeTrue())
+
+				Expect(store.IsIndexReadableUniquePending("Order$unique_qty")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns false for WRITE_ONLY and DISABLED indexes", func() {
+			ks := specSubspace()
+
+			idx1 := NewIndex("Order$price", Field("price"))
+			idx2 := NewIndex("Order$qty", Field("quantity"))
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx1)
+			builder.AddIndex("Order", idx2)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.MarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.MarkIndexDisabled("Order$qty")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(store.IsIndexReadableUniquePending("Order$price")).To(BeFalse())
+				Expect(store.IsIndexReadableUniquePending("Order$qty")).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("GetWriteOnlyIndexes / GetDisabledIndexes", func() {
+		It("returns empty when all indexes are READABLE", func() {
+			ks := specSubspace()
+
+			idx1 := NewIndex("Order$price", Field("price"))
+			idx2 := NewIndex("Order$qty", Field("quantity"))
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx1)
+			builder.AddIndex("Order", idx2)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(store.GetWriteOnlyIndexes()).To(BeEmpty())
+				Expect(store.GetDisabledIndexes()).To(BeEmpty())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns correct indexes when states are mixed", func() {
+			ks := specSubspace()
+
+			idx1 := NewIndex("Order$price", Field("price"))
+			idx2 := NewIndex("Order$qty", Field("quantity"))
+			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx1)
+			builder.AddIndex("Order", idx2)
+			builder.AddIndex("Order", idx3)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// price stays READABLE, qty → WRITE_ONLY, flower_type → DISABLED.
+				_, err = store.MarkIndexWriteOnly("Order$qty")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.MarkIndexDisabled("Order$flower_type")
+				Expect(err).NotTo(HaveOccurred())
+
+				writeOnly := store.GetWriteOnlyIndexes()
+				Expect(writeOnly).To(HaveLen(1))
+				Expect(writeOnly[0].Name).To(Equal("Order$qty"))
+
+				disabled := store.GetDisabledIndexes()
+				Expect(disabled).To(HaveLen(1))
+				Expect(disabled[0].Name).To(Equal("Order$flower_type"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns multiple indexes in same state", func() {
+			ks := specSubspace()
+
+			idx1 := NewIndex("Order$price", Field("price"))
+			idx2 := NewIndex("Order$qty", Field("quantity"))
+			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx1)
+			builder.AddIndex("Order", idx2)
+			builder.AddIndex("Order", idx3)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Mark all three WRITE_ONLY.
+				_, err = store.MarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.MarkIndexWriteOnly("Order$qty")
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.MarkIndexWriteOnly("Order$flower_type")
+				Expect(err).NotTo(HaveOccurred())
+
+				writeOnly := store.GetWriteOnlyIndexes()
+				Expect(writeOnly).To(HaveLen(3))
+
+				Expect(store.GetDisabledIndexes()).To(BeEmpty())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("GetIndexesToBuildSince", func() {
+		It("returns indexes added after given version", func() {
+			ks := specSubspace()
+
+			builder := baseMetaData()
+			// Set explicit version=1 as baseline.
+			builder.SetVersion(1)
+
+			idx1 := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", idx1) // bumps to version=2, idx1.LastModifiedVersion=2
+
+			idx2 := NewIndex("Order$qty", Field("quantity"))
+			builder.AddIndex("Order", idx2) // bumps to version=3, idx2.LastModifiedVersion=3
+
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// All indexes added after version 1.
+				toBuild := store.GetIndexesToBuildSince(1)
+				Expect(toBuild).To(HaveLen(2))
+
+				// Only idx2 was added after version 2.
+				toBuild = store.GetIndexesToBuildSince(2)
+				Expect(toBuild).To(HaveLen(1))
+				Expect(toBuild[0].Name).To(Equal("Order$qty"))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns empty when no indexes need building", func() {
+			ks := specSubspace()
+
+			builder := baseMetaData()
+			idx1 := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", idx1)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Use a version higher than any index's LastModifiedVersion.
+				toBuild := store.GetIndexesToBuildSince(md.Version())
+				Expect(toBuild).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns empty when there are no indexes at all", func() {
+			ks := specSubspace()
+
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				toBuild := store.GetIndexesToBuildSince(0)
+				Expect(toBuild).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ScanRecordKeys", func() {
+		It("returns primary keys for all records in forward order", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				keys, err := AsList(ctx, store.ScanRecordKeys(nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(HaveLen(5))
+
+				for i, pk := range keys {
+					Expect(pk).To(Equal(tuple.Tuple{int64(i + 1)}))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns empty list for empty store", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				keys, err := AsList(ctx, store.ScanRecordKeys(nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("supports row limit with continuation", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Scan with limit=2.
+				scan := ForwardScan()
+				scan.ExecuteProperties.ReturnedRowLimit = 2
+				cursor := store.ScanRecordKeys(nil, scan)
+
+				r1, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(r1.HasNext()).To(BeTrue())
+				Expect(r1.GetValue()).To(Equal(tuple.Tuple{int64(1)}))
+
+				r2, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(r2.HasNext()).To(BeTrue())
+				Expect(r2.GetValue()).To(Equal(tuple.Tuple{int64(2)}))
+
+				// Third call should hit the limit.
+				r3, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(r3.HasNext()).To(BeFalse())
+				Expect(r3.GetNoNextReason()).To(Equal(ReturnLimitReached))
+
+				// Extract continuation and resume.
+				contBytes, err := r3.GetContinuation().ToBytes()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(contBytes).NotTo(BeNil())
+
+				scan2 := ForwardScan()
+				scan2.ExecuteProperties.ReturnedRowLimit = 10
+				cursor2 := store.ScanRecordKeys(contBytes, scan2)
+
+				keys, err := AsList(ctx, cursor2)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(HaveLen(3))
+				Expect(keys[0]).To(Equal(tuple.Tuple{int64(3)}))
+				Expect(keys[1]).To(Equal(tuple.Tuple{int64(4)}))
+				Expect(keys[2]).To(Equal(tuple.Tuple{int64(5)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("handles split records by deduplicating PKs", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			builder.SetSplitLongRecords(true)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save a small record (unsplit, but still uses split format with suffix).
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save a large record that will be split into chunks.
+				_, err = store.SaveRecord(makeLargeOrder(2, 250_000))
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// ScanRecordKeys should return exactly 3 PKs despite split KV entries.
+				keys, err := AsList(ctx, store.ScanRecordKeys(nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(HaveLen(3))
+				Expect(keys[0]).To(Equal(tuple.Tuple{int64(1)}))
+				Expect(keys[1]).To(Equal(tuple.Tuple{int64(2)}))
+				Expect(keys[2]).To(Equal(tuple.Tuple{int64(3)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns keys for multiple record types", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(10), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(20), Name: proto.String("Alice")})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(30), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+
+				keys, err := AsList(ctx, store.ScanRecordKeys(nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(HaveLen(3))
+				// Keys are in order of their FDB key encoding, which is int64 order.
+				Expect(keys[0]).To(Equal(tuple.Tuple{int64(10)}))
+				Expect(keys[1]).To(Equal(tuple.Tuple{int64(20)}))
+				Expect(keys[2]).To(Equal(tuple.Tuple{int64(30)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ResolveUniquenessViolationByDeletion", func() {
+		It("deletes all violating records except remainPrimaryKey", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save one record normally.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(10), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Mark index WRITE_ONLY so we can create violations.
+				_, err = store.MarkIndexWriteOnly("Order$unique_qty")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save duplicate records (WRITE_ONLY allows duplicates for unique indexes).
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(10), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Quantity: proto.Int32(10), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Manually record uniqueness violations.
+				idx := md.GetIndex("Order$unique_qty")
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(3)})
+
+				// Resolve: keep record with PK=1, delete PK=2 and PK=3.
+				err = store.ResolveUniquenessViolationByDeletion(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// PK=1 should still exist.
+				rec1, err := store.LoadRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec1).NotTo(BeNil())
+
+				// PK=2 and PK=3 should be deleted.
+				rec2, err := store.LoadRecord(tuple.Tuple{int64(2)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec2).To(BeNil())
+
+				rec3, err := store.LoadRecord(tuple.Tuple{int64(3)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec3).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("deletes all violating records when remainPrimaryKey is nil", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Quantity: proto.Int32(20), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.MarkIndexWriteOnly("Order$unique_qty")
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Quantity: proto.Int32(20), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(1)})
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(2)})
+
+				// Resolve with nil remainPrimaryKey: delete all.
+				err = store.ResolveUniquenessViolationByDeletion(idx, tuple.Tuple{int64(20)}, nil)
+				Expect(err).NotTo(HaveOccurred())
+
+				rec1, err := store.LoadRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec1).To(BeNil())
+
+				rec2, err := store.LoadRecord(tuple.Tuple{int64(2)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec2).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ScanUniquenessViolationsForValue", func() {
+		It("returns violations matching the given value key", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+
+				// Add violations for two different value keys.
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(3)})
+
+				// Scan for value=10: should find 2.
+				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(10)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(HaveLen(2))
+
+				pks := map[int64]bool{}
+				for _, v := range violations {
+					Expect(v.IndexName).To(Equal("Order$unique_qty"))
+					Expect(v.IndexKey).To(Equal(tuple.Tuple{int64(10)}))
+					pk := v.PrimaryKey[0].(int64)
+					pks[pk] = true
+				}
+				Expect(pks).To(HaveKey(int64(1)))
+				Expect(pks).To(HaveKey(int64(2)))
+
+				// Scan for value=20: should find 1.
+				violations, err = store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(20)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(HaveLen(1))
+				Expect(violations[0].PrimaryKey).To(Equal(tuple.Tuple{int64(3)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns empty when no violations exist for the given value", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+
+				// Add a violation for value=10 only.
+				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
+
+				// Scan for value=99: should be empty.
+				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(99)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns empty when no violations exist at all", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(10)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(BeEmpty())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("includes ExistingKey when stored with AddUniquenessViolationWithExisting", func() {
+			ks := specSubspace()
+
+			uniqueIdx := NewIndex("Order$unique_qty", Field("quantity"))
+			uniqueIdx.SetUnique()
+
+			builder := baseMetaData()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				idx := md.GetIndex("Order$unique_qty")
+				store.AddUniquenessViolationWithExisting(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)}, tuple.Tuple{int64(1)})
+
+				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(10)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(violations).To(HaveLen(1))
+				Expect(violations[0].ExistingKey).To(Equal(tuple.Tuple{int64(1)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -275,4 +276,163 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		ValueSize:  len(data),
 		Split:      splitEnabled && len(data) > SplitRecordSize,
 	}, nil
+}
+
+// DryRunDeleteRecord checks whether a record with the given primary key exists
+// and could be deleted, without actually deleting it.
+// Returns true if the record exists (and would be deleted), false if not found.
+// Returns an error if the store is locked for record updates.
+// Matches Java's FDBRecordStore.dryRunDeleteRecordAsync().
+func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, error) {
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	splitEnabled := store.metaData.IsSplitLongRecords()
+	var sizeInfo SizeInfo
+	value, err := loadWithSplit(
+		store.context.Transaction(),
+		recordsSubspace,
+		primaryKey,
+		splitEnabled,
+		&sizeInfo,
+	)
+	if err != nil {
+		return false, fmt.Errorf("dry run delete record: %w", err)
+	}
+	if value == nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// IsIndexReadableUniquePending returns true if the index is in READABLE_UNIQUE_PENDING state.
+// This state means the unique index is fully indexed but may have duplicate entries.
+// Matches Java's FDBRecordStoreBase.isIndexReadableUniquePending().
+func (store *FDBRecordStore) IsIndexReadableUniquePending(indexName string) bool {
+	return store.GetIndexState(indexName) == IndexStateReadableUniquePending
+}
+
+// GetWriteOnlyIndexes returns all indexes that are in WRITE_ONLY state.
+// These are indexes currently being built by an OnlineIndexer.
+// Matches Java's FDBRecordStoreBase.getWriteOnlyIndexes() (derived from getAllIndexStates).
+func (store *FDBRecordStore) GetWriteOnlyIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetAllIndexes() {
+		if store.GetIndexState(idx.Name) == IndexStateWriteOnly {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// GetDisabledIndexes returns all indexes that are in DISABLED state.
+// These indexes are not maintained or readable.
+// Matches Java's FDBRecordStoreBase.getDisabledIndexes() (derived from getAllIndexStates).
+func (store *FDBRecordStore) GetDisabledIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetAllIndexes() {
+		if store.GetIndexState(idx.Name) == IndexStateDisabled {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// GetIndexesToBuildSince returns all indexes that need to be built because they were
+// added or modified since the given metadata version.
+// Matches Java's FDBRecordStore.getIndexesToBuildSince(version).
+func (store *FDBRecordStore) GetIndexesToBuildSince(version int) []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetAllIndexes() {
+		if idx.LastModifiedVersion > version {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// ResolveUniquenessViolationByDeletion resolves uniqueness violations for a specific
+// index value key by deleting all records that violate uniqueness, except for the
+// record with remainPrimaryKey (if non-nil). If remainPrimaryKey is nil, all violating
+// records are deleted.
+// Matches Java's FDBRecordStore.resolveUniquenessViolation(index, valueKey, remainPrimaryKey).
+func (store *FDBRecordStore) ResolveUniquenessViolationByDeletion(
+	index *Index,
+	valueKey tuple.Tuple,
+	remainPrimaryKey tuple.Tuple,
+) error {
+	violations, err := store.ScanUniquenessViolationsForValue(index, valueKey)
+	if err != nil {
+		return fmt.Errorf("resolve uniqueness violation: %w", err)
+	}
+	for _, v := range violations {
+		if remainPrimaryKey != nil && tuplesEqual(v.PrimaryKey, remainPrimaryKey) {
+			continue
+		}
+		if _, err := store.DeleteRecord(v.PrimaryKey); err != nil {
+			return fmt.Errorf("resolve uniqueness violation: delete pk=%v: %w", v.PrimaryKey, err)
+		}
+	}
+	return nil
+}
+
+// ScanUniquenessViolationsForValue returns uniqueness violations for a specific index
+// value key. This filters violations to only those matching the given value key.
+// Matches Java's StandardIndexMaintainer.scanUniquenessViolations(index, valueKey).
+func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
+	index *Index,
+	valueKey tuple.Tuple,
+) ([]UniquenessViolation, error) {
+	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
+	// The key format is [valueKey..., primaryKey...]. To scan for a specific valueKey,
+	// use a prefix range on the valueKey portion.
+	prefixKey := violationSubspace.Pack(valueKey)
+	pr, err := fdb.PrefixRange(prefixKey)
+	if err != nil {
+		return nil, fmt.Errorf("scan violations for value: prefix range: %w", err)
+	}
+
+	kvs, err := store.context.Transaction().GetRange(pr, fdb.RangeOptions{}).GetSliceWithError()
+	if err != nil {
+		return nil, fmt.Errorf("scan violations for value on index %q: %w", index.Name, err)
+	}
+
+	colCount := keyExpressionColumnSize(index.RootExpression)
+	var violations []UniquenessViolation
+	for _, kv := range kvs {
+		t, err := violationSubspace.Unpack(kv.Key)
+		if err != nil {
+			return nil, fmt.Errorf("unpack violation key: %w", err)
+		}
+		if len(t) > colCount {
+			v := UniquenessViolation{
+				IndexName:  index.Name,
+				IndexKey:   tuple.Tuple(t[:colCount]),
+				PrimaryKey: tuple.Tuple(t[colCount:]),
+			}
+			if len(kv.Value) > 0 {
+				existingKey, err := tuple.Unpack(kv.Value)
+				if err == nil {
+					v.ExistingKey = existingKey
+				}
+			}
+			violations = append(violations, v)
+		}
+	}
+	return violations, nil
+}
+
+// ScanRecordKeys scans only the primary keys of records without deserializing
+// record data. This is significantly faster than ScanRecords when you only need
+// the keys (avoids protobuf deserialization overhead).
+// Split records (multiple KV entries per PK) are automatically deduplicated.
+// Matches Java's FDBRecordStore.scanRecordKeys().
+func (store *FDBRecordStore) ScanRecordKeys(
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[tuple.Tuple] {
+	return &recordKeyCursor{
+		store:          store,
+		continuation:   continuation,
+		scanProperties: scanProperties,
+		startTime:      time.Now(),
+	}
 }

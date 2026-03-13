@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1353 specs pass (1006 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1376 specs pass (1029 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -102,6 +102,10 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
 - [x] **Index build state tracking** — `AddBuildProgress`/`LoadBuildProgress` at `[9][indexSubspaceKey][1]` (atomic ADD). Wired into `buildRange`/`buildRangeByIndex`. 4 tests. **LOW**.
 - [x] **DryRunSaveRecord** — Validation (existence, type, lock) without writes. Returns computed record with size info. 4 tests. **LOW**.
+- [x] **DryRunDeleteRecord** — Checks record existence without deleting. 3 tests. **LOW**.
+- [x] **ScanRecordKeys** — Key-only scan without deserialization (dedup for split records). 5 tests. **LOW**.
+- [x] **Index state query APIs** — `IsIndexReadableUniquePending`, `GetWriteOnlyIndexes`, `GetDisabledIndexes`, `GetIndexesToBuildSince`. 9 tests. **LOW**.
+- [x] **Uniqueness violation resolution** — `ScanUniquenessViolationsForValue`, `ResolveUniquenessViolationByDeletion`. 6 tests. **LOW**.
 
 ### 5. Metadata & schema evolution changes
 
