@@ -2010,4 +2010,200 @@ var _ = Describe("OnlineIndexer", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("Build progress tracking", func() {
+		It("tracks records scanned during BY_RECORDS build", func() {
+			ks := specSubspace()
+
+			// Phase 1: Insert records without index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 10; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Build index online.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Verify progress counter.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				progress, err := store.LoadBuildProgress(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				// At least 10 records scanned (may be more due to boundary re-scans).
+				Expect(progress).To(BeNumerically(">=", int64(10)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("tracks records scanned during chunked build", func() {
+			ks := specSubspace()
+
+			// Insert 15 records without index.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 15; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Build with limit=4 to force multiple chunks.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIndex)
+			mdWithIndex, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIndex).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				SetLimit(4).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Each chunk atomically ADD's its count. Total should be >= 15.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				progress, err := store.LoadBuildProgress(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(progress).To(BeNumerically(">=", int64(15)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("tracks records scanned per index during multi-target build", func() {
+			ks := specSubspace()
+
+			// Insert records without indexes.
+			_, builder := baseMetaData()
+			mdNoIndex, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 8; i++ {
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(i),
+						Price:    proto.Int32(int32(i * 100)),
+						Quantity: proto.Int32(int32(i)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Multi-target build with 2 indexes.
+			priceIdx := NewIndex("Order$price", Field("price"))
+			qtyIdx := NewIndex("Order$qty", Field("quantity"))
+			_, builder2 := baseMetaData()
+			builder2.AddIndex("Order", priceIdx)
+			builder2.AddIndex("Order", qtyIdx)
+			mdWithIdx, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdWithIdx).
+				AddTargetIndex(priceIdx).
+				AddTargetIndex(qtyIdx).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Both indexes should have progress tracked independently.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdWithIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				priceProgress, err := store.LoadBuildProgress(priceIdx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(priceProgress).To(BeNumerically(">=", int64(8)))
+
+				qtyProgress, err := store.LoadBuildProgress(qtyIdx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(qtyProgress).To(BeNumerically(">=", int64(8)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns zero for index with no build progress", func() {
+			ks := specSubspace()
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				progress, err := store.LoadBuildProgress(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(progress).To(Equal(int64(0)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
