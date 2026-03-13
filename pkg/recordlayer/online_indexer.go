@@ -533,6 +533,14 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			}
 		}
 
+		// Track progress: atomic ADD of records scanned per target index.
+		// Matches Java's IndexingBase.tieredMergeAndCommit() progress tracking.
+		if recordsProcessed > 0 {
+			for _, idx := range oi.targetIndexes {
+				store.AddBuildProgress(idx, recordsProcessed)
+			}
+		}
+
 		return nil, nil
 	})
 
@@ -687,6 +695,11 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		_, err = rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true)
 		if err != nil {
 			return nil, fmt.Errorf("mark range built: %w", err)
+		}
+
+		// Track progress: atomic ADD of records scanned.
+		if recordsProcessed > 0 {
+			store.AddBuildProgress(oi.primaryIndex(), recordsProcessed)
 		}
 
 		return nil, nil

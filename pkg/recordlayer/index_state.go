@@ -350,7 +350,8 @@ func (store *FDBRecordStore) indexStateSubspace() subspace.Subspace {
 
 // Index build subspace sub-keys matching Java's IndexingSubspaces.
 const (
-	indexBuildTypeVersionSubKey = int64(2) // IndexBuildIndexingStamp proto
+	indexBuildScannedRecordsSubKey = int64(1) // atomic ADD counter for records scanned
+	indexBuildTypeVersionSubKey    = int64(2) // IndexBuildIndexingStamp proto
 )
 
 // indexBuildTypeSubspace returns the subspace for the index build type stamp.
@@ -388,6 +389,29 @@ func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuil
 		return nil, fmt.Errorf("unmarshal indexing type stamp: %w", err)
 	}
 	return stamp, nil
+}
+
+// AddBuildProgress atomically increments the records-scanned counter for an index build.
+// Matches Java's IndexingBase.tieredMergeAndCommit() → MutationType.ADD at
+// IndexingSubspaces.indexBuildScannedRecordsSubspace().
+func (store *FDBRecordStore) AddBuildProgress(index *Index, count int64) {
+	key := store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey(), indexBuildScannedRecordsSubKey).Bytes()
+	store.context.Transaction().Add(fdb.Key(key), encodeRecordCount(count))
+}
+
+// LoadBuildProgress reads the records-scanned counter for an index build.
+// Returns 0 if no progress has been tracked.
+// Matches Java's IndexBuildState.loadRecordsScannedAsync().
+func (store *FDBRecordStore) LoadBuildProgress(index *Index) (int64, error) {
+	key := store.subspace.Sub(IndexBuildSpaceKey, index.SubspaceTupleKey(), indexBuildScannedRecordsSubKey).Bytes()
+	data, err := store.context.Transaction().Get(fdb.Key(key)).Get()
+	if err != nil {
+		return 0, fmt.Errorf("load build progress: %w", err)
+	}
+	if data == nil {
+		return 0, nil
+	}
+	return decodeRecordCount(data), nil
 }
 
 // clearIndexData removes all FDB data for an index.
