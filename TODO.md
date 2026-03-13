@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1301 specs pass (954 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1311 specs pass (964 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -468,9 +468,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Validation: source must be READABLE VALUE index, no duplicates, single record type.
    - [x] BY_INDEX stamp with `SourceIndexSubspaceKey` + `SourceIndexLastModifiedVersion`. 7 tests.
 
-7. **Multi-target index building** (LOW — optimization for bulk schema changes)
-   - [ ] Build multiple WRITE_ONLY indexes in a single record scan pass.
-   - [ ] All target indexes share the same missing-range tracking (first index's RangeSet).
+7. **Multi-target index building** (LOW — optimization for bulk schema changes) ✅
+   - [x] Build multiple WRITE_ONLY indexes in a single record scan pass. `AddTargetIndex()`/`SetTargetIndexes()` builder methods. MULTI_TARGET_BY_RECORDS stamp with sorted target names. Per-index record type filtering, per-index transaction for markReadable. Targets sorted by name for deterministic primary selection, deduplicated, validated against metadata. 10 tests.
+   - [x] All target indexes share the same missing-range tracking (first index's RangeSet).
 
 8. **Mutual/concurrent index building** (LOW — multi-process coordination)
    - [ ] Multiple OnlineIndexer processes build different ranges concurrently.
