@@ -445,6 +445,67 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(mapped.Close()).To(Succeed())
 	})
 
+	It("MapErrCursor transforms values", func() {
+		inner := FromList([]int{1, 2, 3})
+		mapped := MapErrCursor(inner, func(n int) (string, error) {
+			return fmt.Sprintf("item_%d", n), nil
+		})
+		result, err := AsList(ctx, mapped)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal([]string{"item_1", "item_2", "item_3"}))
+	})
+
+	It("MapErrCursor propagates transform error", func() {
+		inner := FromList([]int{1, 2, 3})
+		mapped := MapErrCursor(inner, func(n int) (string, error) {
+			if n == 2 {
+				return "", fmt.Errorf("transform error at %d", n)
+			}
+			return fmt.Sprintf("item_%d", n), nil
+		})
+		// First item succeeds
+		r1, err := mapped.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r1.HasNext()).To(BeTrue())
+		Expect(r1.GetValue()).To(Equal("item_1"))
+
+		// Second item fails
+		_, err = mapped.OnNext(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("transform error at 2"))
+		Expect(mapped.Close()).To(Succeed())
+	})
+
+	It("MapErrCursor empty", func() {
+		mapped := MapErrCursor(Empty[int](), func(n int) (string, error) { return "", nil })
+		result, err := AsList(ctx, mapped)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(BeEmpty())
+	})
+
+	It("AsListWithContinuation collects all from exhausted cursor", func() {
+		inner := FromList([]int{10, 20, 30})
+		items, cont, err := AsListWithContinuation(ctx, inner)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(items).To(Equal([]int{10, 20, 30}))
+		Expect(cont).To(BeNil()) // source exhausted = no continuation
+	})
+
+	It("AsListWithContinuation returns continuation from limited cursor", func() {
+		inner := LimitRowsCursor(FromList([]int{10, 20, 30, 40, 50}), 3)
+		items, cont, err := AsListWithContinuation(ctx, inner)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(items).To(Equal([]int{10, 20, 30}))
+		Expect(cont).NotTo(BeNil()) // limit reached = has continuation
+	})
+
+	It("AsListWithContinuation empty cursor", func() {
+		items, cont, err := AsListWithContinuation(ctx, Empty[int]())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(items).To(BeEmpty())
+		Expect(cont).To(BeNil())
+	})
+
 	It("FlatMapPipelined basic", func() {
 		// Outer: [1, 2, 3], Inner: for each outer x → [x*10, x*10+1]
 		cursor := FlatMapPipelined(

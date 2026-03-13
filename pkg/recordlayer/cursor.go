@@ -739,6 +739,65 @@ func (c *mapResultCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[
 
 func (c *mapResultCursor[T, R]) Close() error { return c.inner.Close() }
 
+// mapErrCursor wraps a cursor and transforms each value with a fallible function.
+type mapErrCursor[T, R any] struct {
+	inner RecordCursor[T]
+	fn    func(T) (R, error)
+}
+
+// MapErrCursor creates a cursor that transforms each value using a function that
+// can return an error. If the transform function returns an error, iteration stops
+// with that error. Continuations from the inner cursor are passed through.
+// Matches Java's MapResultCursor with checked exceptions.
+func MapErrCursor[T, R any](cursor RecordCursor[T], fn func(T) (R, error)) RecordCursor[R] {
+	return &mapErrCursor[T, R]{inner: cursor, fn: fn}
+}
+
+func (c *mapErrCursor[T, R]) OnNext(ctx context.Context) (RecordCursorResult[R], error) {
+	result, err := c.inner.OnNext(ctx)
+	if err != nil {
+		return RecordCursorResult[R]{}, err
+	}
+	if !result.HasNext() {
+		return NewResultNoNext[R](result.GetNoNextReason(), result.GetContinuation()), nil
+	}
+	mapped, mapErr := c.fn(result.GetValue())
+	if mapErr != nil {
+		return RecordCursorResult[R]{}, mapErr
+	}
+	return NewResultWithValue(mapped, result.GetContinuation()), nil
+}
+
+func (c *mapErrCursor[T, R]) Close() error { return c.inner.Close() }
+
+// AsListWithContinuation collects all records from the cursor into a slice and
+// returns the final continuation bytes for pagination. Returns nil continuation
+// when the source is exhausted.
+// This is the common pattern for paginated APIs: drain page, return token.
+func AsListWithContinuation[T any](ctx context.Context, cursor RecordCursor[T]) ([]T, []byte, error) {
+	defer func() { _ = cursor.Close() }()
+	var results []T
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return results, nil, err
+		}
+		if !result.HasNext() {
+			cont := result.GetContinuation()
+			if cont != nil && !cont.IsEnd() {
+				contBytes, contErr := cont.ToBytes()
+				if contErr != nil {
+					return results, nil, contErr
+				}
+				return results, contBytes, nil
+			}
+			// Source exhausted — no continuation
+			return results, nil, nil
+		}
+		results = append(results, result.GetValue())
+	}
+}
+
 // flatMapCursor takes an outer cursor and, for each outer value, creates
 // an inner cursor via a function, flattening all inner results into a single stream.
 // Matches Java's FlatMapPipelinedCursor. The pipelineSize parameter is accepted for
