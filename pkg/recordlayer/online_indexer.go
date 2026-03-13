@@ -213,23 +213,55 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 }
 
 // markWriteOnly transitions the index to WRITE_ONLY state and saves the
-// BY_RECORDS indexing type stamp. Matches Java's IndexingBase.handleIndexingState()
-// which calls clearAndMarkIndexWriteOnly + setIndexingTypeOrThrow.
+// indexing type stamp.
+//
+// Matches Java's IndexingBase.handleIndexingState() + setIndexingTypeOrThrow():
+//   - If the index is already WRITE_ONLY with a matching stamp, resume without
+//     clearing existing index data (preserves WRITE_ONLY maintenance entries).
+//   - If WRITE_ONLY with no stamp and no records scanned, write the stamp and continue.
+//   - Otherwise, clear and mark fresh.
 func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
 		}
+
+		newStamp := oi.buildIndexingStamp()
+
+		// If already WRITE_ONLY, try to resume.
+		if store.IsIndexWriteOnly(oi.index.Name) {
+			savedStamp, err := store.LoadIndexingTypeStamp(oi.index)
+			if err != nil {
+				return nil, err
+			}
+
+			if savedStamp != nil && proto.Equal(savedStamp, newStamp) {
+				// Matching stamp — resume build without clearing.
+				return nil, nil
+			}
+
+			if savedStamp == nil {
+				// No stamp (legacy or manual WRITE_ONLY). Check if any
+				// records have been scanned. If not, safe to write our stamp.
+				rangeSet := NewIndexingRangeSet(store.subspace, oi.index)
+				empty, err := rangeSet.rangeSet.IsEmpty(rtx.Transaction())
+				if err != nil {
+					return nil, err
+				}
+				if empty {
+					return nil, store.SaveIndexingTypeStamp(oi.index, newStamp)
+				}
+			}
+			// Stamp mismatch or partially built with different method — restart.
+		}
+
+		// Fresh start: clear all index data and mark WRITE_ONLY.
 		_, err = store.ClearAndMarkIndexWriteOnly(oi.index.Name)
 		if err != nil {
 			return nil, err
 		}
-		// Save the indexing type stamp. clearAndMarkIndexWriteOnly already cleared
-		// any existing stamp (via clearIndexData), so this is always a fresh write.
-		// Matches Java's compileSingleTargetLegacyIndexingTypeStamp().
-		stamp := oi.buildIndexingStamp()
-		return nil, store.SaveIndexingTypeStamp(oi.index, stamp)
+		return nil, store.SaveIndexingTypeStamp(oi.index, newStamp)
 	})
 	return err
 }

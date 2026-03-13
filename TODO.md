@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1296 specs pass (949 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1301 specs pass (954 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -452,6 +452,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] 8 integration tests: basic build, composite index with PK dedup, empty store, post-build maintenance, small limit chunking, unique index, record type filtering, builder validation.
    - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned. Not yet implemented (optimization, not wire-format critical).
    - [x] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. `SaveIndexingTypeStamp`/`LoadIndexingTypeStamp` + BY_RECORDS/BY_INDEX methods.
+   - [x] **Stamp-aware resume** — `markWriteOnly()` checks if index is already WRITE_ONLY with matching stamp before clearing. Matching stamp → resume build without clearing existing entries (preserves WRITE_ONLY maintenance entries). No stamp + empty range set → write stamp and continue. Stamp mismatch → clear and restart. Matches Java's `IndexingBase.handleIndexingState()` + `setIndexingTypeOrThrow()`. 5 new tests.
 
 5. **rebuildIndex on store** (HIGH — needed for store.Open with new indexes) ✅
    - [x] `FDBRecordStore.RebuildIndex(index)` — clears index data, marks WRITE_ONLY, pre-marks full range in RangeSet, scans all records inline, re-indexes, marks READABLE. Single-transaction path matching Java's `IndexingBase.rebuildIndexAsync()`.
@@ -481,7 +482,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Go saves records + Java rebuilds index → Go scans → entries match.
    - [x] Java saves records + Go rebuilds index → Java scans → entries match.
    - [x] Cross-rebuild: Go rebuild and Java rebuild produce identical entries.
-   - [ ] Go writes WRITE_ONLY records while Java builds → entries consistent.
+   - [x] Go writes WRITE_ONLY records while Go builds → entries consistent. Stamp-aware resume preserves WRITE_ONLY maintenance entries during build. 5 unit tests validate resume/restart/wire-compatibility. Cross-language (Java OnlineIndexer) deferred — requires Java tenant-aware OnlineIndexer step.
    - [x] RangeSet wire format: Go writes ranges → Java reads them (and vice versa). 4 specs in rangeset_conformance_test.go.
 
 ### HIGH

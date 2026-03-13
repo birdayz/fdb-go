@@ -1016,6 +1016,422 @@ var _ = Describe("OnlineIndexer", func() {
 		})
 	})
 
+	Describe("stamp-aware resume", func() {
+		It("resumes from WRITE_ONLY with matching BY_RECORDS stamp", func() {
+			ks := specSubspace()
+
+			// Create metadata WITH index so we can manually control index state.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store and insert initial records (index starts READABLE
+			// since it's in metadata at CreateOrOpen time). Then mark WRITE_ONLY and
+			// save the BY_RECORDS stamp — simulating a partially completed build.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Insert 3 records while index is READABLE — entries are maintained.
+				for i := int64(1); i <= 3; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Mark WRITE_ONLY manually + save BY_RECORDS stamp.
+				_, err = store.MarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				stamp := &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				}
+				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Insert MORE records while WRITE_ONLY — triggers
+			// UpdateWhileWriteOnly, which for VALUE indexes writes entries.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+
+				for i := int64(4); i <= 6; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Run OnlineIndexer. Because the stamp matches BY_RECORDS,
+			// markWriteOnly should NOT clear existing entries.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			// Build processes all 6 records (idempotent VALUE index — re-inserting
+			// existing entries is a no-op).
+			Expect(total).To(BeNumerically(">=", 6))
+
+			// Phase 4: Verify all 6 entries present and index is READABLE.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(6))
+
+				for i, entry := range entries {
+					Expect(entry.IndexValues()).To(Equal(tuple.Tuple{int64((i + 1) * 100)}))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("clears and restarts on stamp mismatch", func() {
+			ks := specSubspace()
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store, insert records, then manually mark WRITE_ONLY
+			// with a BY_INDEX stamp (simulating a prior BY_INDEX build attempt).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Mark WRITE_ONLY + save a BY_INDEX stamp (mismatches BY_RECORDS).
+				_, err = store.MarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				stamp := &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
+				}
+				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Run BY_RECORDS OnlineIndexer. Stamp mismatch should cause
+			// ClearAndMarkIndexWriteOnly (clearing existing entries) + fresh build.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 5))
+
+			// Verify: all 5 entries rebuilt and index is READABLE.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(5))
+
+				// Verify stamp was overwritten with BY_RECORDS.
+				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stamp).NotTo(BeNil())
+				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rebuilds from READABLE state (fresh start)", func() {
+			ks := specSubspace()
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store with records and build index normally.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			indexer1, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer1.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify READABLE.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Add more records.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				for i := int64(6); i <= 8; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Run OnlineIndexer again. Since index is READABLE (not
+			// WRITE_ONLY), markWriteOnly does ClearAndMarkIndexWriteOnly → full rebuild.
+			indexer2, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer2.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 8))
+
+			// Verify all 8 entries present.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(8))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("writes stamp and builds when WRITE_ONLY with no stamp and empty range set", func() {
+			ks := specSubspace()
+
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builder := baseMetaData()
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store with records, then manually mark WRITE_ONLY
+			// WITHOUT saving any stamp (simulating legacy or manual state change).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 4; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// ClearAndMarkIndexWriteOnly clears all index data (including any
+				// stamps and range set) and transitions to WRITE_ONLY. This simulates
+				// a manual or legacy WRITE_ONLY state with no stamp.
+				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify no stamp exists.
+				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stamp).To(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Run OnlineIndexer. No stamp + empty range set → save stamp
+			// and proceed with build (no ClearAndMarkIndexWriteOnly).
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			total, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(total).To(BeNumerically(">=", 4))
+
+			// Verify: stamp written, index READABLE, all entries present.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				stamp, err := store.LoadIndexingTypeStamp(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stamp).NotTo(BeNil())
+				Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_BY_RECORDS))
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(4))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("produces wire-compatible entries from WRITE_ONLY maintenance and build", func() {
+			ks := specSubspace()
+
+			// Use metadata WITHOUT index initially to insert record A.
+			_, builderNoIdx := baseMetaData()
+			mdNoIdx, err := builderNoIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdNoIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Record A: inserted before index exists.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Now create metadata WITH index.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			_, builderIdx := baseMetaData()
+			builderIdx.AddIndex("Order", priceIndex)
+			mdIdx, err := builderIdx.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open with indexed metadata (CreateOrOpen handles version upgrade
+			// from v=0 → v=1, triggering auto-rebuild). Then mark WRITE_ONLY
+			// with stamp, simulating a partially completed OnlineIndexer run.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdIdx).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// ClearAndMarkIndexWriteOnly clears auto-rebuilt entries + range set.
+				_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
+				Expect(err).NotTo(HaveOccurred())
+
+				stamp := &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				}
+				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert record B while WRITE_ONLY — gets a maintenance entry.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Run OnlineIndexer — stamp matches, so WRITE_ONLY maintenance entry
+			// for record B survives, and build adds entry for record A.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(mdIdx).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Scan index and verify both entries have identical structure.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(mdIdx).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(2))
+
+				// Entry for record A (price=100, pk=1) — created by build.
+				Expect(entries[0].IndexValues()).To(Equal(tuple.Tuple{int64(100)}))
+				Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+				Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100), int64(1)}))
+				Expect(entries[0].Value).To(HaveLen(0))
+
+				// Entry for record B (price=200, pk=2) — created by WRITE_ONLY maintenance.
+				Expect(entries[1].IndexValues()).To(Equal(tuple.Tuple{int64(200)}))
+				Expect(entries[1].PrimaryKey()).To(Equal(tuple.Tuple{int64(2)}))
+				Expect(entries[1].Key).To(Equal(tuple.Tuple{int64(200), int64(2)}))
+				Expect(entries[1].Value).To(HaveLen(0))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Builder validation", func() {
 		It("rejects missing database", func() {
 			_, err := NewOnlineIndexerBuilder().
