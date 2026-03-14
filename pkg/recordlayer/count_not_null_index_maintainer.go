@@ -103,15 +103,49 @@ func (m *CountNotNullIndexMaintainer) Scan(scanRange TupleRange, continuation []
 }
 
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record,
-// filtering out any tuples where the source fields contain null (unset) values.
-// Matches Java's COUNT_NOT_NULL behavior: getMutationParam() returns null
-// when entry.keyContainsNonUniqueNull() is true.
+// filtering out any tuples where the GROUPED (trailing) columns contain null values.
+// Java's AtomicMutationIndexMaintainer.updateIndexKeys() splits each evaluated entry
+// into groupKey and groupedValue, then passes ONLY groupedValue to getMutationParam().
+// COUNT_NOT_NULL's getMutationParam() calls keyContainsNonUniqueNull() on the grouped
+// portion only — NOT the grouping (leading) columns.
 func (m *CountNotNullIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
-	// Check null fields first — matching Java's keyContainsNonUniqueNull().
-	if keyExpressionHasNullField(record.Record, m.index.RootExpression) {
+	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
-	return evaluateGroupingKeys(m.index, record)
+
+	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
+	if err != nil {
+		return nil, err
+	}
+
+	groupingCount := indexGroupingCount(m.index.RootExpression)
+	totalColumns := keyExpressionColumnSize(m.index.RootExpression)
+	groupedCount := totalColumns - groupingCount
+
+	result := make([]tuple.Tuple, 0, len(tuples))
+	for _, values := range tuples {
+		// Check only the grouped (trailing) columns for null.
+		// Grouping columns can be null — we still count the entry.
+		hasNull := false
+		for i := groupingCount; i < len(values) && i < totalColumns; i++ {
+			if values[i] == nil {
+				hasNull = true
+				break
+			}
+		}
+		// Also skip if grouped portion is entirely missing (truncated tuple).
+		if hasNull || (groupedCount > 0 && len(values) <= groupingCount) {
+			continue
+		}
+
+		// Extract only the grouping (leading) columns as the key.
+		groupKey := make(tuple.Tuple, groupingCount)
+		for j := 0; j < groupingCount && j < len(values); j++ {
+			groupKey[j] = values[j]
+		}
+		result = append(result, groupKey)
+	}
+	return result, nil
 }
 
 // keyExpressionHasNullField checks if evaluating a key expression against a message

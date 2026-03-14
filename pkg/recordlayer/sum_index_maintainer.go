@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -70,6 +71,9 @@ func (m *SumIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.
 	clearWhenZero := m.index.IsClearWhenZero()
 
 	for _, e := range oldEntries {
+		if e.sumValue == math.MinInt64 {
+			return fmt.Errorf("sum index %q overflow: cannot negate math.MinInt64", m.index.Name)
+		}
 		fdbKey := m.indexSubspace.Pack(e.groupKey)
 		m.tx.Add(fdb.Key(fdbKey), encodeRecordCount(-e.sumValue))
 		if clearWhenZero {

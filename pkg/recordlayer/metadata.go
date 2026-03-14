@@ -391,11 +391,15 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // Returns an error if any record type has no primary key set.
 // The record types map is copied to prevent the builder from mutating the built metadata.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
-	// Validate primary keys: must be set and must not create duplicates.
+	// Validate primary keys: must be set, must produce at least one column,
+	// and must not create duplicates.
 	// Matches Java's MetaDataValidator.validatePrimaryKey().
 	for name, rt := range b.recordTypes {
 		if rt.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has no primary key set", name)}
+		}
+		if keyExpressionColumnSize(rt.PrimaryKey) == 0 {
+			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that produces no columns (EmptyKeyExpression or empty Concat are not valid primary keys)", name)}
 		}
 		if createsDuplicates(rt.PrimaryKey) {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)}

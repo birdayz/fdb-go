@@ -727,6 +727,10 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 	var hasMore bool
 
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		// Reset on retry — previous attempt's values are stale.
+		recordsProcessed = 0
+		hasMore = false
+
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err
@@ -892,6 +896,10 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 	var hasMore bool
 
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		// Reset on retry — previous attempt's values are stale.
+		recordsProcessed = 0
+		hasMore = false
+
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err

@@ -32,6 +32,8 @@ func compareKeys(a, b []any) int {
 }
 
 // compareField compares two individual field values.
+// Uses checked type assertions to avoid panics on type-mismatched keys.
+// Returns 0 if types don't match (safe fallback instead of panic).
 // Matches Java's KeyComparisons.FIELD_COMPARATOR.
 func compareField(a, b any) int {
 	if a == nil && b == nil {
@@ -46,7 +48,10 @@ func compareField(a, b any) int {
 
 	switch av := a.(type) {
 	case int64:
-		bv := b.(int64)
+		bv, ok := b.(int64)
+		if !ok {
+			return 0
+		}
 		if av < bv {
 			return -1
 		}
@@ -55,7 +60,10 @@ func compareField(a, b any) int {
 		}
 		return 0
 	case int:
-		bv := b.(int)
+		bv, ok := b.(int)
+		if !ok {
+			return 0
+		}
 		if av < bv {
 			return -1
 		}
@@ -64,7 +72,10 @@ func compareField(a, b any) int {
 		}
 		return 0
 	case float64:
-		bv := b.(float64)
+		bv, ok := b.(float64)
+		if !ok {
+			return 0
+		}
 		if av < bv {
 			return -1
 		}
@@ -73,7 +84,10 @@ func compareField(a, b any) int {
 		}
 		return 0
 	case string:
-		bv := b.(string)
+		bv, ok := b.(string)
+		if !ok {
+			return 0
+		}
 		if av < bv {
 			return -1
 		}
@@ -82,7 +96,10 @@ func compareField(a, b any) int {
 		}
 		return 0
 	case bool:
-		bv := b.(bool)
+		bv, ok := b.(bool)
+		if !ok {
+			return 0
+		}
 		if av == bv {
 			return 0
 		}
@@ -91,10 +108,117 @@ func compareField(a, b any) int {
 		}
 		return 1
 	case []byte:
-		bv := b.([]byte)
+		bv, ok := b.([]byte)
+		if !ok {
+			return 0
+		}
 		return bytes.Compare(av, bv)
 	default:
 		return 0
+	}
+}
+
+// compareKeysChecked is like compareKeys but returns an error on type mismatches.
+// Used by merge cursors to propagate errors to callers.
+func compareKeysChecked(a, b []any) (int, error) {
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+	for i := 0; i < minLen; i++ {
+		c, err := compareFieldChecked(a[i], b[i])
+		if err != nil {
+			return 0, err
+		}
+		if c != 0 {
+			return c, nil
+		}
+	}
+	return len(a) - len(b), nil
+}
+
+// compareFieldChecked compares two individual field values.
+// Returns an error if a and b have different types.
+func compareFieldChecked(a, b any) (int, error) {
+	if a == nil && b == nil {
+		return 0, nil
+	}
+	if a == nil {
+		return -1, nil
+	}
+	if b == nil {
+		return 1, nil
+	}
+
+	switch av := a.(type) {
+	case int64:
+		bv, ok := b.(int64)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is int64, right is %T", b)
+		}
+		if av < bv {
+			return -1, nil
+		}
+		if av > bv {
+			return 1, nil
+		}
+		return 0, nil
+	case int:
+		bv, ok := b.(int)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is int, right is %T", b)
+		}
+		if av < bv {
+			return -1, nil
+		}
+		if av > bv {
+			return 1, nil
+		}
+		return 0, nil
+	case float64:
+		bv, ok := b.(float64)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is float64, right is %T", b)
+		}
+		if av < bv {
+			return -1, nil
+		}
+		if av > bv {
+			return 1, nil
+		}
+		return 0, nil
+	case string:
+		bv, ok := b.(string)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is string, right is %T", b)
+		}
+		if av < bv {
+			return -1, nil
+		}
+		if av > bv {
+			return 1, nil
+		}
+		return 0, nil
+	case bool:
+		bv, ok := b.(bool)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is bool, right is %T", b)
+		}
+		if av == bv {
+			return 0, nil
+		}
+		if !av {
+			return -1, nil
+		}
+		return 1, nil
+	case []byte:
+		bv, ok := b.([]byte)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is []byte, right is %T", b)
+		}
+		return bytes.Compare(av, bv), nil
+	default:
+		return 0, fmt.Errorf("compareField: unsupported type %T", a)
 	}
 }
 
@@ -217,7 +341,10 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 			minKey = child.comparisonKey
 			continue
 		}
-		cmp := compareKeys(child.comparisonKey, minKey)
+		cmp, cmpErr := compareKeysChecked(child.comparisonKey, minKey)
+		if cmpErr != nil {
+			return RecordCursorResult[T]{}, cmpErr
+		}
 		if c.reverse {
 			cmp = -cmp
 		}
@@ -227,7 +354,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 		}
 	}
 
-	// No children have results → exhausted
+	// No children have results -> exhausted
 	if minIdx == -1 {
 		cont, contErr := c.buildContinuation()
 		if contErr != nil {
@@ -241,7 +368,11 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// Consume all children with the same key (deduplication)
 	for _, child := range c.children {
-		if child.hasResult && compareKeys(child.comparisonKey, minKey) == 0 {
+		eq, eqErr := compareKeysChecked(child.comparisonKey, minKey)
+		if eqErr != nil {
+			return RecordCursorResult[T]{}, eqErr
+		}
+		if child.hasResult && eq == 0 {
 			if err := child.advance(ctx); err != nil {
 				return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 			}
@@ -390,7 +521,10 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Find maximum key
 		maxKey := c.children[0].comparisonKey
 		for _, child := range c.children[1:] {
-			cmp := compareKeys(child.comparisonKey, maxKey)
+			cmp, cmpErr := compareKeysChecked(child.comparisonKey, maxKey)
+			if cmpErr != nil {
+				return RecordCursorResult[T]{}, cmpErr
+			}
 			if c.reverse {
 				cmp = -cmp
 			}
@@ -402,7 +536,11 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Check if all children agree on the max key
 		allMatch := true
 		for _, child := range c.children {
-			if compareKeys(child.comparisonKey, maxKey) != 0 {
+			eq, eqErr := compareKeysChecked(child.comparisonKey, maxKey)
+			if eqErr != nil {
+				return RecordCursorResult[T]{}, eqErr
+			}
+			if eq != 0 {
 				allMatch = false
 				break
 			}
@@ -425,7 +563,11 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 
 		// Advance all non-maximal children
 		for _, child := range c.children {
-			if compareKeys(child.comparisonKey, maxKey) != 0 {
+			neq, neqErr := compareKeysChecked(child.comparisonKey, maxKey)
+			if neqErr != nil {
+				return RecordCursorResult[T]{}, neqErr
+			}
+			if neq != 0 {
 				if err := child.advance(ctx); err != nil {
 					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), err
 				}

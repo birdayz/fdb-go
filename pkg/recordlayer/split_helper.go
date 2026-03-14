@@ -32,6 +32,10 @@ func saveWithSplit(
 	oldSizeInfo *SizeInfo,
 	sizeInfo *SizeInfo,
 ) error {
+	if len(primaryKey) == 0 {
+		return fmt.Errorf("primary key must not be empty")
+	}
+
 	dataLen := len(serialized)
 
 	// Clear previous record data
@@ -239,6 +243,10 @@ func deleteSplit(
 	splitLongRecords bool,
 	oldSizeInfo *SizeInfo,
 ) bool {
+	if len(primaryKey) == 0 {
+		return false
+	}
+
 	if oldSizeInfo == nil {
 		return false
 	}
@@ -296,7 +304,11 @@ func recordExistsWithSplit(
 }
 
 // clearRecordKeyRange clears all keys for a primary key (version, unsplit, and all split chunks).
+// Empty primaryKey is a no-op to prevent catastrophic data loss (would clear entire records subspace).
 func clearRecordKeyRange(tx fdb.Transaction, recordSubspace subspace.Subspace, primaryKey tuple.Tuple) {
+	if len(primaryKey) == 0 {
+		return
+	}
 	pkSubspace := recordSubspace.Sub(primaryKey...)
 	begin, end := pkSubspace.FDBRangeKeys()
 	tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})

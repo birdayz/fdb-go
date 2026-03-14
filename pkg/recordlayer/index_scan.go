@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -158,6 +159,9 @@ type IndexEntry struct {
 // pulled from the index key portion (deduplicated) and the rest from the
 // appended tail. Matches Java's IndexEntry.getPrimaryKey() → Index.getEntryPrimaryKey().
 func (e *IndexEntry) PrimaryKey() tuple.Tuple {
+	if e.Index == nil {
+		return tuple.Tuple{}
+	}
 	if e.primaryKey == nil {
 		e.primaryKey = e.Index.getEntryPrimaryKey(e.Key)
 	}
@@ -167,6 +171,9 @@ func (e *IndexEntry) PrimaryKey() tuple.Tuple {
 // IndexValues extracts the indexed values portion from the entry key.
 // Returns the prefix of Key up to the index expression's column count.
 func (e *IndexEntry) IndexValues() tuple.Tuple {
+	if e.Index == nil {
+		return tuple.Tuple{}
+	}
 	colSize := keyExpressionColumnSize(e.Index.RootExpression)
 	if colSize <= len(e.Key) {
 		return e.Key[:colSize]
@@ -174,46 +181,67 @@ func (e *IndexEntry) IndexValues() tuple.Tuple {
 	return e.Key
 }
 
-// keyExpressionColumnSize returns the number of tuple elements a key expression
-// produces. Used to split index entry keys into indexed values and primary key.
+// keyExpressionColumnSizeChecked returns the number of tuple elements a key expression
+// produces, or an error for unknown expression types. Used to split index entry
+// keys into indexed values and primary key.
 // Matches Java's KeyExpression.getColumnSize().
-func keyExpressionColumnSize(expr KeyExpression) int {
+func keyExpressionColumnSizeChecked(expr KeyExpression) (int, error) {
 	switch e := expr.(type) {
 	case *FieldKeyExpression:
-		return 1
+		return 1, nil
 	case *CompositeKeyExpression:
 		total := 0
 		for _, child := range e.expressions {
-			total += keyExpressionColumnSize(child)
+			n, err := keyExpressionColumnSizeChecked(child)
+			if err != nil {
+				return 0, err
+			}
+			total += n
 		}
-		return total
+		return total, nil
 	case *RecordTypeKeyExpression:
 		if e.nested != nil {
-			return 1 + keyExpressionColumnSize(e.nested)
+			n, err := keyExpressionColumnSizeChecked(e.nested)
+			if err != nil {
+				return 0, err
+			}
+			return 1 + n, nil
 		}
-		return 1
+		return 1, nil
 	case *NestingKeyExpression:
 		// NestingKeyExpression column size is the child's column size (parent message
 		// field doesn't contribute a tuple element). Matches Java's getColumnSize().
-		return keyExpressionColumnSize(e.child)
+		return keyExpressionColumnSizeChecked(e.child)
 	case *EmptyKeyExpression:
-		return 0
+		return 0, nil
 	case *GroupingKeyExpression:
-		return keyExpressionColumnSize(e.wholeKey)
+		return keyExpressionColumnSizeChecked(e.wholeKey)
 	case *LiteralKeyExpression:
-		return 1
+		return 1, nil
 	case *KeyWithValueExpression:
 		// Only key columns count toward column size (not value columns).
 		// Matches Java's KeyWithValueExpression.getColumnSize() which returns splitPoint.
-		return e.splitPoint
+		return e.splitPoint, nil
 	case *VersionKeyExpression:
-		return 1
+		return 1, nil
 	case *FunctionKeyExpression:
 		// Most functions produce a single column. Matches Java's typical behavior.
-		return 1
+		return 1, nil
 	default:
-		return 0
+		return 0, fmt.Errorf("unknown key expression type %T: cannot determine column size", expr)
 	}
+}
+
+// keyExpressionColumnSize returns the number of tuple elements a key expression
+// produces. Panics on unknown expression types (programming error).
+// Use keyExpressionColumnSizeChecked when the expression type is not guaranteed
+// to be a known type.
+func keyExpressionColumnSize(expr KeyExpression) int {
+	n, err := keyExpressionColumnSizeChecked(expr)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }
 
 // ScanIndex scans a secondary index and returns a cursor over IndexEntry results.
@@ -362,7 +390,7 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 
 	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one entry (free initial pass).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
 		if c.lastCont != nil {
 			return NewResultNoNext[*IndexEntry](
 				ByteLimitReached,
@@ -492,7 +520,12 @@ func (c *indexCursor) initIterator() error {
 
 	// Each index entry is one KV, so FDB-level limit is safe (no split handling needed).
 	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
-		options.Limit = c.scanProps.ExecuteProperties.ReturnedRowLimit - c.recordsRead + 1
+		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.recordsRead
+		if limit == math.MaxInt {
+			options.Limit = math.MaxInt
+		} else {
+			options.Limit = limit + 1
+		}
 	}
 
 	var rangeResult fdb.RangeResult

@@ -552,8 +552,13 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 
 	rc.flushVersionMutations()
 
-	// Get the versionstamp future BEFORE committing
-	vsFuture := rc.tx.GetVersionstamp()
+	// Only request versionstamp future if we actually queued versionstamp mutations.
+	// Matches the pattern in RunWithVersionstamp.
+	hasVersionMutations := rc.HasVersionMutations()
+	var vsFuture fdb.FutureKey
+	if hasVersionMutations {
+		vsFuture = rc.tx.GetVersionstamp()
+	}
 
 	// Commit the transaction — timed as EventCommit
 	commitStart := time.Now()
@@ -566,14 +571,17 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	// Run post-commit callbacks after successful commit
 	rc.runPostCommits()
 
-	// Retrieve the committed versionstamp
-	vs, err := vsFuture.Get()
-	if err != nil {
-		// Read-only transactions don't have a versionstamp
-		return nil, nil
+	// Retrieve the committed versionstamp only if mutations were queued.
+	if hasVersionMutations && vsFuture != nil {
+		vs, err := vsFuture.Get()
+		if err != nil {
+			return nil, fmt.Errorf("get versionstamp after commit: %w", err)
+		}
+		return []byte(vs), nil
 	}
 
-	return []byte(vs), nil
+	// No versionstamp mutations — read-only or no versioned writes.
+	return nil, nil
 }
 
 // buildVersionstampedValue builds the value for SET_VERSIONSTAMPED_VALUE mutation.

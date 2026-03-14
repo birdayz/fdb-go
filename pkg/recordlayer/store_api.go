@@ -183,6 +183,9 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
+	if record == nil {
+		return nil, fmt.Errorf("cannot save nil record")
+	}
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {

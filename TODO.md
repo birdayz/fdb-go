@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1388 specs pass (1041 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1412 specs pass (1065 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -890,6 +890,43 @@ Test file: `agent-a3134e5b/pkg/recordlayer/online_indexer_bug_verify_test.go`
 | Index maintainers | `agent-a60827f1` | 3 | 1 | 2 | $500 |
 | OnlineIndexer | `agent-a3134e5b` | 2 | 0 | 2 | $400 |
 | **Total** | | **27** | **11** | **16** | **$4,100** |
+
+---
+
+## Bug bounty round 2 (2026-03-13)
+
+Second audit focused on arithmetic overflow, off-by-one, error handling, nil safety, and retry semantics. 20 bugs found across 4 test files, all fixed.
+
+### P0 — data loss
+
+- [x] **Empty PK allows range-clearing all records** — `saveWithSplit`/`deleteSplit`/`clearRecordKeyRange` now reject empty primary keys. File: `split_helper.go`.
+- [x] **EmptyKeyExpression accepted as primary key** — `Build()` now rejects PK expressions producing 0 columns. File: `metadata.go`.
+- [x] **normalizeKeyForPositions missing GroupingKeyExpression** — `DeleteRecordsWhere` failed on universal COUNT indexes. Fixed: delegate to `wholeKey`. File: `key_expression.go`.
+- [x] **SUM index negation overflow on MinInt64** — `-math.MinInt64 == math.MinInt64` in two's complement. Now returns error. File: `sum_index_maintainer.go`.
+
+### P1 — incorrect behavior
+
+- [x] **isRetryableError uses type assertion, not errors.As** — Wrapped FDB errors not detected as retryable. Fixed: `errors.As()`. File: `runner.go`.
+- [x] **ByteScanLimit off-by-one (> vs >=)** — Allowed one extra record when `bytesScanned == limit`. Fixed in `key_value_cursor.go` and `index_scan.go`.
+- [x] **FDB limit overflow: math.MaxInt + 1** — Wraps to MinInt. Added guard in `key_value_cursor.go`, `index_scan.go`, `count_index_maintainer.go`.
+- [x] **OnlineIndexer recordsProcessed not reset on retry** — Inflated counts after FDB transaction conflict. Fixed: reset at top of closure. File: `online_indexer.go`.
+- [x] **CommitWithVersionstamp swallows vsFuture.Get() errors** — Only requests versionstamp future when mutations exist; propagates errors. File: `database.go`.
+- [x] **CountNotNull null check on wrong key portion** — Was checking grouping (leading) portion instead of grouped (trailing). Fixed: `evaluateGroupingKeys` checks trailing columns only. File: `count_not_null_index_maintainer.go`.
+
+### P2 — panics
+
+- [x] **merge_cursor compareField unchecked type assertion** — `int64` vs `string` comparison panics. Fixed: checked assertions with error propagation. File: `merge_cursor.go`.
+- [x] **SaveRecord nil proto.Message** — Panics at `ProtoReflect()`. Added nil check. Files: `store.go`, `store_api.go`.
+- [x] **IndexEntry nil Index field** — `PrimaryKey()`/`IndexValues()` panic on manually constructed entries. Added nil guard. File: `index_scan.go`.
+- [x] **getAggregator unchecked type assertion** — Non-int64 accumulator panics. Fixed: checked assertion. File: `aggregate_function.go`.
+- [x] **keyExpressionColumnSize unknown type** — Silently returns 0 instead of erroring. Added `keyExpressionColumnSizeChecked` variant. File: `index_scan.go`.
+
+### P3 — edge cases
+
+- [x] **getEntryPrimaryKey truncated entry** — No length validation before extracting PK from index entry. Added minimum-length check. File: `index.go`.
+- [x] **record_key_cursor hasMore not buffered** — `Advance()` result lost on FDB iterator. Added `peekedHasMore` buffer. File: `record_key_cursor.go`.
+
+20 bugs found, 20 fixed. Test files: `bug_bounty_test.go`, `bug_bounty2_test.go`, `bug_bounty3_test.go`, `byte_limit_bug_test.go`. Current: 1065 unit/integration specs, 347 conformance specs (1412 total).
 
 ---
 

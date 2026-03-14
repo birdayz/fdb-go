@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -222,7 +223,8 @@ func isRetryableError(err error) bool {
 	// 1021 - commit_unknown_result
 	// 1009 - request_for_timestamp_not_yet_set
 	// The FDB Go binding wraps these as fdb.Error
-	if fdbErr, ok := err.(fdb.Error); ok {
+	var fdbErr fdb.Error
+	if errors.As(err, &fdbErr) {
 		code := fdbErr.Code
 		return code == 1020 || code == 1021 || code == 1009
 	}

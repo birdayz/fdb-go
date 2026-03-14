@@ -29,6 +29,7 @@ type recordKeyCursor struct {
 	prefixLength   int
 	startTime      time.Time
 	lastPK         tuple.Tuple // for dedup of adjacent duplicate PKs
+	peekedHasMore  *bool       // non-nil when hasMore() has been called but result not consumed
 }
 
 func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.Tuple], error) {
@@ -70,7 +71,14 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 	recordsSubspace := c.store.subspace.Sub(RecordKey)
 
 	for {
-		if !c.iterator.Advance() {
+		hasNext := false
+		if c.peekedHasMore != nil {
+			hasNext = *c.peekedHasMore
+			c.peekedHasMore = nil
+		} else {
+			hasNext = c.iterator.Advance()
+		}
+		if !hasNext {
 			return NewResultNoNext[tuple.Tuple](SourceExhausted, &EndContinuation{}), nil
 		}
 
@@ -117,7 +125,12 @@ func (c *recordKeyCursor) noNextWithCont(reason NoNextReason) RecordCursorResult
 }
 
 func (c *recordKeyCursor) hasMore() bool {
-	return c.iterator != nil && c.iterator.Advance()
+	if c.iterator == nil {
+		return false
+	}
+	result := c.iterator.Advance()
+	c.peekedHasMore = &result
+	return result
 }
 
 func (c *recordKeyCursor) initIterator() error {

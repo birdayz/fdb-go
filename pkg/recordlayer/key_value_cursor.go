@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -144,7 +145,7 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Check byte limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
 	// Java's tryRecordScan() calls byteScanLimiter.hasBytesRemaining() before the read.
 	// Allow at least one record (free initial pass — usedInitialPass in Java).
-	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.bytesScanned > executeProps.ScannedBytesLimit {
+	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
 		if c.continuation != nil {
 			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 				ByteLimitReached,
@@ -618,7 +619,11 @@ func (c *keyValueCursor) initIterator() error {
 	// Skip is added to the FDB limit so we have enough KVs to skip AND return.
 	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
 		skip := c.scanProperties.ExecuteProperties.Skip
-		recordLimit := c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead + 1
+		limit := c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead
+		recordLimit := limit + 1
+		if limit == math.MaxInt {
+			recordLimit = math.MaxInt
+		}
 		// When versioning is enabled, each record has 2 KV pairs
 		// (version at suffix -1, data at suffix 0). Double the FDB limit
 		// to account for version KVs.

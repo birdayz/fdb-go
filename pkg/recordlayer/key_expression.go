@@ -478,6 +478,11 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 			}
 		}
 		return result
+	case *GroupingKeyExpression:
+		// Delegates to the underlying whole key expression.
+		// Matches Java's GroupingKeyExpression.normalizeKeyForPositions()
+		// which calls getWholeKey().normalizeKeyForPositions().
+		return normalizeKeyForPositions(e.wholeKey)
 	case *KeyWithValueExpression:
 		// Delegates to full inner key, matching Java's KeyWithValueExpression.normalizeKeyForPositions().
 		// NOTE: PK components must NOT be placed in the value portion (positions >= splitPoint).

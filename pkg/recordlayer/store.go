@@ -357,6 +357,9 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
+	if record == nil {
+		return nil, fmt.Errorf("cannot save nil record")
+	}
 	startTime := time.Now()
 	// Extract the primary key from the record
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())

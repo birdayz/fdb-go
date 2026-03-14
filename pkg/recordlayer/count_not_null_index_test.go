@@ -21,10 +21,12 @@ var _ = Describe("CountNotNullIndex", func() {
 		return builder
 	}
 
-	It("counts only non-null entries", func() {
+	It("counts only non-null entries (ungrouped)", func() {
 		ks := specSubspace()
 
-		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
+		// Ungrouped(Field("price")) = all columns are GROUPED → null check applies to price.
+		// Java's COUNT_NOT_NULL.getMutationParam checks null on the GROUPED portion only.
+		idx := NewCountNotNullIndex("count_price", Ungrouped(Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -39,7 +41,7 @@ var _ = Describe("CountNotNullIndex", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Order without price (nil) — should NOT be counted
+			// Order without price (nil) — should NOT be counted (null grouped column)
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -50,12 +52,44 @@ var _ = Describe("CountNotNullIndex", func() {
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
 
-			// Only 2 entries (price=100 count=1, price=200 count=1), the nil-price order is skipped
-			Expect(entries).To(HaveLen(2))
-			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
-			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(1)}))
-			Expect(entries[1].Key).To(Equal(tuple.Tuple{int64(200)}))
-			Expect(entries[1].Value).To(Equal(tuple.Tuple{int64(1)}))
+			// Only 1 ungrouped entry with count=2 (price=100 + price=200), null skipped
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("GroupAll counts ALL entries including null (Java compat)", func() {
+		ks := specSubspace()
+
+		// GroupAll(Field("price")) = all columns are GROUPING → grouped portion is empty.
+		// Java's null check on empty grouped portion always passes → null prices ARE counted.
+		// This matches Java: GroupAll + COUNT_NOT_NULL == GROUP BY with no null filtering.
+		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// ALL 3 entries — null price IS counted (grouped portion is empty, no null check)
+			Expect(entries).To(HaveLen(3))
 
 			return nil, nil
 		})
@@ -95,10 +129,11 @@ var _ = Describe("CountNotNullIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("delete of null-key entry is no-op", func() {
+	It("delete of null-grouped-key entry is no-op (ungrouped)", func() {
 		ks := specSubspace()
 
-		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
+		// Ungrouped: null check applies to price (grouped portion)
+		idx := NewCountNotNullIndex("count_price", Ungrouped(Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -115,14 +150,13 @@ var _ = Describe("CountNotNullIndex", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Delete the null-price order — count should stay the same
+			// Delete the null-price order — count should stay the same (null was never counted)
 			_, err = store.DeleteRecord(tuple.Tuple{int64(2)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(1))
-			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(100)}))
 			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(1)}))
 
 			return nil, nil
@@ -130,10 +164,11 @@ var _ = Describe("CountNotNullIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("update from null to non-null increments", func() {
+	It("update from null to non-null increments (ungrouped)", func() {
 		ks := specSubspace()
 
-		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
+		// Ungrouped: null check applies to price (grouped portion)
+		idx := NewCountNotNullIndex("count_price", Ungrouped(Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -144,23 +179,21 @@ var _ = Describe("CountNotNullIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Save without price
+			// Save without price — null grouped column → not counted, no entry written
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
 			Expect(err).NotTo(HaveOccurred())
 
-			// No entries yet — null key was skipped
 			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(0))
 
-			// Update to have price
+			// Update to have price → now counted
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(1))
-			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(50)}))
 			Expect(entries[0].Value).To(Equal(tuple.Tuple{int64(1)}))
 
 			return nil, nil

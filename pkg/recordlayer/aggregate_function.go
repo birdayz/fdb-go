@@ -266,15 +266,24 @@ func evaluateAtomicAggregate(
 }
 
 // getAggregator returns the identity value and aggregation function for a given
-// aggregate function name. Matches Java's AtomicMutation.getIdentity()/getAggregator().
+// aggregate function name. Uses checked type assertions to avoid panics on
+// corrupt/unexpected index data.
+// Matches Java's AtomicMutation.getIdentity()/getAggregator().
 func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tuple.Tuple) {
 	switch name {
 	case FunctionNameCount, FunctionNameCountNotNull, FunctionNameCountUpdates, FunctionNameSum:
 		return tuple.Tuple{int64(0)}, func(accum, entry tuple.Tuple) tuple.Tuple {
-			a := accum[0].(int64)
+			a, ok := accum[0].(int64)
+			if !ok {
+				return accum // type mismatch: return accumulator unchanged
+			}
 			b := int64(0)
 			if len(entry) > 0 {
-				b = entry[0].(int64)
+				bv, ok := entry[0].(int64)
+				if !ok {
+					return accum // type mismatch: skip this entry
+				}
+				b = bv
 			}
 			return tuple.Tuple{a + b}
 		}

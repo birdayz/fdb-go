@@ -357,6 +357,7 @@ func (idx *Index) trimPrimaryKey(primaryKey tuple.Tuple) tuple.Tuple {
 // getEntryPrimaryKey reconstructs the full primary key from an index entry key.
 // When primaryKeyComponentPositions is set, some PK components come from the
 // index key portion and some from the appended portion.
+// Returns an empty tuple if the entry key is truncated (fewer elements than expected).
 // Matches Java's Index.getEntryPrimaryKey().
 func (idx *Index) getEntryPrimaryKey(entryKey tuple.Tuple) tuple.Tuple {
 	colSize := keyExpressionColumnSize(idx.RootExpression)
@@ -365,6 +366,19 @@ func (idx *Index) getEntryPrimaryKey(entryKey tuple.Tuple) tuple.Tuple {
 			return entryKey[colSize:]
 		}
 		return tuple.Tuple{}
+	}
+
+	// Validate minimum expected length: at least colSize elements for index values,
+	// plus enough trailing elements for PK components not in the index key.
+	expectedTrailing := 0
+	for _, pos := range idx.primaryKeyComponentPositions {
+		if pos < 0 {
+			expectedTrailing++
+		}
+	}
+	minLen := colSize + expectedTrailing
+	if len(entryKey) < minLen {
+		return tuple.Tuple{} // truncated entry: return empty PK rather than nil-filled garbage
 	}
 
 	pk := make(tuple.Tuple, len(idx.primaryKeyComponentPositions))
