@@ -200,6 +200,12 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 				return nil, err
 			}
 		}
+		if r.ContextConfig.TransactionID != "" {
+			if err := tx.Options().SetDebugTransactionIdentifier(r.ContextConfig.TransactionID); err != nil {
+				tx.Cancel()
+				return nil, err
+			}
+		}
 	}
 
 	return recordCtx, nil
@@ -217,16 +223,18 @@ func (r *FDBDatabaseRunner) calculateDelay(attempt int) time.Duration {
 }
 
 // isRetryableError checks if an FDB error is retryable.
+// Matches the error codes that FDB's native Transaction.OnError considers retryable.
 func isRetryableError(err error) bool {
-	// FDB errors that are retryable include:
-	// 1020 - not_committed (conflict)
-	// 1021 - commit_unknown_result
-	// 1009 - request_for_timestamp_not_yet_set
-	// The FDB Go binding wraps these as fdb.Error
 	var fdbErr fdb.Error
 	if errors.As(err, &fdbErr) {
-		code := fdbErr.Code
-		return code == 1020 || code == 1021 || code == 1009
+		switch fdbErr.Code {
+		case 1007, // transaction_too_old
+			1009, // request_for_timestamp_not_yet_set
+			1020, // not_committed (conflict)
+			1021, // commit_unknown_result
+			1031: // transaction_timed_out
+			return true
+		}
 	}
 	return false
 }

@@ -3,8 +3,10 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -99,6 +101,57 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(runner.MaxAttempts).To(Equal(5))
 			Expect(runner.InitialDelay).To(Equal(20 * time.Millisecond))
 			Expect(runner.MaxDelay).To(Equal(2 * time.Second))
+		})
+	})
+
+	Describe("isRetryableError", func() {
+		DescribeTable("recognizes all retryable FDB error codes",
+			func(code int, desc string) {
+				err := fdb.Error{Code: code}
+				Expect(isRetryableError(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
+			},
+			Entry("transaction_too_old", 1007, "transaction_too_old"),
+			Entry("request_for_timestamp", 1009, "request_for_timestamp_not_yet_set"),
+			Entry("not_committed", 1020, "not_committed"),
+			Entry("commit_unknown_result", 1021, "commit_unknown_result"),
+			Entry("transaction_timed_out", 1031, "transaction_timed_out"),
+		)
+
+		It("rejects non-retryable FDB errors", func() {
+			Expect(isRetryableError(fdb.Error{Code: 2000})).To(BeFalse())
+			Expect(isRetryableError(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
+		})
+
+		It("rejects non-FDB errors", func() {
+			Expect(isRetryableError(errors.New("not an FDB error"))).To(BeFalse())
+		})
+
+		It("detects wrapped FDB errors via errors.As", func() {
+			wrapped := fmt.Errorf("context: %w", fdb.Error{Code: 1020})
+			Expect(isRetryableError(wrapped)).To(BeTrue())
+		})
+	})
+
+	Describe("OpenContext", func() {
+		It("creates a valid context", func() {
+			runner := NewFDBDatabaseRunner(sharedDB)
+			rctx, err := runner.OpenContext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rctx).NotTo(BeNil())
+			Expect(rctx.Transaction()).NotTo(BeNil())
+			rctx.Cancel()
+		})
+
+		It("applies context config including TransactionID", func() {
+			runner := NewFDBDatabaseRunner(sharedDB).SetContextConfig(&RecordContextConfig{
+				TransactionTimeout: 5 * time.Second,
+				Priority:           PriorityBatch,
+				TransactionID:      "open-ctx-test",
+			})
+			rctx, err := runner.OpenContext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rctx).NotTo(BeNil())
+			rctx.Cancel()
 		})
 	})
 
