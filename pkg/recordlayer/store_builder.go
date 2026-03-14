@@ -25,6 +25,9 @@ import (
 // Matches Java's FDBRecordStore.rebuildIndex() which delegates to
 // IndexingBase.rebuildIndexAsync() for the in-transaction path.
 func (store *FDBRecordStore) RebuildIndex(index *Index) error {
+	if index == nil {
+		return fmt.Errorf("index must not be nil")
+	}
 	startTime := time.Now()
 	defer func() { store.context.Timer().RecordSince(EventRebuildIndex, startTime) }()
 

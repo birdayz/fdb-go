@@ -672,12 +672,18 @@ func (store *FDBRecordStore) GetMetaData() *RecordMetaData {
 // GetIndexMaintainer returns the index maintainer for the given index.
 // Matches Java's FDBRecordStore.getIndexMaintainer().
 func (store *FDBRecordStore) GetIndexMaintainer(index *Index) IndexMaintainer {
+	if index == nil {
+		return nil
+	}
 	return store.getIndexMaintainer(index)
 }
 
 // DeleteIndexEntries clears all entries for the given index.
 // Matches Java's StandardIndexMaintainer.deleteWhere() with no predicate.
 func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
+	if index == nil {
+		return
+	}
 	indexSub := store.indexSubspace(index)
 	store.context.Transaction().ClearRange(indexSub)
 }
@@ -686,6 +692,9 @@ func (store *FDBRecordStore) DeleteIndexEntries(index *Index) {
 // For example, passing tuple.Tuple{"alice"} clears all entries where the first
 // indexed value is "alice".
 func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tuple.Tuple) error {
+	if index == nil {
+		return fmt.Errorf("index must not be nil")
+	}
 	indexSub := store.indexSubspace(index)
 	prefixKey := indexSub.Pack(prefix)
 	r, err := fdb.PrefixRange(prefixKey)
@@ -1144,6 +1153,9 @@ func (store *FDBRecordStore) GetIncarnation() int32 {
 // function. The new value must be strictly greater than the current value.
 // Matches Java's FDBRecordStore.updateIncarnation().
 func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32) error {
+	if updater == nil {
+		return fmt.Errorf("updater must not be nil")
+	}
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1359,6 +1371,9 @@ type UniquenessViolation struct {
 // Violations are stored in the IndexUniquenessViolationsKey (7) subspace.
 // Matches Java's StandardIndexMaintainer.scanUniquenessViolations().
 func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]UniquenessViolation, error) {
+	if index == nil {
+		return nil, fmt.Errorf("index must not be nil")
+	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
 	begin, end := violationSubspace.FDBRangeKeys()
 	kr := fdb.KeyRange{Begin: begin, End: end}
@@ -1400,6 +1415,9 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 // Call this after manually resolving the conflict (e.g., deleting the duplicate record).
 // Matches Java's StandardIndexMaintainer.resolveUniquenessViolation().
 func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	if index == nil {
+		return
+	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
 	entryKey := indexEntryKey(index, indexKey, primaryKey)
 	store.context.Transaction().Clear(fdb.Key(violationSubspace.Pack(entryKey)))
@@ -1410,6 +1428,9 @@ func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey t
 // Stores empty bytes as the value (no cross-reference to conflicting PK).
 // Use AddUniquenessViolationWithExisting to store the conflicting PK in the value.
 func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+	if index == nil {
+		return
+	}
 	store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, nil)
 }
 
@@ -1418,6 +1439,9 @@ func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple
 // When existingKey is non-nil, its packed bytes are stored as the FDB value.
 // When existingKey is nil, empty bytes are stored.
 func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) {
+	if index == nil {
+		return
+	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
 	entryKey := indexEntryKey(index, indexKey, primaryKey)
 	var value []byte

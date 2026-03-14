@@ -76,6 +76,7 @@ go_test(
     timeout = "long",
     srcs = [
         "aggregate_function_test.go",
+        "api_coverage_test.go",
         "bug_bounty2_test.go",
         "bug_bounty3_test.go",
         "bug_bounty_test.go",
