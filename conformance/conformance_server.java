@@ -60,6 +60,7 @@ class ConformanceServer {
         new IndexBuildStateSteps(),
         new AggregateSteps(),
         new UniqueViolationSteps(),
+        new TupleOrderingSteps(),
     };
 
     private static class StepEntry {
