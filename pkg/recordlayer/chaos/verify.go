@@ -34,6 +34,8 @@ func (v Violation) String() string {
 //  3. No orphans (every store record exists in model)
 //  4. VALUE index entries
 //  5. Atomic index values (COUNT, SUM, COUNT_UPDATES)
+//  6. MIN/MAX_EVER index values
+//  7. RANK index entries + ranked set consistency
 func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
 
@@ -122,8 +124,14 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	// 4. VALUE index entry verification
 	violations = append(violations, verifyValueIndexes(ctx, store, model)...)
 
-	// 5. Atomic index verification (COUNT, SUM, COUNT_UPDATES)
+	// 5. Atomic index verification (COUNT, SUM, COUNT_UPDATES, MIN/MAX_EVER)
 	violations = append(violations, verifyAtomicIndexes(ctx, store, model)...)
+
+	// 6. MIN/MAX_EVER index verification
+	violations = append(violations, verifyMinMaxEverIndexes(ctx, store, model)...)
+
+	// 7. RANK index verification (B-tree entries + ranked set consistency)
+	violations = append(violations, verifyRankIndexes(ctx, store, model)...)
 
 	return violations
 }

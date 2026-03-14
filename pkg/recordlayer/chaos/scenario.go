@@ -184,6 +184,27 @@ func (s *Scenario) openStore(rtx *recordlayer.FDBRecordContext) (*recordlayer.FD
 		CreateOrOpen()
 }
 
+// TrySaveRecord attempts to save a record and returns the error (if any).
+// Unlike SaveRecord, it does NOT call t.Fatal on error — the caller handles it.
+// Model is only updated on success.
+func (s *Scenario) TrySaveRecord(msg proto.Message) error {
+	s.t.Helper()
+	ctx := context.Background()
+	_, err := s.chaosDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := s.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SaveRecord(msg)
+		return nil, err
+	})
+	if err == nil {
+		s.model.Save(msg)
+	}
+	s.opIndex++
+	return err
+}
+
 // FaultLog returns the list of injected faults so far.
 func (s *Scenario) FaultLog() []FaultLogEntry {
 	return s.chaos.Log

@@ -8,6 +8,8 @@ go_library(
         "scenario.go",
         "verify.go",
         "verify_atomic.go",
+        "verify_minmax.go",
+        "verify_rank.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/chaos",
     visibility = ["//visibility:public"],
@@ -23,7 +25,12 @@ go_library(
 go_test(
     name = "chaos_test",
     srcs = [
+        "chaos_fanout_test.go",
+        "chaos_minmax_test.go",
+        "chaos_multi_test.go",
+        "chaos_rank_test.go",
         "chaos_test.go",
+        "chaos_unique_test.go",
     ],
     embed = [":chaos"],
     deps = [

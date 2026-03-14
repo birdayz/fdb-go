@@ -36,6 +36,11 @@ var (
 	FaultsRetryHeavy = &FaultConfig{Rates: map[FaultType]float64{
 		FaultCommitUnknown: 0.05,
 	}}
+
+	// FaultsRetryVeryHeavy injects commit-unknown at 20% rate.
+	FaultsRetryVeryHeavy = &FaultConfig{Rates: map[FaultType]float64{
+		FaultCommitUnknown: 0.20,
+	}}
 )
 
 // FaultLogEntry records a single injected fault for reproducibility.
