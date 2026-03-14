@@ -132,7 +132,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		It("no-op when positions is nil", func() {
 			idx := NewIndex("test", Field("price"))
 			pk := tuple.Tuple{int64(42)}
-			trimmed, err := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.TrimPrimaryKey(pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(Equal(pk))
 			// getEntryPrimaryKey should return the tail
@@ -144,7 +144,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			idx := NewIndex("test", Concat(Field("price"), Field("order_id")))
 			idx.primaryKeyComponentPositions = []int{1} // order_id is at index position 1
 			pk := tuple.Tuple{int64(42)}
-			trimmed, err := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.TrimPrimaryKey(pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(HaveLen(0))
 		})
@@ -154,7 +154,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// PK is (RecordType, name). RecordType not in index (-1), name at position 0
 			idx.primaryKeyComponentPositions = []int{-1, 0}
 			pk := tuple.Tuple{int64(1), "Alice"}
-			trimmed, err := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.TrimPrimaryKey(pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(Equal(tuple.Tuple{int64(1)})) // Only RecordType remains
 		})

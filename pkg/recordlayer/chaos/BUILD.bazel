@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "chaos",
+    srcs = [
+        "fault.go",
+        "model.go",
+        "scenario.go",
+        "verify.go",
+        "verify_atomic.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/chaos",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/recordlayer",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "chaos_test",
+    srcs = [
+        "chaos_test.go",
+    ],
+    embed = [":chaos"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

@@ -330,9 +330,9 @@ func (idx *Index) SetUnique() *Index {
 // Format: (indexedValues..., trimmedPrimaryKeyValues...).
 // When the index has primaryKeyComponentPositions, PK components that already
 // appear in the index key are omitted (deduplicated). This matches Java's
-// FDBRecordStoreBase.indexEntryKey() which calls Index.trimPrimaryKey().
+// FDBRecordStoreBase.indexEntryKey() which calls Index.TrimPrimaryKey().
 func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) (tuple.Tuple, error) {
-	trimmed, err := idx.trimPrimaryKey(primaryKey)
+	trimmed, err := idx.TrimPrimaryKey(primaryKey)
 	if err != nil {
 		return nil, err
 	}
@@ -346,8 +346,8 @@ func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) 
 // Returns the remaining PK components that need to be appended to the index entry.
 // Returns an error if primaryKeyComponentPositions references an index beyond the
 // primary key length.
-// Matches Java's Index.trimPrimaryKey().
-func (idx *Index) trimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
+// Matches Java's Index.TrimPrimaryKey().
+func (idx *Index) TrimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
 	if idx.primaryKeyComponentPositions == nil {
 		return primaryKey, nil
 	}

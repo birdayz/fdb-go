@@ -39,6 +39,18 @@ func NewFDBDatabase(db fdb.Database) *FDBDatabase {
 	}
 }
 
+// NewFDBDatabaseWithTransactor creates a new FDBDatabase with a custom Transactor.
+// The transactor is used for Run()/RunWithVersionstamp() (transaction execution),
+// while the db is used for CreateTransaction() (direct transaction creation).
+// This enables wrapping the transactor for fault injection, tracing, or middleware.
+func NewFDBDatabaseWithTransactor(transactor fdb.Transactor, db fdb.Database) *FDBDatabase {
+	return &FDBDatabase{
+		transactor:      transactor,
+		db:              db,
+		storeStateCache: PassThroughStoreStateCache(),
+	}
+}
+
 // NewFDBDatabaseFromTenant creates a new FDBDatabase wrapping an FDB tenant
 // for tenant-isolated operations. All operations will be scoped to the tenant's keyspace.
 func NewFDBDatabaseFromTenant(tenant fdb.Tenant) *FDBDatabase {
