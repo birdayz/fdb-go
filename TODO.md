@@ -69,7 +69,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
 - [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, 5+ query modes (containsAll/Any/Phrase/Prefix). **LOW** — large scope, specialized.
 - [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
-- [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. 12 tests.
+- [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
 - [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree with configurable node sizes. **LOW**.
 - [ ] **VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization, configurable M/ef parameters). Very large. **LOW**.
 - [ ] **TIME_WINDOW_LEADERBOARD index** — Sliding time window score tracking. 12+ Java classes. **LOW**.
@@ -928,6 +928,16 @@ Second audit focused on arithmetic overflow, off-by-one, error handling, nil saf
 - [x] **record_key_cursor hasMore not buffered** — `Advance()` result lost on FDB iterator. Added `peekedHasMore` buffer. File: `record_key_cursor.go`.
 
 20 bugs found, 20 fixed. Test files: `bug_bounty_test.go`, `bug_bounty2_test.go`, `bug_bounty3_test.go`, `byte_limit_bug_test.go`. Current: 1065 unit/integration specs, 347 conformance specs (1412 total).
+
+---
+
+## Bugs found by chaos testing (2026-03-14)
+
+Model-based chaos testing framework: in-memory model shadows real FDB store, random operations + fault injection, periodic verification catches divergence. 80 chaos tests (71 targeted + 9 random).
+
+### Bug found
+
+- [x] **PERMUTED_MIN/MAX Update() doesn't handle group membership changes** — When a record's grouping key changes (e.g., quantity updates), the old group's permuted entry was left stale. Decomposed `Update()` into `updatePermutedForInsert()` and `updatePermutedForRemove()` helpers. UPDATE path now properly processes new groups before primary update, then cleans up old groups after. File: `permuted_min_max_index_maintainer.go`.
 
 ---
 
