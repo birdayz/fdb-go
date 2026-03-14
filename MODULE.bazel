@@ -10,9 +10,9 @@ bazel_dep(name = "gazelle", version = "0.47.0")
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 go_deps.module_override(
-    patch_strip = 1,
-    patches = ["//patches:fdb-go-range-iterator-done.patch"],
     path = "github.com/apple/foundationdb/bindings/go",
+    patches = ["//patches:fdb-go-range-iterator-done.patch"],
+    patch_strip = 1,
 )
 use_repo(
     go_deps,
