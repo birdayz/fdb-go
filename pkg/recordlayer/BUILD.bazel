@@ -76,6 +76,7 @@ go_test(
     timeout = "long",
     srcs = [
         "aggregate_function_test.go",
+        "api_coverage2_test.go",
         "api_coverage_test.go",
         "bug_bounty2_test.go",
         "bug_bounty3_test.go",
@@ -84,6 +85,7 @@ go_test(
         "chained_cursor_test.go",
         "collision_test.go",
         "commit_hooks_test.go",
+        "context_api_test.go",
         "context_test.go",
         "continuation_test.go",
         "count_index_test.go",

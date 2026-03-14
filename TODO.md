@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1412 specs pass (1065 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1512 specs pass (1165 unit/integration + 347 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
