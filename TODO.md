@@ -963,6 +963,36 @@ Second audit focused on arithmetic overflow, off-by-one, error handling, nil saf
 
 ---
 
+## Build & CI
+
+### MEDIUM
+
+- [ ] **FDB client version mismatch between CI and testcontainers** — CI installs FDB client 7.3.43 (`.github/workflows/ci.yml`), testcontainers defaults to 7.3.46 (`foundationdbtc` package). Minor version skew is tolerable but should be aligned. Either bump CI to 7.3.46 or pin testcontainers to 7.3.43. Also add checksum verification to the CI curl download.
+
+### LOW
+
+- [ ] **CI missing `go mod verify` and format checks** — Add `go mod verify` step to catch go.sum tampering. Add `gofmt -l` or `go fmt ./...` check to enforce formatting. Add `go mod tidy` diff check.
+- [ ] **CI missing Gazelle drift detection** — If a developer adds/removes Go files and forgets to run `just gazelle`, stale BUILD files slip through. Add a CI step that runs gazelle and checks for uncommitted diffs.
+- [ ] **Justfile missing `fmt` and `coverage` targets** — Add `just fmt` (gofmt) and `just coverage` (`bazelisk coverage //...`). Minor ergonomics improvement.
+
+---
+
+## Test quality improvements
+
+### MEDIUM
+
+- [ ] **~25 implementation files lack dedicated unit tests** — Core files like `cursor.go`, `ranked_set.go`, `split_helper.go`, `database.go`, `key_expression.go`, `key_value_cursor.go`, `index_maintainer.go`, `scan_properties.go`, and various index maintainers (`count_index_maintainer.go`, `version_index_maintainer.go`, `rank_index_maintainer.go`, etc.) have no `_test.go` counterparts. They're exercised indirectly via integration tests, but direct unit tests would catch regressions faster and document expected behavior at the unit level.
+- [ ] **Brittle string-matching error assertions in tests** — ~20 instances of `.Error()` string comparison (e.g. `Expect(err.Error()).To(ContainSubstring(...))`) instead of `errors.As()` type matching. Fragile: error message changes break tests silently. Migrate to typed assertions matching the error struct fields.
+- [ ] **Temp file leak in test suite setup** — `recordlayer_suite_test.go` `SynchronizedBeforeSuite` creates `os.CreateTemp("", "fdb_cluster_*.txt")` but never removes it. Files accumulate in `/tmp/` across test runs. Add `defer os.Remove(tmpFile.Name())` or cleanup in `SynchronizedAfterSuite`.
+
+### LOW
+
+- [ ] **Missing cursor combinator edge case tests** — Empty cursors through combinators (`ConcatCursor([], [])`, `FilterCursor` that filters everything), deep combinator composition with continuation tokens, error propagation through combinator chains (one layer errors → upstream cursors cleaned up properly).
+- [ ] **Missing continuation token stability tests** — Resume scan after schema version bump, resume after index rebuild (WRITE_ONLY → READABLE transition), resume after record deletion mid-scan (cursor should skip gracefully).
+- [ ] **Missing schema evolution edge case tests** — Multi-version jump validation (v1 → v5 skipping intermediates), enum value removal (open vs closed enums), cardinality change (optional → repeated). Current MetaDataEvolutionValidator tests cover common cases but miss these boundaries.
+
+---
+
 ## Documentation cleanup
 
 ### LOW

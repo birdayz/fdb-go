@@ -134,7 +134,7 @@ var _ = Describe("MetadataValidation", func() {
 
 			pk := tuple.Tuple{int64(42)} // Only 1 element, but positions expects 3
 
-			_, err := idx.trimPrimaryKey(pk)
+			_, err := idx.TrimPrimaryKey(pk)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("out of bounds"))
 		})
@@ -153,7 +153,7 @@ var _ = Describe("MetadataValidation", func() {
 			idx.primaryKeyComponentPositions = []int{-1, 0}
 
 			pk := tuple.Tuple{int64(1), "Alice"}
-			trimmed, err := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.TrimPrimaryKey(pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(Equal(tuple.Tuple{int64(1)}))
 		})
@@ -162,7 +162,7 @@ var _ = Describe("MetadataValidation", func() {
 			idx := NewIndex("test", Field("price"))
 
 			pk := tuple.Tuple{int64(42)}
-			trimmed, err := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.TrimPrimaryKey(pk)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(Equal(pk))
 		})
