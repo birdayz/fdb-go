@@ -85,8 +85,11 @@ func CRCHash(key []byte) int32 {
 
 // NewRankedSet creates a RankedSet backed by the given subspace.
 func NewRankedSet(sub subspace.Subspace, config RankedSetConfig) *RankedSet {
-	if config.NLevels == 0 {
+	if config.NLevels <= 0 {
 		config.NLevels = rankedSetDefaultLevels
+	}
+	if config.NLevels > rankedSetMaxLevels {
+		config.NLevels = rankedSetMaxLevels
 	}
 	if config.HashFunction == nil {
 		config.HashFunction = JDKArrayHash
@@ -561,7 +564,11 @@ func rsEncodeLong(count int64) []byte {
 }
 
 // rsDecodeLong decodes 8-byte little-endian to int64.
+// Returns 0 for nil or short slices (defensive: missing key = zero count).
 // Matches Java's RankedSet.decodeLong().
 func rsDecodeLong(v []byte) int64 {
+	if len(v) < 8 {
+		return 0
+	}
 	return int64(binary.LittleEndian.Uint64(v))
 }

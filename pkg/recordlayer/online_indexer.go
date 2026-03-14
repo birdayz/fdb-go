@@ -607,12 +607,17 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, c
 		if continuedBuild && newStamp.GetMethod() != gen.IndexBuildIndexingStamp_BY_RECORDS {
 			// Backward compatibility: maybe continuing an old BY_RECORDS session that
 			// didn't write stamps. Check if any records have been scanned.
+			// Matches Java's throwAsByRecordsUnlessNoRecordWasScanned().
 			if !isWriteOnlyButNoRecordScanned(store, store.context, index) {
-				// There is no type stamp, but records were scanned. Treat as BY_RECORDS.
-				return store.SaveIndexingTypeStamp(index, newStamp)
+				// Records were scanned under old BY_RECORDS — reject non-BY_RECORDS takeover.
+				fakeSavedStamp := &gen.IndexBuildIndexingStamp{
+					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+				}
+				return oi.newPartlyBuiltError(fakeSavedStamp, newStamp, index,
+					"this index was partly built by records (no stamp)")
 			}
 		}
-		// Fresh session or BY_RECORDS: write stamp.
+		// Fresh session or BY_RECORDS or no records scanned: write stamp.
 		return store.SaveIndexingTypeStamp(index, newStamp)
 	}
 
@@ -1126,6 +1131,8 @@ func (oi *OnlineIndexer) UnblockIndex(ctx context.Context, blockID string) error
 func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) {
 	allReadable := true
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		// Reset on retry — previous attempt's result is stale.
+		allReadable = true
 		store, err := oi.openStore(rtx)
 		if err != nil {
 			return nil, err

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
@@ -113,6 +114,28 @@ func compareField(a, b any) int {
 			return 0
 		}
 		return bytes.Compare(av, bv)
+	case tuple.Versionstamp:
+		bv, ok := b.(tuple.Versionstamp)
+		if !ok {
+			return 0
+		}
+		c := bytes.Compare(av.TransactionVersion[:], bv.TransactionVersion[:])
+		if c != 0 {
+			return c
+		}
+		if av.UserVersion < bv.UserVersion {
+			return -1
+		}
+		if av.UserVersion > bv.UserVersion {
+			return 1
+		}
+		return 0
+	case tuple.UUID:
+		bv, ok := b.(tuple.UUID)
+		if !ok {
+			return 0
+		}
+		return bytes.Compare(av[:], bv[:])
 	default:
 		return 0
 	}
@@ -217,6 +240,28 @@ func compareFieldChecked(a, b any) (int, error) {
 			return 0, fmt.Errorf("compareField: type mismatch: left is []byte, right is %T", b)
 		}
 		return bytes.Compare(av, bv), nil
+	case tuple.Versionstamp:
+		bv, ok := b.(tuple.Versionstamp)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is Versionstamp, right is %T", b)
+		}
+		c := bytes.Compare(av.TransactionVersion[:], bv.TransactionVersion[:])
+		if c != 0 {
+			return c, nil
+		}
+		if av.UserVersion < bv.UserVersion {
+			return -1, nil
+		}
+		if av.UserVersion > bv.UserVersion {
+			return 1, nil
+		}
+		return 0, nil
+	case tuple.UUID:
+		bv, ok := b.(tuple.UUID)
+		if !ok {
+			return 0, fmt.Errorf("compareField: type mismatch: left is UUID, right is %T", b)
+		}
+		return bytes.Compare(av[:], bv[:]), nil
 	default:
 		return 0, fmt.Errorf("compareField: unsupported type %T", a)
 	}
@@ -443,10 +488,13 @@ func (c *unionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
 
 func (c *unionCursor[T]) Close() error {
 	c.closed = true
+	var firstErr error
 	for _, child := range c.children {
-		_ = child.cursor.Close()
+		if err := child.cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // --- IntersectionCursor ---
@@ -657,8 +705,11 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 
 func (c *intersectionCursor[T]) Close() error {
 	c.closed = true
+	var firstErr error
 	for _, child := range c.children {
-		_ = child.cursor.Close()
+		if err := child.cursor.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
