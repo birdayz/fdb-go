@@ -192,6 +192,145 @@ func TestRandomAllFaults(t *testing.T) {
 	})
 }
 
+// buildRankRandomMetadata creates metadata with VALUE + RANK indexes for random testing.
+func buildRankRandomMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_rank_price_val", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_rank_price", recordlayer.Field("price")))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build rank random metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestRandomRankIndex validates RANK index + VALUE index under random operations.
+// RANK has complex dual-subspace state (B-tree + RankedSet) that can drift.
+func TestRandomRankIndex(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildRankRandomMetadata(), RandomConfig{
+		Seed:   10010,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsNone,
+	})
+}
+
+// TestRandomRankIndexWithFaults validates RANK index under 5% commit-unknown.
+// Tests that B-tree and RankedSet stay consistent when operations are retried.
+func TestRandomRankIndexWithFaults(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildRankRandomMetadata(), RandomConfig{
+		Seed:   11011,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
+	})
+}
+
+// buildKitchenSinkMetadata creates metadata with VALUE + COUNT + SUM + RANK + MAX_EVER.
+// The ultimate stress test configuration.
+func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_ks_price_idx", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewCountIndex("rand_ks_count",
+		recordlayer.GroupAll(recordlayer.Field("price"))))
+	builder.AddIndex("Order", recordlayer.NewSumIndex("rand_ks_sum",
+		recordlayer.Ungrouped(recordlayer.Field("price"))))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_ks_rank", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewMaxEverLongIndex("rand_ks_maxever",
+		recordlayer.Ungrouped(recordlayer.Field("price"))))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build kitchen sink metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestRandomKitchenSink is the ultimate stress test: VALUE + COUNT + SUM + RANK + MAX_EVER,
+// all active simultaneously under heavy fault injection. 2000 ops with FaultsAll.
+func TestRandomKitchenSink(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildKitchenSinkMetadata(), RandomConfig{
+		Seed:   12012,
+		NumOps: 2000,
+		MaxPKs: 50,
+		Faults: FaultsAll,
+	})
+}
+
+// buildPermutedMaxMetadata creates metadata with a PERMUTED_MAX index.
+// Groups by quantity, aggregated value is price. permutedSize=1.
+// Primary entries: [quantity, price, trimmedPK...], Permuted: [price, quantity].
+func buildPermutedMaxMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewPermutedMaxIndex("rand_permuted_max_price",
+		recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("quantity")), 1))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build permuted max metadata: " + err.Error())
+	}
+	return md
+}
+
+// buildPermutedMinMetadata creates metadata with a PERMUTED_MIN index.
+// Groups by quantity, aggregated value is price. permutedSize=1.
+// Primary entries: [quantity, price, trimmedPK...], Permuted: [price, quantity].
+func buildPermutedMinMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewPermutedMinIndex("rand_permuted_min_price",
+		recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("quantity")), 1))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build permuted min metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestRandomPermutedMax validates PERMUTED_MAX index under 5% commit-unknown.
+// The permuted subspace must always reflect the current maximum per group.
+func TestRandomPermutedMax(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildPermutedMaxMetadata(), RandomConfig{
+		Seed:   13013,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
+	})
+}
+
+// TestRandomPermutedMin validates PERMUTED_MIN index under 5% commit-unknown.
+// The permuted subspace must always reflect the current minimum per group.
+func TestRandomPermutedMin(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildPermutedMinMetadata(), RandomConfig{
+		Seed:   14014,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
+	})
+}
+
 // TestRandomDeterminism runs the same seed twice and verifies the model ends
 // up in exactly the same state. Same seed = same PRNG = same operations.
 func TestRandomDeterminism(t *testing.T) {

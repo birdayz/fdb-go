@@ -98,6 +98,13 @@ func compareTuples(a, b tuple.Tuple) int {
 
 // Update handles insert/delete/update with permuted subspace maintenance.
 // Matches Java's PermutedMinMaxIndexMaintainer.updateIndexKeys().
+//
+// For UPDATE (both old and new non-nil), Java's IndexMaintainer.update() splits
+// into two parallel updateIndexKeys calls: remove=true for old entries and
+// remove=false for new entries. We replicate this by processing the insert path
+// for new entries (reading extrema before primary update), then updating primary,
+// then processing the delete path for old groups that the new record no longer
+// belongs to.
 func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	groupPrefixSize := m.getGroupingCount()
 	totalSize := keyExpressionColumnSize(m.index.RootExpression)
@@ -108,95 +115,135 @@ func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 		if err := m.StandardIndexMaintainer.Update(oldRecord, nil); err != nil {
 			return err
 		}
-
-		oldEntries, err := m.evaluateIndex(oldRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate index %q for old record (permuted delete): %w", m.index.Name, err)
-		}
-
-		entryPerGroup := m.extremumEntriesByGroup(oldEntries, groupPrefixSize, totalSize)
-		for _, entry := range entryPerGroup {
-			groupKey := entry.key[:groupPrefixSize]
-			value := entry.key[groupPrefixSize:totalSize]
-			groupPrefix := groupKey[:permutePosition]
-			groupSuffix := groupKey[permutePosition:groupPrefixSize]
-
-			permutedKey := m.buildPermutedKey(groupPrefix, value, groupSuffix)
-			permutedKeyBytes := m.secondarySubspace.Pack(permutedKey)
-
-			// Check if the deleted value is in the permuted subspace.
-			existing := m.tx.Get(fdb.Key(permutedKeyBytes)).MustGet()
-			if existing == nil {
-				continue // Not the current extremum, nothing to do.
-			}
-
-			// Get the new extremum from the primary index.
-			extremum, err := m.getExtremum(groupKey)
-			if err != nil {
-				return fmt.Errorf("get extremum for permuted delete: %w", err)
-			}
-
-			if extremum == nil {
-				// No replacement, just remove.
-				m.tx.Clear(fdb.Key(permutedKeyBytes))
-			} else {
-				remainingValue := tuple.Tuple(extremum[groupPrefixSize:totalSize])
-				if !tuplesEqual(value, remainingValue) {
-					newPermutedKey := m.buildPermutedKey(groupPrefix, remainingValue, groupSuffix)
-					newPermutedKeyBytes := m.secondarySubspace.Pack(newPermutedKey)
-					m.tx.Clear(fdb.Key(permutedKeyBytes))
-					m.tx.Set(fdb.Key(newPermutedKeyBytes), tuple.Tuple{}.Pack())
-				}
-			}
-		}
-		return nil
+		return m.updatePermutedForRemove(oldRecord, groupPrefixSize, totalSize, permutePosition)
 	}
 
-	if newRecord != nil {
-		// INSERT or UPDATE path: update permuted subspace first, then primary.
-		newEntries, err := m.evaluateIndex(newRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate index %q for new record (permuted insert): %w", m.index.Name, err)
-		}
-
-		entryPerGroup := m.extremumEntriesByGroup(newEntries, groupPrefixSize, totalSize)
-		for _, entry := range entryPerGroup {
-			groupKey := entry.key[:groupPrefixSize]
-			value := entry.key[groupPrefixSize:totalSize]
-			groupPrefix := groupKey[:permutePosition]
-			groupSuffix := groupKey[permutePosition:groupPrefixSize]
-
-			extremum, err := m.getExtremum(groupKey)
-			if err != nil {
-				return fmt.Errorf("get extremum for permuted insert: %w", err)
-			}
-
-			addPermuted := false
-			if extremum == nil {
-				addPermuted = true // New group.
-			} else {
-				currentValue := tuple.Tuple(extremum[groupPrefixSize:totalSize])
-				if m.shouldUpdateExtremum(currentValue, value) {
-					addPermuted = true
-					// Remove old permuted entry.
-					oldPermutedKey := m.buildPermutedKey(groupPrefix, currentValue, groupSuffix)
-					m.tx.Clear(fdb.Key(m.secondarySubspace.Pack(oldPermutedKey)))
-				}
-			}
-
-			if addPermuted {
-				newPermutedKey := m.buildPermutedKey(groupPrefix, value, groupSuffix)
-				m.tx.Set(fdb.Key(m.secondarySubspace.Pack(newPermutedKey)), tuple.Tuple{}.Pack())
-			}
-		}
-
-		// Now update the primary VALUE index.
-		if oldRecord != nil {
-			return m.StandardIndexMaintainer.Update(oldRecord, newRecord)
+	if oldRecord == nil && newRecord != nil {
+		// INSERT path: update permuted subspace first, then primary.
+		if err := m.updatePermutedForInsert(newRecord, groupPrefixSize, totalSize, permutePosition); err != nil {
+			return err
 		}
 		return m.StandardIndexMaintainer.Update(nil, newRecord)
 	}
 
+	if oldRecord != nil && newRecord != nil {
+		// UPDATE path: handle permuted insert for new groups, then update primary,
+		// then handle permuted delete for old groups no longer in new record.
+
+		// Step 1: Process new record's groups for the permuted subspace.
+		// Read extrema BEFORE primary update (matches Java's insert path timing).
+		if err := m.updatePermutedForInsert(newRecord, groupPrefixSize, totalSize, permutePosition); err != nil {
+			return err
+		}
+
+		// Step 2: Update primary VALUE index entries (removes old, adds new).
+		if err := m.StandardIndexMaintainer.Update(oldRecord, newRecord); err != nil {
+			return err
+		}
+
+		// Step 3: Process old record's groups that the new record no longer belongs to.
+		// After primary update, old entries are gone and new entries are in.
+		// getExtremum will see the updated primary state.
+		return m.updatePermutedForRemove(oldRecord, groupPrefixSize, totalSize, permutePosition)
+	}
+
+	return nil
+}
+
+// updatePermutedForInsert processes the INSERT side of the permuted subspace.
+// For each group the record belongs to, checks the current extremum and adds
+// a new permuted entry if the record's value beats it.
+// Reads from primary index BEFORE new entries are inserted.
+func (m *permutedMinMaxIndexMaintainer) updatePermutedForInsert(
+	record *FDBStoredRecord[proto.Message],
+	groupPrefixSize, totalSize, permutePosition int,
+) error {
+	entries, err := m.evaluateIndex(record)
+	if err != nil {
+		return fmt.Errorf("evaluate index %q for record (permuted insert): %w", m.index.Name, err)
+	}
+
+	entryPerGroup := m.extremumEntriesByGroup(entries, groupPrefixSize, totalSize)
+	for _, entry := range entryPerGroup {
+		groupKey := entry.key[:groupPrefixSize]
+		value := entry.key[groupPrefixSize:totalSize]
+		groupPrefix := groupKey[:permutePosition]
+		groupSuffix := groupKey[permutePosition:groupPrefixSize]
+
+		extremum, err := m.getExtremum(groupKey)
+		if err != nil {
+			return fmt.Errorf("get extremum for permuted insert: %w", err)
+		}
+
+		addPermuted := false
+		if extremum == nil {
+			addPermuted = true // New group.
+		} else {
+			currentValue := tuple.Tuple(extremum[groupPrefixSize:totalSize])
+			if m.shouldUpdateExtremum(currentValue, value) {
+				addPermuted = true
+				// Remove old permuted entry.
+				oldPermutedKey := m.buildPermutedKey(groupPrefix, currentValue, groupSuffix)
+				m.tx.Clear(fdb.Key(m.secondarySubspace.Pack(oldPermutedKey)))
+			}
+		}
+
+		if addPermuted {
+			newPermutedKey := m.buildPermutedKey(groupPrefix, value, groupSuffix)
+			m.tx.Set(fdb.Key(m.secondarySubspace.Pack(newPermutedKey)), tuple.Tuple{}.Pack())
+		}
+	}
+	return nil
+}
+
+// updatePermutedForRemove processes the DELETE side of the permuted subspace.
+// For each group the old record belonged to, checks if the deleted value was
+// the current extremum and finds a replacement if needed.
+// Reads from primary index AFTER old entries have been removed.
+func (m *permutedMinMaxIndexMaintainer) updatePermutedForRemove(
+	record *FDBStoredRecord[proto.Message],
+	groupPrefixSize, totalSize, permutePosition int,
+) error {
+	entries, err := m.evaluateIndex(record)
+	if err != nil {
+		return fmt.Errorf("evaluate index %q for record (permuted remove): %w", m.index.Name, err)
+	}
+
+	entryPerGroup := m.extremumEntriesByGroup(entries, groupPrefixSize, totalSize)
+	for _, entry := range entryPerGroup {
+		groupKey := entry.key[:groupPrefixSize]
+		value := entry.key[groupPrefixSize:totalSize]
+		groupPrefix := groupKey[:permutePosition]
+		groupSuffix := groupKey[permutePosition:groupPrefixSize]
+
+		permutedKey := m.buildPermutedKey(groupPrefix, value, groupSuffix)
+		permutedKeyBytes := m.secondarySubspace.Pack(permutedKey)
+
+		// Check if the deleted value is in the permuted subspace.
+		existing := m.tx.Get(fdb.Key(permutedKeyBytes)).MustGet()
+		if existing == nil {
+			continue // Not the current extremum, nothing to do.
+		}
+
+		// Get the new extremum from the primary index.
+		extremum, err := m.getExtremum(groupKey)
+		if err != nil {
+			return fmt.Errorf("get extremum for permuted delete: %w", err)
+		}
+
+		if extremum == nil {
+			// No replacement, just remove.
+			m.tx.Clear(fdb.Key(permutedKeyBytes))
+		} else {
+			remainingValue := tuple.Tuple(extremum[groupPrefixSize:totalSize])
+			if !tuplesEqual(value, remainingValue) {
+				newPermutedKey := m.buildPermutedKey(groupPrefix, remainingValue, groupSuffix)
+				newPermutedKeyBytes := m.secondarySubspace.Pack(newPermutedKey)
+				m.tx.Clear(fdb.Key(permutedKeyBytes))
+				m.tx.Set(fdb.Key(newPermutedKeyBytes), tuple.Tuple{}.Pack())
+			}
+		}
+	}
 	return nil
 }
 

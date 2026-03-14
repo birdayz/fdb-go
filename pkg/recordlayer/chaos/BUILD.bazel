@@ -5,15 +5,18 @@ go_library(
     srcs = [
         "fault.go",
         "model.go",
+        "random.go",
         "scenario.go",
         "verify.go",
         "verify_atomic.go",
         "verify_minmax.go",
+        "verify_permuted.go",
         "verify_rank.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/chaos",
     visibility = ["//visibility:public"],
     deps = [
+        "//gen",
         "//pkg/recordlayer",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
@@ -31,6 +34,7 @@ go_test(
         "chaos_rank_test.go",
         "chaos_test.go",
         "chaos_unique_test.go",
+        "random_test.go",
     ],
     embed = [":chaos"],
     deps = [
