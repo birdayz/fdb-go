@@ -32,9 +32,11 @@ func compareKeys(a, b []any) int {
 	return len(a) - len(b)
 }
 
-// compareField compares two individual field values.
-// Uses checked type assertions to avoid panics on type-mismatched keys.
-// Returns 0 if types don't match (safe fallback instead of panic).
+// compareField compares two individual field values using FDB tuple encoding order.
+// Nil sorts first. For non-nil values, delegates to FDB's order-preserving tuple
+// encoding — handles int64, float64, string, []byte, bool, Versionstamp, UUID,
+// and all other tuple-encodable types automatically.
+// Returns 0 if Pack panics (safe fallback for unsupported types).
 // Matches Java's KeyComparisons.FIELD_COMPARATOR.
 func compareField(a, b any) int {
 	if a == nil && b == nil {
@@ -46,99 +48,8 @@ func compareField(a, b any) int {
 	if b == nil {
 		return 1
 	}
-
-	switch av := a.(type) {
-	case int64:
-		bv, ok := b.(int64)
-		if !ok {
-			return 0
-		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
-	case int:
-		bv, ok := b.(int)
-		if !ok {
-			return 0
-		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
-	case float64:
-		bv, ok := b.(float64)
-		if !ok {
-			return 0
-		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
-	case string:
-		bv, ok := b.(string)
-		if !ok {
-			return 0
-		}
-		if av < bv {
-			return -1
-		}
-		if av > bv {
-			return 1
-		}
-		return 0
-	case bool:
-		bv, ok := b.(bool)
-		if !ok {
-			return 0
-		}
-		if av == bv {
-			return 0
-		}
-		if !av {
-			return -1 // false < true
-		}
-		return 1
-	case []byte:
-		bv, ok := b.([]byte)
-		if !ok {
-			return 0
-		}
-		return bytes.Compare(av, bv)
-	case tuple.Versionstamp:
-		bv, ok := b.(tuple.Versionstamp)
-		if !ok {
-			return 0
-		}
-		c := bytes.Compare(av.TransactionVersion[:], bv.TransactionVersion[:])
-		if c != 0 {
-			return c
-		}
-		if av.UserVersion < bv.UserVersion {
-			return -1
-		}
-		if av.UserVersion > bv.UserVersion {
-			return 1
-		}
-		return 0
-	case tuple.UUID:
-		bv, ok := b.(tuple.UUID)
-		if !ok {
-			return 0
-		}
-		return bytes.Compare(av[:], bv[:])
-	default:
-		return 0
-	}
+	// FDB tuple encoding is order-preserving: Pack(a) < Pack(b) iff a < b.
+	return bytes.Compare(tuple.Tuple{a}.Pack(), tuple.Tuple{b}.Pack())
 }
 
 // compareKeysChecked is like compareKeys but returns an error on type mismatches.
@@ -160,9 +71,9 @@ func compareKeysChecked(a, b []any) (int, error) {
 	return len(a) - len(b), nil
 }
 
-// compareFieldChecked compares two individual field values.
-// Returns an error if a and b have different types.
-func compareFieldChecked(a, b any) (int, error) {
+// compareFieldChecked compares two individual field values using FDB tuple encoding.
+// Returns an error if either value is not tuple-encodable.
+func compareFieldChecked(a, b any) (c int, err error) {
 	if a == nil && b == nil {
 		return 0, nil
 	}
@@ -173,98 +84,14 @@ func compareFieldChecked(a, b any) (int, error) {
 		return 1, nil
 	}
 
-	switch av := a.(type) {
-	case int64:
-		bv, ok := b.(int64)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is int64, right is %T", b)
+	// FDB tuple encoding is order-preserving. Recover from Pack panics
+	// on unsupported types and return a clean error.
+	defer func() {
+		if r := recover(); r != nil {
+			c, err = 0, fmt.Errorf("compareField: unsupported type: %v", r)
 		}
-		if av < bv {
-			return -1, nil
-		}
-		if av > bv {
-			return 1, nil
-		}
-		return 0, nil
-	case int:
-		bv, ok := b.(int)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is int, right is %T", b)
-		}
-		if av < bv {
-			return -1, nil
-		}
-		if av > bv {
-			return 1, nil
-		}
-		return 0, nil
-	case float64:
-		bv, ok := b.(float64)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is float64, right is %T", b)
-		}
-		if av < bv {
-			return -1, nil
-		}
-		if av > bv {
-			return 1, nil
-		}
-		return 0, nil
-	case string:
-		bv, ok := b.(string)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is string, right is %T", b)
-		}
-		if av < bv {
-			return -1, nil
-		}
-		if av > bv {
-			return 1, nil
-		}
-		return 0, nil
-	case bool:
-		bv, ok := b.(bool)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is bool, right is %T", b)
-		}
-		if av == bv {
-			return 0, nil
-		}
-		if !av {
-			return -1, nil
-		}
-		return 1, nil
-	case []byte:
-		bv, ok := b.([]byte)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is []byte, right is %T", b)
-		}
-		return bytes.Compare(av, bv), nil
-	case tuple.Versionstamp:
-		bv, ok := b.(tuple.Versionstamp)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is Versionstamp, right is %T", b)
-		}
-		c := bytes.Compare(av.TransactionVersion[:], bv.TransactionVersion[:])
-		if c != 0 {
-			return c, nil
-		}
-		if av.UserVersion < bv.UserVersion {
-			return -1, nil
-		}
-		if av.UserVersion > bv.UserVersion {
-			return 1, nil
-		}
-		return 0, nil
-	case tuple.UUID:
-		bv, ok := b.(tuple.UUID)
-		if !ok {
-			return 0, fmt.Errorf("compareField: type mismatch: left is UUID, right is %T", b)
-		}
-		return bytes.Compare(av[:], bv[:]), nil
-	default:
-		return 0, fmt.Errorf("compareField: unsupported type %T", a)
-	}
+	}()
+	return bytes.Compare(tuple.Tuple{a}.Pack(), tuple.Tuple{b}.Pack()), nil
 }
 
 // mergeChildState tracks the state of a single child cursor in a merge operation.
