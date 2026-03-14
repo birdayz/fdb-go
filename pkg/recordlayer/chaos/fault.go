@@ -19,6 +19,18 @@ const (
 	// Critical for: COUNT/SUM indexes (atomic ADD is not idempotent),
 	// record counting, any mutation that isn't naturally idempotent.
 	FaultCommitUnknown FaultType = iota
+
+	// FaultConflict simulates FDB error 1020 (not_committed / transaction conflict).
+	// Implemented identically to FaultCommitUnknown at the Transactor level:
+	// both commit, then re-execute. In real FDB, the first attempt's writes
+	// would be rolled back, but we can't simulate true rollback at this
+	// abstraction level. The double-commit is a superset test: if the code
+	// is correct under double-commit, it's correct under rollback+retry too.
+	FaultConflict
+
+	// FaultTransactionTooOld simulates FDB error 1007 (transaction_too_old).
+	// Same implementation as FaultConflict — see comment above.
+	FaultTransactionTooOld
 )
 
 // FaultConfig controls fault injection rates.
@@ -40,6 +52,13 @@ var (
 	// FaultsRetryVeryHeavy injects commit-unknown at 20% rate.
 	FaultsRetryVeryHeavy = &FaultConfig{Rates: map[FaultType]float64{
 		FaultCommitUnknown: 0.20,
+	}}
+
+	// FaultsAll injects all fault types at moderate rates.
+	FaultsAll = &FaultConfig{Rates: map[FaultType]float64{
+		FaultCommitUnknown:     0.03,
+		FaultConflict:          0.03,
+		FaultTransactionTooOld: 0.02,
 	}}
 )
 
@@ -96,23 +115,31 @@ func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (interface{}, error)
 	c.opIndex++
 	c.mu.Unlock()
 
-	// Determine if we should inject commit-unknown
-	injectCommitUnknown := (pending != nil && *pending == FaultCommitUnknown) ||
-		c.shouldInject(FaultCommitUnknown)
+	// Determine which fault to inject (at most one per transaction).
+	var injectFault *FaultType
+	if pending != nil {
+		injectFault = pending
+	} else {
+		for _, ft := range []FaultType{FaultCommitUnknown, FaultConflict, FaultTransactionTooOld} {
+			if c.shouldInject(ft) {
+				f := ft
+				injectFault = &f
+				break
+			}
+		}
+	}
 
-	// Execute the real transaction
+	// Execute the real transaction.
 	result, err := c.inner.Transact(fn)
 	if err != nil {
 		return result, err
 	}
 
-	// Post-commit fault: commit-unknown simulation
-	if injectCommitUnknown {
-		c.logFault(opIdx, FaultCommitUnknown)
-		// Commit succeeded, but simulate client getting error 1021.
-		// Re-execute fn in a new transaction. The second execution
-		// sees the effects of the first commit. If fn is idempotent,
-		// this is a no-op. If not (e.g., COUNT atomic ADD), state corrupts.
+	// All fault types: commit succeeded, then re-execute fn in a new
+	// transaction. The second execution sees effects of the first.
+	// This tests idempotency — the hardest property to get right.
+	if injectFault != nil {
+		c.logFault(opIdx, *injectFault)
 		return c.inner.Transact(fn)
 	}
 
