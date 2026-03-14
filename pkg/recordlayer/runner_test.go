@@ -104,22 +104,36 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		})
 	})
 
+	// Codes match fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, code) from fdb_c.cpp.
 	Describe("isRetryableError", func() {
 		DescribeTable("recognizes all retryable FDB error codes",
 			func(code int, desc string) {
 				err := fdb.Error{Code: code}
 				Expect(isRetryableError(err)).To(BeTrue(), "code %d (%s) should be retryable", code, desc)
 			},
-			Entry("transaction_too_old", 1007, "transaction_too_old"),
-			Entry("request_for_timestamp", 1009, "request_for_timestamp_not_yet_set"),
-			Entry("not_committed", 1020, "not_committed"),
+			// MAYBE_COMMITTED
 			Entry("commit_unknown_result", 1021, "commit_unknown_result"),
-			Entry("transaction_timed_out", 1031, "transaction_timed_out"),
+			Entry("cluster_version_changed", 1039, "cluster_version_changed"),
+			// RETRYABLE_NOT_COMMITTED
+			Entry("transaction_too_old", 1007, "transaction_too_old"),
+			Entry("future_version", 1009, "future_version"),
+			Entry("not_committed", 1020, "not_committed"),
+			Entry("process_behind", 1037, "process_behind"),
+			Entry("database_locked", 1038, "database_locked"),
+			Entry("commit_proxy_memory_limit_exceeded", 1042, "commit_proxy_memory_limit_exceeded"),
+			Entry("batch_transaction_throttled", 1051, "batch_transaction_throttled"),
+			Entry("grv_proxy_memory_limit_exceeded", 1078, "grv_proxy_memory_limit_exceeded"),
+			Entry("tag_throttled", 1213, "tag_throttled"),
+			Entry("proxy_tag_throttled", 1223, "proxy_tag_throttled"),
+			Entry("transaction_throttled_hot_shard", 1235, "transaction_throttled_hot_shard"),
+			Entry("transaction_rejected_range_locked", 1242, "transaction_rejected_range_locked"),
 		)
 
 		It("rejects non-retryable FDB errors", func() {
 			Expect(isRetryableError(fdb.Error{Code: 2000})).To(BeFalse())
 			Expect(isRetryableError(fdb.Error{Code: 1025})).To(BeFalse()) // transaction_cancelled
+			Expect(isRetryableError(fdb.Error{Code: 1031})).To(BeFalse()) // transaction_timed_out
+			Expect(isRetryableError(fdb.Error{Code: 1034})).To(BeFalse()) // future_released
 		})
 
 		It("rejects non-FDB errors", func() {

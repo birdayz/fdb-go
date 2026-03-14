@@ -37,8 +37,8 @@ type IndexMaintainer interface {
 type indexStoreContext interface {
 	isIndexWriteOnly(index *Index) bool
 	isIndexReadableUniquePending(index *Index) bool
-	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple)
-	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple)
+	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error
+	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error
 	// isKeyInIndexBuildRange checks if a primary key is in the already-built range
 	// of an index being built online. Used by non-idempotent index maintainers
 	// (COUNT) during WRITE_ONLY to avoid double-counting.
@@ -96,24 +96,37 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 
 	// Skip unchanged entries (optimization matching Java's skipUpdateForUnchangedKeys)
 	if oldEntries != nil && newEntries != nil {
-		oldEntries, newEntries = removeCommonEntries(m.index, oldEntries, newEntries)
+		var err error
+		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Remove old entries first so uniqueness checks see clean state
 	isWriteOnlyOrUniquePending := m.store != nil && (m.store.isIndexWriteOnly(m.index) || m.store.isIndexReadableUniquePending(m.index))
 	for i := range oldEntries {
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey))))
+		oldEntryKey, err := indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
+		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
 		// Clean up violation entries on delete for WRITE_ONLY/READABLE_UNIQUE_PENDING indexes.
 		// Matches Java's StandardIndexMaintainer.updateOneKeyAsync() remove path.
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
-			m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+			if err := m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Add new entries
 	emptyValue := tuple.Tuple{}.Pack()
 	for i := range newEntries {
-		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		entryTupleKey, err := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
 		keyBytes := m.indexSubspace.Pack(entryTupleKey)
 
 		// For KeyWithValueExpression indexes, store the value portion in the FDB value.
@@ -263,8 +276,12 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		// Matches Java's StandardIndexMaintainer.checkUniqueness() which
 		// calls addUniquenessViolation() for both conflicting PKs.
 		if m.store != nil && m.store.isIndexWriteOnly(m.index) {
-			m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK)
-			m.store.addUniquenessViolation(m.index, entry.key, existingPK, entry.primaryKey)
+			if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK); err != nil {
+				return err
+			}
+			if err := m.store.addUniquenessViolation(m.index, entry.key, existingPK, entry.primaryKey); err != nil {
+				return err
+			}
 			return nil
 		}
 		return &RecordIndexUniquenessViolationError{
@@ -349,26 +366,37 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 // removeCommonEntries filters out entries that are identical in both old and new.
 // This avoids unnecessary FDB mutations when a record update doesn't change
 // the indexed value. Matches Java's StandardIndexMaintainer.commonKeys optimization.
-func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry) {
-	packEntry := func(e indexEntry) string {
+func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry, error) {
+	packEntry := func(e indexEntry) (string, error) {
 		// Include value in the comparison key for KeyWithValueExpression indexes.
 		// Matches Java's IndexEntry.equals() which compares both key and value.
-		s := string(indexEntryKey(idx, e.key, e.primaryKey).Pack())
+		ek, err := indexEntryKey(idx, e.key, e.primaryKey)
+		if err != nil {
+			return "", err
+		}
+		s := string(ek.Pack())
 		if e.value != nil {
 			s += "|" + string(e.value.Pack())
 		}
-		return s
+		return s, nil
 	}
 
 	newSet := make(map[string]struct{}, len(new))
 	for _, e := range new {
-		newSet[packEntry(e)] = struct{}{}
+		p, err := packEntry(e)
+		if err != nil {
+			return nil, nil, err
+		}
+		newSet[p] = struct{}{}
 	}
 
 	common := make(map[string]struct{})
 	var filteredOld []indexEntry
 	for _, e := range old {
-		p := packEntry(e)
+		p, err := packEntry(e)
+		if err != nil {
+			return nil, nil, err
+		}
 		if _, ok := newSet[p]; ok {
 			common[p] = struct{}{}
 		} else {
@@ -378,12 +406,16 @@ func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []ind
 
 	var filteredNew []indexEntry
 	for _, e := range new {
-		if _, ok := common[packEntry(e)]; !ok {
+		p, err := packEntry(e)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, ok := common[p]; !ok {
 			filteredNew = append(filteredNew, e)
 		}
 	}
 
-	return filteredOld, filteredNew
+	return filteredOld, filteredNew, nil
 }
 
 // RecordIndexUniquenessViolationError indicates a unique index constraint violation.

@@ -9,67 +9,15 @@ import (
 )
 
 // =============================================================================
-// BUG #1: compareField panics on type-mismatched comparison keys
-//
-// Severity: panic
-// Location: merge_cursor.go:49 (and lines 59, 68, 77, 86, 95)
-//
-// Description: compareField uses unchecked type assertions like b.(int64).
-// If the two values being compared have different runtime types (e.g., one is
-// int64 and the other is string — which can happen with corrupt index data,
-// mixed-type indexes, or cross-type union cursors), the assertion panics
-// instead of returning an error or a defined ordering.
-//
-// In a real scenario, an IntersectionCursor or UnionCursor operating over
-// indexes with heterogeneous key types (or corrupt data) will crash the
-// entire application.
-// =============================================================================
-
-func TestBug1_CompareFieldMixedTypesPanic(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		a, b any
-	}{
-		{"int64_vs_string", int64(42), "hello"},
-		{"string_vs_int64", "hello", int64(42)},
-		{"int64_vs_float64", int64(42), float64(3.14)},
-		{"float64_vs_string", float64(3.14), "hello"},
-		{"bool_vs_int64", true, int64(1)},
-		{"int_vs_string", int(42), "hello"},
-		{"bytes_vs_string", []byte{1, 2}, "hello"},
-		{"string_vs_bool", "true", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// This should NOT panic, but it does because of unchecked
-			// type assertions in the switch cases.
-			defer func() {
-				if r := recover(); r != nil {
-					t.Fatalf("compareField(%v [%T], %v [%T]) panicked: %v",
-						tt.a, tt.a, tt.b, tt.b, r)
-				}
-			}()
-
-			// Call compareField — if types mismatch, this panics.
-			compareField(tt.a, tt.b)
-		})
-	}
-}
-
-// =============================================================================
 // BUG #2: Union/Intersection cursor panics on type-mismatched comparison keys
 //
-// Severity: panic (propagated from BUG #1)
-// Location: merge_cursor.go via compareField
+// Severity: panic
+// Location: merge_cursor.go via compareKeys
 //
 // Description: When a Union or Intersection cursor has children whose
-// ComparisonKeyFunc returns different types for the same position (e.g., one
-// returns int64, another returns string), the merge comparison panics.
+// ComparisonKeyFunc returns tuple.Tuple values with different element types at
+// the same position (e.g., one returns int64, another returns string),
+// compareKeys panics on the type mismatch inside the FDB tuple comparison.
 // This can happen with corrupt data or when different record types in a
 // union have differently-typed index columns.
 // =============================================================================
@@ -89,11 +37,11 @@ func TestBug2_UnionCursorMixedKeyTypesPanic(t *testing.T) {
 	cursor2 := FromList([]int{4, 5, 6})
 
 	// These comparison functions return different types for the same position
-	compKeyFunc := func(v int) []any {
+	compKeyFunc := func(v int) tuple.Tuple {
 		if v <= 3 {
-			return []any{int64(v)} // int64
+			return tuple.Tuple{int64(v)} // int64
 		}
-		return []any{"value"} // string — type mismatch!
+		return tuple.Tuple{"value"} // string — type mismatch!
 	}
 
 	union := Union(

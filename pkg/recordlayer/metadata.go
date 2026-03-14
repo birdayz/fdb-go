@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -130,6 +131,7 @@ type RecordMetaDataBuilder struct {
 	formerIndexes            []*FormerIndex
 	counterBasedSubspaceKeys bool
 	subspaceKeyCounter       int64
+	buildErrors              []error
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -264,6 +266,9 @@ func (b *RecordMetaDataBuilder) SetSplitLongRecords(split bool) *RecordMetaDataB
 func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *RecordMetaDataBuilder {
 	rt, ok := b.recordTypes[recordTypeName]
 	if !ok {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{
+			Message: fmt.Sprintf("Unknown record type %s", recordTypeName),
+		})
 		return b
 	}
 	b.addIndexCommon(index)
@@ -283,6 +288,15 @@ func (b *RecordMetaDataBuilder) assignSubspaceKey(index *Index) {
 // Sets LastModifiedVersion and AddedVersion on the index and registers it
 // in the builder's index map. Matches Java's RecordMetaDataBuilder.addIndexCommon().
 func (b *RecordMetaDataBuilder) addIndexCommon(index *Index) {
+	if b.indexes == nil {
+		b.indexes = make(map[string]*Index)
+	}
+	if _, exists := b.indexes[index.Name]; exists {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{
+			Message: fmt.Sprintf("Index %s already defined", index.Name),
+		})
+		return
+	}
 	b.assignSubspaceKey(index)
 	if index.LastModifiedVersion <= 0 {
 		b.version++
@@ -292,9 +306,6 @@ func (b *RecordMetaDataBuilder) addIndexCommon(index *Index) {
 	}
 	if index.AddedVersion <= 0 {
 		index.AddedVersion = index.LastModifiedVersion
-	}
-	if b.indexes == nil {
-		b.indexes = make(map[string]*Index)
 	}
 	b.indexes[index.Name] = index
 }
@@ -314,6 +325,9 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 	for _, name := range recordTypeNames {
 		rt, ok := b.recordTypes[name]
 		if !ok {
+			b.buildErrors = append(b.buildErrors, &MetaDataError{
+				Message: fmt.Sprintf("Unknown record type %s", name),
+			})
 			continue
 		}
 		rt.multiTypeIndexes = append(rt.multiTypeIndexes, index)
@@ -391,6 +405,11 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // Returns an error if any record type has no primary key set.
 // The record types map is copied to prevent the builder from mutating the built metadata.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
+	// Check for errors accumulated during builder method calls.
+	if len(b.buildErrors) > 0 {
+		return nil, errors.Join(b.buildErrors...)
+	}
+
 	// Validate primary keys: must be set, must produce at least one column,
 	// and must not create duplicates.
 	// Matches Java's MetaDataValidator.validatePrimaryKey().

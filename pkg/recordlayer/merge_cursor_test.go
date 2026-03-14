@@ -3,11 +3,13 @@ package recordlayer
 import (
 	"context"
 	"testing"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
 // intCompKey extracts an int as the comparison key.
-func intCompKey(v int) []any {
-	return []any{v}
+func intCompKey(v int) tuple.Tuple {
+	return tuple.Tuple{v}
 }
 
 func TestUnionCursorBasic(t *testing.T) {
@@ -341,53 +343,28 @@ func TestCompareKeys(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		a, b     []any
+		a, b     tuple.Tuple
 		expected int
 	}{
-		{"equal", []any{1, "a"}, []any{1, "a"}, 0},
-		{"less_first", []any{1, "a"}, []any{2, "a"}, -1},
-		{"greater_first", []any{2, "a"}, []any{1, "a"}, 1},
-		{"less_second", []any{1, "a"}, []any{1, "b"}, -1},
-		{"shorter", []any{1}, []any{1, "a"}, -1},
-		{"longer", []any{1, "a"}, []any{1}, 1},
-		{"nil_first", []any{nil, "a"}, []any{1, "a"}, -1},
-		{"both_nil", []any{nil}, []any{nil}, 0},
-		{"empty", []any{}, []any{}, 0},
+		{"equal", tuple.Tuple{1, "a"}, tuple.Tuple{1, "a"}, 0},
+		{"less_first", tuple.Tuple{1, "a"}, tuple.Tuple{2, "a"}, -1},
+		{"greater_first", tuple.Tuple{2, "a"}, tuple.Tuple{1, "a"}, 1},
+		{"less_second", tuple.Tuple{1, "a"}, tuple.Tuple{1, "b"}, -1},
+		{"shorter", tuple.Tuple{1}, tuple.Tuple{1, "a"}, -1},
+		{"longer", tuple.Tuple{1, "a"}, tuple.Tuple{1}, 1},
+		{"nil_first", tuple.Tuple{nil, "a"}, tuple.Tuple{1, "a"}, -1},
+		{"both_nil", tuple.Tuple{nil}, tuple.Tuple{nil}, 0},
+		{"empty", tuple.Tuple{}, tuple.Tuple{}, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := compareKeys(tt.a, tt.b)
+			got, err := compareKeys(tt.a, tt.b)
+			if err != nil {
+				t.Fatalf("compareKeys(%v, %v): unexpected error: %v", tt.a, tt.b, err)
+			}
 			if (tt.expected < 0 && got >= 0) || (tt.expected > 0 && got <= 0) || (tt.expected == 0 && got != 0) {
 				t.Fatalf("compareKeys(%v, %v): got %d, want sign of %d", tt.a, tt.b, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestCompareFieldTypes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		a, b     any
-		expected int
-	}{
-		{"int64_equal", int64(5), int64(5), 0},
-		{"int64_less", int64(3), int64(5), -1},
-		{"float64_less", 1.0, 2.0, -1},
-		{"string_less", "abc", "def", -1},
-		{"bool_false_lt_true", false, true, -1},
-		{"bool_equal", true, true, 0},
-		{"bytes_equal", []byte{1, 2}, []byte{1, 2}, 0},
-		{"bytes_less", []byte{1, 2}, []byte{1, 3}, -1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := compareField(tt.a, tt.b)
-			if (tt.expected < 0 && got >= 0) || (tt.expected > 0 && got <= 0) || (tt.expected == 0 && got != 0) {
-				t.Fatalf("compareField(%v, %v): got %d, want sign of %d", tt.a, tt.b, got, tt.expected)
 			}
 		})
 	}

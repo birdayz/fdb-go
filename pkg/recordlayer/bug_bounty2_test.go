@@ -65,18 +65,8 @@ var _ = Describe("Bug Bounty Round 2", func() {
 		})
 	})
 
-	// =========================================================================
-	// BUG #2: isRetryableError uses direct type assertion instead of errors.As,
-	// failing to detect wrapped FDB errors as retryable.
-	//
-	// Severity: incorrect behavior (missed retries → unnecessary failures)
-	// Location: runner.go:219-230
-	//
-	// Description: isRetryableError checks `err.(fdb.Error)` which fails on
-	// wrapped errors. If a retryable FDB error (code 1020=conflict, 1021=
-	// commit_unknown, 1009=timestamp) is wrapped with fmt.Errorf, RunWithRetry
-	// treats it as non-retryable and fails immediately instead of retrying.
-	// =========================================================================
+	// BUG #2 (FIXED): isRetryableError now uses errors.As instead of type assertion,
+	// so wrapped FDB errors are correctly detected as retryable.
 	Describe("BUG: isRetryableError fails on wrapped FDB errors", func() {
 		It("detects unwrapped FDB errors correctly", func() {
 			Expect(isRetryableError(fdb.Error{Code: 1020})).To(BeTrue(), "unwrapped conflict")
@@ -85,7 +75,6 @@ var _ = Describe("Bug Bounty Round 2", func() {
 		})
 
 		It("detects wrapped FDB retryable errors (FIXED)", func() {
-			// FIX: isRetryableError now uses errors.As, so wrapped errors are detected
 			for _, code := range []int{1020, 1021, 1009} {
 				inner := fdb.Error{Code: code}
 				wrapped := fmt.Errorf("operation failed: %w", inner)
@@ -104,7 +93,6 @@ var _ = Describe("Bug Bounty Round 2", func() {
 
 			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
 				attempts++
-				// User code wraps the FDB error (common pattern)
 				return nil, fmt.Errorf("save record failed: %w", fdb.Error{Code: 1020})
 			})
 

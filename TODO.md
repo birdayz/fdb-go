@@ -655,9 +655,10 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **DeleteRecordsWhere** — `DeleteRecordsWhere(prefix)` bulk-deletes all records with a PK prefix via range clears (no scanning). Clears records, versions, record counts, and all index entries. Type-specific indexes cleared entirely; universal indexes require aligned leading expression. `DeleteWhere(prefix)` on `IndexMaintainer` interface. RANK indexes clear both B-tree and ranked set subspaces. 10 unit tests + 5 conformance specs (Go deletes/Java verifies, Java deletes/Go verifies, mixed writes, delete+reinsert, Java-written records).
 
-- [ ] **Query execution methods** — Java has `evaluateStoreFunction()`. Go has `EvaluateAggregateFunction()` and `EvaluateRecordFunction()` (done) but not `evaluateStoreFunction()`.
+- [x] **Query execution methods** — `EvaluateStoreFunction()` for store-level functions (VERSION), `EvaluateAggregateFunction()` for index aggregates, `EvaluateRecordFunction()` for index record functions. All matching Java's dispatch hierarchy.
   - [x] `CountRecords(ctx, low, high, lowEndpoint, highEndpoint, continuation, scanProperties)` — scan-based record count (not atomic counter). Matches Java's `FDBRecordStore.countRecords()`.
   - [x] `EvaluateRecordFunction(fn, record)` — evaluates index record functions (e.g. RANK) for a specific record. Auto-selects best index. 5 tests.
+  - [x] `EvaluateStoreFunction(fn, record)` — evaluates store-level functions. VERSION function returns record version from store context. 6 tests.
 
 - [x] **Per-type record count** — `GetSnapshotRecordCountForRecordType(recordTypeName)` added. Requires `RecordTypeKeyExpression` as count key. Matches Java's `getSnapshotRecordCountForRecordType()`.
 

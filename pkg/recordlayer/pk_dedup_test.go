@@ -132,7 +132,9 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		It("no-op when positions is nil", func() {
 			idx := NewIndex("test", Field("price"))
 			pk := tuple.Tuple{int64(42)}
-			Expect(idx.trimPrimaryKey(pk)).To(Equal(pk))
+			trimmed, err := idx.trimPrimaryKey(pk)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(trimmed).To(Equal(pk))
 			// getEntryPrimaryKey should return the tail
 			entry := tuple.Tuple{int64(100), int64(42)} // (price, pk)
 			Expect(idx.getEntryPrimaryKey(entry)).To(Equal(tuple.Tuple{int64(42)}))
@@ -142,7 +144,9 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			idx := NewIndex("test", Concat(Field("price"), Field("order_id")))
 			idx.primaryKeyComponentPositions = []int{1} // order_id is at index position 1
 			pk := tuple.Tuple{int64(42)}
-			Expect(idx.trimPrimaryKey(pk)).To(HaveLen(0))
+			trimmed, err := idx.trimPrimaryKey(pk)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(trimmed).To(HaveLen(0))
 		})
 
 		It("trims partial overlap", func() {
@@ -150,7 +154,8 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// PK is (RecordType, name). RecordType not in index (-1), name at position 0
 			idx.primaryKeyComponentPositions = []int{-1, 0}
 			pk := tuple.Tuple{int64(1), "Alice"}
-			trimmed := idx.trimPrimaryKey(pk)
+			trimmed, err := idx.trimPrimaryKey(pk)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(trimmed).To(Equal(tuple.Tuple{int64(1)})) // Only RecordType remains
 		})
 

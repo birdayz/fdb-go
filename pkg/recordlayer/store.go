@@ -980,12 +980,12 @@ func (store *FDBRecordStore) isIndexReadableUniquePending(index *Index) bool {
 	return store.GetIndexState(index.Name) == IndexStateReadableUniquePending
 }
 
-func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) {
-	store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, existingKey)
+func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
+	return store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, existingKey)
 }
 
-func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
-	store.ResolveUniquenessViolation(index, indexKey, primaryKey)
+func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
+	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
 
 func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error) {
@@ -1414,41 +1414,49 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 // ResolveUniquenessViolation removes a single uniqueness violation entry.
 // Call this after manually resolving the conflict (e.g., deleting the duplicate record).
 // Matches Java's StandardIndexMaintainer.resolveUniquenessViolation().
-func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+func (store *FDBRecordStore) ResolveUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
 	if index == nil {
-		return
+		return fmt.Errorf("index must not be nil")
 	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey := indexEntryKey(index, indexKey, primaryKey)
+	entryKey, err := indexEntryKey(index, indexKey, primaryKey)
+	if err != nil {
+		return fmt.Errorf("resolve uniqueness violation for index %q: %w", index.Name, err)
+	}
 	store.context.Transaction().Clear(fdb.Key(violationSubspace.Pack(entryKey)))
+	return nil
 }
 
 // AddUniquenessViolation records a uniqueness violation for the given index.
 // Used during WRITE_ONLY index builds when a uniqueness conflict is detected.
 // Stores empty bytes as the value (no cross-reference to conflicting PK).
 // Use AddUniquenessViolationWithExisting to store the conflicting PK in the value.
-func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) {
+func (store *FDBRecordStore) AddUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
 	if index == nil {
-		return
+		return fmt.Errorf("index must not be nil")
 	}
-	store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, nil)
+	return store.AddUniquenessViolationWithExisting(index, indexKey, primaryKey, nil)
 }
 
 // AddUniquenessViolationWithExisting records a uniqueness violation with the conflicting PK.
 // Matches Java's StandardIndexMaintainer.addUniquenessViolation(valueKey, primaryKey, existingKey).
 // When existingKey is non-nil, its packed bytes are stored as the FDB value.
 // When existingKey is nil, empty bytes are stored.
-func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) {
+func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
 	if index == nil {
-		return
+		return fmt.Errorf("index must not be nil")
 	}
 	violationSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
-	entryKey := indexEntryKey(index, indexKey, primaryKey)
+	entryKey, err := indexEntryKey(index, indexKey, primaryKey)
+	if err != nil {
+		return fmt.Errorf("add uniqueness violation for index %q: %w", index.Name, err)
+	}
 	var value []byte
 	if existingKey != nil {
 		value = existingKey.Pack()
 	}
 	store.context.Transaction().Set(fdb.Key(violationSubspace.Pack(entryKey)), value)
+	return nil
 }
 
 // wrapInUnion wraps a record message in a UnionDescriptor for storage compatibility with Java

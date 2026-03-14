@@ -11,87 +11,21 @@ import (
 )
 
 // ComparisonKeyFunc extracts a comparison key from a cursor element.
-// The key is a list of comparable values used for merge ordering.
-// Matches Java's KeyedMergeCursorState.comparisonKeyFunction.
-type ComparisonKeyFunc[T any] func(T) []any
+// The returned tuple is used for merge ordering via FDB's order-preserving
+// tuple encoding. Matches Java's KeyedMergeCursorState.comparisonKeyFunction.
+type ComparisonKeyFunc[T any] func(T) tuple.Tuple
 
-// compareKeys compares two comparison keys lexicographically.
-// Returns negative if a < b, positive if a > b, zero if equal.
+// compareKeys compares two comparison keys using FDB's order-preserving tuple
+// encoding. Returns negative if a < b, positive if a > b, 0 if equal.
+// Returns error if values are not tuple-encodable.
 // Matches Java's KeyComparisons.KEY_COMPARATOR.
-func compareKeys(a, b []any) int {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	for i := 0; i < minLen; i++ {
-		c := compareField(a[i], b[i])
-		if c != 0 {
-			return c
-		}
-	}
-	return len(a) - len(b)
-}
-
-// compareField compares two individual field values using FDB tuple encoding order.
-// Nil sorts first. For non-nil values, delegates to FDB's order-preserving tuple
-// encoding — handles int64, float64, string, []byte, bool, Versionstamp, UUID,
-// and all other tuple-encodable types automatically.
-// Returns 0 if Pack panics (safe fallback for unsupported types).
-// Matches Java's KeyComparisons.FIELD_COMPARATOR.
-func compareField(a, b any) int {
-	if a == nil && b == nil {
-		return 0
-	}
-	if a == nil {
-		return -1 // null sorts first
-	}
-	if b == nil {
-		return 1
-	}
-	// FDB tuple encoding is order-preserving: Pack(a) < Pack(b) iff a < b.
-	return bytes.Compare(tuple.Tuple{a}.Pack(), tuple.Tuple{b}.Pack())
-}
-
-// compareKeysChecked is like compareKeys but returns an error on type mismatches.
-// Used by merge cursors to propagate errors to callers.
-func compareKeysChecked(a, b []any) (int, error) {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
-	for i := 0; i < minLen; i++ {
-		c, err := compareFieldChecked(a[i], b[i])
-		if err != nil {
-			return 0, err
-		}
-		if c != 0 {
-			return c, nil
-		}
-	}
-	return len(a) - len(b), nil
-}
-
-// compareFieldChecked compares two individual field values using FDB tuple encoding.
-// Returns an error if either value is not tuple-encodable.
-func compareFieldChecked(a, b any) (c int, err error) {
-	if a == nil && b == nil {
-		return 0, nil
-	}
-	if a == nil {
-		return -1, nil
-	}
-	if b == nil {
-		return 1, nil
-	}
-
-	// FDB tuple encoding is order-preserving. Recover from Pack panics
-	// on unsupported types and return a clean error.
+func compareKeys(a, b tuple.Tuple) (c int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			c, err = 0, fmt.Errorf("compareField: unsupported type: %v", r)
+			c, err = 0, fmt.Errorf("compareKeys: unsupported tuple element: %v", r)
 		}
 	}()
-	return bytes.Compare(tuple.Tuple{a}.Pack(), tuple.Tuple{b}.Pack()), nil
+	return bytes.Compare(a.Pack(), b.Pack()), nil
 }
 
 // mergeChildState tracks the state of a single child cursor in a merge operation.
@@ -99,7 +33,7 @@ type mergeChildState[T any] struct {
 	cursor        RecordCursor[T]
 	compKeyFunc   ComparisonKeyFunc[T]
 	result        RecordCursorResult[T]
-	comparisonKey []any
+	comparisonKey tuple.Tuple
 	hasResult     bool
 }
 
@@ -203,7 +137,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// Find minimum (or maximum for reverse) key across all children
 	var minIdx int = -1
-	var minKey []any
+	var minKey tuple.Tuple
 	for i, child := range c.children {
 		if !child.hasResult {
 			continue
@@ -213,7 +147,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 			minKey = child.comparisonKey
 			continue
 		}
-		cmp, cmpErr := compareKeysChecked(child.comparisonKey, minKey)
+		cmp, cmpErr := compareKeys(child.comparisonKey, minKey)
 		if cmpErr != nil {
 			return RecordCursorResult[T]{}, cmpErr
 		}
@@ -240,7 +174,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// Consume all children with the same key (deduplication)
 	for _, child := range c.children {
-		eq, eqErr := compareKeysChecked(child.comparisonKey, minKey)
+		eq, eqErr := compareKeys(child.comparisonKey, minKey)
 		if eqErr != nil {
 			return RecordCursorResult[T]{}, eqErr
 		}
@@ -396,7 +330,7 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Find maximum key
 		maxKey := c.children[0].comparisonKey
 		for _, child := range c.children[1:] {
-			cmp, cmpErr := compareKeysChecked(child.comparisonKey, maxKey)
+			cmp, cmpErr := compareKeys(child.comparisonKey, maxKey)
 			if cmpErr != nil {
 				return RecordCursorResult[T]{}, cmpErr
 			}
@@ -411,7 +345,7 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Check if all children agree on the max key
 		allMatch := true
 		for _, child := range c.children {
-			eq, eqErr := compareKeysChecked(child.comparisonKey, maxKey)
+			eq, eqErr := compareKeys(child.comparisonKey, maxKey)
 			if eqErr != nil {
 				return RecordCursorResult[T]{}, eqErr
 			}
@@ -438,7 +372,7 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 
 		// Advance all non-maximal children
 		for _, child := range c.children {
-			neq, neqErr := compareKeysChecked(child.comparisonKey, maxKey)
+			neq, neqErr := compareKeys(child.comparisonKey, maxKey)
 			if neqErr != nil {
 				return RecordCursorResult[T]{}, neqErr
 			}

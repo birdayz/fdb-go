@@ -105,7 +105,11 @@ func (m *RankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 	}
 
 	if oldEntries != nil && newEntries != nil {
-		oldEntries, newEntries = removeCommonEntries(m.index, oldEntries, newEntries)
+		var err error
+		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		if err != nil {
+			return err
+		}
 	}
 
 	isWriteOnlyOrUniquePending := m.store != nil &&
@@ -113,9 +117,15 @@ func (m *RankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 
 	// Process removes: clear B-tree + update ranked set.
 	for i := range oldEntries {
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey))))
+		oldEntryKey, err := indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
+		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
-			m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+			if err := m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey); err != nil {
+				return err
+			}
 		}
 		if err := m.updateRankedSet(oldEntries[i], true); err != nil {
 			return err
@@ -125,7 +135,10 @@ func (m *RankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 	// Process inserts: set B-tree + update ranked set.
 	valueBytes := tuple.Tuple{}.Pack()
 	for i := range newEntries {
-		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		entryTupleKey, err := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
 		keyBytes := m.indexSubspace.Pack(entryTupleKey)
 
 		if err := checkKeyValueSizes(m.index, newEntries[i].primaryKey, keyBytes, valueBytes); err != nil {

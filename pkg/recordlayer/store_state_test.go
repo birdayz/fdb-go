@@ -422,8 +422,8 @@ var _ = Describe("Store state management", func() {
 				}
 
 				// Manually add a violation
-				store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})
-				store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				violations, err := store.ScanUniquenessViolations(priceIndex)
 				Expect(err).NotTo(HaveOccurred())
@@ -454,11 +454,11 @@ var _ = Describe("Store state management", func() {
 					return nil, err
 				}
 
-				store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})
-				store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				// Resolve one
-				store.ResolveUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})
+				Expect(store.ResolveUniquenessViolation(priceIndex, tuple.Tuple{int64(500)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
 
 				violations, err := store.ScanUniquenessViolations(priceIndex)
 				Expect(err).NotTo(HaveOccurred())

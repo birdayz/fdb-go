@@ -144,7 +144,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				idx := md.GetIndex("Order$unique_qty")
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 				markRangeSetComplete(store, idx)
 
 				// Mark as READABLE_UNIQUE_PENDING.
@@ -970,7 +970,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				idx := md.GetIndex("Order$unique_qty")
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 				markRangeSetComplete(store, idx)
 
 				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_qty")
@@ -1401,9 +1401,9 @@ var _ = Describe("FDBRecordStore API", func() {
 
 				// Manually record uniqueness violations.
 				idx := md.GetIndex("Order$unique_qty")
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(3)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(3)})).NotTo(HaveOccurred())
 
 				// Resolve: keep record with PK=1, delete PK=2 and PK=3.
 				err = store.ResolveUniquenessViolationByDeletion(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
@@ -1454,8 +1454,8 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				idx := md.GetIndex("Order$unique_qty")
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(1)})
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				// Resolve with nil remainPrimaryKey: delete all.
 				err = store.ResolveUniquenessViolationByDeletion(idx, tuple.Tuple{int64(20)}, nil)
@@ -1621,9 +1621,9 @@ var _ = Describe("FDBRecordStore API", func() {
 				idx := md.GetIndex("Order$unique_qty")
 
 				// Add violations for two different value keys.
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(3)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(20)}, tuple.Tuple{int64(3)})).NotTo(HaveOccurred())
 
 				// Scan for value=10: should find 2.
 				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(10)})
@@ -1670,7 +1670,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				idx := md.GetIndex("Order$unique_qty")
 
 				// Add a violation for value=10 only.
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
 
 				// Scan for value=99: should be empty.
 				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(99)})
@@ -1725,7 +1725,7 @@ var _ = Describe("FDBRecordStore API", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				idx := md.GetIndex("Order$unique_qty")
-				store.AddUniquenessViolationWithExisting(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)}, tuple.Tuple{int64(1)})
+				Expect(store.AddUniquenessViolationWithExisting(idx, tuple.Tuple{int64(10)}, tuple.Tuple{int64(2)}, tuple.Tuple{int64(1)})).NotTo(HaveOccurred())
 
 				violations, err := store.ScanUniquenessViolationsForValue(idx, tuple.Tuple{int64(10)})
 				Expect(err).NotTo(HaveOccurred())

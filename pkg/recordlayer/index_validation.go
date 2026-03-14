@@ -63,7 +63,10 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 			for j, v := range values {
 				key[j] = v
 			}
-			entryKey := indexEntryKey(index, key, record.PrimaryKey)
+			entryKey, err := indexEntryKey(index, key, record.PrimaryKey)
+			if err != nil {
+				return nil, fmt.Errorf("validate index %q: malformed entry for PK %v: %w", index.Name, record.PrimaryKey, err)
+			}
 			packed := string(entryKey.Pack())
 			expectedEntries[packed] = IndexValidationEntry{
 				IndexKey:   key,

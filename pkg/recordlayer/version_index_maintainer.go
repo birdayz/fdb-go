@@ -71,7 +71,10 @@ func (m *VersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 
 	// Remove old entries
 	for i := range oldEntries {
-		entryTupleKey := indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+		entryTupleKey, err := indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
 		hasIncomplete := tupleHasIncompleteVersionstamp(entryTupleKey)
 		if hasIncomplete {
 			keyBytes, err := m.indexSubspace.PackWithVersionstamp(entryTupleKey)
@@ -88,7 +91,10 @@ func (m *VersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	// Add new entries
 	emptyValue := tuple.Tuple{}.Pack()
 	for i := range newEntries {
-		entryTupleKey := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		entryTupleKey, err := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
+		if err != nil {
+			return err
+		}
 		hasIncomplete := tupleHasIncompleteVersionstamp(entryTupleKey)
 
 		// For KeyWithValueExpression indexes, store the value portion in the FDB value.

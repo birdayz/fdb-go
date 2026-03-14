@@ -223,18 +223,35 @@ func (r *FDBDatabaseRunner) calculateDelay(attempt int) time.Duration {
 }
 
 // isRetryableError checks if an FDB error is retryable.
-// Matches the error codes that FDB's native Transaction.OnError considers retryable.
+// These codes match FDB's fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE, code),
+// which is RETRYABLE = MAYBE_COMMITTED ∪ RETRYABLE_NOT_COMMITTED.
+// The Go binding exposes fdb.ErrorPredicateRetryable (50000) but not the C function
+// fdb_error_predicate() itself, so we maintain the list manually.
+// Source of truth: fdb_c.cpp fdb_error_predicate() + flow/error_definitions.h
 func isRetryableError(err error) bool {
 	var fdbErr fdb.Error
-	if errors.As(err, &fdbErr) {
-		switch fdbErr.Code {
-		case 1007, // transaction_too_old
-			1009, // request_for_timestamp_not_yet_set
-			1020, // not_committed (conflict)
-			1021, // commit_unknown_result
-			1031: // transaction_timed_out
-			return true
-		}
+	if !errors.As(err, &fdbErr) {
+		return false
+	}
+	switch fdbErr.Code {
+	// MAYBE_COMMITTED
+	case 1021, // commit_unknown_result
+		1039: // cluster_version_changed
+		return true
+	// RETRYABLE_NOT_COMMITTED
+	case 1007, // transaction_too_old
+		1009, // future_version
+		1020, // not_committed (conflict)
+		1037, // process_behind
+		1038, // database_locked
+		1042, // commit_proxy_memory_limit_exceeded
+		1051, // batch_transaction_throttled
+		1078, // grv_proxy_memory_limit_exceeded
+		1213, // tag_throttled
+		1223, // proxy_tag_throttled
+		1235, // transaction_throttled_hot_shard
+		1242: // transaction_rejected_range_locked
+		return true
 	}
 	return false
 }

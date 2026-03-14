@@ -238,7 +238,7 @@ var _ = Describe("IndexState", func() {
 
 				idx := mdWithUnique.GetIndex("Order$unique_price")
 				markRangeSetComplete(store, idx)
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				// MarkIndexReadable should fail due to violations
 				_, err = store.MarkIndexReadable("Order$unique_price")
@@ -562,7 +562,7 @@ var _ = Describe("IndexState", func() {
 
 				// Manually add a uniqueness violation entry
 				idx := mdWithUnique.GetIndex("Order$unique_price")
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				// Mark range set as complete so checkIndexBuilt passes.
 				markRangeSetComplete(store, idx)
@@ -648,7 +648,7 @@ var _ = Describe("IndexState", func() {
 
 				idx := mdWithUnique.GetIndex("Order$unique_price")
 				markRangeSetComplete(store, idx)
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				changed, err := store.MarkIndexReadableOrUniquePending("Order$unique_price")
 				Expect(err).NotTo(HaveOccurred())
@@ -878,7 +878,7 @@ var _ = Describe("IndexState", func() {
 
 				idx := mdWithUnique.GetIndex("Order$unique_price")
 				markRangeSetComplete(store, idx)
-				store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})
+				Expect(store.AddUniquenessViolation(idx, tuple.Tuple{int64(100)}, tuple.Tuple{int64(2)})).NotTo(HaveOccurred())
 
 				_, err = store.MarkIndexReadableOrUniquePending("Order$unique_price")
 				Expect(err).NotTo(HaveOccurred())

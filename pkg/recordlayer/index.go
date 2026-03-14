@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -330,28 +331,36 @@ func (idx *Index) SetUnique() *Index {
 // When the index has primaryKeyComponentPositions, PK components that already
 // appear in the index key are omitted (deduplicated). This matches Java's
 // FDBRecordStoreBase.indexEntryKey() which calls Index.trimPrimaryKey().
-func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) tuple.Tuple {
-	trimmed := idx.trimPrimaryKey(primaryKey)
+func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) (tuple.Tuple, error) {
+	trimmed, err := idx.trimPrimaryKey(primaryKey)
+	if err != nil {
+		return nil, err
+	}
 	entry := make(tuple.Tuple, 0, len(indexValues)+len(trimmed))
 	entry = append(entry, indexValues...)
 	entry = append(entry, trimmed...)
-	return entry
+	return entry, nil
 }
 
 // trimPrimaryKey removes PK components that already appear in the index key.
 // Returns the remaining PK components that need to be appended to the index entry.
+// Returns an error if primaryKeyComponentPositions references an index beyond the
+// primary key length.
 // Matches Java's Index.trimPrimaryKey().
-func (idx *Index) trimPrimaryKey(primaryKey tuple.Tuple) tuple.Tuple {
+func (idx *Index) trimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
 	if idx.primaryKeyComponentPositions == nil {
-		return primaryKey
+		return primaryKey, nil
 	}
 	trimmed := make(tuple.Tuple, 0, len(primaryKey))
 	for i, pos := range idx.primaryKeyComponentPositions {
-		if pos < 0 && i < len(primaryKey) {
+		if i >= len(primaryKey) {
+			return nil, fmt.Errorf("trimPrimaryKey: primaryKeyComponentPositions[%d] out of bounds for primary key of length %d (index %q)", i, len(primaryKey), idx.Name)
+		}
+		if pos < 0 {
 			trimmed = append(trimmed, primaryKey[i])
 		}
 	}
-	return trimmed
+	return trimmed, nil
 }
 
 // getEntryPrimaryKey reconstructs the full primary key from an index entry key.
