@@ -190,8 +190,15 @@ func (t *StoreTimer) Snapshot() map[string]*CounterSnapshot {
 	}
 	result := make(map[string]*CounterSnapshot)
 	t.counters.Range(func(key, value any) bool {
-		c := value.(*Counter)
-		result[key.(string)] = &CounterSnapshot{
+		c, ok := value.(*Counter)
+		if !ok {
+			return true
+		}
+		k, ok := key.(string)
+		if !ok {
+			return true
+		}
+		result[k] = &CounterSnapshot{
 			Count:           c.Count(),
 			CumulativeValue: c.CumulativeValue(),
 		}

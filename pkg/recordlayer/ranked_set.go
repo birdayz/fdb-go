@@ -298,7 +298,11 @@ func (rs *RankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool
 			if err != nil {
 				return nil, err
 			}
-			rankKey = t[0].([]byte)
+			var ok bool
+			rankKey, ok = t[0].([]byte)
+			if !ok {
+				return nil, fmt.Errorf("ranked set: expected []byte key at level %d, got %T", level, t[0])
+			}
 			lastCount = rsDecodeLong(kv.Value)
 			rank += lastCount
 		}
@@ -347,7 +351,11 @@ func (rs *RankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 			if err != nil {
 				return nil, err
 			}
-			key = t[0].([]byte)
+			var ok bool
+			key, ok = t[0].([]byte)
+			if !ok {
+				return nil, fmt.Errorf("ranked set: expected []byte key at level %d, got %T", level, t[0])
+			}
 
 			if rank == 0 && len(key) > 0 {
 				return key, nil // Found the element.
@@ -491,7 +499,10 @@ func (rs *RankedSet) getPreviousKey(tx fdb.Transaction, level int, key []byte, o
 	if err != nil {
 		return nil, err
 	}
-	prevKeyBytes := prevKeyTuple[1].([]byte)
+	prevKeyBytes, ok := prevKeyTuple[1].([]byte)
+	if !ok {
+		return nil, fmt.Errorf("ranked set: expected []byte at tuple position 1, got %T", prevKeyTuple[1])
+	}
 	level0Key := fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(0), prevKeyBytes}))
 	if err := tx.AddReadConflictKey(level0Key); err != nil {
 		return nil, err
