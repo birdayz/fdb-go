@@ -136,18 +136,20 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		} else if len(rtNames) == 1 {
 			// Single-type index
 			rt := builder.recordTypes[rtNames[0]]
-			if rt != nil {
-				builder.addIndexCommon(idx)
-				rt.indexes = append(rt.indexes, idx)
+			if rt == nil {
+				return nil, fmt.Errorf("unknown record type %q referenced by index %q", rtNames[0], idxProto.GetName())
 			}
+			builder.addIndexCommon(idx)
+			rt.indexes = append(rt.indexes, idx)
 		} else {
 			// Multi-type index
 			builder.addIndexCommon(idx)
 			for _, name := range rtNames {
 				rt := builder.recordTypes[name]
-				if rt != nil {
-					rt.multiTypeIndexes = append(rt.multiTypeIndexes, idx)
+				if rt == nil {
+					return nil, fmt.Errorf("unknown record type %q referenced by index %q", name, idxProto.GetName())
 				}
+				rt.multiTypeIndexes = append(rt.multiTypeIndexes, idx)
 			}
 		}
 	}

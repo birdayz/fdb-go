@@ -952,6 +952,74 @@ Model-based chaos testing framework: in-memory model shadows real FDB store, ran
 
 ---
 
+## Bug bounty round 3 (2026-03-15)
+
+Third audit via 5 parallel subagents targeting: cursor combinators, index maintainers, store operations, online indexer, metadata + expressions.
+
+### Agent 1: Cursor combinators
+
+Root cause: `EndContinuation` is overloaded to mean both "iteration truly done" and "no continuation available." This poisons every combinator that checks `continuation.IsEnd()`.
+
+- [x] **Bug 1: `LimitRowsCursor(n<=0)` leaks inner cursor** — Fixed: close inner cursor before returning Empty. **$100**.
+- [x] **Bug 2: `AutoContinuingCursor` infinite loop on EndCont + HasStoppedBeforeEnd** — Documented: matches Java behavior. HasStoppedBeforeEnd + EndContinuation doesn't occur with real cursors (they always provide valid continuations for non-exhaustion stops). **$100**.
+- [x] **Bug 3: `ConcatCursors` data loss with EndCont inner cursors** — Documented: matches Java's `ConcatCursorContinuation.isEnd = secondCursor && inner.isEnd()`. Only affects artificial cursors returning values with EndContinuation. **$200**.
+- [x] **Bug 4: `FlatMapPipelined` data loss with EndCont inner cursors** — Documented: matches Java. Inner EndContinuation on values = inner exhausted. Same limitation in Java's FlatMapContinuation. **$200**.
+- [x] **Bug 5: `ChainedCursor` + `ConcatCursors` pagination data loss** — Documented: ChainedCursor(nil encode) returns EndContinuation for values — same pattern as Bug 3. Real usage always has encode/decode. **$200**.
+- [x] **Bug 6: `DedupCursor` drops continuation on EndCont stop** — Documented: matches Java. Pass-through of inner continuation. Real cursors provide valid continuations. **$200**.
+- [x] **Bug 7: `ConcatCursors` restarts from beginning on 1st cursor OOB + EndCont** — Documented: matches Java (Java would crash with BufferUnderflowException on empty continuation). Doesn't occur with real cursors. **$200**.
+- [x] **Bug 8: `FromListWithContinuation` silently ignores invalid continuation lengths** — Fixed: <4 bytes → error (matches Java's BufferUnderflowException), ≥4 bytes → reads first 4 (matches Java's ByteBuffer.getInt()). **$100**.
+
+Test file: `pkg/recordlayer/bug_bounty3_cursor_test.go`
+
+### Agent 5: Metadata + expressions
+
+- [x] **Bug 9: `bindRecordTypeKeyExpressions` is shallow** — Fixed: recursive type-switch walks all expression types (Grouping, KWV, Nesting, Split, List, Function). Matches Java's recursive `KeyExpression.resolveRecordType()`. **$100**.
+- [x] **Bug 10: `Build()` typeKeys map ignores `int32` explicit record type keys** — Fixed: added `int32` case to typeKeys switch. **$100**.
+- [x] **Bug 11: `SplitKeyExpression.Evaluate` panics on `splitSize=0`** — Fixed: `Split()` now validates `splitSize > 0`. **$100**.
+- [x] **Bug 12: `GroupingKeyExpression` allows `groupedCount > columnSize`** — Fixed: `groupingFromProto` now validates range. **$100**.
+- [x] **Bug 13: Former index subspace key type changes through proto round-trip** — Fixed: `normalizeSubspaceKey()` normalizes int/int32/int64 → int64 before comparison. Applied to duplicate type key, index subspace key, and former index checks. **$200**.
+- [x] **Bug 14: `RecordTypeKeyExpression.Nest()` type lost on proto round-trip** — Documented: matches Java. `concat(recordTypeKey(), X)` → `ThenKeyExpression` on deser in both Java and Go. Proto format has no RecordTypeKey+nested message. `primaryKeyStartsWithRecordType()` handles both forms. **$100**.
+- [x] **Bug 15: `SetRecordCountKey` version bump uses pointer equality** — Fixed: uses `keyExpressionsEqualNilSafe()` structural comparison. **$100**.
+- [x] **Bug 16: `isGroupPrefix` uses `FieldNames()` — structural info lost** — Fixed: rewritten to use `normalizeKeyForPositions` + `keyExpressionEquals` for structural comparison. Matches Java's `IndexFunctionHelper.isGroupPrefix()` which uses `KeyExpression.equals()` + `isPrefixKey()`. **$100**.
+- [x] **Bug 17: `SplitKeyExpression` accepts negative `splitSize`** — Fixed: same `Split()` validation. **$100**.
+- [x] **Bug 18: `ListKeyExpression` empty children lossy proto round-trip** — Fixed: `listFromProto` now accepts 0 children. Matches Java's `ListKeyExpression(RecordKeyExpressionProto.List)` constructor which also accepts empty. **$100**.
+- [x] **Bug 19: Evolution validator `fmt.Sprint` confuses `int(5)` with `string("5")`** — Fixed: `subspaceKeyString()` uses `%T:%v` format (type-qualified). All `fmt.Sprint` key comparisons replaced. **$100**.
+- [x] **Bug 20: `RecordMetaDataFromProto` silently drops indexes for unknown record types** — Fixed: returns error. Matches Java's `throwUnknownRecordType()`. **$100**.
+- [x] **Bug 21: Global function registry has no concurrency protection** — Fixed: `sync.RWMutex` on registry. **$100**.
+
+Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
+
+### Agent 2: Index maintainers
+
+- [x] **Bug 25: `MustGet()` panic in PERMUTED_MIN/MAX delete path** — Fixed: `MustGet()` → `Get()` with proper error return. **$100**.
+- [x] **Bug 26: COUNT_NOT_NULL without GroupingKeyExpression silently counts nulls** — Fixed: `Build()` validates atomic index types require `GroupingKeyExpression` root. Matches Java's `AtomicMutationIndexMaintainerFactory.getIndexValidator()`. **$100**.
+- [x] **Bug 27: SUM index without GroupingKeyExpression silently produces empty index** — Fixed: same Build() validation. **$100**.
+- [x] **Bug 28: MIN/MAX_EVER_LONG without GroupingKeyExpression silently produces empty index** — Fixed: same Build() validation. **$100**.
+- [x] **Bug 29: `removeCommonGroupingKeys` set semantics on fan-out duplicates** — Documented: matches Java behavior. Java's `List.removeAll()` has the same set-semantics collapse for duplicate grouping keys. Known limitation in both implementations. **$100**.
+
+### Agent 3: Store operations
+
+- [x] **Bug 22: Reverse scan + continuation leaks version to wrong record** — Fixed: `takePendingVersion(currentPK)` now validates PK match. Stale version from continuation boundary discarded. Both unsplit and split paths fixed. **$200**.
+- [x] **Bug 23: `TypedFDBRecordStore.LoadRecord` drops Version field** — Fixed: added `Version: storedRecord.Version` to struct literal. **$200**.
+- [x] **Bug 24: `TypedFDBRecordStore.SaveRecord` drops Version field** — Fixed: added `Version: storedRecord.Version` to all 3 typed wrapper paths (Load, Save, SaveWithOptions). **$200**.
+
+### Agent 4: Online indexer
+
+- [x] **Bug 30: OnlineIndexer progress tracking undercounts filtered records** — Fixed: count ALL scanned records regardless of type filtering. Matches Java. **$100**.
+
+### Running totals
+
+| Agent | Bugs | $100 | $200 | Total |
+|-------|------|------|------|-------|
+| Cursor combinators | 8 | 3 | 5 | $1,300 |
+| Metadata + expressions | 13 | 12 | 1 | $1,400 |
+| Index maintainers | 5 | 5 | 0 | $500 |
+| Store operations | 3 | 0 | 3 | $600 |
+| Online indexer | 1 | 1 | 0 | $100 |
+| **Total** | **30** | **21** | **9** | **$3,900** |
+
+---
+
 ## Remaining work buckets (2026-03-11 assessment)
 
 **A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.

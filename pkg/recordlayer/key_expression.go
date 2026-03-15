@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -532,6 +533,18 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 }
 
 // keyExpressionEquals returns true if two key expressions are structurally
+// keyExpressionsEqualNilSafe compares two key expressions for structural equality,
+// handling nil on either side.
+func keyExpressionsEqualNilSafe(a, b KeyExpression) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return keyExpressionEquals(a, b)
+}
+
 // identical. Used by buildPrimaryKeyComponentPositions to find overlapping
 // components between index key and primary key.
 // Matches Java's KeyExpression.equals() semantics.
@@ -824,13 +837,19 @@ type FunctionEvaluator func(record *FDBStoredRecord[proto.Message], msg proto.Me
 
 // globalFunctionRegistry maps function names to their evaluators.
 // Matches Java's FunctionKeyExpression.Registry.
-var globalFunctionRegistry = map[string]FunctionEvaluator{
-	"get_versionstamp_incarnation": evaluateGetVersionstampIncarnation,
-}
+// Protected by globalFunctionRegistryMu for concurrent access safety.
+var (
+	globalFunctionRegistryMu sync.RWMutex
+	globalFunctionRegistry   = map[string]FunctionEvaluator{
+		"get_versionstamp_incarnation": evaluateGetVersionstampIncarnation,
+	}
+)
 
 // RegisterFunction registers a named function evaluator in the global registry.
 // Call this before building metadata that uses the function.
 func RegisterFunction(name string, evaluator FunctionEvaluator) {
+	globalFunctionRegistryMu.Lock()
+	defer globalFunctionRegistryMu.Unlock()
 	globalFunctionRegistry[name] = evaluator
 }
 
@@ -852,7 +871,9 @@ func FunctionExpr(name string, arguments KeyExpression) *FunctionKeyExpression {
 // Evaluate resolves the named function from the registry, evaluates arguments,
 // and applies the function. Matches Java's FunctionKeyExpression.evaluateMessage().
 func (f *FunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
+	globalFunctionRegistryMu.RLock()
 	evaluator, ok := globalFunctionRegistry[f.name]
+	globalFunctionRegistryMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown function key expression: %s", f.name)
 	}

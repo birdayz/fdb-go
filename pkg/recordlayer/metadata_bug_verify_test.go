@@ -147,7 +147,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			})
 
 			new := buildMetaDataForBugTest(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("Order$price", Field("price"))
+				idx := NewIndex("Order$price", GroupAll(Field("price")))
 				idx.Type = "count"
 				idx.subspaceKey = old.GetIndex("Order$price").SubspaceTupleKey()
 				idx.AddedVersion = old.GetIndex("Order$price").AddedVersion
@@ -168,7 +168,7 @@ var _ = Describe("MetadataBugVerify", func() {
 			oldIdx := old.GetIndex("Order$price")
 
 			new := buildMetaDataForBugTest(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("Order$price", Field("price"))
+				idx := NewIndex("Order$price", GroupAll(Field("price")))
 				idx.Type = "count"
 				idx.subspaceKey = oldIdx.SubspaceTupleKey()
 				idx.AddedVersion = oldIdx.AddedVersion

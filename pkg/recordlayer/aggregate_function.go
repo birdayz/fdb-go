@@ -321,19 +321,35 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 	}
 }
 
-// isGroupPrefix checks if the function operand's grouping part is a prefix of
-// the index root expression's grouping part.
-// Matches Java's IndexFunctionHelper.isGroupPrefix().
+// isGroupPrefix checks if the function operand is compatible with the index root.
+// The grouped (aggregated) part must match structurally. The grouping (GROUP BY)
+// part of the operand must be a structural prefix of the index's grouping part.
+// Matches Java's IndexFunctionHelper.isGroupPrefix() which uses KeyExpression.equals()
+// and isPrefixKey() for structural comparison (NOT field names).
 func isGroupPrefix(operand KeyExpression, indexRoot KeyExpression) bool {
-	operandGrouping := getGroupingColumns(operand)
-	indexGrouping := getGroupingColumns(indexRoot)
-
-	// Operand's grouping part must be a prefix of index's grouping part
+	// Fast path: full structural equality.
+	if keyExpressionEquals(operand, indexRoot) {
+		return true
+	}
+	// Compare grouped (aggregated) portions structurally.
+	operandGrouped := getGroupedExprs(operand)
+	indexGrouped := getGroupedExprs(indexRoot)
+	if len(operandGrouped) != len(indexGrouped) {
+		return false
+	}
+	for i := range operandGrouped {
+		if !keyExpressionEquals(operandGrouped[i], indexGrouped[i]) {
+			return false
+		}
+	}
+	// Compare grouping (GROUP BY) portions: operand must be a prefix.
+	operandGrouping := getGroupingExprs(operand)
+	indexGrouping := getGroupingExprs(indexRoot)
 	if len(operandGrouping) > len(indexGrouping) {
 		return false
 	}
 	for i := range operandGrouping {
-		if operandGrouping[i] != indexGrouping[i] {
+		if !keyExpressionEquals(operandGrouping[i], indexGrouping[i]) {
 			return false
 		}
 	}
@@ -341,27 +357,28 @@ func isGroupPrefix(operand KeyExpression, indexRoot KeyExpression) bool {
 }
 
 // isUngroupedPrefixOf checks if the operand's ungrouped (aggregated) part
-// is a prefix of the index root expression. Used for VALUE index MIN/MAX.
+// is a structural prefix of the index root expression. Used for VALUE index MIN/MAX.
 // Matches Java's ValueIndexMaintainer.canEvaluateAggregateFunction().
 func isUngroupedPrefixOf(operand KeyExpression, indexRoot KeyExpression) bool {
-	operandFields := operand.FieldNames()
-	indexFields := indexRoot.FieldNames()
+	operandExprs := normalizeKeyForPositions(operand)
+	indexExprs := normalizeKeyForPositions(indexRoot)
 
-	if len(operandFields) > len(indexFields) {
+	if len(operandExprs) > len(indexExprs) {
 		return false
 	}
-	for i := range operandFields {
-		if operandFields[i] != indexFields[i] {
+	for i := range operandExprs {
+		if !keyExpressionEquals(operandExprs[i], indexExprs[i]) {
 			return false
 		}
 	}
 	return true
 }
 
-// getGroupingColumns returns the field names of the grouping (non-aggregated) part.
-func getGroupingColumns(expr KeyExpression) []string {
+// getGroupingExprs returns the per-column key expressions of the grouping (GROUP BY)
+// part. Uses normalizeKeyForPositions for structural decomposition.
+func getGroupingExprs(expr KeyExpression) []KeyExpression {
 	if g, ok := expr.(*GroupingKeyExpression); ok {
-		all := g.wholeKey.FieldNames()
+		all := normalizeKeyForPositions(g.wholeKey)
 		groupingCount := g.GetGroupingCount()
 		if groupingCount <= len(all) {
 			return all[:groupingCount]
@@ -369,7 +386,22 @@ func getGroupingColumns(expr KeyExpression) []string {
 		return all
 	}
 	// Non-grouped expression: all columns are grouping
-	return expr.FieldNames()
+	return normalizeKeyForPositions(expr)
+}
+
+// getGroupedExprs returns the per-column key expressions of the grouped (aggregated)
+// part. Uses normalizeKeyForPositions for structural decomposition.
+func getGroupedExprs(expr KeyExpression) []KeyExpression {
+	if g, ok := expr.(*GroupingKeyExpression); ok {
+		all := normalizeKeyForPositions(g.wholeKey)
+		groupingCount := g.GetGroupingCount()
+		if groupingCount <= len(all) {
+			return all[groupingCount:]
+		}
+		return nil
+	}
+	// Non-grouped expression: no grouped columns (everything is grouping)
+	return normalizeKeyForPositions(expr)
 }
 
 // tupleGreater returns true if a > b using FDB tuple byte ordering.

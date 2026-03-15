@@ -243,9 +243,14 @@ func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
 	if err != nil {
 		return nil, fmt.Errorf("grouping whole key: %w", err)
 	}
+	groupedCount := int(g.GetGroupedCount())
+	columnSize := keyExpressionColumnSize(wholeKey)
+	if groupedCount < 0 || groupedCount > columnSize {
+		return nil, fmt.Errorf("grouping grouped_count %d out of range [0, %d]", groupedCount, columnSize)
+	}
 	return &GroupingKeyExpression{
 		wholeKey:     wholeKey,
-		groupedCount: int(g.GetGroupedCount()),
+		groupedCount: groupedCount,
 	}, nil
 }
 
@@ -330,9 +335,8 @@ func splitFromProto(s *gen.Split) (*SplitKeyExpression, error) {
 
 // listFromProto reconstructs a ListKeyExpression from a proto List.
 func listFromProto(l *gen.List) (*ListKeyExpression, error) {
-	if len(l.Child) == 0 {
-		return nil, fmt.Errorf("list expression requires at least one child")
-	}
+	// Java's ListKeyExpression(RecordKeyExpressionProto.List) accepts empty children lists.
+	// Match Java: allow zero children for proto round-trip compatibility.
 	children := make([]KeyExpression, len(l.Child))
 	for i, child := range l.Child {
 		expr, err := KeyExpressionFromProto(child)

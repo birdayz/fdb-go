@@ -220,7 +220,10 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForRemove(
 		permutedKeyBytes := m.secondarySubspace.Pack(permutedKey)
 
 		// Check if the deleted value is in the permuted subspace.
-		existing := m.tx.Get(fdb.Key(permutedKeyBytes)).MustGet()
+		existing, err := m.tx.Get(fdb.Key(permutedKeyBytes)).Get()
+		if err != nil {
+			return fmt.Errorf("get permuted entry for delete: %w", err)
+		}
 		if existing == nil {
 			continue // Not the current extremum, nothing to do.
 		}

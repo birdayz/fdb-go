@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"fmt"
 	"iter"
 
 	"google.golang.org/protobuf/proto"
@@ -242,12 +243,20 @@ func FromList[T any](items []T) RecordCursor[T] {
 
 // FromListWithContinuation creates a cursor from a slice, starting from a continuation.
 // Matches Java's RecordCursor.fromList(list, continuation).
-// Continuation format: 4-byte big-endian position (nil = start from beginning).
+// Continuation format: 4-byte big-endian position (nil/empty = start from beginning).
+// Java uses ByteBuffer.wrap(continuation).getInt() which reads first 4 bytes and
+// throws BufferUnderflowException for continuations shorter than 4 bytes. Go returns
+// an error from OnNext for invalid continuation lengths to match Java's fail-fast behavior.
 func FromListWithContinuation[T any](items []T, continuation []byte) RecordCursor[T] {
-	start := 0
-	if len(continuation) == 4 {
-		start = int(continuation[0])<<24 | int(continuation[1])<<16 | int(continuation[2])<<8 | int(continuation[3])
+	if len(continuation) == 0 {
+		return &listCursor[T]{items: items, pos: 0}
 	}
+	if len(continuation) < 4 {
+		// Java throws BufferUnderflowException. Return an error cursor.
+		return &errorCursor[T]{err: fmt.Errorf("invalid list continuation: expected at least 4 bytes, got %d", len(continuation))}
+	}
+	// Read first 4 bytes as big-endian int (matches Java's ByteBuffer.getInt())
+	start := int(continuation[0])<<24 | int(continuation[1])<<16 | int(continuation[2])<<8 | int(continuation[3])
 	if start > len(items) {
 		start = len(items)
 	}

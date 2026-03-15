@@ -23,8 +23,11 @@ type SplitKeyExpression struct {
 }
 
 // Split creates a SplitKeyExpression that batches the joined expression's
-// results into groups of splitSize.
+// results into groups of splitSize. splitSize must be > 0.
 func Split(joined KeyExpression, splitSize int) *SplitKeyExpression {
+	if splitSize <= 0 {
+		panic(fmt.Sprintf("splitSize must be positive, got %d", splitSize))
+	}
 	return &SplitKeyExpression{joined: joined, splitSize: splitSize}
 }
 

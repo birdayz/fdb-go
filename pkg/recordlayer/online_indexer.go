@@ -800,9 +800,6 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			}
 
 			// Update each target index that applies to this record.
-			// recordsProcessed counts records scanned (not per-index updates),
-			// matching Java's recordsScannedCounter.
-			indexed := false
 			for _, idx := range oi.targetIndexes {
 				if !oi.shouldIndexRecordForIndex(rec, idx) {
 					continue
@@ -811,11 +808,11 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 				if err := maintainer.Update(nil, rec); err != nil {
 					return nil, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
 				}
-				indexed = true
 			}
-			if indexed {
-				recordsProcessed++
-			}
+			// Count ALL scanned records, not just indexed ones.
+			// Matches Java's IndexingBase.handleCursorResult() which increments
+			// recordsScannedCounter for every record regardless of type filtering.
+			recordsProcessed++
 		}
 
 		// Mark progress in ALL target indexes' RangeSets.
@@ -977,6 +974,9 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			}
 
 			rec := indexedRec.Record
+			// Count ALL scanned records regardless of type filtering.
+			// Matches Java's IndexingBase.handleCursorResult().
+			recordsProcessed++
 
 			if !oi.shouldIndexRecordForIndex(rec, oi.primaryIndex()) {
 				continue
@@ -985,8 +985,6 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			if err := maintainer.Update(nil, rec); err != nil {
 				return nil, fmt.Errorf("index record pk=%v: %w", rec.PrimaryKey, err)
 			}
-
-			recordsProcessed++
 		}
 
 		var rangeBeginBytes, rangeEndBytes []byte

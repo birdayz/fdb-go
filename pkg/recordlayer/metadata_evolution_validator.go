@@ -244,7 +244,7 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 			// Try to find by type key
 			found := false
 			for _, nrt := range new.RecordTypes() {
-				if fmt.Sprint(nrt.GetRecordTypeKey()) == fmt.Sprint(oldRT.GetRecordTypeKey()) {
+				if normalizeSubspaceKey(nrt.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
 					found = true
 					newRT = nrt
 					break
@@ -263,7 +263,7 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 		}
 
 		// Record type key must not change
-		if fmt.Sprint(oldRT.GetRecordTypeKey()) != fmt.Sprint(newRT.GetRecordTypeKey()) {
+		if normalizeSubspaceKey(oldRT.GetRecordTypeKey()) != normalizeSubspaceKey(newRT.GetRecordTypeKey()) {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("record type key changed for %q (old=%v, new=%v)",
 					name, oldRT.GetRecordTypeKey(), newRT.GetRecordTypeKey()),
@@ -286,7 +286,7 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 		// If this type was renamed, map old name to the new name
 		renamed := name
 		for newName, newRT := range new.RecordTypes() {
-			if fmt.Sprint(newRT.GetRecordTypeKey()) == fmt.Sprint(oldRT.GetRecordTypeKey()) {
+			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
 				renamed = newName
 				break
 			}
@@ -348,7 +348,7 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 		newIdx := new.GetIndex(name)
 		if newIdx == nil {
 			// Must have become a FormerIndex
-			subKey := fmt.Sprint(oldIdx.SubspaceTupleKey())
+			subKey := subspaceKeyString(oldIdx.SubspaceTupleKey())
 			if _, ok := newFormerIndexMap[subKey]; !ok {
 				return &MetaDataEvolutionError{
 					Message: fmt.Sprintf("index %q missing in new meta-data (not replaced by former index)", name),
@@ -717,10 +717,19 @@ func validateProtoSyntax(oldDesc, newDesc protoreflect.MessageDescriptor) error 
 	return nil
 }
 
+// subspaceKeyString returns a type-safe string representation of a subspace key
+// for use as a map key. Normalizes integer types to int64 first so that
+// int(42), int32(42), and int64(42) all produce the same string.
+// Uses %T:%v format so that string("5") != int64(5). Fixes bug 19.
+func subspaceKeyString(key any) string {
+	normalized := normalizeSubspaceKey(key)
+	return fmt.Sprintf("%T:%v", normalized, normalized)
+}
+
 func buildFormerIndexMap(indexes []*FormerIndex) map[string]*FormerIndex {
 	m := make(map[string]*FormerIndex, len(indexes))
 	for _, fi := range indexes {
-		m[fmt.Sprint(fi.SubspaceKey)] = fi
+		m[subspaceKeyString(fi.SubspaceKey)] = fi
 	}
 	return m
 }

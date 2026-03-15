@@ -152,7 +152,9 @@ var _ = Describe("OnlineIndexerBugVerify", func() {
 
 			total, err := indexer.BuildIndex(ctx)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(total).To(Equal(int64(5)))
+			// Bug 30 FIX: counts ALL scanned records (10 Customers + 5 Orders = 15),
+			// matching Java's IndexingBase.handleCursorResult().
+			Expect(total).To(Equal(int64(15)))
 
 			// Phase 3: Verify the index has all 5 Order entries.
 			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

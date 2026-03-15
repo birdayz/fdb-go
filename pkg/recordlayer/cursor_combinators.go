@@ -70,6 +70,8 @@ func (c *skipCursor[T]) Close() error { return c.inner.Close() }
 // Matches Java's RecordCursor.limitRowsTo().
 func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
 	if n <= 0 {
+		// Close inner cursor to prevent resource leaks (FDB iterators, etc.)
+		_ = cursor.Close()
 		return Empty[T]()
 	}
 	return &limitRowsCursor[T]{inner: cursor, remaining: n}

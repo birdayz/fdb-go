@@ -216,7 +216,7 @@ func (b *RecordMetaDataBuilder) setRecordsWithoutUnion(fd protoreflect.FileDescr
 // If nil (default), record counting is disabled.
 // Java equivalent: RecordMetaDataBuilder.setRecordCountKey(KeyExpression)
 func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMetaDataBuilder {
-	if b.recordCountKey != key {
+	if !keyExpressionsEqualNilSafe(b.recordCountKey, key) {
 		b.version++ // Matches Java: bumps version when value changes
 	}
 	b.recordCountKey = key
@@ -427,9 +427,10 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 
 	// Validate no duplicate record type keys.
 	// Matches Java's MetaDataValidator which checks for duplicate type keys.
+	// Use normalizeSubspaceKey to handle type mismatches (int vs int64 vs int32).
 	typeKeySeen := make(map[any]string)
 	for name, rt := range b.recordTypes {
-		key := rt.GetRecordTypeKey()
+		key := normalizeSubspaceKey(rt.GetRecordTypeKey())
 		if prevName, exists := typeKeySeen[key]; exists {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record types %q and %q have the same record type key %v", prevName, name, key)}
 		}
@@ -447,19 +448,22 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 
 	// Validate no duplicate subspace keys among current indexes.
 	// Matches Java's MetaDataValidator.validateIndexes().
+	// Use normalizeSubspaceKey to handle type mismatches after proto round-trip.
 	indexSubspaceKeySeen := make(map[any]string)
 	for _, idx := range indexes {
-		sk := idx.SubspaceTupleKey()
+		sk := normalizeSubspaceKey(idx.SubspaceTupleKey())
 		if prevName, exists := indexSubspaceKeySeen[sk]; exists {
 			return nil, &MetaDataError{Message: fmt.Sprintf("indexes %q and %q have the same subspace key %v", prevName, idx.Name, sk)}
 		}
 		indexSubspaceKeySeen[sk] = idx.Name
 	}
 
-	// Validate no former index subspace key conflicts with current indexes
+	// Validate no former index subspace key conflicts with current indexes.
+	// Use normalizeSubspaceKey to handle type mismatches after proto round-trip
+	// (e.g. int vs int64 from FDB tuple unpack). Bug 13 fix.
 	for _, fi := range b.formerIndexes {
 		for _, idx := range indexes {
-			if fi.SubspaceKey == idx.SubspaceTupleKey() {
+			if normalizeSubspaceKey(fi.SubspaceKey) == normalizeSubspaceKey(idx.SubspaceTupleKey()) {
 				return nil, &MetaDataError{Message: fmt.Sprintf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)}
 			}
 		}
@@ -484,6 +488,27 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	for _, idx := range indexes {
 		if idx.AddedVersion > 0 && idx.LastModifiedVersion > 0 && idx.AddedVersion > idx.LastModifiedVersion {
 			return nil, &MetaDataError{Message: fmt.Sprintf("index %q has addedVersion (%d) > lastModifiedVersion (%d)", idx.Name, idx.AddedVersion, idx.LastModifiedVersion)}
+		}
+	}
+
+	// Validate atomic index types require GroupingKeyExpression as root.
+	// Matches Java's AtomicMutationIndexMaintainerFactory.getIndexValidator() which calls
+	// validateGrouping(), and IndexValidator.validateGrouping() which throws if the root
+	// expression is not a GroupingKeyExpression.
+	// Without this, indexGroupingCount() silently treats all columns as "grouping" and
+	// zero as "grouped/aggregated", causing the index to malfunction (bugs #26-28).
+	for _, idx := range indexes {
+		switch idx.Type {
+		case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates,
+			IndexTypeSum,
+			IndexTypeMinEverLong, IndexTypeMaxEverLong,
+			IndexTypeMinEverTuple, IndexTypeMaxEverTuple:
+			if _, ok := idx.RootExpression.(*GroupingKeyExpression); !ok {
+				return nil, &MetaDataError{Message: fmt.Sprintf(
+					"%s index %q requires a GroupingKeyExpression as root expression; "+
+						"wrap with Ungrouped(), GroupAll(), or GroupBy()",
+					idx.Type, idx.Name)}
+			}
 		}
 	}
 
@@ -568,23 +593,39 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		switch k := key.(type) {
 		case int:
 			typeKeys[rt.Name] = int64(k)
+		case int32:
+			typeKeys[rt.Name] = int64(k)
 		case int64:
 			typeKeys[rt.Name] = k
 		}
 	}
-	bindRecordTypeKeyExpressions := func(expr KeyExpression) {
+	var bindRecordTypeKeyExpressions func(KeyExpression)
+	bindRecordTypeKeyExpressions = func(expr KeyExpression) {
 		if expr == nil {
 			return
 		}
-		if rt, ok := expr.(*RecordTypeKeyExpression); ok {
-			rt.bindTypeKeys(typeKeys)
-		}
-		if comp, ok := expr.(*CompositeKeyExpression); ok {
-			for _, child := range comp.expressions {
-				if rt, ok := child.(*RecordTypeKeyExpression); ok {
-					rt.bindTypeKeys(typeKeys)
-				}
+		switch e := expr.(type) {
+		case *RecordTypeKeyExpression:
+			e.bindTypeKeys(typeKeys)
+			bindRecordTypeKeyExpressions(e.nested)
+		case *CompositeKeyExpression:
+			for _, child := range e.expressions {
+				bindRecordTypeKeyExpressions(child)
 			}
+		case *GroupingKeyExpression:
+			bindRecordTypeKeyExpressions(e.wholeKey)
+		case *KeyWithValueExpression:
+			bindRecordTypeKeyExpressions(e.innerKey)
+		case *NestingKeyExpression:
+			bindRecordTypeKeyExpressions(e.child)
+		case *SplitKeyExpression:
+			bindRecordTypeKeyExpressions(e.joined)
+		case *ListKeyExpression:
+			for _, child := range e.children {
+				bindRecordTypeKeyExpressions(child)
+			}
+		case *FunctionKeyExpression:
+			bindRecordTypeKeyExpressions(e.arguments)
 		}
 	}
 	for _, rt := range types {
@@ -782,6 +823,24 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 		return ok
 	}
 	return false
+}
+
+// normalizeSubspaceKey normalizes a subspace key for comparison. All integer
+// types (int, int32, int64) are normalized to int64 so that Go's any equality
+// works correctly after proto round-trip (FDB tuple unpack returns int64,
+// valueFromProto may return int32, and Go code may use int). Without this,
+// int64(42) != int(42) in Go's any comparison. Fixes bug 13.
+func normalizeSubspaceKey(key any) any {
+	switch k := key.(type) {
+	case int:
+		return int64(k)
+	case int32:
+		return int64(k)
+	case int64:
+		return k
+	default:
+		return key
+	}
 }
 
 // countVersionColumnsInGroupParts counts version columns in the grouping

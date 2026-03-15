@@ -78,7 +78,8 @@ type keyValueCursor struct {
 	// that hasn't been attached to a record yet. In forward scans, the version
 	// key (suffix -1) appears before the record data (suffix 0 or 1+), so we
 	// store it here until the record is read.
-	pendingVersion *FDBRecordVersion
+	pendingVersion   *FDBRecordVersion
+	pendingVersionPK tuple.Tuple // PK of the record this pending version belongs to
 }
 
 // OnNext returns the next record or indicates why iteration stopped
@@ -240,8 +241,12 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			// Capture version data for the next record.
 			// In forward scan, version key (suffix -1) appears before record data.
 			// Matches Java's KeyValueUnsplitter which reads version inline.
+			// Track the PK to avoid leaking versions across records on reverse
+			// scan resume (where a stale version key from the continuation
+			// boundary falls within the resumed range).
 			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
 				c.pendingVersion = ver
+				c.pendingVersionPK = primaryKey
 			}
 			continue
 
@@ -252,7 +257,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 				return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 			}
 			// Attach version: from pendingVersion (forward scan) or peek ahead (reverse scan)
-			version := c.takePendingVersion()
+			version := c.takePendingVersion(primaryKey)
 			if version == nil {
 				version = c.peekVersionKey(recordsSubspace, primaryKey)
 			}
@@ -286,16 +291,28 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 	}
 }
 
-// takePendingVersion returns and clears the pending version. In forward scans,
-// the version key (suffix -1) appears before the record data, so pendingVersion
-// is set before the record is read. In reverse scans for split records,
-// readSplitRecord captures the version while collecting chunks. Keys are sorted
-// by PK then suffix, so the pending version always belongs to the current record.
-func (c *keyValueCursor) takePendingVersion() *FDBRecordVersion {
+// takePendingVersion returns and clears the pending version if it belongs to
+// the given primary key. In forward scans, the version key (suffix -1) appears
+// before the record data, so pendingVersion is set before the record is read.
+// In reverse scans for split records, readSplitRecord captures the version
+// while collecting chunks.
+//
+// The PK check prevents version leakage across continuation boundaries in
+// reverse scans: when resuming, the stale version key from the previous
+// record falls within the scan range and gets captured. Without the PK check,
+// it would be incorrectly attached to the next record.
+func (c *keyValueCursor) takePendingVersion(currentPK tuple.Tuple) *FDBRecordVersion {
 	if c.pendingVersion != nil {
-		ver := c.pendingVersion
+		if sameTuple(c.pendingVersionPK, currentPK) {
+			ver := c.pendingVersion
+			c.pendingVersion = nil
+			c.pendingVersionPK = nil
+			return ver
+		}
+		// Version belongs to a different record (reverse scan continuation
+		// boundary). Discard it.
 		c.pendingVersion = nil
-		return ver
+		c.pendingVersionPK = nil
 	}
 	return nil
 }
@@ -406,6 +423,7 @@ func (c *keyValueCursor) readSplitRecord(
 		if suffix == RecordVersionSuffix {
 			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
 				c.pendingVersion = ver
+				c.pendingVersionPK = primaryKey
 			}
 			continue
 		}
@@ -450,7 +468,7 @@ func (c *keyValueCursor) readSplitRecord(
 	}
 
 	// Attach version captured during chunk collection (forward or reverse scan)
-	version := c.takePendingVersion()
+	version := c.takePendingVersion(primaryKey)
 	if version == nil {
 		version = c.localVersionFallback(primaryKey)
 	}
