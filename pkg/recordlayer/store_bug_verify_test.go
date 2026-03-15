@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -55,7 +56,11 @@ var _ = Describe("StoreBugVerify", func() {
 				return nil, err
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("record type changed"))
+			var typeChanged *RecordTypeChangedError
+			Expect(errors.As(err, &typeChanged)).To(BeTrue())
+			Expect(typeChanged.PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
+			Expect(typeChanged.ActualType).To(Equal("Order"))
+			Expect(typeChanged.ExpectedType).To(Equal("Customer"))
 		})
 	})
 

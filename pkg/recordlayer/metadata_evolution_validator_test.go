@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"errors"
+
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,8 +32,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(1, nil)
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not have newer version"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("does not have newer version"))
 		})
 
 		It("rejects older version", func() {
@@ -39,8 +42,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(3, nil)
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not have newer version"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("does not have newer version"))
 		})
 
 		It("allows same version when configured", func() {
@@ -69,8 +73,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(2, nil)
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("no longer splits"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("no longer splits"))
 		})
 
 		It("rejects adding split by default", func() {
@@ -80,8 +85,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("splits long records"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("splits long records"))
 		})
 
 		It("allows adding split when configured", func() {
@@ -104,8 +110,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("primary key changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("primary key changed"))
 		})
 
 		It("rejects record type key change", func() {
@@ -115,8 +122,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("record type key changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("record type key changed"))
 		})
 
 		It("allows unchanged record types with higher version", func() {
@@ -136,8 +144,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("since version changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("since version changed"))
 		})
 
 		It("allows same since version on existing type", func() {
@@ -162,8 +171,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(3, nil)
 
 			err := ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("missing in new meta-data"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("missing in new meta-data"))
 		})
 
 		It("accepts removed index with former index", func() {
@@ -207,8 +217,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 			v := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(true).Build()
 			err := v.Validate(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("type changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("type changed"))
 		})
 
 		It("rejects index key expression change", func() {
@@ -226,8 +237,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 			v := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(true).Build()
 			err := v.Validate(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("key expression changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("key expression changed"))
 		})
 
 		It("accepts new index with proper version", func() {
@@ -257,8 +269,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("not newer than the old meta-data version"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("not newer than the old meta-data version"))
 		})
 
 		It("rejects last modified version decrease", func() {
@@ -289,8 +302,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("last modified version"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("last modified version"))
 		})
 
 		It("allows index rebuild when configured", func() {
@@ -339,8 +353,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("changes primary key component positions"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("changes primary key component positions"))
 		})
 
 		It("rejects adding primary key component positions", func() {
@@ -366,8 +381,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			err = ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("adds primary key component positions"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("adds primary key component positions"))
 		})
 
 		It("accepts unchanged primary key component positions", func() {
@@ -437,9 +453,10 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(5, nil)
 
 			err = ValidateEvolution(old, new)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("former index"))
-			Expect(err.Error()).To(ContainSubstring("removed from meta-data"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("former index"))
+			Expect(evolErr.Message).To(ContainSubstring("removed from meta-data"))
 		})
 
 		It("accepts preserved former index", func() {

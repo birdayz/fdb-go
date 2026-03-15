@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -54,7 +55,8 @@ var _ = Describe("IndexBugVerify", func() {
 				return nil, err
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("uniqueness"))
+			var uniquenessErr *RecordIndexUniquenessViolationError
+			Expect(errors.As(err, &uniquenessErr)).To(BeTrue())
 		})
 
 		It("unique index allows same record to update without violation", func() {

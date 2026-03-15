@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -64,7 +65,8 @@ var _ = Describe("API Coverage 2", func() {
 
 				_, typedErr := GetTypedRecordStore[*gen.Order](store, "DoesNotExist")
 				Expect(typedErr).To(HaveOccurred())
-				Expect(typedErr.Error()).To(ContainSubstring("not found"))
+				var mdErr *MetaDataError
+				Expect(errors.As(typedErr, &mdErr)).To(BeTrue())
 
 				return nil, nil
 			})

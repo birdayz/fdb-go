@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -1000,7 +1001,8 @@ var _ = Describe("IndexScanning", func() {
 				cursor := store.ScanIndexRecords("nonexistent", TupleRangeAll, nil, ForwardScan())
 				_, scanErr := cursor.OnNext(ctx)
 				Expect(scanErr).To(HaveOccurred())
-				Expect(scanErr.Error()).To(ContainSubstring("not found"))
+				var notFound *IndexNotFoundError
+				Expect(errors.As(scanErr, &notFound)).To(BeTrue())
 
 				return nil, nil
 			})

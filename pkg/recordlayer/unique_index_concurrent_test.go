@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -124,7 +125,8 @@ var _ = Describe("UniqueIndexConcurrent", func() {
 		Expect(err).To(HaveOccurred())
 
 		// Should be a uniqueness violation, not an FDB conflict
-		Expect(err.Error()).To(ContainSubstring("uniqueness violation"))
+		var uniquenessErr *RecordIndexUniquenessViolationError
+		Expect(errors.As(err, &uniquenessErr)).To(BeTrue())
 
 		// Verify only one entry in the index
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

@@ -135,12 +135,10 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			err = store.SaveRecordWithOptions(ctx, StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfExists)
 			Expect(err).To(HaveOccurred())
 
-			// Check if error is the structured type
+			// Check error is the structured type
 			var recordExistsErr *recordlayer.RecordAlreadyExistsError
-			if errors.As(err, &recordExistsErr) {
-				Expect(recordExistsErr.PrimaryKey).NotTo(BeNil())
-				Expect(recordExistsErr.Error()).To(ContainSubstring("already exists"))
-			}
+			Expect(errors.As(err, &recordExistsErr)).To(BeTrue())
+			Expect(recordExistsErr.PrimaryKey).NotTo(BeNil())
 		})
 	})
 
@@ -182,12 +180,10 @@ var _ = Describe("RecordExistenceCheck Conformance", func() {
 			err := store.SaveRecordWithOptions(ctx, StandardOrder(orderID), recordlayer.RecordExistenceCheckErrorIfNotExists)
 			Expect(err).To(HaveOccurred())
 
-			// Check if error is the structured type
+			// Check error is the structured type
 			var recordDoesNotExistErr *recordlayer.RecordDoesNotExistError
-			if errors.As(err, &recordDoesNotExistErr) {
-				Expect(recordDoesNotExistErr.PrimaryKey).NotTo(BeNil())
-				Expect(recordDoesNotExistErr.Error()).To(ContainSubstring("does not exist"))
-			}
+			Expect(errors.As(err, &recordDoesNotExistErr)).To(BeTrue())
+			Expect(recordDoesNotExistErr.PrimaryKey).NotTo(BeNil())
 		})
 	})
 

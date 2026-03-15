@@ -299,7 +299,8 @@ var _ = Describe("Error Conformance", func() {
 				return nil, err
 			})
 			Expect(goErr).To(HaveOccurred())
-			Expect(goErr.Error()).To(ContainSubstring("lock"))
+			var lockedErr *recordlayer.StoreIsLockedForRecordUpdatesError
+			Expect(errors.As(goErr, &lockedErr)).To(BeTrue())
 
 			// Java: same operation
 			tenantName2 := fmt.Sprintf("err_locked_java_%s", uuid.New().String())

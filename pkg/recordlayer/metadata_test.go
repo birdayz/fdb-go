@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -288,7 +289,9 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("has no primary key set"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("has no primary key set"))
 	})
 
 	It("Build returns error when one record type lacks primary key", func() {
@@ -298,7 +301,9 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("has no primary key set"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("has no primary key set"))
 	})
 
 	It("Build succeeds when all primary keys are set", func() {
@@ -321,7 +326,9 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("create duplicates"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("create duplicates"))
 	})
 
 	It("Build rejects duplicate record type keys", func() {
@@ -335,7 +342,9 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("same record type key"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("same record type key"))
 	})
 
 	It("Build rejects duplicate index subspace keys", func() {
@@ -352,7 +361,9 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("same subspace key"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("same subspace key"))
 	})
 
 	It("Build rejects former index with addedVersion > removedVersion", func() {
@@ -372,6 +383,8 @@ var _ = Describe("RecordMetaDataBuilder_Validation", func() {
 		md, err := builder.Build()
 		Expect(err).To(HaveOccurred())
 		Expect(md).To(BeNil())
-		Expect(err.Error()).To(ContainSubstring("addedVersion"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("addedVersion"))
 	})
 })

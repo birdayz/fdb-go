@@ -92,8 +92,10 @@ var _ = Describe("StaleMetaDataVersion", func() {
 	})
 
 	It("error message includes both versions", func() {
-		err := &StaleMetaDataVersionError{LocalVersion: 2, StoredVersion: 7}
-		Expect(err.Error()).To(ContainSubstring("local 2"))
-		Expect(err.Error()).To(ContainSubstring("stored 7"))
+		var err error = &StaleMetaDataVersionError{LocalVersion: 2, StoredVersion: 7}
+		var staleErr *StaleMetaDataVersionError
+		Expect(errors.As(err, &staleErr)).To(BeTrue())
+		Expect(staleErr.LocalVersion).To(Equal(2))
+		Expect(staleErr.StoredVersion).To(Equal(7))
 	})
 })

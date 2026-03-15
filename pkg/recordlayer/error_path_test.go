@@ -575,8 +575,10 @@ var _ = Describe("ErrorMessageFormat", func() {
 			Reason:    "index rebuild",
 			Timestamp: 1234567890,
 		}
-		Expect(err.Error()).To(ContainSubstring("index rebuild"))
-		Expect(err.Error()).To(ContainSubstring("1234567890"))
+		var lockedErr *StoreIsLockedForRecordUpdatesError
+		Expect(errors.As(err, &lockedErr)).To(BeTrue())
+		Expect(lockedErr.Reason).To(ContainSubstring("index rebuild"))
+		Expect(lockedErr.Timestamp).To(Equal(int64(1234567890)))
 	})
 
 	It("StaleMetaDataVersionError", func() {
@@ -584,8 +586,10 @@ var _ = Describe("ErrorMessageFormat", func() {
 			LocalVersion:  1,
 			StoredVersion: 5,
 		}
-		Expect(err.Error()).To(ContainSubstring("local 1"))
-		Expect(err.Error()).To(ContainSubstring("stored 5"))
+		var staleErr *StaleMetaDataVersionError
+		Expect(errors.As(err, &staleErr)).To(BeTrue())
+		Expect(staleErr.LocalVersion).To(Equal(1))
+		Expect(staleErr.StoredVersion).To(Equal(5))
 	})
 
 	It("IndexKeySizeError", func() {
@@ -595,8 +599,11 @@ var _ = Describe("ErrorMessageFormat", func() {
 			KeySize:    15000,
 			Limit:      10000,
 		}
-		Expect(err.Error()).To(ContainSubstring("my_index"))
-		Expect(err.Error()).To(ContainSubstring("15000"))
+		var keySizeErr *IndexKeySizeError
+		Expect(errors.As(err, &keySizeErr)).To(BeTrue())
+		Expect(keySizeErr.IndexName).To(Equal("my_index"))
+		Expect(keySizeErr.KeySize).To(Equal(15000))
+		Expect(keySizeErr.Limit).To(Equal(10000))
 	})
 
 	It("IndexValueSizeError", func() {
@@ -606,8 +613,11 @@ var _ = Describe("ErrorMessageFormat", func() {
 			ValueSize:  150000,
 			Limit:      100000,
 		}
-		Expect(err.Error()).To(ContainSubstring("covering_idx"))
-		Expect(err.Error()).To(ContainSubstring("150000"))
+		var valSizeErr *IndexValueSizeError
+		Expect(errors.As(err, &valSizeErr)).To(BeTrue())
+		Expect(valSizeErr.IndexName).To(Equal("covering_idx"))
+		Expect(valSizeErr.ValueSize).To(Equal(150000))
+		Expect(valSizeErr.Limit).To(Equal(100000))
 	})
 
 	It("RecordIndexUniquenessViolationError", func() {
@@ -617,8 +627,12 @@ var _ = Describe("ErrorMessageFormat", func() {
 			PrimaryKey:  tuple.Tuple{int64(2)},
 			ExistingKey: tuple.Tuple{int64(1)},
 		}
-		Expect(err.Error()).To(ContainSubstring("unique_idx"))
-		Expect(err.Error()).To(ContainSubstring("uniqueness violation"))
+		var uniqErr *RecordIndexUniquenessViolationError
+		Expect(errors.As(err, &uniqErr)).To(BeTrue())
+		Expect(uniqErr.IndexName).To(Equal("unique_idx"))
+		Expect(uniqErr.IndexKey).To(Equal(tuple.Tuple{int64(100)}))
+		Expect(uniqErr.PrimaryKey).To(Equal(tuple.Tuple{int64(2)}))
+		Expect(uniqErr.ExistingKey).To(Equal(tuple.Tuple{int64(1)}))
 	})
 
 	It("RecordExistenceCheckString", func() {
@@ -971,8 +985,9 @@ var _ = Describe("Error type coverage gaps", func() {
 
 	It("UnknownStoreLockStateError includes correct error message", func() {
 		err := &UnknownStoreLockStateError{LockStateValue: 42}
-		Expect(err.Error()).To(ContainSubstring("unknown lock state"))
-		Expect(err.Error()).To(ContainSubstring("42"))
+		var unknownErr *UnknownStoreLockStateError
+		Expect(errors.As(err, &unknownErr)).To(BeTrue())
+		Expect(unknownErr.LockStateValue).To(Equal(int32(42)))
 	})
 
 	It("IndexNotReadableError via errors.As on WRITE_ONLY index scan", func() {

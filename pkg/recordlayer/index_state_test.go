@@ -441,7 +441,10 @@ var _ = Describe("IndexState", func() {
 				idx := md.GetIndex("Order$price")
 				_, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("not readable"))
+				var notReadable *IndexNotReadableError
+				Expect(errors.As(err, &notReadable)).To(BeTrue())
+				Expect(notReadable.IndexName).To(Equal("Order$price"))
+				Expect(notReadable.CurrentState).To(Equal(IndexStateDisabled))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -462,7 +465,8 @@ var _ = Describe("IndexState", func() {
 				idx := md.GetIndex("Order$price")
 				_, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("not readable"))
+				var notReadable *IndexNotReadableError
+				Expect(errors.As(err, &notReadable)).To(BeTrue())
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -479,7 +483,9 @@ var _ = Describe("IndexState", func() {
 				}
 				_, err = store.MarkIndexDisabled("nonexistent")
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("not found"))
+				var notFound *IndexNotFoundError
+				Expect(errors.As(err, &notFound)).To(BeTrue())
+				Expect(notFound.IndexName).To(Equal("nonexistent"))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

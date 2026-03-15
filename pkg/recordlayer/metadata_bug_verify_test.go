@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -181,7 +182,8 @@ var _ = Describe("MetadataBugVerify", func() {
 			v := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(false).Build()
 			err := v.Validate(old, new)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("type changed"))
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
 		})
 	})
 
