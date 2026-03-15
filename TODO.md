@@ -781,7 +781,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **store.go too large (2004 lines)** — Split into `store.go` (1134, core CRUD/scanning/state), `store_builder.go` (549, builder/lifecycle/rebuild), `store_typed.go` (228, TypedFDBRecordStore), `store_version.go` (115, version management).
 
-- [ ] **cursor.go (1090 lines)** — Down from 1514 after interface slimming. Could split further into `cursor.go` (interface/result), `cursor_combinators.go` (combinators), `cursor_util.go` (utilities). Low priority — size is manageable.
+- [x] **cursor.go split** — Split 1202→3 files: `cursor.go` (286, interfaces), `cursor_combinators.go` (735, combinators), `cursor_util.go` (195, utilities).
 
 - [x] **NewRecordMetaData discards Build() error** — Fixed: removed the function entirely. Callers should use `NewRecordMetaDataBuilder()` and `Build()` for proper error handling.
 
