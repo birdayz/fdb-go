@@ -302,8 +302,8 @@ var _ = Describe("RangeSet", func() {
 				ranges, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 0)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ranges).To(HaveLen(1))
-				Expect(ranges[0].Begin).To(Equal(RangeSetFirstKey))
-				Expect(ranges[0].End).To(Equal(RangeSetFinalKey))
+				Expect(ranges[0].Begin).To(Equal(rangeSetFirstKey))
+				Expect(ranges[0].End).To(Equal(rangeSetFinalKey))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -335,14 +335,14 @@ var _ = Describe("RangeSet", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ranges).To(HaveLen(3))
 				// Before first: [0x00, 0x10)
-				Expect(ranges[0].Begin).To(Equal(RangeSetFirstKey))
+				Expect(ranges[0].Begin).To(Equal(rangeSetFirstKey))
 				Expect(ranges[0].End).To(Equal([]byte{0x10}))
 				// Between: [0x20, 0x40)
 				Expect(ranges[1].Begin).To(Equal([]byte{0x20}))
 				Expect(ranges[1].End).To(Equal([]byte{0x40}))
 				// After last: [0x50, 0xff)
 				Expect(ranges[2].Begin).To(Equal([]byte{0x50}))
-				Expect(ranges[2].End).To(Equal(RangeSetFinalKey))
+				Expect(ranges[2].End).To(Equal(rangeSetFinalKey))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -359,7 +359,7 @@ var _ = Describe("RangeSet", func() {
 				ranges, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 1)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ranges).To(HaveLen(1))
-				Expect(ranges[0].Begin).To(Equal(RangeSetFirstKey))
+				Expect(ranges[0].Begin).To(Equal(rangeSetFirstKey))
 				Expect(ranges[0].End).To(Equal([]byte{0x10}))
 				return nil, nil
 			})
@@ -521,7 +521,7 @@ var _ = Describe("RangeSet", func() {
 			chunks := [][2][]byte{
 				{[]byte{0x00}, []byte{0x30}},
 				{[]byte{0x30}, []byte{0x60}},
-				{[]byte{0x60}, RangeSetFinalKey},
+				{[]byte{0x60}, rangeSetFinalKey},
 			}
 
 			for _, chunk := range chunks {

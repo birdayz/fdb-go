@@ -85,7 +85,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				Expect(modified).To(BeTrue())
 
 				// Verify the range is there
-				contains, err := rs.Contains(rtx.Transaction(), RangeSetFirstKey)
+				contains, err := rs.Contains(rtx.Transaction(), rangeSetFirstKey)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(contains).To(BeTrue(), "FIRST_KEY should be contained")
 
@@ -245,7 +245,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				limited, err := rs.MissingRanges(rtx.Transaction(), nil, nil, 1)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(limited).To(HaveLen(1))
-				Expect(limited[0].Begin).To(Equal(RangeSetFirstKey))
+				Expect(limited[0].Begin).To(Equal(rangeSetFirstKey))
 				Expect(limited[0].End).To(Equal([]byte{0x10}))
 
 				// Limit=2: should return first two gaps
@@ -355,7 +355,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				rs := NewRangeSet(ks.Sub("rs13"))
 
-				_, err := rs.Contains(rtx.Transaction(), RangeSetFinalKey)
+				_, err := rs.Contains(rtx.Transaction(), rangeSetFinalKey)
 				Expect(err).To(HaveOccurred())
 				var tooLargeErr *RangeSetKeyTooLargeError
 				Expect(errors.As(err, &tooLargeErr)).To(BeTrue(), "should be RangeSetKeyTooLargeError")

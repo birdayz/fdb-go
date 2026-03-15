@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// CountUpdatesIndexMaintainer handles COUNT_UPDATES index maintenance using FDB atomic ADD.
+// countUpdatesIndexMaintainer handles COUNT_UPDATES index maintenance using FDB atomic ADD.
 // Like COUNT, but with two key differences:
 //  1. Deletes are no-ops — the count never decrements.
 //  2. Updates always re-count (skipUpdateForUnchangedKeys = false) — even if the grouping
@@ -19,15 +19,15 @@ import (
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: little-endian int64 count
 // Matches Java's AtomicMutationIndexMaintainer with COUNT_UPDATES mutation.
-type CountUpdatesIndexMaintainer struct {
+type countUpdatesIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
 	store         indexStoreContext
 }
 
-func newCountUpdatesIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *CountUpdatesIndexMaintainer {
-	return &CountUpdatesIndexMaintainer{
+func newCountUpdatesIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *countUpdatesIndexMaintainer {
+	return &countUpdatesIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -40,7 +40,7 @@ func newCountUpdatesIndexMaintainer(index *Index, indexSubspace subspace.Subspac
 // For deletes: NO-OP — count never decrements.
 // For updates: atomically adds +1 to each NEW grouping key entry (no common-key skip).
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys() with COUNT_UPDATES.
-func (m *CountUpdatesIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countUpdatesIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	// Deletes are no-ops — Java's getMutationParam() returns null when remove=true.
 	if newRecord == nil {
 		return nil
@@ -68,7 +68,7 @@ func (m *CountUpdatesIndexMaintainer) Update(oldRecord, newRecord *FDBStoredReco
 // UpdateWhileWriteOnly checks the index build range set before updating.
 // COUNT_UPDATES is non-idempotent — blindly updating would cause double-counting.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
-func (m *CountUpdatesIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countUpdatesIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	// Deletes are already no-ops in Update(), but short-circuit here too.
 	if newRecord == nil {
 		return nil
@@ -77,19 +77,19 @@ func (m *CountUpdatesIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord 
 }
 
 // DeleteWhere clears all COUNT_UPDATES index entries whose key starts with the given prefix.
-func (m *CountUpdatesIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *countUpdatesIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans COUNT_UPDATES index entries within the given tuple range.
 // Reuses countKVCursor — identical wire format (little-endian int64 values).
-func (m *CountUpdatesIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *countUpdatesIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record.
-func (m *CountUpdatesIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
+func (m *countUpdatesIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
 	return evaluateGroupingKeys(m.index, record)
 }
 
-var _ IndexMaintainer = (*CountUpdatesIndexMaintainer)(nil)
+var _ IndexMaintainer = (*countUpdatesIndexMaintainer)(nil)

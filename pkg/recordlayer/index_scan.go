@@ -293,7 +293,7 @@ func (store *FDBRecordStore) ScanIndexByType(
 	maintainer := store.getIndexMaintainer(index)
 	switch scanType {
 	case IndexScanByRank:
-		rm, ok := maintainer.(*RankIndexMaintainer)
+		rm, ok := maintainer.(*rankIndexMaintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_RANK scan", index.Name, index.Type),

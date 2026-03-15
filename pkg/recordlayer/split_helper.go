@@ -8,9 +8,9 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
-// SizeInfo tracks the storage metrics for a record.
-// Matches Java's SplitHelper.SizeInfo / FDBStoredSizes.
-type SizeInfo struct {
+// sizeInfo tracks the storage metrics for a record.
+// Matches Java's SplitHelper.sizeInfo / FDBStoredSizes.
+type sizeInfo struct {
 	KeyCount       int
 	KeySize        int
 	ValueSize      int
@@ -19,7 +19,7 @@ type SizeInfo struct {
 }
 
 // saveWithSplit saves a serialized record, splitting it across multiple KV pairs
-// if it exceeds SplitRecordSize and splitLongRecords is enabled.
+// if it exceeds splitRecordSize and splitLongRecords is enabled.
 // Does NOT handle version saves — the store layer manages versions separately
 // because Go FDB bindings need context-level AddVersionMutation for versionstamps.
 // Matches Java's SplitHelper.saveWithSplit() (data portion only).
@@ -29,8 +29,8 @@ func saveWithSplit(
 	primaryKey tuple.Tuple,
 	serialized []byte,
 	splitLongRecords bool,
-	oldSizeInfo *SizeInfo,
-	sizeInfo *SizeInfo,
+	oldsizeInfo *sizeInfo,
+	sizeInfo *sizeInfo,
 ) error {
 	if len(primaryKey) == 0 {
 		return fmt.Errorf("primary key must not be empty")
@@ -39,18 +39,18 @@ func saveWithSplit(
 	dataLen := len(serialized)
 
 	// Clear previous record data
-	clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldSizeInfo)
+	clearPreviousRecord(tx, recordSubspace, primaryKey, splitLongRecords, oldsizeInfo)
 
-	if dataLen > SplitRecordSize {
+	if dataLen > splitRecordSize {
 		if !splitLongRecords {
-			return fmt.Errorf("record size %d exceeds limit %d and splitLongRecords is not enabled", dataLen, SplitRecordSize)
+			return fmt.Errorf("record size %d exceeds limit %d and splitLongRecords is not enabled", dataLen, splitRecordSize)
 		}
 
 		// Split the record into chunks
-		splitIndex := StartSplitRecord
+		splitIndex := startSplitRecord
 		offset := 0
 		for offset < dataLen {
-			end := offset + SplitRecordSize
+			end := offset + splitRecordSize
 			if end > dataLen {
 				end = dataLen
 			}
@@ -70,7 +70,7 @@ func saveWithSplit(
 		sizeInfo.IsSplit = true
 	} else {
 		// Unsplit: single KV pair at suffix 0
-		keyTuple := appendToTuple(primaryKey, UnsplitRecord)
+		keyTuple := appendToTuple(primaryKey, unsplitRecord)
 		key := recordSubspace.Pack(keyTuple)
 		tx.Set(key, serialized)
 
@@ -84,33 +84,33 @@ func saveWithSplit(
 }
 
 // clearPreviousRecord clears the old record's KV pairs before saving a new version.
-// If oldSizeInfo indicates the previous record was split, clears the split range.
+// If oldsizeInfo indicates the previous record was split, clears the split range.
 // Otherwise, clears just the unsplit key.
-// Matches Java's SplitHelper behavior with clearBasedOnPreviousSizeInfo.
+// Matches Java's SplitHelper behavior with clearBasedOnPrevioussizeInfo.
 func clearPreviousRecord(
 	tx fdb.Transaction,
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
-	oldSizeInfo *SizeInfo,
+	oldsizeInfo *sizeInfo,
 ) {
-	if oldSizeInfo == nil {
+	if oldsizeInfo == nil {
 		// No previous record — nothing to clear
 		return
 	}
 
-	if oldSizeInfo.IsSplit || splitLongRecords {
+	if oldsizeInfo.IsSplit || splitLongRecords {
 		// Clear the entire primary key range (covers all suffixes: -1, 0, 1, 2, ...)
 		// This is safe because the range only covers this primary key's data.
 		clearRecordKeyRange(tx, recordSubspace, primaryKey)
 	} else {
 		// Only unsplit key exists — clear just that
-		keyTuple := appendToTuple(primaryKey, UnsplitRecord)
+		keyTuple := appendToTuple(primaryKey, unsplitRecord)
 		tx.Clear(recordSubspace.Pack(keyTuple))
 
 		// Also clear version key if it was stored inline
-		if oldSizeInfo.VersionedInline {
-			versionKeyTuple := appendToTuple(primaryKey, RecordVersionSuffix)
+		if oldsizeInfo.VersionedInline {
+			versionKeyTuple := appendToTuple(primaryKey, recordVersionSuffix)
 			tx.Clear(recordSubspace.Pack(versionKeyTuple))
 		}
 	}
@@ -124,10 +124,10 @@ func loadWithSplit(
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
-	sizeInfo *SizeInfo,
+	sizeInfo *sizeInfo,
 ) ([]byte, error) {
 	// Try unsplit first (most common case)
-	unsplitKeyTuple := appendToTuple(primaryKey, UnsplitRecord)
+	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)
 
 	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -149,7 +149,7 @@ func loadWithSplit(
 	}
 
 	// Check for split record: scan from suffix 1 onwards
-	firstSplitKeyTuple := appendToTuple(primaryKey, StartSplitRecord)
+	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
 	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
 
 	firstValue, err := tx.Get(fdb.Key(firstSplitKey)).Get()
@@ -164,7 +164,7 @@ func loadWithSplit(
 
 	// Record is split — scan for remaining chunks
 	// Range from suffix 2 to end of primary key subspace
-	nextSplitKeyTuple := appendToTuple(primaryKey, StartSplitRecord+1)
+	nextSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord+1)
 	rangeBegin := recordSubspace.Pack(nextSplitKeyTuple)
 
 	// End is exclusive: everything under this pk but beyond valid split suffixes.
@@ -198,7 +198,7 @@ func loadWithSplit(
 	sizeInfo.ValueSize = len(firstValue)
 
 	// Validate sequential indices and concatenate
-	expectedIndex := StartSplitRecord + 1
+	expectedIndex := startSplitRecord + 1
 	for _, kv := range kvs {
 		keyTuple, unpackErr := recordSubspace.Unpack(kv.Key)
 		if unpackErr != nil {
@@ -214,7 +214,7 @@ func loadWithSplit(
 		}
 
 		// Skip version keys
-		if suffix == RecordVersionSuffix {
+		if suffix == recordVersionSuffix {
 			continue
 		}
 
@@ -241,27 +241,27 @@ func deleteSplit(
 	recordSubspace subspace.Subspace,
 	primaryKey tuple.Tuple,
 	splitLongRecords bool,
-	oldSizeInfo *SizeInfo,
+	oldsizeInfo *sizeInfo,
 ) bool {
 	if len(primaryKey) == 0 {
 		return false
 	}
 
-	if oldSizeInfo == nil {
+	if oldsizeInfo == nil {
 		return false
 	}
 
-	if oldSizeInfo.IsSplit || splitLongRecords {
+	if oldsizeInfo.IsSplit || splitLongRecords {
 		// Clear the entire primary key range
 		clearRecordKeyRange(tx, recordSubspace, primaryKey)
 	} else {
 		// Clear unsplit key only
-		keyTuple := appendToTuple(primaryKey, UnsplitRecord)
+		keyTuple := appendToTuple(primaryKey, unsplitRecord)
 		tx.Clear(recordSubspace.Pack(keyTuple))
 
 		// Clear inline version if present
-		if oldSizeInfo.VersionedInline {
-			versionKeyTuple := appendToTuple(primaryKey, RecordVersionSuffix)
+		if oldsizeInfo.VersionedInline {
+			versionKeyTuple := appendToTuple(primaryKey, recordVersionSuffix)
 			tx.Clear(recordSubspace.Pack(versionKeyTuple))
 		}
 	}
@@ -277,7 +277,7 @@ func recordExistsWithSplit(
 	splitLongRecords bool,
 ) (bool, error) {
 	// Check unsplit key
-	unsplitKeyTuple := appendToTuple(primaryKey, UnsplitRecord)
+	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)
 
 	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
@@ -293,7 +293,7 @@ func recordExistsWithSplit(
 	}
 
 	// Check first split key
-	firstSplitKeyTuple := appendToTuple(primaryKey, StartSplitRecord)
+	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
 	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
 
 	value, err = tx.Get(fdb.Key(firstSplitKey)).Get()

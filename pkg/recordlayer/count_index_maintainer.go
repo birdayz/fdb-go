@@ -12,20 +12,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// CountIndexMaintainer handles COUNT index maintenance using FDB atomic ADD.
+// countIndexMaintainer handles COUNT index maintenance using FDB atomic ADD.
 // The index stores the count of records matching each grouping key.
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: little-endian int64 count
 // Matches Java's AtomicMutationIndexMaintainer with COUNT mutation.
-type CountIndexMaintainer struct {
+type countIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
 	store         indexStoreContext
 }
 
-func newCountIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *CountIndexMaintainer {
-	return &CountIndexMaintainer{
+func newCountIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *countIndexMaintainer {
+	return &countIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -38,7 +38,7 @@ func newCountIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx f
 // For deletes: atomically adds -1 to each grouping key entry.
 // For updates: decrements old grouping keys, increments new grouping keys.
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys().
-func (m *CountIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldKeys, newKeys []tuple.Tuple
 
 	if oldRecord != nil {
@@ -119,24 +119,24 @@ func removeCommonGroupingKeys(old, new []tuple.Tuple) ([]tuple.Tuple, []tuple.Tu
 // UpdateWhileWriteOnly checks the index build range set before updating.
 // COUNT is non-idempotent — blindly updating would cause double-counting.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
-func (m *CountIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT", m.Update)
 }
 
 // DeleteWhere clears all COUNT index entries whose key starts with the given prefix.
-func (m *CountIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *countIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans count index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = count as tuple.
 // Matches Java's StandardIndexMaintainer.scan() with BY_GROUP semantics.
-func (m *CountIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *countIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record.
-func (m *CountIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
+func (m *countIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
 	return evaluateGroupingKeys(m.index, record)
 }
 

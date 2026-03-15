@@ -27,7 +27,7 @@ const IndexOptionPermutedSize = "permutedSize"
 //
 // Matches Java's PermutedMinMaxIndexMaintainer.
 type permutedMinMaxIndexMaintainer struct {
-	*StandardIndexMaintainer
+	*standardIndexMaintainer
 	isMax             bool
 	permutedSize      int
 	secondarySubspace subspace.Subspace
@@ -48,7 +48,7 @@ func newPermutedMinMaxIndexMaintainer(
 		}
 	}
 	return &permutedMinMaxIndexMaintainer{
-		StandardIndexMaintainer: newStandardIndexMaintainer(index, indexSubspace, tx, store),
+		standardIndexMaintainer: newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		isMax:                   isMax,
 		permutedSize:            permutedSize,
 		secondarySubspace:       secondarySubspace,
@@ -112,7 +112,7 @@ func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 
 	if oldRecord != nil && newRecord == nil {
 		// DELETE path: first update primary, then fix permuted subspace.
-		if err := m.StandardIndexMaintainer.Update(oldRecord, nil); err != nil {
+		if err := m.standardIndexMaintainer.Update(oldRecord, nil); err != nil {
 			return err
 		}
 		return m.updatePermutedForRemove(oldRecord, groupPrefixSize, totalSize, permutePosition)
@@ -123,7 +123,7 @@ func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 		if err := m.updatePermutedForInsert(newRecord, groupPrefixSize, totalSize, permutePosition); err != nil {
 			return err
 		}
-		return m.StandardIndexMaintainer.Update(nil, newRecord)
+		return m.standardIndexMaintainer.Update(nil, newRecord)
 	}
 
 	if oldRecord != nil && newRecord != nil {
@@ -137,7 +137,7 @@ func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 		}
 
 		// Step 2: Update primary VALUE index entries (removes old, adds new).
-		if err := m.StandardIndexMaintainer.Update(oldRecord, newRecord); err != nil {
+		if err := m.standardIndexMaintainer.Update(oldRecord, newRecord); err != nil {
 			return err
 		}
 
@@ -254,7 +254,7 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForRemove(
 // This is the default BY_VALUE scan. For BY_GROUP, use ScanByGroup.
 // Matches Java's PermutedMinMaxIndexMaintainer.scan() for BY_VALUE.
 func (m *permutedMinMaxIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-	return m.StandardIndexMaintainer.Scan(scanRange, continuation, scanProperties)
+	return m.standardIndexMaintainer.Scan(scanRange, continuation, scanProperties)
 }
 
 // ScanByGroup scans the secondary (permuted) subspace.
@@ -267,7 +267,7 @@ func (m *permutedMinMaxIndexMaintainer) ScanByGroup(scanRange TupleRange, contin
 // DeleteWhere clears both primary and secondary subspaces.
 // Matches Java's PermutedMinMaxIndexMaintainer.deleteWhere().
 func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	if err := m.StandardIndexMaintainer.DeleteWhere(prefix); err != nil {
+	if err := m.standardIndexMaintainer.DeleteWhere(prefix); err != nil {
 		return err
 	}
 	return deleteWhereRange(m.tx, m.secondarySubspace, prefix)
@@ -287,7 +287,7 @@ func (m *permutedMinMaxIndexMaintainer) getExtremum(groupKey tuple.Tuple) (tuple
 		Reverse: m.isMax,
 	}
 
-	cursor := m.StandardIndexMaintainer.Scan(scanRange, nil, props)
+	cursor := m.standardIndexMaintainer.Scan(scanRange, nil, props)
 	defer func() { _ = cursor.Close() }()
 
 	result, err := cursor.OnNext(context.Background())

@@ -10,20 +10,20 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// CountNotNullIndexMaintainer handles COUNT_NOT_NULL index maintenance using FDB atomic ADD.
+// countNotNullIndexMaintainer handles COUNT_NOT_NULL index maintenance using FDB atomic ADD.
 // Like COUNT, but skips entries where the index key contains a null (nil) element.
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: little-endian int64 count
 // Matches Java's AtomicMutationIndexMaintainer with COUNT_NOT_NULL mutation.
-type CountNotNullIndexMaintainer struct {
+type countNotNullIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
 	store         indexStoreContext
 }
 
-func newCountNotNullIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *CountNotNullIndexMaintainer {
-	return &CountNotNullIndexMaintainer{
+func newCountNotNullIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *countNotNullIndexMaintainer {
+	return &countNotNullIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -37,7 +37,7 @@ func newCountNotNullIndexMaintainer(index *Index, indexSubspace subspace.Subspac
 // For updates: decrements old non-null keys, increments new non-null keys.
 // Entries with nil key elements are skipped entirely.
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys() with COUNT_NOT_NULL.
-func (m *CountNotNullIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countNotNullIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldKeys, newKeys []tuple.Tuple
 
 	if oldRecord != nil {
@@ -87,18 +87,18 @@ func (m *CountNotNullIndexMaintainer) Update(oldRecord, newRecord *FDBStoredReco
 // UpdateWhileWriteOnly checks the index build range set before updating.
 // COUNT_NOT_NULL is non-idempotent — blindly updating would cause double-counting.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
-func (m *CountNotNullIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *countNotNullIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "COUNT_NOT_NULL", m.Update)
 }
 
 // DeleteWhere clears all COUNT_NOT_NULL index entries whose key starts with the given prefix.
-func (m *CountNotNullIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *countNotNullIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans COUNT_NOT_NULL index entries within the given tuple range.
 // Reuses countKVCursor — identical wire format (little-endian int64 values).
-func (m *CountNotNullIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *countNotNullIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -108,7 +108,7 @@ func (m *CountNotNullIndexMaintainer) Scan(scanRange TupleRange, continuation []
 // into groupKey and groupedValue, then passes ONLY groupedValue to getMutationParam().
 // COUNT_NOT_NULL's getMutationParam() calls keyContainsNonUniqueNull() on the grouped
 // portion only — NOT the grouping (leading) columns.
-func (m *CountNotNullIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
+func (m *countNotNullIndexMaintainer) evaluateGroupingKeys(record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
@@ -201,4 +201,4 @@ func keyExpressionHasNullField(msg proto.Message, expr KeyExpression) bool {
 }
 
 
-var _ IndexMaintainer = (*CountNotNullIndexMaintainer)(nil)
+var _ IndexMaintainer = (*countNotNullIndexMaintainer)(nil)

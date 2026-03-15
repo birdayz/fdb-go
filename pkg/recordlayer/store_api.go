@@ -212,13 +212,13 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	// Load existing record for existence/type validation.
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
-	var oldSizeInfo SizeInfo
+	var oldsizeInfo sizeInfo
 	oldValue, err := loadWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
-		&oldSizeInfo,
+		&oldsizeInfo,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load existing record: %w", err)
@@ -277,7 +277,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		KeyCount:   1,
 		KeySize:    len(store.subspace.Sub(RecordKey).Pack(primaryKey)),
 		ValueSize:  len(data),
-		Split:      splitEnabled && len(data) > SplitRecordSize,
+		Split:      splitEnabled && len(data) > splitRecordSize,
 	}, nil
 }
 
@@ -289,7 +289,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, error) {
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	splitEnabled := store.metaData.IsSplitLongRecords()
-	var sizeInfo SizeInfo
+	var sizeInfo sizeInfo
 	value, err := loadWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,

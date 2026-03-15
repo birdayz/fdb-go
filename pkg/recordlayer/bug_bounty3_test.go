@@ -220,7 +220,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	//
 	// In the save path (saveWithSplit), clearPreviousRecord is always called
 	// even for new records when splitLongRecords is true (because
-	// oldSizeInfo.IsSplit || splitLongRecords evaluates to true). So saving
+	// oldsizeInfo.IsSplit || splitLongRecords evaluates to true). So saving
 	// a record with an empty PK and splitLongRecords=true nukes the store.
 	//
 	// While EmptyKeyExpression as a primary key is unusual, the builder
@@ -288,14 +288,14 @@ var _ = Describe("Bug Bounty Round 3", func() {
 			// This simulates what would happen if SaveRecord were called with
 			// a record whose PK evaluates to an empty tuple.
 			recordsSubspace := store.subspace.Sub(RecordKey)
-			oldSizeInfo := &SizeInfo{} // Zero-value, IsSplit=false
-			// Condition: oldSizeInfo.IsSplit || splitLongRecords = false || true = true
+			oldsizeInfo := &sizeInfo{} // Zero-value, IsSplit=false
+			// Condition: oldsizeInfo.IsSplit || splitLongRecords = false || true = true
 			clearPreviousRecord(
 				store.context.Transaction(),
 				recordsSubspace,
 				tuple.Tuple{}, // empty primary key
 				true,          // splitLongRecords
-				oldSizeInfo,
+				oldsizeInfo,
 			)
 
 			// FIX: clearRecordKeyRange is now a no-op for empty PK, so records survive

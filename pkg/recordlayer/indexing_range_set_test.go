@@ -114,7 +114,7 @@ var _ = Describe("IndexingRangeSet", func() {
 			missing, err := irs.FirstMissingRange(rtx.Transaction())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(missing).NotTo(BeNil())
-			Expect(missing.Begin).To(Equal(RangeSetFirstKey))
+			Expect(missing.Begin).To(Equal(rangeSetFirstKey))
 			Expect(missing.End).To(Equal([]byte{0x01}))
 			return nil, nil
 		})
@@ -155,14 +155,14 @@ var _ = Describe("IndexingRangeSet", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(gaps).To(HaveLen(3))
 
-			Expect(gaps[0].Begin).To(Equal(RangeSetFirstKey))
+			Expect(gaps[0].Begin).To(Equal(rangeSetFirstKey))
 			Expect(gaps[0].End).To(Equal([]byte{0x10}))
 
 			Expect(gaps[1].Begin).To(Equal([]byte{0x20}))
 			Expect(gaps[1].End).To(Equal([]byte{0x40}))
 
 			Expect(gaps[2].Begin).To(Equal([]byte{0x60}))
-			Expect(gaps[2].End).To(Equal(RangeSetFinalKey))
+			Expect(gaps[2].End).To(Equal(rangeSetFinalKey))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// MinMaxEverIndexMaintainer handles MIN_EVER_LONG and MAX_EVER_LONG index maintenance.
+// minMaxEverIndexMaintainer handles MIN_EVER_LONG and MAX_EVER_LONG index maintenance.
 // Uses FDB atomic MIN/MAX mutations to track the minimum/maximum value ever seen per grouping key.
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: little-endian int64 (unsigned comparison)
@@ -20,7 +20,7 @@ import (
 //
 // Idempotent: applying the same mutation multiple times yields the same result.
 // Values must be non-negative (FDB MIN/MAX compare unsigned little-endian).
-type MinMaxEverIndexMaintainer struct {
+type minMaxEverIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
@@ -28,8 +28,8 @@ type MinMaxEverIndexMaintainer struct {
 	isMax         bool // true = MAX_EVER_LONG, false = MIN_EVER_LONG
 }
 
-func newMinMaxEverIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, isMax bool) *MinMaxEverIndexMaintainer {
-	return &MinMaxEverIndexMaintainer{
+func newMinMaxEverIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, isMax bool) *minMaxEverIndexMaintainer {
+	return &minMaxEverIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -44,7 +44,7 @@ func newMinMaxEverIndexMaintainer(index *Index, indexSubspace subspace.Subspace,
 // For updates: applies MIN/MAX of the new value (old value's delete is a no-op).
 // Null values are skipped. Negative values are rejected.
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys() for MIN_EVER_LONG/MAX_EVER_LONG.
-func (m *MinMaxEverIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *minMaxEverIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	// Deletes are no-ops for _EVER indexes — the aggregate is irreversible.
 	// Java returns null from getMutationParam() when remove=true.
 	if newRecord == nil {
@@ -77,19 +77,19 @@ func (m *MinMaxEverIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord
 // UpdateWhileWriteOnly passes through to Update() for MIN/MAX _EVER indexes.
 // These are idempotent — applying the same mutation multiple times is safe.
 // No range set check needed. Matches Java's AtomicMutation.isIdempotent() = true.
-func (m *MinMaxEverIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *minMaxEverIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // Scan scans MIN/MAX_EVER index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = min/max as tuple.
 // DeleteWhere clears all MIN/MAX_EVER_LONG index entries whose key starts with the given prefix.
-func (m *MinMaxEverIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *minMaxEverIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Reuses countKVCursor — identical wire format (little-endian int64 values).
-func (m *MinMaxEverIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *minMaxEverIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -101,7 +101,7 @@ type minMaxEntry struct {
 
 // evaluateEntries extracts (groupingKey, value) pairs from a record.
 // Validates that values are non-negative (FDB MIN/MAX compare unsigned).
-func (m *MinMaxEverIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]minMaxEntry, error) {
+func (m *minMaxEverIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]minMaxEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
@@ -144,4 +144,4 @@ func (m *MinMaxEverIndexMaintainer) evaluateEntries(record *FDBStoredRecord[prot
 }
 
 
-var _ IndexMaintainer = (*MinMaxEverIndexMaintainer)(nil)
+var _ IndexMaintainer = (*minMaxEverIndexMaintainer)(nil)

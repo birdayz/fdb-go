@@ -10,20 +10,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// SumIndexMaintainer handles SUM index maintenance using FDB atomic ADD.
+// sumIndexMaintainer handles SUM index maintenance using FDB atomic ADD.
 // The index stores the running sum of a field's value per grouping key.
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: little-endian int64 sum
 // Matches Java's AtomicMutationIndexMaintainer with SUM_LONG mutation.
-type SumIndexMaintainer struct {
+type sumIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
 	store         indexStoreContext
 }
 
-func newSumIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *SumIndexMaintainer {
-	return &SumIndexMaintainer{
+func newSumIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *sumIndexMaintainer {
+	return &sumIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -43,7 +43,7 @@ type sumEntry struct {
 // For updates: subtracts old values and adds new values.
 // Null values are skipped (no mutation), matching Java's behavior.
 // Matches Java's AtomicMutationIndexMaintainer.updateIndexKeys() for SUM_LONG.
-func (m *SumIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *sumIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldEntries, newEntries []sumEntry
 
 	if oldRecord != nil {
@@ -135,19 +135,19 @@ func removeCommonSumEntries(old, new []sumEntry) ([]sumEntry, []sumEntry) {
 // UpdateWhileWriteOnly checks the index build range set before updating.
 // SUM is non-idempotent — blindly updating would double-count values.
 // Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
-func (m *SumIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *sumIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, "SUM", m.Update)
 }
 
 // Scan scans SUM index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = sum as tuple.
 // DeleteWhere clears all SUM index entries whose key starts with the given prefix.
-func (m *SumIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *sumIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Matches Java's AtomicMutationIndexMaintainer.scan() with BY_GROUP semantics.
-func (m *SumIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *sumIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	// Reuse countKVCursor — identical wire format (little-endian int64 values).
 	return newCountIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
@@ -155,7 +155,7 @@ func (m *SumIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sca
 // evaluateSumEntries extracts (groupingKey, sumValue) pairs from a record.
 // The grouping key is the leading columns, the sum value is the first grouped column.
 // Null sum values are skipped (matching Java's getMutationParam returning null for null).
-func (m *SumIndexMaintainer) evaluateSumEntries(record *FDBStoredRecord[proto.Message]) ([]sumEntry, error) {
+func (m *sumIndexMaintainer) evaluateSumEntries(record *FDBStoredRecord[proto.Message]) ([]sumEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
@@ -213,4 +213,4 @@ func toInt64(v any) (int64, error) {
 	}
 }
 
-var _ IndexMaintainer = (*SumIndexMaintainer)(nil)
+var _ IndexMaintainer = (*sumIndexMaintainer)(nil)

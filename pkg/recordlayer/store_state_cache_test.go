@@ -60,7 +60,7 @@ var _ = Describe("Store State Cache", func() {
 				}
 				Expect(store).NotTo(BeNil())
 				Expect(store.storeHeader).NotTo(BeNil())
-				Expect(store.storeHeader.GetFormatVersion()).To(BeNumerically(">=", FormatVersionCacheableState))
+				Expect(store.storeHeader.GetFormatVersion()).To(BeNumerically(">=", formatVersionCacheableState))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -822,8 +822,8 @@ var _ = Describe("Store State Cache", func() {
 					return nil, err
 				}
 
-				// Manually downgrade format version to below FormatVersionCacheableState.
-				oldVersion := int32(FormatVersionCacheableState - 1)
+				// Manually downgrade format version to below formatVersionCacheableState.
+				oldVersion := int32(formatVersionCacheableState - 1)
 				store.storeHeader.FormatVersion = &oldVersion
 
 				_, err = store.SetStateCacheability(true)
@@ -1038,7 +1038,7 @@ var _ = Describe("Store State Cache", func() {
 					return nil, err
 				}
 				Expect(store.storeHeader.GetCacheable()).To(BeTrue())
-				Expect(store.storeHeader.GetFormatVersion()).To(Equal(int32(FormatVersionCurrent)))
+				Expect(store.storeHeader.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
 				var found bool
 				for _, uf := range store.storeHeader.UserField {
 					if uf.GetKey() == "cached-field" {

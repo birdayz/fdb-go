@@ -187,9 +187,9 @@ var _ = Describe("VersionIndex", func() {
 	})
 
 	// =========================================================================
-	// 4. VersionIndexMaintainer integration tests (need FDB testcontainer)
+	// 4. versionIndexMaintainer integration tests (need FDB testcontainer)
 	// =========================================================================
-	Describe("VersionIndexMaintainer integration", func() {
+	Describe("versionIndexMaintainer integration", func() {
 		ctx := context.Background()
 
 		buildMetaWithVersionIndex := func(indexes ...*Index) *RecordMetaData {

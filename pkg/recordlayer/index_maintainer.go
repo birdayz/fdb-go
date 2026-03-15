@@ -19,7 +19,7 @@ type IndexMaintainer interface {
 	// UpdateWhileWriteOnly updates the index during WRITE_ONLY state (index being built).
 	// For idempotent indexes (VALUE), this is a pass-through to Update().
 	// For non-idempotent indexes, checks if the record's PK is in the already-built range.
-	// Matches Java's StandardIndexMaintainer.updateWhileWriteOnly().
+	// Matches Java's standardIndexMaintainer.updateWhileWriteOnly().
 	UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
 
 	// Scan scans the index within the given tuple range.
@@ -42,22 +42,22 @@ type indexStoreContext interface {
 	// isKeyInIndexBuildRange checks if a primary key is in the already-built range
 	// of an index being built online. Used by non-idempotent index maintainers
 	// (COUNT) during WRITE_ONLY to avoid double-counting.
-	// Matches Java's StandardIndexMaintainer.addedRangeWithKey().
+	// Matches Java's standardIndexMaintainer.addedRangeWithKey().
 	isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error)
 }
 
-// StandardIndexMaintainer handles VALUE index maintenance.
+// standardIndexMaintainer handles VALUE index maintenance.
 // Evaluates the index key expression against records, then sets/clears entries
-// in the index subspace. Matches Java's StandardIndexMaintainer.
-type StandardIndexMaintainer struct {
+// in the index subspace. Matches Java's standardIndexMaintainer.
+type standardIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
 	store         indexStoreContext
 }
 
-func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *StandardIndexMaintainer {
-	return &StandardIndexMaintainer{
+func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *standardIndexMaintainer {
+	return &standardIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -66,15 +66,15 @@ func newStandardIndexMaintainer(index *Index, indexSubspace subspace.Subspace, t
 }
 
 // UpdateWhileWriteOnly updates the index during WRITE_ONLY state.
-// StandardIndexMaintainer is idempotent, so this is a pass-through to Update().
-// Matches Java's StandardIndexMaintainer.updateWhileWriteOnly() + isIdempotent() = true.
-func (m *StandardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// standardIndexMaintainer is idempotent, so this is a pass-through to Update().
+// Matches Java's standardIndexMaintainer.updateWhileWriteOnly() + isIdempotent() = true.
+func (m *standardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
-// Matches Java's StandardIndexMaintainer.update().
-func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// Matches Java's standardIndexMaintainer.update().
+func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldEntries []indexEntry
 	var newEntries []indexEntry
 
@@ -112,7 +112,7 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		}
 		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
 		// Clean up violation entries on delete for WRITE_ONLY/READABLE_UNIQUE_PENDING indexes.
-		// Matches Java's StandardIndexMaintainer.updateOneKeyAsync() remove path.
+		// Matches Java's standardIndexMaintainer.updateOneKeyAsync() remove path.
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
 			if err := m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey); err != nil {
 				return err
@@ -154,8 +154,8 @@ func (m *StandardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 
 // Scan scans index entries within the given tuple range.
 // Creates a KeyValueCursor over the index subspace and maps KVs to IndexEntry.
-// Matches Java's StandardIndexMaintainer.scan().
-func (m *StandardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+// Matches Java's standardIndexMaintainer.scan().
+func (m *standardIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -174,8 +174,8 @@ func deleteWhereRange(tx fdb.Transaction, indexSubspace subspace.Subspace, prefi
 }
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
-// Matches Java's StandardIndexMaintainer.deleteWhere().
-func (m *StandardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+// Matches Java's standardIndexMaintainer.deleteWhere().
+func (m *standardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
@@ -189,8 +189,8 @@ type indexEntry struct {
 // evaluateIndex evaluates the index expression against a record to produce index entries.
 // Fans out when the expression returns multiple key tuples (e.g. repeated fields).
 // If the index has a predicate and the record doesn't match, returns nil (no entries).
-// Matches Java's StandardIndexMaintainer.evaluateIndex().
-func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+// Matches Java's standardIndexMaintainer.evaluateIndex().
+func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
 	// Check predicate for sparse/filtered indexes
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
@@ -206,7 +206,7 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 	for i, values := range tuples {
 		if isKeyWithValue {
 			// Split at splitPoint: key columns go in FDB key, value columns in FDB value.
-			// Matches Java's StandardIndexMaintainer.evaluateIndex() KeyWithValueExpression path.
+			// Matches Java's standardIndexMaintainer.evaluateIndex() KeyWithValueExpression path.
 			keyPart, valuePart := kwv.SplitEvaluatedKey(values)
 			key := make(tuple.Tuple, len(keyPart))
 			for j, v := range keyPart {
@@ -234,8 +234,8 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 // covers the entire range, preventing concurrent inserts of conflicting entries.
 // Java reads the full range too (no limit) and registers the scan as a
 // commit check via addIndexUniquenessCommitCheck().
-// Matches Java's StandardIndexMaintainer.checkUniqueness().
-func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
+// Matches Java's standardIndexMaintainer.checkUniqueness().
+func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	prefixKey := m.indexSubspace.Pack(entry.key)
 	r, err := fdb.PrefixRange(prefixKey)
 	if err != nil {
@@ -273,7 +273,7 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		}
 
 		// WRITE_ONLY indexes: write violation entries instead of throwing.
-		// Matches Java's StandardIndexMaintainer.checkUniqueness() which
+		// Matches Java's standardIndexMaintainer.checkUniqueness() which
 		// calls addUniquenessViolation() for both conflicting PKs.
 		if m.store != nil && m.store.isIndexWriteOnly(m.index) {
 			if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK); err != nil {
@@ -297,22 +297,22 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 
 // checkKeyValueSizes validates that an index entry's key and value don't exceed
 // FDB limits. Called on insert only (not delete).
-// Matches Java's StandardIndexMaintainer.checkKeyValueSizes().
+// Matches Java's standardIndexMaintainer.checkKeyValueSizes().
 func checkKeyValueSizes(index *Index, primaryKey tuple.Tuple, keyBytes, valueBytes []byte) error {
-	if len(keyBytes) > KeySizeLimit {
+	if len(keyBytes) > keySizeLimit {
 		return &IndexKeySizeError{
 			IndexName:  index.Name,
 			PrimaryKey: primaryKey,
 			KeySize:    len(keyBytes),
-			Limit:      KeySizeLimit,
+			Limit:      keySizeLimit,
 		}
 	}
-	if len(valueBytes) > ValueSizeLimit {
+	if len(valueBytes) > valueSizeLimit {
 		return &IndexValueSizeError{
 			IndexName:  index.Name,
 			PrimaryKey: primaryKey,
 			ValueSize:  len(valueBytes),
-			Limit:      ValueSizeLimit,
+			Limit:      valueSizeLimit,
 		}
 	}
 	return nil
@@ -365,7 +365,7 @@ func tuplesEqual(a, b tuple.Tuple) bool {
 
 // removeCommonEntries filters out entries that are identical in both old and new.
 // This avoids unnecessary FDB mutations when a record update doesn't change
-// the indexed value. Matches Java's StandardIndexMaintainer.commonKeys optimization.
+// the indexed value. Matches Java's standardIndexMaintainer.commonKeys optimization.
 func removeCommonEntries(idx *Index, old, new []indexEntry) ([]indexEntry, []indexEntry, error) {
 	packEntry := func(e indexEntry) (string, error) {
 		// Include value in the comparison key for KeyWithValueExpression indexes.

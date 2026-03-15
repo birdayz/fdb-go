@@ -18,16 +18,16 @@ import (
 // Record Layer format versions - should match Java FormatVersion enum.
 // See FormatVersion.java for the full list.
 const (
-	FormatVersionInfoAdded                 = 1  // Minimum version (INFO_ADDED in Java)
-	FormatVersionHeaderUserFields          = 8  // User-defined key→bytes map in store header
-	FormatVersionReadableUniquePending     = 9  // READABLE_UNIQUE_PENDING index state
-	FormatVersionCheckIndexBuildType       = 10 // Non-idempotent index build-from-source validation
-	FormatVersionRecordCountState          = 11 // RecordCountState enum (READABLE/WRITE_ONLY/DISABLED)
-	FormatVersionStoreLockState            = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
-	FormatVersionIncarnation               = 13 // Incarnation counter for cross-cluster migration
-	FormatVersionFullStoreLock             = 14 // Unknown lock states prevent store opening
-	FormatVersionCurrent                   = FormatVersionFullStoreLock
-	FormatVersionMinimum                   = FormatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
+	formatVersionInfoAdded                 = 1  // Minimum version (INFO_ADDED in Java)
+	formatVersionHeaderUserFields          = 8  // User-defined key→bytes map in store header
+	formatVersionReadableUniquePending     = 9  // READABLE_UNIQUE_PENDING index state
+	formatVersionCheckIndexBuildType       = 10 // Non-idempotent index build-from-source validation
+	formatVersionRecordCountState          = 11 // RecordCountState enum (READABLE/WRITE_ONLY/DISABLED)
+	formatVersionStoreLockState            = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
+	formatVersionIncarnation               = 13 // Incarnation counter for cross-cluster migration
+	formatVersionFullStoreLock             = 14 // Unknown lock states prevent store opening
+	formatVersionCurrent                   = formatVersionFullStoreLock
+	formatVersionMinimum                   = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
 )
 
 // StoreIsLockedForRecordUpdatesError is returned when attempting to modify records
@@ -67,9 +67,9 @@ func (e *UnknownStoreLockStateError) Error() string {
 }
 
 
-// FormatVersionCacheableState is the minimum format version required for
+// formatVersionCacheableState is the minimum format version required for
 // store state cacheability. Matches Java's FormatVersion.CACHEABLE_STATE.
-const FormatVersionCacheableState = 7
+const formatVersionCacheableState = 7
 
 // StaleMetaDataVersionError is returned when the stored metadata version is
 // newer than the local metadata version, meaning another instance already
@@ -145,7 +145,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 
 	// At FormatVersion >= FULL_STORE_LOCK, reject unknown/unspecified states.
 	// FORBID_RECORD_UPDATE is known and handled at mutation time, so skip it here.
-	if storeHeader.GetFormatVersion() >= FormatVersionFullStoreLock {
+	if storeHeader.GetFormatVersion() >= formatVersionFullStoreLock {
 		if state != gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
 			return &UnknownStoreLockStateError{LockStateValue: int32(state)}
 		}
@@ -161,7 +161,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 	startTime := time.Now()
 	recordsSubspace := store.subspace.Sub(RecordKey)
 
-	var sizeInfo SizeInfo
+	var sizeInfo sizeInfo
 	value, err := loadWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,
@@ -225,13 +225,13 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Load existing record to get size info and record data (for counting)
-	var oldSizeInfo SizeInfo
+	var oldsizeInfo sizeInfo
 	value, err := loadWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
-		&oldSizeInfo,
+		&oldsizeInfo,
 	)
 	if err != nil {
 		return false, fmt.Errorf("failed to load record for deletion %v: %w", primaryKey, err)
@@ -262,7 +262,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 
 	// Check for inline version
 	if store.metaData.IsStoreRecordVersions() {
-		oldSizeInfo.VersionedInline = true
+		oldsizeInfo.VersionedInline = true
 	}
 
 	// Load old record's version BEFORE deleteSplit clears the FDB keys and
@@ -279,7 +279,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	}
 
 	// Delete all KV pairs for this record
-	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldSizeInfo)
+	deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, &oldsizeInfo)
 
 	// Clean up version mutations (incomplete versionstamp + local version cache).
 	// deleteSplit clears the FDB key, but we also need to dequeue any pending
@@ -316,7 +316,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	timer := store.context.Timer()
 	timer.RecordSince(EventDeleteRecord, startTime)
 	timer.Increment(CountDeleteRecordKey)
-	timer.IncrementBy(CountDeleteRecordKeyBytes, int64(oldSizeInfo.KeySize))
+	timer.IncrementBy(CountDeleteRecordKeyBytes, int64(oldsizeInfo.KeySize))
 
 	return true, nil
 }
@@ -395,13 +395,13 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	// Always load the existing record (matching Java's saveRecordAsync behavior).
 	// This is needed for: existence checks, record counting, and future
 	// index updates / version management.
-	var oldSizeInfo SizeInfo
+	var oldsizeInfo sizeInfo
 	oldValue, err := loadWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,
 		primaryKey,
 		splitEnabled,
-		&oldSizeInfo,
+		&oldsizeInfo,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
@@ -477,24 +477,24 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 
 	// If versioning is enabled, mark old record as having inline version for proper cleanup
 	if store.metaData.IsStoreRecordVersions() && oldRecordExists {
-		oldSizeInfo.VersionedInline = true
+		oldsizeInfo.VersionedInline = true
 	}
 
 	// Save using split helper (handles both split and unsplit data)
-	var oldSizeInfoPtr *SizeInfo
+	var oldsizeInfoPtr *sizeInfo
 	if oldRecordExists {
-		oldSizeInfoPtr = &oldSizeInfo
+		oldsizeInfoPtr = &oldsizeInfo
 	}
 
-	var newSizeInfo SizeInfo
+	var newsizeInfo sizeInfo
 	if err := saveWithSplit(
 		store.context.Transaction(),
 		recordsSubspace,
 		primaryKey,
 		data,
 		splitEnabled,
-		oldSizeInfoPtr,
-		&newSizeInfo,
+		oldsizeInfoPtr,
+		&newsizeInfo,
 	); err != nil {
 		return nil, fmt.Errorf("failed to save record: %w", err)
 	}
@@ -527,10 +527,10 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 		Record:     record,
 		Version:    savedVersion,
 		Store:      store,
-		KeyCount:   newSizeInfo.KeyCount,
-		ValueSize:  newSizeInfo.ValueSize,
-		KeySize:    newSizeInfo.KeySize,
-		Split:      newSizeInfo.IsSplit,
+		KeyCount:   newsizeInfo.KeyCount,
+		ValueSize:  newsizeInfo.ValueSize,
+		KeySize:    newsizeInfo.KeySize,
+		Split:      newsizeInfo.IsSplit,
 	}
 
 	// Update secondary indexes
@@ -558,8 +558,8 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	timer := store.context.Timer()
 	timer.RecordSince(EventSaveRecord, startTime)
 	timer.Increment(CountSaveRecordKey)
-	timer.IncrementBy(CountSaveRecordKeyBytes, int64(newSizeInfo.KeySize))
-	timer.IncrementBy(CountSaveRecordValueBytes, int64(newSizeInfo.ValueSize))
+	timer.IncrementBy(CountSaveRecordKeyBytes, int64(newsizeInfo.KeySize))
+	timer.IncrementBy(CountSaveRecordValueBytes, int64(newsizeInfo.ValueSize))
 
 	return newStoredRecord, nil
 }
@@ -1321,9 +1321,9 @@ func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) 
 	if store.storeHeader == nil {
 		return false, &RecordStoreStateNotLoadedError{}
 	}
-	if store.storeHeader.GetFormatVersion() < FormatVersionCacheableState {
+	if store.storeHeader.GetFormatVersion() < formatVersionCacheableState {
 		return false, fmt.Errorf("store format version %d does not support cacheability (requires >= %d)",
-			store.storeHeader.GetFormatVersion(), FormatVersionCacheableState)
+			store.storeHeader.GetFormatVersion(), formatVersionCacheableState)
 	}
 	if store.storeHeader.GetCacheable() == cacheable {
 		return false, nil

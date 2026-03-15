@@ -671,7 +671,7 @@ func isWriteOnlyButNoRecordScanned(store *FDBRecordStore, rtx *FDBRecordContext,
 		return false // fully built — no missing ranges
 	}
 	// Empty if the first missing range spans the entire key space.
-	return bytes.Equal(missing.Begin, RangeSetFirstKey) && bytes.Equal(missing.End, RangeSetFinalKey)
+	return bytes.Equal(missing.Begin, rangeSetFirstKey) && bytes.Equal(missing.End, rangeSetFinalKey)
 }
 
 // newPartlyBuiltError creates a PartlyBuiltError with stamp descriptions.
@@ -756,13 +756,13 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 
 		// Convert byte boundaries to TupleRange for record scanning.
 		var rangeStart, rangeEnd tuple.Tuple
-		if !bytes.Equal(missing.Begin, RangeSetFirstKey) {
+		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
 			rangeStart, err = tuple.Unpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
-		if !bytes.Equal(missing.End, RangeSetFinalKey) {
+		if !bytes.Equal(missing.End, rangeSetFinalKey) {
 			rangeEnd, err = tuple.Unpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
@@ -828,7 +828,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			if rangeEnd != nil {
 				rangeEndBytes = rangeEnd.Pack()
 			}
-			hasMore = !bytes.Equal(missing.End, RangeSetFinalKey)
+			hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
 		}
 
 		for _, idx := range oi.targetIndexes {
@@ -926,13 +926,13 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 
 		// Convert byte boundaries to TupleRange for source index scanning.
 		var rangeStart, rangeEnd tuple.Tuple
-		if !bytes.Equal(missing.Begin, RangeSetFirstKey) {
+		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
 			rangeStart, err = tuple.Unpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
-		if !bytes.Equal(missing.End, RangeSetFinalKey) {
+		if !bytes.Equal(missing.End, rangeSetFinalKey) {
 			rangeEnd, err = tuple.Unpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
@@ -999,7 +999,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			if rangeEnd != nil {
 				rangeEndBytes = rangeEnd.Pack()
 			}
-			hasMore = !bytes.Equal(missing.End, RangeSetFinalKey)
+			hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
 		}
 
 		_, err = rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true)

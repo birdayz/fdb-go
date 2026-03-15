@@ -561,8 +561,8 @@ var _ = Describe("SecondaryIndexes", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create a tag string that will exceed KeySizeLimit (10KB) once packed.
-			longTag := make([]byte, KeySizeLimit+1)
+			// Create a tag string that will exceed keySizeLimit (10KB) once packed.
+			longTag := make([]byte, keySizeLimit+1)
 			for i := range longTag {
 				longTag[i] = 'x'
 			}

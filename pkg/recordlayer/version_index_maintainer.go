@@ -9,16 +9,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// VersionIndexMaintainer handles VERSION index maintenance.
+// versionIndexMaintainer handles VERSION index maintenance.
 // VERSION indexes store the record's commit version (Versionstamp) in the index key,
 // enabling efficient queries by version ordering.
 //
-// Key difference from StandardIndexMaintainer: when the entry key contains an
+// Key difference from standardIndexMaintainer: when the entry key contains an
 // incomplete versionstamp (record being saved in this transaction), the entry
 // is written via SET_VERSIONSTAMPED_KEY mutation instead of a regular set.
 //
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.indexes.VersionIndexMaintainer.
-type VersionIndexMaintainer struct {
+type versionIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
@@ -26,8 +26,8 @@ type VersionIndexMaintainer struct {
 	store         indexStoreContext
 }
 
-func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, recordContext *FDBRecordContext, store indexStoreContext) *VersionIndexMaintainer {
-	return &VersionIndexMaintainer{
+func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, recordContext *FDBRecordContext, store indexStoreContext) *versionIndexMaintainer {
+	return &versionIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -37,14 +37,14 @@ func newVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx
 }
 
 // UpdateWhileWriteOnly delegates to Update. VERSION indexes are idempotent.
-func (m *VersionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *versionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Note: uniqueness is validated at Build() time in metadata validation, so no
 // runtime check is needed here.
-func (m *VersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldEntries []indexEntry
 	var newEntries []indexEntry
 
@@ -125,22 +125,22 @@ func (m *VersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 }
 
 // Scan scans index entries within the given tuple range.
-// VERSION indexes only support BY_VALUE scanning (same cursor as StandardIndexMaintainer).
+// VERSION indexes only support BY_VALUE scanning (same cursor as standardIndexMaintainer).
 // Scan type validation (rejecting BY_RANK etc.) is handled at the store level in
 // ScanIndexByType, which checks the maintainer type before dispatching. Java's
 // VersionIndexMaintainer.scan(IndexScanType, ...) throws if scanType != BY_VALUE.
-func (m *VersionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *versionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
-func (m *VersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *versionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.
-// Reuses the same logic as StandardIndexMaintainer.evaluateIndex.
-func (m *VersionIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+// Reuses the same logic as standardIndexMaintainer.evaluateIndex.
+func (m *versionIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}

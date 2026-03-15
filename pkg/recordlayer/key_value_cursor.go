@@ -74,7 +74,7 @@ type keyValueCursor struct {
 	// That KV is buffered here for the next OnNext() call.
 	bufferedKV *fdb.KeyValue
 
-	// pendingVersion holds a version captured from a RecordVersionSuffix key
+	// pendingVersion holds a version captured from a recordVersionSuffix key
 	// that hasn't been attached to a record yet. In forward scans, the version
 	// key (suffix -1) appears before the record data (suffix 0 or 1+), so we
 	// store it here until the record is read.
@@ -237,7 +237,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 		primaryKey := keyTuple[:len(keyTuple)-1]
 
 		switch {
-		case suffix == RecordVersionSuffix:
+		case suffix == recordVersionSuffix:
 			// Capture version data for the next record.
 			// In forward scan, version key (suffix -1) appears before record data.
 			// Matches Java's KeyValueUnsplitter which reads version inline.
@@ -250,7 +250,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			}
 			continue
 
-		case suffix == UnsplitRecord:
+		case suffix == unsplitRecord:
 			// Unsplit record — single KV
 			recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
 			if deserErr != nil {
@@ -280,7 +280,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 				Split:      false,
 			}, kv.Key, nil
 
-		case suffix >= StartSplitRecord:
+		case suffix >= startSplitRecord:
 			// Split record — collect all chunks for this primary key
 			return c.readSplitRecord(recordsSubspace, primaryKey, kv, suffix)
 
@@ -337,7 +337,7 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 		return nil
 	}
 	kvPK := keyTuple[:len(keyTuple)-1]
-	if suffix == RecordVersionSuffix && sameTuple(kvPK, primaryKey) {
+	if suffix == recordVersionSuffix && sameTuple(kvPK, primaryKey) {
 		ver, verErr := unpackVersion(kv.Value)
 		if verErr != nil {
 			return nil
@@ -377,7 +377,7 @@ type splitChunk struct {
 }
 
 // readSplitRecord collects all split chunks for a primary key and reassembles the record.
-// firstKV is the first chunk already read (with suffix >= StartSplitRecord).
+// firstKV is the first chunk already read (with suffix >= startSplitRecord).
 // Handles both forward and reverse scans — chunks are sorted by suffix before reassembly.
 // Returns the reassembled record and the last key (in scan order) for continuation.
 func (c *keyValueCursor) readSplitRecord(
@@ -420,7 +420,7 @@ func (c *keyValueCursor) readSplitRecord(
 
 		// Capture version key within this primary key (for reverse scans,
 		// version at suffix -1 appears after split chunks)
-		if suffix == RecordVersionSuffix {
+		if suffix == recordVersionSuffix {
 			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
 				c.pendingVersion = ver
 				c.pendingVersionPK = primaryKey
@@ -429,7 +429,7 @@ func (c *keyValueCursor) readSplitRecord(
 		}
 
 		// Skip unsplit key (suffix 0) if encountered — shouldn't happen but be safe
-		if suffix == UnsplitRecord {
+		if suffix == unsplitRecord {
 			c.bufferedKV = &kv
 			break
 		}
@@ -446,7 +446,7 @@ func (c *keyValueCursor) readSplitRecord(
 
 	// Validate sequential indices
 	for i, chunk := range chunks {
-		expected := StartSplitRecord + int64(i)
+		expected := startSplitRecord + int64(i)
 		if chunk.suffix != expected {
 			return nil, nil, fmt.Errorf("split record segments out of order: expected %d, got %d", expected, chunk.suffix)
 		}

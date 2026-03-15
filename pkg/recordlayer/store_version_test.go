@@ -34,7 +34,7 @@ var _ = Describe("Store version access", func() {
 				if err != nil {
 					return nil, err
 				}
-				Expect(store.GetFormatVersion()).To(Equal(int32(FormatVersionCurrent)))
+				Expect(store.GetFormatVersion()).To(Equal(int32(formatVersionCurrent)))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

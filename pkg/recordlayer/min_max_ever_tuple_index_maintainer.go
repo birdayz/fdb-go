@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// MinMaxEverTupleIndexMaintainer handles MIN_EVER_TUPLE and MAX_EVER_TUPLE index maintenance.
+// minMaxEverTupleIndexMaintainer handles MIN_EVER_TUPLE and MAX_EVER_TUPLE index maintenance.
 // Uses FDB atomic BYTE_MIN/BYTE_MAX mutations to track the min/max value ever seen per grouping key.
 // Key format: [indexSubspace].pack(groupingTuple)
 // Value format: tuple-packed bytes (byte comparison, works for any tuple-encodable type)
@@ -21,7 +21,7 @@ import (
 // _EVER semantics: deleting a record does NOT revert the aggregate.
 // Idempotent: applying the same mutation multiple times yields the same result.
 // Non-idempotent for grouping count >= 1 (COUNT_NOT_NULL-like behavior).
-type MinMaxEverTupleIndexMaintainer struct {
+type minMaxEverTupleIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
@@ -29,8 +29,8 @@ type MinMaxEverTupleIndexMaintainer struct {
 	isMax         bool // true = MAX_EVER_TUPLE, false = MIN_EVER_TUPLE
 }
 
-func newMinMaxEverTupleIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, isMax bool) *MinMaxEverTupleIndexMaintainer {
-	return &MinMaxEverTupleIndexMaintainer{
+func newMinMaxEverTupleIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, isMax bool) *minMaxEverTupleIndexMaintainer {
+	return &minMaxEverTupleIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -44,7 +44,7 @@ func newMinMaxEverTupleIndexMaintainer(index *Index, indexSubspace subspace.Subs
 // For deletes: NO-OP (_EVER = irreversible).
 // For updates: applies BYTE_MIN/BYTE_MAX of the new value.
 // Null values are skipped. Any tuple-encodable value is accepted (no negative restriction).
-func (m *MinMaxEverTupleIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *minMaxEverTupleIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if newRecord == nil {
 		return nil
 	}
@@ -72,19 +72,19 @@ func (m *MinMaxEverTupleIndexMaintainer) Update(oldRecord, newRecord *FDBStoredR
 }
 
 // UpdateWhileWriteOnly passes through to Update(). TUPLE _EVER indexes are idempotent.
-func (m *MinMaxEverTupleIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *minMaxEverTupleIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // DeleteWhere clears all MIN/MAX_EVER_TUPLE index entries whose key starts with the given prefix.
-func (m *MinMaxEverTupleIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *minMaxEverTupleIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans MIN/MAX_EVER_TUPLE index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = tuple-decoded value.
 // Uses a dedicated cursor that decodes tuple-packed values (unlike countKVCursor which decodes int64).
-func (m *MinMaxEverTupleIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *minMaxEverTupleIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -95,7 +95,7 @@ type tupleEntry struct {
 }
 
 // evaluateEntries extracts (groupingKey, tuple-packed value) pairs from a record.
-func (m *MinMaxEverTupleIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]tupleEntry, error) {
+func (m *minMaxEverTupleIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]tupleEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
@@ -142,4 +142,4 @@ func (m *MinMaxEverTupleIndexMaintainer) evaluateEntries(record *FDBStoredRecord
 }
 
 
-var _ IndexMaintainer = (*MinMaxEverTupleIndexMaintainer)(nil)
+var _ IndexMaintainer = (*minMaxEverTupleIndexMaintainer)(nil)

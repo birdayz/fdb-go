@@ -75,12 +75,12 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 }
 
 // validateFormatVersion checks that the stored format version is supported.
-// Rejects versions below FormatVersionMinimum (1) and above FormatVersionCurrent.
+// Rejects versions below formatVersionMinimum (1) and above formatVersionCurrent.
 // Matches Java's FormatVersion.validateFormatVersion().
 func (store *FDBRecordStore) validateFormatVersion(storeHeader *gen.DataStoreInfo) error {
 	storedVersion := storeHeader.GetFormatVersion()
-	if storedVersion < FormatVersionMinimum || storedVersion > FormatVersionCurrent {
-		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(FormatVersionCurrent)}
+	if storedVersion < formatVersionMinimum || storedVersion > formatVersionCurrent {
+		return &UnsupportedFormatVersionError{Version: storedVersion, MaxVersion: int32(formatVersionCurrent)}
 	}
 	return nil
 }
@@ -169,7 +169,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	// Matches Java's checkRebuild() which sets info.setFormatVersion(formatVersion).
 	newVersion := int32(newMetaDataVersion)
 	storeHeader.MetaDataversion = &newVersion
-	fmtVersion := int32(FormatVersionCurrent)
+	fmtVersion := int32(formatVersionCurrent)
 	storeHeader.FormatVersion = &fmtVersion
 	lastUpdateTime := uint64(time.Now().UnixMilli())
 	storeHeader.LastUpdateTime = &lastUpdateTime
@@ -337,7 +337,7 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy() (int64, error) {
 // Includes RecordCountKey from metadata if present, matching Java's
 // checkPossiblyRebuildRecordCounts which sets it during store creation.
 func createStoreHeader(metaDataVersion int32, metaData *RecordMetaData) *gen.DataStoreInfo {
-	formatVersion := int32(FormatVersionCurrent)
+	formatVersion := int32(formatVersionCurrent)
 	userVersion := int32(0) // Default user version
 	lastUpdateTime := uint64(time.Now().UnixMilli())
 

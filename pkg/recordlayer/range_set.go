@@ -18,10 +18,10 @@ import (
 // Valid key space: [\x00, \xff). FIRST_KEY = {0x00}, FINAL_KEY = {0xff}.
 
 var (
-	// RangeSetFirstKey is the minimum valid range boundary.
-	RangeSetFirstKey = []byte{0x00}
-	// RangeSetFinalKey is the exclusive upper bound sentinel.
-	RangeSetFinalKey = []byte{0xff}
+	// rangeSetFirstKey is the minimum valid range boundary.
+	rangeSetFirstKey = []byte{0x00}
+	// rangeSetFinalKey is the exclusive upper bound sentinel.
+	rangeSetFinalKey = []byte{0xff}
 )
 
 // RangeSetEmptyKeyError is returned when a RangeSet operation receives an empty key.
@@ -69,7 +69,7 @@ func rangeSetCheckKey(key []byte) error {
 	if len(key) == 0 {
 		return &RangeSetEmptyKeyError{}
 	}
-	if bytes.Compare(key, RangeSetFinalKey) >= 0 {
+	if bytes.Compare(key, rangeSetFinalKey) >= 0 {
 		return &RangeSetKeyTooLargeError{Key: key}
 	}
 	return nil
@@ -120,11 +120,11 @@ func (rs *RangeSet) Contains(tr fdb.Transaction, key []byte) (bool, error) {
 func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEmpty bool) (bool, error) {
 	beginNonNull := begin
 	if beginNonNull == nil {
-		beginNonNull = RangeSetFirstKey
+		beginNonNull = rangeSetFirstKey
 	}
 	endNonNull := end
 	if endNonNull == nil {
-		endNonNull = RangeSetFinalKey
+		endNonNull = rangeSetFinalKey
 	}
 
 	// Java validates begin with checkKey but NOT end (end can be FINAL_KEY).
@@ -264,11 +264,11 @@ func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEm
 func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit int) ([]RangeSetRange, error) {
 	beginNonNull := begin
 	if beginNonNull == nil {
-		beginNonNull = RangeSetFirstKey
+		beginNonNull = rangeSetFirstKey
 	}
 	endNonNull := end
 	if endNonNull == nil {
-		endNonNull = RangeSetFinalKey
+		endNonNull = rangeSetFinalKey
 	}
 
 	if err := rangeSetCheckKey(beginNonNull); err != nil {
@@ -362,8 +362,8 @@ func (rs *RangeSet) IsEmpty(tr fdb.Transaction) (bool, error) {
 		return false, err
 	}
 	if len(ranges) == 1 {
-		return bytes.Equal(ranges[0].Begin, RangeSetFirstKey) &&
-			bytes.Equal(ranges[0].End, RangeSetFinalKey), nil
+		return bytes.Equal(ranges[0].Begin, rangeSetFirstKey) &&
+			bytes.Equal(ranges[0].End, rangeSetFinalKey), nil
 	}
 	// No missing ranges → set covers everything → not empty.
 	return false, nil

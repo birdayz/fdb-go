@@ -101,7 +101,7 @@ func evaluateRecordFunction(
 	record *FDBStoredRecord[proto.Message],
 	index *Index,
 ) (*int64, error) {
-	if rm, ok := maintainer.(*RankIndexMaintainer); ok {
+	if rm, ok := maintainer.(*rankIndexMaintainer); ok {
 		return rm.EvaluateRecordFunction(fn, record)
 	}
 	return nil, fmt.Errorf("index %q (type %s) does not support record function %q", index.Name, index.Type, fn.Name)
@@ -112,7 +112,7 @@ func evaluateRecordFunction(
 // Returns nil if the record's index key evaluates to null.
 //
 // Matches Java's RankIndexMaintainer.evaluateRecordFunction() → rank().
-func (m *RankIndexMaintainer) EvaluateRecordFunction(
+func (m *rankIndexMaintainer) EvaluateRecordFunction(
 	fn *IndexRecordFunction,
 	record *FDBStoredRecord[proto.Message],
 ) (*int64, error) {

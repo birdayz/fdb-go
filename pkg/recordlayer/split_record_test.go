@@ -495,7 +495,7 @@ var _ = Describe("SplitRecords", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Check if it's split based on actual serialized size
-			if stored.ValueSize <= SplitRecordSize {
+			if stored.ValueSize <= splitRecordSize {
 				Expect(stored.Split).To(BeFalse())
 			} else {
 				Expect(stored.Split).To(BeTrue())

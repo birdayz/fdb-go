@@ -183,7 +183,7 @@ func evaluateAggregate(
 	}
 
 	// For RANK index aggregate functions: delegate to rank-specific evaluation.
-	if rm, ok := maintainer.(*RankIndexMaintainer); ok {
+	if rm, ok := maintainer.(*rankIndexMaintainer); ok {
 		return evaluateRankAggregate(fn, rm, scanRange)
 	}
 
@@ -445,7 +445,7 @@ func canEvaluateRankAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 // Matches Java's RankIndexMaintainer.evaluateAggregateFunction().
 func evaluateRankAggregate(
 	fn *IndexAggregateFunction,
-	rm *RankIndexMaintainer,
+	rm *rankIndexMaintainer,
 	scanRange TupleRange,
 ) (tuple.Tuple, error) {
 	groupPrefixSize := rm.getGroupingCount()
@@ -466,7 +466,7 @@ func evaluateRankAggregate(
 		}
 		rankSubspace = rankSubspace.Sub(elems...)
 	}
-	rankedSet := NewRankedSet(rankSubspace, rm.rankedSetConfig)
+	rankedSet := newRankedSet(rankSubspace, rm.rankedSetConfig)
 
 	// Init if needed.
 	needed, err := rankedSet.InitNeeded(rm.tx.Snapshot())

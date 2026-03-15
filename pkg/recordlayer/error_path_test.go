@@ -116,7 +116,7 @@ var _ = Describe("UniqueIndex_ReadableViolation", func() {
 var _ = Describe("IndexValueSizeError_Test", func() {
 	It("CoveringIndexValueExceedsLimit", func() {
 		// Directly test checkKeyValueSizes with synthetic data.
-		bigValue := make([]byte, ValueSizeLimit+1)
+		bigValue := make([]byte, valueSizeLimit+1)
 		err := checkKeyValueSizes(
 			&Index{Name: "test_idx"},
 			tuple.Tuple{int64(1)},
@@ -129,12 +129,12 @@ var _ = Describe("IndexValueSizeError_Test", func() {
 		Expect(errors.As(err, &valueSizeErr)).To(BeTrue())
 		Expect(valueSizeErr.IndexName).To(Equal("test_idx"))
 		Expect(valueSizeErr.PrimaryKey).To(Equal(tuple.Tuple{int64(1)}))
-		Expect(valueSizeErr.ValueSize).To(Equal(ValueSizeLimit + 1))
-		Expect(valueSizeErr.Limit).To(Equal(ValueSizeLimit))
+		Expect(valueSizeErr.ValueSize).To(Equal(valueSizeLimit + 1))
+		Expect(valueSizeErr.Limit).To(Equal(valueSizeLimit))
 	})
 
 	It("KeyExceedsLimit", func() {
-		bigKey := make([]byte, KeySizeLimit+1)
+		bigKey := make([]byte, keySizeLimit+1)
 		err := checkKeyValueSizes(
 			&Index{Name: "test_idx"},
 			tuple.Tuple{int64(42)},
@@ -146,15 +146,15 @@ var _ = Describe("IndexValueSizeError_Test", func() {
 		var keySizeErr *IndexKeySizeError
 		Expect(errors.As(err, &keySizeErr)).To(BeTrue())
 		Expect(keySizeErr.IndexName).To(Equal("test_idx"))
-		Expect(keySizeErr.KeySize).To(Equal(KeySizeLimit + 1))
+		Expect(keySizeErr.KeySize).To(Equal(keySizeLimit + 1))
 	})
 
 	It("BothWithinLimitsSucceeds", func() {
 		err := checkKeyValueSizes(
 			&Index{Name: "test_idx"},
 			tuple.Tuple{int64(1)},
-			make([]byte, KeySizeLimit),   // exactly at limit
-			make([]byte, ValueSizeLimit), // exactly at limit
+			make([]byte, keySizeLimit),   // exactly at limit
+			make([]byte, valueSizeLimit), // exactly at limit
 		)
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -650,8 +650,8 @@ var _ = Describe("IndexValueSizeError_Integration", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(specSubspace()).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Create a tag string that exceeds KeySizeLimit once packed into index entry
-			longTag := strings.Repeat("x", KeySizeLimit+1)
+			// Create a tag string that exceeds keySizeLimit once packed into index entry
+			longTag := strings.Repeat("x", keySizeLimit+1)
 			order := &gen.Order{
 				OrderId: proto.Int64(1),
 				Price:   proto.Int32(100),
@@ -770,7 +770,7 @@ var _ = Describe("Phase 2 error types", func() {
 			var fmtErr *UnsupportedFormatVersionError
 			Expect(errors.As(err, &fmtErr)).To(BeTrue())
 			Expect(fmtErr.Version).To(Equal(int32(999)))
-			Expect(fmtErr.MaxVersion).To(Equal(int32(FormatVersionCurrent)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionCurrent)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -788,7 +788,7 @@ var _ = Describe("Phase 2 error types", func() {
 			Expect(err).NotTo(HaveOccurred())
 			_ = store
 
-			// Now overwrite the store header with format version 0 (below FormatVersionMinimum=1).
+			// Now overwrite the store header with format version 0 (below formatVersionMinimum=1).
 			zeroVersion := int32(0)
 			header := &gen.DataStoreInfo{
 				FormatVersion: &zeroVersion,
@@ -806,7 +806,7 @@ var _ = Describe("Phase 2 error types", func() {
 			var fmtErr *UnsupportedFormatVersionError
 			Expect(errors.As(err, &fmtErr)).To(BeTrue())
 			Expect(fmtErr.Version).To(Equal(int32(0)))
-			Expect(fmtErr.MaxVersion).To(Equal(int32(FormatVersionCurrent)))
+			Expect(fmtErr.MaxVersion).To(Equal(int32(formatVersionCurrent)))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -823,9 +823,9 @@ var _ = Describe("Phase 2 error types", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Write garbage bytes directly at the record key for PK=42.
-			// Key format: [subspace][RecordKey][pk...][UnsplitRecord=0]
+			// Key format: [subspace][RecordKey][pk...][unsplitRecord=0]
 			pk := tuple.Tuple{int64(42)}
-			recordKey := ss.Sub(RecordKey).Pack(append(pk, UnsplitRecord))
+			recordKey := ss.Sub(RecordKey).Pack(append(pk, unsplitRecord))
 			rtx.Transaction().Set(recordKey, []byte{0xDE, 0xAD, 0xBE, 0xEF})
 
 			// LoadRecord should fail with RecordDeserializationError.
@@ -877,7 +877,7 @@ var _ = Describe("Phase 2 error types", func() {
 			// Write some data into the store's subspace at the RecordKey position,
 			// but do NOT write a store header at StoreInfoKey. The first key found
 			// will not be at StoreInfoKey, triggering the error.
-			garbageKey := ss.Pack(tuple.Tuple{RecordKey, int64(1), UnsplitRecord})
+			garbageKey := ss.Pack(tuple.Tuple{RecordKey, int64(1), unsplitRecord})
 			rtx.Transaction().Set(garbageKey, []byte{0x01, 0x02, 0x03})
 
 			// Try to Open — should fail because there's data but no header.
@@ -943,7 +943,7 @@ var _ = Describe("Error type coverage gaps", func() {
 
 			// Overwrite the store header with FormatVersion=14 and an unknown lock state (999).
 			// Proto enums in Go accept arbitrary int32 values, so this is valid wire data.
-			fmtVersion := int32(FormatVersionFullStoreLock)
+			fmtVersion := int32(formatVersionFullStoreLock)
 			unknownState := gen.DataStoreInfo_StoreLockState_State(999)
 			header := &gen.DataStoreInfo{
 				FormatVersion: &fmtVersion,

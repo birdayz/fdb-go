@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// MaxEverVersionIndexMaintainer handles MAX_EVER_VERSION index maintenance.
+// maxEverVersionIndexMaintainer handles MAX_EVER_VERSION index maintenance.
 // Like MAX_EVER_TUPLE but version-aware: incomplete versionstamps use
 // SET_VERSIONSTAMPED_VALUE mutations (via context), complete versionstamps
 // use FDB BYTE_MAX atomic mutations.
@@ -29,7 +29,7 @@ import (
 // This ensures the maximum local version wins.
 //
 // Matches Java's AtomicMutationIndexMaintainer with AtomicMutation.MAX_EVER_VERSION.
-type MaxEverVersionIndexMaintainer struct {
+type maxEverVersionIndexMaintainer struct {
 	index         *Index
 	indexSubspace subspace.Subspace
 	tx            fdb.Transaction
@@ -37,8 +37,8 @@ type MaxEverVersionIndexMaintainer struct {
 	store         indexStoreContext
 }
 
-func newMaxEverVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, recordContext *FDBRecordContext, store indexStoreContext) *MaxEverVersionIndexMaintainer {
-	return &MaxEverVersionIndexMaintainer{
+func newMaxEverVersionIndexMaintainer(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction, recordContext *FDBRecordContext, store indexStoreContext) *maxEverVersionIndexMaintainer {
+	return &maxEverVersionIndexMaintainer{
 		index:         index,
 		indexSubspace: indexSubspace,
 		tx:            tx,
@@ -50,7 +50,7 @@ func newMaxEverVersionIndexMaintainer(index *Index, indexSubspace subspace.Subsp
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // For inserts/updates: applies BYTE_MAX (complete) or SET_VERSIONSTAMPED_VALUE (incomplete).
 // For deletes: NO-OP (_EVER = irreversible).
-func (m *MaxEverVersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *maxEverVersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if newRecord == nil {
 		return nil // _EVER: deletes are no-ops
 	}
@@ -93,19 +93,19 @@ func (m *MaxEverVersionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 }
 
 // UpdateWhileWriteOnly passes through to Update(). MAX_EVER_VERSION is idempotent.
-func (m *MaxEverVersionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *maxEverVersionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
 
 // DeleteWhere clears all MAX_EVER_VERSION index entries whose key starts with the given prefix.
-func (m *MaxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+func (m *maxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
 // Scan scans MAX_EVER_VERSION index entries within the given tuple range.
 // Returns IndexEntry where Key = grouping tuple and Value = tuple-decoded grouped columns.
 // Uses the tuple value cursor (same as MAX_EVER_TUPLE).
-func (m *MaxEverVersionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+func (m *maxEverVersionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
 	return newTupleValueIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
@@ -120,7 +120,7 @@ type versionEntry struct {
 // The grouped columns (including versionstamp) are tuple-packed as the value.
 // For incomplete versionstamps, PackWithVersionstamp is used to include the
 // versionstamp offset bytes required by SET_VERSIONSTAMPED_VALUE.
-func (m *MaxEverVersionIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]versionEntry, error) {
+func (m *maxEverVersionIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]versionEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
 	}
@@ -189,4 +189,4 @@ func (m *MaxEverVersionIndexMaintainer) evaluateEntries(record *FDBStoredRecord[
 	return result, nil
 }
 
-var _ IndexMaintainer = (*MaxEverVersionIndexMaintainer)(nil)
+var _ IndexMaintainer = (*maxEverVersionIndexMaintainer)(nil)

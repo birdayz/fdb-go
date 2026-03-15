@@ -10,16 +10,22 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RankIndexMaintainer maintains a RANK index.
+// RankQuerier is the public interface for rank-based queries on a RANK index maintainer.
+type RankQuerier interface {
+	RankForScore(score tuple.Tuple, nullsAreLow bool) (*int64, error)
+	ScoreForRank(rank tuple.Tuple) (tuple.Tuple, error)
+}
+
+// rankIndexMaintainer maintains a RANK index.
 // A RANK index has two subspaces:
 //   - Primary (B-tree): standard VALUE index on [group..., score...]
 //   - Secondary: a RankedSet per group for rank/select queries
 //
-// Matches Java's RankIndexMaintainer.
-type RankIndexMaintainer struct {
-	StandardIndexMaintainer              // embedded — primary B-tree operations
+// Matches Java's rankIndexMaintainer.
+type rankIndexMaintainer struct {
+	standardIndexMaintainer              // embedded — primary B-tree operations
 	secondarySubspace       subspace.Subspace // ranked sets per group
-	rankedSetConfig         RankedSetConfig
+	rankedSetConfig         rankedSetConfig
 }
 
 // Index option keys for RANK indexes.
@@ -35,9 +41,9 @@ func newRankIndexMaintainer(
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.Transaction,
 	store indexStoreContext,
-) *RankIndexMaintainer {
-	return &RankIndexMaintainer{
-		StandardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
+) *rankIndexMaintainer {
+	return &rankIndexMaintainer{
+		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
 		rankedSetConfig:         parseRankedSetConfig(index),
 	}
@@ -45,8 +51,8 @@ func newRankIndexMaintainer(
 
 // parseRankedSetConfig reads RankedSet configuration from index options.
 // Matches Java's RankedSetIndexHelper.getConfig().
-func parseRankedSetConfig(index *Index) RankedSetConfig {
-	config := DefaultRankedSetConfig
+func parseRankedSetConfig(index *Index) rankedSetConfig {
+	config := defaultRankedSetConfig
 	if v, ok := index.Options[IndexOptionRankNLevels]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			config.NLevels = n
@@ -55,9 +61,9 @@ func parseRankedSetConfig(index *Index) RankedSetConfig {
 	if v, ok := index.Options[IndexOptionRankHashFunction]; ok {
 		switch v {
 		case "CRC":
-			config.HashFunction = CRCHash
+			config.HashFunction = crcHash
 		default:
-			config.HashFunction = JDKArrayHash
+			config.HashFunction = jdkArrayHash
 		}
 	}
 	if v, ok := index.Options[IndexOptionRankCountDuplicates]; ok {
@@ -67,17 +73,17 @@ func parseRankedSetConfig(index *Index) RankedSetConfig {
 }
 
 // DeleteWhere clears both the primary B-tree and secondary ranked set entries
-// for the given prefix. Matches Java's RankIndexMaintainer.deleteWhere().
-func (m *RankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+// for the given prefix. Matches Java's rankIndexMaintainer.deleteWhere().
+func (m *rankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Clear primary (B-tree) entries.
-	if err := m.StandardIndexMaintainer.DeleteWhere(prefix); err != nil {
+	if err := m.standardIndexMaintainer.DeleteWhere(prefix); err != nil {
 		return err
 	}
 	// Clear secondary (ranked set) entries.
 	key := m.secondarySubspace.Pack(prefix)
 	pr, err := fdb.PrefixRange(key)
 	if err != nil {
-		return fmt.Errorf("RankIndexMaintainer.DeleteWhere: PrefixRange(%x): %w", key, err)
+		return fmt.Errorf("rankIndexMaintainer.DeleteWhere: PrefixRange(%x): %w", key, err)
 	}
 	m.tx.ClearRange(pr)
 	return nil
@@ -85,8 +91,8 @@ func (m *RankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 
 // Update handles insert/delete/update for the RANK index.
 // Maintains both the primary B-tree and the secondary ranked set.
-// Matches Java's RankIndexMaintainer.updateIndexKeys().
-func (m *RankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// Matches Java's rankIndexMaintainer.updateIndexKeys().
+func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
@@ -162,13 +168,13 @@ func (m *RankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 
 // UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
 // RANK is idempotent when !CountDuplicates.
-func (m *RankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *rankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if !m.rankedSetConfig.CountDuplicates {
 		return m.Update(oldRecord, newRecord) // idempotent
 	}
 	// Non-idempotent: check range set before updating.
 	// Use oldRecord's PK when available (for deletes), fall back to newRecord.
-	// Matches Java's RankIndexMaintainer.updateWriteOnlyByRecords().
+	// Matches Java's rankIndexMaintainer.updateWriteOnlyByRecords().
 	var checkRecord *FDBStoredRecord[proto.Message]
 	if oldRecord != nil {
 		checkRecord = oldRecord
@@ -188,12 +194,12 @@ func (m *RankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 }
 
 // Scan scans the primary B-tree (BY_VALUE).
-// Inherited from StandardIndexMaintainer — no override needed.
+// Inherited from standardIndexMaintainer — no override needed.
 
 // ScanByRank converts a rank range to a score range, then scans BY_VALUE.
 // The rank range tuples have format [group..., rank] where rank is an int64.
-// Matches Java's RankIndexMaintainer.scan(BY_RANK, ...).
-func (m *RankIndexMaintainer) ScanByRank(
+// Matches Java's rankIndexMaintainer.scan(BY_RANK, ...).
+func (m *rankIndexMaintainer) ScanByRank(
 	rankRange TupleRange,
 	continuation []byte,
 	scanProperties ScanProperties,
@@ -205,13 +211,13 @@ func (m *RankIndexMaintainer) ScanByRank(
 	if scoreRange == nil {
 		return Empty[*IndexEntry]()
 	}
-	return m.StandardIndexMaintainer.Scan(*scoreRange, continuation, scanProperties)
+	return m.standardIndexMaintainer.Scan(*scoreRange, continuation, scanProperties)
 }
 
 // updateRankedSet adds or removes a score from the ranked set for the entry's group.
 // On remove with !CountDuplicates, only removes if no other B-tree entry has this score.
 // Matches Java's RankedSetIndexHelper.updateRankedSet().
-func (m *RankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) error {
+func (m *rankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) error {
 	groupPrefixSize := m.getGroupingCount()
 
 	var rankSubspace subspace.Subspace
@@ -226,7 +232,7 @@ func (m *RankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) err
 		scoreKey = entry.key
 	}
 
-	rankedSet := NewRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
 	score := scoreKey.Pack()
 
 	// Init if needed — use snapshot check to avoid conflicts with atomic mutations.
@@ -282,7 +288,7 @@ func (m *RankIndexMaintainer) updateRankedSet(entry indexEntry, remove bool) err
 
 // rankRangeToScoreRange converts rank endpoints to score endpoints.
 // Returns nil if the range is empty. Matches Java's RankedSetIndexHelper.rankRangeToScoreRange().
-func (m *RankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*TupleRange, error) {
+func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*TupleRange, error) {
 	groupPrefixSize := m.getGroupingCount()
 
 	var prefix tuple.Tuple
@@ -336,7 +342,7 @@ func (m *RankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		return &result, nil
 	}
 
-	rankedSet := NewRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
 
 	// Init if needed.
 	needed, err := rankedSet.InitNeeded(m.tx.Snapshot())
@@ -409,7 +415,7 @@ func (m *RankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 }
 
 // getGroupingCount returns the number of grouping columns in the index expression.
-func (m *RankIndexMaintainer) getGroupingCount() int {
+func (m *rankIndexMaintainer) getGroupingCount() int {
 	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
 		return g.GetGroupingCount()
 	}
@@ -418,7 +424,7 @@ func (m *RankIndexMaintainer) getGroupingCount() int {
 
 // RankForScore returns the rank of a given score in the ranked set for the
 // specified group. Returns nil if the score is not present and nullIfMissing is true.
-func (m *RankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMissing bool) (*int64, error) {
+func (m *rankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMissing bool) (*int64, error) {
 	groupPrefixSize := m.getGroupingCount()
 
 	var rankSubspace subspace.Subspace
@@ -433,13 +439,13 @@ func (m *RankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMiss
 		scoreTuple = groupAndScore
 	}
 
-	rankedSet := NewRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
 	return rankedSet.Rank(m.tx, scoreTuple.Pack(), nullIfMissing)
 }
 
 // ScoreForRank returns the score at the given rank in the ranked set for the
 // specified group. Returns nil if rank is out of bounds.
-func (m *RankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tuple, error) {
+func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tuple, error) {
 	groupPrefixSize := m.getGroupingCount()
 
 	var rankSubspace subspace.Subspace
@@ -464,7 +470,7 @@ func (m *RankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 		return nil, fmt.Errorf("rank index: empty group and rank tuple")
 	}
 
-	rankedSet := NewRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
 	scoreBytes, err := rankedSet.GetNth(m.tx, rank)
 	if err != nil {
 		return nil, err

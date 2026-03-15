@@ -104,12 +104,12 @@ func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot 
 }
 
 // versionKey returns the FDB key for storing a record's version.
-// Uses the new inline format: recordsSubspace.pack(primaryKey, RecordVersionSuffix).
+// Uses the new inline format: recordsSubspace.pack(primaryKey, recordVersionSuffix).
 // Matches Java's SplitHelper.RECORD_VERSION = -1L for format version >= 6.
 func (store *FDBRecordStore) versionKey(primaryKey tuple.Tuple) fdb.Key {
 	recordsSubspace := store.subspace.Sub(RecordKey)
 	keyTuple := make(tuple.Tuple, len(primaryKey)+1)
 	copy(keyTuple, primaryKey)
-	keyTuple[len(primaryKey)] = RecordVersionSuffix
+	keyTuple[len(primaryKey)] = recordVersionSuffix
 	return recordsSubspace.Pack(keyTuple)
 }

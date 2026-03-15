@@ -121,11 +121,11 @@ func verifyRankIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, m
 
 		// --- Part 2: Ranked set consistency ---
 		maintainer := store.GetIndexMaintainer(idx)
-		rankMaintainer, ok := maintainer.(*recordlayer.RankIndexMaintainer)
+		rankMaintainer, ok := maintainer.(recordlayer.RankQuerier)
 		if !ok {
 			violations = append(violations, Violation{
 				Invariant: "rank_index_maintainer_type",
-				Expected:  "RankIndexMaintainer",
+				Expected:  "RankQuerier",
 				Actual:    fmt.Sprintf("%T", maintainer),
 			})
 			continue
