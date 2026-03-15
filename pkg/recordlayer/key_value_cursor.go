@@ -220,7 +220,10 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 
 	for {
 		// Get the next KV pair (from buffer or iterator)
-		kv, ok := c.nextKV()
+		kv, ok, err := c.nextKV()
+		if err != nil {
+			return nil, nil, err
+		}
 		if !ok {
 			return nil, nil, nil // exhausted
 		}
@@ -322,7 +325,7 @@ func (c *keyValueCursor) takePendingVersion(currentPK tuple.Tuple) *FDBRecordVer
 // appears after the record data. If found, returns the version and consumes the
 // KV. Otherwise, buffers the peeked KV for the next call.
 func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple) *FDBRecordVersion {
-	kv, ok := c.nextKV()
+	kv, ok, _ := c.nextKV()
 	if !ok {
 		return nil
 	}
@@ -393,7 +396,10 @@ func (c *keyValueCursor) readSplitRecord(
 
 	// Collect remaining chunks for this primary key
 	for {
-		kv, ok := c.nextKV()
+		kv, ok, kvErr := c.nextKV()
+		if kvErr != nil {
+			return nil, nil, kvErr
+		}
 		if !ok {
 			break // Iterator exhausted
 		}
@@ -500,25 +506,26 @@ func sortSplitChunks(chunks []splitChunk) {
 }
 
 // nextKV returns the next KV pair from the buffer or iterator.
-// Returns (kv, true) on success, (zero, false) when exhausted.
-func (c *keyValueCursor) nextKV() (kv fdb.KeyValue, ok bool) {
+// Returns (kv, true, nil) on success, (zero, false, nil) when exhausted,
+// or (zero, false, err) on FDB error.
+func (c *keyValueCursor) nextKV() (fdb.KeyValue, bool, error) {
 	// Return buffered KV if available
 	if c.bufferedKV != nil {
-		kv = *c.bufferedKV
+		kv := *c.bufferedKV
 		c.bufferedKV = nil
-		return kv, true
+		return kv, true, nil
 	}
 
 	// Advance iterator
 	if !c.iterator.Advance() {
-		return fdb.KeyValue{}, false
+		return fdb.KeyValue{}, false, nil
 	}
 
 	kv, err := c.iterator.Get()
 	if err != nil {
-		return fdb.KeyValue{}, false
+		return fdb.KeyValue{}, false, fmt.Errorf("key-value cursor: iterator get: %w", err)
 	}
-	return kv, true
+	return kv, true, nil
 }
 
 // makeKeyContinuation creates a proto-wrapped continuation from an FDB key.
@@ -537,7 +544,9 @@ func (c *keyValueCursor) makeKeyContinuation(key fdb.Key) ([]byte, error) {
 }
 
 // hasMoreKVs checks if there are more KV pairs available (from buffer or iterator).
-// Used for the limit-reached vs source-exhausted check.
+// Used for the limit-reached vs source-exhausted check. Best-effort: FDB errors
+// during the probe are treated as "no more" since we're just distinguishing
+// ReturnLimitReached from SourceExhausted.
 func (c *keyValueCursor) hasMoreKVs() bool {
 	if c.bufferedKV != nil {
 		return true
