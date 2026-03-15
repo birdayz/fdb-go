@@ -331,6 +331,48 @@ func TestRandomPermutedMin(t *testing.T) {
 	})
 }
 
+// buildVersionRandomMetadata creates metadata with VALUE + VERSION indexes for random testing.
+func buildVersionRandomMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.SetStoreRecordVersions(true)
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_ver_price_idx", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewVersionIndex("rand_ver_version_idx",
+		recordlayer.VersionKey()))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build version random metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestRandomVersionIndex validates VERSION index under random operations with no faults.
+func TestRandomVersionIndex(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildVersionRandomMetadata(), RandomConfig{
+		Seed:   15015,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsNone,
+	})
+}
+
+// TestRandomVersionIndexWithFaults validates VERSION index under 5% commit-unknown.
+// Tests that VERSION index entries are correctly cleaned up and recreated on retry.
+func TestRandomVersionIndexWithFaults(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildVersionRandomMetadata(), RandomConfig{
+		Seed:   16016,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
+	})
+}
+
 // TestRandomDeterminism runs the same seed twice and verifies the model ends
 // up in exactly the same state. Same seed = same PRNG = same operations.
 func TestRandomDeterminism(t *testing.T) {
