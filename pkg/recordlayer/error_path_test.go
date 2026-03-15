@@ -167,7 +167,9 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 		expr := Field("nonexistent_field")
 		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("field nonexistent_field not found"))
+		var keErr *KeyExpressionError
+		Expect(errors.As(err, &keErr)).To(BeTrue())
+		Expect(keErr.Message).To(ContainSubstring("field nonexistent_field not found"))
 	})
 
 	It("RepeatedFieldWithFanTypeNone", func() {
@@ -179,7 +181,9 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 		expr := Field("tags")
 		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("is repeated with FanType.None"))
+		var keErr *KeyExpressionError
+		Expect(errors.As(err, &keErr)).To(BeTrue())
+		Expect(keErr.Message).To(ContainSubstring("is repeated with FanType.None"))
 	})
 
 	It("NilMessageReturnsNullKeyComponent", func() {
@@ -209,7 +213,9 @@ var _ = Describe("KeyExpression_ErrorPaths", func() {
 		expr := Nest("nonexistent_parent", Field("type"))
 		_, err := expr.Evaluate(nil, order)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("not found"))
+		var keErr *KeyExpressionError
+		Expect(errors.As(err, &keErr)).To(BeTrue())
+		Expect(keErr.Message).To(ContainSubstring("not found"))
 	})
 })
 
@@ -337,8 +343,9 @@ var _ = Describe("SaveRecord_ValidationErrors", func() {
 
 			flower := &gen.Flower{Type: proto.String("Rose"), Color: gen.Color_RED.Enum()}
 			_, err = store.SaveRecord(flower)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("unknown record type"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("unknown record type"))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -513,8 +520,9 @@ var _ = Describe("MetadataBuild_ErrorPaths", func() {
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("primary key"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("primary key"))
 	})
 
 	It("FormerIndexSubspaceKeyReuse", func() {
@@ -534,8 +542,9 @@ var _ = Describe("MetadataBuild_ErrorPaths", func() {
 		builder.AddIndex("Order", idx2)
 
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("subspace key"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("subspace key"))
 	})
 })
 

@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -667,8 +668,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		// NOT calling SetStoreRecordVersions(true)
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", Ungrouped(VersionKey())))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("SetStoreRecordVersions(true)"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("SetStoreRecordVersions(true)"))
 	})
 
 	// =========================================================================
@@ -683,8 +685,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		// Using raw VersionKey() without GroupBy/Ungrouped wrapper
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", VersionKey()))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("GroupingKeyExpression"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("GroupingKeyExpression"))
 	})
 
 	// =========================================================================
@@ -700,8 +703,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		// VersionKey is 1 column; GroupAll → groupedCount=0 → "at least 1 grouped column" error
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad", GroupAll(VersionKey())))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("at least 1 grouped column"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("at least 1 grouped column"))
 	})
 
 	It("metadata validation: version in grouping portion with field in grouped rejected", func() {
@@ -717,8 +721,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Field("price"), VersionKey())))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(SatisfyAny(
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(SatisfyAny(
 			ContainSubstring("no version entries in grouping key"),
 			ContainSubstring("exactly 1 version entry in grouped key"),
 		))
@@ -738,8 +743,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Field("price"), Field("order_id"))))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("exactly 1 version entry in grouped key"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		Expect(mdErr.Message).To(ContainSubstring("exactly 1 version entry in grouped key"))
 	})
 
 	It("metadata validation: 2 version columns in grouped rejected", func() {
@@ -753,8 +759,9 @@ var _ = Describe("MaxEverVersionIndex", func() {
 		builder.AddIndex("Order", NewMaxEverVersionIndex("bad",
 			GroupBy(Concat(VersionKey(), VersionKey()), Field("price"))))
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("exactly 1 version entry in grouped key"))
+		var mdErr2 *MetaDataError
+		Expect(errors.As(err, &mdErr2)).To(BeTrue())
+		Expect(mdErr2.Message).To(ContainSubstring("exactly 1 version entry in grouped key"))
 	})
 
 	// =========================================================================

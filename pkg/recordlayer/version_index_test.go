@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -464,8 +465,9 @@ var _ = Describe("VersionIndex", func() {
 			builder.SetStoreRecordVersions(true)
 			builder.AddIndex("Order", uniqueVersionIndex)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not support unique"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("does not support unique"))
 		})
 
 		It("multiple records get separate version index entries", func() {
@@ -1109,8 +1111,9 @@ var _ = Describe("VersionIndex", func() {
 			// Deliberately NOT calling SetStoreRecordVersions(true)
 			builder.AddIndex("Order", NewVersionIndex("Order$version", VersionKey()))
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("requires SetStoreRecordVersions"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("requires SetStoreRecordVersions"))
 		})
 
 		It("VERSION index with grouping expression fails at Build", func() {
@@ -1123,8 +1126,9 @@ var _ = Describe("VersionIndex", func() {
 			groupedExpr := Ungrouped(VersionKey())
 			builder.AddIndex("Order", NewVersionIndex("Order$version_grouped", groupedExpr))
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("does not support grouping"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("does not support grouping"))
 		})
 
 		It("VERSION index with no version column fails at Build", func() {
@@ -1136,8 +1140,9 @@ var _ = Describe("VersionIndex", func() {
 			// Use Field("order_id") as root — no VersionKeyExpression
 			builder.AddIndex("Order", NewVersionIndex("Order$no_version", Field("order_id")))
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("exactly 1 version entry"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("exactly 1 version entry"))
 		})
 
 		It("VERSION index with composite expression including version passes validation", func() {

@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -271,9 +272,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(err.Error()).To(ContainSubstring("count_notnull_bare_field"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
+			Expect(mdErr.Message).To(ContainSubstring("count_notnull_bare_field"))
 		})
 	})
 
@@ -310,9 +312,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(err.Error()).To(ContainSubstring("sum_bare_price"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
+			Expect(mdErr.Message).To(ContainSubstring("sum_bare_price"))
 		})
 
 		It("works correctly with Ungrouped wrapper", func() {
@@ -377,9 +380,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(err.Error()).To(ContainSubstring("max_ever_bare_price"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
+			Expect(mdErr.Message).To(ContainSubstring("max_ever_bare_price"))
 		})
 
 		It("MIN_EVER_LONG without GroupingKeyExpression is rejected at Build time", func() {
@@ -391,9 +395,10 @@ var _ = Describe("BugBounty3Index", func() {
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddIndex("Order", idx)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("requires a GroupingKeyExpression"))
-			Expect(err.Error()).To(ContainSubstring("min_ever_bare_price"))
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("requires a GroupingKeyExpression"))
+			Expect(mdErr.Message).To(ContainSubstring("min_ever_bare_price"))
 		})
 	})
 

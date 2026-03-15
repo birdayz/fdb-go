@@ -103,7 +103,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 // Matches Java's RecordMetaDataBuilder.loadFromProto().
 func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	if md == nil {
-		return nil, fmt.Errorf("nil metadata proto")
+		return nil, &MetaDataError{Message: "nil metadata proto"}
 	}
 
 	// 1. Rebuild file descriptor from proto
@@ -137,7 +137,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			// Single-type index
 			rt := builder.recordTypes[rtNames[0]]
 			if rt == nil {
-				return nil, fmt.Errorf("unknown record type %q referenced by index %q", rtNames[0], idxProto.GetName())
+				return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q referenced by index %q", rtNames[0], idxProto.GetName())}
 			}
 			builder.addIndexCommon(idx)
 			rt.indexes = append(rt.indexes, idx)
@@ -147,7 +147,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			for _, name := range rtNames {
 				rt := builder.recordTypes[name]
 				if rt == nil {
-					return nil, fmt.Errorf("unknown record type %q referenced by index %q", name, idxProto.GetName())
+					return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q referenced by index %q", name, idxProto.GetName())}
 				}
 				rt.multiTypeIndexes = append(rt.multiTypeIndexes, idx)
 			}

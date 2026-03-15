@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"errors"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -184,8 +186,10 @@ var _ = Describe("FunctionKeyExpression", func() {
 			expr := FunctionExpr("totally_nonexistent_function_xyz", EmptyKey())
 			_, err := expr.Evaluate(nil, nil)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("unknown function key expression"))
-			Expect(err.Error()).To(ContainSubstring("totally_nonexistent_function_xyz"))
+			var keErr *KeyExpressionError
+			Expect(errors.As(err, &keErr)).To(BeTrue())
+			Expect(keErr.Message).To(ContainSubstring("unknown function key expression"))
+			Expect(keErr.Message).To(ContainSubstring("totally_nonexistent_function_xyz"))
 		})
 	})
 
@@ -194,7 +198,9 @@ var _ = Describe("FunctionKeyExpression", func() {
 			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
 			_, err := expr.Evaluate(nil, nil)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
+			var keErr *KeyExpressionError
+			Expect(errors.As(err, &keErr)).To(BeTrue())
+			Expect(keErr.Message).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
 		})
 
 		It("returns error with nil Store on record", func() {
@@ -204,7 +210,9 @@ var _ = Describe("FunctionKeyExpression", func() {
 			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
 			_, err := expr.Evaluate(record, nil)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
+			var keErr *KeyExpressionError
+			Expect(errors.As(err, &keErr)).To(BeTrue())
+			Expect(keErr.Message).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
 		})
 	})
 

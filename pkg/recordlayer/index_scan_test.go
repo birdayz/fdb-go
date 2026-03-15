@@ -788,7 +788,9 @@ var _ = Describe("IndexScanning", func() {
 				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent"}}
 				_, err = store.SaveRecord(order)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("repeated with FanType.None"))
+				var keErr *KeyExpressionError
+				Expect(errors.As(err, &keErr)).To(BeTrue())
+				Expect(keErr.Message).To(ContainSubstring("repeated with FanType.None"))
 
 				return nil, nil
 			})

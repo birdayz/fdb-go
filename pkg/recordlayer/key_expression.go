@@ -53,7 +53,7 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
 	if fd == nil {
-		return nil, fmt.Errorf("field %s not found in message", f.fieldName)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
 	}
 
 	if fd.IsList() {
@@ -123,7 +123,7 @@ func (f *FieldKeyExpression) evaluateRepeated(m protoreflect.Message, fd protore
 		return [][]any{{values}}, nil
 
 	default: // FanTypeNone
-		return nil, fmt.Errorf("field %s is repeated with FanType.None", f.fieldName)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is repeated with FanType.None", f.fieldName)}
 	}
 }
 
@@ -153,7 +153,7 @@ func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value
 	case protoreflect.EnumKind:
 		return int64(value.Enum()), nil
 	default:
-		return nil, fmt.Errorf("unsupported field type %s for key expression", kind)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("unsupported field type %s for key expression", kind)}
 	}
 }
 
@@ -368,10 +368,10 @@ func (n *NestingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 	m := msg.ProtoReflect()
 	fd := m.Descriptor().Fields().ByName(protoreflect.Name(n.parentField))
 	if fd == nil {
-		return nil, fmt.Errorf("field %s not found in message", n.parentField)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", n.parentField)}
 	}
 	if fd.Kind() != protoreflect.MessageKind {
-		return nil, fmt.Errorf("field %s is not a message type, cannot nest", n.parentField)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is not a message type, cannot nest", n.parentField)}
 	}
 
 	if fd.IsList() {
@@ -391,7 +391,7 @@ func (n *NestingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 // evaluateRepeated handles repeated message fields.
 func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Message], m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
 	if n.fanType != FanTypeFanOut {
-		return nil, fmt.Errorf("field %s is repeated, must use NestFanOut", n.parentField)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is repeated, must use NestFanOut", n.parentField)}
 	}
 
 	list := m.Get(fd).List()
@@ -875,7 +875,7 @@ func (f *FunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message],
 	evaluator, ok := globalFunctionRegistry[f.name]
 	globalFunctionRegistryMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("unknown function key expression: %s", f.name)
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("unknown function key expression: %s", f.name)}
 	}
 
 	argTuples, err := f.arguments.Evaluate(record, msg)
@@ -907,7 +907,7 @@ func (f *FunctionKeyExpression) Arguments() KeyExpression {
 // Matches Java's GetVersionstampIncarnationFn.
 func evaluateGetVersionstampIncarnation(record *FDBStoredRecord[proto.Message], _ proto.Message, _ [][]any) ([][]any, error) {
 	if record == nil || record.Store == nil {
-		return nil, fmt.Errorf("get_versionstamp_incarnation requires store context on record")
+		return nil, &KeyExpressionError{Message: "get_versionstamp_incarnation requires store context on record"}
 	}
 	return [][]any{{int64(record.Store.GetIncarnation())}}, nil
 }

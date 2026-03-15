@@ -132,6 +132,16 @@ func (e *RecordDeserializationError) Unwrap() error {
 	return e.Cause
 }
 
+// KeyExpressionError is returned when a key expression evaluation fails.
+// Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.InvalidExpressionException.
+type KeyExpressionError struct {
+	Message string
+}
+
+func (e *KeyExpressionError) Error() string {
+	return e.Message
+}
+
 // PartlyBuiltError is returned when an OnlineIndexer encounters an index that was
 // partly built by another method or is blocked from continuing.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexingBase.PartlyBuiltException.
