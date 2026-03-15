@@ -149,6 +149,7 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 //   - Compute expected entries from model records (evaluate index expression + trim PK)
 //   - Scan actual entries from the store
 //   - Missing or extra entries = violation
+//   - For covering indexes (KeyWithValueExpression), also verifies value portions
 func verifyValueIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
 	md := model.metadata
@@ -158,9 +159,15 @@ func verifyValueIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, 
 			continue
 		}
 
+		// Detect covering index (KeyWithValueExpression).
+		kwv, isCovering := idx.RootExpression.(*recordlayer.KeyWithValueExpression)
+
 		// Build expected entries from model records.
-		// Key: packed tuple of [indexedValues..., trimmedPK...]
-		expected := make(map[string]tuple.Tuple)
+		type expectedEntry struct {
+			key   tuple.Tuple // [keyColumns..., trimmedPK...]
+			value tuple.Tuple // non-nil for covering indexes
+		}
+		expected := make(map[string]*expectedEntry)
 
 		for _, rec := range model.Records {
 			// Check if this index applies to this record type.
@@ -198,17 +205,36 @@ func verifyValueIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, 
 			}
 
 			for _, values := range tuples {
-				entryKey := make(tuple.Tuple, 0, len(values)+len(trimmedPK))
-				for _, v := range values {
+				var keyColumns []any
+				var valueTuple tuple.Tuple
+
+				if isCovering {
+					// Split: key columns [0, splitPoint), value columns [splitPoint, end).
+					keyPart, valuePart := kwv.SplitEvaluatedKey(values)
+					keyColumns = keyPart
+					valueTuple = make(tuple.Tuple, len(valuePart))
+					for j, v := range valuePart {
+						valueTuple[j] = v
+					}
+				} else {
+					keyColumns = values
+				}
+
+				entryKey := make(tuple.Tuple, 0, len(keyColumns)+len(trimmedPK))
+				for _, v := range keyColumns {
 					entryKey = append(entryKey, v)
 				}
 				entryKey = append(entryKey, trimmedPK...)
-				expected[string(entryKey.Pack())] = entryKey
+				expected[string(entryKey.Pack())] = &expectedEntry{key: entryKey, value: valueTuple}
 			}
 		}
 
 		// Scan actual index entries.
-		actual := make(map[string]tuple.Tuple)
+		type actualEntry struct {
+			key   tuple.Tuple
+			value tuple.Tuple
+		}
+		actual := make(map[string]*actualEntry)
 		idxCursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
 
 		for {
@@ -225,29 +251,46 @@ func verifyValueIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, 
 				break
 			}
 			entry := result.GetValue()
-			actual[string(entry.Key.Pack())] = entry.Key
+			actual[string(entry.Key.Pack())] = &actualEntry{key: entry.Key, value: entry.Value}
 		}
 		_ = idxCursor.Close()
 
 		// Diff: missing entries (in model but not in store)
-		for key, entryKey := range expected {
+		for key, exp := range expected {
 			if _, ok := actual[key]; !ok {
 				violations = append(violations, Violation{
 					Invariant: "index_entry_missing",
-					Expected:  fmt.Sprintf("index %q entry %v", idx.Name, entryKey),
+					Expected:  fmt.Sprintf("index %q entry %v", idx.Name, exp.key),
 					Actual:    "not in store",
 				})
 			}
 		}
 
 		// Diff: orphan entries (in store but not in model)
-		for key, entryKey := range actual {
+		for key, act := range actual {
 			if _, ok := expected[key]; !ok {
 				violations = append(violations, Violation{
 					Invariant: "index_entry_orphan",
-					Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, entryKey),
+					Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, act.key),
 					Actual:    "exists in store but not in model",
 				})
+			}
+		}
+
+		// For covering indexes, verify value portions match.
+		if isCovering {
+			for key, exp := range expected {
+				act, ok := actual[key]
+				if !ok {
+					continue // Already flagged as missing above.
+				}
+				if string(exp.value.Pack()) != string(act.value.Pack()) {
+					violations = append(violations, Violation{
+						Invariant: "index_entry_value_mismatch",
+						Expected:  fmt.Sprintf("index %q entry %v value %v", idx.Name, exp.key, exp.value),
+						Actual:    fmt.Sprintf("value %v", act.value),
+					})
+				}
 			}
 		}
 

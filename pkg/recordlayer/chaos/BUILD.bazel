@@ -29,6 +29,7 @@ go_library(
 go_test(
     name = "chaos_test",
     srcs = [
+        "chaos_covering_test.go",
         "chaos_fanout_test.go",
         "chaos_minmax_test.go",
         "chaos_multi_test.go",

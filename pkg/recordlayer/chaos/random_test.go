@@ -233,8 +233,8 @@ func TestRandomRankIndexWithFaults(t *testing.T) {
 	})
 }
 
-// buildKitchenSinkMetadata creates metadata with VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION.
-// The ultimate stress test configuration — 6 index types simultaneously.
+// buildKitchenSinkMetadata creates metadata with VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION + COVERING.
+// The ultimate stress test configuration — 7 index types simultaneously.
 func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -253,6 +253,10 @@ func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewVersionIndex("rand_ks_version",
 		recordlayer.VersionKey()))
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_ks_covering",
+		recordlayer.KeyWithValue(
+			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))),
+			1)))
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build kitchen sink metadata: " + err.Error())
@@ -370,6 +374,48 @@ func TestRandomVersionIndexWithFaults(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildVersionRandomMetadata(), RandomConfig{
 		Seed:   16016,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
+	})
+}
+
+// buildCoveringRandomMetadata creates metadata with a VALUE index + a covering index.
+func buildCoveringRandomMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_cov_price_idx", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewIndex("rand_cov_covering",
+		recordlayer.KeyWithValue(
+			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))),
+			1)))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build covering random metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestRandomCoveringIndex validates covering index under random operations with no faults.
+func TestRandomCoveringIndex(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildCoveringRandomMetadata(), RandomConfig{
+		Seed:   22022,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsNone,
+	})
+}
+
+// TestRandomCoveringIndexWithFaults validates covering index under 5% commit-unknown.
+func TestRandomCoveringIndexWithFaults(t *testing.T) {
+	t.Parallel()
+	RunRandom(t, testRealDB, buildCoveringRandomMetadata(), RandomConfig{
+		Seed:   23023,
 		NumOps: 500,
 		MaxPKs: 30,
 		Faults: FaultsRetryHeavy,
