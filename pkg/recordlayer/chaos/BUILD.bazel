@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "chaos",
     srcs = [
+        "concurrent.go",
         "fault.go",
         "model.go",
         "random.go",
@@ -37,6 +38,7 @@ go_test(
         "chaos_test.go",
         "chaos_unique_test.go",
         "chaos_version_test.go",
+        "concurrent_test.go",
         "random_test.go",
     ],
     embed = [":chaos"],
