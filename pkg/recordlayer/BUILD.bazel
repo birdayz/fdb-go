@@ -84,6 +84,7 @@ go_test(
         "aggregate_function_test.go",
         "api_coverage2_test.go",
         "api_coverage_test.go",
+        "benchmark_test.go",
         "bug_bounty2_test.go",
         "bug_bounty3_cursor_test.go",
         "bug_bounty3_index_test.go",
