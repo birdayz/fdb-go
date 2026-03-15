@@ -87,6 +87,8 @@ TODO.md                             # Tracked issues and improvements
 ```sh
 just build          # bazel build //... (includes nogo lint)
 just test           # bazel test //... (fully cached, incremental)
+just bench          # Run all benchmarks (9 benchmarks, ~50s)
+just bench-one NAME # Run specific benchmark by regex (e.g. just bench-one SaveRecord)
 just gazelle        # Regenerate BUILD files after adding/removing Go files
 just generate       # buf generate (proto codegen — not in Bazel)
 just tidy           # go mod tidy
@@ -98,6 +100,35 @@ just clean          # bazel clean
 - After adding/removing Go files or changing `go.mod`, run `just gazelle` then `bazel mod tidy`.
 - Proto codegen stays with `buf generate` — not in Bazel.
 - **IMPORTANT**: Always use `bazelisk` (not `bazel`) when running bazel commands directly. The `just` recipes handle this, but if invoking bazel manually, use `bazelisk`.
+
+### Benchmarks
+
+`benchmark_test.go` contains 9 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
+
+```sh
+just bench                          # All benchmarks (~50s)
+just bench-one BenchmarkSaveRecord  # Single benchmark by regex
+```
+
+**Available benchmarks:**
+
+| Benchmark | What it measures |
+|---|---|
+| `BenchmarkSaveRecord` | Single Order save + tx commit |
+| `BenchmarkLoadRecord` | Load by primary key |
+| `BenchmarkScanRecords` | Forward scan over 100 records |
+| `BenchmarkSaveRecordWithIndex` | Save with VALUE index |
+| `BenchmarkScanIndex` | Scan 100 VALUE index entries |
+| `BenchmarkSaveRecordWithMultipleIndexes` | Save with VALUE + COUNT + SUM |
+| `BenchmarkGetRecordCount` | Atomic record count read |
+| `BenchmarkSaveLargeRecord` | 50KB record (below split threshold) |
+| `BenchmarkSaveSplitRecord` | 250KB record (3 split chunks) |
+
+**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer):
+- Save: ~2.35ms/op, 100 allocs
+- Load: ~0.43ms/op, 92 allocs
+- Scan 100: ~0.75ms/op, 3112 allocs
+- Split save 250KB: ~2.93ms/op, 121 allocs
 
 ### Debugging Bazel cache invalidation
 
