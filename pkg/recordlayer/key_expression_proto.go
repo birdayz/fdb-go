@@ -172,6 +172,22 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		}
 		root = fn
 	}
+	if expr.Split != nil {
+		found++
+		sp, err := splitFromProto(expr.Split)
+		if err != nil {
+			return nil, err
+		}
+		root = sp
+	}
+	if expr.List != nil {
+		found++
+		l, err := listFromProto(expr.List)
+		if err != nil {
+			return nil, err
+		}
+		root = l
+	}
 
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
@@ -301,4 +317,29 @@ func functionFromProto(fn *gen.Function) (*FunctionKeyExpression, error) {
 		return nil, fmt.Errorf("function arguments: %w", err)
 	}
 	return FunctionExpr(fn.GetName(), args), nil
+}
+
+// splitFromProto reconstructs a SplitKeyExpression from a proto Split.
+func splitFromProto(s *gen.Split) (*SplitKeyExpression, error) {
+	joined, err := KeyExpressionFromProto(s.Joined)
+	if err != nil {
+		return nil, fmt.Errorf("split joined: %w", err)
+	}
+	return Split(joined, int(s.GetSplitSize())), nil
+}
+
+// listFromProto reconstructs a ListKeyExpression from a proto List.
+func listFromProto(l *gen.List) (*ListKeyExpression, error) {
+	if len(l.Child) == 0 {
+		return nil, fmt.Errorf("list expression requires at least one child")
+	}
+	children := make([]KeyExpression, len(l.Child))
+	for i, child := range l.Child {
+		expr, err := KeyExpressionFromProto(child)
+		if err != nil {
+			return nil, fmt.Errorf("list child %d: %w", i, err)
+		}
+		children[i] = expr
+	}
+	return ListExpr(children...), nil
 }

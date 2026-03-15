@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -28,8 +29,9 @@ const (
 
 // Index option keys matching Java's IndexOptions.
 const (
-	IndexOptionUnique        = "unique"
-	IndexOptionClearWhenZero = "clearWhenZero"
+	IndexOptionUnique              = "unique"
+	IndexOptionClearWhenZero       = "clearWhenZero"
+	IndexOptionReplacedByPrefix    = "replacedBy"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.
@@ -318,6 +320,20 @@ func (idx *Index) PrimaryKeyComponentPositions() []int {
 // Matches Java's Index.hasPrimaryKeyComponentPositions().
 func (idx *Index) HasPrimaryKeyComponentPositions() bool {
 	return idx.primaryKeyComponentPositions != nil
+}
+
+// GetReplacedByIndexNames returns the names of indexes that replace this one.
+// Options with keys starting with "replacedBy" (e.g. "replacedBy", "replacedBy_0")
+// have their values as replacement index names.
+// Matches Java's Index.getReplacedByIndexNames().
+func (idx *Index) GetReplacedByIndexNames() []string {
+	var names []string
+	for k, v := range idx.Options {
+		if strings.HasPrefix(k, IndexOptionReplacedByPrefix) {
+			names = append(names, v)
+		}
+	}
+	return names
 }
 
 // SetUnique marks this index as enforcing uniqueness.

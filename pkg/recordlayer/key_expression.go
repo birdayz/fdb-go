@@ -449,6 +449,16 @@ func createsDuplicates(expr KeyExpression) bool {
 		// Matches Java's FunctionKeyExpression.createsDuplicates() which returns true.
 		// Functions can potentially produce multiple values.
 		return true
+	case *SplitKeyExpression:
+		// Matches Java's SplitKeyExpression.createsDuplicates() which returns true.
+		return true
+	case *ListKeyExpression:
+		for _, child := range e.children {
+			if createsDuplicates(child) {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
@@ -493,6 +503,29 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 		return []KeyExpression{expr}
 	case *FunctionKeyExpression:
 		return []KeyExpression{expr}
+	case *SplitKeyExpression:
+		// Matches Java's SplitKeyExpression.normalizeKeyForPositions()
+		// which returns Collections.nCopies(splitSize, getJoined()).
+		result := make([]KeyExpression, e.splitSize)
+		for i := range result {
+			result[i] = e.joined
+		}
+		return result
+	case *ListKeyExpression:
+		// Matches Java's ListKeyExpression.normalizeKeyForPositions():
+		// each child is wrapped in a single-child ListKeyExpression to
+		// preserve the nesting semantics in position matching.
+		if len(e.children) == 0 {
+			return nil
+		}
+		if len(e.children) == 1 {
+			return []KeyExpression{expr}
+		}
+		result := make([]KeyExpression, len(e.children))
+		for i, child := range e.children {
+			result[i] = ListExpr(child)
+		}
+		return result
 	default:
 		return []KeyExpression{expr}
 	}
@@ -547,6 +580,20 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 	case *FunctionKeyExpression:
 		bv, ok := b.(*FunctionKeyExpression)
 		return ok && av.name == bv.name && keyExpressionEquals(av.arguments, bv.arguments)
+	case *SplitKeyExpression:
+		bv, ok := b.(*SplitKeyExpression)
+		return ok && av.splitSize == bv.splitSize && keyExpressionEquals(av.joined, bv.joined)
+	case *ListKeyExpression:
+		bv, ok := b.(*ListKeyExpression)
+		if !ok || len(av.children) != len(bv.children) {
+			return false
+		}
+		for i := range av.children {
+			if !keyExpressionEquals(av.children[i], bv.children[i]) {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}

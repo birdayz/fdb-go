@@ -471,6 +471,20 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		if fi.AddedVersion > fi.RemovedVersion {
 			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has addedVersion (%d) > removedVersion (%d)", fi.FormerName, fi.AddedVersion, fi.RemovedVersion)}
 		}
+		if fi.AddedVersion > b.version {
+			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has addedVersion (%d) > metadata version (%d)", fi.FormerName, fi.AddedVersion, b.version)}
+		}
+		if fi.RemovedVersion > b.version {
+			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has removedVersion (%d) > metadata version (%d)", fi.FormerName, fi.RemovedVersion, b.version)}
+		}
+	}
+
+	// Validate index addedVersion ≤ lastModifiedVersion.
+	// Matches Java's IndexValidator: addedVersion ≤ lastModifiedVersion.
+	for _, idx := range indexes {
+		if idx.AddedVersion > 0 && idx.LastModifiedVersion > 0 && idx.AddedVersion > idx.LastModifiedVersion {
+			return nil, &MetaDataError{Message: fmt.Sprintf("index %q has addedVersion (%d) > lastModifiedVersion (%d)", idx.Name, idx.AddedVersion, idx.LastModifiedVersion)}
+		}
 	}
 
 	// Validate VERSION indexes.
@@ -525,6 +539,22 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 		if groupedVersionCount != 1 {
 			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q: there must be exactly 1 version entry in grouped key", idx.Name)}
+		}
+	}
+
+	// Validate index replacement chains.
+	// Matches Java's MetaDataValidator.validateIndex(): replacement indexes must exist
+	// and must not themselves have replacements (no multi-level chains).
+	for _, idx := range indexes {
+		replacements := idx.GetReplacedByIndexNames()
+		for _, replacementName := range replacements {
+			replacement, exists := indexes[replacementName]
+			if !exists {
+				return nil, &MetaDataError{Message: fmt.Sprintf("index %q has replacement index %q that is not in the metadata", idx.Name, replacementName)}
+			}
+			if len(replacement.GetReplacedByIndexNames()) > 0 {
+				return nil, &MetaDataError{Message: fmt.Sprintf("index %q has replacement index %q that itself has replacement indexes", idx.Name, replacementName)}
+			}
 		}
 	}
 

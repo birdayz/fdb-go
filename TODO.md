@@ -90,7 +90,10 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | InvertibleFunctionKeyExpression | (interface) | Bidirectionally invertible functions | **LOW** |
 
 - [x] **FunctionKeyExpression** — Implemented with global registry, proto round-trip, `get_versionstamp_incarnation` built-in. `FDBStoredRecord.Store` field added (matches Java's `FDBRecord.getStore()`). 25 unit tests.
-- [ ] **Other expression types** — DimensionsKE, SplitKE, ListKE, CollateFunctionKE, OrderFunctionKE, LongArithmeticKE. **LOW** — only needed for specialized index types.
+- [x] **SplitKeyExpression** — Batches FanOut results into fixed-size groups. Proto `Split{joined, split_size}`. Overflow-checked. 14 unit tests.
+- [x] **ListKeyExpression** — Cross-product with nested tuple wrapping (unlike Concat which flattens). Proto `List{repeated child}`. FDB tuple.Tuple nesting for proper Pack(). 15 unit tests.
+- [x] **LongArithmeticFunctionKeyExpression** — 14 arithmetic functions (add, sub, subtract, mul, multiply, div, divide, mod, bitand, bitor, bitxor, bitnot, bitmap_bit_position, bitmap_bucket_offset) via FunctionKeyExpression registry. Overflow-checked (Math.*Exact), null propagation, both-function pattern (sub/subtract). 25 unit tests.
+- [ ] **Other expression types** — DimensionsKE, CollateFunctionKE, OrderFunctionKE, AtomKE, InvertibleFunctionKE. **LOW** — only needed for specialized index types.
 
 ### 4. New store APIs
 
@@ -110,7 +113,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 ### 5. Metadata & schema evolution changes
 
 - [ ] **Index predicates (IndexPredicate)** — Sparse/filtered indexes with boolean conditions. `shouldIndexThisRecord()` evaluation. We have a simple function-based predicate; Java has a full predicate hierarchy (And/Or/Not/Constant/Value). **LOW** (our function-based approach works, full predicate tree is query-planner level).
-- [ ] **Index replacement lifecycle** — `REPLACED_BY_OPTION_PREFIX` in index options. `getReplacedByIndexNames()` for old→new migration. MetaDataValidator checks no circular replacements. **LOW**.
+- [x] **Index replacement lifecycle** — `GetReplacedByIndexNames()`, replacement-exists validation, chained-replacement rejection. 7 tests. **LOW**.
 - [ ] **Synthetic record types** — `JoinedRecordType` (equi-join with outer join support), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. **LOW** (large feature, experimental API).
 - [ ] **Views** — `PView` in MetaData proto (field 15). Name + SQL definition text. **LOW**.
 - [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). Macro or SQL functions. **LOW**.
@@ -118,7 +121,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MetaDataEvolutionValidator: `allowNoSinceVersion` validation** — Implemented: `SetAllowNoSinceVersion()` builder option. New record types must have `SinceVersion` set (errors if missing unless allowed) and `SinceVersion > oldMetaData.Version()`. Matches Java lines 378-397. 6 new tests (29 total). **HIGH**.
 - [x] **MetaDataEvolutionValidator: `SinceVersion` immutability check** — Implemented: `SinceVersion` cannot change on existing record types. Matches Java line 361. **MEDIUM**.
 - [x] **MetaDataEvolutionValidator: `primaryKeyComponentPositions` validation** — Implemented: positions cannot be added, dropped, or changed between index versions. Skipped when `allowIndexRebuilds` and version changed. Matches Java lines 649-667. Added `HasPrimaryKeyComponentPositions()`/`PrimaryKeyComponentPositions()` getters on Index. **MEDIUM**.
-- [ ] **MetaDataValidator enhancements** — New: predicate validation, index replacement circular dependency check, subspaceKey uniqueness with former indexes. **LOW**.
+- [x] **MetaDataValidator enhancements** — Former index version boundary checks, addedVersion ≤ lastModifiedVersion, index replacement chain validation. 11 tests. Remaining: predicate validation, subspaceKey uniqueness. **LOW**.
 
 ### 6. New cursor types
 
@@ -594,7 +597,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — 9+ types not in Go: DimensionsKeyExpression, SplitKeyExpression, ListKeyExpression, AtomKeyExpression, CollateFunctionKeyExpression, OrderFunctionKeyExpression, LongArithmeticFunctionKeyExpression, InvertibleFunctionKeyExpression. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE. See 4.10.6.0 upgrade assessment §3.
+- [ ] **Missing key expression types** — Remaining: DimensionsKE, AtomKE, CollateFunctionKE, OrderFunctionKE, InvertibleFunctionKE. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 

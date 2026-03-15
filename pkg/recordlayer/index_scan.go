@@ -227,6 +227,14 @@ func keyExpressionColumnSizeChecked(expr KeyExpression) (int, error) {
 	case *FunctionKeyExpression:
 		// Most functions produce a single column. Matches Java's typical behavior.
 		return 1, nil
+	case *SplitKeyExpression:
+		// Column size is splitSize — each batch produces splitSize columns.
+		// Matches Java's SplitKeyExpression.getColumnSize().
+		return e.splitSize, nil
+	case *ListKeyExpression:
+		// Each child contributes one column (nested tuple element).
+		// Matches Java's ListKeyExpression.getColumnSize().
+		return len(e.children), nil
 	default:
 		return 0, fmt.Errorf("unknown key expression type %T: cannot determine column size", expr)
 	}
