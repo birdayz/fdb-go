@@ -262,6 +262,7 @@ if errors.As(err, &e) {
 | `IndexValueSizeException` | `IndexValueSizeError` | `IndexName`, `PrimaryKey`, `ValueSize`, `Limit` |
 | (no Java equivalent) | `IndexNotFoundError` | `IndexName` |
 | (no Java equivalent) | `IndexNotBuiltError` | `IndexName` |
+| `KeyExpression.InvalidExpressionException` | `KeyExpressionError` | `Message` |
 
 ## Proto definitions
 

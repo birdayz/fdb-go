@@ -1071,7 +1071,7 @@ Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
 ### MEDIUM
 
 - [ ] **~25 implementation files lack dedicated unit tests** — Core files like `cursor.go`, `ranked_set.go`, `split_helper.go`, `database.go`, `key_expression.go`, `key_value_cursor.go`, `index_maintainer.go`, `scan_properties.go`, and various index maintainers (`count_index_maintainer.go`, `version_index_maintainer.go`, `rank_index_maintainer.go`, etc.) have no `_test.go` counterparts. They're exercised indirectly via integration tests, but direct unit tests would catch regressions faster and document expected behavior at the unit level.
-- [x] **Brittle string-matching error assertions in tests** — Migrated 35 assertions across 14 test files from `.Error().To(ContainSubstring(...))` to typed `errors.As()` + struct field checks. Covers 13 error types (IndexNotReadableError, StaleMetaDataVersionError, MetaDataEvolutionError, etc.). ~60 remaining use plain `fmt.Errorf` (no structured type to match on).
+- [x] **Brittle string-matching error assertions in tests** — Migrated 63 assertions total across 22 test files from `.Error().To(ContainSubstring(...))` to typed `errors.As()` + struct field checks. Round 1: 35 assertions (13 error types). Round 2: 28 assertions (new `KeyExpressionError` type + `MetaDataError` for metadata_proto.go). 31 remaining are genuine internal validation (`fmt.Errorf` with no Java exception mapping).
 - [x] **Temp file leak in test suite setup** — Fixed: cleanup in `SynchronizedAfterSuite` via package-level `clusterTmpFilePath` variable.
 
 ### LOW
