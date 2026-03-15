@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	sharedContainer *foundationdbtc.Container
-	sharedDB        *FDBDatabase
+	sharedContainer    *foundationdbtc.Container
+	sharedDB           *FDBDatabase
+	clusterTmpFilePath string
 )
 
 // specSubspace returns a unique subspace for the current spec, ensuring isolation
@@ -55,14 +56,18 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	err = tmpFile.Close()
 	Expect(err).NotTo(HaveOccurred())
 
+	clusterTmpFilePath = tmpFile.Name()
 	fdb.MustAPIVersion(720)
-	db, err := fdb.OpenDatabase(tmpFile.Name())
+	db, err := fdb.OpenDatabase(clusterTmpFilePath)
 	Expect(err).NotTo(HaveOccurred())
 	sharedDB = NewFDBDatabase(db)
 })
 
 var _ = SynchronizedAfterSuite(func() {
-	// All processes: nothing to clean up
+	// All processes: clean up temp cluster file
+	if clusterTmpFilePath != "" {
+		_ = os.Remove(clusterTmpFilePath)
+	}
 }, func() {
 	// Process #1 only: terminate container
 	if sharedContainer != nil {

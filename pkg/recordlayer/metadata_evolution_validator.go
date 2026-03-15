@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
@@ -561,6 +562,12 @@ func (v *MetaDataEvolutionValidator) validateMessageDescriptor(
 	}
 	seen[fullName] = true
 
+	// Check proto syntax/edition hasn't changed.
+	// Matches Java's MetaDataEvolutionValidator.validateProtoSyntax() (lines 255-260).
+	if err := validateProtoSyntax(oldDesc, newDesc); err != nil {
+		return err
+	}
+
 	// Check all old fields still exist
 	oldFields := oldDesc.Fields()
 	newFields := newDesc.Fields()
@@ -616,6 +623,15 @@ func (v *MetaDataEvolutionValidator) validateField(
 		return &MetaDataEvolutionError{
 			Message: fmt.Sprintf("%s field %q is no longer %s in message %q (now %s)",
 				oldLabel, oldField.Name(), oldLabel, msgName, newLabel),
+		}
+	}
+
+	// Presence tracking check — field must not change whether it tracks explicit set vs default.
+	// Matches Java's MetaDataEvolutionValidator line 280-283.
+	if oldField.HasPresence() != newField.HasPresence() {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("field %q changed whether default values are stored if set explicitly in message %q",
+				oldField.Name(), msgName),
 		}
 	}
 
@@ -686,6 +702,19 @@ func cardinalityString(c protoreflect.Cardinality) string {
 	default:
 		return c.String()
 	}
+}
+
+// validateProtoSyntax checks that the old and new message descriptors use the same
+// proto syntax and edition. Matches Java's MetaDataEvolutionValidator.validateProtoSyntax().
+func validateProtoSyntax(oldDesc, newDesc protoreflect.MessageDescriptor) error {
+	oldFile := protodesc.ToFileDescriptorProto(oldDesc.ParentFile())
+	newFile := protodesc.ToFileDescriptorProto(newDesc.ParentFile())
+	if oldFile.GetSyntax() != newFile.GetSyntax() || oldFile.GetEdition() != newFile.GetEdition() {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("message descriptor %q proto syntax changed", oldDesc.Name()),
+		}
+	}
+	return nil
 }
 
 func buildFormerIndexMap(indexes []*FormerIndex) map[string]*FormerIndex {
