@@ -11,6 +11,8 @@ go_library(
         "count_not_null_index_maintainer.go",
         "count_updates_index_maintainer.go",
         "cursor.go",
+        "cursor_combinators.go",
+        "cursor_util.go",
         "database.go",
         "dedup_cursor.go",
         "endpoint_type.go",
