@@ -933,7 +933,15 @@ Second audit focused on arithmetic overflow, off-by-one, error handling, nil saf
 
 ## Bugs found by chaos testing (2026-03-14)
 
-Model-based chaos testing framework: in-memory model shadows real FDB store, random operations + fault injection, periodic verification catches divergence. 80 chaos tests (71 targeted + 9 random).
+Model-based chaos testing framework: in-memory model shadows real FDB store, random operations + fault injection, periodic verification catches divergence. Concurrent stress testing validates snapshot-consistent derived state under multi-goroutine contention.
+
+**Test breakdown:** 71 targeted + 15 random + 5 concurrent = 91 chaos tests.
+
+**Verification checks:** record count, VALUE indexes (including covering index value verification), COUNT indexes, SUM indexes, RANK indexes, PERMUTED_MIN/MAX indexes, VERSION indexes, COUNT_UPDATES (model-based only), MIN/MAX_EVER (model-based only). Concurrent mode uses snapshot-based validation (builds model from store, verifies derivable state only).
+
+**Index types covered:** VALUE, COUNT, SUM, RANK, MAX_EVER, MIN_EVER, COUNT_UPDATES, PERMUTED_MIN, PERMUTED_MAX, VERSION, covering (KeyWithValue) — 7 simultaneously in kitchen sink tests.
+
+**Concurrent stress tests:** 4 workers × 5s, snapshot validation every 1s. Kitchen sink: 6 snapshot-verifiable index types under concurrent load. High contention: 8 workers, 5 PKs.
 
 ### Bug found
 
@@ -969,7 +977,7 @@ Model-based chaos testing framework: in-memory model shadows real FDB store, ran
 - [ ] **API surface polish** — Review exported types, functions, and method signatures for consistency and ergonomics. Hide internal helpers. Ensure naming follows Go conventions (`NewX`, `WithOption`, receiver names). Stabilize the public API before external consumers depend on it.
 - [ ] **Performance testing under real workloads** — Benchmark key operations (bulk inserts, index-heavy saves, large scans with continuations, split record read/write, OnlineIndexer throughput) under realistic data volumes. Profile hotspots. Compare with Java Record Layer on equivalent workloads where possible.
 - [ ] **Edge case hardening** — Systematic audit of behaviors at boundaries: max key/value sizes, transaction size limits (10MB), 5-second transaction timeout under load, empty stores, nil/zero-value inputs, corrupt or truncated data, concurrent schema evolution, partial failures mid-commit. The kind of bugs that only surface in production.
-- [ ] **Chaos testing** — Inject failures at the FDB layer: killed transactions mid-commit, network partitions (simulated via FDB fault injection or testcontainer restarts), read/write conflicts under contention, clock skew for versionstamps, OOM during large scans, index builds interrupted and resumed. Verify correctness and recovery, not just absence of panics.
+- [x] **Chaos testing** — Model-based framework at `pkg/recordlayer/chaos/`. ChaosTransactor injects commit-unknown/conflict/timeout faults. 91 tests: 71 targeted (per-index-type fault injection), 15 random (seeded PRNG, up to 2000 ops), 5 concurrent (multi-goroutine contention). Covers VALUE/COUNT/SUM/RANK/PERMUTED/VERSION/COVERING indexes. Found and fixed 1 bug (PERMUTED group membership change). Remaining: network partition simulation, OOM during scans, interrupted index builds.
 
 ---
 
@@ -1000,6 +1008,69 @@ Model-based chaos testing framework: in-memory model shadows real FDB store, ran
 - [ ] **Missing cursor combinator edge case tests** — Empty cursors through combinators (`ConcatCursor([], [])`, `FilterCursor` that filters everything), deep combinator composition with continuation tokens, error propagation through combinator chains (one layer errors → upstream cursors cleaned up properly).
 - [ ] **Missing continuation token stability tests** — Resume scan after schema version bump, resume after index rebuild (WRITE_ONLY → READABLE transition), resume after record deletion mid-scan (cursor should skip gracefully).
 - [ ] **Missing schema evolution edge case tests** — Multi-version jump validation (v1 → v5 skipping intermediates), enum value removal (open vs closed enums), cardinality change (optional → repeated). Current MetaDataEvolutionValidator tests cover common cases but miss these boundaries.
+
+---
+
+## Future: Query planner + SQL layer
+
+**Not started. Blocked on: core must be rock solid first.**
+
+Port the full query infrastructure from Java, then the relational/SQL layer on top.
+
+### Phase 1: Cascades query optimizer (~104K lines Java)
+
+The Cascades framework (Graefe 1995) is the cost-based query optimizer — 494 files, 40% of core by itself. Turns logical queries into optimized physical execution plans (index selection, join ordering, predicate pushdown, etc.).
+
+- [ ] **Cascades optimizer framework** — `query/plan/cascades/` — rule-based exploration of equivalent plans, cost estimation, memo structure
+- [ ] **Physical plan implementations** — `query/plan/plans/` (74 files, 19K lines) — RecordQueryPlan nodes (index scan, filter, union, intersection, sort, aggregate, etc.)
+- [ ] **Query expressions** — `query/expressions/` (35 files, 9K lines) — predicates, comparisons, logical operators for query specification
+- [ ] **Planning infrastructure** — `query/plan/planning/` — plan generation, property derivation
+- [ ] **Synthetic record planner** — `query/plan/synthetic/` (11 files, 2K lines) — joined/unnested record plan generation
+- [ ] **Bitmap plans** — `query/plan/bitmap/` — bitmap index scan plans
+- [ ] **Sort plans** — `query/plan/sorting/` — external sort, in-memory sort
+- [ ] **Explain** — `query/plan/explain/` — plan visualization/debugging
+
+### Phase 2: Prerequisites from core
+
+- [ ] **Joined record types** — `SyntheticRecordType`, `JoinedRecordType`, `UnnestedRecordType` — virtual records composed from constituents via equi-joins
+- [ ] **KeySpace directory layer** — `provider/fdb/keyspace/` (25 files, 7K lines) — hierarchical key management
+- [ ] **TEXT index** — full-text search with tokenization
+- [ ] **Remaining key expression types** — ~10 unported expression types from `metadata/expressions/`
+
+### Phase 3: Relational / SQL layer (~55K lines Java)
+
+Separate module (`fdb-relational-core` + `fdb-relational-api`). Compiles SQL to RecordLayer query plans.
+
+- [ ] **SQL parser** — SQL AST (`structuredsql/`)
+- [ ] **SQL → plan compiler** — `recordlayer/query/` — translates SQL AST to Cascades logical plans
+- [ ] **Schema catalog** — `recordlayer/catalog/` — DDL → RecordMetaData mapping, system tables, stored in FDB
+- [ ] **Type system** — SQL types ↔ protobuf types mapping
+- [ ] **gRPC server** — `fdb-relational-grpc/` + `fdb-relational-server/`
+
+### Phase 4: `database/sql` driver
+
+Go `database/sql` compatible driver. Any Go app using `database/sql` (ORMs, migration tools, existing codebases) just works — swap your Postgres DSN for an FDB one. Wire-compatible with Java JDBC driver: a Java app and a Go app can read/write the same tables in the same FDB cluster simultaneously.
+
+- [ ] **`database/sql` driver registration** — `sql.Register("fdb", ...)`, DSN parsing
+- [ ] **`driver.Conn` / `driver.Tx`** — map to `FDBRecordContext` transactions (5s limit awareness)
+- [ ] **`driver.Rows`** — cursor-backed result sets with continuation support
+- [ ] **`driver.Stmt`** — prepared statements → Cascades plan cache
+- [ ] **Query parameter binding** — `?` placeholders → plan parameterization
+- [ ] **DDL passthrough** — `CREATE TABLE` / `ALTER TABLE` / `CREATE INDEX` via schema catalog
+- [ ] **Type mapping** — Go `sql.Scanner`/`driver.Valuer` ↔ protobuf ↔ FDB tuple types
+
+### Size estimates
+
+| Component | Java files | Java lines | Notes |
+|---|---|---|---|
+| Cascades optimizer | 494 | 104K | Biggest single chunk |
+| Plan implementations | 74 | 19K | Physical execution nodes |
+| Query expressions | 35 | 9K | Predicates, comparisons |
+| Planning + other | 43 | 15K | Infra, bitmap, sort, explain |
+| Relational core | 233 | 41K | SQL→plan compiler |
+| Relational API | 88 | 13K | Interfaces, types |
+| Relational server/JDBC/gRPC | 31 | small | Thin wrappers |
+| **Total** | **~1000** | **~200K** | |
 
 ---
 
