@@ -148,7 +148,7 @@ func (c *recordKeyCursor) initIterator() error {
 	}
 
 	_, endKey := recordsSubspace.FDBRangeKeys()
-	end = endKey.(fdb.Key)
+	end = endKey.FDBKey()
 
 	rng := fdb.KeyRange{Begin: begin, End: end}
 	options := fdb.RangeOptions{

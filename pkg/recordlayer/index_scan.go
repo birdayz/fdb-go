@@ -130,7 +130,7 @@ func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
 	switch r.HighEndpoint {
 	case EndpointTypeTreeEnd:
 		_, endKey := ss.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	case EndpointTypeRangeInclusive:
 		packed := ss.Pack(r.High)
 		end = append(packed, 0xFF)
@@ -138,7 +138,7 @@ func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
 		end = ss.Pack(r.High)
 	default:
 		_, endKey := ss.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	}
 
 	return fdb.KeyRange{Begin: begin, End: end}
@@ -497,7 +497,7 @@ func (c *indexCursor) initIterator() error {
 	switch c.tupleRange.HighEndpoint {
 	case EndpointTypeTreeEnd:
 		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	case EndpointTypeRangeInclusive:
 		packed := c.indexSubspace.Pack(c.tupleRange.High)
 		end = append(packed, 0xFF)
@@ -505,7 +505,7 @@ func (c *indexCursor) initIterator() error {
 		end = c.indexSubspace.Pack(c.tupleRange.High)
 	default:
 		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	}
 
 	// Apply continuation — overrides one endpoint

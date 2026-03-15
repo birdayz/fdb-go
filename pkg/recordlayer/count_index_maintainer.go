@@ -216,7 +216,7 @@ func (c *countKVCursor) initIterator() error {
 	switch c.tupleRange.HighEndpoint {
 	case EndpointTypeTreeEnd:
 		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	case EndpointTypeRangeInclusive:
 		packed := c.indexSubspace.Pack(c.tupleRange.High)
 		end = append(packed, 0xFF)
@@ -224,7 +224,7 @@ func (c *countKVCursor) initIterator() error {
 		end = c.indexSubspace.Pack(c.tupleRange.High)
 	default:
 		_, endKey := c.indexSubspace.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	}
 
 	// Apply continuation — overrides one endpoint

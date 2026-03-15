@@ -598,7 +598,7 @@ func (c *keyValueCursor) initIterator() error {
 	switch c.highEndpoint {
 	case EndpointTypeTreeEnd:
 		_, endKey := recordsSubspace.FDBRangeKeys()
-		end = endKey.(fdb.Key)
+		end = endKey.FDBKey()
 	case EndpointTypeRangeInclusive:
 		packedKey := recordsSubspace.Pack(c.high)
 		var strincErr error
@@ -615,7 +615,7 @@ func (c *keyValueCursor) initIterator() error {
 			end = fullKey // exclusive: FDB won't return this key
 		} else {
 			_, endKey := recordsSubspace.FDBRangeKeys()
-			end = endKey.(fdb.Key)
+			end = endKey.FDBKey()
 		}
 	default:
 		end = recordsSubspace.Pack(c.high)

@@ -468,8 +468,8 @@ func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
 	}
 	begin, end := r.FDBRangeKeys()
 	rc.conflictRanges = append(rc.conflictRanges, fdb.KeyRange{
-		Begin: begin.(fdb.Key),
-		End:   end.(fdb.Key),
+		Begin: begin.FDBKey(),
+		End:   end.FDBKey(),
 	})
 	return nil
 }
