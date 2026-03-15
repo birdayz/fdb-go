@@ -233,8 +233,8 @@ func TestRandomRankIndexWithFaults(t *testing.T) {
 	})
 }
 
-// buildKitchenSinkMetadata creates metadata with VALUE + COUNT + SUM + RANK + MAX_EVER.
-// The ultimate stress test configuration.
+// buildKitchenSinkMetadata creates metadata with VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION.
+// The ultimate stress test configuration — 6 index types simultaneously.
 func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -242,6 +242,7 @@ func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.SetStoreRecordVersions(true)
 	builder.AddIndex("Order", recordlayer.NewIndex("rand_ks_price_idx", recordlayer.Field("price")))
 	builder.AddIndex("Order", recordlayer.NewCountIndex("rand_ks_count",
 		recordlayer.GroupAll(recordlayer.Field("price"))))
@@ -250,6 +251,8 @@ func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 	builder.AddIndex("Order", recordlayer.NewRankIndex("rand_ks_rank", recordlayer.Field("price")))
 	builder.AddIndex("Order", recordlayer.NewMaxEverLongIndex("rand_ks_maxever",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
+	builder.AddIndex("Order", recordlayer.NewVersionIndex("rand_ks_version",
+		recordlayer.VersionKey()))
 	md, err := builder.Build()
 	if err != nil {
 		panic("chaos: failed to build kitchen sink metadata: " + err.Error())
@@ -257,8 +260,8 @@ func buildKitchenSinkMetadata() *recordlayer.RecordMetaData {
 	return md
 }
 
-// TestRandomKitchenSink is the ultimate stress test: VALUE + COUNT + SUM + RANK + MAX_EVER,
-// all active simultaneously under heavy fault injection. 2000 ops with FaultsAll.
+// TestRandomKitchenSink is the ultimate stress test: VALUE + COUNT + SUM + RANK + MAX_EVER + VERSION,
+// all 6 index types active simultaneously under heavy fault injection. 2000 ops with FaultsAll.
 func TestRandomKitchenSink(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildKitchenSinkMetadata(), RandomConfig{
