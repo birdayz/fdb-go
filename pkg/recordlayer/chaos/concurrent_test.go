@@ -93,3 +93,46 @@ func TestConcurrentLongRun(t *testing.T) {
 		ValidateEvery: 1 * time.Second,
 	})
 }
+
+// buildConcurrentKitchenSinkMetadata creates metadata with all snapshot-verifiable
+// index types: VALUE + COUNT + SUM + RANK + COVERING + VERSION.
+// Excludes history-dependent types (COUNT_UPDATES, EVER indexes).
+func buildConcurrentKitchenSinkMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.SetStoreRecordVersions(true)
+	builder.AddIndex("Order", recordlayer.NewIndex("conc_ks_price", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewCountIndex("conc_ks_count",
+		recordlayer.GroupAll(recordlayer.Field("price"))))
+	builder.AddIndex("Order", recordlayer.NewSumIndex("conc_ks_sum",
+		recordlayer.Ungrouped(recordlayer.Field("price"))))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("conc_ks_rank", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewVersionIndex("conc_ks_version",
+		recordlayer.VersionKey()))
+	builder.AddIndex("Order", recordlayer.NewIndex("conc_ks_covering",
+		recordlayer.KeyWithValue(
+			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Nest("flower", recordlayer.Field("type"))),
+			1)))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build concurrent kitchen sink metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestConcurrentKitchenSink is the ultimate concurrent stress test: 6 snapshot-verifiable
+// index types active simultaneously under concurrent access.
+func TestConcurrentKitchenSink(t *testing.T) {
+	t.Parallel()
+	RunConcurrent(t, testRealDB, buildConcurrentKitchenSinkMetadata(), ConcurrentConfig{
+		Seed:          34034,
+		Workers:       4,
+		Duration:      5 * time.Second,
+		MaxPKs:        30,
+		ValidateEvery: 1 * time.Second,
+	})
+}
