@@ -117,7 +117,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [ ] **Synthetic record types** — `JoinedRecordType` (equi-join with outer join support), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. **LOW** (large feature, experimental API).
 - [ ] **Views** — `PView` in MetaData proto (field 15). Name + SQL definition text. **LOW**.
 - [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto (field 14). Macro or SQL functions. **LOW**.
-- [ ] **MetaDataEvolutionValidator enhancements** — New validation: proto syntax/edition match, `hasPresence` consistency, `allowUnsplitToSplit` option. **LOW** (our validator already covers critical rules).
+- [x] **MetaDataEvolutionValidator enhancements** — Proto syntax/edition check, `hasPresence` consistency, `allowUnsplitToSplit` (already done). All Java checks now covered. **LOW**.
 - [x] **MetaDataEvolutionValidator: `allowNoSinceVersion` validation** — Implemented: `SetAllowNoSinceVersion()` builder option. New record types must have `SinceVersion` set (errors if missing unless allowed) and `SinceVersion > oldMetaData.Version()`. Matches Java lines 378-397. 6 new tests (29 total). **HIGH**.
 - [x] **MetaDataEvolutionValidator: `SinceVersion` immutability check** — Implemented: `SinceVersion` cannot change on existing record types. Matches Java line 361. **MEDIUM**.
 - [x] **MetaDataEvolutionValidator: `primaryKeyComponentPositions` validation** — Implemented: positions cannot be added, dropped, or changed between index versions. Skipped when `allowIndexRebuilds` and version changed. Matches Java lines 649-667. Added `HasPrimaryKeyComponentPositions()`/`PrimaryKeyComponentPositions()` getters on Index. **MEDIUM**.
@@ -988,13 +988,13 @@ Model-based chaos testing framework: in-memory model shadows real FDB store, ran
 
 ### MEDIUM
 
-- [ ] **FDB client version mismatch between CI and testcontainers** — CI installs FDB client 7.3.43 (`.github/workflows/ci.yml`), testcontainers defaults to 7.3.46 (`foundationdbtc` package). Minor version skew is tolerable but should be aligned. Either bump CI to 7.3.46 or pin testcontainers to 7.3.43. Also add checksum verification to the CI curl download.
+- [x] **FDB client version mismatch between CI and testcontainers** — Bumped CI to 7.3.46 matching testcontainers default.
 
 ### LOW
 
-- [ ] **CI missing `go mod verify` and format checks** — Add `go mod verify` step to catch go.sum tampering. Add `gofmt -l` or `go fmt ./...` check to enforce formatting. Add `go mod tidy` diff check.
-- [ ] **CI missing Gazelle drift detection** — If a developer adds/removes Go files and forgets to run `just gazelle`, stale BUILD files slip through. Add a CI step that runs gazelle and checks for uncommitted diffs.
-- [ ] **Justfile missing `fmt` and `coverage` targets** — Add `just fmt` (gofmt) and `just coverage` (`bazelisk coverage //...`). Minor ergonomics improvement.
+- [x] **CI missing `go mod verify` and format checks** — Added `go mod verify`, `gofmt -l`, and Gazelle drift detection steps.
+- [x] **CI missing Gazelle drift detection** — Added to CI build job (runs gazelle, checks git diff).
+- [x] **Justfile missing `fmt` and `coverage` targets** — Added `just fmt` and `just coverage`.
 
 ---
 
@@ -1004,7 +1004,7 @@ Model-based chaos testing framework: in-memory model shadows real FDB store, ran
 
 - [ ] **~25 implementation files lack dedicated unit tests** — Core files like `cursor.go`, `ranked_set.go`, `split_helper.go`, `database.go`, `key_expression.go`, `key_value_cursor.go`, `index_maintainer.go`, `scan_properties.go`, and various index maintainers (`count_index_maintainer.go`, `version_index_maintainer.go`, `rank_index_maintainer.go`, etc.) have no `_test.go` counterparts. They're exercised indirectly via integration tests, but direct unit tests would catch regressions faster and document expected behavior at the unit level.
 - [ ] **Brittle string-matching error assertions in tests** — ~20 instances of `.Error()` string comparison (e.g. `Expect(err.Error()).To(ContainSubstring(...))`) instead of `errors.As()` type matching. Fragile: error message changes break tests silently. Migrate to typed assertions matching the error struct fields.
-- [ ] **Temp file leak in test suite setup** — `recordlayer_suite_test.go` `SynchronizedBeforeSuite` creates `os.CreateTemp("", "fdb_cluster_*.txt")` but never removes it. Files accumulate in `/tmp/` across test runs. Add `defer os.Remove(tmpFile.Name())` or cleanup in `SynchronizedAfterSuite`.
+- [x] **Temp file leak in test suite setup** — Fixed: cleanup in `SynchronizedAfterSuite` via package-level `clusterTmpFilePath` variable.
 
 ### LOW
 

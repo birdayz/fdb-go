@@ -28,3 +28,11 @@ clean:
 # Go mod tidy
 tidy:
     go mod tidy
+
+# Format Go source files
+fmt:
+    gofmt -w $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*')
+
+# Run tests with coverage
+coverage:
+    bazelisk coverage //...

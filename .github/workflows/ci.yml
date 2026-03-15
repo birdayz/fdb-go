@@ -27,8 +27,28 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.46/foundationdb-clients_7.3.46-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.46-1_amd64.deb
+
+      - name: Check go.sum integrity
+        run: go mod verify
+
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*'))
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check Gazelle BUILD files are up to date
+        run: |
+          bazelisk run //:gazelle
+          if ! git diff --exit-code -- '*.bazel' '*.bzl'; then
+            echo "BUILD files are out of date. Run 'just gazelle' and commit."
+            exit 1
+          fi
 
       - name: Build all targets (includes nogo lint)
         run: bazelisk build //...
@@ -54,8 +74,8 @@ jobs:
 
       - name: Install FoundationDB Client
         run: |
-          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.43/foundationdb-clients_7.3.43-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.43-1_amd64.deb
+          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.46/foundationdb-clients_7.3.46-1_amd64.deb
+          sudo dpkg -i foundationdb-clients_7.3.46-1_amd64.deb
 
       - name: Run tests
         run: bazelisk test //... --test_summary=detailed
