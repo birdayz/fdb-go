@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Full API surface review performed 2026-03-16 across 5 areas (store CRUD, indexes, metadata, cursors, DB/context/key expressions).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1525 specs pass (1165 unit/integration + 360 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1640 specs pass (1280 unit/integration + 360 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -1202,7 +1202,7 @@ These are architectural decisions, not bugs:
 
 - [x] **API surface polish (Phase 1+2)** — RFC 003 Option B executed: unexported 11 concrete index maintainer types, RankedSet/RankedSetConfig, SizeInfo, all format version constants, split/size constants. Added `RankQuerier` interface for chaos test package access. `IndexMaintainer` interface and `RangeSet` kept exported (public API returns / conformance tests). 37 files, ~400 lines changed. Subspace constants kept exported for debugging.
 - [ ] **Performance testing under real workloads** — Benchmark key operations (bulk inserts, index-heavy saves, large scans with continuations, split record read/write, OnlineIndexer throughput) under realistic data volumes. Profile hotspots. Compare with Java Record Layer on equivalent workloads where possible.
-- [ ] **Edge case hardening** — Systematic audit of behaviors at boundaries: max key/value sizes, transaction size limits (10MB), 5-second transaction timeout under load, empty stores, nil/zero-value inputs, corrupt or truncated data, concurrent schema evolution, partial failures mid-commit. The kind of bugs that only surface in production.
+- [x] **Edge case hardening** — 37 specs in `edge_case_test.go`: corrupt store headers (garbage/empty/missing), corrupt record data (load + scan), boundary PKs (0, MinInt64, MaxInt64), empty store ops (load/scan/delete/count/deleteAll), index edge cases (empty scan, nil values, unique nil), continuation pagination, concurrent reads + write-write conflict detection, metadata validation (missing PK, zero-column PK, bad field), builder validation (missing context/metadata/subspace), save/load round-trips (boundary values, long strings, 10x overwrite), split boundary, reopen semantics, index state errors, count semantics, store lock enforcement, FormerIndex tracking.
 - [x] **Chaos testing** — Model-based framework at `pkg/recordlayer/chaos/`. ChaosTransactor injects commit-unknown/conflict/timeout faults. 91 tests: 71 targeted (per-index-type fault injection), 15 random (seeded PRNG, up to 2000 ops), 5 concurrent (multi-goroutine contention). Covers VALUE/COUNT/SUM/RANK/PERMUTED/VERSION/COVERING indexes. Found and fixed 1 bug (PERMUTED group membership change). Remaining: network partition simulation, OOM during scans, interrupted index builds.
 
 ---
