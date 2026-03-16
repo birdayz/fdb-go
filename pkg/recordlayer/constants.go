@@ -67,15 +67,9 @@ const (
 	// maxRecordsForRebuild is the maximum records for rebuild operations
 	maxRecordsForRebuild = 200
 
-	// maxParallelIndexRebuild is the maximum parallel index rebuilds
-	maxParallelIndexRebuild = 10
-
 	// keySizeLimit is the maximum key size in bytes
 	keySizeLimit = 10_000
 
 	// valueSizeLimit is the maximum value size in bytes
 	valueSizeLimit = 100_000
-
-	// preloadCacheSize is the default preload cache size
-	preloadCacheSize = 100
 )

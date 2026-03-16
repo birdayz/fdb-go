@@ -704,11 +704,6 @@ func (g *GroupingKeyExpression) FieldNames() []string {
 	return g.wholeKey.FieldNames()
 }
 
-// GetWholeKey returns the underlying key expression.
-func (g *GroupingKeyExpression) GetWholeKey() KeyExpression {
-	return g.wholeKey
-}
-
 // GetGroupedCount returns the number of trailing "grouped" (aggregated) columns.
 func (g *GroupingKeyExpression) GetGroupedCount() int {
 	return g.groupedCount

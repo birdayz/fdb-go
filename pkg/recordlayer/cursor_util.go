@@ -139,25 +139,6 @@ func Map[T, R any](seq iter.Seq[T], fn func(T) R) iter.Seq[R] {
 	}
 }
 
-// MapErr transforms values in a sequence with error handling
-func MapErr[T, R any](seq iter.Seq2[T, error], fn func(T) (R, error)) iter.Seq2[R, error] {
-	return func(yield func(R, error) bool) {
-		for value, err := range seq {
-			if err != nil {
-				if !yield(*new(R), err) {
-					return
-				}
-				continue
-			}
-
-			mapped, mappingErr := fn(value)
-			if !yield(mapped, mappingErr) {
-				return
-			}
-		}
-	}
-}
-
 // Filter2 filters a Seq2 sequence
 func Filter2[T any](seq iter.Seq2[T, error], predicate func(T) bool) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {

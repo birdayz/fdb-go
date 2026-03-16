@@ -725,11 +725,6 @@ func (m *RecordMetaData) IsSplitLongRecords() bool {
 	return m.splitLongRecords
 }
 
-// GetRecordTypeIndex returns the record type index for this record type
-func (rt *RecordType) GetRecordTypeIndex() int {
-	return rt.RecordTypeIndex
-}
-
 // GetRecordTypeKey returns the explicit record type key if set, or falls back
 // to the record type index. Matches Java's RecordType.getRecordTypeKey().
 func (rt *RecordType) GetRecordTypeKey() any {

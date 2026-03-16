@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"iter"
-
-	"google.golang.org/protobuf/proto"
 )
 
 // NoNextReason indicates why a cursor stopped producing records
@@ -280,12 +278,6 @@ func (c *listCursor[T]) Close() error {
 	c.closed = true
 	return nil
 }
-
-// RecordCursorProto is a convenience type for cursors over protobuf messages
-type RecordCursorProto = RecordCursor[*FDBStoredRecord[proto.Message]]
-
-// TypedRecordCursor is a convenience type for typed record cursors
-type TypedRecordCursor[T proto.Message] RecordCursor[*FDBStoredRecord[T]]
 
 // Note: Most sequence utilities are available in Go 1.23+ standard library:
 // - slices.Collect() for collecting sequences
