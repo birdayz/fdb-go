@@ -50,6 +50,11 @@ type RecordMetaData struct {
 	// formerIndexes tracks deleted indexes for schema evolution safety.
 	// Java equivalent: RecordMetaData.getFormerIndexes()
 	formerIndexes []*FormerIndex
+
+	// unionDescriptor is the protobuf message descriptor for UnionDescriptor.
+	// Nil if the schema has no union (single-type).
+	// Matches Java's RecordMetaData.getUnionDescriptor().
+	unionDescriptor protoreflect.MessageDescriptor
 }
 
 // FormerIndex tracks a deleted index for schema evolution safety.
@@ -132,6 +137,7 @@ type RecordMetaDataBuilder struct {
 	counterBasedSubspaceKeys bool
 	subspaceKeyCounter       int64
 	buildErrors              []error
+	unionDescriptor          protoreflect.MessageDescriptor
 }
 
 // NewRecordMetaDataBuilder creates a new builder
@@ -153,6 +159,7 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 		b.setRecordsWithoutUnion(fd)
 		return b
 	}
+	b.unionDescriptor = unionDesc
 	
 	// Auto-discover record types from UnionDescriptor fields
 	unionFields := unionDesc.Fields()
@@ -670,6 +677,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		indexes:             indexes,
 		universalIndexes:    b.universalIndexes,
 		formerIndexes:       b.formerIndexes,
+		unionDescriptor:     b.unionDescriptor,
 	}, nil
 }
 
@@ -861,6 +869,20 @@ func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
 		}
 	}
 	return result
+}
+
+// GetUnionDescriptor returns the protobuf message descriptor for UnionDescriptor.
+// Returns nil if the schema has no union (single-type schema).
+// Matches Java's RecordMetaData.getUnionDescriptor().
+func (m *RecordMetaData) GetUnionDescriptor() protoreflect.MessageDescriptor {
+	return m.unionDescriptor
+}
+
+// GetUnionFieldForRecordType returns the union field descriptor for a record type.
+// Returns nil if the record type has no union field (single-type schema).
+// Matches Java's RecordMetaData.getUnionFieldForRecordType().
+func (m *RecordMetaData) GetUnionFieldForRecordType(rt *RecordType) protoreflect.FieldDescriptor {
+	return rt.UnionFieldDescriptor
 }
 
 // CommonPrimaryKey returns the primary key expression if all record types share

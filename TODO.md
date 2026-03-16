@@ -1071,7 +1071,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 - [x] **`getRecordTypeForDescriptor()` / `getRecordTypeFromRecordTypeKey()`** — Added `GetRecordTypeFromRecordTypeKey()` with normalized integer comparison. Descriptor-based lookup deferred. **LOW**.
 - [x] **`getIndexFromSubspaceKey()`** — Added `GetIndexFromSubspaceKey()` with normalized integer comparison. **LOW**.
-- [ ] **`getUnionDescriptor()` / `getUnionFieldForRecordType()`** — Union descriptor access. **LOW**.
+- [x] **`getUnionDescriptor()` / `getUnionFieldForRecordType()`** — Added `GetUnionDescriptor()` and `GetUnionFieldForRecordType()`. Union descriptor stored during Build(). **LOW**.
 - [x] **`commonPrimaryKey()` / `commonPrimaryKeyLength()` static helpers** — Added `CommonPrimaryKey()` (structural equality via keyExpressionEquals) and `CommonPrimaryKeyLength()`. **LOW**.
 - [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
 - [x] **`getFormerIndexesSince(version)`** — Added `GetFormerIndexesSince()`. **LOW**.
