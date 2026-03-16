@@ -268,6 +268,34 @@ func (b *RecordMetaDataBuilder) SetSplitLongRecords(split bool) *RecordMetaDataB
 	return b
 }
 
+// GetVersion returns the current metadata version on the builder.
+// Matches Java's RecordMetaDataBuilder.getVersion().
+func (b *RecordMetaDataBuilder) GetVersion() int {
+	return b.version
+}
+
+// IsSplitLongRecords returns whether split long records is enabled on the builder.
+// Matches Java's RecordMetaDataBuilder.isSplitLongRecords().
+func (b *RecordMetaDataBuilder) IsSplitLongRecords() bool {
+	return b.splitLongRecords
+}
+
+// IsStoreRecordVersions returns whether record versioning is enabled on the builder.
+// Matches Java's RecordMetaDataBuilder.isStoreRecordVersions().
+func (b *RecordMetaDataBuilder) IsStoreRecordVersions() bool {
+	return b.storeRecordVersions
+}
+
+// GetRecordCountKey returns the record count key expression on the builder.
+func (b *RecordMetaDataBuilder) GetRecordCountKey() KeyExpression {
+	return b.recordCountKey
+}
+
+// GetRecordTypes returns the record types map on the builder.
+func (b *RecordMetaDataBuilder) GetRecordTypes() map[string]*RecordType {
+	return b.recordTypes
+}
+
 // AddIndex adds a secondary index for a specific record type.
 // Matches Java's RecordMetaDataBuilder.addIndex(String recordType, Index index).
 func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *RecordMetaDataBuilder {

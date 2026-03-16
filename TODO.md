@@ -1075,7 +1075,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 - [x] **`commonPrimaryKey()` / `commonPrimaryKeyLength()` static helpers** — Added `CommonPrimaryKey()` (structural equality via keyExpressionEquals) and `CommonPrimaryKeyLength()`. **LOW**.
 - [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
 - [x] **`getFormerIndexesSince(version)`** — Added `GetFormerIndexesSince()`. **LOW**.
-- [ ] **Builder query methods** — Getters for configured values during build (isSplitLongRecords, getVersion, etc). **LOW**.
+- [x] **Builder query methods** — Added `GetVersion()`, `IsSplitLongRecords()`, `IsStoreRecordVersions()`, `GetRecordCountKey()`, `GetRecordTypes()` on builder. **LOW**.
 - [ ] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
 - [ ] **`IndexMaintainerRegistry` pluggable** — Go dispatches from hardcoded switch. **LOW**.
 - [ ] **Synthetic record types** — JoinedRecordType, UnnestedRecordType. Large feature. **LOW**.
