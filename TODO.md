@@ -1150,9 +1150,9 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 ### Convenience methods — not implemented
 
-- [ ] **`getRecordCount()` / `getRecordCount(recordTypeName)`** — Java convenience wrappers around `evaluateAggregateFunction`. **LOW**.
+- [x] **`getRecordCount()` / `getRecordCount(recordTypeName)`** — Already implemented as `GetRecordCount()`, `GetSnapshotRecordCount()`, `GetSnapshotRecordCountForRecordType()`. **LOW**.
 - [x] **`Index.getBooleanOption(key, default)`** — Added `GetBooleanOption()`. **LOW**.
-- [ ] **`IndexAggregateFunction` constructor helpers** — Go requires manual struct construction. **LOW**.
+- [x] **`IndexAggregateFunction` constructor helpers** — Added `NewCountAggregateFunction`, `NewSumAggregateFunction`, `NewMin/MaxAggregateFunction`, `NewMin/MaxEverAggregateFunction`. **LOW**.
 
 ### Design differences (intentional, not gaps)
 

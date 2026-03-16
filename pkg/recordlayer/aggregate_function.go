@@ -34,6 +34,37 @@ type IndexAggregateFunction struct {
 	Index   string        // Optional: explicit index name. Empty = auto-select.
 }
 
+// NewCountAggregateFunction creates a COUNT aggregate function.
+// Matches Java's IndexAggregateFunction(FunctionNames.COUNT, operand).
+func NewCountAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameCount, Operand: operand}
+}
+
+// NewSumAggregateFunction creates a SUM aggregate function.
+func NewSumAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameSum, Operand: operand}
+}
+
+// NewMinAggregateFunction creates a MIN aggregate function (via VALUE index).
+func NewMinAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameMin, Operand: operand}
+}
+
+// NewMaxAggregateFunction creates a MAX aggregate function (via VALUE index).
+func NewMaxAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameMax, Operand: operand}
+}
+
+// NewMinEverAggregateFunction creates a MIN_EVER aggregate function.
+func NewMinEverAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameMinEver, Operand: operand}
+}
+
+// NewMaxEverAggregateFunction creates a MAX_EVER aggregate function.
+func NewMaxEverAggregateFunction(operand KeyExpression) *IndexAggregateFunction {
+	return &IndexAggregateFunction{Name: FunctionNameMaxEver, Operand: operand}
+}
+
 // EvaluateAggregateFunction evaluates an aggregate function using the best matching index.
 // Returns the aggregate result as a tuple, or nil if no matching entries exist.
 //
