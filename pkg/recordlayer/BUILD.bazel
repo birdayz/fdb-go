@@ -114,6 +114,7 @@ go_test(
         "cursor_seq_test.go",
         "database_test.go",
         "dedup_cursor_test.go",
+        "edge_case_test.go",
         "error_path_test.go",
         "existence_test.go",
         "fallback_cursor_test.go",
