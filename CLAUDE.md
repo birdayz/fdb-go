@@ -103,10 +103,10 @@ just clean          # bazel clean
 
 ### Benchmarks
 
-`benchmark_test.go` contains 9 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
+`benchmark_test.go` contains 13 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
 
 ```sh
-just bench                          # All benchmarks (~50s)
+just bench                          # All benchmarks (~60s)
 just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 ```
 
@@ -123,12 +123,18 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkGetRecordCount` | Atomic record count read |
 | `BenchmarkSaveLargeRecord` | 50KB record (below split threshold) |
 | `BenchmarkSaveSplitRecord` | 250KB record (3 split chunks) |
+| `BenchmarkStoreOpen` | Open existing store (uncached) |
+| `BenchmarkStoreOpenCached` | Open with state cache enabled |
+| `BenchmarkDeleteRecord` | Delete by primary key |
+| `BenchmarkSaveRecordWithCountAndIndex` | Save with COUNT + VALUE index |
 
 **Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer):
 - Save: ~2.35ms/op, 100 allocs
 - Load: ~0.43ms/op, 92 allocs
 - Scan 100: ~0.75ms/op, 3112 allocs
 - Split save 250KB: ~2.93ms/op, 121 allocs
+- Store open: ~0.35ms/op, 69 allocs
+- Save with count+index: ~2.33ms/op, 129 allocs
 
 ### Debugging Bazel cache invalidation
 
