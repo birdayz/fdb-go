@@ -567,4 +567,137 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("multi-version jump (v1 → v5)", func() {
+		It("accepts large version jump with new index at intermediate version", func() {
+			v := DefaultMetaDataEvolutionValidator()
+
+			old := buildMetaData(1, nil)
+			new := buildMetaData(5, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("price_idx", Field("price"))
+				idx.LastModifiedVersion = 3 // added at v3, between old(1) and new(5)
+				idx.AddedVersion = 3
+				b.AddIndex("Order", idx)
+			})
+
+			err := v.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects new index with version not exceeding old metadata version", func() {
+			v := DefaultMetaDataEvolutionValidator()
+
+			old := buildMetaData(3, nil)
+			new := buildMetaData(5, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("price_idx", Field("price"))
+				idx.LastModifiedVersion = 2 // v2 < old v3 — not valid
+				idx.AddedVersion = 2
+				b.AddIndex("Order", idx)
+			})
+
+			err := v.Validate(old, new)
+			Expect(err).To(HaveOccurred())
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("not newer than the old meta-data version"))
+		})
+
+		It("accepts combined changes: add index + remove index (with former)", func() {
+			v := DefaultMetaDataEvolutionValidator()
+
+			oldIdx := NewIndex("old_idx", Field("price"))
+			oldIdx.LastModifiedVersion = 1
+			oldIdx.AddedVersion = 1
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", oldIdx)
+			})
+
+			new := buildMetaData(5, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", oldIdx) // keep old index so RemoveIndex works
+				b.RemoveIndex("old_idx")    // creates FormerIndex
+				newIdx := NewIndex("new_idx", Field("price"))
+				newIdx.LastModifiedVersion = 4
+				newIdx.AddedVersion = 4
+				b.AddIndex("Order", newIdx)
+			})
+
+			err := v.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("index version boundary checks", func() {
+		It("rejects index addedVersion changing between old and new", func() {
+			v := DefaultMetaDataEvolutionValidator()
+
+			idx1 := NewIndex("price_idx", Field("price"))
+			idx1.AddedVersion = 1
+			idx1.LastModifiedVersion = 1
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", idx1)
+			})
+
+			idx2 := NewIndex("price_idx", Field("price"))
+			idx2.AddedVersion = 2 // changed!
+			idx2.LastModifiedVersion = 2
+			new := buildMetaData(3, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", idx2)
+			})
+
+			err := v.Validate(old, new)
+			Expect(err).To(HaveOccurred())
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("added version does not match"))
+		})
+
+		It("rejects lastModifiedVersion decreasing even with allowIndexRebuilds", func() {
+			// With allowIndexRebuilds=true, changed lastModifiedVersion is allowed
+			// (indexes get rebuilt). But the unconditional check rejects DECREASING
+			// versions (old > new), matching Java line 634.
+			v := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(true).Build()
+
+			idx1 := NewIndex("price_idx", Field("price"))
+			idx1.AddedVersion = 1
+			idx1.LastModifiedVersion = 3
+			old := buildMetaData(3, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", idx1)
+			})
+
+			idx2 := NewIndex("price_idx", Field("price"))
+			idx2.AddedVersion = 1
+			idx2.LastModifiedVersion = 2 // decreased!
+			new := buildMetaData(4, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", idx2)
+			})
+
+			err := v.Validate(old, new)
+			Expect(err).To(HaveOccurred())
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("last-modified version newer than new index"))
+		})
+	})
+
+	Describe("safe type promotion", func() {
+		It("recognizes int32 to int64 as safe", func() {
+			Expect(isSafeTypePromotion(protoreflect.Int32Kind, protoreflect.Int64Kind)).To(BeTrue())
+		})
+
+		It("recognizes sint32 to sint64 as safe", func() {
+			Expect(isSafeTypePromotion(protoreflect.Sint32Kind, protoreflect.Sint64Kind)).To(BeTrue())
+		})
+
+		It("rejects int64 to int32 (narrowing)", func() {
+			Expect(isSafeTypePromotion(protoreflect.Int64Kind, protoreflect.Int32Kind)).To(BeFalse())
+		})
+
+		It("rejects int32 to string (type change)", func() {
+			Expect(isSafeTypePromotion(protoreflect.Int32Kind, protoreflect.StringKind)).To(BeFalse())
+		})
+
+		It("rejects same type (not a promotion)", func() {
+			Expect(isSafeTypePromotion(protoreflect.Int32Kind, protoreflect.Int32Kind)).To(BeFalse())
+		})
+	})
 })

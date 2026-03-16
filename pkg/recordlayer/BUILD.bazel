@@ -107,6 +107,7 @@ go_test(
         "count_updates_index_test.go",
         "cross_type_index_test.go",
         "cursor_bug_verify_test.go",
+        "cursor_combinator_edge_test.go",
         "cursor_combinator_test.go",
         "cursor_functions_test.go",
         "cursor_seq_test.go",
