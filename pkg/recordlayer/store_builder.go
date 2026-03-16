@@ -293,8 +293,11 @@ func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 		}
 		rec := result.GetValue()
 		subkeys, err := countKey.Evaluate(rec, rec.Record)
-		if err != nil || len(subkeys) != 1 {
-			continue
+		if err != nil {
+			return fmt.Errorf("evaluate count key for record: %w", err)
+		}
+		if len(subkeys) != 1 {
+			return fmt.Errorf("count key should evaluate to single key, got %d", len(subkeys))
 		}
 		keyTuple := make(tuple.Tuple, len(subkeys[0]))
 		for i, v := range subkeys[0] {
