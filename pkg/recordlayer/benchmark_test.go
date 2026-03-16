@@ -551,7 +551,8 @@ func BenchmarkSaveLargeRecord(b *testing.B) {
 }
 
 // BenchmarkSaveSplitRecord measures saving a ~250KB record that triggers the
-// split record path (3 x 100KB chunks).
+// split record path (3 x 100KB chunks). Includes serialize, split into 3
+// chunks, and commit.
 func BenchmarkSaveSplitRecord(b *testing.B) {
 	ensureBenchDB(b)
 
@@ -595,7 +596,171 @@ func BenchmarkSaveSplitRecord(b *testing.B) {
 			return store.SaveRecord(order)
 		})
 		if err != nil {
-			b.Fatalf("iteration %d: %v", i, err)
+			b.Fatalf("split-save %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkStoreOpen measures the cost of opening an existing store in a new
+// transaction. This is the hot path for every request in a typical application.
+func BenchmarkStoreOpen(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+		})
+		if err != nil {
+			b.Fatalf("open %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkStoreOpenCached measures store open with state caching enabled.
+func BenchmarkStoreOpenCached(b *testing.B) {
+	ensureBenchDB(b)
+
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		b.Fatalf("metadata: %v", err)
+	}
+
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	cache := NewMetaDataVersionStampStoreStateCache()
+	sharedDB.SetStoreStateCache(cache)
+	defer sharedDB.SetStoreStateCache(PassThroughStoreStateCache())
+
+	_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		_, err = store.SetStateCacheability(true)
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+		})
+		if err != nil {
+			b.Fatalf("open-cached %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkDeleteRecord measures the cost of deleting a single record by PK.
+func BenchmarkDeleteRecord(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		for i := int64(0); i < int64(b.N)+100; i++ {
+			if _, err := store.SaveRecord(benchOrder(i, int32(i))); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			return store.DeleteRecord(tuple.Tuple{int64(i)})
+		})
+		if err != nil {
+			b.Fatalf("delete %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkSaveRecordWithCountAndIndex measures saving with both record counting
+// and a VALUE index — the common production configuration.
+func BenchmarkSaveRecordWithCountAndIndex(b *testing.B) {
+	ensureBenchDB(b)
+
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.SetRecordCountKey(EmptyKey())
+	builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+	md, err := builder.Build()
+	if err != nil {
+		b.Fatalf("metadata: %v", err)
+	}
+
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(benchOrder(int64(i), int32(i%1000)))
+		})
+		if err != nil {
+			b.Fatalf("save %d: %v", i, err)
 		}
 	}
 }
