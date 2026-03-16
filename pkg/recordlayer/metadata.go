@@ -863,6 +863,41 @@ func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
 	return result
 }
 
+// CommonPrimaryKey returns the primary key expression if all record types share
+// the same one, or nil if they differ. Uses structural comparison via
+// keyExpressionEquals. Matches Java's RecordMetaData.commonPrimaryKey().
+func (m *RecordMetaData) CommonPrimaryKey() KeyExpression {
+	var common KeyExpression
+	first := true
+	for _, rt := range m.recordTypes {
+		if first {
+			common = rt.PrimaryKey
+			first = false
+		} else if !keyExpressionEquals(common, rt.PrimaryKey) {
+			return nil
+		}
+	}
+	return common
+}
+
+// CommonPrimaryKeyLength returns the number of columns in the primary key if
+// all record types have the same PK length, or -1 if they differ.
+// Matches Java's RecordMetaData.commonPrimaryKeyLength().
+func (m *RecordMetaData) CommonPrimaryKeyLength() int {
+	common := -1
+	first := true
+	for _, rt := range m.recordTypes {
+		size := keyExpressionColumnSize(rt.PrimaryKey)
+		if first {
+			common = size
+			first = false
+		} else if common != size {
+			return -1
+		}
+	}
+	return common
+}
+
 // PrimaryKeyHasRecordTypePrefix returns true if all record types have a
 // primary key that starts with a RecordTypeKeyExpression.
 // Matches Java's RecordMetaData.primaryKeyHasRecordTypePrefix().
