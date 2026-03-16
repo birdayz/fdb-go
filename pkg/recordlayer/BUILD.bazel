@@ -100,6 +100,7 @@ go_test(
         "compare_field_test.go",
         "context_api_test.go",
         "context_test.go",
+        "continuation_stability_test.go",
         "continuation_test.go",
         "count_index_test.go",
         "count_not_null_index_test.go",
