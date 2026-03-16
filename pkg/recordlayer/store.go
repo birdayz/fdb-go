@@ -1390,7 +1390,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}
 		// Key format: [indexKey..., primaryKey...]
-		colCount := keyExpressionColumnSize(index.RootExpression)
+		colCount := index.RootExpression.ColumnSize()
 		if len(t) > colCount {
 			v := UniquenessViolation{
 				IndexName:  index.Name,

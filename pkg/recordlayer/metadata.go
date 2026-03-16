@@ -117,6 +117,10 @@ type KeyExpression interface {
 	// FieldNames returns the field names this expression accesses
 	FieldNames() []string
 
+	// ColumnSize returns the number of tuple elements this expression produces.
+	// Matches Java's KeyExpression.getColumnSize().
+	ColumnSize() int
+
 	// ToKeyExpression serializes this expression to its protobuf representation.
 	// Matches Java's KeyExpression.toKeyExpression().
 	ToKeyExpression() *gen.KeyExpression
@@ -452,7 +456,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		if rt.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has no primary key set", name)}
 		}
-		if keyExpressionColumnSize(rt.PrimaryKey) == 0 {
+		if rt.PrimaryKey.ColumnSize() == 0 {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that produces no columns (EmptyKeyExpression or empty Concat are not valid primary keys)", name)}
 		}
 		if createsDuplicates(rt.PrimaryKey) {
@@ -937,7 +941,7 @@ func (m *RecordMetaData) CommonPrimaryKeyLength() int {
 	common := -1
 	first := true
 	for _, rt := range m.recordTypes {
-		size := keyExpressionColumnSize(rt.PrimaryKey)
+		size := rt.PrimaryKey.ColumnSize()
 		if first {
 			common = size
 			first = false
@@ -1001,7 +1005,7 @@ func countVersionColumnsInGroupParts(expr KeyExpression, groupingCount int) (gro
 	if comp, ok := expr.(*CompositeKeyExpression); ok {
 		colsSoFar := 0
 		for _, child := range comp.expressions {
-			childCols := keyExpressionColumnSize(child)
+			childCols := child.ColumnSize()
 			childVersions := countVersionColumns(child)
 			if colsSoFar+childCols <= groupingCount {
 				groupingVersions += childVersions

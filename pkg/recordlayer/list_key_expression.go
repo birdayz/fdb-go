@@ -100,6 +100,12 @@ func (l *ListKeyExpression) FieldNames() []string {
 	return names
 }
 
+// ColumnSize returns the number of children — each child contributes one column
+// (as a nested tuple element). Matches Java's ListKeyExpression.getColumnSize().
+func (l *ListKeyExpression) ColumnSize() int {
+	return len(l.children)
+}
+
 // GetChildren returns the child expressions.
 func (l *ListKeyExpression) GetChildren() []KeyExpression {
 	return l.children

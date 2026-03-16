@@ -89,10 +89,10 @@ var _ = Describe("FunctionKeyExpression", func() {
 		})
 	})
 
-	Describe("keyExpressionColumnSize", func() {
+	Describe("ColumnSize", func() {
 		It("returns 1", func() {
-			Expect(keyExpressionColumnSize(FunctionExpr("fn", EmptyKey()))).To(Equal(1))
-			Expect(keyExpressionColumnSize(FunctionExpr("fn", Concat(Field("a"), Field("b"))))).To(Equal(1))
+			Expect(FunctionExpr("fn", EmptyKey()).ColumnSize()).To(Equal(1))
+			Expect(FunctionExpr("fn", Concat(Field("a"), Field("b"))).ColumnSize()).To(Equal(1))
 		})
 	})
 

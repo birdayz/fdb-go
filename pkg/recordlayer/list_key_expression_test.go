@@ -215,7 +215,7 @@ func TestListKeyExpressionColumnSize(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := keyExpressionColumnSize(tc.expr)
+			got := tc.expr.ColumnSize()
 			if got != tc.expected {
 				t.Fatalf("keyExpressionColumnSize: expected %d, got %d", tc.expected, got)
 			}

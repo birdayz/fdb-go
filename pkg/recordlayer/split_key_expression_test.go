@@ -206,7 +206,7 @@ func TestSplitKeyExpressionColumnSize(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			expr := Split(FanOut("tags"), tt.splitSize)
-			got := keyExpressionColumnSize(expr)
+			got := expr.ColumnSize()
 			if got != tt.want {
 				t.Fatalf("expected column size %d, got %d", tt.want, got)
 			}

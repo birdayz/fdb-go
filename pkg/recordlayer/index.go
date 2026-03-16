@@ -396,7 +396,7 @@ func (idx *Index) TrimPrimaryKey(primaryKey tuple.Tuple) (tuple.Tuple, error) {
 // Returns an empty tuple if the entry key is truncated (fewer elements than expected).
 // Matches Java's Index.getEntryPrimaryKey().
 func (idx *Index) getEntryPrimaryKey(entryKey tuple.Tuple) tuple.Tuple {
-	colSize := keyExpressionColumnSize(idx.RootExpression)
+	colSize := idx.RootExpression.ColumnSize()
 	if idx.primaryKeyComponentPositions == nil {
 		if colSize < len(entryKey) {
 			return entryKey[colSize:]

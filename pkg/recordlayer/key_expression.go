@@ -162,6 +162,11 @@ func (f *FieldKeyExpression) FieldNames() []string {
 	return []string{f.fieldName}
 }
 
+// ColumnSize returns 1 — a field expression produces a single tuple element.
+func (f *FieldKeyExpression) ColumnSize() int {
+	return 1
+}
+
 // RecordTypeKeyExpression represents the special record type key prefix.
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
@@ -239,6 +244,15 @@ func (r *RecordTypeKeyExpression) FieldNames() []string {
 	return []string{}
 }
 
+// ColumnSize returns 1 for the type key itself, plus the nested expression's
+// column size if present.
+func (r *RecordTypeKeyExpression) ColumnSize() int {
+	if r.nested != nil {
+		return 1 + r.nested.ColumnSize()
+	}
+	return 1
+}
+
 // IsRecordTypeExpression checks if a key expression starts with record type
 func IsRecordTypeExpression(expr KeyExpression) bool {
 	_, ok := expr.(*RecordTypeKeyExpression)
@@ -270,6 +284,11 @@ func (e *EmptyKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto
 // FieldNames returns no field names.
 func (e *EmptyKeyExpression) FieldNames() []string {
 	return nil
+}
+
+// ColumnSize returns 0 — an empty expression produces no tuple elements.
+func (e *EmptyKeyExpression) ColumnSize() int {
+	return 0
 }
 
 // CompositeKeyExpression combines multiple key expressions
@@ -325,6 +344,15 @@ func (c *CompositeKeyExpression) FieldNames() []string {
 		names = append(names, expr.FieldNames()...)
 	}
 	return names
+}
+
+// ColumnSize returns the sum of all child column sizes.
+func (c *CompositeKeyExpression) ColumnSize() int {
+	total := 0
+	for _, child := range c.expressions {
+		total += child.ColumnSize()
+	}
+	return total
 }
 
 // NestingKeyExpression navigates into a nested protobuf message and evaluates
@@ -419,6 +447,12 @@ func (n *NestingKeyExpression) FieldNames() []string {
 	result = append(result, n.parentField)
 	result = append(result, childNames...)
 	return result
+}
+
+// ColumnSize returns the child's column size — the parent message field doesn't
+// contribute a tuple element.
+func (n *NestingKeyExpression) ColumnSize() int {
+	return n.child.ColumnSize()
 }
 
 // createsDuplicates returns true if a key expression can produce multiple tuples
@@ -656,7 +690,7 @@ type GroupingKeyExpression struct {
 //   wholeKey = Concat(game_id, score), groupedCount = 1
 // Matches Java's KeyExpression.groupBy().
 func GroupBy(grouped KeyExpression, groupBy ...KeyExpression) *GroupingKeyExpression {
-	groupedColCount := keyExpressionColumnSize(grouped)
+	groupedColCount := grouped.ColumnSize()
 	allExprs := make([]KeyExpression, 0, len(groupBy)+1)
 	allExprs = append(allExprs, groupBy...)
 	allExprs = append(allExprs, grouped)
@@ -677,7 +711,7 @@ func GroupBy(grouped KeyExpression, groupBy ...KeyExpression) *GroupingKeyExpres
 func Ungrouped(expr KeyExpression) *GroupingKeyExpression {
 	return &GroupingKeyExpression{
 		wholeKey:     expr,
-		groupedCount: keyExpressionColumnSize(expr),
+		groupedCount: expr.ColumnSize(),
 	}
 }
 
@@ -704,6 +738,11 @@ func (g *GroupingKeyExpression) FieldNames() []string {
 	return g.wholeKey.FieldNames()
 }
 
+// ColumnSize delegates to the whole key expression's column size.
+func (g *GroupingKeyExpression) ColumnSize() int {
+	return g.wholeKey.ColumnSize()
+}
+
 // GetGroupedCount returns the number of trailing "grouped" (aggregated) columns.
 func (g *GroupingKeyExpression) GetGroupedCount() int {
 	return g.groupedCount
@@ -711,7 +750,7 @@ func (g *GroupingKeyExpression) GetGroupedCount() int {
 
 // GetGroupingCount returns the number of leading "grouping" (GROUP BY) columns.
 func (g *GroupingKeyExpression) GetGroupingCount() int {
-	return keyExpressionColumnSize(g.wholeKey) - g.groupedCount
+	return g.wholeKey.ColumnSize() - g.groupedCount
 }
 
 // LiteralKeyExpression represents a static constant value in a key expression.
@@ -739,6 +778,11 @@ func (l *LiteralKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ pro
 // FieldNames returns an empty slice — literal expressions don't access any fields.
 func (l *LiteralKeyExpression) FieldNames() []string {
 	return nil
+}
+
+// ColumnSize returns 1 — a literal expression produces a single tuple element.
+func (l *LiteralKeyExpression) ColumnSize() int {
+	return 1
 }
 
 // GetValue returns the constant value held by this expression.
@@ -773,6 +817,12 @@ func (k *KeyWithValueExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 // FieldNames delegates to the inner key expression.
 func (k *KeyWithValueExpression) FieldNames() []string {
 	return k.innerKey.FieldNames()
+}
+
+// ColumnSize returns the split point — only key columns count, not value columns.
+// Matches Java's KeyWithValueExpression.getColumnSize().
+func (k *KeyWithValueExpression) ColumnSize() int {
+	return k.splitPoint
 }
 
 // InnerKey returns the wrapped key expression.
@@ -828,6 +878,11 @@ func (v *VersionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 // FieldNames returns an empty slice — version expressions don't access proto fields.
 func (v *VersionKeyExpression) FieldNames() []string {
 	return nil
+}
+
+// ColumnSize returns 1 — a version expression produces a single tuple element.
+func (v *VersionKeyExpression) ColumnSize() int {
+	return 1
 }
 
 // FunctionEvaluator evaluates a named function on a record.
@@ -888,6 +943,11 @@ func (f *FunctionKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message],
 // FieldNames returns field names from the arguments expression.
 func (f *FunctionKeyExpression) FieldNames() []string {
 	return f.arguments.FieldNames()
+}
+
+// ColumnSize returns 1 — a function expression produces a single tuple element.
+func (f *FunctionKeyExpression) ColumnSize() int {
+	return 1
 }
 
 // Name returns the function name.

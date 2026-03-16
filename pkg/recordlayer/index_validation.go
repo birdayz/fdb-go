@@ -85,7 +85,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 	}
 
 	actualEntries := make(map[string]struct{}, len(kvs))
-	colCount := keyExpressionColumnSize(index.RootExpression)
+	colCount := index.RootExpression.ColumnSize()
 
 	for _, kv := range kvs {
 		result.TotalEntriesScanned++

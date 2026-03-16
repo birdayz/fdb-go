@@ -490,12 +490,12 @@ var _ = Describe("IndexScanning", func() {
 
 	Describe("IndexEntry methods", func() {
 		It("returns correct column size for various expressions", func() {
-			Expect(keyExpressionColumnSize(Field("x"))).To(Equal(1))
-			Expect(keyExpressionColumnSize(Concat(Field("x"), Field("y")))).To(Equal(2))
-			Expect(keyExpressionColumnSize(Concat(Field("x"), Field("y"), Field("z")))).To(Equal(3))
-			Expect(keyExpressionColumnSize(EmptyKey())).To(Equal(0))
-			Expect(keyExpressionColumnSize(RecordTypeKey())).To(Equal(1))
-			Expect(keyExpressionColumnSize(RecordTypeKey().Nest(Field("x")))).To(Equal(2))
+			Expect(Field("x").ColumnSize()).To(Equal(1))
+			Expect(Concat(Field("x"), Field("y")).ColumnSize()).To(Equal(2))
+			Expect(Concat(Field("x"), Field("y"), Field("z")).ColumnSize()).To(Equal(3))
+			Expect(EmptyKey().ColumnSize()).To(Equal(0))
+			Expect(RecordTypeKey().ColumnSize()).To(Equal(1))
+			Expect(RecordTypeKey().Nest(Field("x")).ColumnSize()).To(Equal(2))
 		})
 	})
 
@@ -843,9 +843,9 @@ var _ = Describe("IndexScanning", func() {
 
 		It("computes correct column size for nested expressions", func() {
 			// Nest("flower", Field("type")) → 1 column (child's column size)
-			Expect(keyExpressionColumnSize(Nest("flower", Field("type")))).To(Equal(1))
+			Expect(Nest("flower", Field("type")).ColumnSize()).To(Equal(1))
 			// Nest("flower", Concat(Field("type"), Field("color"))) → 2 columns
-			Expect(keyExpressionColumnSize(Nest("flower", Concat(Field("type"), Field("color"))))).To(Equal(2))
+			Expect(Nest("flower", Concat(Field("type"), Field("color"))).ColumnSize()).To(Equal(2))
 		})
 
 		It("indexes composite nested fields", func() {

@@ -151,25 +151,21 @@ type customKeyExpression struct{}
 func (c *customKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
 	return [][]any{{"val"}}, nil
 }
-func (c *customKeyExpression) FieldNames() []string        { return []string{"custom"} }
+func (c *customKeyExpression) FieldNames() []string                { return []string{"custom"} }
+func (c *customKeyExpression) ColumnSize() int                     { panic("not implemented") }
 func (c *customKeyExpression) ToKeyExpression() *gen.KeyExpression { return nil }
 
 func TestBug4_KeyExpressionColumnSizeDefaultZero(t *testing.T) {
 	t.Parallel()
 
-	// FIX: unknown expression types now return an error via keyExpressionColumnSizeChecked
-	_, err := keyExpressionColumnSizeChecked(&customKeyExpression{})
-	if err == nil {
-		t.Fatal("expected error for unknown expression type, got nil")
-	}
-
-	// keyExpressionColumnSize (unchecked) now panics on unknown types
+	// customKeyExpression.ColumnSize() panics because it's not a real implementation.
+	// This verifies that the contract is enforced at the interface level.
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic from keyExpressionColumnSize on unknown type")
+			t.Fatal("expected panic from unknown expression's ColumnSize()")
 		}
 	}()
-	_ = keyExpressionColumnSize(&customKeyExpression{})
+	_ = (&customKeyExpression{}).ColumnSize()
 }
 
 // =============================================================================

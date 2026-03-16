@@ -137,7 +137,7 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 			continue
 		}
 		if canEvaluateAggregate(fn, idx) {
-			colSize := keyExpressionColumnSize(idx.RootExpression)
+			colSize := idx.RootExpression.ColumnSize()
 			if colSize < bestColSize {
 				best = idx
 				bestColSize = colSize
@@ -243,7 +243,7 @@ func evaluateMinMaxFromValueIndex(
 	// For a GroupingKeyExpression operand, the grouping columns come first,
 	// then the aggregated columns.
 	groupSize := 0
-	totalSize := keyExpressionColumnSize(fn.Operand)
+	totalSize := fn.Operand.ColumnSize()
 	if g, ok := fn.Operand.(*GroupingKeyExpression); ok {
 		groupSize = g.GetGroupingCount()
 	}
@@ -451,7 +451,7 @@ func canEvaluateRankAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		if g, ok := idx.RootExpression.(*GroupingKeyExpression); ok {
 			groupingCount = g.GetGroupingCount()
 		}
-		return keyExpressionColumnSize(fn.Operand) == groupingCount &&
+		return fn.Operand.ColumnSize() == groupingCount &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
 	case FunctionNameScoreForRank, FunctionNameScoreForRankElseSkip, FunctionNameRankForScore:
 		return keyExpressionEquals(fn.Operand, idx.RootExpression)

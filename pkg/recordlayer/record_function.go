@@ -68,7 +68,7 @@ func (store *FDBRecordStore) findIndexForRecordFunction(
 			continue
 		}
 		if canEvaluateRecordFunction(fn, idx) {
-			colSize := keyExpressionColumnSize(idx.RootExpression)
+			colSize := idx.RootExpression.ColumnSize()
 			if colSize < bestColSize {
 				best = idx
 				bestColSize = colSize

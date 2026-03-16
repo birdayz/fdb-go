@@ -112,13 +112,13 @@ var _ = Describe("VersionIndex", func() {
 			Expect(ok).To(BeTrue(), "round-tripped expression should be VersionKeyExpression")
 		})
 
-		It("keyExpressionColumnSize == 1", func() {
-			Expect(keyExpressionColumnSize(VersionKey())).To(Equal(1))
+		It("ColumnSize == 1", func() {
+			Expect(VersionKey().ColumnSize()).To(Equal(1))
 		})
 
-		It("keyExpressionColumnSize of Concat(VersionKey, Field) == 2", func() {
+		It("ColumnSize of Concat(VersionKey, Field) == 2", func() {
 			expr := Concat(VersionKey(), Field("order_id"))
-			Expect(keyExpressionColumnSize(expr)).To(Equal(2))
+			Expect(expr.ColumnSize()).To(Equal(2))
 		})
 
 		It("createsDuplicates == false", func() {

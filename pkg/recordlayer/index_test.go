@@ -823,9 +823,9 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("keyExpressionColumnSize returns splitPoint", func() {
+	It("ColumnSize returns splitPoint", func() {
 		expr := KeyWithValue(Concat(Field("a"), Field("b"), Field("c")), 2)
-		Expect(keyExpressionColumnSize(expr)).To(Equal(2))
+		Expect(expr.ColumnSize()).To(Equal(2))
 	})
 
 	It("proto roundtrip preserves KeyWithValueExpression", func() {

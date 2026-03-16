@@ -69,6 +69,12 @@ func (s *SplitKeyExpression) FieldNames() []string {
 	return s.joined.FieldNames()
 }
 
+// ColumnSize returns the split size — each batch produces splitSize columns.
+// Matches Java's SplitKeyExpression.getColumnSize().
+func (s *SplitKeyExpression) ColumnSize() int {
+	return s.splitSize
+}
+
 // ToKeyExpression serializes SplitKeyExpression to proto.
 // Matches Java's SplitKeyExpression.toKeyExpression().
 func (s *SplitKeyExpression) ToKeyExpression() *gen.KeyExpression {

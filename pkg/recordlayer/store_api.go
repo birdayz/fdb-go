@@ -399,7 +399,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 		return nil, fmt.Errorf("scan violations for value on index %q: %w", index.Name, err)
 	}
 
-	colCount := keyExpressionColumnSize(index.RootExpression)
+	colCount := index.RootExpression.ColumnSize()
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
 		t, err := violationSubspace.Unpack(kv.Key)

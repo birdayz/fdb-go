@@ -60,7 +60,7 @@ func (m *permutedMinMaxIndexMaintainer) getGroupingCount() int {
 	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
 		return g.GetGroupingCount()
 	}
-	return keyExpressionColumnSize(m.index.RootExpression)
+	return m.index.RootExpression.ColumnSize()
 }
 
 // shouldUpdateExtremum returns true if newValue should replace oldValue.
@@ -107,7 +107,7 @@ func compareTuples(a, b tuple.Tuple) int {
 // belongs to.
 func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	groupPrefixSize := m.getGroupingCount()
-	totalSize := keyExpressionColumnSize(m.index.RootExpression)
+	totalSize := m.index.RootExpression.ColumnSize()
 	permutePosition := groupPrefixSize - m.permutedSize
 
 	if oldRecord != nil && newRecord == nil {
@@ -347,7 +347,7 @@ func evaluatePermutedMinMaxAggregate(
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
 	groupPrefixSize := m.getGroupingCount()
-	totalSize := keyExpressionColumnSize(m.index.RootExpression)
+	totalSize := m.index.RootExpression.ColumnSize()
 	valueStart := groupPrefixSize - m.permutedSize
 	valueEnd := totalSize - m.permutedSize
 

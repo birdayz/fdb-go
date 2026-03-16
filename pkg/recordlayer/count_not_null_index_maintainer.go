@@ -119,7 +119,7 @@ func (m *countNotNullIndexMaintainer) evaluateGroupingKeys(record *FDBStoredReco
 	}
 
 	groupingCount := indexGroupingCount(m.index.RootExpression)
-	totalColumns := keyExpressionColumnSize(m.index.RootExpression)
+	totalColumns := m.index.RootExpression.ColumnSize()
 	groupedCount := totalColumns - groupingCount
 
 	result := make([]tuple.Tuple, 0, len(tuples))

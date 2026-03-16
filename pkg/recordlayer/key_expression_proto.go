@@ -244,7 +244,7 @@ func groupingFromProto(g *gen.Grouping) (*GroupingKeyExpression, error) {
 		return nil, fmt.Errorf("grouping whole key: %w", err)
 	}
 	groupedCount := int(g.GetGroupedCount())
-	columnSize := keyExpressionColumnSize(wholeKey)
+	columnSize := wholeKey.ColumnSize()
 	if groupedCount < 0 || groupedCount > columnSize {
 		return nil, fmt.Errorf("grouping grouped_count %d out of range [0, %d]", groupedCount, columnSize)
 	}

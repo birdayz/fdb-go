@@ -107,7 +107,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	countKeyExpr := store.metaData.GetRecordCountKey()
 	if countKeyExpr != nil && !store.isRecordCountDisabled() {
 		countSub := store.subspace.Sub(RecordCountKey)
-		countColSize := keyExpressionColumnSize(countKeyExpr)
+		countColSize := countKeyExpr.ColumnSize()
 		if len(prefix) == countColSize {
 			// Delete exact count entry.
 			tx.Clear(fdb.Key(countSub.Pack(prefix)))
@@ -158,7 +158,7 @@ func (store *FDBRecordStore) removeVersionDataInPrefixRange(sub subspace.Subspac
 func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []string {
 	var names []string
 	for _, rt := range store.metaData.RecordTypes() {
-		pkColSize := keyExpressionColumnSize(rt.PrimaryKey)
+		pkColSize := rt.PrimaryKey.ColumnSize()
 		if len(prefix) <= pkColSize {
 			names = append(names, rt.Name)
 		}

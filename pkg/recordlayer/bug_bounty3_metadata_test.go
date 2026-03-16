@@ -295,6 +295,7 @@ func (m *mockFanOutExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ pro
 	return m.results, nil
 }
 func (m *mockFanOutExpression) FieldNames() []string { return nil }
+func (m *mockFanOutExpression) ColumnSize() int      { return 1 }
 func (m *mockFanOutExpression) ToKeyExpression() *gen.KeyExpression {
 	return &gen.KeyExpression{Empty: &gen.Empty{}}
 }
@@ -637,7 +638,7 @@ func TestBug8_AggregateFieldNameMatchingIsWrong(t *testing.T) {
 	fieldNames := fieldExpr.FieldNames()
 
 	// NestingKE has field names ["flower", "type"] but column size 1
-	nestColSize := keyExpressionColumnSize(nestExpr)
+	nestColSize := nestExpr.ColumnSize()
 	if nestColSize != 1 {
 		t.Fatalf("Expected NestingKE column size 1, got %d", nestColSize)
 	}

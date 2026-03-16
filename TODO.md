@@ -9,6 +9,15 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ---
 
+## Investigate
+
+- [ ] **MEDIUM** — Package structure: all production code lives in one flat `pkg/recordlayer/` package (58 .go files). Consider subpackages for indexing, cursors, key expressions as codebase grows.
+- [x] **HIGH** — `index_scan.go:250`: `keyExpressionColumnSize()` panic eliminated. Added `ColumnSize() int` to `KeyExpression` interface (matches Java's `getColumnSize()`), implemented on all 12 expression types, replaced all ~23 callsites, deleted both `keyExpressionColumnSize` and `keyExpressionColumnSizeChecked`.
+- [ ] **LOW** — `cursor.go:114`: `GetValue()` panics if called without `HasNext()`. Matches Java's `IllegalResultValueAccessException`. Acceptable precondition — document clearly.
+- [ ] **LOW** — `split_key_expression.go:29`: `Split()` constructor panics on `splitSize <= 0`. Acceptable build-time validation — programming error caught early.
+
+---
+
 ## 4.10.6.0 upgrade assessment
 
 Upgraded from 4.2.6.0 → 4.10.6.0 (2026-03-11). 548 commits across 8 minor versions. All 1012 conformance+unit tests pass unchanged. All 15 proto files synced from Java source. Below is a thorough analysis of all changes, organized by priority.

@@ -16,7 +16,7 @@ func indexGroupingCount(expr KeyExpression) int {
 	if g, ok := expr.(*GroupingKeyExpression); ok {
 		return g.GetGroupingCount()
 	}
-	return keyExpressionColumnSize(expr)
+	return expr.ColumnSize()
 }
 
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record.

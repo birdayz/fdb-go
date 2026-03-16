@@ -174,82 +174,11 @@ func (e *IndexEntry) IndexValues() tuple.Tuple {
 	if e.Index == nil {
 		return tuple.Tuple{}
 	}
-	colSize := keyExpressionColumnSize(e.Index.RootExpression)
+	colSize := e.Index.RootExpression.ColumnSize()
 	if colSize <= len(e.Key) {
 		return e.Key[:colSize]
 	}
 	return e.Key
-}
-
-// keyExpressionColumnSizeChecked returns the number of tuple elements a key expression
-// produces, or an error for unknown expression types. Used to split index entry
-// keys into indexed values and primary key.
-// Matches Java's KeyExpression.getColumnSize().
-func keyExpressionColumnSizeChecked(expr KeyExpression) (int, error) {
-	switch e := expr.(type) {
-	case *FieldKeyExpression:
-		return 1, nil
-	case *CompositeKeyExpression:
-		total := 0
-		for _, child := range e.expressions {
-			n, err := keyExpressionColumnSizeChecked(child)
-			if err != nil {
-				return 0, err
-			}
-			total += n
-		}
-		return total, nil
-	case *RecordTypeKeyExpression:
-		if e.nested != nil {
-			n, err := keyExpressionColumnSizeChecked(e.nested)
-			if err != nil {
-				return 0, err
-			}
-			return 1 + n, nil
-		}
-		return 1, nil
-	case *NestingKeyExpression:
-		// NestingKeyExpression column size is the child's column size (parent message
-		// field doesn't contribute a tuple element). Matches Java's getColumnSize().
-		return keyExpressionColumnSizeChecked(e.child)
-	case *EmptyKeyExpression:
-		return 0, nil
-	case *GroupingKeyExpression:
-		return keyExpressionColumnSizeChecked(e.wholeKey)
-	case *LiteralKeyExpression:
-		return 1, nil
-	case *KeyWithValueExpression:
-		// Only key columns count toward column size (not value columns).
-		// Matches Java's KeyWithValueExpression.getColumnSize() which returns splitPoint.
-		return e.splitPoint, nil
-	case *VersionKeyExpression:
-		return 1, nil
-	case *FunctionKeyExpression:
-		// Most functions produce a single column. Matches Java's typical behavior.
-		return 1, nil
-	case *SplitKeyExpression:
-		// Column size is splitSize — each batch produces splitSize columns.
-		// Matches Java's SplitKeyExpression.getColumnSize().
-		return e.splitSize, nil
-	case *ListKeyExpression:
-		// Each child contributes one column (nested tuple element).
-		// Matches Java's ListKeyExpression.getColumnSize().
-		return len(e.children), nil
-	default:
-		return 0, fmt.Errorf("unknown key expression type %T: cannot determine column size", expr)
-	}
-}
-
-// keyExpressionColumnSize returns the number of tuple elements a key expression
-// produces. Panics on unknown expression types (programming error).
-// Use keyExpressionColumnSizeChecked when the expression type is not guaranteed
-// to be a known type.
-func keyExpressionColumnSize(expr KeyExpression) int {
-	n, err := keyExpressionColumnSizeChecked(expr)
-	if err != nil {
-		panic(err)
-	}
-	return n
 }
 
 // ScanIndex scans a secondary index and returns a cursor over IndexEntry results.

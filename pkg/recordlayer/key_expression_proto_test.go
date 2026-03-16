@@ -307,7 +307,7 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 
 	t.Run("column_size", func(t *testing.T) {
 		t.Parallel()
-		if keyExpressionColumnSize(Literal(int64(1))) != 1 {
+		if Literal(int64(1)).ColumnSize() != 1 {
 			t.Fatal("expected column size 1")
 		}
 	})
@@ -316,7 +316,7 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 		t.Parallel()
 		// Literal works in Concat (composite key expression)
 		expr := Concat(Literal("prefix"), Field("order_id"))
-		if keyExpressionColumnSize(expr) != 2 {
+		if expr.ColumnSize() != 2 {
 			t.Fatal("expected column size 2")
 		}
 	})
