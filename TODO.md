@@ -3,7 +3,7 @@
 Actionable work items for the Go port of Apple's FoundationDB Record Layer.
 Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important for production quality, **MEDIUM** = improvement, **LOW** = nice-to-have.
 
-Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Coverage: ~28% of Java FDBRecordStore API surface (40/144 public methods).
+Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Full API surface review performed 2026-03-16 across 5 areas (store CRUD, indexes, metadata, cursors, DB/context/key expressions).
 
 **Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1525 specs pass (1165 unit/integration + 360 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
@@ -189,8 +189,8 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 8. ~~Store state caching~~ **DONE**
 
 **LOW (specialized / future):**
-9. All new index types (TEXT, BITMAP, PERMUTED, MULTIDIMENSIONAL, VECTOR, LEADERBOARD)
-10. All new key expression types (Dimensions, Split, List, Collate, Order, LongArithmetic)
+9. Remaining index types (TEXT, BITMAP, MULTIDIMENSIONAL, VECTOR, LEADERBOARD) — ~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~ done
+10. Remaining key expression types (Dimensions, Collate, Order, Atom, Invertible) — ~~Split~~, ~~List~~, ~~LongArithmetic~~, ~~Function~~ done
 11. Synthetic record types (JoinedRecordType, UnnestedRecordType)
 12. Views, UDFs
 13. New cursor types (Aggregate, Comparator, UnorderedUnion)
@@ -1020,18 +1020,164 @@ Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
 
 ---
 
+## Java vs Go API surface review (2026-03-16)
+
+Full public API comparison across 5 areas. Wire-level compatibility is 100% — all gaps are API surface / feature gaps, not wire format. Go and Java can share the same FDB cluster today.
+
+### Coverage summary
+
+| Area | Coverage | Key Gaps |
+|---|---|---|
+| FDBRecordStore (CRUD) | ~83% | `preloadRecordAsync`, query planning methods, synthetic records |
+| Index types | 14/19 | TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD |
+| IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
+| MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
+| Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
+| ScanProperties/ExecuteProperties | ~95% | `isDryRun`, convenience clear methods |
+| Continuations (wire format) | ~90% | Wire-compatible. Go writes TO_OLD, reads both TO_OLD and TO_NEW |
+| FDBDatabase/Context/Runner | ~60% | Async API (by design), weak read semantics, MDC, executor control |
+| Key expressions | ~80% | CollateFunctionKE, OrderFunctionKE, DimensionsKE, InvertibleFunctionKE |
+
+### FDBRecordStore — missing public methods
+
+- [ ] **`preloadRecordAsync()`** — Read-ahead optimization. Not applicable to Go's sync model. **LOW**.
+- [ ] **`isVersionChanged()`** — Rare introspection. **LOW**.
+- [ ] **`buildSingleRecord()`** — Edge case for single-record index builds. **LOW**.
+- [ ] **Query planning methods** (~5 methods) — Out of scope until query planner is ported. **LOW**.
+
+### Index API — missing methods on IndexMaintainer interface
+
+- [ ] **`scanUniquenessViolations()` / `clearUniquenessViolations()`** — On maintainer interface (store-level `ScanUniquenessViolationsForValue` already exists). **LOW**.
+- [ ] **`validateEntries()`** — Index entry validation cursor (store-level `ValidateIndex` exists). **LOW**.
+- [ ] **`canDeleteWhere()` with QueryToKeyMatcher** — Go uses structural expression matching instead. **LOW**.
+- [ ] **`scanRemoteFetch()`** — Experimental Java feature. **LOW**.
+- [ ] **`mergeIndex()` / `performOperation()`** — Generic index operation dispatch. **LOW**.
+- [ ] **`isIdempotent()` / `addedRangeWithKey()`** — Internal to Go, not on interface. **LOW**.
+
+### Index types — 5 missing
+
+- [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan. Large scope. **LOW**.
+- [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
+- [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. **LOW**.
+- [ ] **VECTOR/HNSW index** — 4 distance metrics, RaBitQ quantization. Very large. **LOW**.
+- [ ] **TIME_WINDOW_LEADERBOARD** — Sliding time window score tracking. 12+ Java classes. **LOW**.
+
+### Index scanning — API gaps
+
+- [ ] **`IndexScanBounds` abstraction** — Go takes `TupleRange` directly; Java has `IndexScanBounds` wrapping bounds + comparisons. **LOW**.
+- [ ] **`scanIndexRecords` with record type filtering** — Go infers from metadata. **LOW**.
+
+### MetaData — missing public methods
+
+- [ ] **`getRecordTypeForDescriptor()` / `getRecordTypeFromRecordTypeKey()`** — Descriptor-based lookups. **LOW**.
+- [ ] **`getIndexFromSubspaceKey()`** — Reverse lookup by subspace key. **LOW**.
+- [ ] **`getUnionDescriptor()` / `getUnionFieldForRecordType()`** — Union descriptor access. **LOW**.
+- [ ] **`commonPrimaryKey()` / `commonPrimaryKeyLength()` static helpers** — **LOW**.
+- [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
+- [ ] **`getFormerIndexesSince(version)`** — Former indexes since version. **LOW**.
+- [ ] **Builder query methods** — Getters for configured values during build (isSplitLongRecords, getVersion, etc). **LOW**.
+- [ ] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
+- [ ] **`IndexMaintainerRegistry` pluggable** — Go dispatches from hardcoded switch. **LOW**.
+- [ ] **Synthetic record types** — JoinedRecordType, UnnestedRecordType. Large feature. **LOW**.
+- [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto. **LOW**.
+- [ ] **Views** — `PView` in MetaData proto. **LOW**.
+
+### RecordType — missing getters
+
+- [ ] **`getIndexes()` / `getMultiTypeIndexes()` / `getAllIndexes()`** — Fields are private in Go. **LOW**.
+- [ ] **`hasExplicitRecordTypeKey()` / `getRecordTypeKeyTuple()`** — **LOW**.
+- [ ] **`isSynthetic()`** — No synthetic record support yet. **LOW**.
+
+### Cursor — missing combinators & methods
+
+- [ ] **`UnorderedUnionCursor`** — Union without order preservation. **LOW**.
+- [ ] **`MapPipelinedCursor`** — Async pipelined map (no Go equivalent of CompletableFuture). **LOW**.
+- [ ] **`filterAsync()`** — Pipelined async filter. Not applicable to Go's sync model. **LOW**.
+- [ ] **`mapEffect()` / `mapContinuation()`** — Side-effect map, continuation rewriting. **LOW**.
+- [ ] **`forEachResult()` / `forEachAsync()`** — Result-level iteration. **LOW**.
+- [ ] **`reduce()` with stop condition** — Conditional reduction. **LOW**.
+- [ ] **`AggregateCursor`** — Accumulator-based aggregation. **LOW**.
+- [ ] **`ComparatorCursor`** — Custom comparison ordering. **LOW**.
+- [ ] **`ProbableIntersectionCursor`** — Bloom filter intersection. **LOW**.
+- [ ] **`SizeStatisticsGroupingCursor`** — Key/value size tracking. **LOW**.
+- [ ] **`RecordCursorVisitor` pattern** — Cursor tree inspection. **LOW**.
+- [ ] **`RecordCursorResult.Map()` / `WithContinuation()`** — Result-level transformations. **LOW**.
+- [ ] **`isClosed()` on cursor** — Closure state check. **LOW**.
+
+### ExecuteProperties — missing features
+
+- [ ] **`isDryRun` flag** — Dry-run execution mode. **LOW**.
+- [ ] **Convenience clear methods** — `clearRowAndTimeLimits()`, `clearSkipAndLimit()`, `setLimitsFrom()`. **LOW**.
+
+### FDBDatabase — missing methods
+
+- [ ] **`openContext()` (6 overloads)** — Go uses Run()/RunWithVersionstamp() exclusively. **LOW**.
+- [ ] **`performNoOp()` / `performNoOpAsync()`** — No-op transaction testing. **LOW**.
+- [ ] **`clearCaches()` / `close()`** — Cache/lifecycle management. **LOW**.
+- [ ] **`FDBDatabaseFactory`** — Database pooling. **LOW**.
+- [ ] **`setDatacenterId()` / `getLocalityProvider()`** — Datacenter affinity. **LOW**.
+
+### FDBRecordContext — missing methods
+
+- [ ] **`getConfig()` / `getTransactionId()` / `getTimeoutMillis()`** — Context introspection. **LOW**.
+- [ ] **`getTransactionAge()`** — Transaction timing. **LOW**.
+- [ ] **`getCommitCheck()` / `removeCommitChecks()`** — Hook management post-add. **LOW**.
+- [ ] **`removePostCommit()` / `addPostCloseHook()`** — Hook removal. **LOW**.
+- [ ] **`WeakReadSemantics`** — Causal read risky / version staleness bounds. **LOW**.
+- [ ] **`getMdcContext()`** — Mapped diagnostic context. **LOW**.
+
+### FDBDatabaseRunner — missing methods
+
+- [ ] **`runAsync()` (5 overloads)** — Go is sync only. **LOW**.
+- [ ] **Timer/MDC/WeakReadSemantics getters/setters** — **LOW**.
+
+### Key expressions — 5 missing types
+
+- [ ] **`CollateFunctionKeyExpression`** — Locale-aware string sorting. **LOW**.
+- [ ] **`OrderFunctionKeyExpression`** — Custom sort order functions. **LOW**.
+- [ ] **`DimensionsKeyExpression`** — Multidimensional indexing. **LOW**.
+- [ ] **`InvertibleFunctionKeyExpression`** — Bidirectional function evaluation. **LOW**.
+- [ ] **`AtomKeyExpression`** — Atom-level expressions. **LOW**.
+
+### OnlineIndexer — missing config options
+
+- [ ] **`setIndexStatePrecondition()`** — State pre-check. **LOW**.
+- [ ] **`setTimeLimitMillis()`** — Per-batch time limits. **LOW**.
+- [ ] **`setCommitCheckIntervalCount()`** — **LOW**.
+- [ ] **`setMaxWriteRetries()`** — Handled implicitly via FDBDatabaseRunner. **LOW**.
+- [ ] **`setDesiredRecordsPerSecond()`** — Rate limiting. **LOW**.
+- [ ] **`addStatisticsCollector()`** — Statistics collection. **LOW**.
+
+### Convenience methods — not implemented
+
+- [ ] **`getRecordCount()` / `getRecordCount(recordTypeName)`** — Java convenience wrappers around `evaluateAggregateFunction`. **LOW**.
+- [ ] **`Index.getBooleanOption(key, default)`** — Option parsing helper. **LOW**.
+- [ ] **`IndexAggregateFunction` constructor helpers** — Go requires manual struct construction. **LOW**.
+
+### Design differences (intentional, not gaps)
+
+These are architectural decisions, not bugs:
+
+- **Async → Sync**: Java uses `CompletableFuture`; Go uses sync + `context.Context`. All pipelined/async cursor variants are N/A.
+- **Executor control**: Java exposes thread pools; Go uses goroutines. N/A.
+- **Builder query methods**: Java exposes getters on builders; Go uses direct struct fields. Functional equivalent.
+- **`RecordCursor` interface width**: Java has 20+ default methods; Go has 2 (OnNext, Close) + standalone generic functions. Same functionality, different ergonomics.
+
+---
+
 ## Remaining work buckets (2026-03-11 assessment)
 
 **A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.
 
 **B. Niche index types** — BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~ done.)
 
-**C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
+**C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, ~~dead code removal~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 
 - [x] **[MEDIUM] Store state caching** — `MetaDataVersionStampStoreStateCache` + `PassThroughRecordStoreStateCache`. Validates via `\xff/metadataVersion` versionstamp, handles dirty state, read conflicts on cache hit, proto.Clone on cache-hit path, LRU+TTL eviction. 40 specs, 2.2x benchmark speedup. Files: `store_state_cache.go`, `store_state_cache_test.go`.
 - [ ] **[LOW] `FDBDatabase.storeStateCache` field unsynchronized** — Interface field on `FDBDatabase` is not protected by mutex or `atomic.Value`. Safe as long as it's set-once-at-startup before any transactions. If runtime reconfiguration is needed, wrap in `atomic.Value`.
 - [ ] **[LOW] TOCTOU duplicate FDB reads on concurrent cache miss** — Two goroutines can miss the cache simultaneously and both load from FDB. Same behavior as Java (Guava cache). Harmless — both writes are idempotent and `addToCache` keeps the newer versionstamp.
 - [ ] **[LOW] O(n) LRU eviction scan in store state cache** — `evictIfNeeded()` iterates all entries under mutex. Max 500 entries (default), so bounded. Replace with container/heap if profiling shows contention.
+- [x] **[LOW] Dead code removal** — 5-agent parallel scan of entire codebase. Removed 7 items: 2 unused constants (`maxParallelIndexRebuild`, `preloadCacheSize`), 2 unused type aliases (`RecordCursorProto`, `TypedRecordCursor`), 1 unused utility function (`MapErr` in cursor_util.go), 2 dead accessor methods (`GetWholeKey`, `GetRecordTypeIndex` — fields accessed directly). Kept `SetAllowMissingFormerIndexNames`/`SetAllowNoSinceVersion` (Java API surface, wired into validation).
 
 **Next high-value target**: VERSION index — DONE (Phase 1 + Phase 2). Conformance tests remaining.
 
