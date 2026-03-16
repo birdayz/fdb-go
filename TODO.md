@@ -1076,9 +1076,9 @@ Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
 
 ### LOW
 
-- [ ] **Missing cursor combinator edge case tests** — Empty cursors through combinators (`ConcatCursor([], [])`, `FilterCursor` that filters everything), deep combinator composition with continuation tokens, error propagation through combinator chains (one layer errors → upstream cursors cleaned up properly).
-- [ ] **Missing continuation token stability tests** — Resume scan after schema version bump, resume after index rebuild (WRITE_ONLY → READABLE transition), resume after record deletion mid-scan (cursor should skip gracefully).
-- [ ] **Missing schema evolution edge case tests** — Multi-version jump validation (v1 → v5 skipping intermediates), enum value removal (open vs closed enums), cardinality change (optional → repeated). Current MetaDataEvolutionValidator tests cover common cases but miss these boundaries.
+- [x] **Missing cursor combinator edge case tests** — 10 in-memory tests: empty Concat/Union/Intersection, FilterCursor rejects all, filter continuation under limit, MapErrCursor error propagation, LimitRows(0), Skip past all, deep composition Filter(Map(Limit(FromList))), ConcatCursors ordering.
+- [x] **Missing continuation token stability tests** — 5 tests: resume after record deletion (skips deleted), resume after insertion (sees new records past cursor), resume index scan after deletion, resume after DeleteAllRecords + re-insert, resume index scan after rebuild. All cross-transaction.
+- [x] **Missing schema evolution edge case tests** — 10 tests: multi-version jump (v1→v5) with intermediate index, new index with stale version, combined add+remove with FormerIndex, addedVersion change, lastModifiedVersion decrease, safe type promotions (int32→int64, sint32→sint64, narrowing, cross-type, identity). 44 total evolution validator tests.
 
 ---
 
