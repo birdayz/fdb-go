@@ -1069,12 +1069,12 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 ### MetaData — missing public methods
 
-- [ ] **`getRecordTypeForDescriptor()` / `getRecordTypeFromRecordTypeKey()`** — Descriptor-based lookups. **LOW**.
-- [ ] **`getIndexFromSubspaceKey()`** — Reverse lookup by subspace key. **LOW**.
+- [x] **`getRecordTypeForDescriptor()` / `getRecordTypeFromRecordTypeKey()`** — Added `GetRecordTypeFromRecordTypeKey()` with normalized integer comparison. Descriptor-based lookup deferred. **LOW**.
+- [x] **`getIndexFromSubspaceKey()`** — Added `GetIndexFromSubspaceKey()` with normalized integer comparison. **LOW**.
 - [ ] **`getUnionDescriptor()` / `getUnionFieldForRecordType()`** — Union descriptor access. **LOW**.
 - [ ] **`commonPrimaryKey()` / `commonPrimaryKeyLength()` static helpers** — **LOW**.
 - [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
-- [ ] **`getFormerIndexesSince(version)`** — Former indexes since version. **LOW**.
+- [x] **`getFormerIndexesSince(version)`** — Added `GetFormerIndexesSince()`. **LOW**.
 - [ ] **Builder query methods** — Getters for configured values during build (isSplitLongRecords, getVersion, etc). **LOW**.
 - [ ] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
 - [ ] **`IndexMaintainerRegistry` pluggable** — Go dispatches from hardcoded switch. **LOW**.
@@ -1084,8 +1084,8 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 ### RecordType — missing getters
 
-- [ ] **`getIndexes()` / `getMultiTypeIndexes()` / `getAllIndexes()`** — Fields are private in Go. **LOW**.
-- [ ] **`hasExplicitRecordTypeKey()` / `getRecordTypeKeyTuple()`** — **LOW**.
+- [x] **`getIndexes()` / `getMultiTypeIndexes()` / `getAllIndexes()`** — Added `GetIndexes()`, `GetMultiTypeIndexes()`, `GetAllIndexes()` on RecordType. **LOW**.
+- [x] **`hasExplicitRecordTypeKey()` / `getRecordTypeKeyTuple()`** — Added `HasExplicitRecordTypeKey()`. Key already accessible via `GetRecordTypeKey()`. **LOW**.
 - [ ] **`isSynthetic()`** — No synthetic record support yet. **LOW**.
 
 ### Cursor — missing combinators & methods
@@ -1101,13 +1101,13 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 - [ ] **`ProbableIntersectionCursor`** — Bloom filter intersection. **LOW**.
 - [ ] **`SizeStatisticsGroupingCursor`** — Key/value size tracking. **LOW**.
 - [ ] **`RecordCursorVisitor` pattern** — Cursor tree inspection. **LOW**.
-- [ ] **`RecordCursorResult.Map()` / `WithContinuation()`** — Result-level transformations. **LOW**.
+- [x] **`RecordCursorResult.Map()` / `WithContinuation()`** — Added `MapResult[T,R]()` standalone function + `WithContinuation()` method. **LOW**.
 - [ ] **`isClosed()` on cursor** — Closure state check. **LOW**.
 
 ### ExecuteProperties — missing features
 
 - [ ] **`isDryRun` flag** — Dry-run execution mode. **LOW**.
-- [ ] **Convenience clear methods** — `clearRowAndTimeLimits()`, `clearSkipAndLimit()`, `setLimitsFrom()`. **LOW**.
+- [x] **Convenience clear methods** — `ClearRowAndTimeLimits()`, `ClearSkipAndLimit()`, `WithScannedRecordsLimit()`, `WithScannedBytesLimit()`, `WithSkip()`. **LOW**.
 
 ### FDBDatabase — missing methods
 
@@ -1151,7 +1151,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 ### Convenience methods — not implemented
 
 - [ ] **`getRecordCount()` / `getRecordCount(recordTypeName)`** — Java convenience wrappers around `evaluateAggregateFunction`. **LOW**.
-- [ ] **`Index.getBooleanOption(key, default)`** — Option parsing helper. **LOW**.
+- [x] **`Index.getBooleanOption(key, default)`** — Added `GetBooleanOption()`. **LOW**.
 - [ ] **`IndexAggregateFunction` constructor helpers** — Go requires manual struct construction. **LOW**.
 
 ### Design differences (intentional, not gaps)

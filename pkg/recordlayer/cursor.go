@@ -133,6 +133,26 @@ func (r RecordCursorResult[T]) HasStoppedBeforeEnd() bool {
 	return !r.hasNext && !r.noNextReason.IsSourceExhausted()
 }
 
+// WithContinuation returns a copy of this result with a different continuation.
+// Matches Java's RecordCursorResult.withContinuation().
+func (r RecordCursorResult[T]) WithContinuation(continuation RecordCursorContinuation) RecordCursorResult[T] {
+	r.continuation = continuation
+	return r
+}
+
+// MapResult transforms a result's value using the given function.
+// If the result has no value (HasNext() is false), returns a no-next result
+// with the same reason and continuation. Go generics require this as a
+// standalone function rather than a method.
+// Matches Java's RecordCursorResult.map().
+func MapResult[T, R any](result RecordCursorResult[T], fn func(T) R) RecordCursorResult[R] {
+	if !result.hasNext {
+		return NewResultNoNext[R](result.noNextReason, result.continuation)
+	}
+	mapped := fn(*result.value)
+	return NewResultWithValue(mapped, result.continuation)
+}
+
 // RecordCursor is a generic async iterator over records
 type RecordCursor[T any] interface {
 	// OnNext asynchronously returns the next result from this cursor
