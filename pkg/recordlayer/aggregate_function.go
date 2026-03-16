@@ -132,21 +132,10 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		return fn.Name == FunctionNameCountUpdates && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeSum:
 		return fn.Name == FunctionNameSum && isGroupPrefix(fn.Operand, idx.RootExpression)
-	case IndexTypeMaxEverLong:
-		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverLong) &&
-			isGroupPrefix(fn.Operand, idx.RootExpression)
-	case IndexTypeMinEverLong:
-		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverLong) &&
-			isGroupPrefix(fn.Operand, idx.RootExpression)
-	case IndexTypeMaxEverTuple:
-		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverTuple) &&
-			isGroupPrefix(fn.Operand, idx.RootExpression)
-	case IndexTypeMaxEverVersion:
-		return (fn.Name == FunctionNameMaxEver || fn.Name == IndexTypeMaxEverVersion) &&
-			isGroupPrefix(fn.Operand, idx.RootExpression)
-	case IndexTypeMinEverTuple:
-		return (fn.Name == FunctionNameMinEver || fn.Name == IndexTypeMinEverTuple) &&
-			isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeMaxEverLong, IndexTypeMaxEverTuple, IndexTypeMaxEverVersion:
+		return fn.Name == FunctionNameMaxEver && isGroupPrefix(fn.Operand, idx.RootExpression)
+	case IndexTypeMinEverLong, IndexTypeMinEverTuple:
+		return fn.Name == FunctionNameMinEver && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypePermutedMin:
 		return fn.Name == FunctionNameMin && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypePermutedMax:
@@ -287,7 +276,7 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			}
 			return tuple.Tuple{a + b}
 		}
-	case FunctionNameMaxEver, IndexTypeMaxEverLong, IndexTypeMaxEverTuple, IndexTypeMaxEverVersion:
+	case FunctionNameMaxEver:
 		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
 			if accum == nil {
 				return entry
@@ -300,7 +289,7 @@ func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tup
 			}
 			return accum
 		}
-	case FunctionNameMinEver, IndexTypeMinEverLong, IndexTypeMinEverTuple:
+	case FunctionNameMinEver:
 		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
 			if accum == nil {
 				return entry
