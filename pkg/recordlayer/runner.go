@@ -130,16 +130,19 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	if r.ContextConfig != nil {
 		if r.ContextConfig.TransactionTimeout > 0 {
 			if err := tx.Options().SetTimeout(int64(r.ContextConfig.TransactionTimeout / time.Millisecond)); err != nil {
+				tx.Cancel()
 				return nil, err
 			}
 		}
 		if r.ContextConfig.Priority != PriorityDefault {
 			if err := recordCtx.SetTransactionPriority(r.ContextConfig.Priority); err != nil {
+				tx.Cancel()
 				return nil, err
 			}
 		}
 		if r.ContextConfig.TransactionID != "" {
 			if err := tx.Options().SetDebugTransactionIdentifier(r.ContextConfig.TransactionID); err != nil {
+				tx.Cancel()
 				return nil, err
 			}
 		}
@@ -160,6 +163,7 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	recordCtx.flushVersionMutations()
 
 	if err := tx.Commit().Get(); err != nil {
+		tx.Cancel()
 		return nil, err
 	}
 

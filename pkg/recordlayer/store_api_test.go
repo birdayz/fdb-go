@@ -922,6 +922,39 @@ var _ = Describe("FDBRecordStore API", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("succeeds even when store is locked — matches Java dryRunDeleteRecordAsync", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 1: Create store, save a record, then lock it.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				return nil, store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: DryRunDeleteRecord should succeed even when locked.
+			// Java's dryRunDeleteRecordAsync just loads and returns existence,
+			// it does NOT call validateRecordUpdateAllowed.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				exists, err := store.DryRunDeleteRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(exists).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("IsIndexReadableUniquePending", func() {

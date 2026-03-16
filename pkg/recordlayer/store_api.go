@@ -284,7 +284,8 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 // DryRunDeleteRecord checks whether a record with the given primary key exists
 // and could be deleted, without actually deleting it.
 // Returns true if the record exists (and would be deleted), false if not found.
-// Returns an error if the store is locked for record updates.
+// Note: does NOT check store lock state, matching Java's dryRunDeleteRecordAsync
+// which only loads the record without calling validateRecordUpdateAllowed.
 // Matches Java's FDBRecordStore.dryRunDeleteRecordAsync().
 func (store *FDBRecordStore) DryRunDeleteRecord(primaryKey tuple.Tuple) (bool, error) {
 	recordsSubspace := store.subspace.Sub(RecordKey)

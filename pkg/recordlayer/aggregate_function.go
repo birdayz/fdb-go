@@ -401,7 +401,7 @@ func getGroupedExprs(expr KeyExpression) []KeyExpression {
 		return nil
 	}
 	// Non-grouped expression: no grouped columns (everything is grouping)
-	return normalizeKeyForPositions(expr)
+	return nil
 }
 
 // tupleGreater returns true if a > b using FDB tuple byte ordering.
@@ -421,7 +421,7 @@ func tupleLess(a, b tuple.Tuple) bool {
 func canEvaluateRankAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 	switch fn.Name {
 	case FunctionNameCountDistinct:
-		return expressionsEqual(fn.Operand, idx.RootExpression)
+		return keyExpressionEquals(fn.Operand, idx.RootExpression)
 	case FunctionNameCount:
 		// COUNT on a unique RANK index where the operand covers only grouping columns.
 		if !idx.IsUnique() {
@@ -434,7 +434,7 @@ func canEvaluateRankAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		return keyExpressionColumnSize(fn.Operand) == groupingCount &&
 			isGroupPrefix(fn.Operand, idx.RootExpression)
 	case FunctionNameScoreForRank, FunctionNameScoreForRankElseSkip, FunctionNameRankForScore:
-		return expressionsEqual(fn.Operand, idx.RootExpression)
+		return keyExpressionEquals(fn.Operand, idx.RootExpression)
 	default:
 		return false
 	}
@@ -560,42 +560,3 @@ func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, t
 	return groupPrefix, trailingValues, nil
 }
 
-// expressionsEqual checks if two key expressions are structurally equivalent.
-func expressionsEqual(a, b KeyExpression) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	// Compare by field names and column sizes.
-	aNames := a.FieldNames()
-	bNames := b.FieldNames()
-	if len(aNames) != len(bNames) {
-		return false
-	}
-	for i := range aNames {
-		if aNames[i] != bNames[i] {
-			return false
-		}
-	}
-	// Also check grouping structure.
-	aGrouping, aOk := a.(*GroupingKeyExpression)
-	bGrouping, bOk := b.(*GroupingKeyExpression)
-	if aOk != bOk {
-		return false
-	}
-	if aOk && bOk {
-		return aGrouping.groupedCount == bGrouping.groupedCount
-	}
-	// Check KeyWithValueExpression structure.
-	aKwv, aOk := a.(*KeyWithValueExpression)
-	bKwv, bOk := b.(*KeyWithValueExpression)
-	if aOk != bOk {
-		return false
-	}
-	if aOk && bOk {
-		return aKwv.splitPoint == bKwv.splitPoint
-	}
-	return true
-}

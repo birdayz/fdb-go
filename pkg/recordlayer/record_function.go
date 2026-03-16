@@ -88,7 +88,7 @@ func canEvaluateRecordFunction(fn *IndexRecordFunction, idx *Index) bool {
 	switch idx.Type {
 	case IndexTypeRank:
 		return fn.Name == FunctionNameRank &&
-			expressionsEqual(idx.RootExpression, fn.Operand)
+			keyExpressionEquals(idx.RootExpression, fn.Operand)
 	default:
 		return false
 	}

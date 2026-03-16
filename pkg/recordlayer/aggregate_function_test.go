@@ -484,4 +484,125 @@ var _ = Describe("EvaluateAggregateFunction", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("isGroupPrefix with non-GroupingKeyExpression operand (Bug 3)", func() {
+		It("matches when operand and index root are both non-grouped with same structure", func() {
+			// Before the fix, getGroupedExprs(nonGroupingExpr) returned
+			// normalizeKeyForPositions(expr) (all columns as grouped).
+			// After fix, it returns nil (no grouped columns).
+			//
+			// Test: a non-GroupingKeyExpression operand with a GroupAll index root
+			// (GroupAll = 0 grouped columns). Before fix, getGroupedExprs(operand)
+			// returned [Field("price")] while getGroupedExprs(GroupAll(Field("price")))
+			// returned [] -> mismatch -> false. After fix, both return nil/[] -> match.
+			operand := Field("price")
+			indexRoot := GroupAll(Field("price"))
+			Expect(isGroupPrefix(operand, indexRoot)).To(BeTrue())
+		})
+
+		It("does not match when operand is non-grouped and index has grouped columns", func() {
+			operand := Field("price")
+			// Ungrouped(Field("price")) has 1 grouped column
+			indexRoot := Ungrouped(Field("price"))
+			// operand has 0 grouped columns (nil), indexRoot has 1 -> length mismatch
+			Expect(isGroupPrefix(operand, indexRoot)).To(BeFalse())
+		})
+
+		It("correctly auto-selects COUNT index with plain Field operand", func() {
+			ks := specSubspace()
+
+			// COUNT index with GroupAll means grouping by price, 0 grouped columns.
+			// A plain Field("price") operand (non-GroupingKeyExpression) should match
+			// since after the fix both have 0 grouped columns.
+			countIdx := NewCountIndex("count_by_price", GroupAll(Field("price")))
+			builder := baseMetaData()
+			builder.AddIndex("Order", countIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i, price := range []int32{100, 100, 200} {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Use plain Field (not GroupAll) as operand — should still match.
+				result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameCount, Operand: Field("price")},
+					TupleRangeAllOf(tuple.Tuple{int64(100)}), IsolationLevelSerializable)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("keyExpressionEquals structural comparison (Bug 4)", func() {
+		It("distinguishes Nest from Concat with same field names", func() {
+			// Nest("parent", Field("child")) and Concat(Field("parent"), Field("child"))
+			// both have FieldNames() = ["parent", "child"], but are structurally different.
+			nestExpr := Nest("parent", Field("child"))
+			concatExpr := Concat(Field("parent"), Field("child"))
+
+			// Same field names
+			Expect(nestExpr.FieldNames()).To(Equal(concatExpr.FieldNames()))
+
+			// But structurally different
+			Expect(keyExpressionEquals(nestExpr, concatExpr)).To(BeFalse())
+		})
+
+		It("canEvaluateAggregate rejects structurally different expression with same field names", func() {
+			// Index root: Concat(Field("parent"), Field("child")) with COUNT type
+			concatRoot := GroupAll(Concat(Field("order_id"), Field("price")))
+			countIdx := NewCountIndex("count_concat", concatRoot)
+
+			// Operand: Nest("order_id", Field("price")) — same field names, different structure.
+			nestOperand := Nest("order_id", Field("price"))
+
+			// canEvaluateAggregate should reject the mismatch.
+			Expect(canEvaluateAggregate(
+				&IndexAggregateFunction{Name: FunctionNameCount, Operand: nestOperand},
+				countIdx,
+			)).To(BeFalse())
+		})
+
+		It("canEvaluateAggregate accepts structurally identical expressions", func() {
+			concatRoot := GroupAll(Concat(Field("order_id"), Field("price")))
+			countIdx := NewCountIndex("count_concat", concatRoot)
+
+			// Same structure as the index root
+			concatOperand := Concat(Field("order_id"), Field("price"))
+
+			Expect(canEvaluateAggregate(
+				&IndexAggregateFunction{Name: FunctionNameCount, Operand: concatOperand},
+				countIdx,
+			)).To(BeTrue())
+		})
+
+		It("canEvaluateAggregate rejects Nest vs Concat for COUNT index", func() {
+			// Index root uses Concat (via GroupAll)
+			// GroupAll(Concat(Field("order_id"), Field("price"))) →
+			//   GroupingKeyExpression{wholeKey: Concat(order_id, price), groupedCount: 0}
+			concatRoot := GroupAll(Concat(Field("order_id"), Field("price")))
+			countIdx := NewCountIndex("count_idx", concatRoot)
+
+			// Operand uses Nest — structurally different but same field names.
+			// GroupAll(Nest("order_id", Field("price"))) →
+			//   GroupingKeyExpression{wholeKey: Nest(order_id, child=price), groupedCount: 0}
+			nestOperand := GroupAll(Nest("order_id", Field("price")))
+
+			// Before bug fix (expressionsEqual compared FieldNames), this would match.
+			// After fix (keyExpressionEquals structural comparison), it correctly rejects.
+			Expect(canEvaluateAggregate(
+				&IndexAggregateFunction{Name: FunctionNameCount, Operand: nestOperand},
+				countIdx,
+			)).To(BeFalse())
+		})
+	})
 })

@@ -607,6 +607,10 @@ func keyExpressionEquals(a, b KeyExpression) bool {
 			}
 		}
 		return true
+	case *GroupingKeyExpression:
+		bv, ok := b.(*GroupingKeyExpression)
+		return ok && av.groupedCount == bv.groupedCount &&
+			keyExpressionEquals(av.wholeKey, bv.wholeKey)
 	default:
 		return false
 	}
