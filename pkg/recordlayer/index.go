@@ -303,6 +303,17 @@ func (idx *Index) SetClearWhenZero(clear bool) *Index {
 	return idx
 }
 
+// GetBooleanOption returns the boolean value of an index option.
+// Returns the default value if the option is not set.
+// Matches Java's Index.getBooleanOption(String, boolean).
+func (idx *Index) GetBooleanOption(key string, defaultVal bool) bool {
+	v, ok := idx.Options[key]
+	if !ok {
+		return defaultVal
+	}
+	return v == "true"
+}
+
 // SetPredicate sets a filter predicate for sparse/filtered indexes.
 // Only records where the predicate returns true will have index entries.
 func (idx *Index) SetPredicate(p IndexPredicate) *Index {

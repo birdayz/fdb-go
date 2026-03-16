@@ -725,6 +725,38 @@ func (m *RecordMetaData) IsSplitLongRecords() bool {
 	return m.splitLongRecords
 }
 
+// GetIndexes returns the indexes defined for this record type (single-type only).
+// Does not include multi-type or universal indexes.
+// Matches Java's RecordType.getIndexes().
+func (rt *RecordType) GetIndexes() []*Index {
+	return rt.indexes
+}
+
+// GetMultiTypeIndexes returns the multi-type indexes for this record type.
+// Matches Java's RecordType.getMultiTypeIndexes().
+func (rt *RecordType) GetMultiTypeIndexes() []*Index {
+	return rt.multiTypeIndexes
+}
+
+// GetAllIndexes returns all indexes for this record type (single-type + multi-type).
+// Does not include universal indexes.
+// Matches Java's RecordType.getAllIndexes().
+func (rt *RecordType) GetAllIndexes() []*Index {
+	if len(rt.multiTypeIndexes) == 0 {
+		return rt.indexes
+	}
+	all := make([]*Index, 0, len(rt.indexes)+len(rt.multiTypeIndexes))
+	all = append(all, rt.indexes...)
+	all = append(all, rt.multiTypeIndexes...)
+	return all
+}
+
+// HasExplicitRecordTypeKey returns true if the record type key was explicitly set.
+// Matches Java's RecordType.hasExplicitRecordTypeKey().
+func (rt *RecordType) HasExplicitRecordTypeKey() bool {
+	return rt.explicitRecordTypeKey != nil
+}
+
 // GetRecordTypeKey returns the explicit record type key if set, or falls back
 // to the record type index. Matches Java's RecordType.getRecordTypeKey().
 func (rt *RecordType) GetRecordTypeKey() any {
@@ -777,6 +809,44 @@ func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 // Matches Java's RecordMetaData.getFormerIndexes().
 func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {
 	return m.formerIndexes
+}
+
+// GetRecordTypeFromRecordTypeKey returns the record type with the given type key.
+// The key is compared after normalizing integer types (int/int32/int64 → int64).
+// Returns nil if no record type matches.
+// Matches Java's RecordMetaData.getRecordTypeFromRecordTypeKey().
+func (m *RecordMetaData) GetRecordTypeFromRecordTypeKey(key any) *RecordType {
+	normalized := normalizeSubspaceKey(key)
+	for _, rt := range m.recordTypes {
+		if normalizeSubspaceKey(rt.GetRecordTypeKey()) == normalized {
+			return rt
+		}
+	}
+	return nil
+}
+
+// GetFormerIndexesSince returns former indexes removed since the given version.
+// Matches Java's RecordMetaData.getFormerIndexesSince(int).
+func (m *RecordMetaData) GetFormerIndexesSince(version int) []*FormerIndex {
+	var result []*FormerIndex
+	for _, fi := range m.formerIndexes {
+		if fi.RemovedVersion > version {
+			result = append(result, fi)
+		}
+	}
+	return result
+}
+
+// GetIndexFromSubspaceKey returns the index with the given subspace key, or nil.
+// Matches Java's RecordMetaData.getIndexFromSubspaceKey().
+func (m *RecordMetaData) GetIndexFromSubspaceKey(key any) *Index {
+	normalized := normalizeSubspaceKey(key)
+	for _, idx := range m.indexes {
+		if normalizeSubspaceKey(idx.SubspaceTupleKey()) == normalized {
+			return idx
+		}
+	}
+	return nil
 }
 
 // GetIndexesToBuildSince returns indexes that were added or modified since the

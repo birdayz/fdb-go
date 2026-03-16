@@ -149,6 +149,40 @@ func (e ExecuteProperties) WithIsolationLevel(level IsolationLevel) ExecutePrope
 	return e
 }
 
+// WithScannedRecordsLimit returns a copy with the specified scanned records limit.
+func (e ExecuteProperties) WithScannedRecordsLimit(limit int) ExecuteProperties {
+	e.ScannedRecordsLimit = limit
+	return e
+}
+
+// WithScannedBytesLimit returns a copy with the specified scanned bytes limit.
+func (e ExecuteProperties) WithScannedBytesLimit(limit int64) ExecuteProperties {
+	e.ScannedBytesLimit = limit
+	return e
+}
+
+// WithSkip returns a copy with the specified skip count.
+func (e ExecuteProperties) WithSkip(skip int) ExecuteProperties {
+	e.Skip = skip
+	return e
+}
+
+// ClearRowAndTimeLimits returns a copy with row limit and time limit cleared.
+// Matches Java's ExecuteProperties.clearRowAndTimeLimits().
+func (e ExecuteProperties) ClearRowAndTimeLimits() ExecuteProperties {
+	e.ReturnedRowLimit = 0
+	e.TimeLimit = 0
+	return e
+}
+
+// ClearSkipAndLimit returns a copy with skip and row limit cleared.
+// Matches Java's ExecuteProperties.clearSkipAndLimit().
+func (e ExecuteProperties) ClearSkipAndLimit() ExecuteProperties {
+	e.Skip = 0
+	e.ReturnedRowLimit = 0
+	return e
+}
+
 // ScanProperties groups properties that pertain to a single scan
 type ScanProperties struct {
 	// ExecuteProperties holds the execution-level properties
