@@ -11,7 +11,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Investigate
 
-- [ ] **MEDIUM** — Package structure: all production code lives in one flat `pkg/recordlayer/` package (58 .go files). Consider subpackages for indexing, cursors, key expressions as codebase grows.
+- [x] **MEDIUM** — Package structure: investigated in RFC 004 (rejected multi-package split due to irreducible type cycle). Staying flat + nogo layering enforcement. See `rfcs/004-package-structure-investigation.md`.
 - [x] **HIGH** — `index_scan.go:250`: `keyExpressionColumnSize()` panic eliminated. Added `ColumnSize() int` to `KeyExpression` interface (matches Java's `getColumnSize()`), implemented on all 12 expression types, replaced all ~23 callsites, deleted both `keyExpressionColumnSize` and `keyExpressionColumnSizeChecked`.
 - [ ] **LOW** — `cursor.go:114`: `GetValue()` panics if called without `HasNext()`. Matches Java's `IllegalResultValueAccessException`. Acceptable precondition — document clearly.
 - [ ] **LOW** — `split_key_expression.go:29`: `Split()` constructor panics on `splitSize <= 0`. Acceptable build-time validation — programming error caught early.
@@ -1225,7 +1225,7 @@ These are architectural decisions, not bugs:
 
 ### MEDIUM
 
-- [ ] **~25 implementation files lack dedicated unit tests** — Core files like `cursor.go`, `ranked_set.go`, `split_helper.go`, `database.go`, `key_expression.go`, `key_value_cursor.go`, `index_maintainer.go`, `scan_properties.go`, and various index maintainers (`count_index_maintainer.go`, `version_index_maintainer.go`, `rank_index_maintainer.go`, etc.) have no `_test.go` counterparts. They're exercised indirectly via integration tests, but direct unit tests would catch regressions faster and document expected behavior at the unit level.
+- [x] **~25 implementation files lack dedicated unit tests** — Added dedicated tests for core files: `key_expression_test.go` (144 specs), `cursor_test.go` (42 specs), `scan_properties_test.go` (37 specs), `cursor_util_test.go` (31 specs), `errors_test.go` (56 specs). Remaining untested: index maintainers (well-covered by integration + chaos tests), `record_key_cursor.go`, `store_typed.go`, `record_function.go` (all FDB-dependent), `constants.go`/`endpoint_type.go` (trivial enums/constants).
 - [x] **Brittle string-matching error assertions in tests** — Migrated 63 assertions total across 22 test files from `.Error().To(ContainSubstring(...))` to typed `errors.As()` + struct field checks. Round 1: 35 assertions (13 error types). Round 2: 28 assertions (new `KeyExpressionError` type + `MetaDataError` for metadata_proto.go). 31 remaining are genuine internal validation (`fmt.Errorf` with no Java exception mapping).
 - [x] **Temp file leak in test suite setup** — Fixed: cleanup in `SynchronizedAfterSuite` via package-level `clusterTmpFilePath` variable.
 
