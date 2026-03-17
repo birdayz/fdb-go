@@ -171,14 +171,14 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	fd := gen.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("Order").SetPrimaryKey( Concat(Field("order_id"), Field("order_no")))
+	builder.GetRecordType("Order").SetPrimaryKey( Concat(Field("order_id"), Field("price")))
 	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 	builder.SetStoreRecordVersions(true)
 	builder.SetSplitLongRecords(true)
 	builder.SetRecordCountKey(EmptyKey())
 	// Add an index (before setting version, since AddIndex bumps version)
-	idx := NewIndex("order_by_no", Field("order_no"))
+	idx := NewIndex("order_by_price", Field("price"))
 	builder.AddIndex("Order", idx)
 
 	builder.SetVersion(5)
@@ -262,9 +262,9 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	}
 
 	// Check index
-	restoredIdx := md2.GetIndex("order_by_no")
+	restoredIdx := md2.GetIndex("order_by_price")
 	if restoredIdx == nil {
-		t.Fatal("order_by_no index should exist")
+		t.Fatal("order_by_price index should exist")
 	}
 	if restoredIdx.Type != IndexTypeValue {
 		t.Fatalf("index type: got %q, want %q", restoredIdx.Type, IndexTypeValue)
@@ -274,13 +274,13 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	orderIndexes := md2.GetIndexesForRecordType("Order")
 	found := false
 	for _, idx := range orderIndexes {
-		if idx.Name == "order_by_no" {
+		if idx.Name == "order_by_price" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("order_by_no should be associated with Order record type")
+		t.Fatal("order_by_price should be associated with Order record type")
 	}
 }
 
@@ -294,9 +294,9 @@ func TestMetaDataToProtoWithFormerIndexes(t *testing.T) {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 
 	// Add and then remove an index
-	idx := NewIndex("by_name", Field("order_no"))
+	idx := NewIndex("by_price", Field("price"))
 	builder.AddIndex("Order", idx)
-	builder.RemoveIndex("by_name")
+	builder.RemoveIndex("by_price")
 
 	md, err := builder.Build()
 	if err != nil {
@@ -333,7 +333,7 @@ func TestMetaDataToProtoUniversalIndex(t *testing.T) {
 	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
 
-	idx := NewIndex("global_idx", Field("order_no"))
+	idx := NewIndex("global_idx", RecordTypeKey())
 	builder.AddUniversalIndex(idx)
 
 	md, err := builder.Build()

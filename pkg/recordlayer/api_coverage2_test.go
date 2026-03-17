@@ -822,7 +822,7 @@ var _ = Describe("API Coverage 2", func() {
 		It("GetIndexesForRecordType returns type-specific indexes", func() {
 			builder := baseMetaData()
 			builder.AddIndex("Order", NewIndex("idx_order_price", Field("price")))
-			builder.AddIndex("Customer", NewIndex("idx_cust_name", Field("first_name")))
+			builder.AddIndex("Customer", NewIndex("idx_cust_name", Field("name")))
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 

@@ -449,6 +449,29 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		return nil, errors.Join(b.buildErrors...)
 	}
 
+	// Validate at least one record type is defined.
+	// Matches Java's MetaDataValidator.validate() which throws "No record types defined in meta-data".
+	if len(b.recordTypes) == 0 {
+		return nil, &MetaDataError{Message: "no record types defined in meta-data"}
+	}
+
+	// Validate union descriptor oneof structure.
+	// Matches Java's MetaDataValidator.validateUnionDescriptor():
+	//   - Must have at most 1 oneof
+	//   - If a oneof exists, it must contain all fields
+	if b.unionDescriptor != nil {
+		oneofs := b.unionDescriptor.Oneofs()
+		if oneofs.Len() > 1 {
+			return nil, &MetaDataError{Message: "union descriptor has more than one oneof"}
+		}
+		if oneofs.Len() == 1 {
+			oneof := oneofs.Get(0)
+			if oneof.Fields().Len() != b.unionDescriptor.Fields().Len() {
+				return nil, &MetaDataError{Message: "union descriptor oneof must contain every field"}
+			}
+		}
+	}
+
 	// Validate primary keys: must be set, must produce at least one column,
 	// and must not create duplicates.
 	// Matches Java's MetaDataValidator.validatePrimaryKey().
@@ -461,6 +484,34 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 		if createsDuplicates(rt.PrimaryKey) {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)}
+		}
+	}
+
+	// Validate primary key and index expressions against proto message descriptors.
+	// Matches Java's MetaDataValidator.validatePrimaryKeyForRecordType() and
+	// MetaDataValidator.validateIndexForRecordType() which call KeyExpression.validate(Descriptor).
+	for name, rt := range b.recordTypes {
+		if rt.Descriptor != nil && rt.PrimaryKey != nil {
+			if err := validateKeyExpression(rt.PrimaryKey, rt.Descriptor); err != nil {
+				return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: primary key validation failed: %v", name, err)}
+			}
+		}
+		if rt.Descriptor != nil {
+			for _, idx := range rt.indexes {
+				if err := validateKeyExpression(idx.RootExpression, rt.Descriptor); err != nil {
+					return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: index %q validation failed: %v", name, idx.Name, err)}
+				}
+			}
+		}
+	}
+	// Validate universal indexes against all record types.
+	for _, idx := range b.universalIndexes {
+		for name, rt := range b.recordTypes {
+			if rt.Descriptor != nil {
+				if err := validateKeyExpression(idx.RootExpression, rt.Descriptor); err != nil {
+					return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: universal index %q validation failed: %v", name, idx.Name, err)}
+				}
+			}
 		}
 	}
 

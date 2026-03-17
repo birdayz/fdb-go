@@ -37,7 +37,7 @@ var _ = Describe("Store State Cache", func() {
 		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
 		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
-		b.AddIndex("Order", NewIndex("test_idx", Field("order_no")))
+		b.AddIndex("Order", NewIndex("test_idx", Field("price")))
 		m, err := b.Build()
 		Expect(err).NotTo(HaveOccurred())
 		return m

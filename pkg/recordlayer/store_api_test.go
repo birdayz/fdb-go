@@ -84,7 +84,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 			idx1 := NewIndex("Order$price", Field("price"))
 			idx2 := NewIndex("Order$qty", Field("quantity"))
-			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+			idx3 := NewIndex("Order$flower_type", Nest("flower", Field("type")))
 
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx1)
@@ -176,7 +176,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 			idx1 := NewIndex("Order$price", Field("price"))
 			idx2 := NewIndex("Order$qty", Field("quantity"))
-			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+			idx3 := NewIndex("Order$flower_type", Nest("flower", Field("type")))
 
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx1)
@@ -219,7 +219,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 			idx1 := NewIndex("Order$price", Field("price"))
 			idx2 := NewIndex("Order$qty", Field("quantity"))
-			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+			idx3 := NewIndex("Order$flower_type", Nest("flower", Field("type")))
 
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx1)
@@ -1076,7 +1076,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 			idx1 := NewIndex("Order$price", Field("price"))
 			idx2 := NewIndex("Order$qty", Field("quantity"))
-			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+			idx3 := NewIndex("Order$flower_type", Nest("flower", Field("type")))
 
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx1)
@@ -1113,7 +1113,7 @@ var _ = Describe("FDBRecordStore API", func() {
 
 			idx1 := NewIndex("Order$price", Field("price"))
 			idx2 := NewIndex("Order$qty", Field("quantity"))
-			idx3 := NewIndex("Order$flower_type", Field("flower.type"))
+			idx3 := NewIndex("Order$flower_type", Nest("flower", Field("type")))
 
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx1)

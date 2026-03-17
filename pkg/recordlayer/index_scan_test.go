@@ -775,26 +775,18 @@ var _ = Describe("IndexScanning", func() {
 		})
 
 		It("errors on FanTypeNone with repeated field", func() {
-			// Using Field() (FanTypeNone) on a repeated field should error during evaluate
+			// Using Field() (FanTypeNone) on a repeated field is caught at Build() time
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			badIndex := NewIndex("Order$tags_bad", Field("tags"))
-			metaData := buildMetaWithIndex(badIndex)
-
-			ks := specSubspace()
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
-				Expect(err).NotTo(HaveOccurred())
-
-				order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Tags: []string{"urgent"}}
-				_, err = store.SaveRecord(order)
-				Expect(err).To(HaveOccurred())
-				var keErr *KeyExpressionError
-				Expect(errors.As(err, &keErr)).To(BeTrue())
-				Expect(keErr.Message).To(ContainSubstring("repeated with FanType.None"))
-
-				return nil, nil
-			})
-			Expect(err).NotTo(HaveOccurred())
+			builder.AddIndex("Order", badIndex)
+			_, err := builder.Build()
+			Expect(err).To(HaveOccurred())
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("repeated"))
 		})
 	})
 

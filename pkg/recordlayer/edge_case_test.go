@@ -629,25 +629,10 @@ var _ = Describe("Edge case hardening", func() {
 			badIdx := NewIndex("bad_idx", Field("nonexistent_field"))
 			builder.AddIndex("Order", badIdx)
 
-			md, err := builder.Build()
-			Expect(err).NotTo(HaveOccurred())
-
-			// The error should surface when trying to save
-			ks := specSubspace()
-			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-				Expect(err).NotTo(HaveOccurred())
-
-				_, err = store.SaveRecord(&gen.Order{
-					OrderId: proto.Int64(1),
-					Price:   proto.Int32(100),
-				})
-				return nil, err
-			})
+			_, err := builder.Build()
 			Expect(err).To(HaveOccurred())
-			var keyErr *KeyExpressionError
-			Expect(errors.As(err, &keyErr)).To(BeTrue())
+			var mdErr *MetaDataError
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
 		})
 	})
 
