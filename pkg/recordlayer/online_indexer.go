@@ -770,8 +770,14 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		}
 
 		// Scan limit+1 records: process up to limit, use the extra as continuation.
+		// Idempotent indexes use SNAPSHOT reads (no conflict tracking) for better
+		// throughput. Non-idempotent indexes use SERIALIZABLE to prevent double-counting.
+		// Matches Java's IndexingBase.scanPropertiesWithLimits().
 		scanProps := ForwardScan()
 		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit + 1
+		if oi.allTargetIndexesIdempotent() {
+			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
+		}
 
 		lowEp := EndpointTypeRangeInclusive
 		highEp := EndpointTypeRangeExclusive
@@ -954,6 +960,9 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 
 		scanProps := ForwardScan()
 		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit + 1
+		if oi.allTargetIndexesIdempotent() {
+			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
+		}
 
 		cursor := store.ScanIndexRecords(oi.sourceIndex.Name, scanRange, nil, scanProps)
 
@@ -1016,6 +1025,35 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 	})
 
 	return recordsProcessed, hasMore, err
+}
+
+// isIndexTypeIdempotent returns true if the given index type produces idempotent
+// updates. Idempotent indexes can safely use SNAPSHOT reads during online builds
+// because re-applying the same operation produces the same result.
+// Matches Java's IndexMaintainer.isIdempotent().
+func isIndexTypeIdempotent(indexType string) bool {
+	switch indexType {
+	case IndexTypeValue, IndexTypeRank,
+		IndexTypeMinEverLong, IndexTypeMaxEverLong,
+		IndexTypeMinEverTuple, IndexTypeMaxEverTuple,
+		IndexTypeMaxEverVersion, IndexTypeVersion,
+		IndexTypePermutedMin, IndexTypePermutedMax:
+		return true
+	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
+		return false
+	default:
+		return false // conservative default
+	}
+}
+
+// allTargetIndexesIdempotent returns true if all target indexes are idempotent.
+func (oi *OnlineIndexer) allTargetIndexesIdempotent() bool {
+	for _, idx := range oi.targetIndexes {
+		if !isIndexTypeIdempotent(idx.Type) {
+			return false
+		}
+	}
+	return isIndexTypeIdempotent(oi.primaryIndex().Type)
 }
 
 // shouldIndexRecordForIndex checks if a record should be indexed by a specific
