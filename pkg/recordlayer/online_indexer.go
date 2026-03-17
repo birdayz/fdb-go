@@ -203,16 +203,18 @@ func (e *TimeLimitExceededError) Error() string {
 // Matches Java's OnlineIndexer with IndexingByRecords, IndexingByIndex,
 // and IndexingMultiTargetByRecords.
 type OnlineIndexer struct {
-	db            *FDBDatabase
-	metaData      *RecordMetaData
-	targetIndexes []*Index  // target indexes to build (first = primary for range tracking)
-	sourceIndex   *Index    // non-nil = BY_INDEX strategy (single target only)
-	subspace      subspace.Subspace
-	limit         int
-	maxRetries    int            // max retries per range on transient failures (0 = no retries)
-	timeLimit     time.Duration  // overall build time limit (0 = unlimited)
-	recordTypes   []string        // record types to index (empty = all types; not allowed with multi-target)
-	policy        *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
+	db               *FDBDatabase
+	metaData         *RecordMetaData
+	targetIndexes    []*Index  // target indexes to build (first = primary for range tracking)
+	sourceIndex      *Index    // non-nil = BY_INDEX strategy (single target only)
+	subspace         subspace.Subspace
+	limit            int
+	maxRetries       int            // max retries per range on transient failures (0 = no retries)
+	recordsPerSecond int            // inter-transaction rate limit (0 = unlimited, default 10000)
+	timeLimit        time.Duration  // overall build time limit (0 = unlimited)
+	recordTypes      []string        // record types to index (empty = all types; not allowed with multi-target)
+	policy           *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
+	throttle         *indexingThrottle // adaptive throttle (created at Build time)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -235,7 +237,8 @@ type OnlineIndexerBuilder struct {
 func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 	return &OnlineIndexerBuilder{
 		indexer: OnlineIndexer{
-			limit: 100,
+			limit:            100,
+			recordsPerSecond: 10000, // matches Java DEFAULT_RECORDS_PER_SECOND
 		},
 	}
 }
@@ -322,6 +325,15 @@ func (b *OnlineIndexerBuilder) SetTimeLimit(d time.Duration) *OnlineIndexerBuild
 	return b
 }
 
+// SetRecordsPerSecond sets the inter-transaction rate limit. The indexer will
+// sleep between transactions to maintain approximately this rate. Default is
+// 10,000 records/second (matching Java). Set to 0 for unlimited.
+// Matches Java's OnlineIndexer.Builder.setRecordsPerSecond().
+func (b *OnlineIndexerBuilder) SetRecordsPerSecond(rps int) *OnlineIndexerBuilder {
+	b.indexer.recordsPerSecond = rps
+	return b
+}
+
 // SetPolicy sets the indexing policy for stamp conflict resolution.
 // Matches Java's OnlineIndexer.Builder.setIndexingPolicy().
 func (b *OnlineIndexerBuilder) SetPolicy(policy *IndexingPolicy) *OnlineIndexerBuilder {
@@ -398,6 +410,10 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 			return nil, err
 		}
 	}
+
+	// Create adaptive throttle (matches Java's IndexingThrottle initialization)
+	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond)
+
 	return &b.indexer, nil
 }
 
@@ -539,23 +555,26 @@ func shouldLessenWork(err error) bool {
 // are returned immediately without retry.
 // Matches Java's IndexingThrottle.mayRetryAfterHandlingException().
 func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func(context.Context) (int64, bool, error)) (int64, bool, error) {
-	if oi.maxRetries <= 0 {
+	if oi.throttle == nil || oi.maxRetries <= 0 {
 		return buildFn(ctx)
 	}
 
-	originalLimit := oi.limit
-	defer func() { oi.limit = originalLimit }()
-
 	for attempt := 0; ; attempt++ {
+		// Apply adaptive limit from throttle
+		oi.limit = oi.throttle.getLimit()
+
+		// Rate limit between transactions
+		oi.throttle.waitForRateLimit()
+
 		n, hasMore, err := buildFn(ctx)
 		if err == nil {
+			oi.throttle.handleSuccess(int(n))
 			return n, hasMore, nil
 		}
-		if attempt >= oi.maxRetries || !shouldLessenWork(err) {
+		if !oi.throttle.mayRetryAfterHandlingException(err, attempt, int(n)) {
 			return n, hasMore, err
 		}
-		// Halve the limit on retry (minimum 1).
-		oi.limit = max(1, oi.limit/2)
+		// Throttle has decreased the limit — retry
 	}
 }
 
