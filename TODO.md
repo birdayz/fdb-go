@@ -5,7 +5,7 @@ Severity: **CRITICAL** = blocks correctness/compatibility, **HIGH** = important 
 
 Conformance audit performed 2026-03-08 comparing Go implementation method-by-method against Java source at `fdb-record-layer/`. Full API surface review performed 2026-03-16 across 5 areas (store CRUD, indexes, metadata, cursors, DB/context/key expressions).
 
-**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All 1640 specs pass (1280 unit/integration + 360 conformance). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
+**Java Record Layer version**: 4.10.6.0 (upgraded from 4.2.6.0 on 2026-03-11). All specs pass (1640 Ginkgo + 70 unit = 1710 total). Java source at `fdb-record-layer/` checked out at tag 4.10.6.0. All 15 proto files synced from Java source.
 
 ---
 
@@ -130,7 +130,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MetaDataEvolutionValidator: `allowNoSinceVersion` validation** — Implemented: `SetAllowNoSinceVersion()` builder option. New record types must have `SinceVersion` set (errors if missing unless allowed) and `SinceVersion > oldMetaData.Version()`. Matches Java lines 378-397. 6 new tests (29 total). **HIGH**.
 - [x] **MetaDataEvolutionValidator: `SinceVersion` immutability check** — Implemented: `SinceVersion` cannot change on existing record types. Matches Java line 361. **MEDIUM**.
 - [x] **MetaDataEvolutionValidator: `primaryKeyComponentPositions` validation** — Implemented: positions cannot be added, dropped, or changed between index versions. Skipped when `allowIndexRebuilds` and version changed. Matches Java lines 649-667. Added `HasPrimaryKeyComponentPositions()`/`PrimaryKeyComponentPositions()` getters on Index. **MEDIUM**.
-- [x] **MetaDataValidator enhancements** — Former index version boundary checks, addedVersion ≤ lastModifiedVersion, index replacement chain validation. 11 tests. Remaining: predicate validation, subspaceKey uniqueness. **LOW**.
+- [x] **MetaDataValidator enhancements** — Former index version boundary checks, addedVersion ≤ lastModifiedVersion, index replacement chain validation. 11 tests. KeyExpression.Validate() against proto descriptors added (field existence, FanType vs repeatedness, message-without-Nest). Build() validates: no record types, union descriptor oneof, PK/index/universal expressions. 70 new tests. Found 6 latent test bugs. **LOW**.
 
 ### 6. New cursor types
 
