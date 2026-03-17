@@ -3,10 +3,12 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -508,10 +510,34 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	return totalRecords, nil
 }
 
+// shouldLessenWork returns true if the error is a transient FDB error indicating
+// the transaction did too much work (too large, timed out, conflicted, etc.).
+// Only these errors warrant retrying with a smaller limit.
+// Matches Java's IndexingThrottle.shouldLessenWork() which whitelists:
+// TIMED_OUT, TRANSACTION_TOO_OLD, NOT_COMMITTED, TRANSACTION_TIMED_OUT,
+// COMMIT_READ_INCOMPLETE, TRANSACTION_TOO_LARGE.
+func shouldLessenWork(err error) bool {
+	var fdbErr fdb.Error
+	if !errors.As(err, &fdbErr) {
+		return false
+	}
+	switch fdbErr.Code {
+	case 1007, // transaction_too_old
+		1020, // not_committed (conflict)
+		1028, // transaction_too_large
+		1031, // timed_out
+		1039, // commit_read_incomplete
+		2501: // transaction_timed_out
+		return true
+	}
+	return false
+}
+
 // buildRangeWithRetries wraps a buildRange call with retry logic.
-// On transient failures, halves the limit and retries up to maxRetries times.
-// After success, restores the original limit.
-// Matches Java's IndexingThrottle retry behavior.
+// On transient FDB failures indicating the transaction was too large/slow,
+// halves the limit and retries up to maxRetries times. Permanent errors
+// are returned immediately without retry.
+// Matches Java's IndexingThrottle.mayRetryAfterHandlingException().
 func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func(context.Context) (int64, bool, error)) (int64, bool, error) {
 	if oi.maxRetries <= 0 {
 		return buildFn(ctx)
@@ -525,7 +551,7 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		if err == nil {
 			return n, hasMore, nil
 		}
-		if attempt >= oi.maxRetries {
+		if attempt >= oi.maxRetries || !shouldLessenWork(err) {
 			return n, hasMore, err
 		}
 		// Halve the limit on retry (minimum 1).
