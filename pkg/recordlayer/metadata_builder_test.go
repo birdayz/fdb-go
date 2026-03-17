@@ -207,4 +207,20 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			Expect(md.Version()).To(Equal(0))
 		})
 	})
+
+	Describe("GetRecordType panics on unknown type", func() {
+		It("panics with MetaDataError for nonexistent type", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			Expect(func() {
+				builder.GetRecordType("NonExistentType")
+			}).To(PanicWith(MatchError(ContainSubstring("unknown record type"))))
+		})
+
+		It("panics with MetaDataError for empty string", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			Expect(func() {
+				builder.GetRecordType("")
+			}).To(PanicWith(MatchError(ContainSubstring("unknown record type"))))
+		})
+	})
 })

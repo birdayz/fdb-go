@@ -429,10 +429,12 @@ func (b *RecordMetaDataBuilder) GetFormerIndexes() []*FormerIndex {
 }
 
 // GetRecordType returns the record type builder for setting primary keys, etc.
+// Panics with MetaDataError if the record type does not exist, matching Java's
+// RecordMetaDataBuilder.getRecordType() which throws MetaDataException.
 func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 	recordType := b.recordTypes[name]
 	if recordType == nil {
-		return nil
+		panic(&MetaDataError{Message: fmt.Sprintf("unknown record type %q", name)})
 	}
 	return &RecordTypeBuilder{
 		recordType: recordType,
