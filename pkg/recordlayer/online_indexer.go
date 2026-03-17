@@ -944,6 +944,18 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			return nil, fmt.Errorf("online indexer: source index %q is not scannable", oi.sourceIndex.Name)
 		}
 
+		// FormatVersion 10 check: non-idempotent indexes cannot be built from a source
+		// index on stores with format version < CHECK_INDEX_BUILD_TYPE_DURING_UPDATE.
+		// On older format versions, UpdateWhileWriteOnly uses primary key range set checks
+		// which are incorrect for source-index-based builds.
+		// Matches Java's IndexingByIndex.validateSourceAndTargetIndexes().
+		if store.GetFormatVersion() < formatVersionCheckIndexBuildType {
+			if !isIndexTypeIdempotent(oi.primaryIndex().Type) {
+				return nil, fmt.Errorf("online indexer: cannot build non-idempotent index %q from source index on format version %d (requires >= %d)",
+					oi.primaryIndex().Name, store.GetFormatVersion(), formatVersionCheckIndexBuildType)
+			}
+		}
+
 		rangeSet := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
 
 		// Find first missing range.

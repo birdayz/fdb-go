@@ -32,7 +32,7 @@ Java added 7 new format versions. We must handle them correctly on open/create:
 |--------|------|---------|----------|
 | 8 | HEADER_USER_FIELDS | `DataStoreInfo.user_field` — user-defined key→bytes map in store header | **MEDIUM** |
 | 9 | READABLE_UNIQUE_PENDING | New `IndexState` for unique indexes with pending violations | **HIGH** |
-| 10 | CHECK_INDEX_BUILD_TYPE_DURING_UPDATE | Non-idempotent index build-from-source validation | **LOW** |
+| 10 | CHECK_INDEX_BUILD_TYPE_DURING_UPDATE | Non-idempotent index build-from-source validation | **DONE** |
 | 11 | RECORD_COUNT_STATE | `DataStoreInfo.record_count_state` enum (READABLE/WRITE_ONLY/DISABLED) | **DONE** (already implemented) |
 | 12 | STORE_LOCK_STATE | `DataStoreInfo.store_lock_state` with FORBID_RECORD_UPDATE + FULL_STORE | **HIGH** |
 | 13 | INCARNATION | `DataStoreInfo.incarnation` (int32) for cross-cluster migration | **MEDIUM** |
