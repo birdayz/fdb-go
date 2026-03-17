@@ -34,7 +34,7 @@ func (c *oobStopCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], err
 
 func (c *oobStopCursor[T]) Close() error { return nil }
 
-// endContValueCursor returns values where every value's continuation is EndContinuation.
+// endContValueCursor returns values where every value's continuation is StartContinuation.
 // This simulates cursors that don't support continuations (like ChainedCursor with nil encode).
 type endContValueCursor[T any] struct {
 	items []T
@@ -51,7 +51,7 @@ func (c *endContValueCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T]
 	}
 	val := c.items[c.pos]
 	c.pos++
-	return NewResultWithValue(val, &EndContinuation{}), nil
+	return NewResultWithValue(val, &StartContinuation{}), nil
 }
 
 func (c *endContValueCursor[T]) Close() error { return nil }
@@ -171,8 +171,8 @@ func TestBugBounty3Cursor_AutoContinuingWouldInfiniteLoop(t *testing.T) {
 	ctx := context.Background()
 
 	// Simulate what a cursor inside AutoContinuingCursor would return:
-	// HasStoppedBeforeEnd()=true with EndContinuation
-	cursor := newOOBStopCursor([]int{}, ReturnLimitReached, &EndContinuation{})
+	// HasStoppedBeforeEnd()=true with StartContinuation (nil bytes, not end)
+	cursor := newOOBStopCursor([]int{}, ReturnLimitReached, &StartContinuation{})
 
 	result, err := cursor.OnNext(ctx)
 	if err != nil {
@@ -194,20 +194,20 @@ func TestBugBounty3Cursor_AutoContinuingWouldInfiniteLoop(t *testing.T) {
 		t.Fatal(contErr)
 	}
 
-	// KNOWN LIMITATION (matches Java): HasStoppedBeforeEnd + EndContinuation means
+	// KNOWN LIMITATION (matches Java): HasStoppedBeforeEnd + StartContinuation means
 	// "stopped for non-exhaustion reason but no continuation available." This shouldn't
 	// happen with real cursors — they always provide valid continuations when stopping
 	// for scan/time/byte limits. AutoContinuingCursor would loop forever on such input.
 	// Java's equivalent would have the same behavior (retry with null continuation = restart).
-	if cont.IsEnd() && contBytes == nil {
-		t.Logf("Known limitation: HasStoppedBeforeEnd()=true but continuation IsEnd()=true, bytes=nil.\n"+
+	if !cont.IsEnd() && contBytes == nil {
+		t.Logf("Known limitation: HasStoppedBeforeEnd()=true but continuation bytes=nil.\n"+
 			"AutoContinuingCursor would loop. This combination doesn't occur with real cursors.")
 	}
 
 	// Confirm the loop: simulate 3 iterations of AutoContinuingCursor's logic
 	iterations := 0
 	for iterations < 3 {
-		inner := newOOBStopCursor([]int{}, ReturnLimitReached, &EndContinuation{})
+		inner := newOOBStopCursor([]int{}, ReturnLimitReached, &StartContinuation{})
 		r, e := inner.OnNext(ctx)
 		if e != nil {
 			t.Fatal(e)
@@ -504,7 +504,7 @@ func TestBugBounty3Cursor_DedupDropsContinuationOnEndContStop(t *testing.T) {
 
 	// Inner cursor returns 3 values, then ScanLimitReached with EndContinuation
 	innerItems := []int{1, 2, 3}
-	inner := newOOBStopCursor(innerItems, ScanLimitReached, &EndContinuation{})
+	inner := newOOBStopCursor(innerItems, ScanLimitReached, &StartContinuation{})
 
 	dedup := Dedup(
 		func(cont []byte) RecordCursor[int] {
@@ -589,9 +589,9 @@ func TestBugBounty3Cursor_ConcatFirstCursorOOBEndContRestartsFromBeginning(t *te
 		firstCallCount++
 		if cont == nil && firstCallCount > 1 {
 			// If we're called again with nil continuation, that's a restart — BUG!
-			return newOOBStopCursor([]int{1, 2}, ScanLimitReached, &EndContinuation{})
+			return newOOBStopCursor([]int{1, 2}, ScanLimitReached, &StartContinuation{})
 		}
-		return newOOBStopCursor([]int{1, 2}, ScanLimitReached, &EndContinuation{})
+		return newOOBStopCursor([]int{1, 2}, ScanLimitReached, &StartContinuation{})
 	}
 
 	secondFactory := func(_ []byte) RecordCursor[int] {
@@ -700,7 +700,7 @@ func TestBugBounty3Cursor_FlatMapOOBStopEndContSkipsRemainingInner(t *testing.T)
 	makeInner := func(outer int, cont []byte) RecordCursor[int] {
 		if outer == 1 {
 			// Returns 10, 11, then ScanLimitReached with EndContinuation
-			return newOOBStopCursor([]int{10, 11}, ScanLimitReached, &EndContinuation{})
+			return newOOBStopCursor([]int{10, 11}, ScanLimitReached, &StartContinuation{})
 		}
 		return FromListWithContinuation([]int{20, 21}, cont)
 	}
@@ -1003,8 +1003,8 @@ func TestBugBounty3Cursor_HelperEndContValueCursor(t *testing.T) {
 	if !r1.HasNext() || r1.GetValue() != 10 {
 		t.Fatalf("expected 10, got %v", r1.GetValue())
 	}
-	if !r1.GetContinuation().IsEnd() {
-		t.Fatal("expected end continuation for value")
+	if r1.GetContinuation().IsEnd() {
+		t.Fatal("expected non-end continuation for value (StartContinuation)")
 	}
 
 	r2, _ := cursor.OnNext(ctx)

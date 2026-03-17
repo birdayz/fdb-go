@@ -121,7 +121,7 @@ func (c *recordKeyCursor) noNextWithCont(reason NoNextReason) RecordCursorResult
 	if c.continuation != nil {
 		return NewResultNoNext[tuple.Tuple](reason, &BytesContinuation{bytes: c.continuation})
 	}
-	return NewResultNoNext[tuple.Tuple](reason, &EndContinuation{})
+	return NewResultNoNext[tuple.Tuple](reason, &StartContinuation{})
 }
 
 func (c *recordKeyCursor) hasMore() bool {

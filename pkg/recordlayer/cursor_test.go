@@ -116,21 +116,35 @@ var _ = Describe("EndContinuation", func() {
 	})
 })
 
+var _ = Describe("StartContinuation", func() {
+	It("ToBytes returns nil, nil", func() {
+		c := &StartContinuation{}
+		b, err := c.ToBytes()
+		Expect(err).To(BeNil())
+		Expect(b).To(BeNil())
+	})
+
+	It("IsEnd returns false", func() {
+		c := &StartContinuation{}
+		Expect(c.IsEnd()).To(BeFalse())
+	})
+})
+
 var _ = Describe("RecordCursorResult", func() {
 	Describe("NewResultWithValue", func() {
 		It("HasNext returns true", func() {
-			cont := &EndContinuation{}
+			cont := &BytesContinuation{bytes: []byte{1}}
 			r := NewResultWithValue(42, cont)
 			Expect(r.HasNext()).To(BeTrue())
 		})
 
 		It("GetValue returns the stored value", func() {
-			r := NewResultWithValue("hello", &EndContinuation{})
+			r := NewResultWithValue("hello", &StartContinuation{})
 			Expect(r.GetValue()).To(Equal("hello"))
 		})
 
 		It("GetNoNextReason returns the zero value (SourceExhausted)", func() {
-			r := NewResultWithValue(99, &EndContinuation{})
+			r := NewResultWithValue(99, &StartContinuation{})
 			Expect(r.GetNoNextReason()).To(Equal(SourceExhausted))
 		})
 
@@ -142,8 +156,14 @@ var _ = Describe("RecordCursorResult", func() {
 
 		It("works with a struct type", func() {
 			type Point struct{ X, Y int }
-			r := NewResultWithValue(Point{X: 3, Y: 4}, &EndContinuation{})
+			r := NewResultWithValue(Point{X: 3, Y: 4}, &StartContinuation{})
 			Expect(r.GetValue()).To(Equal(Point{X: 3, Y: 4}))
+		})
+
+		It("panics with EndContinuation", func() {
+			Expect(func() {
+				NewResultWithValue(42, &EndContinuation{})
+			}).To(Panic())
 		})
 	})
 
@@ -154,7 +174,7 @@ var _ = Describe("RecordCursorResult", func() {
 		})
 
 		It("GetNoNextReason returns the provided reason", func() {
-			r := NewResultNoNext[string](ReturnLimitReached, &EndContinuation{})
+			r := NewResultNoNext[string](ReturnLimitReached, &BytesContinuation{bytes: []byte{1}})
 			Expect(r.GetNoNextReason()).To(Equal(ReturnLimitReached))
 		})
 
@@ -162,6 +182,18 @@ var _ = Describe("RecordCursorResult", func() {
 			cont := &BytesContinuation{bytes: []byte{1, 2, 3, 4}}
 			r := NewResultNoNext[int](ByteLimitReached, cont)
 			Expect(r.GetContinuation()).To(BeIdenticalTo(cont))
+		})
+
+		It("panics with EndContinuation for non-SourceExhausted", func() {
+			Expect(func() {
+				NewResultNoNext[int](ReturnLimitReached, &EndContinuation{})
+			}).To(Panic())
+		})
+
+		It("panics with non-EndContinuation for SourceExhausted", func() {
+			Expect(func() {
+				NewResultNoNext[int](SourceExhausted, &BytesContinuation{bytes: []byte{1}})
+			}).To(Panic())
 		})
 	})
 
@@ -174,7 +206,7 @@ var _ = Describe("RecordCursorResult", func() {
 
 	Describe("HasStoppedBeforeEnd", func() {
 		It("returns false when HasNext is true", func() {
-			r := NewResultWithValue(1, &EndContinuation{})
+			r := NewResultWithValue(1, &BytesContinuation{bytes: []byte{1}})
 			Expect(r.HasStoppedBeforeEnd()).To(BeFalse())
 		})
 
@@ -183,44 +215,49 @@ var _ = Describe("RecordCursorResult", func() {
 			Expect(r.HasStoppedBeforeEnd()).To(BeFalse())
 		})
 
-		It("returns true for ReturnLimitReached", func() {
-			r := NewResultNoNext[int](ReturnLimitReached, &EndContinuation{})
+		It("returns true for ReturnLimitReached with continuation", func() {
+			r := NewResultNoNext[int](ReturnLimitReached, &BytesContinuation{bytes: []byte{1}})
 			Expect(r.HasStoppedBeforeEnd()).To(BeTrue())
 		})
 
-		It("returns true for ByteLimitReached", func() {
-			r := NewResultNoNext[int](ByteLimitReached, &EndContinuation{})
+		It("returns true for ByteLimitReached with continuation", func() {
+			r := NewResultNoNext[int](ByteLimitReached, &BytesContinuation{bytes: []byte{1}})
 			Expect(r.HasStoppedBeforeEnd()).To(BeTrue())
 		})
 
-		It("returns true for TimeLimitReached", func() {
-			r := NewResultNoNext[int](TimeLimitReached, &EndContinuation{})
+		It("returns true for TimeLimitReached with continuation", func() {
+			r := NewResultNoNext[int](TimeLimitReached, &BytesContinuation{bytes: []byte{1}})
 			Expect(r.HasStoppedBeforeEnd()).To(BeTrue())
 		})
 
-		It("returns true for ScanLimitReached", func() {
-			r := NewResultNoNext[int](ScanLimitReached, &EndContinuation{})
+		It("returns true for ScanLimitReached with continuation", func() {
+			r := NewResultNoNext[int](ScanLimitReached, &BytesContinuation{bytes: []byte{1}})
+			Expect(r.HasStoppedBeforeEnd()).To(BeTrue())
+		})
+
+		It("returns true for ReturnLimitReached with StartContinuation", func() {
+			r := NewResultNoNext[int](ReturnLimitReached, &StartContinuation{})
 			Expect(r.HasStoppedBeforeEnd()).To(BeTrue())
 		})
 	})
 
 	Describe("WithContinuation", func() {
 		It("returns a copy with the new continuation", func() {
-			original := NewResultWithValue(10, &EndContinuation{})
+			original := NewResultWithValue(10, &StartContinuation{})
 			newCont := &BytesContinuation{bytes: []byte{0xAB}}
 			updated := original.WithContinuation(newCont)
 			Expect(updated.GetContinuation()).To(BeIdenticalTo(newCont))
 		})
 
 		It("leaves the original continuation unchanged", func() {
-			origCont := &EndContinuation{}
+			origCont := &StartContinuation{}
 			original := NewResultWithValue(10, origCont)
 			_ = original.WithContinuation(&BytesContinuation{bytes: []byte{1}})
 			Expect(original.GetContinuation()).To(BeIdenticalTo(origCont))
 		})
 
 		It("preserves HasNext and value", func() {
-			original := NewResultWithValue(42, &EndContinuation{})
+			original := NewResultWithValue(42, &BytesContinuation{bytes: []byte{1}})
 			updated := original.WithContinuation(&BytesContinuation{bytes: []byte{9}})
 			Expect(updated.HasNext()).To(BeTrue())
 			Expect(updated.GetValue()).To(Equal(42))
@@ -230,7 +267,7 @@ var _ = Describe("RecordCursorResult", func() {
 
 var _ = Describe("MapResult", func() {
 	It("maps the value when HasNext is true", func() {
-		r := NewResultWithValue(3, &EndContinuation{})
+		r := NewResultWithValue(3, &StartContinuation{})
 		mapped := MapResult(r, func(v int) string { return "x" })
 		Expect(mapped.HasNext()).To(BeTrue())
 		Expect(mapped.GetValue()).To(Equal("x"))
@@ -244,7 +281,7 @@ var _ = Describe("MapResult", func() {
 	})
 
 	It("passes through noNextReason when HasNext is false", func() {
-		r := NewResultNoNext[int](TimeLimitReached, &EndContinuation{})
+		r := NewResultNoNext[int](TimeLimitReached, &StartContinuation{})
 		mapped := MapResult(r, func(v int) string { return "never" })
 		Expect(mapped.HasNext()).To(BeFalse())
 		Expect(mapped.GetNoNextReason()).To(Equal(TimeLimitReached))

@@ -63,7 +63,9 @@ func (c *BytesContinuation) IsEnd() bool {
 	return c.bytes == nil
 }
 
-// EndContinuation represents the end of a cursor's iteration
+// EndContinuation represents the end of a cursor's iteration.
+// INVARIANT: Only valid when NoNextReason is SourceExhausted.
+// Matches Java's RecordCursorEndContinuation.
 type EndContinuation struct{}
 
 // ToBytes always returns nil for end continuations
@@ -76,7 +78,28 @@ func (c *EndContinuation) IsEnd() bool {
 	return true
 }
 
-// RecordCursorResult represents the result of a cursor's OnNext() call
+// StartContinuation represents the start of a cursor's iteration, or a state
+// where no continuation is available for the current result. Unlike EndContinuation,
+// this is NOT terminal — the cursor may have more data.
+// Matches Java's RecordCursorStartContinuation.
+type StartContinuation struct{}
+
+// ToBytes returns nil (no position information available).
+func (c *StartContinuation) ToBytes() ([]byte, error) {
+	return nil, nil
+}
+
+// IsEnd returns false — StartContinuation is never an end state.
+func (c *StartContinuation) IsEnd() bool {
+	return false
+}
+
+// RecordCursorResult represents the result of a cursor's OnNext() call.
+//
+// Invariants (matching Java's RecordCursorResult):
+//   - A result WITH a value (HasNext=true) must NOT have an EndContinuation
+//   - A result with SourceExhausted MUST have an EndContinuation
+//   - A result with any other NoNextReason must NOT have an EndContinuation
 type RecordCursorResult[T any] struct {
 	value        *T
 	continuation RecordCursorContinuation
@@ -84,8 +107,13 @@ type RecordCursorResult[T any] struct {
 	hasNext      bool
 }
 
-// NewResultWithValue creates a result with a value
+// NewResultWithValue creates a result with a value.
+// Panics if continuation is an EndContinuation — a value result must always
+// have a resumable continuation. Matches Java's RecordCursorResult.withNextValue().
 func NewResultWithValue[T any](value T, continuation RecordCursorContinuation) RecordCursorResult[T] {
+	if continuation != nil && continuation.IsEnd() {
+		panic("cannot return end continuation with next value")
+	}
 	return RecordCursorResult[T]{
 		value:        &value,
 		continuation: continuation,
@@ -93,8 +121,18 @@ func NewResultWithValue[T any](value T, continuation RecordCursorContinuation) R
 	}
 }
 
-// NewResultNoNext creates a result indicating no more records
+// NewResultNoNext creates a result indicating no more records.
+// Enforces invariants matching Java's RecordCursorResult.withoutNextValue():
+//   - EndContinuation is only valid with SourceExhausted
+//   - SourceExhausted requires an EndContinuation
 func NewResultNoNext[T any](reason NoNextReason, continuation RecordCursorContinuation) RecordCursorResult[T] {
+	isEnd := continuation != nil && continuation.IsEnd()
+	if isEnd && !reason.IsSourceExhausted() {
+		panic(fmt.Sprintf("cannot return end continuation with NoNextReason %d (only valid for SourceExhausted)", reason))
+	}
+	if reason.IsSourceExhausted() && !isEnd {
+		panic("SourceExhausted requires an end continuation")
+	}
 	return RecordCursorResult[T]{
 		continuation: continuation,
 		noNextReason: reason,
@@ -128,9 +166,10 @@ func (r RecordCursorResult[T]) GetNoNextReason() NoNextReason {
 
 // HasStoppedBeforeEnd returns true if the cursor stopped before exhausting all records.
 // This means the cursor can be resumed with the continuation to get more results.
-// Matches Java's RecordCursorResult.hasStoppedBeforeEnd().
+// Matches Java's RecordCursorResult.hasStoppedBeforeEnd() which checks the continuation,
+// not the reason — with the EndContinuation↔SourceExhausted invariant, these are equivalent.
 func (r RecordCursorResult[T]) HasStoppedBeforeEnd() bool {
-	return !r.hasNext && !r.noNextReason.IsSourceExhausted()
+	return !r.hasNext && r.continuation != nil && !r.continuation.IsEnd()
 }
 
 // WithContinuation returns a copy of this result with a different continuation.

@@ -162,11 +162,7 @@ func (c *unionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], err
 
 	// No children have results -> exhausted
 	if minIdx == -1 {
-		cont, contErr := c.buildContinuation()
-		if contErr != nil {
-			return RecordCursorResult[T]{}, contErr
-		}
-		return NewResultNoNext[T](SourceExhausted, cont), nil
+		return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
 	}
 
 	// Get the result from the winning child
@@ -316,14 +312,15 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 		// Check if any child is exhausted
 		for _, child := range c.children {
 			if !child.hasResult {
+				reason := c.weakestNoNextReason()
+				if reason.IsSourceExhausted() {
+					return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+				}
 				cont, contErr := c.buildContinuation()
 				if contErr != nil {
 					return RecordCursorResult[T]{}, contErr
 				}
-				return NewResultNoNext[T](
-					c.weakestNoNextReason(),
-					cont,
-				), nil
+				return NewResultNoNext[T](reason, cont), nil
 			}
 		}
 

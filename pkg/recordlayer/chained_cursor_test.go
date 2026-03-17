@@ -182,7 +182,7 @@ func TestChainedCursorNilEncode(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// nil encode — continuations will be end continuations
+	// nil encode — continuations will be StartContinuation (no position info available)
 	cursor := Chained[int64](
 		func(prev *int64) (*int64, error) {
 			if prev == nil {
@@ -201,7 +201,9 @@ func TestChainedCursorNilEncode(t *testing.T) {
 	if !result.HasNext() || result.GetValue() != 1 {
 		t.Fatalf("expected 1, got %v", result)
 	}
-	if !result.GetContinuation().IsEnd() {
-		t.Fatal("expected end continuation with nil encode")
+	// With nil encode, continuation is StartContinuation (not end — we have a value,
+	// so EndContinuation would violate the invariant).
+	if result.GetContinuation().IsEnd() {
+		t.Fatal("expected non-end continuation (StartContinuation) with nil encode")
 	}
 }

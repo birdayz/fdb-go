@@ -66,7 +66,7 @@ func (c *chainedCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], e
 
 func (c *chainedCursor[T]) makeContinuation(val T) RecordCursorContinuation {
 	if c.encode == nil {
-		return &EndContinuation{}
+		return &StartContinuation{}
 	}
 	return &BytesContinuation{bytes: c.encode(val)}
 }

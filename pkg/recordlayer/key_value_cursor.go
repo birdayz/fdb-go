@@ -115,15 +115,9 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Check time limit BEFORE reading next record (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one record before enforcing (free initial pass).
 	if executeProps.TimeLimit > 0 && c.recordsScanned > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		if c.continuation != nil {
-			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-				TimeLimitReached,
-				&BytesContinuation{bytes: c.continuation},
-			), nil
-		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			TimeLimitReached,
-			&EndContinuation{},
+			c.limitContinuation(),
 		), nil
 	}
 
@@ -131,15 +125,9 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Continuation points to the last RETURNED record, so resumption starts after it.
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks limits pre-read.
 	if executeProps.ScannedRecordsLimit > 0 && c.recordsScanned >= executeProps.ScannedRecordsLimit {
-		if c.continuation != nil {
-			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-				ScanLimitReached,
-				&BytesContinuation{bytes: c.continuation},
-			), nil
-		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			ScanLimitReached,
-			&EndContinuation{},
+			c.limitContinuation(),
 		), nil
 	}
 
@@ -147,15 +135,9 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 	// Java's tryRecordScan() calls byteScanLimiter.hasBytesRemaining() before the read.
 	// Allow at least one record (free initial pass — usedInitialPass in Java).
 	if executeProps.ScannedBytesLimit > 0 && c.recordsScanned > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		if c.continuation != nil {
-			return NewResultNoNext[*FDBStoredRecord[proto.Message]](
-				ByteLimitReached,
-				&BytesContinuation{bytes: c.continuation},
-			), nil
-		}
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](
 			ByteLimitReached,
-			&EndContinuation{},
+			c.limitContinuation(),
 		), nil
 	}
 
@@ -552,6 +534,16 @@ func (c *keyValueCursor) hasMoreKVs() bool {
 		return true
 	}
 	return c.iterator.Advance()
+}
+
+// limitContinuation returns the appropriate continuation when a limit is hit.
+// If we have a continuation (from a previously scanned record), use it.
+// Otherwise, use StartContinuation (no position information available but NOT end of iteration).
+func (c *keyValueCursor) limitContinuation() RecordCursorContinuation {
+	if c.continuation != nil {
+		return &BytesContinuation{bytes: c.continuation}
+	}
+	return &StartContinuation{}
 }
 
 // sameTuple compares two tuples for equality.

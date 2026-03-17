@@ -217,7 +217,7 @@ var _ = Describe("CursorCombinators", func() {
 		Expect(r3.HasStoppedBeforeEnd()).To(BeTrue())
 
 		// Result with value → HasStoppedBeforeEnd is false (it has a value)
-		r4 := NewResultWithValue(42, &BytesContinuation{})
+		r4 := NewResultWithValue(42, &StartContinuation{})
 		Expect(r4.HasStoppedBeforeEnd()).To(BeFalse())
 	})
 

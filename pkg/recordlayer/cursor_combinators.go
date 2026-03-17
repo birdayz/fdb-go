@@ -78,27 +78,47 @@ func LimitRowsCursor[T any](cursor RecordCursor[T], n int) RecordCursor[T] {
 }
 
 type limitRowsCursor[T any] struct {
-	inner            RecordCursor[T]
-	remaining        int
-	lastContinuation RecordCursorContinuation // from last inner result
+	inner      RecordCursor[T]
+	remaining  int
+	lastResult *RecordCursorResult[T] // cached from last inner read
 }
 
 func (c *limitRowsCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[T], error) {
-	if c.remaining <= 0 {
-		// Preserve inner continuation for resumability.
-		// Matches Java's RowLimitedCursor which uses nextResult.getContinuation().
-		if c.lastContinuation != nil {
-			return NewResultNoNext[T](ReturnLimitReached, c.lastContinuation), nil
-		}
-		return NewResultNoNext[T](ReturnLimitReached, &EndContinuation{}), nil
+	// Already returned a terminal result — return it again.
+	// Matches Java's RowLimitedCursor early return for cached !hasNext results.
+	if c.lastResult != nil && !c.lastResult.HasNext() {
+		return *c.lastResult, nil
 	}
+
+	if c.remaining <= 0 {
+		_ = c.inner.Close()
+		// Determine correct reason: if inner already signaled SOURCE_EXHAUSTED
+		// (EndContinuation), propagate that. Otherwise, it's a limit.
+		// Matches Java's RowLimitedCursor logic.
+		var reason NoNextReason
+		var cont RecordCursorContinuation
+		if c.lastResult != nil && !c.lastResult.HasNext() && c.lastResult.GetContinuation().IsEnd() {
+			reason = c.lastResult.GetNoNextReason()
+			cont = c.lastResult.GetContinuation()
+		} else if c.lastResult != nil {
+			reason = ReturnLimitReached
+			cont = c.lastResult.GetContinuation()
+		} else {
+			reason = ReturnLimitReached
+			cont = &StartContinuation{}
+		}
+		result := NewResultNoNext[T](reason, cont)
+		c.lastResult = &result
+		return result, nil
+	}
+
 	result, err := c.inner.OnNext(ctx)
 	if err != nil {
 		return result, err
 	}
+	c.lastResult = &result
 	if result.HasNext() {
 		c.remaining--
-		c.lastContinuation = result.GetContinuation()
 	}
 	return result, nil
 }

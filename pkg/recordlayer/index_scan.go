@@ -313,30 +313,18 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 
 	// Check time limit before reading next entry (free initial pass for first record).
 	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
-		if c.lastCont != nil {
-			return NewResultNoNext[*IndexEntry](
-				TimeLimitReached,
-				&BytesContinuation{bytes: c.lastCont},
-			), nil
-		}
 		return NewResultNoNext[*IndexEntry](
 			TimeLimitReached,
-			&EndContinuation{},
+			c.limitContinuation(),
 		), nil
 	}
 
 	// Check byte limit BEFORE reading next entry (matching Java's CursorLimitManager.tryRecordScan).
 	// Allow at least one entry (free initial pass).
 	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && c.bytesScanned >= executeProps.ScannedBytesLimit {
-		if c.lastCont != nil {
-			return NewResultNoNext[*IndexEntry](
-				ByteLimitReached,
-				&BytesContinuation{bytes: c.lastCont},
-			), nil
-		}
 		return NewResultNoNext[*IndexEntry](
 			ByteLimitReached,
-			&EndContinuation{},
+			c.limitContinuation(),
 		), nil
 	}
 
@@ -390,6 +378,14 @@ func (c *indexCursor) unpackKeyValue(kv fdb.KeyValue) (*IndexEntry, error) {
 		Key:   keyTuple,
 		Value: valueTuple,
 	}, nil
+}
+
+// limitContinuation returns the appropriate continuation when a limit is hit.
+func (c *indexCursor) limitContinuation() RecordCursorContinuation {
+	if c.lastCont != nil {
+		return &BytesContinuation{bytes: c.lastCont}
+	}
+	return &StartContinuation{}
 }
 
 func (c *indexCursor) makeContinuation(key fdb.Key) ([]byte, error) {
