@@ -151,6 +151,7 @@ go_test(
         "multi_type_index_test.go",
         "multi_type_test.go",
         "online_indexer_bug_verify_test.go",
+        "online_indexer_idempotent_test.go",
         "online_indexer_test.go",
         "permuted_min_max_index_test.go",
         "pk_dedup_test.go",
