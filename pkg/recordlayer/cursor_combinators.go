@@ -650,6 +650,11 @@ func (c *autoContinuingCursor[T]) OnNext(ctx context.Context) (RecordCursorResul
 			if contErr != nil {
 				return RecordCursorResult[T]{}, fmt.Errorf("auto-continuing cursor continuation: %w", contErr)
 			}
+			// Guard against infinite loop: if continuation is nil/end, the cursor
+			// has nothing to resume from. Treat as source exhausted.
+			if contBytes == nil || result.GetContinuation().IsEnd() {
+				return NewResultNoNext[T](SourceExhausted, &EndContinuation{}), nil
+			}
 			if err := c.openContextAndGenerateCursor(ctx, contBytes); err != nil {
 				return RecordCursorResult[T]{}, err
 			}
