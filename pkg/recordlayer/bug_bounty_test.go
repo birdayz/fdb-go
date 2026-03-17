@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -228,16 +229,16 @@ func TestBug6_IndexEntryNilIndexIndexValuesPanic(t *testing.T) {
 }
 
 // =============================================================================
-// BUG #7: getAggregator panics on non-int64 index entry values
+// BUG #7: addAggregate panics on non-int64 index entry values
 //
 // Severity: panic
-// Location: aggregate_function.go:274,277
+// Location: atomic_mutation.go (addAggregate)
 //
-// Description: The aggregator closure returned by getAggregator() for COUNT/SUM
-// functions uses unchecked type assertions `accum[0].(int64)` and
-// `entry[0].(int64)`. If a COUNT or SUM index entry stored in FDB contains
-// a value that is not int64 (e.g., corrupt data stored as float64, string,
-// or []byte), the aggregator panics instead of returning an error.
+// Description: The addAggregate function used by COUNT/SUM aggregation uses
+// checked type assertions `accum[0].(int64)` and `entry[0].(int64)`. If a
+// COUNT or SUM index entry stored in FDB contains a value that is not int64
+// (e.g., corrupt data stored as float64, string, or []byte), the aggregator
+// returns the accumulator unchanged instead of panicking.
 //
 // This can happen if:
 // - FDB data is corrupt (e.g., manual writes, partial failures)
@@ -246,34 +247,30 @@ func TestBug6_IndexEntryNilIndexIndexValuesPanic(t *testing.T) {
 // - The index value is a different numeric type due to tuple encoding quirks
 // =============================================================================
 
-func TestBug7_GetAggregatorPanicsOnNonInt64(t *testing.T) {
+func TestBug7_AddAggregateHandlesNonInt64(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		fnName  string
-		entry   tuple.Tuple
-	}{
-		{"count_float64", FunctionNameCount, tuple.Tuple{float64(42.0)}},
-		{"count_string", FunctionNameCount, tuple.Tuple{"42"}},
-		{"sum_bytes", FunctionNameSum, tuple.Tuple{[]byte{0x01}}},
-		{"sum_float64", FunctionNameSum, tuple.Tuple{float64(100.5)}},
+	mutation := &countMutation{index: &Index{Name: "test"}}
+	entries := []tuple.Tuple{
+		{float64(42.0)},
+		{"42"},
+		{[]byte{0x01}},
+		{float64(100.5)},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, entry := range entries {
+		t.Run(fmt.Sprintf("%T", entry[0]), func(t *testing.T) {
 			t.Parallel()
 
 			defer func() {
 				if r := recover(); r != nil {
-					t.Fatalf("getAggregator(%q) panicked on entry %v [%T]: %v",
-						tt.fnName, tt.entry, tt.entry[0], r)
+					t.Fatalf("aggregate panicked on entry %v [%T]: %v",
+						entry, entry[0], r)
 				}
 			}()
 
-			identity, aggregator := getAggregator(tt.fnName)
-			// This panics on non-int64 entry values
-			_ = aggregator(identity, tt.entry)
+			identity := mutation.aggregateIdentity()
+			_ = mutation.aggregate(identity, entry)
 		})
 	}
 }

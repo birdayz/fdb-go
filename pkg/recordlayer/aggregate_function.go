@@ -256,7 +256,10 @@ func evaluateMinMaxFromValueIndex(
 }
 
 // evaluateAtomicAggregate evaluates an aggregate by scanning all entries and
-// reducing them. Used for COUNT, SUM, MIN_EVER_LONG, MAX_EVER_LONG indexes.
+// reducing them. Used for COUNT, SUM, MIN_EVER_LONG, MAX_EVER_LONG, MAX_EVER_VERSION indexes.
+// The maintainer must implement indexAggregator (identity + reducer live on the
+// mutation type, not on string-name dispatch). This ensures adding a new atomic
+// index type without implementing aggregation is a compile error, not a silent bug.
 // Matches Java's AtomicMutationIndexMaintainer.evaluateAggregateFunction().
 func evaluateAtomicAggregate(
 	ctx context.Context,
@@ -265,6 +268,11 @@ func evaluateAtomicAggregate(
 	scanRange TupleRange,
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
+	agg, ok := maintainer.(indexAggregator)
+	if !ok {
+		return nil, fmt.Errorf("index maintainer for %q does not support aggregation", fn.Name)
+	}
+
 	props := ScanProperties{
 		ExecuteProperties: ExecuteProperties{
 			IsolationLevel: isolationLevel,
@@ -276,69 +284,11 @@ func evaluateAtomicAggregate(
 		return nil, fmt.Errorf("evaluate %s aggregate: %w", fn.Name, err)
 	}
 
-	identity, aggregator := getAggregator(fn.Name)
-
-	result := identity
+	result := agg.aggregateIdentity()
 	for _, e := range entries {
-		result = aggregator(result, e.Value)
+		result = agg.aggregate(result, e.Value)
 	}
 	return result, nil
-}
-
-// getAggregator returns the identity value and aggregation function for a given
-// aggregate function name. Uses checked type assertions to avoid panics on
-// corrupt/unexpected index data.
-// Matches Java's AtomicMutation.getIdentity()/getAggregator().
-func getAggregator(name string) (tuple.Tuple, func(accum, entry tuple.Tuple) tuple.Tuple) {
-	switch name {
-	case FunctionNameCount, FunctionNameCountNotNull, FunctionNameCountUpdates, FunctionNameSum:
-		return tuple.Tuple{int64(0)}, func(accum, entry tuple.Tuple) tuple.Tuple {
-			a, ok := accum[0].(int64)
-			if !ok {
-				return accum // type mismatch: return accumulator unchanged
-			}
-			b := int64(0)
-			if len(entry) > 0 {
-				bv, ok := entry[0].(int64)
-				if !ok {
-					return accum // type mismatch: skip this entry
-				}
-				b = bv
-			}
-			return tuple.Tuple{a + b}
-		}
-	case FunctionNameMaxEver:
-		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
-			if accum == nil {
-				return entry
-			}
-			if len(entry) == 0 {
-				return accum
-			}
-			if len(accum) == 0 || tupleGreater(entry, accum) {
-				return entry
-			}
-			return accum
-		}
-	case FunctionNameMinEver:
-		return nil, func(accum, entry tuple.Tuple) tuple.Tuple {
-			if accum == nil {
-				return entry
-			}
-			if len(entry) == 0 {
-				return accum
-			}
-			if len(accum) == 0 || tupleLess(entry, accum) {
-				return entry
-			}
-			return accum
-		}
-	default:
-		// Fallback: just return last entry
-		return nil, func(_, entry tuple.Tuple) tuple.Tuple {
-			return entry
-		}
-	}
 }
 
 // isGroupPrefix checks if the function operand is compatible with the index root.

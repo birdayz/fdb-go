@@ -938,21 +938,21 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 	tx := store.context.Transaction()
 	switch index.Type {
 	case IndexTypeCount:
-		return newCountIndexMaintainer(index, idxSubspace, tx, store)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countMutation{index: index})
 	case IndexTypeCountNotNull:
-		return newCountNotNullIndexMaintainer(index, idxSubspace, tx, store)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countNotNullMutation{index: index})
 	case IndexTypeCountUpdates:
-		return newCountUpdatesIndexMaintainer(index, idxSubspace, tx, store)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countUpdatesMutation{index: index})
 	case IndexTypeSum:
-		return newSumIndexMaintainer(index, idxSubspace, tx, store)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &sumMutation{index: index})
 	case IndexTypeMaxEverLong:
-		return newMinMaxEverIndexMaintainer(index, idxSubspace, tx, store, true)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: true})
 	case IndexTypeMinEverLong:
-		return newMinMaxEverIndexMaintainer(index, idxSubspace, tx, store, false)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: false})
 	case IndexTypeMaxEverTuple:
-		return newMinMaxEverTupleIndexMaintainer(index, idxSubspace, tx, store, true)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: true})
 	case IndexTypeMinEverTuple:
-		return newMinMaxEverTupleIndexMaintainer(index, idxSubspace, tx, store, false)
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: false})
 	case IndexTypeRank:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)

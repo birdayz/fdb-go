@@ -189,4 +189,10 @@ func (m *maxEverVersionIndexMaintainer) evaluateEntries(record *FDBStoredRecord[
 	return result, nil
 }
 
+func (m *maxEverVersionIndexMaintainer) aggregateIdentity() tuple.Tuple { return nil }
+func (m *maxEverVersionIndexMaintainer) aggregate(accum, entry tuple.Tuple) tuple.Tuple {
+	return maxAggregate(accum, entry)
+}
+
 var _ IndexMaintainer = (*maxEverVersionIndexMaintainer)(nil)
+var _ indexAggregator = (*maxEverVersionIndexMaintainer)(nil)

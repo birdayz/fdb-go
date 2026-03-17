@@ -5,6 +5,7 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // indexGroupingCount returns the number of grouping columns in an index expression.
@@ -81,4 +82,111 @@ func updateWhileWriteOnlyNonIdempotent(
 	}
 
 	return updateFunc(oldRecord, newRecord)
+}
+
+// evaluateGroupingKeysNotNull extracts the grouping key tuple(s) from a record,
+// filtering out any tuples where the GROUPED (trailing) columns contain null values.
+// Used by COUNT_NOT_NULL maintainer.
+func evaluateGroupingKeysNotNull(index *Index, record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
+	if index.Predicate != nil && !index.Predicate(record.Record) {
+		return nil, nil
+	}
+
+	tuples, err := index.RootExpression.Evaluate(record, record.Record)
+	if err != nil {
+		return nil, err
+	}
+
+	groupingCount := indexGroupingCount(index.RootExpression)
+	totalColumns := index.RootExpression.ColumnSize()
+	groupedCount := totalColumns - groupingCount
+
+	result := make([]tuple.Tuple, 0, len(tuples))
+	for _, values := range tuples {
+		hasNull := false
+		for i := groupingCount; i < len(values) && i < totalColumns; i++ {
+			if values[i] == nil {
+				hasNull = true
+				break
+			}
+		}
+		if hasNull || (groupedCount > 0 && len(values) <= groupingCount) {
+			continue
+		}
+
+		groupKey := make(tuple.Tuple, groupingCount)
+		for j := 0; j < groupingCount && j < len(values); j++ {
+			groupKey[j] = values[j]
+		}
+		result = append(result, groupKey)
+	}
+	return result, nil
+}
+
+// keyExpressionHasNullField checks if evaluating a key expression against a message
+// would involve any unset (null) proto fields. Used by COUNT_NOT_NULL to skip
+// entries where the key contains NullStandin.NULL.
+// Matches Java's IndexEntry.keyContainsNonUniqueNull().
+func keyExpressionHasNullField(msg proto.Message, expr KeyExpression) bool {
+	if msg == nil {
+		return true
+	}
+	switch e := expr.(type) {
+	case *FieldKeyExpression:
+		m := msg.ProtoReflect()
+		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.fieldName))
+		if fd == nil {
+			return true
+		}
+		if fd.HasPresence() && !m.Has(fd) {
+			return true
+		}
+		return false
+	case *CompositeKeyExpression:
+		for _, child := range e.expressions {
+			if keyExpressionHasNullField(msg, child) {
+				return true
+			}
+		}
+		return false
+	case *NestingKeyExpression:
+		m := msg.ProtoReflect()
+		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.parentField))
+		if fd == nil {
+			return true
+		}
+		if fd.HasPresence() && !m.Has(fd) {
+			return true
+		}
+		if fd.Kind() == protoreflect.MessageKind {
+			nestedMsg := m.Get(fd).Message().Interface()
+			return keyExpressionHasNullField(nestedMsg, e.child)
+		}
+		return false
+	case *GroupingKeyExpression:
+		return keyExpressionHasNullField(msg, e.wholeKey)
+	case *EmptyKeyExpression:
+		return false
+	default:
+		return false
+	}
+}
+
+// toInt64 converts a numeric value (from proto field evaluation) to int64.
+// Handles int64, int32, float64, float32 matching Java's Number.longValue().
+func toInt64(v any) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case int32:
+		return int64(n), nil
+	case int:
+		return int64(n), nil
+	case float64:
+		return int64(n), nil
+	case float32:
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to int64 for atomic index", v)
+	}
 }
