@@ -164,27 +164,108 @@ func (m *textIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 }
 
 // updateStandard performs the standard index update (evaluate expression, update keys).
+// When both old and new are present (update), skips entries with identical text values
+// to avoid redundant BunchedMap operations. Matches Java's StandardIndexMaintainer
+// commonKeys optimization (skipUpdateForUnchangedKeys).
 func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	var oldEntries, newEntries [][]any
+	var err error
+
 	if oldRecord != nil {
-		recordTokenizerVersion := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
-		oldEntries, err := m.index.RootExpression.Evaluate(oldRecord, oldRecord.Record)
+		oldEntries, err = m.index.RootExpression.Evaluate(oldRecord, oldRecord.Record)
 		if err != nil {
-			return err
-		}
-		if err := m.updateIndexKeys(oldRecord, true, oldEntries, recordTokenizerVersion); err != nil {
 			return err
 		}
 	}
 	if newRecord != nil {
-		newEntries, err := m.index.RootExpression.Evaluate(newRecord, newRecord.Record)
+		newEntries, err = m.index.RootExpression.Evaluate(newRecord, newRecord.Record)
 		if err != nil {
 			return err
 		}
+	}
+
+	// Skip unchanged entries when both old and new are present.
+	// For TEXT indexes, two entries with the same text value at the text position
+	// will produce identical token→position mappings, so updating is a no-op.
+	if oldRecord != nil && newRecord != nil {
+		oldEntries, newEntries = removeCommonTextEntries(m.index, oldEntries, newEntries)
+	}
+
+	if oldRecord != nil && len(oldEntries) > 0 {
+		recordTokenizerVersion := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
+		if err := m.updateIndexKeys(oldRecord, true, oldEntries, recordTokenizerVersion); err != nil {
+			return err
+		}
+	}
+	if newRecord != nil && len(newEntries) > 0 {
 		if err := m.updateIndexKeys(newRecord, false, newEntries, m.tokenizerVersion); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// removeCommonTextEntries filters out evaluated entries whose text values are identical
+// between old and new. For TEXT indexes, the "text value" at the text field position
+// determines the tokens — if it hasn't changed, no index update is needed.
+func removeCommonTextEntries(idx *Index, old, new [][]any) ([][]any, [][]any) {
+	if len(old) == 0 || len(new) == 0 {
+		return old, new
+	}
+	textPos := textFieldPosition(idx.RootExpression)
+
+	// Build a set of old entry keys (all fields except the text field value don't matter
+	// for TEXT — what matters is the text at textPos being identical).
+	// For single-entry indexes (most common), this is a simple comparison.
+	if len(old) == 1 && len(new) == 1 {
+		if textPos < len(old[0]) && textPos < len(new[0]) {
+			oldText, _ := old[0][textPos].(string)
+			newText, _ := new[0][textPos].(string)
+			if oldText == newText {
+				return nil, nil
+			}
+		}
+		return old, new
+	}
+
+	// For multi-entry cases, do pairwise comparison.
+	type entryKey struct {
+		idx  int
+		text string
+	}
+	oldMap := make(map[string][]int) // text → indices in old
+	for i, e := range old {
+		if textPos < len(e) {
+			if t, ok := e[textPos].(string); ok {
+				oldMap[t] = append(oldMap[t], i)
+			}
+		}
+	}
+
+	var filteredOld, filteredNew [][]any
+	matched := make(map[int]bool) // matched old indices
+
+	for _, e := range new {
+		if textPos < len(e) {
+			if t, ok := e[textPos].(string); ok {
+				if indices, ok := oldMap[t]; ok && len(indices) > 0 {
+					// Mark first matching old entry as consumed.
+					matched[indices[0]] = true
+					oldMap[t] = indices[1:]
+					continue // skip this new entry — same text, no update needed
+				}
+			}
+		}
+		filteredNew = append(filteredNew, e)
+	}
+
+	for i, e := range old {
+		if !matched[i] {
+			filteredOld = append(filteredOld, e)
+		}
+	}
+
+	return filteredOld, filteredNew
 }
 
 // updateIndexKeys tokenizes text and writes/removes BunchedMap entries for each token.
@@ -342,7 +423,16 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 // is tokenized, there's no efficient way to remove documents within the
 // grouped part. Matches Java's TextIndexMaintainer.canDeleteWhere() which
 // delegates to canDeleteGroup().
+//
+// For non-grouped TEXT indexes, only an empty prefix (clear everything) is
+// allowed. For grouped TEXT indexes, the prefix must match the grouping columns.
 func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Validate prefix alignment with grouping key.
+	// Java's canDeleteWhere → canDeleteGroup requires GroupingKeyExpression
+	// and validates that the prefix aligns with the grouping columns.
+	if _, ok := m.index.RootExpression.(*GroupingKeyExpression); !ok && len(prefix) > 0 {
+		return fmt.Errorf("TEXT index %q is not grouped; deleteWhere requires empty prefix", m.index.Name)
+	}
 	// Clear index entries using PrefixRange to include the exact prefix key
 	// (matching Java's Range.startsWith pattern).
 	if len(prefix) == 0 {

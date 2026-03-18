@@ -1568,4 +1568,437 @@ var _ = Describe("TEXT index", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// =========================================================================
+	// 36. OnlineIndexer builds TEXT index on pre-existing records
+	// =========================================================================
+	It("OnlineIndexer builds TEXT index on pre-existing records", func() {
+		ks := specSubspace()
+
+		// Phase 1: Save 5 customers WITHOUT the TEXT index.
+		builder1 := baseMetaData()
+		md1, err := builder1.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Phase 2: Add TEXT index and build with OnlineIndexer.
+		builder2 := baseMetaData()
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder2.AddIndex("Customer", textIdx)
+		md2, err := builder2.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		indexer, err := NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(md2).
+			SetIndex(textIdx).
+			SetSubspace(ks).
+			Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		total, err := indexer.BuildIndex(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(total).To(BeNumerically(">=", 5))
+
+		// Phase 3: Verify all tokens are scannable.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.IsIndexReadable("customer_name_text")).To(BeTrue())
+
+			// Each customer has 2 words -> 10 total tokens.
+			allEntries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(10))
+
+			// Spot-check specific tokens.
+			for _, token := range []string{"alpha", "bravo", "charlie", "echo", "india"} {
+				entries, err := AsList(ctx, store.ScanIndexByType(
+					textIdx, IndexScanByTextToken, TupleRangeAllOf(tuple.Tuple{token}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(1), "token %q should have exactly 1 entry", token)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 37. OnlineIndexer with limit=2 forces multi-transaction chunked build
+	// =========================================================================
+	It("OnlineIndexer with limit=2 chunks TEXT index build correctly", func() {
+		ks := specSubspace()
+
+		// Phase 1: Save 5 customers WITHOUT the TEXT index.
+		builder1 := baseMetaData()
+		md1, err := builder1.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(4), Name: proto.String("golf hotel")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(5), Name: proto.String("india juliet")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Phase 2: Build with limit=2 to force multiple chunks.
+		builder2 := baseMetaData()
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder2.AddIndex("Customer", textIdx)
+		md2, err := builder2.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		indexer, err := NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(md2).
+			SetIndex(textIdx).
+			SetSubspace(ks).
+			SetLimit(2).
+			Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		total, err := indexer.BuildIndex(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		// With limit=2 and 5 records (+Customers mixed with Orders), boundary
+		// records may be re-scanned across chunk boundaries.
+		Expect(total).To(BeNumerically(">=", 5))
+
+		// Phase 3: Verify all 10 tokens are present.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.IsIndexReadable("customer_name_text")).To(BeTrue())
+
+			allEntries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(10))
+
+			// Every expected token should be present.
+			expectedTokens := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet"}
+			for _, token := range expectedTokens {
+				entries, err := AsList(ctx, store.ScanIndexByType(
+					textIdx, IndexScanByTextToken, TupleRangeAllOf(tuple.Tuple{token}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(1), "token %q should have exactly 1 entry after chunked build", token)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 38. RebuildIndex on TEXT index
+	// =========================================================================
+	It("RebuildIndex on TEXT index rebuilds all entries", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save records with the TEXT index already present (READABLE).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(3), Name: proto.String("echo foxtrot")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// RebuildIndex clears and re-populates the TEXT index.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.RebuildIndex(textIdx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify: 6 tokens total (2 per customer * 3 customers).
+			allEntries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(6))
+
+			// Spot-check specific tokens.
+			for _, token := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot"} {
+				entries, err := AsList(ctx, store.ScanIndexByType(
+					textIdx, IndexScanByTextToken, TupleRangeAllOf(tuple.Tuple{token}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(1), "token %q should have exactly 1 entry after rebuild", token)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 39. RebuildIndex after record update reflects new tokens
+	// =========================================================================
+	It("RebuildIndex after record update reflects new tokens", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save initial records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha bravo")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("charlie delta")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Update customer 1's name (removes "alpha bravo", adds "xray yankee").
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("xray yankee")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// RebuildIndex should produce the current state.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.RebuildIndex(textIdx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Should have: xray, yankee (customer 1), charlie, delta (customer 2) = 4 tokens.
+			allEntries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(4))
+
+			// "alpha" and "bravo" should be gone.
+			for _, gone := range []string{"alpha", "bravo"} {
+				entries, err := AsList(ctx, store.ScanIndexByType(
+					textIdx, IndexScanByTextToken, TupleRangeAllOf(tuple.Tuple{gone}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(BeEmpty(), "token %q should be gone after rebuild", gone)
+			}
+
+			// New tokens should be present.
+			for _, present := range []string{"xray", "yankee", "charlie", "delta"} {
+				entries, err := AsList(ctx, store.ScanIndexByType(
+					textIdx, IndexScanByTextToken, TupleRangeAllOf(tuple.Tuple{present}), nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(1), "token %q should be present after rebuild", present)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 40. commonKeys optimization: update with unchanged text is no-op
+	// =========================================================================
+	It("commonKeys optimization: update with unchanged text is no-op", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save initial record.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{
+				CustomerId: proto.Int64(1),
+				Name:       proto.String("hello world"),
+				Price:      proto.Int32(100),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Capture tokens before update.
+		var tokensBefore []string
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			for _, e := range entries {
+				tokensBefore = append(tokensBefore, e.Key[0].(string))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tokensBefore).To(ConsistOf("hello", "world"))
+
+		// Update the same record with same text but different price.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{
+				CustomerId: proto.Int64(1),
+				Name:       proto.String("hello world"),
+				Price:      proto.Int32(999),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Capture tokens after update.
+		var tokensAfter []string
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			for _, e := range entries {
+				tokensAfter = append(tokensAfter, e.Key[0].(string))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Tokens should be identical: no duplicates, no missing.
+		Expect(tokensAfter).To(ConsistOf("hello", "world"))
+		Expect(tokensAfter).To(Equal(tokensBefore))
+	})
+
+	// =========================================================================
+	// 41. DeleteRecordsWhere clears type-specific TEXT index entries
+	// =========================================================================
+	It("DeleteRecordsWhere clears type-specific TEXT index entries", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save customers and an order (different type).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("hello world")})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("foo bar")})
+			Expect(err).NotTo(HaveOccurred())
+			// Use non-overlapping PK for order.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(100), Price: proto.Int32(42)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify TEXT index has 4 tokens before delete.
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(4)) // hello, world, foo, bar
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// DeleteRecordsWhere with prefix matching customer PK. For type-specific
+		// TEXT index, this clears ALL index entries (not just the prefix range).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.DeleteRecordsWhere(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// All TEXT index entries cleared (type-specific index fully cleared).
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(BeEmpty())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

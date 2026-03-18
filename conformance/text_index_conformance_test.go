@@ -568,4 +568,168 @@ var _ = Describe("TEXT Index Conformance", func() {
 			Expect(worldGo[1].Positions).To(Equal([]int64{1, 3}))
 		})
 	})
+
+	Describe("Unicode diacritical conformance", func() {
+		It("should produce identical normalized tokens from diacritical text", func() {
+			// "Après-midi café résumé" should normalize to:
+			// UAX #29 splits on hyphens → "Après", "midi", "café", "résumé"
+			// NFKD + strip marks + lowercase → "apres", "midi", "cafe", "resume"
+			err := store.SaveCustomerGo(ctx, &gen.Customer{
+				CustomerId: proto.Int64(100),
+				Name:       proto.String("Après-midi café résumé"),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			goEntries, err := store.ScanTextIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(4))
+
+			javaEntries, err := store.ScanTextIndexJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(4))
+
+			err = CompareTextIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the exact normalized tokens.
+			sortTextEntries(goEntries)
+			Expect(goEntries[0].Token).To(Equal("apres"))
+			Expect(goEntries[1].Token).To(Equal("cafe"))
+			Expect(goEntries[2].Token).To(Equal("midi"))
+			Expect(goEntries[3].Token).To(Equal("resume"))
+
+			// Verify positions: "Après"(0), "-"(skip), "midi"(1), "café"(2), "résumé"(3)
+			Expect(goEntries[0].Positions).To(Equal([]int64{0}))
+			Expect(goEntries[1].Positions).To(Equal([]int64{2}))
+			Expect(goEntries[2].Positions).To(Equal([]int64{1}))
+			Expect(goEntries[3].Positions).To(Equal([]int64{3}))
+		})
+	})
+
+	Describe("Multiple records per token — bunch splitting", func() {
+		It("should return all 25 entries for a shared token from both Go and Java", func() {
+			// Save 25 customers each containing "common" — forces BunchedMap
+			// bunch splitting (bunchSize=20, so at least 2 bunches).
+			for i := int64(200); i < 225; i++ {
+				err := store.SaveCustomerGo(ctx, &gen.Customer{
+					CustomerId: proto.Int64(i),
+					Name:       proto.String(fmt.Sprintf("common extra%d", i)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan for "common" — should find 25 entries.
+			goByToken, err := store.ScanTextIndexByTokenGo(ctx, "common")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goByToken).To(HaveLen(25))
+
+			javaByToken, err := store.ScanTextIndexByTokenJava(ctx, "common")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaByToken).To(HaveLen(25))
+
+			err = CompareTextIndexEntries(goByToken, javaByToken)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify all PKs present (200..224).
+			sortTextEntries(goByToken)
+			for i, entry := range goByToken {
+				Expect(entry.PrimaryKey).To(Equal(int64(200 + i)))
+				Expect(entry.Token).To(Equal("common"))
+				Expect(entry.Positions).To(Equal([]int64{0}))
+			}
+		})
+	})
+
+	Describe("Position list with many positions", func() {
+		It("should record correct positions for repeated tokens", func() {
+			// "the the the the the" — token "the" at positions [0, 1, 2, 3, 4].
+			err := store.SaveCustomerGo(ctx, &gen.Customer{
+				CustomerId: proto.Int64(300),
+				Name:       proto.String("the the the the the"),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			goEntries, err := store.ScanTextIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(1))
+
+			javaEntries, err := store.ScanTextIndexJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(1))
+
+			err = CompareTextIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(goEntries[0].Token).To(Equal("the"))
+			Expect(goEntries[0].PrimaryKey).To(Equal(int64(300)))
+			Expect(goEntries[0].Positions).To(Equal([]int64{0, 1, 2, 3, 4}))
+		})
+	})
+
+	Describe("Cross-language update", func() {
+		It("should re-index when Java updates a Go-written record", func() {
+			// Go saves customer with "alpha beta".
+			err := store.SaveCustomerGo(ctx, &gen.Customer{
+				CustomerId: proto.Int64(400),
+				Name:       proto.String("alpha beta"),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify initial tokens exist.
+			goEntries, err := store.ScanTextIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(2))
+
+			// Java updates same PK with different text.
+			err = store.SaveCustomerJava(ctx, &gen.Customer{
+				CustomerId: proto.Int64(400),
+				Name:       proto.String("gamma delta"),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Old tokens must be gone, new tokens present.
+			goEntries, err = store.ScanTextIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(2))
+
+			javaEntries, err := store.ScanTextIndexJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(2))
+
+			err = CompareTextIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			sortTextEntries(goEntries)
+			Expect(goEntries[0].Token).To(Equal("delta"))
+			Expect(goEntries[1].Token).To(Equal("gamma"))
+
+			// Confirm old tokens are truly gone.
+			alphaEntries, err := store.ScanTextIndexByTokenGo(ctx, "alpha")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(alphaEntries).To(BeEmpty())
+
+			betaEntries, err := store.ScanTextIndexByTokenJava(ctx, "beta")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(betaEntries).To(BeEmpty())
+		})
+	})
+
+	Describe("Empty text cross-language", func() {
+		It("should produce zero index entries for empty name", func() {
+			// Save customer with empty name — no tokens to index.
+			err := store.SaveCustomerGo(ctx, &gen.Customer{
+				CustomerId: proto.Int64(500),
+				Name:       proto.String(""),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			goEntries, err := store.ScanTextIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(BeEmpty())
+
+			javaEntries, err := store.ScanTextIndexJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(BeEmpty())
+		})
+	})
 })

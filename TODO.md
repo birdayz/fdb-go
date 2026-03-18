@@ -548,9 +548,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [ ] **Index types beyond implemented** — Java has more types: MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE, TEXT done.) See 4.10.6.0 upgrade assessment §2.
 
 - [ ] **TEXT index audit items (LOW)** — Remaining from 2026-03-18 audit:
-  - [ ] `commonKeys` deduplication in text update path — redundant BunchedMap ops when text unchanged (performance)
+  - [x] `commonKeys` deduplication in text update path — `removeCommonTextEntries()` skips unchanged text on update
   - [ ] Pipeline parallelism for multi-token updates — Go processes tokens serially, Java uses `forEachAsync` with pipeline (performance)
-  - [ ] `canDeleteWhere` validation — Go should validate prefix alignment with GroupingKeyExpression before DeleteWhere
+  - [x] `canDeleteWhere` validation — rejects non-empty prefix on non-grouped TEXT indexes
   - [ ] `BunchedMap.Get()` read conflict key — skipped when called with ReadTransaction instead of Transaction (no practical impact since always called from Transaction)
   - [ ] InstrumentedBunchedMap for timer/metrics — no observability hooks in Go BunchedMap
   - [ ] BunchedMap `compact()` / `containsKey()` / single-map `Scan()` — missing convenience APIs
