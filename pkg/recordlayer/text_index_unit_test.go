@@ -647,19 +647,15 @@ func TestTokenizerGermanUmlauts(t *testing.T) {
 func TestTokenizerRussianStressMarks(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	// Combining marks (U+0301) are not word chars, so they break the segment.
-	// "прив\u0301ет" segments into ["прив", "\u0301", "ет"].
-	// After filtering non-letter/digit segments and lowercasing:
-	// ["прив", "ет"] (the combining accent segment is filtered out).
+	// With UAX #29 word segmentation, combining marks (U+0301) are Extend
+	// characters that don't break words. "прив\u0301ет" is one word.
+	// After NFKD + strip marks: "привет" (matching Java's BreakIterator behavior).
 	list := tok.TokenizeToList("прив\u0301ет", 0, TokenizerModeIndex)
-	if len(list) != 2 {
-		t.Fatalf("expected 2 tokens, got %v", list)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 token, got %v", list)
 	}
-	if list[0] != "прив" {
-		t.Fatalf("got %q, want %q", list[0], "прив")
-	}
-	if list[1] != "ет" {
-		t.Fatalf("got %q, want %q", list[1], "ет")
+	if list[0] != "привет" {
+		t.Fatalf("got %q, want %q", list[0], "привет")
 	}
 
 	// Plain Russian without stress marks stays intact.

@@ -234,7 +234,9 @@ func (it *BunchedMapMultiIterator) advance() {
 
 		// Check if this key is in the parent subspace.
 		if !bytes.HasPrefix(kv.Key, it.parentKey) {
-			if !it.reverse && bytes.Compare(kv.Key, it.parentKey) > 0 {
+			cmp := bytes.Compare(kv.Key, it.parentKey)
+			if (!it.reverse && cmp > 0) || (it.reverse && cmp < 0) {
+				// Past the parent subspace — done.
 				it.done = true
 				return
 			}

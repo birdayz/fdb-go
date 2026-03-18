@@ -120,7 +120,7 @@ func deserializePositionList(buf *bytes.Reader) ([]int, error) {
 		return nil, fmt.Errorf("reading list size: %w", err)
 	}
 	if serializedSize == 0 {
-		return nil, nil // empty list
+		return []int{}, nil // empty list (non-nil, matching Java's Collections.emptyList())
 	}
 	// serializedSize is an upper bound on the number of entries (exact if all varints are 1 byte).
 	result := make([]int, 0, serializedSize)

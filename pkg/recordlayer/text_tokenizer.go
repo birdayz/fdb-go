@@ -6,6 +6,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/rivo/uniseg"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -226,82 +227,30 @@ func stripMarks(s string) string {
 	return b.String()
 }
 
-// wordSegments splits text into word segments matching the behavior of
-// Java's BreakIterator.getWordInstance(Locale.ROOT).
+// wordSegments splits text into word segments using UAX #29 Unicode Text Segmentation,
+// matching Java's BreakIterator.getWordInstance(Locale.ROOT).
 //
-// The rules (derived from observed JDK behavior on Locale.ROOT):
-//   - Word characters: Unicode letters and digits
-//   - Mid-word characters: '.' (U+002E) and '-' (U+002D) when flanked by
-//     word characters on both sides
-//   - Everything else (whitespace, punctuation, apostrophes, etc.) is a
-//     segment boundary
-//
-// Each contiguous run of word characters (including mid-word punctuation
-// between word characters) forms one segment. Non-word segments are also
-// returned (they are filtered later by the hasLetterOrDigit check).
+// Uses github.com/rivo/uniseg which implements the full UAX #29 word boundary algorithm,
+// including proper handling of:
+//   - MidLetter/MidNumLet (apostrophe, period between letters/digits)
+//   - ExtendNumLet (underscore joining words)
+//   - Extend (combining marks don't break words)
+//   - CJK ideographs (each is its own word segment)
 func wordSegments(text string) []string {
 	if len(text) == 0 {
 		return nil
 	}
-
-	runes := []rune(text)
-	n := len(runes)
 	var segments []string
-	i := 0
-
-	for i < n {
-		r := runes[i]
-		if isWordChar(r) {
-			// Start of a word segment. Consume word chars, allowing
-			// mid-word punctuation (. or -) when followed by a word char.
-			start := i
-			i++
-			for i < n {
-				if isWordChar(runes[i]) {
-					i++
-				} else if isMidWord(runes[i]) && i+1 < n && isWordChar(runes[i+1]) {
-					// Mid-word punctuation between word chars: include both
-					// the punctuation and the next word char.
-					i += 2
-				} else {
-					break
-				}
-			}
-			segments = append(segments, string(runes[start:i]))
-		} else {
-			// Non-word character(s) form their own segment(s).
-			// Emit each non-word character as its own segment to match
-			// Java's BreakIterator which produces fine-grained segments.
-			start := i
-			i++
-			// Group consecutive non-word, non-mid-word chars together,
-			// but each mid-word char that didn't qualify above gets its own.
-			for i < n && !isWordChar(runes[i]) {
-				i++
-			}
-			segments = append(segments, string(runes[start:i]))
+	remaining := text
+	state := -1
+	for len(remaining) > 0 {
+		var word string
+		word, remaining, state = uniseg.FirstWordInString(remaining, state)
+		if word != "" {
+			segments = append(segments, word)
 		}
 	}
 	return segments
-}
-
-// isWordChar returns true for Unicode letters and digits.
-func isWordChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r)
-}
-
-// isMidWord returns true for characters that can appear mid-word when
-// flanked by word characters. Matches Java's BreakIterator for Locale.ROOT
-// which follows UAX #29 MidLetter/MidNumLet rules.
-// Key characters: apostrophe (U+0027), right single quotation mark (U+2019),
-// middle dot (U+00B7), colon (U+003A), period (U+002E).
-func isMidWord(r rune) bool {
-	switch r {
-	case '\'', '\u2019', '\u00B7', ':', '.':
-		return true
-	default:
-		return false
-	}
 }
 
 // TextTokenizerFactory creates instances of a TextTokenizer.
