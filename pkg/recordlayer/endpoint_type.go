@@ -14,6 +14,12 @@ const (
 	EndpointTypeRangeExclusive
 	// EndpointTypeContinuation indicates continuation from a previous scan
 	EndpointTypeContinuation
-	// EndpointTypePrefixRange for prefix-based ranges
-	EndpointTypePrefixRange
+	// EndpointTypePrefixString for prefix-string-based ranges.
+	// When used, the tuple is packed and the trailing null byte (string
+	// terminator in FDB tuple encoding) is stripped.  For the low
+	// endpoint the stripped bytes are used directly.  For the high
+	// endpoint the stripped bytes are strinc'd (trailing 0xFF bytes are
+	// removed, then the last byte is incremented).
+	// Matches Java's EndpointType.PREFIX_STRING.
+	EndpointTypePrefixString
 )

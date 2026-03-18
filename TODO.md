@@ -77,7 +77,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 - [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
 - [x] **BITMAP_VALUE index** — `bitmapValueIndexMaintainer` with FDB atomic BIT_OR (insert) / BIT_AND + CompareAndClear (delete). Position-aligned bitmaps with configurable entrySize (default 10K, max 250K). BY_GROUP scan with position trimming for non-aligned ranges. Unique index enforcement via snapshot read + conflict keys. BITMAP_VALUE aggregate function. Custom `bitmapKVCursor` (raw bytes, not tuple-packed values). 27 unit tests + 6 conformance specs.
-- [x] **TEXT index** — `textIndexMaintainer` with BunchedMap for token→position list storage. `TextIndexBunchedSerializer` with wire-compatible base-128 varint + delta compression (prefix 0x20). `DefaultTextTokenizer` with NFKD normalization, case folding, diacritical removal, Unicode word boundary segmentation. `TextTokenizerRegistry` with factory pattern. BY_TEXT_TOKEN scan type via `BunchedMapMultiIterator` + `TextCursor`. Tokenizer version tracking per record in secondary subspace. 115 unit tests + 31 integration tests. 4 pending (continuation pagination, multi-type filter, duplicate DeleteAllRecords). Conformance tests pending.
+- [x] **TEXT index** — `textIndexMaintainer` with BunchedMap for token→position list storage. `TextIndexBunchedSerializer` with wire-compatible base-128 varint + delta compression (prefix 0x20). `DefaultTextTokenizer` with UAX #29 word segmentation (via `rivo/uniseg`), NFKD normalization, case folding, diacritical removal. `TextTokenizerRegistry` with factory pattern. BY_TEXT_TOKEN scan type via `BunchedMapMultiIterator` + `TextCursor` with time/record scan limits. `EndpointTypePrefixString` for prefix token searches. Tokenizer version tracking per record in secondary subspace. DeleteWhere with PrefixRange + skip handling in Scan. 115 unit tests + 34 integration tests + 7 conformance specs.
 - [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
 - [ ] **CURRENT — TIME_WINDOW_LEADERBOARD index** — Time-windowed ranked sets, reuses RankedSet. ~3,600 lines Java (12+ classes).
 - [ ] **CURRENT — MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. Needs RTree port from fdb-extensions. ~900 lines Java + RTree lib.
@@ -545,7 +545,17 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: TEXT, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE done.) See 4.10.6.0 upgrade assessment §2.
+- [ ] **Index types beyond implemented** — Java has more types: MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE, TEXT done.) See 4.10.6.0 upgrade assessment §2.
+
+- [ ] **TEXT index audit items (LOW)** — Remaining from 2026-03-18 audit:
+  - [ ] `commonKeys` deduplication in text update path — redundant BunchedMap ops when text unchanged (performance)
+  - [ ] Pipeline parallelism for multi-token updates — Go processes tokens serially, Java uses `forEachAsync` with pipeline (performance)
+  - [ ] `canDeleteWhere` validation — Go should validate prefix alignment with GroupingKeyExpression before DeleteWhere
+  - [ ] `BunchedMap.Get()` read conflict key — skipped when called with ReadTransaction instead of Transaction (no practical impact since always called from Transaction)
+  - [ ] InstrumentedBunchedMap for timer/metrics — no observability hooks in Go BunchedMap
+  - [ ] BunchedMap `compact()` / `containsKey()` / single-map `Scan()` — missing convenience APIs
+  - [ ] ByteScanLimiter in TextCursor — byte tracking requires deeper BunchedMapMultiIterator integration
+  - [ ] BunchedMapMultiIterator eager materialization vs streaming — Go materializes all KVs upfront (performance for large scans)
 
 - [x] **VERSION index type** — HIGH. Two phases:
 

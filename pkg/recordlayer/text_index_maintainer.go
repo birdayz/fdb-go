@@ -330,7 +330,7 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 		TextIndexBunchedSerializerInstance(),
 	)
 
-	var cursor RecordCursor[*IndexEntry] = newTextCursor(iterator, m.index)
+	var cursor RecordCursor[*IndexEntry] = newTextCursor(iterator, m.index, scanProperties)
 	if skip > 0 {
 		cursor = SkipCursor(cursor, skip)
 	}

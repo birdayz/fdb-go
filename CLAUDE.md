@@ -420,5 +420,4 @@ Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/MAX_EVER_VERSION/COUNT_NOT_NULL/COUNT_UPDATES/PERMUTED_MIN/PERMUTED_MAX indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
 - **Key gaps**: more key expression types
-- **In progress**: TEXT index (BunchedMap, tokenizer, maintainer — code complete, testing in progress)
-- **Test counts**: 1885 Ginkgo unit/integration specs, 360 conformance specs (2245 total)
+- **Test counts**: 1919 Ginkgo unit/integration specs, 367 conformance specs, 115 unit tests (2401 total)

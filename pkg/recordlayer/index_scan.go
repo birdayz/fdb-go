@@ -89,6 +89,20 @@ func TupleRangeBetweenInclusive(low, high tuple.Tuple) TupleRange {
 	}
 }
 
+// TupleRangePrefixString creates a range scanning all entries whose string
+// element starts with the given prefix. Both endpoints use
+// EndpointTypePrefixString so that the tuple-packed trailing null byte is
+// stripped (low) or strinc'd (high).
+// Matches Java's TupleRange.prefixedBy(String).
+func TupleRangePrefixString(token string) TupleRange {
+	return TupleRange{
+		Low:          tuple.Tuple{token},
+		High:         tuple.Tuple{token},
+		LowEndpoint:  EndpointTypePrefixString,
+		HighEndpoint: EndpointTypePrefixString,
+	}
+}
+
 // Prepend prepends a tuple prefix to both Low and High bounds.
 // Matches Java's TupleRange.prepend(Tuple).
 func (r TupleRange) Prepend(prefix tuple.Tuple) TupleRange {
@@ -127,6 +141,12 @@ func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
 		} else {
 			begin = inc
 		}
+	case EndpointTypePrefixString:
+		// Strip the trailing null byte (string terminator in FDB tuple encoding).
+		// Matches Java's TupleRange.toRange() PREFIX_STRING low handling:
+		//   lowBytes = Arrays.copyOfRange(lowBytes, 0, lowBytes.length - 1)
+		packed := ss.Pack(r.Low)
+		begin = packed[:len(packed)-1]
 	default:
 		begin = ss.FDBKey()
 	}
@@ -140,6 +160,25 @@ func (r TupleRange) ToFDBRange(ss subspace.Subspace) fdb.KeyRange {
 		end = append(packed, 0xFF)
 	case EndpointTypeRangeExclusive:
 		end = ss.Pack(r.High)
+	case EndpointTypePrefixString:
+		// Strip the trailing null byte, then strinc the result.
+		// Matches Java's TupleRange.toRange() PREFIX_STRING high handling:
+		//   strip trailing 0xFF bytes, then increment last byte.
+		packed := ss.Pack(r.High)
+		stripped := packed[:len(packed)-1]
+		// Remove trailing 0xFF bytes
+		newLen := len(stripped)
+		for newLen >= 1 && stripped[newLen-1] == 0xFF {
+			newLen--
+		}
+		if newLen == 0 {
+			end = fdb.Key{0xFF}
+		} else {
+			dest := make([]byte, newLen)
+			copy(dest, stripped[:newLen])
+			dest[newLen-1]++
+			end = dest
+		}
 	default:
 		_, endKey := ss.FDBRangeKeys()
 		end = endKey.FDBKey()
@@ -440,6 +479,9 @@ func (c *indexCursor) initIterator() error {
 		if err != nil {
 			return fmt.Errorf("strinc for exclusive low endpoint: %w", err)
 		}
+	case EndpointTypePrefixString:
+		packed := c.indexSubspace.Pack(c.tupleRange.Low)
+		begin = packed[:len(packed)-1]
 	default:
 		begin = c.indexSubspace.FDBKey()
 	}
@@ -455,6 +497,21 @@ func (c *indexCursor) initIterator() error {
 		end = append(packed, 0xFF)
 	case EndpointTypeRangeExclusive:
 		end = c.indexSubspace.Pack(c.tupleRange.High)
+	case EndpointTypePrefixString:
+		packed := c.indexSubspace.Pack(c.tupleRange.High)
+		stripped := packed[:len(packed)-1]
+		newLen := len(stripped)
+		for newLen >= 1 && stripped[newLen-1] == 0xFF {
+			newLen--
+		}
+		if newLen == 0 {
+			end = fdb.Key{0xFF}
+		} else {
+			dest := make([]byte, newLen)
+			copy(dest, stripped[:newLen])
+			dest[newLen-1]++
+			end = dest
+		}
 	default:
 		_, endKey := c.indexSubspace.FDBRangeKeys()
 		end = endKey.FDBKey()
