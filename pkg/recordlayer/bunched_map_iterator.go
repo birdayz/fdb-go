@@ -219,6 +219,8 @@ func (it *BunchedMapMultiIterator) advance() {
 				}
 				return
 			}
+			// Exhausted this bunch — clear so we don't re-enter it.
+			it.currentEntries = nil
 		}
 
 		// Need next KV from FDB range.
@@ -261,9 +263,8 @@ func (it *BunchedMapMultiIterator) advance() {
 				it.currentSubspaceKey = nextSubspaceKey
 				it.currentSubspaceSuffix = nextSubspaceSuffix
 				it.currentSubspaceTag = it.splitter.SubspaceTag(nextSubspace)
-				it.currentEntries = entries
 
-				// Find the first entry past the continuation key.
+				// Find the first entry strictly past the continuation key.
 				startIdx := -1
 				if it.reverse {
 					for i := len(entries) - 1; i >= 0; i-- {
@@ -282,6 +283,7 @@ func (it *BunchedMapMultiIterator) advance() {
 				}
 
 				if startIdx >= 0 {
+					it.currentEntries = entries
 					it.entryIndex = startIdx
 					e := entries[startIdx]
 					it.nextEntry = &BunchedMapScanEntry{
@@ -292,8 +294,8 @@ func (it *BunchedMapMultiIterator) advance() {
 					}
 					return
 				}
-				// Continuation key was at the end of this bunch, try next.
-				_ = continuationKey
+				// No entries past the continuation key in this bunch.
+				// Do NOT set currentEntries — the bunch is fully consumed.
 				continue
 			} else if bytes.Compare(nextSubspaceSuffix, it.continuation)*(boolToInt(!it.reverse)-boolToInt(it.reverse)) > 0 {
 				// Past the continuation subspace, satisfied.

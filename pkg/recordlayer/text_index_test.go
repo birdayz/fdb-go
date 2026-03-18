@@ -442,7 +442,7 @@ var _ = Describe("TEXT index", func() {
 	// =========================================================================
 	// 9. Scan with continuation (pagination)
 	// =========================================================================
-	PIt("scan with continuation: paginate through results", func() { // TODO: fix BunchedMapMultiIterator continuation handling
+	It("scan with continuation: paginate through results", func() {
 		ks := specSubspace()
 
 		idx := NewTextIndex("customer_name_text", Field("name"))
@@ -1268,7 +1268,7 @@ var _ = Describe("TEXT index", func() {
 	// =========================================================================
 	// 28. Reverse scan with continuation
 	// =========================================================================
-	PIt("reverse scan with continuation: pages in reverse order", func() { // TODO: fix BunchedMapMultiIterator continuation handling
+	It("reverse scan with continuation: pages in reverse order", func() {
 		ks := specSubspace()
 
 		idx := NewTextIndex("customer_name_text", Field("name"))

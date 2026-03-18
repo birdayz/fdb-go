@@ -67,7 +67,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | Type | Maintainer | Mutation/Storage | Priority | Notes |
 |------|-----------|-----------------|----------|-------|
 | TEXT | `TextIndexMaintainer` | BunchedMap token storage | **LOW** | Full-text search with pluggable tokenizers |
-| BITMAP_VALUE | `BitmapValueIndexMaintainer` | Position bitmaps (10K–250K bits per entry) | **LOW** | Sparse position indexing |
+| BITMAP_VALUE | `BitmapValueIndexMaintainer` | Position bitmaps (10K–250K bits per entry) | **DONE** | 27 unit + 6 conformance |
 | PERMUTED_MIN | `PermutedMinMaxIndexMaintainer` | Permuted grouping columns for value-ordered min | **LOW** | Enumerate extrema by value, not group |
 | PERMUTED_MAX | `PermutedMinMaxIndexMaintainer` | Same, max variant | **LOW** | Same as above |
 | MAX_EVER_VERSION | `AtomicMutationIndexMaintainer` | SET_VERSIONSTAMPED_VALUE | **MEDIUM** | Like MAX_EVER_TUPLE but version-aware |
@@ -77,7 +77,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 - [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
 - [x] **BITMAP_VALUE index** — `bitmapValueIndexMaintainer` with FDB atomic BIT_OR (insert) / BIT_AND + CompareAndClear (delete). Position-aligned bitmaps with configurable entrySize (default 10K, max 250K). BY_GROUP scan with position trimming for non-aligned ranges. Unique index enforcement via snapshot read + conflict keys. BITMAP_VALUE aggregate function. Custom `bitmapKVCursor` (raw bytes, not tuple-packed values). 27 unit tests + 6 conformance specs.
-- [ ] **CURRENT — TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, delta-compressed position lists. ~3,500 lines Java (incl BunchedMap).
+- [x] **TEXT index** — `textIndexMaintainer` with BunchedMap for token→position list storage. `TextIndexBunchedSerializer` with wire-compatible base-128 varint + delta compression (prefix 0x20). `DefaultTextTokenizer` with NFKD normalization, case folding, diacritical removal, Unicode word boundary segmentation. `TextTokenizerRegistry` with factory pattern. BY_TEXT_TOKEN scan type via `BunchedMapMultiIterator` + `TextCursor`. Tokenizer version tracking per record in secondary subspace. 115 unit tests + 31 integration tests. 4 pending (continuation pagination, multi-type filter, duplicate DeleteAllRecords). Conformance tests pending.
 - [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
 - [ ] **CURRENT — TIME_WINDOW_LEADERBOARD index** — Time-windowed ranked sets, reuses RankedSet. ~3,600 lines Java (12+ classes).
 - [ ] **CURRENT — MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. Needs RTree port from fdb-extensions. ~900 lines Java + RTree lib.
@@ -545,7 +545,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX and MAX_EVER_VERSION done.) See 4.10.6.0 upgrade assessment §2.
+- [ ] **Index types beyond implemented** — Java has more types: TEXT, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE done.) See 4.10.6.0 upgrade assessment §2.
 
 - [x] **VERSION index type** — HIGH. Two phases:
 
@@ -1038,7 +1038,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 | Area | Coverage | Key Gaps |
 |---|---|---|
 | FDBRecordStore (CRUD) | ~83% | `preloadRecordAsync`, query planning methods, synthetic records |
-| Index types | 14/19 | TEXT, BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD |
+| Index types | 15/19 | TEXT, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD |
 | IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
 | Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
@@ -1063,10 +1063,10 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 - [ ] **`mergeIndex()` / `performOperation()`** — Generic index operation dispatch. **LOW**.
 - [ ] **`isIdempotent()` / `addedRangeWithKey()`** — Internal to Go, not on interface. **LOW**.
 
-### Index types — 5 missing
+### Index types — 4 missing
 
 - [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan. Large scope. **LOW**.
-- [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
+- [x] **BITMAP_VALUE index** — Done. 27 unit tests + 6 conformance specs.
 - [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. **LOW**.
 - [ ] **VECTOR/HNSW index** — 4 distance metrics, RaBitQ quantization. Very large. **LOW**.
 - [ ] **TIME_WINDOW_LEADERBOARD** — Sliding time window score tracking. 12+ Java classes. **LOW**.
@@ -1178,7 +1178,7 @@ These are architectural decisions, not bugs:
 
 **A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.
 
-**B. Niche index types** — BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~ done.)
+**B. Niche index types** — MULTIDIMENSIONAL, VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~BITMAP_VALUE~~ done.)
 
 **C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, ~~dead code removal~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 
