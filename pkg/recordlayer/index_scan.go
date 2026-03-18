@@ -33,6 +33,12 @@ const (
 	// extremum value, ordered by [groupPrefix, value, groupSuffix].
 	// Matches Java's IndexScanType.BY_GROUP.
 	IndexScanByGroup IndexScanType = "BY_GROUP"
+
+	// IndexScanByTimeWindow scans a TIME_WINDOW_LEADERBOARD index within a
+	// specific time window. The scan range contains score bounds; the
+	// leaderboard type and timestamp are provided via TimeWindowScanRange.
+	// Matches Java's IndexScanType.BY_TIME_WINDOW.
+	IndexScanByTimeWindow IndexScanType = "BY_TIME_WINDOW"
 )
 
 // TupleRange specifies a range of tuples for index scanning.
@@ -252,6 +258,9 @@ func (store *FDBRecordStore) ScanIndex(
 			err: fmt.Errorf("TEXT index %q must be scanned with BY_TEXT_TOKEN scan type", index.Name),
 		}
 	}
+	// TIME_WINDOW_LEADERBOARD indexes should use ScanTimeWindowLeaderboard.
+	// Standard ScanIndex falls back to all-time BY_VALUE which is acceptable.
+	// No rejection here — matches Java's behavior where plain scan() works on all-time.
 	maintainer := store.getIndexMaintainer(index)
 	cursor := maintainer.Scan(scanRange, continuation, scanProperties)
 	store.context.Timer().RecordSince(EventScanIndex, startTime)
@@ -277,13 +286,17 @@ func (store *FDBRecordStore) ScanIndexByType(
 	maintainer := store.getIndexMaintainer(index)
 	switch scanType {
 	case IndexScanByRank:
-		rm, ok := maintainer.(*rankIndexMaintainer)
-		if !ok {
+		switch rm := maintainer.(type) {
+		case *rankIndexMaintainer:
+			return rm.ScanByRank(scanRange, continuation, scanProperties)
+		case *timeWindowLeaderboardIndexMaintainer:
+			// BY_RANK on leaderboard: uses all-time leaderboard.
+			return rm.ScanByRankInTimeWindow(AllTimeLeaderboardType, 0, scanRange, continuation, scanProperties)
+		default:
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_RANK scan", index.Name, index.Type),
 			}
 		}
-		return rm.ScanByRank(scanRange, continuation, scanProperties)
 	case IndexScanByTextToken:
 		tm, ok := maintainer.(*textIndexMaintainer)
 		if !ok {
@@ -305,6 +318,45 @@ func (store *FDBRecordStore) ScanIndexByType(
 		}
 	default:
 		return maintainer.Scan(scanRange, continuation, scanProperties)
+	}
+}
+
+// ScanTimeWindowLeaderboard scans a TIME_WINDOW_LEADERBOARD index within a specific
+// time window. The scanType determines how the range is interpreted:
+//   - BY_TIME_WINDOW / BY_VALUE: scanRange contains score bounds
+//   - BY_RANK: scanRange contains rank bounds (converted to score bounds via RankedSet)
+//
+// Matches Java's FDBRecordStore.scanIndex() with TimeWindowScanRange.
+func (store *FDBRecordStore) ScanTimeWindowLeaderboard(
+	index *Index,
+	scanType IndexScanType,
+	leaderboardType int,
+	leaderboardTimestamp int64,
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	if !store.IsIndexScannable(index.Name) {
+		return &errorCursor[*IndexEntry]{
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+		}
+	}
+	maintainer := store.getIndexMaintainer(index)
+	lm, ok := maintainer.(*timeWindowLeaderboardIndexMaintainer)
+	if !ok {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("index %q (type %s) is not a TIME_WINDOW_LEADERBOARD", index.Name, index.Type),
+		}
+	}
+	switch scanType {
+	case IndexScanByTimeWindow, IndexScanByValue:
+		return lm.ScanByTimeWindow(leaderboardType, leaderboardTimestamp, scanRange, continuation, scanProperties)
+	case IndexScanByRank:
+		return lm.ScanByRankInTimeWindow(leaderboardType, leaderboardTimestamp, scanRange, continuation, scanProperties)
+	default:
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("TIME_WINDOW_LEADERBOARD does not support %s scan type", scanType),
+		}
 	}
 }
 

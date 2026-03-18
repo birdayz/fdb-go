@@ -25,8 +25,9 @@ const (
 	IndexTypeMaxEverVersion   = "max_ever_version"
 	IndexTypePermutedMin      = "permuted_min"
 	IndexTypePermutedMax      = "permuted_max"
-	IndexTypeBitmapValue      = "bitmap_value"
-	IndexTypeText             = "text"
+	IndexTypeBitmapValue              = "bitmap_value"
+	IndexTypeText                     = "text"
+	IndexTypeTimeWindowLeaderboard    = "time_window_leaderboard"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -292,6 +293,20 @@ func NewTextIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeText,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewTimeWindowLeaderboardIndex creates a TIME_WINDOW_LEADERBOARD index.
+// TIME_WINDOW_LEADERBOARD indexes maintain multiple ranked sets, one per time window,
+// enabling time-windowed leaderboard queries.
+// Matches Java's new Index(name, rootExpression, IndexTypes.TIME_WINDOW_LEADERBOARD).
+func NewTimeWindowLeaderboardIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeTimeWindowLeaderboard,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

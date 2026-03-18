@@ -971,6 +971,9 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 	case IndexTypeText:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newTextIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
+	case IndexTypeTimeWindowLeaderboard:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}
