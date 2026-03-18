@@ -73,13 +73,13 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | MAX_EVER_VERSION | `AtomicMutationIndexMaintainer` | SET_VERSIONSTAMPED_VALUE | **MEDIUM** | Like MAX_EVER_TUPLE but version-aware |
 | MULTIDIMENSIONAL | `MultidimensionalIndexMaintainer` | Hilbert R-tree spatial indexing | **LOW** | Specialized spatial use case |
 | VECTOR | `VectorIndexMaintainer` | HNSW graph for similarity search | **LOW** | Large subsystem (4.8–4.9) |
-| TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **LOW** | 12+ classes, entire subsystem |
+| TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **DONE** | 22 tests |
 
 - [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
 - [x] **BITMAP_VALUE index** — `bitmapValueIndexMaintainer` with FDB atomic BIT_OR (insert) / BIT_AND + CompareAndClear (delete). Position-aligned bitmaps with configurable entrySize (default 10K, max 250K). BY_GROUP scan with position trimming for non-aligned ranges. Unique index enforcement via snapshot read + conflict keys. BITMAP_VALUE aggregate function. Custom `bitmapKVCursor` (raw bytes, not tuple-packed values). 27 unit tests + 6 conformance specs.
 - [x] **TEXT index** — `textIndexMaintainer` with BunchedMap for token→position list storage. `TextIndexBunchedSerializer` with wire-compatible base-128 varint + delta compression (prefix 0x20). `DefaultTextTokenizer` with UAX #29 word segmentation (via `rivo/uniseg`), NFKD normalization, case folding, diacritical removal. `TextTokenizerRegistry` with factory pattern. BY_TEXT_TOKEN scan type via `BunchedMapMultiIterator` + `TextCursor` with time/record scan limits. `EndpointTypePrefixString` for prefix token searches. Tokenizer version tracking per record in secondary subspace. DeleteWhere with PrefixRange + skip handling in Scan. 115 unit tests + 34 integration tests + 7 conformance specs.
 - [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
-- [ ] **CURRENT — TIME_WINDOW_LEADERBOARD index** — Time-windowed ranked sets, reuses RankedSet. ~3,600 lines Java (12+ classes).
+- [x] **TIME_WINDOW_LEADERBOARD index** — `timeWindowLeaderboardIndexMaintainer` with directory management, per-group sub-directory, multiple ranked sets per time window, PerformWindowUpdate operation, BY_TIME_WINDOW/BY_RANK/BY_VALUE scans, score negation for highScoreFirst, atomic MAX timestamp tracking. Wire-compatible with Java. 22 tests.
 - [ ] **CURRENT — MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. Needs RTree port from fdb-extensions. ~900 lines Java + RTree lib.
 - [ ] **CURRENT — VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization). Needs HNSW port from fdb-extensions. ~900 lines Java + HNSW lib.
 
@@ -198,7 +198,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 8. ~~Store state caching~~ **DONE**
 
 **LOW (specialized / future):**
-9. Remaining index types (TEXT, BITMAP, MULTIDIMENSIONAL, VECTOR, LEADERBOARD) — ~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~ done
+9. Remaining index types (MULTIDIMENSIONAL, VECTOR) — ~~TEXT~~, ~~BITMAP~~, ~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~TIME_WINDOW_LEADERBOARD~~ done
 10. Remaining key expression types (Dimensions, Collate, Order, Atom, Invertible) — ~~Split~~, ~~List~~, ~~LongArithmetic~~, ~~Function~~ done
 11. Synthetic record types (JoinedRecordType, UnnestedRecordType)
 12. Views, UDFs
