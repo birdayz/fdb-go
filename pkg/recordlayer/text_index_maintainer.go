@@ -303,6 +303,13 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 
 	byteRange := scanRange.ToFDBRange(m.indexSubspace)
 
+	// Adjust limit for skip (matching Java's clearSkipAndAdjustLimit).
+	skip := scanProperties.ExecuteProperties.Skip
+	adjustedLimit := scanProperties.ExecuteProperties.ReturnedRowLimit
+	if skip > 0 && adjustedLimit > 0 {
+		adjustedLimit += skip
+	}
+
 	// Determine the read transaction (snapshot vs serializable).
 	var readTx fdb.ReadTransaction
 	if scanProperties.ExecuteProperties.IsolationLevel.IsSnapshot() {
@@ -318,32 +325,48 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 		[]byte(byteRange.Begin.FDBKey()),
 		[]byte(byteRange.End.FDBKey()),
 		continuation,
-		scanProperties.ExecuteProperties.ReturnedRowLimit,
+		adjustedLimit,
 		scanProperties.IsReverse(),
 		TextIndexBunchedSerializerInstance(),
 	)
 
-	return newTextCursor(iterator, m.index)
+	var cursor RecordCursor[*IndexEntry] = newTextCursor(iterator, m.index)
+	if skip > 0 {
+		cursor = SkipCursor(cursor, skip)
+	}
+	return cursor
 }
 
 // DeleteWhere clears all TEXT index data for records matching the prefix.
-// For TEXT indexes, this can only be aligned with grouping keys.
-// Matches Java's TextIndexMaintainer.canDeleteWhere() + StandardIndexMaintainer.deleteWhere().
+// For TEXT indexes, this can only be aligned with grouping keys — once text
+// is tokenized, there's no efficient way to remove documents within the
+// grouped part. Matches Java's TextIndexMaintainer.canDeleteWhere() which
+// delegates to canDeleteGroup().
 func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	// Clear all index entries.
+	// Clear index entries using PrefixRange to include the exact prefix key
+	// (matching Java's Range.startsWith pattern).
 	if len(prefix) == 0 {
-		begin, end := m.indexSubspace.FDBRangeKeys()
-		m.tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
+		r, err := fdb.PrefixRange(m.indexSubspace.Bytes())
+		if err != nil {
+			return fmt.Errorf("text index deleteWhere: %w", err)
+		}
+		m.tx.ClearRange(r)
 	} else {
 		sub := m.indexSubspace.Sub(tupleToTupleElements(prefix)...)
-		begin, end := sub.FDBRangeKeys()
-		m.tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
+		r, err := fdb.PrefixRange(sub.Bytes())
+		if err != nil {
+			return fmt.Errorf("text index deleteWhere: %w", err)
+		}
+		m.tx.ClearRange(r)
 	}
 
 	// Clear tokenizer version entries in secondary subspace.
 	if m.secSubspace != nil {
-		begin, end := m.secSubspace.FDBRangeKeys()
-		m.tx.ClearRange(fdb.KeyRange{Begin: begin, End: end})
+		r, err := fdb.PrefixRange(m.secSubspace.Bytes())
+		if err != nil {
+			return fmt.Errorf("text index deleteWhere: %w", err)
+		}
+		m.tx.ClearRange(r)
 	}
 
 	return nil
