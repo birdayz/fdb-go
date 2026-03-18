@@ -24,6 +24,9 @@ const (
 	FunctionNameScoreForRank          = "score_for_rank"
 	FunctionNameScoreForRankElseSkip  = "score_for_rank_else_skip"
 	FunctionNameCountDistinct         = "count_distinct"
+
+	// BITMAP_VALUE aggregate function name.
+	FunctionNameBitmapValue = "bitmap_value"
 )
 
 // IndexAggregateFunction specifies an aggregate computation to evaluate via an index.
@@ -176,6 +179,8 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		// The operand's ungrouped part must be a prefix of the index expression.
 		return (fn.Name == FunctionNameMin || fn.Name == FunctionNameMax) &&
 			isUngroupedPrefixOf(fn.Operand, idx.RootExpression)
+	case IndexTypeBitmapValue:
+		return fn.Name == FunctionNameBitmapValue && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeRank:
 		return canEvaluateRankAggregate(fn, idx)
 	default:
@@ -191,6 +196,11 @@ func evaluateAggregate(
 	scanRange TupleRange,
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
+	// For BITMAP_VALUE indexes: delegate to bitmap-specific evaluation.
+	if bm, ok := maintainer.(*bitmapValueIndexMaintainer); ok {
+		return evaluateBitmapValueAggregate(ctx, bm, scanRange, isolationLevel)
+	}
+
 	// For PERMUTED_MIN/MAX indexes: delegate to permuted-specific evaluation.
 	// Must check before the generic MIN/MAX path which assumes a plain VALUE index.
 	if pm, ok := maintainer.(*permutedMinMaxIndexMaintainer); ok {

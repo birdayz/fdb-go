@@ -25,6 +25,7 @@ const (
 	IndexTypeMaxEverVersion   = "max_ever_version"
 	IndexTypePermutedMin      = "permuted_min"
 	IndexTypePermutedMax      = "permuted_max"
+	IndexTypeBitmapValue      = "bitmap_value"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -32,6 +33,7 @@ const (
 	IndexOptionUnique              = "unique"
 	IndexOptionClearWhenZero       = "clearWhenZero"
 	IndexOptionReplacedByPrefix    = "replacedBy"
+	IndexOptionBitmapValueEntrySize = "bitmapValueEntrySize"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.
@@ -259,6 +261,20 @@ func NewPermutedMinIndex(name string, rootExpression KeyExpression, permutedSize
 		Options: map[string]string{
 			IndexOptionPermutedSize: strconv.Itoa(permutedSize),
 		},
+	}
+}
+
+// NewBitmapValueIndex creates a BITMAP_VALUE index with the given name and root key expression.
+// BITMAP_VALUE indexes store one bit per record in fixed-size bitmaps, using atomic
+// BIT_OR/BIT_AND operations for set/clear. The position field is the last grouped column.
+// Matches Java's new Index(name, rootExpression, IndexTypes.BITMAP_VALUE).
+func NewBitmapValueIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeBitmapValue,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
 	}
 }
 

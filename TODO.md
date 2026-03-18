@@ -76,12 +76,12 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **LOW** | 12+ classes, entire subsystem |
 
 - [x] **MAX_EVER_VERSION index** — `MaxEverVersionIndexMaintainer` with dual mutation path: `SET_VERSIONSTAMPED_VALUE` (incomplete, with merge function keeping max local version) + `BYTE_MAX` (complete). `UpdateVersionMutation` added to context with merge function support. Metadata validation: GroupingKeyExpression required, exactly 1 VersionKeyExpression in grouped portion, storeRecordVersions required. Aggregate function support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. 18 tests. **MEDIUM**.
-- [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, 5+ query modes (containsAll/Any/Phrase/Prefix). **LOW** — large scope, specialized.
-- [ ] **BITMAP_VALUE index** — Bitmap position storage, BITMAP_VALUE aggregate function. **LOW**.
+- [x] **BITMAP_VALUE index** — `bitmapValueIndexMaintainer` with FDB atomic BIT_OR (insert) / BIT_AND + CompareAndClear (delete). Position-aligned bitmaps with configurable entrySize (default 10K, max 250K). BY_GROUP scan with position trimming for non-aligned ranges. Unique index enforcement via snapshot read + conflict keys. BITMAP_VALUE aggregate function. Custom `bitmapKVCursor` (raw bytes, not tuple-packed values). 27 unit tests + 6 conformance specs.
+- [ ] **CURRENT — TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan type, delta-compressed position lists. ~3,500 lines Java (incl BunchedMap).
 - [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
-- [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree with configurable node sizes. **LOW**.
-- [ ] **VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization, configurable M/ef parameters). Very large. **LOW**.
-- [ ] **TIME_WINDOW_LEADERBOARD index** — Sliding time window score tracking. 12+ Java classes. **LOW**.
+- [ ] **CURRENT — TIME_WINDOW_LEADERBOARD index** — Time-windowed ranked sets, reuses RankedSet. ~3,600 lines Java (12+ classes).
+- [ ] **CURRENT — MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. Needs RTree port from fdb-extensions. ~900 lines Java + RTree lib.
+- [ ] **CURRENT — VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization). Needs HNSW port from fdb-extensions. ~900 lines Java + HNSW lib.
 
 ### 3. New key expression types
 

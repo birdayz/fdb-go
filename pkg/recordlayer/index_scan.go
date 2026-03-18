@@ -230,13 +230,16 @@ func (store *FDBRecordStore) ScanIndexByType(
 		}
 		return rm.ScanByRank(scanRange, continuation, scanProperties)
 	case IndexScanByGroup:
-		pm, ok := maintainer.(*permutedMinMaxIndexMaintainer)
-		if !ok {
+		switch m := maintainer.(type) {
+		case *permutedMinMaxIndexMaintainer:
+			return m.ScanByGroup(scanRange, continuation, scanProperties)
+		case *bitmapValueIndexMaintainer:
+			return m.ScanByGroup(scanRange, continuation, scanProperties)
+		default:
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type),
 			}
 		}
-		return pm.ScanByGroup(scanRange, continuation, scanProperties)
 	default:
 		return maintainer.Scan(scanRange, continuation, scanProperties)
 	}

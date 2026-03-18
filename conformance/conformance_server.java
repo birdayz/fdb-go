@@ -61,6 +61,7 @@ class ConformanceServer {
         new AggregateSteps(),
         new UniqueViolationSteps(),
         new TupleOrderingSteps(),
+        new BitmapValueIndexSteps(),
     };
 
     private static class StepEntry {
