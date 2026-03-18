@@ -24,6 +24,10 @@ const (
 	// Matches Java's IndexScanType.BY_RANK.
 	IndexScanByRank IndexScanType = "BY_RANK"
 
+	// IndexScanByTextToken scans a TEXT index by text token.
+	// Matches Java's IndexScanType.BY_TEXT_TOKEN.
+	IndexScanByTextToken IndexScanType = "BY_TEXT_TOKEN"
+
 	// IndexScanByGroup scans a PERMUTED_MIN/MAX index by group in the
 	// secondary (permuted) subspace. Returns one entry per group with the
 	// extremum value, ordered by [groupPrefix, value, groupSuffix].
@@ -198,11 +202,15 @@ func (store *FDBRecordStore) ScanIndex(
 		}
 	}
 	// BITMAP_VALUE indexes must be scanned with BY_GROUP via ScanIndexByType.
-	// The default Scan() returns raw bitmap entries which are not meaningful
-	// without the BY_GROUP alignment and trimming logic.
 	if index.Type == IndexTypeBitmapValue {
 		return &errorCursor[*IndexEntry]{
 			err: fmt.Errorf("BITMAP_VALUE index %q must be scanned with BY_GROUP scan type", index.Name),
+		}
+	}
+	// TEXT indexes must be scanned with BY_TEXT_TOKEN via ScanIndexByType.
+	if index.Type == IndexTypeText {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("TEXT index %q must be scanned with BY_TEXT_TOKEN scan type", index.Name),
 		}
 	}
 	maintainer := store.getIndexMaintainer(index)
@@ -237,6 +245,14 @@ func (store *FDBRecordStore) ScanIndexByType(
 			}
 		}
 		return rm.ScanByRank(scanRange, continuation, scanProperties)
+	case IndexScanByTextToken:
+		tm, ok := maintainer.(*textIndexMaintainer)
+		if !ok {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("index %q (type %s) does not support BY_TEXT_TOKEN scan", index.Name, index.Type),
+			}
+		}
+		return tm.Scan(scanRange, continuation, scanProperties)
 	case IndexScanByGroup:
 		switch m := maintainer.(type) {
 		case *permutedMinMaxIndexMaintainer:

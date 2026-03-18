@@ -968,6 +968,9 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true)
 	case IndexTypeBitmapValue:
 		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store)
+	case IndexTypeText:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newTextIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

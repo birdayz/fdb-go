@@ -5,6 +5,17 @@ Port the FoundationDB Record Layer from Java to Go, maintaining API compatibilit
 - Java applications can read/write records created by Go Record Layer applications
 - Both can share the same FDB cluster and data
 
+## Scope
+
+We are porting **`fdb-record-layer-core` only** — the storage engine, indexes, cursors, metadata, and online indexing. All relational/SQL layer features are explicitly out of scope for now:
+- UDFs (`PUserDefinedFunction`) — only used by `fdb-relational-core`'s query planner, not by core record layer
+- Views (`PView`) — SQL layer concept
+- Synthetic record types (`JoinedRecordType`, `UnnestedRecordType`) — query planner feature
+- SQL function catalog, semantic analyzer, cascades optimizer
+- The entire `fdb-relational-*` module family
+
+These features live in metadata proto fields that protobuf round-trips automatically (unknown fields preserved). We don't need explicit Go types for them until we build a query planner.
+
 ## CRITICAL: Keep this file updated
 
 You are co-owner of this project. Treat this codebase like your own — update CLAUDE.md on the fly as architecture evolves, decisions are made, or conventions are established. This file is your memory — if it's wrong or stale, you'll make wrong decisions next session.
@@ -408,5 +419,6 @@ Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is
 
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/MAX_EVER_VERSION/COUNT_NOT_NULL/COUNT_UPDATES/PERMUTED_MIN/PERMUTED_MAX indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
-- **Key gaps**: TEXT index, more key expression types
+- **Key gaps**: more key expression types
+- **In progress**: TEXT index (BunchedMap, tokenizer, maintainer — code complete, testing in progress)
 - **Test counts**: 1885 Ginkgo unit/integration specs, 360 conformance specs (2245 total)

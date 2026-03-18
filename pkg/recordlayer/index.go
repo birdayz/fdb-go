@@ -26,6 +26,7 @@ const (
 	IndexTypePermutedMin      = "permuted_min"
 	IndexTypePermutedMax      = "permuted_max"
 	IndexTypeBitmapValue      = "bitmap_value"
+	IndexTypeText             = "text"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -34,6 +35,12 @@ const (
 	IndexOptionClearWhenZero       = "clearWhenZero"
 	IndexOptionReplacedByPrefix    = "replacedBy"
 	IndexOptionBitmapValueEntrySize = "bitmapValueEntrySize"
+
+	// TEXT index options matching Java's IndexOptions.
+	IndexOptionTextTokenizerName              = "textTokenizerName"
+	IndexOptionTextTokenizerVersion           = "textTokenizerVersion"
+	IndexOptionTextAddAggressiveConflictRanges = "textAddAggressiveConflictRanges"
+	IndexOptionTextOmitPositions              = "textOmitPositions"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.
@@ -272,6 +279,19 @@ func NewBitmapValueIndex(name string, rootExpression KeyExpression) *Index {
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeBitmapValue,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewTextIndex creates a TEXT index with the given name and root key expression.
+// TEXT indexes tokenize string fields and store per-token position lists in a BunchedMap.
+// Matches Java's new Index(name, rootExpression, IndexTypes.TEXT).
+func NewTextIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeText,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),

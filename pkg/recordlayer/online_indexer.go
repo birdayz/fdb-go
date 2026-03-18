@@ -1094,7 +1094,8 @@ func isIndexTypeIdempotent(indexType string) bool {
 		IndexTypeMinEverLong, IndexTypeMaxEverLong,
 		IndexTypeMinEverTuple, IndexTypeMaxEverTuple,
 		IndexTypeMaxEverVersion, IndexTypeVersion,
-		IndexTypePermutedMin, IndexTypePermutedMax:
+		IndexTypePermutedMin, IndexTypePermutedMax,
+		IndexTypeText:
 		return true
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
