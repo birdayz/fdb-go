@@ -419,4 +419,4 @@ Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is
 
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, VALUE indexes, VERSION indexes (VersionKeyExpression, SET_VERSIONSTAMPED_KEY mutations, metadata validation), RANK indexes (with EvaluateRecordFunction, OnlineIndexer, aggregate functions), COUNT/SUM/MIN_EVER/MAX_EVER/MAX_EVER_VERSION/COUNT_NOT_NULL/COUNT_UPDATES/PERMUTED_MIN/PERMUTED_MAX indexes, BITMAP_VALUE indexes, TEXT indexes, TIME_WINDOW_LEADERBOARD indexes, KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
-- **Key gaps**: MULTIDIMENSIONAL index, VECTOR/HNSW index, more key expression types
+- **Key gaps**: VECTOR/HNSW index, more key expression types

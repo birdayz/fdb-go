@@ -71,7 +71,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 | PERMUTED_MIN | `PermutedMinMaxIndexMaintainer` | Permuted grouping columns for value-ordered min | **LOW** | Enumerate extrema by value, not group |
 | PERMUTED_MAX | `PermutedMinMaxIndexMaintainer` | Same, max variant | **LOW** | Same as above |
 | MAX_EVER_VERSION | `AtomicMutationIndexMaintainer` | SET_VERSIONSTAMPED_VALUE | **MEDIUM** | Like MAX_EVER_TUPLE but version-aware |
-| MULTIDIMENSIONAL | `MultidimensionalIndexMaintainer` | Hilbert R-tree spatial indexing | **LOW** | Specialized spatial use case |
+| MULTIDIMENSIONAL | `MultidimensionalIndexMaintainer` | Hilbert R-tree spatial indexing | **DONE** | 16 tests |
 | VECTOR | `VectorIndexMaintainer` | HNSW graph for similarity search | **LOW** | Large subsystem (4.8–4.9) |
 | TIME_WINDOW_LEADERBOARD | `TimeWindowLeaderboardIndexMaintainer` | Time-windowed ranked sets | **DONE** | 22 tests |
 
@@ -80,7 +80,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **TEXT index** — `textIndexMaintainer` with BunchedMap for token→position list storage. `TextIndexBunchedSerializer` with wire-compatible base-128 varint + delta compression (prefix 0x20). `DefaultTextTokenizer` with UAX #29 word segmentation (via `rivo/uniseg`), NFKD normalization, case folding, diacritical removal. `TextTokenizerRegistry` with factory pattern. BY_TEXT_TOKEN scan type via `BunchedMapMultiIterator` + `TextCursor` with time/record scan limits. `EndpointTypePrefixString` for prefix token searches. Tokenizer version tracking per record in secondary subspace. DeleteWhere with PrefixRange + skip handling in Scan. 115 unit tests + 34 integration tests + 7 conformance specs.
 - [x] **PERMUTED_MIN/MAX indexes** — `permutedMinMaxIndexMaintainer` with dual subspace: primary VALUE index at IndexKey(2) + permuted entries at IndexSecondarySpaceKey(3). Permuted key reorders trailing grouping columns after the value for value-ordered scans. BY_VALUE scans primary, BY_GROUP scans permuted. Delete re-fetches extremum from primary. Aggregate function support via `FunctionNameMin`/`FunctionNameMax`. **Bug fixed by chaos testing**: UPDATE path didn't handle group membership changes (stale permuted entries). Decomposed into insert/remove helpers. 12 unit tests + 4 chaos random tests.
 - [x] **TIME_WINDOW_LEADERBOARD index** — `timeWindowLeaderboardIndexMaintainer` with directory management, per-group sub-directory, multiple ranked sets per time window, PerformWindowUpdate operation, BY_TIME_WINDOW/BY_RANK/BY_VALUE scans, score negation for highScoreFirst, atomic MAX timestamp tracking. Wire-compatible with Java. 22 tests.
-- [ ] **CURRENT — MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. Needs RTree port from fdb-extensions. ~900 lines Java + RTree lib.
+- [x] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. `rtree.go` (insert/delete/scan with overflow/underflow), `rtree_hilbert.go` (N-dimensional Hilbert curve), `rtree_storage.go` (BY_NODE FDB serialization), `rtree_types.go` (Point/MBR/ItemSlot/ChildSlot), `dimensions_key_expression.go` (prefix/dimensions/suffix splitting). 16 tests.
 - [ ] **CURRENT — VECTOR/HNSW index** — Full HNSW graph (4 distance metrics, RaBitQ quantization). Needs HNSW port from fdb-extensions. ~900 lines Java + HNSW lib.
 
 ### 3. New key expression types
@@ -198,7 +198,7 @@ Also in Java but out of scope for now: `fdb-record-layer-lucene` (full-text via 
 8. ~~Store state caching~~ **DONE**
 
 **LOW (specialized / future):**
-9. Remaining index types (MULTIDIMENSIONAL, VECTOR) — ~~TEXT~~, ~~BITMAP~~, ~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~TIME_WINDOW_LEADERBOARD~~ done
+9. Remaining index types (VECTOR) — ~~TEXT~~, ~~BITMAP~~, ~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~TIME_WINDOW_LEADERBOARD~~, ~~MULTIDIMENSIONAL~~ done
 10. Remaining key expression types (Dimensions, Collate, Order, Atom, Invertible) — ~~Split~~, ~~List~~, ~~LongArithmetic~~, ~~Function~~ done
 11. Synthetic record types (JoinedRecordType, UnnestedRecordType)
 12. Views, UDFs
@@ -545,7 +545,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK continuation tokens** — tested paginated BY_RANK scan with limit 2, 3 pages. Works through standard cursor path. **LOW**.
 
-- [ ] **Index types beyond implemented** — Java has more types: MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE, TEXT done.) See 4.10.6.0 upgrade assessment §2.
+- [ ] **Index types beyond implemented** — Java has one more type: VECTOR. (PERMUTED_MIN/MAX, MAX_EVER_VERSION, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL done.) See 4.10.6.0 upgrade assessment §2.
 
 - [ ] **TEXT index audit items (LOW)** — Remaining from 2026-03-18 audit:
   - [x] `commonKeys` deduplication in text update path — `removeCommonTextEntries()` skips unchanged text on update
@@ -1048,7 +1048,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 | Area | Coverage | Key Gaps |
 |---|---|---|
 | FDBRecordStore (CRUD) | ~83% | `preloadRecordAsync`, query planning methods, synthetic records |
-| Index types | 15/19 | TEXT, MULTIDIMENSIONAL, VECTOR, TIME_WINDOW_LEADERBOARD |
+| Index types | 18/19 | VECTOR |
 | IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
 | Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
@@ -1077,7 +1077,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 - [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan. Large scope. **LOW**.
 - [x] **BITMAP_VALUE index** — Done. 27 unit tests + 6 conformance specs.
-- [ ] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. **LOW**.
+- [x] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. 16 tests.
 - [ ] **VECTOR/HNSW index** — 4 distance metrics, RaBitQ quantization. Very large. **LOW**.
 - [ ] **TIME_WINDOW_LEADERBOARD** — Sliding time window score tracking. 12+ Java classes. **LOW**.
 
@@ -1188,7 +1188,7 @@ These are architectural decisions, not bugs:
 
 **A. Huge features** — TEXT index (Lucene-style), query planner, synthetic record types. Each is weeks of work.
 
-**B. Niche index types** — MULTIDIMENSIONAL, VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~BITMAP_VALUE~~ done.)
+**B. Niche index types** — VECTOR. Not needed day one. (~~PERMUTED_MIN/MAX~~, ~~MAX_EVER_VERSION~~, ~~BITMAP_VALUE~~, ~~TEXT~~, ~~TIME_WINDOW_LEADERBOARD~~, ~~MULTIDIMENSIONAL~~ done.)
 
 **C. Polish** — ~~Timer/instrumentation~~, ~~store state caching~~, ~~dead code removal~~, CursorLimitManager refactor, API cleanup. Important for production but not feature-blocking.
 
