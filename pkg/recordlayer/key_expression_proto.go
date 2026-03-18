@@ -189,10 +189,31 @@ func KeyExpressionFromProto(expr *gen.KeyExpression) (KeyExpression, error) {
 		root = l
 	}
 
+	if expr.Dimensions != nil {
+		found++
+		d, err := dimensionsFromProto(expr.Dimensions)
+		if err != nil {
+			return nil, err
+		}
+		root = d
+	}
+
 	if root == nil || found > 1 {
 		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
 	}
 	return root, nil
+}
+
+// dimensionsFromProto reconstructs a DimensionsKeyExpression from a proto Dimensions.
+func dimensionsFromProto(d *gen.Dimensions) (*DimensionsKeyExpression, error) {
+	if d.WholeKey == nil {
+		return nil, fmt.Errorf("dimensions expression missing whole_key")
+	}
+	wholeKey, err := KeyExpressionFromProto(d.WholeKey)
+	if err != nil {
+		return nil, fmt.Errorf("dimensions whole_key: %w", err)
+	}
+	return Dimensions(wholeKey, int(d.GetPrefixSize()), int(d.GetDimensionsSize())), nil
 }
 
 // fieldFromProto reconstructs a FieldKeyExpression from a proto Field.

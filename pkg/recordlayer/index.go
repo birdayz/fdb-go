@@ -28,6 +28,7 @@ const (
 	IndexTypeBitmapValue              = "bitmap_value"
 	IndexTypeText                     = "text"
 	IndexTypeTimeWindowLeaderboard    = "time_window_leaderboard"
+	IndexTypeMultidimensional         = "multidimensional"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -307,6 +308,19 @@ func NewTimeWindowLeaderboardIndex(name string, rootExpression KeyExpression) *I
 	return &Index{
 		Name:           name,
 		Type:           IndexTypeTimeWindowLeaderboard,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options:        make(map[string]string),
+	}
+}
+
+// NewMultidimensionalIndex creates a MULTIDIMENSIONAL index backed by a Hilbert R-tree.
+// The root expression must be a DimensionsKeyExpression that specifies prefix, dimensions, and suffix.
+// Matches Java's new Index(name, rootExpression, IndexTypes.MULTIDIMENSIONAL).
+func NewMultidimensionalIndex(name string, rootExpression KeyExpression) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeMultidimensional,
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),
