@@ -197,6 +197,14 @@ func (store *FDBRecordStore) ScanIndex(
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
+	// BITMAP_VALUE indexes must be scanned with BY_GROUP via ScanIndexByType.
+	// The default Scan() returns raw bitmap entries which are not meaningful
+	// without the BY_GROUP alignment and trimming logic.
+	if index.Type == IndexTypeBitmapValue {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("BITMAP_VALUE index %q must be scanned with BY_GROUP scan type", index.Name),
+		}
+	}
 	maintainer := store.getIndexMaintainer(index)
 	cursor := maintainer.Scan(scanRange, continuation, scanProperties)
 	store.context.Timer().RecordSince(EventScanIndex, startTime)

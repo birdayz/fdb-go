@@ -701,9 +701,9 @@ var _ = Describe("BitmapValueIndex", func() {
 	})
 
 	// =========================================================================
-	// 14. Aggregate on empty group returns nil
+	// 14. Aggregate on empty group returns zero-filled buffer (matches Java)
 	// =========================================================================
-	It("aggregate: empty group returns nil", func() {
+	It("aggregate: empty group returns zero-filled buffer", func() {
 		ks := specSubspace()
 
 		idx := NewBitmapValueIndex("order_bitmap_empty_agg", GroupBy(Field("order_id"), Field("price")))
@@ -724,7 +724,14 @@ var _ = Describe("BitmapValueIndex", func() {
 				},
 				TupleRangeAll, IsolationLevelSerializable)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(BeNil())
+			// Java returns zero-filled buffer of entrySize bytes, not nil.
+			Expect(result).NotTo(BeNil())
+			bm, ok := result[0].([]byte)
+			Expect(ok).To(BeTrue())
+			// All zeros
+			for _, b := range bm {
+				Expect(b).To(Equal(byte(0)))
+			}
 
 			return nil, nil
 		})
@@ -869,13 +876,12 @@ var _ = Describe("BitmapValueIndex", func() {
 	})
 
 	// =========================================================================
-	// 17. Scan via store.ScanIndex (BY_VALUE / raw)
+	// 17. ScanIndex rejects BITMAP_VALUE (must use BY_GROUP)
 	// =========================================================================
-	It("ScanIndex (BY_VALUE) returns raw bitmap entries", func() {
+	It("ScanIndex rejects BITMAP_VALUE index (must use BY_GROUP)", func() {
 		ks := specSubspace()
 
-		idx := NewBitmapValueIndex("order_bitmap_raw", GroupBy(Field("order_id")))
-		idx.Options[IndexOptionBitmapValueEntrySize] = "10"
+		idx := NewBitmapValueIndex("order_bitmap_raw", GroupBy(Field("order_id"), Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -888,25 +894,11 @@ var _ = Describe("BitmapValueIndex", func() {
 
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100)})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(12), Price: proto.Int32(200)})
-			Expect(err).NotTo(HaveOccurred())
 
-			// ScanIndex uses BY_VALUE → raw bitmap scan, same as Scan().
-			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(2))
-
-			// Entry at aligned 0: bit 3.
-			Expect(entries[0].Key).To(Equal(tuple.Tuple{int64(0)}))
-			bm0, ok := entries[0].Value[0].([]byte)
-			Expect(ok).To(BeTrue())
-			Expect(hasBit(bm0, 3)).To(BeTrue())
-
-			// Entry at aligned 10: bit 2 (12-10=2).
-			Expect(entries[1].Key).To(Equal(tuple.Tuple{int64(10)}))
-			bm10, ok := entries[1].Value[0].([]byte)
-			Expect(ok).To(BeTrue())
-			Expect(hasBit(bm10, 2)).To(BeTrue())
+			// ScanIndex (BY_VALUE default) should reject BITMAP_VALUE — matches Java.
+			_, err = AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("BY_GROUP"))
 
 			return nil, nil
 		})

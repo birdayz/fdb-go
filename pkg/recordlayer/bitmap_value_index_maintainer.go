@@ -251,13 +251,6 @@ func (m *bitmapValueIndexMaintainer) checkBitmapUniqueness(fdbKey []byte, offset
 		byteIdx := offset / 8
 		if int(byteIdx) < len(existing) && (existing[byteIdx]&(1<<(offset%8))) != 0 {
 			// Bit is already set — uniqueness violation.
-			isWriteOnly := m.store != nil && m.store.isIndexWriteOnly(m.index)
-			if isWriteOnly {
-				if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, nil); err != nil {
-					return err
-				}
-				return nil
-			}
 			return &RecordIndexUniquenessViolationError{
 				IndexName:  m.index.Name,
 				IndexKey:   entry.key,
@@ -718,7 +711,7 @@ func evaluateBitmapValueAggregate(
 	}
 
 	if !wrote {
-		return nil, nil
+		return tuple.Tuple{buf}, nil // Return zero-filled buffer matching Java
 	}
 
 	return tuple.Tuple{buf}, nil

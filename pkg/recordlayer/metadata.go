@@ -604,6 +604,28 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Validate BITMAP_VALUE indexes.
+	// Matches Java's BitmapValueIndexMaintainerFactory.getIndexValidator() which calls
+	// validateGrouping(1) and validateNotVersion(). The root expression must be a
+	// GroupingKeyExpression with exactly 1 grouped column (the position field).
+	for _, idx := range indexes {
+		if idx.Type != IndexTypeBitmapValue {
+			continue
+		}
+		gke, ok := idx.RootExpression.(*GroupingKeyExpression)
+		if !ok {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"BITMAP_VALUE index %q requires a GroupingKeyExpression as root expression; "+
+					"wrap with GroupBy()",
+				idx.Name)}
+		}
+		if gke.GetGroupedCount() != 1 {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"BITMAP_VALUE index %q must have exactly 1 grouped column (the position field), got %d",
+				idx.Name, gke.GetGroupedCount())}
+		}
+	}
+
 	// Validate VERSION indexes.
 	// Matches Java's VersionIndexMaintainerFactory.getIndexValidator() which calls:
 	//   validateNotGrouping(), validateStoresRecordVersions(), validateVersionKey(), validateNotUnique().
