@@ -95,12 +95,12 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — Missing `evaluateRecordFunction`** — Implemented: RANK (all-time), TIME_WINDOW_RANK. `timeWindowRank()` evaluates entries, finds best contained score, looks up rank in per-window ranked set.
 - [x] **HIGH — Missing `evaluateAggregateFunction`** — Implemented: TIME_WINDOW_COUNT (ranked set size), SCORE_FOR_TIME_WINDOW_RANK/ELSE_SKIP (GetNth + un-negate), TIME_WINDOW_RANK_FOR_SCORE (negate + Rank). Wired into canEvaluateAggregate dispatch.
 - [x] **MEDIUM — `Rebuild.IF_OVERLAPPING_CHANGED` misses all-time addendum** — Fixed: triggers rebuild on initial directory creation and all-time addition.
-- [ ] **MEDIUM — Missing `SaveSubDirectory`** — Can read per-group highScoreFirst overrides but not write them.
+- [x] **MEDIUM — Missing `SaveSubDirectory`** — Implemented: `SaveSubDirectory(group, highScoreFirst)` on maintainer. 2 tests.
 - [x] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — Fixed: returns error on corrupt SubspaceKey.
-- [ ] **HIGH — No chaos testing** — Need commit-unknown fault injection tests.
-- [ ] **HIGH — No conformance tests** — Need Go↔Java cross-validation.
-- [ ] **HIGH — No OnlineIndexer test** for this index type.
-- [ ] **HIGH — No RebuildIndex test** for this index type.
+- [x] **HIGH — No chaos testing** — 15 chaos tests: basic, commit-unknown (insert/overwrite/delete), duplicate scores, multiple windows, highScoreFirst, random+heavy stress (200-300 ops, 5-20% fault rate), all fault types.
+- [ ] **HIGH — No conformance tests** — Need Go↔Java cross-validation. Requires Java conformance server leaderboard steps.
+- [x] **HIGH — No OnlineIndexer test** — 2 tests: full build, chunked build with small limit.
+- [x] **HIGH — No RebuildIndex test** — 2 tests: explicit rebuild, PerformWindowUpdate ALWAYS rebuild.
 
 #### MULTIDIMENSIONAL — wire format INCOMPATIBLE, needs rewrite
 
