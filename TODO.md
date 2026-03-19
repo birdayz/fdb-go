@@ -120,25 +120,26 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (150 ops, 5% fault rate). Model-based verification computes expected entries from model, scans R-tree, set-based diff.
 - [x] **Bug — Overflow/underflow re-fetched stale sibling from FDB** — Fixed: in-memory modified node substituted for its re-fetched copy in all overflow/underflow paths.
 
-#### VECTOR/HNSW — wire format INCOMPATIBLE, needs ground-up storage rewrite
+#### VECTOR/HNSW — wire-compatible, needs conformance + additional features
 
-- [ ] **CRITICAL — Wire format completely incompatible** — different key structure (flat vs per-layer), different value encoding (float64 tuple elements vs byte arrays), different metadata storage, different neighbor representation (with vs without distances). Needs complete storage rewrite to match Java's `CompactStorageAdapter`.
-- [ ] **CRITICAL — Layer assignment non-deterministic** — Go uses `rand.NewSource(42)` global PRNG. Java uses `splitMixDouble(primaryKey.hashCode())` — deterministic per PK. Breaks idempotency on retry, breaks delete correctness. Fix: implement PK-based hash.
-- [ ] **CRITICAL — Delete does NOT repair graph** — just removes connections. Java does multi-phase repair with 1st/2nd degree neighbor reconnection. Progressive quality degradation, unreachable graph islands.
-- [ ] **HIGH — `randomLevel()` can return MaxInt** — `Float64()` returning 0.0 causes `log(0) = -Inf`, integer overflow. Fix: clamp or use `1 - Float64()`.
-- [ ] **HIGH — No duplicate detection on insert** — Java checks `exists()` and returns early. Go blindly inserts, creating stale neighbor pointers.
+- [x] **CRITICAL — Wire format completely incompatible** — Fixed: per-layer key `(layer, PK)`, COMPACT value `(kind, vectorTuple, neighborsTuple)` matching Java's `CompactStorageAdapter`. Vector serialization: type byte + big-endian float64. Access info subspace for entry point.
+- [x] **CRITICAL — Layer assignment non-deterministic** — Fixed: `topLayer(primaryKey, m)` using `splitMixDouble(javaHashCode(pk.Pack()))`. Deterministic per PK, matching Java's `Primitives.topLayer()`.
+- [x] **CRITICAL — Delete does NOT repair graph** — Fixed: multi-phase repair via `repairNeighbor()`. Finds candidates from neighbors-of-neighbors, selects best by distance, respects M/MMax limits. Entry point promotion on delete.
+- [x] **HIGH — `randomLevel()` can return MaxInt** — Fixed: replaced with `topLayer()` which uses `math.Floor(-math.Log(u) * lambda)` with clamped input (u = 1.0 - splitMixDouble, always > 0).
+- [x] **HIGH — No duplicate detection on insert** — Fixed: checks layer 0 existence before inserting.
 - [ ] **HIGH — Missing prefix partitioning** — Java supports independent HNSW per prefix via skip-scan. Go has single global graph.
 - [ ] **HIGH — Missing BY_DISTANCE scan type** — Java has full cursor-based kNN scan with continuation. Go returns errorCursor on Scan().
 - [ ] **HIGH — Missing write locks** — Java uses `LockIdentifier` on insert/delete.
-- [ ] **HIGH — Missing Config validation** — Go allows any values including invalid ones (M=0, efConstruction=-1).
+- [x] **HIGH — Missing Config validation** — Fixed: validates numDimensions >= 1, m in [4,200], mMax in [4,200], mMax0 in [4,300], efConstruction in [100,400].
 - [ ] **MEDIUM — Only float64 vectors** — Java supports Float, Double, Half precision via `RealVector` hierarchy.
 - [ ] **MEDIUM — Missing extended neighbor selection heuristic** — Go uses simple top-M. Java supports `extendCandidates` + `keepPrunedConnections`.
 - [ ] **MEDIUM — Cosine distance can return negative** — no clamping for floating-point edge cases.
-- [ ] **MEDIUM — `vectorIndexMaintainer.Update` creates new graph per entry** — resets PRNG state, wasteful.
+- [x] **MEDIUM — `vectorIndexMaintainer.Update` creates new graph per entry** — Fixed: single graph instance per maintainer, no PRNG reset.
 - [ ] **LOW — Missing RaBitQ quantization** — optional lossy quantization for large-scale.
 - [ ] **HIGH — No search quality/recall test** — no brute-force comparison to verify results.
-- [ ] **HIGH — No conformance tests** — moot until wire format is fixed.
+- [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation.
 - [ ] **HIGH — No chaos testing**.
+- [ ] **HIGH — No high-dimensional vector tests** (128D, 768D).
 - [ ] **HIGH — No high-dimensional vector tests** (128D, 768D).
 
 ### 3. New key expression types
