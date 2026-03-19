@@ -191,7 +191,7 @@ func (d *leaderboardDirectory) removeLeaderboard(lb *leaderboard) {
 		return
 	}
 	for i, existing := range lbs {
-		if existing == lb {
+		if existing.StartTimestamp == lb.StartTimestamp && existing.EndTimestamp == lb.EndTimestamp {
 			d.leaderboards[lb.Type] = append(lbs[:i], lbs[i+1:]...)
 			break
 		}
@@ -334,10 +334,11 @@ func encodeSignedLong(value int64) []byte {
 }
 
 // negateScore negates the score element at the given position in a tuple for high-score-first ordering.
+// Returns error if the element type is not a supported numeric type.
 // Matches Java's TupleHelpers.negate() + TupleHelpers.set().
-func negateScore(t tuple.Tuple, position int) tuple.Tuple {
+func negateScore(t tuple.Tuple, position int) (tuple.Tuple, error) {
 	if position < 0 || position >= len(t) {
-		return t
+		return t, nil
 	}
 	result := make(tuple.Tuple, len(t))
 	copy(result, t)
@@ -363,14 +364,18 @@ func negateScore(t tuple.Tuple, position int) tuple.Tuple {
 		result[position] = -v
 	case float32:
 		result[position] = -float64(v)
+	case nil:
+		// nil (null) values are not negated — pass through. Matches Java's null handling.
+	default:
+		return nil, fmt.Errorf("negateScore: unsupported type %T at position %d", t[position], position)
 	}
-	return result
+	return result, nil
 }
 
 // negateScoreRange negates a TupleRange for high-score-first scanning.
 // Swaps low/high and negates the score element at groupPrefixSize position.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.negateScoreRange().
-func negateScoreRange(r TupleRange, groupPrefixSize int) TupleRange {
+func negateScoreRange(r TupleRange, groupPrefixSize int) (TupleRange, error) {
 	low := r.Low
 	high := r.High
 	lowEndpoint := r.LowEndpoint
@@ -381,16 +386,26 @@ func negateScoreRange(r TupleRange, groupPrefixSize int) TupleRange {
 			lowEndpoint = EndpointTypeTreeEnd
 		}
 	} else {
-		low = negateScore(low, groupPrefixSize)
+		var err error
+		low, err = negateScore(low, groupPrefixSize)
+		if err != nil {
+			return TupleRange{}, err
+		}
 	}
 
 	if high == nil || len(high) < groupPrefixSize {
 		// NOTE: Java checks lowEndpoint here (not highEndpoint). Matching Java exactly.
+		// This is a known Java quirk where the first if-block may have mutated lowEndpoint
+		// from TREE_START to TREE_END, and this second block then sees the mutated value.
 		if lowEndpoint == EndpointTypeTreeEnd {
 			lowEndpoint = EndpointTypeTreeStart
 		}
 	} else {
-		high = negateScore(high, groupPrefixSize)
+		var err error
+		high, err = negateScore(high, groupPrefixSize)
+		if err != nil {
+			return TupleRange{}, err
+		}
 	}
 
 	// Swap: high becomes low, low becomes high (with swapped endpoints).
@@ -399,7 +414,7 @@ func negateScoreRange(r TupleRange, groupPrefixSize int) TupleRange {
 		High:         low,
 		LowEndpoint:  highEndpoint,
 		HighEndpoint: lowEndpoint,
-	}
+	}, nil
 }
 
 // orderedScoreIndexKey represents an index entry with its score key (possibly negated)

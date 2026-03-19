@@ -2107,7 +2107,8 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		// math.MinInt64 cannot be negated as int64 (overflow).
 		// negateScore should produce a *big.Int with value 2^63.
 		input := tuple.Tuple{int64(math.MinInt64)}
-		result := negateScore(input, 0)
+		result, err := negateScore(input, 0)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(HaveLen(1))
 
 		bigVal, ok := result[0].(*big.Int)
@@ -2116,7 +2117,8 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		Expect(bigVal.Cmp(expected)).To(Equal(0))
 
 		// Round-trip: negating the big.Int should give back MinInt64.
-		roundTrip := negateScore(result, 0)
+		roundTrip, err := negateScore(result, 0)
+		Expect(err).NotTo(HaveOccurred())
 		// math.MinInt64 stores as Go `int` (untyped constant default) in the tuple.
 		Expect(roundTrip[0]).To(BeNumerically("==", math.MinInt64))
 	})
@@ -2372,25 +2374,16 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank3).To(Equal(int64(1))) // price=200 → rank 1
 
-			// TIME_WINDOW_RANK for window type=1, timestamp=1500:
-			// Only records 1 and 2 are in this window.
-			// In the window: (100,1200)→rank 0, (300,1500)→rank 1
-			// Record 3 (timestamp=500) should return nil (not in this window).
+			// TIME_WINDOW_RANK requires TimeWindowForFunction (not yet implemented).
+			// Verify it returns a clear error rather than silently returning wrong data.
 			twFn := &IndexRecordFunction{
 				Name:    FunctionNameTimeWindowRank,
 				Operand: idx.RootExpression,
 				Index:   idx.Name,
 			}
-
-			// For now, TIME_WINDOW_RANK falls back to all-time (known limitation).
-			// Verify it at least returns a rank without error.
-			twRank1, err := store.EvaluateRecordFunction(twFn, rec1)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(twRank1).NotTo(BeNil())
-
-			twRank2, err := store.EvaluateRecordFunction(twFn, rec2)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(twRank2).NotTo(BeNil())
+			_, twErr := store.EvaluateRecordFunction(twFn, rec1)
+			Expect(twErr).To(HaveOccurred())
+			Expect(twErr.Error()).To(ContainSubstring("not yet implemented"))
 
 			return nil, nil
 		})

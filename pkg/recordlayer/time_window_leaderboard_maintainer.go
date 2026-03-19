@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -107,7 +108,14 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 	}
 
 	allLeaderboards := dir.allLeaderboards()
-	valueBytes := tuple.Tuple{}.Pack()
+
+	// Entry value matches Java's indexEntries.get(0).getValue().
+	var entryValue []byte
+	if len(entries) > 0 && entries[0].value != nil {
+		entryValue = entries[0].value.Pack()
+	} else {
+		entryValue = tuple.Tuple{}.Pack()
+	}
 
 	for _, lb := range allLeaderboards {
 		for _, gs := range groupedScores {
@@ -132,10 +140,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 			if remove {
 				m.tx.Clear(fdb.Key(keyBytes))
 			} else {
-				if err := checkKeyValueSizes(m.index, bestScore.entry.primaryKey, keyBytes, valueBytes); err != nil {
+				if err := checkKeyValueSizes(m.index, bestScore.entry.primaryKey, keyBytes, entryValue); err != nil {
 					return err
 				}
-				m.tx.Set(fdb.Key(keyBytes), valueBytes)
+				m.tx.Set(fdb.Key(keyBytes), entryValue)
 			}
 
 			// Update RankedSet.
@@ -149,8 +157,8 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 		}
 	}
 
-	// Track latest timestamp via atomic MAX.
-	if !remove && latestTimestamp != nil {
+	// Track latest timestamp via atomic MAX (both insert and remove, matching Java).
+	if latestTimestamp != nil {
 		m.tx.Max(m.indexSubspace.FDBKey(), encodeSignedLong(*latestTimestamp))
 	}
 
@@ -251,7 +259,11 @@ func (m *timeWindowLeaderboardIndexMaintainer) groupOrderedScoreIndexKeys(
 		}
 
 		if highScoreFirst {
-			scoreKey = negateScore(scoreKey, 0)
+			var err error
+			scoreKey, err = negateScore(scoreKey, 0)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 
 		// Extract timestamp (position 1 in score key).
@@ -346,16 +358,18 @@ func (m *timeWindowLeaderboardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) e
 		// Clear B-tree entries using strinc (not Subspace.range()).
 		indexKey := m.indexSubspace.Pack(leaderboardGroupKey)
 		inc, err := fdb.Strinc(indexKey)
-		if err == nil {
-			m.tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(indexKey), End: fdb.Key(inc)})
+		if err != nil {
+			return fmt.Errorf("leaderboard DeleteWhere: strinc index key: %w", err)
 		}
+		m.tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(indexKey), End: fdb.Key(inc)})
 
 		// Clear ranked set entries.
 		ranksetKey := m.secondarySubspace.Pack(leaderboardGroupKey)
 		rinc, err := fdb.Strinc(ranksetKey)
-		if err == nil {
-			m.tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(ranksetKey), End: fdb.Key(rinc)})
+		if err != nil {
+			return fmt.Errorf("leaderboard DeleteWhere: strinc rankset key: %w", err)
 		}
+		m.tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(ranksetKey), End: fdb.Key(rinc)})
 	}
 	return nil
 }
@@ -460,7 +474,11 @@ func (m *timeWindowLeaderboardIndexMaintainer) scanWithTimeWindow(
 	actualRange := scoreRange
 	actualProps := scanProperties
 	if highScoreFirst && !isRankScan {
-		actualRange = negateScoreRange(scoreRange, groupPrefixSize)
+		var err error
+		actualRange, err = negateScoreRange(scoreRange, groupPrefixSize)
+		if err != nil {
+			return &errorCursor[*IndexEntry]{err: err}
+		}
 		actualProps.Reverse = !actualProps.Reverse
 	}
 
@@ -485,7 +503,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) getIndexEntry(
 	groupPrefixSize int,
 ) (*IndexEntry, error) {
 	if len(rawEntry.Key) < 1 {
-		return rawEntry, nil
+		return nil, fmt.Errorf("leaderboard getIndexEntry: empty key in scan result")
 	}
 
 	// Remove leaderboard subspace key (first element).
@@ -506,7 +524,11 @@ func (m *timeWindowLeaderboardIndexMaintainer) getIndexEntry(
 
 	key := rawKey
 	if highScoreFirst {
-		key = negateScore(rawKey, groupPrefixSize)
+		var err error
+		key, err = negateScore(rawKey, groupPrefixSize)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &IndexEntry{
@@ -645,19 +667,25 @@ func (m *timeWindowLeaderboardIndexMaintainer) getGroupingCount() int {
 }
 
 // PerformWindowUpdate executes a window update operation on the leaderboard directory.
-// store is needed for RebuildIndex when rebuild is triggered.
+// store is required for RebuildIndex when rebuild is triggered.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.performOperation(WindowUpdate).
 func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeWindowLeaderboardWindowUpdate, store *FDBRecordStore) error {
-	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
-	if err != nil {
-		return err
-	}
-
+	rebuild := update.Rebuild == TimeWindowRebuildAlways
 	changed := false
-	rebuild := false
 
 	isRebuildConditional := func() bool {
-		return update.Rebuild == TimeWindowRebuildIfOverlappingChanged
+		return !rebuild && update.Rebuild == TimeWindowRebuildIfOverlappingChanged
+	}
+
+	// Java's loadDirectory() returns null when rebuild==ALWAYS, skipping the FDB read.
+	// This ensures ALWAYS rebuild starts with a fresh directory (NextKey=0, no old windows).
+	var dir *leaderboardDirectory
+	if !rebuild {
+		var err error
+		dir, err = loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Initialize or validate directory. Matches Java's UpdateState.setDirectory().
@@ -731,14 +759,15 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 	}
 
 	// Check overlapping records for conditional rebuild.
-	if update.Rebuild == TimeWindowRebuildAlways {
-		rebuild = true
-	} else if isRebuildConditional() && !rebuild && earliestAddedStart != nil {
+	if isRebuildConditional() && earliestAddedStart != nil {
 		latestBytes, err := m.tx.Get(m.indexSubspace.FDBKey()).Get()
 		if err != nil {
 			return err
 		}
-		if latestBytes != nil && len(latestBytes) == 8 {
+		if latestBytes != nil {
+			if len(latestBytes) != 8 {
+				return fmt.Errorf("leaderboard: unexpected latestTimestamp length %d (expected 8)", len(latestBytes))
+			}
 			unsigned := binary.LittleEndian.Uint64(latestBytes)
 			latestTimestamp := int64(unsigned) + math.MinInt64
 			if latestTimestamp >= *earliestAddedStart {
@@ -750,6 +779,9 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 	// Execute rebuild: delete all data, save directory, then rebuild index.
 	// Matches Java's UpdateState.save(): deleteWhere → saveDirectory → store.rebuildIndex.
 	if rebuild {
+		if store == nil {
+			return fmt.Errorf("leaderboard: rebuild requires non-nil store")
+		}
 		if err := m.DeleteWhere(nil); err != nil {
 			return err
 		}
@@ -759,7 +791,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 			return err
 		}
 	}
-	if rebuild && store != nil {
+	if rebuild {
 		if err := store.RebuildIndex(m.index); err != nil {
 			return err
 		}
@@ -792,13 +824,12 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateRecordFunction(
 ) (*int64, error) {
 	switch fn.Name {
 	case FunctionNameRank:
-		// All-time leaderboard.
+		// All-time leaderboard. Matches Java's dispatch for FunctionNames.RANK.
 		return m.timeWindowRank(record, AllTimeLeaderboardType, 0)
-	case FunctionNameTimeWindowRank:
-		// Requires TimeWindowForFunction embedded in fn — for now,
-		// extract type and timestamp from fn metadata if available.
-		// Fall back to all-time.
-		return m.timeWindowRank(record, AllTimeLeaderboardType, 0)
+	case FunctionNameTimeWindowRank, FunctionNameTimeWindowRankAndEntry:
+		// These require a TimeWindowForFunction to specify the target time window.
+		// Not yet implemented — return error rather than silently returning wrong data.
+		return nil, fmt.Errorf("leaderboard index %q: %q requires TimeWindowForFunction (not yet implemented)", m.index.Name, fn.Name)
 	default:
 		return nil, fmt.Errorf("leaderboard index %q: unsupported record function %q", m.index.Name, fn.Name)
 	}
@@ -901,8 +932,14 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 		return nil, fmt.Errorf("time window aggregate range must have at least (type, timestamp)")
 	}
 
-	leaderboardType, _ := asInt64(rangeTuple[0])
-	leaderboardTimestamp, _ := asInt64(rangeTuple[1])
+	leaderboardType, ok := asInt64(rangeTuple[0])
+	if !ok {
+		return nil, fmt.Errorf("time window aggregate: type must be int64, got %T", rangeTuple[0])
+	}
+	leaderboardTimestamp, ok := asInt64(rangeTuple[1])
+	if !ok {
+		return nil, fmt.Errorf("time window aggregate: timestamp must be int64, got %T", rangeTuple[1])
+	}
 	groupingCount := m.getGroupingCount()
 	var groupKey tuple.Tuple
 	var values tuple.Tuple
@@ -973,7 +1010,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 			return nil, err
 		}
 		if highScoreFirst {
-			score = negateScore(score, 0)
+			score, err = negateScore(score, 0)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return score, nil
 
@@ -985,7 +1025,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 		}
 		scoreValues := values
 		if highScoreFirst {
-			scoreValues = negateScore(values, 0)
+			scoreValues, err = negateScore(values, 0)
+			if err != nil {
+				return nil, err
+			}
 		}
 		scoreBytes := scoreValues.Pack()
 		rank, err := rankedSet.Rank(m.tx, scoreBytes, false)
@@ -1015,33 +1058,9 @@ func indexEntriesEqual(a, b []indexEntry) bool {
 	return true
 }
 
-// tupleCompare compares two tuples lexicographically by their packed bytes.
+// tupleCompare compares two tuples lexicographically by their packed FDB byte representation.
 func tupleCompare(a, b tuple.Tuple) int {
-	ab := a.Pack()
-	bb := b.Pack()
-	if len(ab) < len(bb) {
-		for i := range ab {
-			if ab[i] < bb[i] {
-				return -1
-			}
-			if ab[i] > bb[i] {
-				return 1
-			}
-		}
-		return -1
-	}
-	for i := range bb {
-		if ab[i] < bb[i] {
-			return -1
-		}
-		if ab[i] > bb[i] {
-			return 1
-		}
-	}
-	if len(ab) > len(bb) {
-		return 1
-	}
-	return 0
+	return bytes.Compare(a.Pack(), b.Pack())
 }
 
 // asInt64 extracts an int64 from a tuple element.
