@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 
@@ -219,7 +220,10 @@ func (m *multidimensionalIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRec
 }
 
 // Scan scans the R-tree for items matching an MBR predicate.
-// The scanRange is used for prefix filtering (first PrefixSize elements scope the R-tree subspace).
+// The scanRange is used for prefix filtering (first PrefixSize elements scope the R-tree subspace)
+// and for extracting spatial bounds for MBR-based subtree pruning.
+// When PrefixSize > 0 but no specific prefix is provided in scanRange, enumerates all
+// distinct prefixes (prefix skip-scan).
 // Supports proto-wrapped continuation tokens (MultidimensionalIndexScanContinuation) and row limits.
 // For basic scans without spatial predicates, returns all items in Hilbert order.
 func (m *multidimensionalIndexMaintainer) Scan(
@@ -234,7 +238,19 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		}
 	}
 
-	// 1. Extract prefix from scanRange to scope the R-tree subspace.
+	// 1. Check if prefix skip-scan is needed: PrefixSize > 0 but no prefix provided in scanRange.
+	if dimExpr.PrefixSize > 0 && (scanRange.Low == nil || len(scanRange.Low) < dimExpr.PrefixSize) {
+		return &prefixSkipScanCursor{
+			m:              m,
+			dimExpr:        dimExpr,
+			scanRange:      scanRange,
+			continuation:   continuation,
+			scanProperties: scanProperties,
+			nextPrefixStart: fdb.Key(m.indexSubspace.Bytes()),
+		}
+	}
+
+	// 2. Extract prefix from scanRange to scope the R-tree subspace.
 	var prefix tuple.Tuple
 	rtSubspace := m.indexSubspace
 	if dimExpr.PrefixSize > 0 && scanRange.Low != nil && len(scanRange.Low) >= dimExpr.PrefixSize {
@@ -242,7 +258,10 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		rtSubspace = m.indexSubspace.Sub(prefix...)
 	}
 
-	// 2. Parse continuation token.
+	// 3. Extract spatial bounds from scanRange for MBR-based subtree pruning.
+	mbrPredicate := m.buildMBRPredicate(dimExpr, scanRange)
+
+	// 4. Parse continuation token.
 	var lastHV *big.Int
 	var lastKey tuple.Tuple
 	if len(continuation) > 0 {
@@ -266,15 +285,15 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		}
 	}
 
-	// 3. Create R-tree iterator (lazy — fetches leaf nodes on demand).
+	// 5. Create R-tree iterator (lazy — fetches leaf nodes on demand).
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)}
 	}
-	iter := rtree.ScanIterator(m.tx, lastHV, lastKey, nil)
+	iter := rtree.ScanIterator(m.tx, lastHV, lastKey, mbrPredicate)
 
-	// 4. Apply row limit.
+	// 6. Apply row limit.
 	limit := 0
 	if scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
 		limit = scanProperties.ExecuteProperties.ReturnedRowLimit
@@ -285,6 +304,48 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		index:  m.index,
 		prefix: prefix,
 		limit:  limit,
+	}
+}
+
+// buildMBRPredicate extracts dimensional bounds from scanRange and creates an
+// MBR overlap predicate for R-tree subtree pruning. Returns nil if scanRange
+// does not contain dimensional bounds.
+func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(MBR) bool {
+	if dimExpr.DimensionsSize <= 0 {
+		return nil
+	}
+
+	dimStart := dimExpr.PrefixSize
+	dimEnd := dimStart + dimExpr.DimensionsSize
+
+	hasLow := scanRange.Low != nil && len(scanRange.Low) >= dimEnd
+	hasHigh := scanRange.High != nil && len(scanRange.High) >= dimEnd
+
+	if !hasLow && !hasHigh {
+		return nil
+	}
+
+	queryMBR := MBR{
+		Low:  make([]int64, dimExpr.DimensionsSize),
+		High: make([]int64, dimExpr.DimensionsSize),
+	}
+	for d := 0; d < dimExpr.DimensionsSize; d++ {
+		queryMBR.Low[d] = math.MinInt64
+		queryMBR.High[d] = math.MaxInt64
+		if hasLow {
+			if v, ok := asInt64(scanRange.Low[dimStart+d]); ok {
+				queryMBR.Low[d] = v
+			}
+		}
+		if hasHigh {
+			if v, ok := asInt64(scanRange.High[dimStart+d]); ok {
+				queryMBR.High[d] = v
+			}
+		}
+	}
+
+	return func(nodeMBR MBR) bool {
+		return nodeMBR.Overlaps(queryMBR)
 	}
 }
 
@@ -381,3 +442,183 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 }
 
 func (c *rtreeScanCursor) Close() error { return nil }
+
+// prefixSkipScanCursor enumerates all distinct prefixes in the index subspace
+// and scans each prefix's R-tree in sequence. Used when PrefixSize > 0 but the
+// scanRange does not specify a prefix.
+//
+// Limitation: continuation tokens work within a single prefix but cross-prefix
+// resume is not supported (the MultidimensionalIndexScanContinuation proto does
+// not encode the prefix). When a prefix is exhausted, the cursor moves to the
+// next prefix and resets the continuation.
+type prefixSkipScanCursor struct {
+	m              *multidimensionalIndexMaintainer
+	dimExpr        *DimensionsKeyExpression
+	scanRange      TupleRange
+	continuation   []byte
+	scanProperties ScanProperties
+
+	// Current per-prefix cursor being drained.
+	currentCursor RecordCursor[*IndexEntry]
+	// FDB key position for finding the next prefix.
+	nextPrefixStart fdb.Key
+	// Total entries delivered across all prefixes.
+	totalDelivered int
+	// Row limit (0 = unlimited).
+	limit int
+	// Whether we've computed the limit yet.
+	limitComputed bool
+	exhausted     bool
+}
+
+func (c *prefixSkipScanCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if !c.limitComputed {
+		c.limitComputed = true
+		if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
+			c.limit = c.scanProperties.ExecuteProperties.ReturnedRowLimit
+		}
+	}
+
+	for {
+		// Check row limit before proceeding.
+		if c.limit > 0 && c.totalDelivered >= c.limit {
+			// We've hit the global row limit. Return limit-reached.
+			// Cross-prefix continuation is not supported, so we use an opaque
+			// non-end continuation (empty bytes) to satisfy the cursor invariant
+			// that ReturnLimitReached must not carry an end continuation.
+			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: []byte{}}), nil
+		}
+
+		// If we have an active per-prefix cursor, delegate to it.
+		if c.currentCursor != nil {
+			result, err := c.currentCursor.OnNext(ctx)
+			if err != nil {
+				return RecordCursorResult[*IndexEntry]{}, err
+			}
+			if result.HasNext() {
+				c.totalDelivered++
+				return result, nil
+			}
+			// Per-prefix cursor exhausted — close it and move to next prefix.
+			_ = c.currentCursor.Close()
+			c.currentCursor = nil
+			// Only advance if the per-prefix source was truly exhausted.
+			if result.GetNoNextReason() == ReturnLimitReached {
+				// The per-prefix cursor hit its limit. Since the limit is
+				// shared, this means our global limit was hit inside the
+				// rtreeScanCursor. Propagate.
+				return result, nil
+			}
+		}
+
+		if c.exhausted {
+			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+		}
+
+		// Find the next prefix and create a cursor for it.
+		prefix, found, err := c.findNextPrefix()
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
+		if !found {
+			c.exhausted = true
+			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+		}
+
+		// Build a per-prefix scanRange with this prefix in the Low/High bounds.
+		prefixScanRange := c.scanRange
+		if prefixScanRange.Low == nil || len(prefixScanRange.Low) < c.dimExpr.PrefixSize {
+			prefixScanRange.Low = make(tuple.Tuple, c.dimExpr.PrefixSize)
+			copy(prefixScanRange.Low, prefix)
+		}
+		if prefixScanRange.High == nil || len(prefixScanRange.High) < c.dimExpr.PrefixSize {
+			prefixScanRange.High = make(tuple.Tuple, c.dimExpr.PrefixSize)
+			copy(prefixScanRange.High, prefix)
+		}
+
+		// Compute remaining row limit for this prefix's cursor.
+		perPrefixProps := c.scanProperties
+		if c.limit > 0 {
+			remaining := c.limit - c.totalDelivered
+			if remaining <= 0 {
+				continue // will be caught by limit check at top
+			}
+			perPrefixProps.ExecuteProperties = perPrefixProps.ExecuteProperties.WithReturnedRowLimit(remaining)
+		}
+
+		// Use the continuation only for the first prefix (subsequent prefixes
+		// start from the beginning since cross-prefix continuation is not supported).
+		var cont []byte
+		if c.continuation != nil {
+			cont = c.continuation
+			c.continuation = nil // only use once
+		}
+
+		c.currentCursor = c.m.Scan(prefixScanRange, cont, perPrefixProps)
+	}
+}
+
+// findNextPrefix discovers the next distinct prefix by reading one key from the
+// index subspace at or after nextPrefixStart. Extracts the first PrefixSize
+// tuple elements as the prefix, then advances nextPrefixStart past this prefix's
+// entire subspace.
+func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
+	indexEnd, err := fdb.Strinc(c.m.indexSubspace.Bytes())
+	if err != nil {
+		return nil, false, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: strinc index subspace: %w", err)
+	}
+
+	rng := fdb.KeyRange{
+		Begin: c.nextPrefixStart,
+		End:   fdb.Key(indexEnd),
+	}
+	kvs, err := c.m.tx.GetRange(rng, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+	if err != nil {
+		return nil, false, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: range read: %w", err)
+	}
+	if len(kvs) == 0 {
+		return nil, false, nil
+	}
+
+	// Unpack the key relative to the index subspace.
+	t, err := c.m.indexSubspace.Unpack(kvs[0].Key)
+	if err != nil {
+		// Key is not in our subspace — shouldn't happen, but skip gracefully.
+		return nil, false, nil
+	}
+
+	if len(t) < c.dimExpr.PrefixSize {
+		return nil, false, nil
+	}
+
+	// Extract the prefix (first PrefixSize elements).
+	prefix := make(tuple.Tuple, c.dimExpr.PrefixSize)
+	copy(prefix, t[:c.dimExpr.PrefixSize])
+
+	// Advance nextPrefixStart past this prefix's entire subspace.
+	prefixSubspace := c.m.indexSubspace.Sub(tupleToElements(prefix)...)
+	prefixEnd, err := fdb.Strinc(prefixSubspace.Bytes())
+	if err != nil {
+		return nil, false, fmt.Errorf("MULTIDIMENSIONAL prefix skip-scan: strinc prefix subspace: %w", err)
+	}
+	c.nextPrefixStart = fdb.Key(prefixEnd)
+
+	return prefix, true, nil
+}
+
+// tupleToElements converts a tuple.Tuple to []tuple.TupleElement for use with
+// subspace.Sub(). This is needed because Sub takes variadic TupleElement, not Tuple.
+func tupleToElements(t tuple.Tuple) []tuple.TupleElement {
+	elems := make([]tuple.TupleElement, len(t))
+	for i, v := range t {
+		elems[i] = v
+	}
+	return elems
+}
+
+func (c *prefixSkipScanCursor) Close() error {
+	if c.currentCursor != nil {
+		return c.currentCursor.Close()
+	}
+	return nil
+}

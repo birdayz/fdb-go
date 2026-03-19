@@ -1702,6 +1702,423 @@ var _ = Describe("MultidimensionalIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("scan with MBR predicate from scanRange prunes subtrees", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_mbr_scan", dimExpr)
+		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
+		mdIdx.Options[IndexOptionRTreeMinM] = "2"
+		mdIdx.Options[IndexOptionRTreeSplitS] = "2"
+
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 30 records spread across coordinate space.
+			const n = 30
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 10)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with spatial bounds [0, 100] x [0, 100].
+			// This should return items with (price, quantity) in that range via MBR pruning.
+			spatialRange := TupleRange{
+				Low:  tuple.Tuple{int64(0), int64(0)},
+				High: tuple.Tuple{int64(100), int64(100)},
+			}
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, spatialRange, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Items with (i*10, i*10) where i*10 <= 100 → i = 1..10 → 10 items must be present.
+			// MBR predicate only prunes intermediate subtrees, not leaf items,
+			// so we may get extra items sharing leaves with qualifying ones.
+			expectedCount := 10
+			foundExpected := 0
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				if x >= 0 && x <= 100 && y >= 0 && y <= 100 {
+					foundExpected++
+				}
+			}
+			Expect(foundExpected).To(Equal(expectedCount),
+				"all 10 qualifying items must be in results")
+
+			// Scan all (no bounds) to compare.
+			allEntries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(n))
+
+			// With MBR pruning on a multi-level tree (MaxM=4, 30 items),
+			// the bounded scan should return fewer entries than the full scan.
+			Expect(len(entries)).To(BeNumerically("<", len(allEntries)),
+				"MBR-bounded scan should return fewer entries than full scan")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("scan with one-sided MBR bounds from scanRange", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_mbr_onesided", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 5 orders.
+			for i := 1; i <= 5; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with only Low bound: [200, 20] to +inf.
+			lowOnly := TupleRange{
+				Low: tuple.Tuple{int64(200), int64(20)},
+			}
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, lowOnly, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+
+			// With only 5 items in a root leaf, MBR predicate won't prune
+			// (leaf items aren't filtered by MBR). All 5 should appear.
+			Expect(entries).To(HaveLen(5))
+
+			// Scan with only High bound: -inf to [300, 30].
+			highOnly := TupleRange{
+				High: tuple.Tuple{int64(300), int64(30)},
+			}
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, highOnly, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("scan with MBR predicate and continuation tokens", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_mbr_cont", dimExpr)
+		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
+		mdIdx.Options[IndexOptionRTreeMinM] = "2"
+		mdIdx.Options[IndexOptionRTreeSplitS] = "2"
+
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 20 records.
+			const n = 20
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 10)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with MBR bounds and a row limit, then continue.
+			spatialRange := TupleRange{
+				Low:  tuple.Tuple{int64(0), int64(0)},
+				High: tuple.Tuple{int64(200), int64(200)},
+			}
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(5),
+			}
+
+			// Page 1.
+			page1, cont1, err := AsListWithContinuation(ctx, store.ScanIndex(
+				mdIdx, spatialRange, nil, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page1).To(HaveLen(5))
+			Expect(cont1).NotTo(BeNil())
+
+			// Page 2.
+			page2, _, err := AsListWithContinuation(ctx, store.ScanIndex(
+				mdIdx, spatialRange, cont1, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(page2)).To(BeNumerically(">", 0), "page 2 should have entries")
+
+			// No duplicates between pages.
+			type coordPair struct{ x, y int64 }
+			seen := make(map[coordPair]bool)
+			for _, e := range page1 {
+				cp := coordPair{e.Key[0].(int64), e.Key[1].(int64)}
+				seen[cp] = true
+			}
+			for _, e := range page2 {
+				cp := coordPair{e.Key[0].(int64), e.Key[1].(int64)}
+				Expect(seen).NotTo(HaveKey(cp), "duplicate entry in page 2: (%d, %d)", cp.x, cp.y)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan enumerates all prefixes", func() {
+		ks := specSubspace()
+
+		// quantity is prefix (PrefixSize=1), price is 1D spatial dimension.
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_skip", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save orders with 3 distinct quantity values (prefixes).
+			// quantity=10: orders 1,2,3; quantity=20: orders 4,5; quantity=30: orders 6,7,8.
+			orders := []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 100, 10}, {2, 200, 10}, {3, 300, 10},
+				{4, 400, 20}, {5, 500, 20},
+				{6, 600, 30}, {7, 700, 30}, {8, 800, 30},
+			}
+
+			for _, o := range orders {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with TupleRangeAll (no prefix specified) — triggers prefix skip-scan.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(8))
+
+			// Verify all entries from all prefixes are present.
+			type entry struct{ qty, price int64 }
+			found := make(map[entry]bool)
+			for _, e := range entries {
+				qty := e.Key[0].(int64)
+				price := e.Key[1].(int64)
+				found[entry{qty, price}] = true
+			}
+			for _, o := range orders {
+				Expect(found).To(HaveKey(entry{int64(o.quantity), int64(o.price)}),
+					"missing order %d at (qty=%d, price=%d)", o.id, o.quantity, o.price)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan with specific prefix scans only that prefix", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_specific", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orders := []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 100, 10}, {2, 200, 10},
+				{3, 300, 20}, {4, 400, 20}, {5, 500, 20},
+				{6, 600, 30},
+			}
+
+			for _, o := range orders {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with a specific prefix (quantity=20) — should return only orders 3,4,5.
+			specificPrefix := TupleRange{
+				Low:  tuple.Tuple{int64(20)},
+				High: tuple.Tuple{int64(20)},
+			}
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, specificPrefix, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+
+			for _, e := range entries {
+				Expect(e.Key[0]).To(Equal(int64(20)), "all entries should have quantity=20")
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan with row limit", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_limit", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 12 orders across 3 prefixes.
+			for i := 1; i <= 12; i++ {
+				qty := int32(((i-1)/4 + 1) * 10) // 10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(qty),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan with limit=5 and no prefix (prefix skip-scan).
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(5),
+			}
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(5), "should return exactly 5 entries with limit=5")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan with empty index returns empty", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_empty", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// No records saved — scan should return empty.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("prefix skip-scan after delete from one prefix", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		mdIdx := NewMultidimensionalIndex("md_prefix_delete", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			orders := []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 100, 10}, {2, 200, 10},
+				{3, 300, 20}, {4, 400, 20},
+			}
+
+			for _, o := range orders {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Delete both orders in prefix quantity=10.
+			for _, id := range []int64{1, 2} {
+				existed, err := store.DeleteRecord(tuple.Tuple{id})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(existed).To(BeTrue())
+			}
+
+			// Prefix skip-scan should only find the quantity=20 entries.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+
+			for _, e := range entries {
+				Expect(e.Key[0]).To(Equal(int64(20)))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("RebuildIndex for MULTIDIMENSIONAL", func() {
 		ks := specSubspace()
 
