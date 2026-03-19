@@ -11,6 +11,7 @@ go_library(
         "verify.go",
         "verify_atomic.go",
         "verify_minmax.go",
+        "verify_multidimensional.go",
         "verify_permuted.go",
         "verify_rank.go",
         "verify_version.go",

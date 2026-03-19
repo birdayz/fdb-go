@@ -463,3 +463,157 @@ func TestRandomWithCountUpdatesIndex(t *testing.T) {
 	s.Verify()
 	t.Logf("completed %d ops", numOps)
 }
+
+// --- MULTIDIMENSIONAL index chaos tests ---
+
+// buildMultidimensionalMetadata creates metadata with a MULTIDIMENSIONAL index
+// on Order's price and quantity fields as 2D spatial coordinates.
+func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewMultidimensionalIndex(
+		"order_price_qty_md",
+		recordlayer.Dimensions(
+			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+			0, // prefix size
+			2, // dimensions
+		),
+	))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build multidimensional metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestMultidimensionalBasicSave verifies the MULTIDIMENSIONAL index matches
+// the model after simple saves. No fault injection.
+func TestMultidimensionalBasicSave(t *testing.T) {
+	t.Parallel()
+	md := buildMultidimensionalMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(2),
+		Price:    proto.Int32(200),
+		Quantity: proto.Int32(20),
+	})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(3),
+		Price:    proto.Int32(300),
+		Quantity: proto.Int32(30),
+	})
+	s.Verify()
+}
+
+// TestMultidimensionalCommitUnknownInsert injects commit-unknown on an insert.
+// MULTIDIMENSIONAL uses insertOrUpdate (upsert), so retry is idempotent.
+func TestMultidimensionalCommitUnknownInsert(t *testing.T) {
+	t.Parallel()
+	md := buildMultidimensionalMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify() // R-tree must have exactly 1 entry, not 2
+}
+
+// TestMultidimensionalCommitUnknownOverwrite injects commit-unknown on an overwrite.
+// First save inserts; second save with same PK + commit-unknown does delete+insert
+// which commits, then retry does delete+insert again — idempotent via upsert.
+func TestMultidimensionalCommitUnknownOverwrite(t *testing.T) {
+	t.Parallel()
+	md := buildMultidimensionalMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify()
+
+	// Overwrite with different coordinates under commit-unknown.
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(999),
+		Quantity: proto.Int32(99),
+	})
+	s.Verify() // Old (100,10) gone, new (999,99) present, exactly 1 entry
+}
+
+// TestMultidimensionalCommitUnknownDelete injects commit-unknown on a delete.
+// Delete commits, then retry sees record already gone — no-op.
+func TestMultidimensionalCommitUnknownDelete(t *testing.T) {
+	t.Parallel()
+	md := buildMultidimensionalMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(2),
+		Price:    proto.Int32(200),
+		Quantity: proto.Int32(20),
+	})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify() // Only record 2 remains, R-tree has exactly 1 entry
+}
+
+// TestMultidimensionalRandomStress runs random saves and deletes with
+// continuous fault injection against the MULTIDIMENSIONAL index.
+func TestMultidimensionalRandomStress(t *testing.T) {
+	t.Parallel()
+	md := buildMultidimensionalMetadata()
+	s := NewScenario(t, testRealDB, md, WithSeed(31337), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 150
+	const verifyEvery = 25
+	maxPK := int64(30)
+
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(maxPK) + 1
+		if s.Rng.Float64() < 0.7 {
+			// 70% saves with random coordinates.
+			s.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(pk),
+				Price:    proto.Int32(s.Rng.Int32N(1000)),
+				Quantity: proto.Int32(s.Rng.Int32N(500)),
+			})
+		} else {
+			// 30% deletes.
+			s.DeleteRecord(tuple.Tuple{pk})
+		}
+
+		if (i+1)%verifyEvery == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("completed %d ops with seed=%d, %d faults injected",
+		numOps, s.Seed(), len(s.FaultLog()))
+}
