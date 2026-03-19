@@ -87,16 +87,16 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 
 #### TIME_WINDOW_LEADERBOARD — wire-compatible, needs correctness fixes
 
-- [ ] **CRITICAL — `PerformWindowUpdate` rebuild is broken** — `DeleteWhere(nil)` is called but `store.RebuildIndex()` is never invoked. Data destroyed, never rebuilt. Fix: accept `*FDBRecordStore` in PerformWindowUpdate and call `store.RebuildIndex(index)` after DeleteWhere.
-- [ ] **HIGH — `negateScore` overflows at `math.MinInt64`** — Java converts to `BigInteger.negate()` (returns positive 2^63). Go's `-v` silently wraps to `MinInt64`. Fix: detect MinInt64, return `big.NewInt(0).Neg(big.NewInt(math.MinInt64))` or equivalent.
-- [ ] **HIGH — `negateScoreRange` boundary `<=` vs `<`** — Go checks `len(low) <= groupPrefixSize`, Java checks `low.size() < groupPrefixSize`. When len equals groupPrefixSize, Go enters wrong branch. Fix: change to `<`.
-- [ ] **HIGH — `highScoreFirst` scan checks only low bound** — Java checks both low and high group tuples, falls back to directory default when groups differ. Fix: extract group from both bounds, only resolve per-group when they match.
-- [ ] **HIGH — `Rebuild.NEVER` + highScoreFirst change should error** — Java throws `RecordCoreException`. Go silently creates inconsistent state. Fix: return error when highScoreFirst differs and rebuild is NEVER.
+- [x] **CRITICAL — `PerformWindowUpdate` rebuild is broken** — Fixed: accepts `*FDBRecordStore`, calls `store.RebuildIndex(index)` after DeleteWhere. Matches Java's `UpdateState.save()`.
+- [x] **HIGH — `negateScore` overflows at `math.MinInt64`** — Fixed: detects MinInt64, returns `big.Int` matching Java's `TupleHelpers.negate()`. Also handles `*big.Int` → `int64` normalization.
+- [x] **HIGH — `negateScoreRange` boundary `<=` vs `<`** — Fixed: changed to `<` matching Java.
+- [x] **HIGH — `highScoreFirst` scan checks only low bound** — Fixed: checks both low and high group tuples, falls back to directory default when groups differ. BY_RANK always false.
+- [x] **HIGH — `Rebuild.NEVER` + highScoreFirst change should error** — Fixed: returns error matching Java's `RecordCoreException`.
 - [ ] **HIGH — Missing `evaluateRecordFunction`** — RANK, TIME_WINDOW_RANK, TIME_WINDOW_RANK_AND_ENTRY. Primary leaderboard use case ("what's my rank?").
 - [ ] **HIGH — Missing `evaluateAggregateFunction`** — TIME_WINDOW_COUNT, SCORE_FOR_TIME_WINDOW_RANK, TIME_WINDOW_RANK_FOR_SCORE, SCORE_FOR_TIME_WINDOW_RANK_ELSE_SKIP.
-- [ ] **MEDIUM — `Rebuild.IF_OVERLAPPING_CHANGED` misses all-time addendum** — Java also triggers conditional rebuild when adding all-time leaderboard.
+- [x] **MEDIUM — `Rebuild.IF_OVERLAPPING_CHANGED` misses all-time addendum** — Fixed: triggers rebuild on initial directory creation and all-time addition.
 - [ ] **MEDIUM — Missing `SaveSubDirectory`** — Can read per-group highScoreFirst overrides but not write them.
-- [ ] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — corrupt SubspaceKey data causes nil, likely later panics.
+- [x] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — Fixed: returns error on corrupt SubspaceKey.
 - [ ] **HIGH — No chaos testing** — Need commit-unknown fault injection tests.
 - [ ] **HIGH — No conformance tests** — Need Go↔Java cross-validation.
 - [ ] **HIGH — No OnlineIndexer test** for this index type.
