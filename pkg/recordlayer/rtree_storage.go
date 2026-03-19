@@ -10,7 +10,8 @@ import (
 )
 
 // rtreeStorage handles BY_NODE serialization of R-tree nodes in FDB.
-// Each node is one FDB key-value pair: subspace.pack(nodeId) → tuple(nodeKind, slots...).
+// Each node is one FDB key-value pair: subspace.pack(nodeId) → tuple(nodeKind, slotList).
+// slotList is a nested tuple containing each slot as a sub-tuple.
 // Matches Java's ByNodeStorageAdapter.
 type rtreeStorage struct {
 	subspace subspace.Subspace
@@ -42,7 +43,14 @@ func (s *rtreeStorage) fetchLeafNode(tx fdb.ReadTransaction, nodeID []byte) (*le
 	if NodeKind(kind) != NodeKindLeaf {
 		return nil, fmt.Errorf("rtree: expected leaf node, got kind %d", kind)
 	}
-	slots, err := s.deserializeItemSlots(t[1:])
+	if len(t) < 2 {
+		return nil, fmt.Errorf("rtree: leaf node tuple missing slot list")
+	}
+	slotList, ok := t[1].(tuple.Tuple)
+	if !ok {
+		return nil, fmt.Errorf("rtree: leaf node slot list is not a tuple")
+	}
+	slots, err := s.deserializeItemSlots(slotList)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +78,14 @@ func (s *rtreeStorage) fetchIntermediateNode(tx fdb.ReadTransaction, nodeID []by
 	if NodeKind(kind) != NodeKindIntermediate {
 		return nil, fmt.Errorf("rtree: expected intermediate node, got kind %d", kind)
 	}
-	slots, err := s.deserializeChildSlots(t[1:])
+	if len(t) < 2 {
+		return nil, fmt.Errorf("rtree: intermediate node tuple missing slot list")
+	}
+	slotList, ok := t[1].(tuple.Tuple)
+	if !ok {
+		return nil, fmt.Errorf("rtree: intermediate node slot list is not a tuple")
+	}
+	slots, err := s.deserializeChildSlots(slotList)
 	if err != nil {
 		return nil, err
 	}
@@ -95,15 +110,22 @@ func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNo
 		return nil, nil, fmt.Errorf("rtree: empty node tuple")
 	}
 	kind, _ := asInt64(t[0])
+	if len(t) < 2 {
+		return nil, nil, fmt.Errorf("rtree: node tuple missing slot list")
+	}
+	slotList, ok := t[1].(tuple.Tuple)
+	if !ok {
+		return nil, nil, fmt.Errorf("rtree: node slot list is not a tuple")
+	}
 	switch NodeKind(kind) {
 	case NodeKindLeaf:
-		slots, err := s.deserializeItemSlots(t[1:])
+		slots, err := s.deserializeItemSlots(slotList)
 		if err != nil {
 			return nil, nil, err
 		}
 		return &leafNode{id: nodeID, slots: slots}, nil, nil
 	case NodeKindIntermediate:
-		slots, err := s.deserializeChildSlots(t[1:])
+		slots, err := s.deserializeChildSlots(slotList)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -116,22 +138,22 @@ func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNo
 // writeLeafNode writes a leaf node to FDB.
 func (s *rtreeStorage) writeLeafNode(tx fdb.Transaction, node *leafNode) {
 	key := s.subspace.Pack(tuple.Tuple{node.id})
-	t := make(tuple.Tuple, 0, 1+len(node.slots)*3)
-	t = append(t, int64(NodeKindLeaf))
+	slotList := make(tuple.Tuple, 0, len(node.slots))
 	for _, slot := range node.slots {
-		t = append(t, s.serializeItemSlot(slot)...)
+		slotList = append(slotList, s.serializeItemSlot(slot))
 	}
+	t := tuple.Tuple{int64(NodeKindLeaf), slotList}
 	tx.Set(fdb.Key(key), t.Pack())
 }
 
 // writeIntermediateNode writes an intermediate node to FDB.
 func (s *rtreeStorage) writeIntermediateNode(tx fdb.Transaction, node *intermediateNode) {
 	key := s.subspace.Pack(tuple.Tuple{node.id})
-	t := make(tuple.Tuple, 0, 1+len(node.slots)*6)
-	t = append(t, int64(NodeKindIntermediate))
+	slotList := make(tuple.Tuple, 0, len(node.slots))
 	for _, slot := range node.slots {
-		t = append(t, s.serializeChildSlot(slot)...)
+		slotList = append(slotList, s.serializeChildSlot(slot))
 	}
+	t := tuple.Tuple{int64(NodeKindIntermediate), slotList}
 	tx.Set(fdb.Key(key), t.Pack())
 }
 
@@ -141,8 +163,8 @@ func (s *rtreeStorage) deleteNode(tx fdb.Transaction, nodeID []byte) {
 	tx.Clear(fdb.Key(key))
 }
 
-// serializeItemSlot serializes a leaf slot to tuple elements.
-// Format: (hilbertValue, (pointCoords, keySuffix), (value))
+// serializeItemSlot serializes a leaf slot to a tuple.
+// Format: (hilbertValue, (pointCoords, keySuffix), value)
 func (s *rtreeStorage) serializeItemSlot(slot ItemSlot) tuple.Tuple {
 	var hv any
 	if s.config.StoreHilbertValues && slot.HilbertValue != nil {
@@ -152,25 +174,25 @@ func (s *rtreeStorage) serializeItemSlot(slot ItemSlot) tuple.Tuple {
 	// itemKey = tuple.Tuple{pointCoords, keySuffix}
 	itemKey := tuple.Tuple{slot.Point.Coordinates, slot.KeySuffix}
 
-	return tuple.Tuple{hv, itemKey, tuple.Tuple{slot.Value}}
+	return tuple.Tuple{hv, itemKey, slot.Value}
 }
 
-// deserializeItemSlots deserializes leaf slots from remaining tuple elements.
-// Each slot is 3 elements: (hv, itemKey, value).
-func (s *rtreeStorage) deserializeItemSlots(t tuple.Tuple) ([]ItemSlot, error) {
-	const elementsPerSlot = 3
-	if len(t)%elementsPerSlot != 0 {
-		return nil, fmt.Errorf("rtree: leaf tuple length %d not divisible by %d", len(t), elementsPerSlot)
-	}
-
-	n := len(t) / elementsPerSlot
-	slots := make([]ItemSlot, n)
-	for i := 0; i < n; i++ {
-		base := i * elementsPerSlot
+// deserializeItemSlots deserializes leaf slots from the slot list tuple.
+// Each element in slotList is a nested tuple: (hv, itemKey, value).
+func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, error) {
+	slots := make([]ItemSlot, len(slotList))
+	for i, elem := range slotList {
+		slotTuple, ok := elem.(tuple.Tuple)
+		if !ok {
+			return nil, fmt.Errorf("rtree: slot %d is not a tuple", i)
+		}
+		if len(slotTuple) < 3 {
+			return nil, fmt.Errorf("rtree: slot %d has %d elements, need 3", i, len(slotTuple))
+		}
 
 		// Hilbert value.
-		if t[base] != nil {
-			switch v := t[base].(type) {
+		if slotTuple[0] != nil {
+			switch v := slotTuple[0].(type) {
 			case *big.Int:
 				slots[i].HilbertValue = v
 			case big.Int:
@@ -180,7 +202,7 @@ func (s *rtreeStorage) deserializeItemSlots(t tuple.Tuple) ([]ItemSlot, error) {
 		}
 
 		// Item key: (pointCoords, keySuffix)
-		if itemKeyTuple, ok := t[base+1].(tuple.Tuple); ok && len(itemKeyTuple) >= 2 {
+		if itemKeyTuple, ok := slotTuple[1].(tuple.Tuple); ok && len(itemKeyTuple) >= 2 {
 			if pointTuple, ok := itemKeyTuple[0].(tuple.Tuple); ok {
 				slots[i].Point = Point{Coordinates: pointTuple}
 			}
@@ -189,11 +211,9 @@ func (s *rtreeStorage) deserializeItemSlots(t tuple.Tuple) ([]ItemSlot, error) {
 			}
 		}
 
-		// Value.
-		if valueTuple, ok := t[base+2].(tuple.Tuple); ok && len(valueTuple) > 0 {
-			if innerValue, ok := valueTuple[0].(tuple.Tuple); ok {
-				slots[i].Value = innerValue
-			}
+		// Value — single tuple, no extra wrapping.
+		if valueTuple, ok := slotTuple[2].(tuple.Tuple); ok {
+			slots[i].Value = valueTuple
 		}
 
 		// Recompute Hilbert value if not stored.
@@ -221,39 +241,40 @@ func (s *rtreeStorage) serializeChildSlot(slot ChildSlot) tuple.Tuple {
 	}
 }
 
-// deserializeChildSlots deserializes intermediate slots from remaining tuple elements.
-// Each slot is 6 elements.
-func (s *rtreeStorage) deserializeChildSlots(t tuple.Tuple) ([]ChildSlot, error) {
-	const elementsPerSlot = 6
-	if len(t)%elementsPerSlot != 0 {
-		return nil, fmt.Errorf("rtree: intermediate tuple length %d not divisible by %d", len(t), elementsPerSlot)
-	}
+// deserializeChildSlots deserializes intermediate slots from the slot list tuple.
+// Each element in slotList is a nested tuple with 6 elements:
+// (smallestHV, smallestKey, largestHV, largestKey, childId, mbr).
+func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot, error) {
+	slots := make([]ChildSlot, len(slotList))
+	for i, elem := range slotList {
+		slotTuple, ok := elem.(tuple.Tuple)
+		if !ok {
+			return nil, fmt.Errorf("rtree: child slot %d is not a tuple", i)
+		}
+		if len(slotTuple) < 6 {
+			return nil, fmt.Errorf("rtree: child slot %d has %d elements, need 6", i, len(slotTuple))
+		}
 
-	n := len(t) / elementsPerSlot
-	slots := make([]ChildSlot, n)
-	for i := 0; i < n; i++ {
-		base := i * elementsPerSlot
-
-		if v, ok := t[base].(*big.Int); ok {
+		if v, ok := slotTuple[0].(*big.Int); ok {
 			slots[i].SmallestHV = v
 		} else {
 			slots[i].SmallestHV = big.NewInt(0)
 		}
-		if v, ok := t[base+1].(tuple.Tuple); ok {
+		if v, ok := slotTuple[1].(tuple.Tuple); ok {
 			slots[i].SmallestKey = v
 		}
-		if v, ok := t[base+2].(*big.Int); ok {
+		if v, ok := slotTuple[2].(*big.Int); ok {
 			slots[i].LargestHV = v
 		} else {
 			slots[i].LargestHV = big.NewInt(0)
 		}
-		if v, ok := t[base+3].(tuple.Tuple); ok {
+		if v, ok := slotTuple[3].(tuple.Tuple); ok {
 			slots[i].LargestKey = v
 		}
-		if v, ok := t[base+4].([]byte); ok {
+		if v, ok := slotTuple[4].([]byte); ok {
 			slots[i].ChildID = v
 		}
-		if v, ok := t[base+5].(tuple.Tuple); ok {
+		if v, ok := slotTuple[5].(tuple.Tuple); ok {
 			slots[i].ChildMBR = MBRFromTuple(v, s.config.NumDimensions)
 		}
 	}

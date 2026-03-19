@@ -312,6 +312,386 @@ var _ = Describe("RTree", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("small MaxM forces leaf split and intermediate overflow", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_small_maxm_overflow")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 25 items. With MaxM=4:
+			// - root leaf splits at 5 items
+			// - intermediate splits when it gets >4 children
+			// 25 items distributed across leaves of capacity 4 = ~7 children,
+			// which forces intermediate overflow.
+			const n = 25
+			for i := 0; i < n; i++ {
+				err := rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 7), int64(i * 13)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{int64(i * 100)},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// All items must be retrievable.
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			// Verify all PKs present.
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk, ok := item.KeySuffix[0].(int64)
+				Expect(ok).To(BeTrue())
+				pks[pk] = true
+			}
+			for i := 0; i < n; i++ {
+				Expect(pks).To(HaveKey(int64(i)), "missing PK %d", i)
+			}
+
+			// Verify items are in Hilbert order (non-decreasing HV).
+			for i := 1; i < len(items); i++ {
+				cmp := items[i-1].HilbertValue.Cmp(items[i].HilbertValue)
+				if cmp == 0 {
+					// Same HV: compare keys.
+					cmp = tupleCompare(items[i-1].ItemKey(), items[i].ItemKey())
+				}
+				Expect(cmp).To(BeNumerically("<=", 0),
+					"items[%d] should be <= items[%d] in Hilbert order", i-1, i)
+			}
+
+			// Verify values are correct.
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				val := item.Value[0].(int64)
+				Expect(val).To(Equal(pk * 100))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("small MaxM split then delete forces underflow and fuse", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_small_maxm_fuse")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 20 items to create a multi-level tree.
+			const n = 20
+			type testItem struct {
+				x, y, pk int64
+			}
+			inserted := make([]testItem, n)
+			for i := 0; i < n; i++ {
+				inserted[i] = testItem{int64(i * 5), int64(i * 11), int64(i)}
+				err := rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{inserted[i].x, inserted[i].y}},
+					tuple.Tuple{inserted[i].pk},
+					tuple.Tuple{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify all present before deletion.
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			// Delete 15 items to force underflow/fuse at leaf and intermediate levels.
+			// With MinM=2 and MaxM=4, deleting most items should trigger fuse cascades.
+			remaining := make(map[int64]bool)
+			for i := 0; i < n; i++ {
+				if i%4 == 0 {
+					// Keep every 4th item.
+					remaining[int64(i)] = true
+					continue
+				}
+				err := rt.Delete(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{inserted[i].x, inserted[i].y}},
+					tuple.Tuple{inserted[i].pk},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan and verify only remaining items exist.
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(len(remaining)))
+
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				Expect(remaining).To(HaveKey(pk), "unexpected PK %d in scan results", pk)
+			}
+
+			// Verify Hilbert order is maintained after fuse.
+			for i := 1; i < len(items); i++ {
+				cmp := items[i-1].HilbertValue.Cmp(items[i].HilbertValue)
+				if cmp == 0 {
+					cmp = tupleCompare(items[i-1].ItemKey(), items[i].ItemKey())
+				}
+				Expect(cmp).To(BeNumerically("<=", 0),
+					"items[%d] should be <= items[%d] in Hilbert order after fuse", i-1, i)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("deep tree with small MaxM creates 3+ levels and scan returns all items", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_deep_tree")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 60 items. With MaxM=4, each leaf holds up to 4 items.
+			// 60 items / 4 = 15 leaves. 15 children / 4 = ~4 level-2 nodes.
+			// 4 children / 4 = 1 root. That's a 3-level tree (root + 2 intermediate + leaves).
+			const n = 60
+			for i := 0; i < n; i++ {
+				err := rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 3), int64(i * 7)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{int64(i)},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// All items must survive.
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			// Verify all PKs are present.
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+			}
+			for i := 0; i < n; i++ {
+				Expect(pks).To(HaveKey(int64(i)), "missing PK %d in deep tree scan", i)
+			}
+
+			// Verify Hilbert order.
+			for i := 1; i < len(items); i++ {
+				cmp := items[i-1].HilbertValue.Cmp(items[i].HilbertValue)
+				if cmp == 0 {
+					cmp = tupleCompare(items[i-1].ItemKey(), items[i].ItemKey())
+				}
+				Expect(cmp).To(BeNumerically("<=", 0),
+					"deep tree items[%d] should be <= items[%d] in Hilbert order", i-1, i)
+			}
+
+			// Now delete half and verify integrity.
+			for i := 0; i < n; i += 2 {
+				err := rt.Delete(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 3), int64(i * 7)}},
+					tuple.Tuple{int64(i)},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n / 2))
+
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				Expect(pk % 2).To(Equal(int64(1)), "only odd PKs should remain, got %d", pk)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("MBR predicate works correctly after rebalancing with small MaxM", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_mbr_after_rebalancing")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 30 items spread across coordinate space.
+			const n = 30
+			for i := 0; i < n; i++ {
+				err := rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 10), int64(i * 10)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Query: points in [0, 100] x [0, 100].
+			// Should include i=0..10 (coordinates 0..100, 0..100).
+			queryMBR := MBR{Low: []int64{0, 0}, High: []int64{100, 100}}
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, func(m MBR) bool {
+				return queryMBR.Overlaps(m)
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Items with coordinates (0,0) through (100,100) = 11 items (i=0..10).
+			expectedPKs := make(map[int64]bool)
+			for i := 0; i <= 10; i++ {
+				expectedPKs[int64(i)] = true
+			}
+
+			gotPKs := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				gotPKs[pk] = true
+			}
+
+			for pk := range expectedPKs {
+				Expect(gotPKs).To(HaveKey(pk), "expected PK %d in MBR query", pk)
+			}
+			for pk := range gotPKs {
+				Expect(expectedPKs).To(HaveKey(pk), "unexpected PK %d in MBR query", pk)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("scan continuation works after rebalancing with small MaxM", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_continuation_rebalancing")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 20 items.
+			const n = 20
+			for i := 0; i < n; i++ {
+				err := rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 3), int64(i * 7)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{int64(i)},
+				)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan all to get full sorted list.
+			allItems, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allItems).To(HaveLen(n))
+
+			// Simulate paginated scan: scan first half, then continue from midpoint.
+			midIdx := n / 2
+			midHV := allItems[midIdx-1].HilbertValue
+			midKey := allItems[midIdx-1].ItemKey()
+
+			rest, err := rt.Scan(rtx.Transaction(), midHV, midKey, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rest).To(HaveLen(n - midIdx))
+
+			// Verify the second half matches.
+			for i, item := range rest {
+				Expect(item.KeySuffix).To(Equal(allItems[midIdx+i].KeySuffix))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert, delete all, reinsert with small MaxM", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_reinsert_after_empty")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt := NewRTree(storage, config)
+
+			// Insert 15 items.
+			const n = 15
+			for i := 0; i < n; i++ {
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i), int64(i * 2)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{},
+				)).To(Succeed())
+			}
+
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			// Delete all items one by one.
+			for i := 0; i < n; i++ {
+				Expect(rt.Delete(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i), int64(i * 2)}},
+					tuple.Tuple{int64(i)},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(BeNil())
+
+			// Reinsert different items.
+			for i := 0; i < n; i++ {
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i + 100), int64(i + 200)}},
+					tuple.Tuple{int64(i + 100)},
+					tuple.Tuple{int64(i)},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+			}
+			for i := 0; i < n; i++ {
+				Expect(pks).To(HaveKey(int64(i + 100)))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("MultidimensionalIndex", func() {
@@ -580,6 +960,168 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(found).NotTo(HaveKey(coordPair{200, 20})) // deleted
 			Expect(found).To(HaveKey(coordPair{300, 30}))
 			Expect(found).To(HaveKey(coordPair{400, 40}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("MULTIDIMENSIONAL index with small MaxM forces R-tree splits via index maintainer", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_price_qty_small", dimExpr)
+		// Configure small MaxM via index options.
+		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
+		mdIdx.Options[IndexOptionRTreeMinM] = "2"
+		mdIdx.Options[IndexOptionRTreeSplitS] = "2"
+
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Generate enough orders to force multiple R-tree splits.
+		// With MaxM=4, 25 records should create a multi-level tree.
+		const n = 25
+		type order struct {
+			id       int64
+			price    int32
+			quantity int32
+		}
+		orders := make([]order, n)
+		for i := 0; i < n; i++ {
+			orders[i] = order{
+				id:       int64(i + 1),
+				price:    int32((i + 1) * 50),
+				quantity: int32((i + 1) * 7),
+			}
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, o := range orders {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan index and verify all entries present.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			// Verify all coordinate pairs are present.
+			type coordPair struct{ x, y int64 }
+			found := make(map[coordPair]bool)
+			for _, e := range entries {
+				x, ok := e.Key[0].(int64)
+				Expect(ok).To(BeTrue())
+				y, ok := e.Key[1].(int64)
+				Expect(ok).To(BeTrue())
+				found[coordPair{x, y}] = true
+			}
+			for _, o := range orders {
+				Expect(found).To(HaveKey(coordPair{int64(o.price), int64(o.quantity)}),
+					"missing order %d at (%d, %d)", o.id, o.price, o.quantity)
+			}
+
+			// Now delete half the records and verify remaining.
+			for i := 0; i < n; i += 2 {
+				existed, err := store.DeleteRecord(tuple.Tuple{orders[i].id})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(existed).To(BeTrue())
+			}
+
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			remaining := n / 2 // odd-indexed orders survive
+			Expect(entries).To(HaveLen(remaining))
+
+			found = make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			for i := 1; i < n; i += 2 {
+				o := orders[i]
+				Expect(found).To(HaveKey(coordPair{int64(o.price), int64(o.quantity)}),
+					"missing surviving order %d", o.id)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("MULTIDIMENSIONAL index with small MaxM — update records after splits", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_price_qty_update", dimExpr)
+		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
+		mdIdx.Options[IndexOptionRTreeMinM] = "2"
+		mdIdx.Options[IndexOptionRTreeSplitS] = "2"
+
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		const n = 15
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert n records.
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			// Update every record with new coordinates. This exercises
+			// delete-old-entry + insert-new-entry through the split tree.
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i*100 + 1)),
+					Quantity: proto.Int32(int32(i*10 + 1)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			// Verify updated coordinates.
+			type coordPair struct{ x, y int64 }
+			found := make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			for i := 1; i <= n; i++ {
+				Expect(found).To(HaveKey(coordPair{int64(i*100 + 1), int64(i*10 + 1)}))
+			}
 
 			return nil, nil
 		})

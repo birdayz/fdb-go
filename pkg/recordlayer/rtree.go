@@ -307,6 +307,16 @@ func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
 		return nil
 	}
 
+	// Replace the re-fetched copy of the overflowing leaf with the in-memory
+	// version that contains the newly inserted item. gatherLeafSiblings reads
+	// from FDB which still has the old data since we haven't written yet.
+	for i, sib := range siblings {
+		if nodeIDEqual(sib.id, path.leaf.id) {
+			siblings[i] = path.leaf
+			break
+		}
+	}
+
 	// Collect all items.
 	var allItems []ItemSlot
 	for _, sib := range siblings {
@@ -354,11 +364,8 @@ func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
 	}
 	parent.slots = newParentSlots
 
-	// TODO: If parent also overflows, handle intermediate-level split.
-	// For now, intermediate overflow is deferred — works for small-to-medium trees.
-	rt.storage.writeIntermediateNode(tx, parent)
-	rt.propagateParentMBRUp(tx, path, parentIdx)
-	return nil
+	// Check if parent intermediate node now overflows.
+	return rt.handleIntermediateOverflow(tx, path, parentIdx)
 }
 
 // handleLeafUnderflow handles a leaf that may be below minM.
@@ -393,6 +400,15 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error
 		rt.storage.writeLeafNode(tx, leaf)
 		rt.propagateMBRUp(tx, path)
 		return nil
+	}
+
+	// Replace the re-fetched copy of the underflowing leaf with the in-memory
+	// version that has the item already removed.
+	for i, sib := range siblings {
+		if nodeIDEqual(sib.id, path.leaf.id) {
+			siblings[i] = path.leaf
+			break
+		}
 	}
 
 	// Collect all items.
@@ -439,19 +455,8 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error
 	}
 	parent.slots = newParentSlots
 
-	// If parent is root with single child, promote child to root.
-	if len(parent.slots) == 1 && parentIdx == 0 {
-		child := siblings[0]
-		rt.storage.deleteNode(tx, child.id)
-		child.id = rootNodeID
-		rt.storage.writeLeafNode(tx, child)
-		// Remove intermediate root.
-		return nil
-	}
-
-	rt.storage.writeIntermediateNode(tx, parent)
-	rt.propagateParentMBRUp(tx, path, parentIdx)
-	return nil
+	// Check if parent intermediate node now underflows.
+	return rt.handleIntermediateUnderflow(tx, path, parentIdx)
 }
 
 // gatherLeafSiblings returns S siblings centered on childIdx, loaded from FDB.
@@ -533,6 +538,7 @@ func (rt *RTree) childSlotForLeaf(leaf *leafNode) ChildSlot {
 }
 
 // propagateMBRUp updates parent ChildSlots with new MBR/HV info after a leaf change.
+// Walks from the leaf parent up to the root, updating each level's ChildSlot.
 func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
 	if len(path.parents) == 0 {
 		return
@@ -542,22 +548,365 @@ func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
 	for i := len(path.parents) - 1; i >= 0; i-- {
 		parent := path.parents[i]
 		childIdx := path.indices[i]
-		if childIdx < len(parent.slots) {
-			if i == len(path.parents)-1 {
-				// Leaf parent — update from leaf.
-				parent.slots[childIdx] = rt.childSlotForLeaf(leaf)
-			}
-			// For higher levels, update MBR from children.
+		if childIdx >= len(parent.slots) {
+			continue
+		}
+		if i == len(path.parents)-1 {
+			// Leaf parent — update from leaf.
+			parent.slots[childIdx] = rt.childSlotForLeaf(leaf)
+		} else {
+			// Higher level — update from child intermediate node.
+			child := path.parents[i+1]
+			parent.slots[childIdx] = rt.childSlotForIntermediate(child)
 		}
 		rt.storage.writeIntermediateNode(tx, parent)
 	}
 }
 
 // propagateParentMBRUp updates intermediate nodes above a given parent level.
+// Recomputes the ChildSlot at each level from the child intermediate node below.
 func (rt *RTree) propagateParentMBRUp(tx fdb.Transaction, path *updatePath, startIdx int) {
 	for i := startIdx - 1; i >= 0; i-- {
 		parent := path.parents[i]
+		childIdx := path.indices[i]
+		if childIdx < len(parent.slots) {
+			child := path.parents[i+1]
+			parent.slots[childIdx] = rt.childSlotForIntermediate(child)
+		}
 		rt.storage.writeIntermediateNode(tx, parent)
+	}
+}
+
+// handleIntermediateOverflow handles an intermediate node that may have exceeded maxM.
+// Called after modifying an intermediate node's child slots (e.g., after leaf overflow
+// added a new child slot). Cascades upward if needed.
+func (rt *RTree) handleIntermediateOverflow(tx fdb.Transaction, path *updatePath, level int) error {
+	node := path.parents[level]
+	if len(node.slots) <= rt.config.MaxM {
+		// No overflow — just write and propagate.
+		rt.storage.writeIntermediateNode(tx, node)
+		rt.propagateParentMBRUp(tx, path, level)
+		return nil
+	}
+
+	if level == 0 {
+		// Root intermediate overflow — split root.
+		return rt.splitRootIntermediate(tx, node)
+	}
+
+	// Non-root intermediate overflow — redistribute with siblings.
+	return rt.overflowIntermediate(tx, path, level)
+}
+
+// splitRootIntermediate splits an overflowing root intermediate node into two
+// intermediate children under a new root.
+func (rt *RTree) splitRootIntermediate(tx fdb.Transaction, root *intermediateNode) error {
+	mid := len(root.slots) / 2
+
+	leftID := newRandomNodeID()
+	rightID := newRandomNodeID()
+
+	left := &intermediateNode{id: leftID, slots: make([]ChildSlot, mid)}
+	copy(left.slots, root.slots[:mid])
+
+	right := &intermediateNode{id: rightID, slots: make([]ChildSlot, len(root.slots)-mid)}
+	copy(right.slots, root.slots[mid:])
+
+	rt.storage.writeIntermediateNode(tx, left)
+	rt.storage.writeIntermediateNode(tx, right)
+
+	// Root becomes new intermediate pointing to left + right.
+	newRoot := &intermediateNode{
+		id: rootNodeID,
+		slots: []ChildSlot{
+			rt.childSlotForIntermediate(left),
+			rt.childSlotForIntermediate(right),
+		},
+	}
+	rt.storage.writeIntermediateNode(tx, newRoot)
+	return nil
+}
+
+// overflowIntermediate redistributes child slots among sibling intermediate nodes
+// when a non-root intermediate node overflows. Mirrors overflowLeaf logic.
+func (rt *RTree) overflowIntermediate(tx fdb.Transaction, path *updatePath, level int) error {
+	grandparentIdx := level - 1
+	grandparent := path.parents[grandparentIdx]
+	childIdx := path.indices[grandparentIdx]
+
+	// Gather S siblings centered on childIdx.
+	siblings, startIdx := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
+	if siblings == nil {
+		// Fallback: just write the overflow node.
+		rt.storage.writeIntermediateNode(tx, path.parents[level])
+		rt.propagateParentMBRUp(tx, path, level)
+		return nil
+	}
+
+	// Replace the re-fetched copy of the overflowing node with the in-memory
+	// version that has the updated child slots.
+	overflowNode := path.parents[level]
+	for i, sib := range siblings {
+		if nodeIDEqual(sib.id, overflowNode.id) {
+			siblings[i] = overflowNode
+			break
+		}
+	}
+
+	// Collect all child slots from siblings.
+	var allSlots []ChildSlot
+	for _, sib := range siblings {
+		allSlots = append(allSlots, sib.slots...)
+	}
+
+	// Check if we need to split (all siblings at maxM).
+	needSplit := true
+	for _, sib := range siblings {
+		if len(sib.slots) < rt.config.MaxM {
+			needSplit = false
+			break
+		}
+	}
+
+	if needSplit {
+		// Split: create one new sibling, redistribute across S+1 nodes.
+		newSibling := &intermediateNode{id: newRandomNodeID()}
+		siblings = append(siblings, newSibling)
+	}
+
+	// Redistribute child slots evenly.
+	rt.redistributeChildSlots(allSlots, siblings)
+
+	// Write all siblings.
+	for _, sib := range siblings {
+		rt.storage.writeIntermediateNode(tx, sib)
+	}
+
+	// Update grandparent's child slots.
+	newGPSlots := make([]ChildSlot, 0, len(grandparent.slots)+1)
+	newGPSlots = append(newGPSlots, grandparent.slots[:startIdx]...)
+	for _, sib := range siblings {
+		newGPSlots = append(newGPSlots, rt.childSlotForIntermediate(sib))
+	}
+	if startIdx+len(siblings)-1 < len(grandparent.slots) {
+		endIdx := startIdx + len(siblings)
+		if needSplit {
+			endIdx-- // one less old slot since we added a new one
+		}
+		if endIdx < len(grandparent.slots) {
+			newGPSlots = append(newGPSlots, grandparent.slots[endIdx:]...)
+		}
+	}
+	grandparent.slots = newGPSlots
+
+	// Recursively check grandparent for overflow.
+	return rt.handleIntermediateOverflow(tx, path, grandparentIdx)
+}
+
+// handleIntermediateUnderflow handles an intermediate node that may have dropped
+// below minM after a child was removed. Cascades upward if needed.
+func (rt *RTree) handleIntermediateUnderflow(tx fdb.Transaction, path *updatePath, level int) error {
+	node := path.parents[level]
+
+	if level == 0 {
+		// Root can have any count. Special cases:
+		if len(node.slots) == 1 {
+			// Single child — promote it to root.
+			return rt.promoteOnlyChild(tx, node)
+		}
+		if len(node.slots) == 0 {
+			// No children — tree is empty.
+			rt.storage.deleteNode(tx, rootNodeID)
+			return nil
+		}
+		// Root with 2+ children — just write it.
+		rt.storage.writeIntermediateNode(tx, node)
+		return nil
+	}
+
+	if len(node.slots) >= rt.config.MinM {
+		// No underflow — just write and propagate.
+		rt.storage.writeIntermediateNode(tx, node)
+		rt.propagateParentMBRUp(tx, path, level)
+		return nil
+	}
+
+	// Underflow — redistribute with siblings at intermediate level.
+	return rt.fuseIntermediate(tx, path, level)
+}
+
+// promoteOnlyChild promotes the single child of a root intermediate node to become
+// the new root. The old child node is deleted and its contents written at the root ID.
+func (rt *RTree) promoteOnlyChild(tx fdb.Transaction, root *intermediateNode) error {
+	childID := root.slots[0].ChildID
+	leaf, inter, err := rt.storage.fetchNode(tx, childID)
+	if err != nil {
+		return err
+	}
+
+	rt.storage.deleteNode(tx, childID)
+
+	if leaf != nil {
+		leaf.id = rootNodeID
+		rt.storage.writeLeafNode(tx, leaf)
+	} else if inter != nil {
+		inter.id = rootNodeID
+		rt.storage.writeIntermediateNode(tx, inter)
+	}
+	return nil
+}
+
+// fuseIntermediate redistributes child slots among sibling intermediate nodes
+// when a non-root intermediate node underflows. Mirrors handleLeafUnderflow logic.
+func (rt *RTree) fuseIntermediate(tx fdb.Transaction, path *updatePath, level int) error {
+	grandparentIdx := level - 1
+	grandparent := path.parents[grandparentIdx]
+	childIdx := path.indices[grandparentIdx]
+
+	siblings, startIdx := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
+	if siblings == nil {
+		// Fallback: just write the underflow node.
+		rt.storage.writeIntermediateNode(tx, path.parents[level])
+		rt.propagateParentMBRUp(tx, path, level)
+		return nil
+	}
+
+	// Replace the re-fetched copy of the underflowing node with the in-memory
+	// version that has the updated child slots.
+	underflowNode := path.parents[level]
+	for i, sib := range siblings {
+		if nodeIDEqual(sib.id, underflowNode.id) {
+			siblings[i] = underflowNode
+			break
+		}
+	}
+
+	// Collect all child slots.
+	var allSlots []ChildSlot
+	for _, sib := range siblings {
+		allSlots = append(allSlots, sib.slots...)
+	}
+
+	// Check if we need to fuse (all siblings at minM).
+	needFuse := true
+	for _, sib := range siblings {
+		if len(sib.slots) > rt.config.MinM {
+			needFuse = false
+			break
+		}
+	}
+
+	if needFuse && len(siblings) > 1 {
+		// Fuse: remove the last sibling, redistribute across S-1 nodes.
+		removedSib := siblings[len(siblings)-1]
+		rt.storage.deleteNode(tx, removedSib.id)
+		siblings = siblings[:len(siblings)-1]
+	}
+
+	// Redistribute child slots evenly.
+	rt.redistributeChildSlots(allSlots, siblings)
+
+	// Write all siblings.
+	for _, sib := range siblings {
+		rt.storage.writeIntermediateNode(tx, sib)
+	}
+
+	// Update grandparent's child slots.
+	newGPSlots := make([]ChildSlot, 0, len(grandparent.slots))
+	newGPSlots = append(newGPSlots, grandparent.slots[:startIdx]...)
+	for _, sib := range siblings {
+		newGPSlots = append(newGPSlots, rt.childSlotForIntermediate(sib))
+	}
+	endIdx := startIdx + len(siblings)
+	if needFuse {
+		endIdx++ // account for removed sibling
+	}
+	if endIdx < len(grandparent.slots) {
+		newGPSlots = append(newGPSlots, grandparent.slots[endIdx:]...)
+	}
+	grandparent.slots = newGPSlots
+
+	// Recursively check grandparent for underflow.
+	return rt.handleIntermediateUnderflow(tx, path, grandparentIdx)
+}
+
+// gatherIntermediateSiblings returns S intermediate siblings centered on childIdx,
+// loaded from FDB. Mirrors gatherLeafSiblings but for intermediate nodes.
+func (rt *RTree) gatherIntermediateSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int) {
+	s := rt.config.SplitS
+	if s >= len(parent.slots) {
+		s = len(parent.slots)
+	}
+
+	// Center the window.
+	startIdx := childIdx - s/2
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx+s > len(parent.slots) {
+		startIdx = len(parent.slots) - s
+	}
+
+	siblings := make([]*intermediateNode, 0, s)
+	for i := startIdx; i < startIdx+s; i++ {
+		node, err := rt.storage.fetchIntermediateNode(tx, parent.slots[i].ChildID)
+		if err != nil || node == nil {
+			return nil, 0
+		}
+		siblings = append(siblings, node)
+	}
+	return siblings, startIdx
+}
+
+// redistributeChildSlots evenly distributes child slots across sibling intermediate nodes.
+func (rt *RTree) redistributeChildSlots(items []ChildSlot, siblings []*intermediateNode) {
+	n := len(siblings)
+	if n == 0 {
+		return
+	}
+	perNode := len(items) / n
+	remainder := len(items) % n
+	idx := 0
+	for i, sib := range siblings {
+		count := perNode
+		if i < remainder {
+			count++
+		}
+		sib.slots = make([]ChildSlot, count)
+		copy(sib.slots, items[idx:idx+count])
+		idx += count
+	}
+}
+
+// childSlotForIntermediate creates a ChildSlot summarizing an intermediate node.
+// Computes the bounding HV/key range and union MBR from all child slots.
+func (rt *RTree) childSlotForIntermediate(node *intermediateNode) ChildSlot {
+	if len(node.slots) == 0 {
+		return ChildSlot{
+			SmallestHV:  big.NewInt(0),
+			SmallestKey: tuple.Tuple{},
+			LargestHV:   big.NewInt(0),
+			LargestKey:  tuple.Tuple{},
+			ChildID:     node.id,
+			ChildMBR:    MBR{Low: make([]int64, rt.config.NumDimensions), High: make([]int64, rt.config.NumDimensions)},
+		}
+	}
+
+	first := node.slots[0]
+	last := node.slots[len(node.slots)-1]
+
+	mbr := first.ChildMBR
+	for _, slot := range node.slots[1:] {
+		mbr = mbr.Union(slot.ChildMBR)
+	}
+
+	return ChildSlot{
+		SmallestHV:  first.SmallestHV,
+		SmallestKey: first.SmallestKey,
+		LargestHV:   last.LargestHV,
+		LargestKey:  last.LargestKey,
+		ChildID:     node.id,
+		ChildMBR:    mbr,
 	}
 }
 

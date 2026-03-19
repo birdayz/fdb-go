@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -33,9 +34,33 @@ func newMultidimensionalIndexMaintainer(
 	}
 }
 
+// R-tree index option keys for configuring the Hilbert R-tree.
+const (
+	IndexOptionRTreeMaxM  = "rtreeMaxM"
+	IndexOptionRTreeMinM  = "rtreeMinM"
+	IndexOptionRTreeSplitS = "rtreeSplitS"
+)
+
 // parseRTreeConfig reads R-tree configuration from index options.
+// Supports IndexOptionRTreeMaxM, IndexOptionRTreeMinM, IndexOptionRTreeSplitS.
 func parseRTreeConfig(index *Index, numDimensions int) RTreeConfig {
-	return DefaultRTreeConfig(numDimensions)
+	config := DefaultRTreeConfig(numDimensions)
+	if v, ok := index.Options[IndexOptionRTreeMaxM]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.MaxM = n
+		}
+	}
+	if v, ok := index.Options[IndexOptionRTreeMinM]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.MinM = n
+		}
+	}
+	if v, ok := index.Options[IndexOptionRTreeSplitS]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			config.SplitS = n
+		}
+	}
+	return config
 }
 
 // getDimensionsExpression extracts the DimensionsKeyExpression from the index.

@@ -214,6 +214,15 @@ type intermediateNode struct {
 // compareHilbertValueAndKey compares (hv1, key1) with (hv2, key2).
 // Returns -1, 0, or 1. Matches Java's NodeSlot.compareHilbertValueAndKey().
 func compareHilbertValueAndKey(hv1 *big.Int, key1 tuple.Tuple, hv2 *big.Int, key2 tuple.Tuple) int {
+	if hv1 == nil && hv2 == nil {
+		return tupleCompare(key1, key2)
+	}
+	if hv1 == nil {
+		return -1
+	}
+	if hv2 == nil {
+		return 1
+	}
 	// Compare Hilbert values first.
 	cmp := hv1.Cmp(hv2)
 	if cmp != 0 {
