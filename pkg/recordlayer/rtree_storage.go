@@ -200,7 +200,7 @@ func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, e
 			return nil, fmt.Errorf("rtree: slot %d has %d elements, need 3", i, len(slotTuple))
 		}
 
-		// Hilbert value.
+		// Hilbert value — may be *big.Int (large) or int64 (small, FDB decodes as int).
 		if slotTuple[0] != nil {
 			switch v := slotTuple[0].(type) {
 			case *big.Int:
@@ -208,6 +208,8 @@ func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, e
 			case big.Int:
 				cp := new(big.Int).Set(&v)
 				slots[i].HilbertValue = cp
+			case int64:
+				slots[i].HilbertValue = big.NewInt(v)
 			}
 		}
 
@@ -265,17 +267,23 @@ func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot,
 			return nil, fmt.Errorf("rtree: child slot %d has %d elements, need 6", i, len(slotTuple))
 		}
 
-		if v, ok := slotTuple[0].(*big.Int); ok {
+		switch v := slotTuple[0].(type) {
+		case *big.Int:
 			slots[i].SmallestHV = v
-		} else {
+		case int64:
+			slots[i].SmallestHV = big.NewInt(v)
+		default:
 			slots[i].SmallestHV = big.NewInt(0)
 		}
 		if v, ok := slotTuple[1].(tuple.Tuple); ok {
 			slots[i].SmallestKey = v
 		}
-		if v, ok := slotTuple[2].(*big.Int); ok {
+		switch v := slotTuple[2].(type) {
+		case *big.Int:
 			slots[i].LargestHV = v
-		} else {
+		case int64:
+			slots[i].LargestHV = big.NewInt(v)
+		default:
 			slots[i].LargestHV = big.NewInt(0)
 		}
 		if v, ok := slotTuple[3].(tuple.Tuple); ok {
