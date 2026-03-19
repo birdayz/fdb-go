@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"math"
 	"math/big"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -716,6 +717,218 @@ var _ = Describe("RTree", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("config validation rejects invalid configs", func() {
+		// NumDimensions=0
+		_, err := NewRTree(nil, RTreeConfig{
+			MinM: 2, MaxM: 4, SplitS: 2,
+			StoreHilbertValues: true, NumDimensions: 0,
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("NumDimensions"))
+
+		// MinM=0
+		_, err = NewRTree(nil, RTreeConfig{
+			MinM: 0, MaxM: 4, SplitS: 2,
+			StoreHilbertValues: true, NumDimensions: 2,
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("MinM"))
+
+		// MaxM=1 (must be >= 2)
+		_, err = NewRTree(nil, RTreeConfig{
+			MinM: 1, MaxM: 1, SplitS: 1,
+			StoreHilbertValues: true, NumDimensions: 2,
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("MaxM"))
+
+		// SplitS=0
+		_, err = NewRTree(nil, RTreeConfig{
+			MinM: 2, MaxM: 4, SplitS: 0,
+			StoreHilbertValues: true, NumDimensions: 2,
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("SplitS"))
+
+		// Split constraint violation: S*MaxM < (S+1)*MinM
+		// MinM=10, MaxM=12, SplitS=2: 2*12=24 < 3*10=30
+		_, err = NewRTree(nil, RTreeConfig{
+			MinM: 10, MaxM: 12, SplitS: 2,
+			StoreHilbertValues: true, NumDimensions: 2,
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("split constraint"))
+
+		// Default config should be valid.
+		err = ValidateRTreeConfig(DefaultRTreeConfig(2))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Default config for 3D should be valid.
+		err = ValidateRTreeConfig(DefaultRTreeConfig(3))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("tree height transitions: grow and shrink", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_height_transitions")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 30 items to force multi-level tree.
+			type testItem struct {
+				x, y, pk int64
+			}
+			inserted := make([]testItem, 30)
+			for i := 0; i < 30; i++ {
+				inserted[i] = testItem{int64(i * 11), int64(i * 17), int64(i)}
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{inserted[i].x, inserted[i].y}},
+					tuple.Tuple{inserted[i].pk},
+					tuple.Tuple{},
+				)).To(Succeed())
+			}
+
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(30))
+
+			// Delete down to 3 items — forces tree shrinking (root promotion,
+			// fuse cascades). Keep items 0, 15, 29.
+			remaining := map[int64]bool{0: true, 15: true, 29: true}
+			for i := 0; i < 30; i++ {
+				if remaining[int64(i)] {
+					continue
+				}
+				Expect(rt.Delete(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{inserted[i].x, inserted[i].y}},
+					tuple.Tuple{inserted[i].pk},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(3))
+
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+			}
+			for pk := range remaining {
+				Expect(pks).To(HaveKey(pk), "missing surviving PK %d", pk)
+			}
+
+			// Insert 10 more items to grow the tree again.
+			for i := 100; i < 110; i++ {
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 3), int64(i * 5)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(13))
+
+			pks = make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+			}
+			for pk := range remaining {
+				Expect(pks).To(HaveKey(pk))
+			}
+			for i := int64(100); i < 110; i++ {
+				Expect(pks).To(HaveKey(i))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("3D R-tree insert, scan, and delete", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_3d")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: true, NumDimensions: 3,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 15 items with 3 coordinates.
+			const n = 15
+			type item3D struct {
+				x, y, z, pk int64
+			}
+			items3D := make([]item3D, n)
+			for i := 0; i < n; i++ {
+				items3D[i] = item3D{int64(i * 7), int64(i * 13), int64(i * 3), int64(i)}
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{items3D[i].x, items3D[i].y, items3D[i].z}},
+					tuple.Tuple{items3D[i].pk},
+					tuple.Tuple{int64(i * 100)},
+				)).To(Succeed())
+			}
+
+			// Scan all — should return all 15.
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+				// Verify 3 coordinates present.
+				Expect(item.Point.Coordinates).To(HaveLen(3))
+			}
+			for i := 0; i < n; i++ {
+				Expect(pks).To(HaveKey(int64(i)), "missing PK %d in 3D tree", i)
+			}
+
+			// Delete 5 items (even indices 0, 2, 4, 6, 8).
+			for i := 0; i < 10; i += 2 {
+				Expect(rt.Delete(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{items3D[i].x, items3D[i].y, items3D[i].z}},
+					tuple.Tuple{items3D[i].pk},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(10))
+
+			pks = make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+			}
+			// Deleted: 0, 2, 4, 6, 8. Remaining: 1, 3, 5, 7, 9, 10, 11, 12, 13, 14.
+			for _, deleted := range []int64{0, 2, 4, 6, 8} {
+				Expect(pks).NotTo(HaveKey(deleted))
+			}
+			for _, kept := range []int64{1, 3, 5, 7, 9, 10, 11, 12, 13, 14} {
+				Expect(pks).To(HaveKey(kept))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("MultidimensionalIndex", func() {
@@ -1145,6 +1358,399 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 			for i := 1; i <= n; i++ {
 				Expect(found).To(HaveKey(coordPair{int64(i*100 + 1), int64(i*10 + 1)}))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("continuation token round-trip through ScanIndex", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_cont_roundtrip", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 15 records.
+			const n = 15
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Paginate with limit=5.
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(5),
+			}
+
+			// Page 1.
+			page1, cont1, err := AsListWithContinuation(ctx, store.ScanIndex(
+				mdIdx, TupleRangeAll, nil, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page1).To(HaveLen(5))
+			Expect(cont1).NotTo(BeNil(), "continuation should be non-nil after page 1")
+
+			// Page 2.
+			page2, cont2, err := AsListWithContinuation(ctx, store.ScanIndex(
+				mdIdx, TupleRangeAll, cont1, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page2).To(HaveLen(5))
+			Expect(cont2).NotTo(BeNil(), "continuation should be non-nil after page 2")
+
+			// Page 3.
+			page3, cont3, err := AsListWithContinuation(ctx, store.ScanIndex(
+				mdIdx, TupleRangeAll, cont2, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page3).To(HaveLen(5))
+
+			// Final page should exhaust the source (nil continuation).
+			Expect(cont3).To(BeNil(), "final page should return nil continuation (source exhausted)")
+
+			// Verify all 15 unique entries, no duplicates, no gaps.
+			type coordPair struct{ x, y int64 }
+			allCoords := make(map[coordPair]bool)
+			for _, pages := range [][]*IndexEntry{page1, page2, page3} {
+				for _, e := range pages {
+					x := e.Key[0].(int64)
+					y := e.Key[1].(int64)
+					cp := coordPair{x, y}
+					Expect(allCoords).NotTo(HaveKey(cp), "duplicate entry at (%d, %d)", x, y)
+					allCoords[cp] = true
+				}
+			}
+			Expect(allCoords).To(HaveLen(n))
+			for i := 1; i <= n; i++ {
+				Expect(allCoords).To(HaveKey(coordPair{int64(i * 100), int64(i * 10)}))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("row limit enforcement", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_row_limit", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 10 records.
+			for i := 1; i <= 10; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 50)),
+					Quantity: proto.Int32(int32(i * 5)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ScanIndex with ReturnedRowLimit=3.
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithReturnedRowLimit(3),
+			}
+			cursor := store.ScanIndex(mdIdx, TupleRangeAll, nil, props)
+			defer func() { _ = cursor.Close() }()
+
+			count := 0
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					// Must stop due to row limit, not source exhaustion.
+					Expect(result.GetNoNextReason()).To(Equal(ReturnLimitReached))
+					cont := result.GetContinuation()
+					Expect(cont).NotTo(BeNil())
+					Expect(cont.IsEnd()).To(BeFalse(), "continuation should not be end when limit reached")
+					break
+				}
+				count++
+			}
+			Expect(count).To(Equal(3), "exactly 3 entries should be returned")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("negative and boundary coordinates", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_neg_boundary", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save records with extreme coordinates.
+			type testCase struct {
+				id       int64
+				price    int32
+				quantity int32
+			}
+			cases := []testCase{
+				{1, -100, -200},
+				{2, 0, 0},
+				{3, math.MaxInt32, math.MinInt32},
+				{4, 1, -1},
+			}
+
+			for _, tc := range cases {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(tc.id),
+					Price:    proto.Int32(tc.price),
+					Quantity: proto.Int32(tc.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan — all 4 entries must be present.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(4))
+
+			type coordPair struct{ x, y int64 }
+			found := make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			for _, tc := range cases {
+				Expect(found).To(HaveKey(coordPair{int64(tc.price), int64(tc.quantity)}),
+					"missing entry for order %d at (%d, %d)", tc.id, tc.price, tc.quantity)
+			}
+
+			// Delete one (the extreme one) and verify rest survive.
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(3)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+
+			found = make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			Expect(found).NotTo(HaveKey(coordPair{int64(math.MaxInt32), int64(math.MinInt32)}))
+			Expect(found).To(HaveKey(coordPair{-100, -200}))
+			Expect(found).To(HaveKey(coordPair{0, 0}))
+			Expect(found).To(HaveKey(coordPair{1, -1}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("duplicate coordinate points with different PKs", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_dup_coords", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save two orders with identical (price=100, quantity=10) but different PKs.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(1),
+				Price:    proto.Int32(100),
+				Quantity: proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(2),
+				Price:    proto.Int32(100),
+				Quantity: proto.Int32(10),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Scan — both entries must be present.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2))
+
+			// Both entries have the same coordinates but different PK in the key suffix.
+			for _, e := range entries {
+				Expect(e.Key[0]).To(Equal(int64(100)))
+				Expect(e.Key[1]).To(Equal(int64(10)))
+			}
+
+			// Delete one. The other must survive.
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[0].Key[1]).To(Equal(int64(10)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("DeleteAllRecords clears R-tree completely", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_delete_all", dimExpr)
+		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
+		mdIdx.Options[IndexOptionRTreeMinM] = "2"
+		mdIdx.Options[IndexOptionRTreeSplitS] = "2"
+
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 20 records (enough for multi-level R-tree with MaxM=4).
+			const n = 20
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 50)),
+					Quantity: proto.Int32(int32(i * 7)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			// DeleteAllRecords.
+			Expect(store.DeleteAllRecords()).To(Succeed())
+
+			// Index should be empty.
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(0))
+
+			// Save new records — only new ones should appear.
+			for i := 100; i < 105; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 10)),
+					Quantity: proto.Int32(int32(i * 3)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(5))
+
+			type coordPair struct{ x, y int64 }
+			found := make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			for i := 100; i < 105; i++ {
+				Expect(found).To(HaveKey(coordPair{int64(i * 10), int64(i * 3)}))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RebuildIndex for MULTIDIMENSIONAL", func() {
+		ks := specSubspace()
+
+		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		mdIdx := NewMultidimensionalIndex("md_rebuild", dimExpr)
+		builder := baseMetaData()
+		builder.AddIndex("Order", mdIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 10 records.
+			const n = 10
+			for i := 1; i <= n; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i)),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify all entries present before rebuild.
+			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			// Rebuild the index (WRITE_ONLY -> re-index -> READABLE).
+			Expect(store.RebuildIndex(mdIdx)).To(Succeed())
+
+			// Verify all 10 entries match after rebuild.
+			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(n))
+
+			type coordPair struct{ x, y int64 }
+			found := make(map[coordPair]bool)
+			for _, e := range entries {
+				x := e.Key[0].(int64)
+				y := e.Key[1].(int64)
+				found[coordPair{x, y}] = true
+			}
+			for i := 1; i <= n; i++ {
+				Expect(found).To(HaveKey(coordPair{int64(i * 100), int64(i * 10)}),
+					"missing entry for order %d after rebuild", i)
 			}
 
 			return nil, nil
