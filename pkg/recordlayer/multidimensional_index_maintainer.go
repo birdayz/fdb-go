@@ -353,15 +353,23 @@ func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEn
 // buildContinuation serializes the position into a MultidimensionalIndexScanContinuation proto.
 func (c *rtreeScanCursor) buildContinuation(idx int) []byte {
 	hvBytes := c.hvs[idx].Bytes()
-	if len(hvBytes) > 0 && hvBytes[0]&0x80 != 0 {
-		// Prepend 0x00 to indicate positive (Java's BigInteger.toByteArray() two's-complement format)
+	if len(hvBytes) == 0 {
+		// big.Int(0).Bytes() returns empty; protobuf treats empty bytes as nil.
+		// Use [0x00] so the round-trip preserves the zero value.
+		hvBytes = []byte{0}
+	} else if hvBytes[0]&0x80 != 0 {
+		// Prepend 0x00 to indicate positive (Java's BigInteger.toByteArray() two's-complement format).
 		hvBytes = append([]byte{0x00}, hvBytes...)
 	}
 	msg := &gen.MultidimensionalIndexScanContinuation{
 		LastHilbertValue: hvBytes,
 		LastKey:          c.keys[idx].Pack(),
 	}
-	data, _ := proto.Marshal(msg)
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		// Should never happen with simple proto, but don't silently drop.
+		return nil
+	}
 	return data
 }
 

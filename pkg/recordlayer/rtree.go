@@ -293,8 +293,10 @@ func (rt *RTree) splitRootLeaf(tx fdb.Transaction, root *leafNode) error {
 	leftID := newRandomNodeID()
 	rightID := newRandomNodeID()
 
-	left := &leafNode{id: leftID, slots: root.slots[:mid]}
-	right := &leafNode{id: rightID, slots: root.slots[mid:]}
+	left := &leafNode{id: leftID, slots: make([]ItemSlot, mid)}
+	copy(left.slots, root.slots[:mid])
+	right := &leafNode{id: rightID, slots: make([]ItemSlot, len(root.slots)-mid)}
+	copy(right.slots, root.slots[mid:])
 
 	rt.storage.writeLeafNode(tx, left)
 	rt.storage.writeLeafNode(tx, right)
@@ -758,12 +760,16 @@ func (rt *RTree) promoteOnlyChild(tx fdb.Transaction, root *intermediateNode) er
 		return err
 	}
 
+	if leaf == nil && inter == nil {
+		return fmt.Errorf("rtree: promoteOnlyChild: child node not found")
+	}
+
 	rt.storage.deleteNode(tx, childID)
 
 	if leaf != nil {
 		leaf.id = rootNodeID
 		rt.storage.writeLeafNode(tx, leaf)
-	} else if inter != nil {
+	} else {
 		inter.id = rootNodeID
 		rt.storage.writeIntermediateNode(tx, inter)
 	}
