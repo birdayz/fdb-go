@@ -17,7 +17,7 @@ const IndexOptionVectorNumDimensions = "vectorNumDimensions"
 const IndexOptionVectorMetric = "vectorMetric"
 
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
-// Matches Java's VectorIndexMaintainer (simplified).
+// Wire-compatible with Java's VectorIndexMaintainer.
 type vectorIndexMaintainer struct {
 	standardIndexMaintainer
 	hnswSubspace subspace.Subspace
@@ -68,10 +68,13 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			nodeID := entry.primaryKey.Pack()
-			storage := newHNSWStorage(m.hnswSubspace)
+			vector := extractVector(entry)
+			if vector == nil {
+				continue
+			}
+			storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Delete(m.tx, nodeID); err != nil {
+			if err := graph.Delete(m.tx, entry.primaryKey, vector); err != nil {
 				return err
 			}
 		}
@@ -83,15 +86,13 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			// Extract vector from the entry value (or key, depending on expression).
 			vector := extractVector(entry)
 			if vector == nil {
 				continue
 			}
-			nodeID := entry.primaryKey.Pack()
-			storage := newHNSWStorage(m.hnswSubspace)
+			storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Insert(m.tx, nodeID, vector); err != nil {
+			if err := graph.Insert(m.tx, entry.primaryKey, vector); err != nil {
 				return err
 			}
 		}
@@ -136,7 +137,7 @@ func tupleToVector(t tuple.Tuple) []float64 {
 }
 
 // UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
-// VECTOR insert is idempotent (same nodeID replaces).
+// VECTOR insert is idempotent (same PK replaces).
 func (m *vectorIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }
@@ -156,7 +157,7 @@ func (m *vectorIndexMaintainer) Scan(
 // SearchKNN performs a k-nearest-neighbor search on the HNSW graph.
 // Returns results sorted by distance (closest first).
 func (m *vectorIndexMaintainer) SearchKNN(queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
-	storage := newHNSWStorage(m.hnswSubspace)
+	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
 	results, err := graph.Search(m.tx, queryVector, k, efSearch)
@@ -166,12 +167,8 @@ func (m *vectorIndexMaintainer) SearchKNN(queryVector []float64, k, efSearch int
 
 	vResults := make([]VectorSearchResult, len(results))
 	for i, r := range results {
-		pk, err := tuple.Unpack(r.NodeID)
-		if err != nil {
-			continue
-		}
 		vResults[i] = VectorSearchResult{
-			PrimaryKey: pk,
+			PrimaryKey: r.PrimaryKey,
 			Distance:   r.Distance,
 		}
 	}
@@ -180,7 +177,7 @@ func (m *vectorIndexMaintainer) SearchKNN(queryVector []float64, k, efSearch int
 
 // DeleteWhere clears all HNSW graph data for the given prefix.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	storage := newHNSWStorage(m.hnswSubspace)
+	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
 	storage.clearAll(m.tx)
 	return nil
 }
