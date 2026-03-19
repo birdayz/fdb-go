@@ -1238,7 +1238,7 @@ Full public API comparison across 5 areas. Wire-level compatibility is 100% — 
 
 - [ ] **`CollateFunctionKeyExpression`** — Locale-aware string sorting. **LOW**.
 - [ ] **`OrderFunctionKeyExpression`** — Custom sort order functions. **LOW**.
-- [ ] **`DimensionsKeyExpression`** — Multidimensional indexing. **LOW**.
+- [x] **`DimensionsKeyExpression`** — Multidimensional indexing. **DONE**.
 - [ ] **`InvertibleFunctionKeyExpression`** — Bidirectional function evaluation. **LOW**.
 - [ ] **`AtomKeyExpression`** — Atom-level expressions. **LOW**.
 
