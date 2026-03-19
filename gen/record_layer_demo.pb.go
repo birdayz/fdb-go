@@ -90,6 +90,8 @@ type Order struct {
 	Price         *int32                 `protobuf:"varint,3,opt,name=price" json:"price,omitempty"`
 	Tags          []string               `protobuf:"bytes,4,rep,name=tags" json:"tags,omitempty"`
 	Quantity      *int32                 `protobuf:"varint,5,opt,name=quantity" json:"quantity,omitempty"`
+	CoordX        *int64                 `protobuf:"varint,6,opt,name=coord_x,json=coordX" json:"coord_x,omitempty"`
+	CoordY        *int64                 `protobuf:"varint,7,opt,name=coord_y,json=coordY" json:"coord_y,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -155,6 +157,20 @@ func (x *Order) GetTags() []string {
 func (x *Order) GetQuantity() int32 {
 	if x != nil && x.Quantity != nil {
 		return *x.Quantity
+	}
+	return 0
+}
+
+func (x *Order) GetCoordX() int64 {
+	if x != nil && x.CoordX != nil {
+		return *x.CoordX
+	}
+	return 0
+}
+
+func (x *Order) GetCoordY() int64 {
+	if x != nil && x.CoordY != nil {
+		return *x.CoordY
 	}
 	return 0
 }
@@ -495,13 +511,15 @@ var File_record_layer_demo_proto protoreflect.FileDescriptor
 
 const file_record_layer_demo_proto_rawDesc = "" +
 	"\n" +
-	"\x17record_layer_demo.proto\x12\x1dcom.apple.foundationdb.record\x1a\x1drecord_metadata_options.proto\"\xa7\x01\n" +
+	"\x17record_layer_demo.proto\x12\x1dcom.apple.foundationdb.record\x1a\x1drecord_metadata_options.proto\"\xd9\x01\n" +
 	"\x05Order\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\x03R\aorderId\x12=\n" +
 	"\x06flower\x18\x02 \x01(\v2%.com.apple.foundationdb.record.FlowerR\x06flower\x12\x14\n" +
 	"\x05price\x18\x03 \x01(\x05R\x05price\x12\x12\n" +
 	"\x04tags\x18\x04 \x03(\tR\x04tags\x12\x1a\n" +
-	"\bquantity\x18\x05 \x01(\x05R\bquantity\"k\n" +
+	"\bquantity\x18\x05 \x01(\x05R\bquantity\x12\x17\n" +
+	"\acoord_x\x18\x06 \x01(\x03R\x06coordX\x12\x17\n" +
+	"\acoord_y\x18\a \x01(\x03R\x06coordY\"k\n" +
 	"\bCustomer\x12\x1f\n" +
 	"\vcustomer_id\x18\x01 \x01(\x03R\n" +
 	"customerId\x12\x12\n" +

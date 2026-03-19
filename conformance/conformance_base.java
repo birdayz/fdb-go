@@ -86,7 +86,8 @@ class ConformanceBase {
                 Reference.reachabilityFence(nativeDb);
             }
         } else {
-            return db.run(context -> action.execute(context));
+            return db.run(new com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer(), null,
+                context -> action.execute(context));
         }
     }
 
@@ -123,7 +124,9 @@ class ConformanceBase {
                 com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer.class
             );
             constructor.setAccessible(true);
-            FDBRecordContextConfig config = FDBRecordContextConfig.newBuilder().build();
+            FDBRecordContextConfig config = FDBRecordContextConfig.newBuilder()
+                .setTimer(new com.apple.foundationdb.record.provider.foundationdb.FDBStoreTimer())
+                .build();
             return constructor.newInstance(db, transaction, config, null);
         } catch (Exception e) {
             throw new RuntimeException("Failed to create FDBRecordContext from transaction: " + e.getMessage(), e);

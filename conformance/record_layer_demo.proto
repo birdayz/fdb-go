@@ -12,6 +12,8 @@ message Order {
     optional int32 price = 3;
     repeated string tags = 4;
     optional int32 quantity = 5;
+    optional int64 coord_x = 6;
+    optional int64 coord_y = 7;
 }
 
 message Customer {
