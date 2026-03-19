@@ -285,6 +285,29 @@ func loadLeaderboardSubDirectory(
 	return sub, nil
 }
 
+// saveLeaderboardSubDirectory persists a per-group sub-directory to FDB.
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.saveSubDirectory().
+func saveLeaderboardSubDirectory(
+	tx fdb.Transaction,
+	extraSubspace subspace.Subspace,
+	sub *leaderboardSubDirectory,
+) error {
+	keyTuple := make(tuple.Tuple, 0, 1+len(sub.Group))
+	keyTuple = append(keyTuple, subDirectoryPrefix...)
+	keyTuple = append(keyTuple, sub.Group...)
+	key := extraSubspace.Pack(keyTuple)
+
+	pb := &gen.TimeWindowLeaderboardSubDirectory{
+		HighScoreFirst: proto.Bool(sub.HighScoreFirst),
+	}
+	data, err := proto.Marshal(pb)
+	if err != nil {
+		return fmt.Errorf("saveSubDirectory: marshal: %w", err)
+	}
+	tx.Set(fdb.Key(key), data)
+	return nil
+}
+
 // isHighScoreFirst resolves the highScoreFirst setting for a specific group.
 // Per-group override takes precedence over directory default.
 func (m *timeWindowLeaderboardIndexMaintainer) isHighScoreFirst(

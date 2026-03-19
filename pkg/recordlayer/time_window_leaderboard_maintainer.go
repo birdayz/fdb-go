@@ -773,6 +773,16 @@ func (m *timeWindowLeaderboardIndexMaintainer) LoadDirectory() (*leaderboardDire
 	return loadLeaderboardDirectory(m.tx, m.secondarySubspace)
 }
 
+// SaveSubDirectory persists a per-group highScoreFirst override.
+// Matches Java's performOperation(SaveSubDirectory).
+func (m *timeWindowLeaderboardIndexMaintainer) SaveSubDirectory(group tuple.Tuple, highScoreFirst bool) error {
+	sub := &leaderboardSubDirectory{
+		Group:          group,
+		HighScoreFirst: highScoreFirst,
+	}
+	return saveLeaderboardSubDirectory(m.tx, m.secondarySubspace, sub)
+}
+
 // EvaluateRecordFunction evaluates a record function (rank, time_window_rank, etc.)
 // for a specific record within the leaderboard.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.evaluateRecordFunction().

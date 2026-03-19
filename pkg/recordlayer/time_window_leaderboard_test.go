@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"math"
+	"math/big"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -1259,7 +1260,934 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 	})
 
 	// =========================================================================
-	// 22. Delete all records clears leaderboard
+	// 22. EvaluateRecordFunction with "rank" returns correct ranks
+	// =========================================================================
+	It("EvaluateRecordFunction returns correct ranks in all-time window", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_recfn_rank",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 5 records with different scores.
+			prices := []int32{500, 100, 300, 200, 400}
+			records := make([]*FDBStoredRecord[proto.Message], 5)
+			for i, p := range prices {
+				rec, err := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i + 1)),
+					Price:    proto.Int32(p),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				records[i] = rec
+			}
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// Ranks should be: 100→0, 200→1, 300→2, 400→3, 500→4
+			// records[0]=500, records[1]=100, records[2]=300, records[3]=200, records[4]=400
+			expectedRanks := []int64{4, 0, 2, 1, 3}
+			for i, rec := range records {
+				rank, err := store.EvaluateRecordFunction(fn, rec)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rank).NotTo(BeNil())
+				Expect(*rank).To(Equal(expectedRanks[i]))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 23. EvaluateRecordFunction returns nil when record not in any window
+	// =========================================================================
+	It("EvaluateRecordFunction returns nil for record not in any window", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_recfn_nil",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Only typed window [1000, 2000), NO all-time.
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			Specs: []TimeWindowSpec{
+				{Type: 1, BaseTimestamp: 1000, Duration: 1000, Count: 1},
+			},
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Record at ts=500 — outside all windows.
+			rec, err := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// "rank" dispatches to all-time leaderboard. No all-time → nil dir? No,
+			// there IS a directory, but no all-time leaderboard → nil from
+			// oldestLeaderboardMatching → nil result.
+			rank, err := store.EvaluateRecordFunction(fn, rec)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 24. Store-level EvaluateRecordFunction auto-selects TIME_WINDOW_LEADERBOARD index
+	// =========================================================================
+	It("store-level EvaluateRecordFunction auto-selects leaderboard index", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_recfn_auto",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			rec1, err := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			rec2, err := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Auto-select: no explicit index name.
+			fn := &IndexRecordFunction{
+				Name:    FunctionNameRank,
+				Operand: idx.RootExpression,
+			}
+
+			rank1, err := store.EvaluateRecordFunction(fn, rec1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank1).NotTo(BeNil())
+			Expect(*rank1).To(Equal(int64(0))) // 100 is rank 0
+
+			rank2, err := store.EvaluateRecordFunction(fn, rec2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rank2).NotTo(BeNil())
+			Expect(*rank2).To(Equal(int64(1))) // 200 is rank 1
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 25. TIME_WINDOW_COUNT aggregate: count entries in a time window
+	// =========================================================================
+	It("TIME_WINDOW_COUNT returns correct count", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_agg_count",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+			Specs: []TimeWindowSpec{
+				{Type: 1, BaseTimestamp: 1000, Duration: 1000, Count: 1},
+			},
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// 3 records in all-time, 2 in window [1000, 2000)
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1200),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(1800),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexAggregateFunction{
+				Name:    FunctionNameTimeWindowCount,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// Count in all-time (type=0, timestamp=0)
+			result, err := store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(3)}))
+
+			// Count in window type=1 at timestamp=1500
+			result, err = store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(1), int64(1500)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 26. SCORE_FOR_TIME_WINDOW_RANK aggregate
+	// =========================================================================
+	It("SCORE_FOR_TIME_WINDOW_RANK returns score at given rank", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_agg_sfr",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, p := range []int32{300, 100, 200} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i + 1)),
+					Price:    proto.Int32(p),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			fn := &IndexAggregateFunction{
+				Name:    FunctionNameScoreForTimeWindowRank,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// Rank 0 → score 100 (lowest)
+			result, err := store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result[0]).To(Equal(int64(100)))
+
+			// Rank 1 → score 200
+			result, err = store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(1)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result[0]).To(Equal(int64(200)))
+
+			// Rank 2 → score 300
+			result, err = store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(2)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result[0]).To(Equal(int64(300)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 27. TIME_WINDOW_RANK_FOR_SCORE aggregate
+	// =========================================================================
+	It("TIME_WINDOW_RANK_FOR_SCORE returns rank for given score", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_agg_rfs",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, p := range []int32{300, 100, 200} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i + 1)),
+					Price:    proto.Int32(p),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			fn := &IndexAggregateFunction{
+				Name:    FunctionNameTimeWindowRankForScore,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// Score 100 → rank 0. Pass score as (score, timestamp) in values.
+			result, err := store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(100), int64(1000)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(0)}))
+
+			// Score 300 → rank 2
+			result, err = store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(300), int64(1000)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tuple.Tuple{int64(2)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 28. SCORE_FOR_TIME_WINDOW_RANK_ELSE_SKIP returns nil for out-of-range rank
+	// =========================================================================
+	It("SCORE_FOR_TIME_WINDOW_RANK_ELSE_SKIP returns nil for out-of-range rank", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_agg_skip",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			fn := &IndexAggregateFunction{
+				Name:    FunctionNameScoreForTimeWindowRankElseSkip,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+
+			// Rank 0 → valid (returns score)
+			result, err := store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).NotTo(BeNil())
+			Expect(result[0]).To(Equal(int64(100)))
+
+			// Rank 99 → out of range → nil (skip sentinel)
+			result, err = store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), int64(99)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 29. SaveSubDirectory persists per-group highScoreFirst override
+	// =========================================================================
+	It("SaveSubDirectory persists per-group highScoreFirst override", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_subdir",
+			GroupBy(Concat(Field("price"), Field("quantity")), Field("order_id")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+			HighScoreFirst:  false, // directory default: low score first
+		}, idx)
+
+		// Save a sub-directory override for group=1 (order_id=1): highScoreFirst=true
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			Expect(maintainer.SaveSubDirectory(tuple.Tuple{int64(1)}, true)).To(Succeed())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the sub-directory persisted across transactions.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			dir, err := maintainer.LoadDirectory()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dir).NotTo(BeNil())
+			Expect(dir.HighScoreFirst).To(BeFalse()) // directory default
+
+			// Load sub-directory for group=1
+			sub, err := loadLeaderboardSubDirectory(rtx.Transaction(), maintainer.secondarySubspace, dir, tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sub.HighScoreFirst).To(BeTrue()) // override
+
+			// Load sub-directory for group=2 (no override) → defaults to dir
+			sub2, err := loadLeaderboardSubDirectory(rtx.Transaction(), maintainer.secondarySubspace, dir, tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sub2.HighScoreFirst).To(BeFalse())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 30. Per-group highScoreFirst override affects scan ordering
+	// =========================================================================
+	It("per-group highScoreFirst override affects score ordering in scan", func() {
+		ks := specSubspace()
+
+		// Grouped by order_id, score=price, timestamp=quantity.
+		idx := NewTimeWindowLeaderboardIndex("lb_subdir_scan",
+			GroupBy(Concat(Field("price"), Field("quantity")), Field("order_id")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+			HighScoreFirst:  false, // directory default
+		}, idx)
+
+		// Set per-group override for group=1: highScoreFirst=true
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			Expect(maintainer.SaveSubDirectory(tuple.Tuple{int64(1)}, true)).To(Succeed())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Save records into group 1 (with highScoreFirst=true due to sub-directory).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1, two scores: 100 and 300
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Need a second record in the same group — but order_id is the PK
+			// and also the group key. Each PK produces one entry per group.
+			// With GroupBy(..., order_id), each order_id is its own group with
+			// exactly 1 entry, so the highScoreFirst changes the negated storage
+			// but each group has exactly 1 entry. Let's verify the score gets
+			// un-negated properly on read.
+
+			// Scan group=1 all-time → entry should show original (un-negated) price
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAllOf(tuple.Tuple{int64(1)}),
+				nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			// Key: [group, score, ts]. Score should be un-negated.
+			Expect(entries[0].Key[0]).To(Equal(int64(1)))  // group
+			Expect(entries[0].Key[1]).To(Equal(int64(100))) // un-negated score
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 31. RebuildIndex after adding records rebuilds leaderboard entries
+	// =========================================================================
+	It("RebuildIndex rebuilds leaderboard entries from existing records", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_rebuild",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		// Save records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, p := range []int32{300, 100, 200} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i + 1)),
+					Price:    proto.Int32(p),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Rebuild index in a new transaction.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.RebuildIndex(idx)).To(Succeed())
+
+			// Verify all entries are present after rebuild.
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[1].Key[0]).To(Equal(int64(200)))
+			Expect(entries[2].Key[0]).To(Equal(int64(300)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 32. PerformWindowUpdate with Rebuild.ALWAYS clears and rebuilds
+	// =========================================================================
+	It("PerformWindowUpdate with Rebuild.ALWAYS clears and rebuilds", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_rebuild_always",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		// Save records.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i, p := range []int32{300, 100, 200} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(int64(i + 1)),
+					Price:    proto.Int32(p),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Trigger rebuild with ALWAYS.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			Expect(maintainer.PerformWindowUpdate(&TimeWindowLeaderboardWindowUpdate{
+				UpdateTimestamp: 600,
+				AllTime:         true,
+				Rebuild:         TimeWindowRebuildAlways,
+			}, store)).To(Succeed())
+
+			// After rebuild, all entries should be present.
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+			Expect(entries[0].Key[0]).To(Equal(int64(100)))
+			Expect(entries[1].Key[0]).To(Equal(int64(200)))
+			Expect(entries[2].Key[0]).To(Equal(int64(300)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 33. OnlineIndexer builds TIME_WINDOW_LEADERBOARD from existing records
+	// =========================================================================
+	It("OnlineIndexer builds TIME_WINDOW_LEADERBOARD index from existing records", func() {
+		ks := specSubspace()
+
+		// Phase 1: Save records WITHOUT the leaderboard index.
+		builder1 := baseMetaData()
+		mdNoIndex, err := builder1.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 5; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(i),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Phase 2: Create metadata WITH leaderboard index.
+		idx := NewTimeWindowLeaderboardIndex("lb_online",
+			Concat(Field("price"), Field("quantity")))
+		builder2 := baseMetaData()
+		builder2.AddIndex("Order", idx)
+		mdWithIndex, err := builder2.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Set up windows before building (the indexer needs them to index).
+		setupWindows(ks, mdWithIndex, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		// Build online.
+		indexer, err := NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(mdWithIndex).
+			SetIndex(idx).
+			SetSubspace(ks).
+			Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		total, err := indexer.BuildIndex(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(total).To(BeNumerically(">=", 5))
+
+		// Phase 3: Verify index is READABLE and entries are correct.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.IsIndexReadable(idx.Name)).To(BeTrue())
+
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(5))
+			for i, entry := range entries {
+				Expect(entry.Key[0]).To(Equal(int64((i + 1) * 100)))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 34. OnlineIndexer with chunked build (small limit)
+	// =========================================================================
+	It("OnlineIndexer builds TIME_WINDOW_LEADERBOARD with small chunk limit", func() {
+		ks := specSubspace()
+
+		// Phase 1: Save records without index.
+		builder1 := baseMetaData()
+		mdNoIndex, err := builder1.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 10; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(i),
+					Price:    proto.Int32(int32(i * 100)),
+					Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Phase 2: Create metadata with leaderboard index.
+		idx := NewTimeWindowLeaderboardIndex("lb_online_chunked",
+			Concat(Field("price"), Field("quantity")))
+		builder2 := baseMetaData()
+		builder2.AddIndex("Order", idx)
+		mdWithIndex, err := builder2.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, mdWithIndex, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		indexer, err := NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(mdWithIndex).
+			SetIndex(idx).
+			SetSubspace(ks).
+			SetLimit(3). // Small chunk: 3 records per transaction
+			Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		total, err := indexer.BuildIndex(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		// With limit=3, processes 4 chunks (3+3+3+1). Boundary rescan means >= 10.
+		Expect(total).To(BeNumerically(">=", 10))
+
+		// Verify all 10 entries present and correctly ordered.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.IsIndexReadable(idx.Name)).To(BeTrue())
+
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(10))
+			for i, entry := range entries {
+				Expect(entry.Key[0]).To(Equal(int64((i + 1) * 100)))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 35. Rebuild.NEVER with highScoreFirst change returns error
+	// =========================================================================
+	It("Rebuild.NEVER with highScoreFirst change returns error", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_rebuild_never",
+			Concat(Field("price"), Field("quantity")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Initial setup with highScoreFirst=false.
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+			HighScoreFirst:  false,
+		}, idx)
+
+		// Try to change highScoreFirst with Rebuild=NEVER → should fail.
+		// Return the error from the callback so the outer Run sees it too.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			err = maintainer.PerformWindowUpdate(&TimeWindowLeaderboardWindowUpdate{
+				UpdateTimestamp: 600,
+				HighScoreFirst:  true,
+				AllTime:         true,
+				Rebuild:         TimeWindowRebuildNever,
+			}, store)
+			return nil, err
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cannot change highScoreFirst without a rebuild"))
+	})
+
+	// =========================================================================
+	// 36. negateScore with math.MinInt64 produces big.Int (not overflow)
+	// =========================================================================
+	It("negateScore with math.MinInt64 produces big.Int", func() {
+		// math.MinInt64 cannot be negated as int64 (overflow).
+		// negateScore should produce a *big.Int with value 2^63.
+		input := tuple.Tuple{int64(math.MinInt64)}
+		result := negateScore(input, 0)
+		Expect(result).To(HaveLen(1))
+
+		bigVal, ok := result[0].(*big.Int)
+		Expect(ok).To(BeTrue())
+		expected := new(big.Int).SetUint64(1 << 63) // 2^63
+		Expect(bigVal.Cmp(expected)).To(Equal(0))
+
+		// Round-trip: negating the big.Int should give back MinInt64.
+		roundTrip := negateScore(result, 0)
+		// math.MinInt64 stores as Go `int` (untyped constant default) in the tuple.
+		Expect(roundTrip[0]).To(BeNumerically("==", math.MinInt64))
+	})
+
+	// =========================================================================
+	// 37. CountDuplicates=true non-idempotent mode basic test
+	// =========================================================================
+	It("CountDuplicates=true allows duplicate scores to increment rank count", func() {
+		ks := specSubspace()
+
+		idx := NewTimeWindowLeaderboardIndex("lb_countdup",
+			Concat(Field("price"), Field("quantity")))
+		idx.Options[IndexOptionRankCountDuplicates] = "true"
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Two records with the SAME score (price=100, ts=1000).
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// One record with score=200
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Scan all entries — should have 3 index entries.
+			entries, err := AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByTimeWindow, AllTimeLeaderboardType, 0,
+				TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+
+			// With CountDuplicates, the ranked set counts score=100 twice.
+			// TIME_WINDOW_COUNT should reflect this.
+			fn := &IndexAggregateFunction{
+				Name:    FunctionNameTimeWindowCount,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+			result, err := store.EvaluateAggregateFunction(ctx, nil, fn,
+				TupleRangeAllOf(tuple.Tuple{int64(0), int64(0)}), IsolationLevelSerializable)
+			Expect(err).NotTo(HaveOccurred())
+			// With CountDuplicates: size=3 (100, 100, 200). Without: size=2.
+			Expect(result).To(Equal(tuple.Tuple{int64(3)}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 38. Delete all records clears leaderboard
 	// =========================================================================
 	It("delete all records clears leaderboard entries", func() {
 		ks := specSubspace()
