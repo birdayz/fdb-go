@@ -98,6 +98,16 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 		newEntries = entries
 	}
 
+	// Skip entries that are identical between old and new — avoids unnecessary
+	// R-tree delete+insert when coordinates/value haven't changed.
+	if len(oldEntries) > 0 && len(newEntries) > 0 {
+		var err error
+		oldEntries, newEntries, err = removeCommonEntries(m.index, oldEntries, newEntries)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Process deletes.
 	for _, entry := range oldEntries {
 		if err := m.deleteEntry(dimExpr, entry); err != nil {

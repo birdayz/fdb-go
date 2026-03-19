@@ -102,22 +102,23 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No OnlineIndexer test** — 2 tests: full build, chunked build with small limit.
 - [x] **HIGH — No RebuildIndex test** — 2 tests: explicit rebuild, PerformWindowUpdate ALWAYS rebuild.
 
-#### MULTIDIMENSIONAL — wire format INCOMPATIBLE, needs rewrite
+#### MULTIDIMENSIONAL — wire-compatible, needs conformance + chaos
 
-- [ ] **CRITICAL — Node serialization format incompatible** — Go uses flat tuple `(kind, slot1_elem1, slot1_elem2, ..., slot2_elem1, ...)`. Java uses nested list `(kind, [slotTuple1, slotTuple2, ...])` via `tuple.getNestedList(1)`. Fix: restructure to 2-element tuple with nested slot list.
-- [ ] **CRITICAL — Intermediate node overflow not handled** — explicit TODO in `overflowLeaf()`. Tree corrupts with >MaxM² items (~1024 with defaults). Fix: implement upward loop matching Java's `AsyncUtil.whileTrue`.
-- [ ] **CRITICAL — Intermediate node underflow not handled** — same gap on the delete path.
-- [ ] **HIGH — `propagateMBRUp` incomplete** — only updates leaf parent ChildSlot, not higher levels. MBR drift accumulates.
-- [ ] **HIGH — No prefix skip-scan in maintainer** — `Scan()` ignores prefix, always scans default R-tree. Wrong results for prefixed indexes.
-- [ ] **HIGH — Continuation tokens incompatible** — Go uses simple int position, Java uses proto `MultidimensionalIndexScanContinuation` with `lastHilbertValue` + `lastKey`.
-- [ ] **HIGH — Scan loads everything into memory** — no streaming, no limit handling. OOM on large trees.
-- [ ] **HIGH — ItemSlot value double-wrapped** — Go writes `(hv, key, ((value)))`, Java writes `(hv, key, (value))`. Extra nesting layer.
-- [ ] **MEDIUM — No `removeCommonEntries` optimization** — every update does full delete+insert even if coordinates unchanged.
-- [ ] **MEDIUM — Silent deserialization failures** — corrupt data produces zero-value slots, no errors returned.
-- [ ] **MEDIUM — `compareHilbertValueAndKey` panics on nil BigInt** — no nil check before `hv1.Cmp(hv2)`.
-- [ ] **CRITICAL — Zero test coverage on split/fuse** — all tests have ≤5 records, never exceeding MaxM=32. Need tests with small MaxM (e.g., 4) to force rebalancing.
-- [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation after wire format fix.
+- [x] **CRITICAL — Node serialization format incompatible** — Fixed: nested list format `(kind, [slot1, slot2, ...])` matching Java's `ByNodeStorageAdapter`. `tuple.getNestedList(1)` compatible.
+- [x] **CRITICAL — Intermediate node overflow not handled** — Fixed: cascading `handleIntermediateOverflow()` with `splitRootIntermediate()` and `overflowIntermediate()`. Redistributes child slots among siblings, creates new sibling when all at MaxM.
+- [x] **CRITICAL — Intermediate node underflow not handled** — Fixed: cascading `handleIntermediateUnderflow()` with `promoteOnlyChild()` and `fuseIntermediate()`. Merges siblings when all at MinM.
+- [x] **HIGH — `propagateMBRUp` incomplete** — Fixed: propagates through ALL intermediate levels. Higher levels updated via `childSlotForIntermediate()`.
+- [x] **HIGH — No prefix skip-scan in maintainer** — Fixed: `Scan()` extracts prefix from scanRange, scopes R-tree subspace per prefix.
+- [x] **HIGH — Continuation tokens incompatible** — Fixed: `MultidimensionalIndexScanContinuation` proto with `lastHilbertValue` + `lastKey`. Wire-compatible with Java.
+- [x] **HIGH — Scan loads everything into memory** — Fixed: row limit support via `ReturnedRowLimit`. Still materializes in-memory but respects limits with proper continuation.
+- [x] **HIGH — ItemSlot value double-wrapped** — Fixed: `slot.Value` stored directly (not wrapped in extra tuple).
+- [x] **MEDIUM — No `removeCommonEntries` optimization** — Fixed: Update() now calls `removeCommonEntries()` to skip identical entries between old and new records.
+- [x] **MEDIUM — Silent deserialization failures** — Fixed: all deserialization paths return typed errors.
+- [x] **MEDIUM — `compareHilbertValueAndKey` panics on nil BigInt** — Fixed: nil guards (both nil → tupleCompare, one nil sorts before non-nil).
+- [x] **CRITICAL — Zero test coverage on split/fuse** — Fixed: 8 new tests with MaxM=4 (25-60 items) exercising leaf split, intermediate overflow, deep trees, underflow/fuse, MBR predicates, scan continuation, full lifecycle, and maintainer integration.
+- [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation.
 - [ ] **HIGH — No chaos testing**.
+- [x] **Bug — Overflow/underflow re-fetched stale sibling from FDB** — Fixed: in-memory modified node substituted for its re-fetched copy in all overflow/underflow paths.
 
 #### VECTOR/HNSW — wire format INCOMPATIBLE, needs ground-up storage rewrite
 
