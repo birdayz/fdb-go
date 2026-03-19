@@ -102,7 +102,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No OnlineIndexer test** — 2 tests: full build, chunked build with small limit.
 - [x] **HIGH — No RebuildIndex test** — 2 tests: explicit rebuild, PerformWindowUpdate ALWAYS rebuild.
 
-#### MULTIDIMENSIONAL — wire-compatible, needs conformance + chaos
+#### MULTIDIMENSIONAL — wire-compatible, 5-reviewer audit complete
 
 - [x] **CRITICAL — Node serialization format incompatible** — Fixed: nested list format `(kind, [slot1, slot2, ...])` matching Java's `ByNodeStorageAdapter`. `tuple.getNestedList(1)` compatible.
 - [x] **CRITICAL — Intermediate node overflow not handled** — Fixed: cascading `handleIntermediateOverflow()` with `splitRootIntermediate()` and `overflowIntermediate()`. Redistributes child slots among siblings, creates new sibling when all at MaxM.
@@ -119,6 +119,31 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation.
 - [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (150 ops, 5% fault rate). Model-based verification computes expected entries from model, scans R-tree, set-based diff.
 - [x] **Bug — Overflow/underflow re-fetched stale sibling from FDB** — Fixed: in-memory modified node substituted for its re-fetched copy in all overflow/underflow paths.
+
+5-reviewer audit (2026-03-19) found and fixed 19 additional issues:
+- [x] **CRITICAL — Scan MBR predicate at wrong level** — Removed per-item filtering, only child slots.
+- [x] **CRITICAL — Delete path walks wrong subtree** — `fetchUpdatePathToLeaf(isInsert)` differentiates insert/delete.
+- [x] **CRITICAL — Option constants wrong** — `rtreeMaxM`→`rtreeMaximumM`, `rtreeMinM`→`rtreeMinimumM`.
+- [x] **CRITICAL — getDimensionsExpression misses KeyWithValueExpression** — Traverses KWV + Composite wrappers.
+- [x] **CRITICAL — numDimensions defaults to 2 on KWV-wrapped index** — Uses `extractDimensionsExpression`.
+- [x] **HIGH — Config validation** — `ValidateRTreeConfig` with split ratio constraint.
+- [x] **HIGH — Hilbert value continuation bytes** — Two's complement + HV==0 handling.
+- [x] **HIGH — ChildSlot HV deserialization drops int64-range values** — Added `int64` case.
+- [x] **HIGH — splitRootLeaf slice aliasing** — Deep-copy left/right slots.
+- [x] **HIGH — gatherSiblings swallows FDB errors** — Returns errors now.
+- [x] **HIGH — Missing storeHilbertValues option** — Parsed from index options.
+- [x] **MEDIUM — createsDuplicates missing DimensionsKE case** — Delegates to WholeKey.
+- [x] **MEDIUM — normalizeKeyForPositions missing DimensionsKE case** — Delegates to WholeKey.
+- [x] **MEDIUM — Empty nodes written instead of deleted** — `writeLeafNode`/`writeIntermediateNode` check.
+- [x] **MEDIUM — clearAll ignores PrefixRange error** — Returns error.
+- [x] **MEDIUM — HV==0 continuation round-trip** — Writes `[0x00]` instead of empty.
+- [x] **LOW — Dead coords variable** — Removed.
+- [x] **LOW — Continuation unmarshal errors swallowed** — Returns error cursor.
+- [x] **LOW — promoteOnlyChild missing child error** — Returns error.
+- 9 new tests: continuation round-trip, row limits, negative/boundary coords, duplicate coords, DeleteAllRecords, RebuildIndex, config validation, tree height transitions, 3D R-tree.
+- [ ] **MEDIUM — Scan materializes all results** — Performance, not correctness. Lazy iterator deferred.
+- [ ] **MEDIUM — No spatial predicate support** — MBR/position/suffix filtering deferred.
+- [ ] **MEDIUM — No prefix skip-scan across all prefixes** — Single-prefix only.
 
 #### VECTOR/HNSW — wire-compatible, needs conformance + additional features
 
