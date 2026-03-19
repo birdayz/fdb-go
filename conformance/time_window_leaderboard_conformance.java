@@ -12,6 +12,7 @@ import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.leaderboard.TimeWindowLeaderboardWindowUpdate;
+import com.apple.foundationdb.record.provider.foundationdb.leaderboard.TimeWindowScanRange;
 import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Order;
 import com.apple.foundationdb.subspace.Subspace;
@@ -149,6 +150,121 @@ class TimeWindowLeaderboardSteps extends ConformanceBase {
                 INDEX_NAME);
 
             return store.evaluateRecordFunction(rankFunction, record).join();
+        });
+    }
+
+    @ConformanceStep("setupLeaderboardWindowsHighScoreFirst")
+    public void setupLeaderboardWindowsHighScoreFirst(String clusterFile, byte[] subspace, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openLeaderboardStore(context, subspace);
+            TimeWindowLeaderboardWindowUpdate update = new TimeWindowLeaderboardWindowUpdate(
+                System.currentTimeMillis(),
+                true,   // highScoreFirst
+                0,
+                true,   // allTime
+                Collections.emptyList(),
+                TimeWindowLeaderboardWindowUpdate.Rebuild.IF_OVERLAPPING_CHANGED);
+            store.performIndexOperation(INDEX_NAME, update);
+            return null;
+        });
+    }
+
+    @ConformanceStep("setupLeaderboardWindowsBounded")
+    public void setupLeaderboardWindowsBounded(String clusterFile, byte[] subspace, String tenantName) {
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openLeaderboardStore(context, subspace);
+            List<TimeWindowLeaderboardWindowUpdate.TimeWindowSpec> specs = new ArrayList<>();
+            // Bounded window: type=1, starts at 1000, duration 1000 => [1000, 2000)
+            specs.add(new TimeWindowLeaderboardWindowUpdate.TimeWindowSpec(1, 1000, 1000, 1000, 1));
+            TimeWindowLeaderboardWindowUpdate update = new TimeWindowLeaderboardWindowUpdate(
+                System.currentTimeMillis(),
+                false,  // highScoreFirst
+                0,
+                true,   // allTime (also create all-time leaderboard)
+                specs,
+                TimeWindowLeaderboardWindowUpdate.Rebuild.IF_OVERLAPPING_CHANGED);
+            store.performIndexOperation(INDEX_NAME, update);
+            return null;
+        });
+    }
+
+    @ConformanceStep("scanLeaderboardByTimeWindow")
+    public List<Map<String, Object>> scanLeaderboardByTimeWindow(String clusterFile, byte[] subspace,
+            long type, long timestamp, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createLeaderboardMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex(INDEX_NAME);
+            TimeWindowScanRange scanRange = new TimeWindowScanRange((int) type, timestamp, TupleRange.ALL);
+            List<IndexEntry> entries = store.scanIndex(
+                index, scanRange, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> map = new HashMap<>();
+                List<Object> keyValues = new ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                List<Object> pkValues = new ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+                result.add(map);
+            }
+            return result;
+        });
+    }
+
+    @ConformanceStep("scanLeaderboardByRank")
+    public List<Map<String, Object>> scanLeaderboardByRank(String clusterFile, byte[] subspace,
+            long lowRank, long highRank, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createLeaderboardMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex(INDEX_NAME);
+            TupleRange rankRange = new TupleRange(
+                Tuple.from(lowRank), Tuple.from(highRank),
+                com.apple.foundationdb.record.EndpointType.RANGE_INCLUSIVE,
+                com.apple.foundationdb.record.EndpointType.RANGE_EXCLUSIVE);
+
+            List<IndexEntry> entries = store.scanIndex(
+                index, IndexScanType.BY_RANK, rankRange, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> map = new HashMap<>();
+                List<Object> keyValues = new ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                List<Object> pkValues = new ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+                result.add(map);
+            }
+            return result;
         });
     }
 }

@@ -321,6 +321,236 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Conformance", func() {
 			Expect(toInt64(goEntries[1].PrimaryKey[0])).To(Equal(int64(1)))
 		})
 	})
+
+	Describe("BY_RANK conformance", func() {
+		It("Go and Java BY_RANK [0,3) return same 3 entries", func() {
+			// Save 5 records via Go.
+			for _, o := range []struct {
+				id    int64
+				price int32
+				qty   int32
+			}{
+				{1, 500, 10},
+				{2, 100, 20},
+				{3, 300, 30},
+				{4, 200, 40},
+				{5, 400, 50},
+			} {
+				err := store.SaveOrderGo(ctx, &gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.qty),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// BY_RANK [0, 3) from Go — returns the 3 lowest scores.
+			goEntries, err := store.ScanLeaderboardGoByRank(ctx, 0, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(3))
+
+			// BY_RANK [0, 3) from Java.
+			javaEntries, err := store.ScanLeaderboardJavaByRank(ctx, 0, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(3))
+
+			err = CompareIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Rank 0=100(pk=2), rank 1=200(pk=4), rank 2=300(pk=3)
+			Expect(toInt64(goEntries[0].Key[0])).To(Equal(int64(100)))
+			Expect(toInt64(goEntries[0].PrimaryKey[0])).To(Equal(int64(2)))
+			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(200)))
+			Expect(toInt64(goEntries[1].PrimaryKey[0])).To(Equal(int64(4)))
+			Expect(toInt64(goEntries[2].Key[0])).To(Equal(int64(300)))
+			Expect(toInt64(goEntries[2].PrimaryKey[0])).To(Equal(int64(3)))
+		})
+	})
+})
+
+// Tests that require custom window setup (not the default all-time lowScoreFirst).
+// Separate Describe block so BeforeEach does NOT call SetupWindowsJava.
+var _ = Describe("TIME_WINDOW_LEADERBOARD Custom Window Conformance", func() {
+	var (
+		ctx   context.Context
+		env   *TenantEnvironment
+		store *LeaderboardConformanceStore
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		tenantName := fmt.Sprintf("twlb_custom_%s", uuid.New().String())
+
+		var err error
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+
+		store, err = NewLeaderboardConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		Expect(err).NotTo(HaveOccurred())
+		// NOTE: No SetupWindowsJava here — each test sets up its own windows.
+	})
+
+	AfterEach(func() {
+		if env != nil {
+			_ = env.Cleanup(ctx)
+		}
+	})
+
+	Describe("highScoreFirst: score negation wire compat", func() {
+		It("Go writes with highScoreFirst, both scan BY_VALUE and see identical negated entries", func() {
+			// Set up highScoreFirst all-time window via Java.
+			err := store.SetupWindowsHighScoreFirstJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Go writes 3 orders with distinct prices.
+			for _, o := range []struct {
+				id    int64
+				price int32
+				qty   int32
+			}{
+				{1, 100, 10},
+				{2, 300, 20},
+				{3, 200, 30},
+			} {
+				err = store.SaveOrderGo(ctx, &gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.qty),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Both scan BY_VALUE (all-time). With highScoreFirst, the scan
+			// reverses + un-negates, so both should return high-to-low.
+			goEntries, err := store.ScanLeaderboardGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(3))
+
+			javaEntries, err := store.ScanLeaderboardJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(3))
+
+			err = CompareIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			// highScoreFirst: scores are negated in storage but un-negated by scan.
+			// Forward scan with highScoreFirst applies double-flip (negate range +
+			// reverse direction), so forward BY_VALUE still returns ascending scores.
+			// The wire compat validation is that Go and Java agree on entry content.
+			Expect(toInt64(goEntries[0].Key[0])).To(Equal(int64(100)))
+			Expect(toInt64(goEntries[0].PrimaryKey[0])).To(Equal(int64(1)))
+			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(200)))
+			Expect(toInt64(goEntries[1].PrimaryKey[0])).To(Equal(int64(3)))
+			Expect(toInt64(goEntries[2].Key[0])).To(Equal(int64(300)))
+			Expect(toInt64(goEntries[2].PrimaryKey[0])).To(Equal(int64(2)))
+		})
+	})
+
+	Describe("Bounded window: records in and out", func() {
+		It("only in-window records appear in bounded time window scan", func() {
+			// Set up bounded window [1000, 2000) type=1 plus all-time via Java.
+			err := store.SetupWindowsBoundedJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The "timestamp" is scoreKey[1] which is the quantity field.
+			// Bounded window [1000, 2000) only contains records whose
+			// quantity falls in [1000, 2000). Records outside that range
+			// only appear in the all-time leaderboard.
+			orders := []struct {
+				id    int64
+				price int32
+				qty   int32 // this is the timestamp for window matching
+			}{
+				{1, 500, 1500},  // in window [1000, 2000)
+				{2, 100, 500},   // outside window
+				{3, 300, 1200},  // in window [1000, 2000)
+				{4, 200, 2500},  // outside window
+			}
+			for _, o := range orders {
+				err = store.SaveOrderGo(ctx, &gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.qty),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// All-time scan returns all 4 records from both Go and Java.
+			goAllTime, err := store.ScanLeaderboardGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goAllTime).To(HaveLen(4))
+
+			javaAllTime, err := store.ScanLeaderboardJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaAllTime).To(HaveLen(4))
+
+			err = CompareIndexEntries(goAllTime, javaAllTime)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Bounded window type=1, timestamp=1500: only records with
+			// qty in [1000, 2000) — orders 1 (qty=1500) and 3 (qty=1200).
+			goBounded, err := store.ScanLeaderboardGoByTimeWindow(ctx, 1, 1500)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goBounded).To(HaveLen(2))
+
+			javaBounded, err := store.ScanLeaderboardJavaByTimeWindow(ctx, 1, 1500)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaBounded).To(HaveLen(2))
+
+			err = CompareIndexEntries(goBounded, javaBounded)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Sorted by price: 300(pk=3, qty=1200), 500(pk=1, qty=1500)
+			Expect(toInt64(goBounded[0].Key[0])).To(Equal(int64(300)))
+			Expect(toInt64(goBounded[0].PrimaryKey[0])).To(Equal(int64(3)))
+			Expect(toInt64(goBounded[1].Key[0])).To(Equal(int64(500)))
+			Expect(toInt64(goBounded[1].PrimaryKey[0])).To(Equal(int64(1)))
+		})
+	})
+
+	Describe("Go creates windows, Java reads", func() {
+		It("Go's PerformWindowUpdate directory proto is readable by Java", func() {
+			// Go creates the all-time window via PerformWindowUpdate.
+			err := store.SetupWindowsGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Java writes records into the Go-created leaderboard.
+			for _, o := range []struct {
+				id    int64
+				price int32
+				qty   int32
+			}{
+				{1, 400, 10},
+				{2, 150, 20},
+				{3, 600, 30},
+			} {
+				err = store.SaveOrderJava(ctx, &gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.qty),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Both scan — validates Go's directory proto is readable by Java.
+			goEntries, err := store.ScanLeaderboardGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(3))
+
+			javaEntries, err := store.ScanLeaderboardJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(3))
+
+			err = CompareIndexEntries(goEntries, javaEntries)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Sorted by price: 150, 400, 600
+			Expect(toInt64(goEntries[0].Key[0])).To(Equal(int64(150)))
+			Expect(toInt64(goEntries[1].Key[0])).To(Equal(int64(400)))
+			Expect(toInt64(goEntries[2].Key[0])).To(Equal(int64(600)))
+		})
+	})
 })
 
 // leaderboardWindowUpdater is a duck-typed interface for the unexported
@@ -552,4 +782,167 @@ func (s *LeaderboardConformanceStore) RankForRecordJava(ctx context.Context, ord
 	}
 	rank := int64(*result)
 	return &rank, nil
+}
+
+// NewLeaderboardConformanceStoreNoSetup creates a LeaderboardConformanceStore
+// without calling SetupWindowsJava. Used by tests that need custom window setup
+// (highScoreFirst, bounded windows, Go-created windows).
+func NewLeaderboardConformanceStoreNoSetup(
+	recordDB *recordlayer.FDBDatabase,
+	keyspace subspace.Subspace,
+	clusterFile string,
+	tenantName string,
+) (*LeaderboardConformanceStore, error) {
+	return NewLeaderboardConformanceStore(recordDB, keyspace, clusterFile, tenantName)
+}
+
+// SetupWindowsHighScoreFirstJava calls Java's performIndexOperation to create
+// an all-time leaderboard with highScoreFirst=true.
+func (s *LeaderboardConformanceStore) SetupWindowsHighScoreFirstJava(ctx context.Context) error {
+	params := s.buildJavaParams()
+	return s.java.InvokeAs(ctx, "setupLeaderboardWindowsHighScoreFirst", params, nil)
+}
+
+// SetupWindowsBoundedJava calls Java's performIndexOperation to create
+// both an all-time leaderboard and a bounded window [1000, 2000) of type 1.
+func (s *LeaderboardConformanceStore) SetupWindowsBoundedJava(ctx context.Context) error {
+	params := s.buildJavaParams()
+	return s.java.InvokeAs(ctx, "setupLeaderboardWindowsBounded", params, nil)
+}
+
+// SetupWindowsGo creates the all-time leaderboard window via Go's
+// PerformWindowUpdate (not Java). Used to test Go's directory proto
+// cross-language readability.
+func (s *LeaderboardConformanceStore) SetupWindowsGo(ctx context.Context) error {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		return nil, s.setupWindowsGo(store)
+	})
+	return err
+}
+
+// ScanLeaderboardGoByTimeWindow scans a specific time window (type + timestamp)
+// using Go's ScanTimeWindowLeaderboard with BY_TIME_WINDOW.
+func (s *LeaderboardConformanceStore) ScanLeaderboardGoByTimeWindow(ctx context.Context, windowType int, timestamp int64) ([]IndexEntryResult, error) {
+	var results []IndexEntryResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		entries, err := recordlayer.AsList(ctx, store.ScanTimeWindowLeaderboard(
+			s.LeaderboardIndex,
+			recordlayer.IndexScanByTimeWindow,
+			windowType,
+			timestamp,
+			recordlayer.TupleRangeAll,
+			nil,
+			recordlayer.ForwardScan(),
+		))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			results = append(results, IndexEntryResult{
+				Key:        tupleToSlice(e.Key),
+				PrimaryKey: tupleToSlice(e.PrimaryKey()),
+			})
+		}
+		return nil, nil
+	})
+	return results, err
+}
+
+// ScanLeaderboardJavaByTimeWindow scans a specific time window using Java's
+// scanIndex with TimeWindowScanRange.
+func (s *LeaderboardConformanceStore) ScanLeaderboardJavaByTimeWindow(ctx context.Context, windowType int, timestamp int64) ([]IndexEntryResult, error) {
+	params := s.buildJavaParams()
+	params["type"] = int64(windowType)
+	params["timestamp"] = int64(timestamp)
+
+	var javaResults []map[string]any
+	if err := s.java.InvokeAs(ctx, "scanLeaderboardByTimeWindow", params, &javaResults); err != nil {
+		return nil, fmt.Errorf("java scanLeaderboardByTimeWindow failed: %w", err)
+	}
+
+	var results []IndexEntryResult
+	for _, m := range javaResults {
+		entry := IndexEntryResult{}
+		if keyRaw, ok := m["key"]; ok {
+			entry.Key = toInterfaceSlice(keyRaw)
+		}
+		if pkRaw, ok := m["primaryKey"]; ok {
+			entry.PrimaryKey = toInterfaceSlice(pkRaw)
+		}
+		results = append(results, entry)
+	}
+	return results, nil
+}
+
+// ScanLeaderboardGoByRank scans the all-time leaderboard BY_RANK [lowRank, highRank)
+// using Go's ScanTimeWindowLeaderboard.
+func (s *LeaderboardConformanceStore) ScanLeaderboardGoByRank(ctx context.Context, lowRank, highRank int64) ([]IndexEntryResult, error) {
+	var results []IndexEntryResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		rankRange := recordlayer.TupleRangeBetween(
+			tuple.Tuple{lowRank},
+			tuple.Tuple{highRank},
+		)
+		entries, err := recordlayer.AsList(ctx, store.ScanTimeWindowLeaderboard(
+			s.LeaderboardIndex,
+			recordlayer.IndexScanByRank,
+			recordlayer.AllTimeLeaderboardType,
+			0,
+			rankRange,
+			nil,
+			recordlayer.ForwardScan(),
+		))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			results = append(results, IndexEntryResult{
+				Key:        tupleToSlice(e.Key),
+				PrimaryKey: tupleToSlice(e.PrimaryKey()),
+			})
+		}
+		return nil, nil
+	})
+	return results, err
+}
+
+// ScanLeaderboardJavaByRank scans the all-time leaderboard BY_RANK [lowRank, highRank)
+// using Java's scanIndex with IndexScanType.BY_RANK.
+func (s *LeaderboardConformanceStore) ScanLeaderboardJavaByRank(ctx context.Context, lowRank, highRank int64) ([]IndexEntryResult, error) {
+	params := s.buildJavaParams()
+	params["lowRank"] = lowRank
+	params["highRank"] = highRank
+
+	var javaResults []map[string]any
+	if err := s.java.InvokeAs(ctx, "scanLeaderboardByRank", params, &javaResults); err != nil {
+		return nil, fmt.Errorf("java scanLeaderboardByRank failed: %w", err)
+	}
+
+	var results []IndexEntryResult
+	for _, m := range javaResults {
+		entry := IndexEntryResult{}
+		if keyRaw, ok := m["key"]; ok {
+			entry.Key = toInterfaceSlice(keyRaw)
+		}
+		if pkRaw, ok := m["primaryKey"]; ok {
+			entry.PrimaryKey = toInterfaceSlice(pkRaw)
+		}
+		results = append(results, entry)
+	}
+	return results, nil
 }

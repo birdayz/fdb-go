@@ -70,13 +70,20 @@ func setupAllTimeWindow(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 	}
 }
 
-// verifyLeaderboardEntries scans the all-time leaderboard and verifies the entry
-// count matches the model's record count. This catches leaderboard-specific
-// corruption that the generic Verify() cannot detect (since it skips
-// TIME_WINDOW_LEADERBOARD indexes).
+// verifyLeaderboardEntries scans the all-time leaderboard and verifies:
+// 1. Entry count matches the model's record count
+// 2. Each entry's primary key exists in the model (no orphan entries)
+// 3. Each model record has a corresponding entry (no missing entries)
+// This catches leaderboard-specific corruption that generic Verify() skips.
 func verifyLeaderboardEntries(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 	t.Helper()
 	ctx := context.Background()
+
+	type entryInfo struct {
+		pk    tuple.Tuple
+		score int64
+	}
+
 	result, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -87,7 +94,6 @@ func verifyLeaderboardEntries(t testing.TB, s *Scenario, idx *recordlayer.Index)
 			return nil, err
 		}
 
-		// Scan the all-time leaderboard (ScanIndex dispatches to Scan → all-time).
 		entries, err := recordlayer.AsList(ctx, store.ScanTimeWindowLeaderboard(
 			idx, recordlayer.IndexScanByTimeWindow,
 			recordlayer.AllTimeLeaderboardType, 0,
@@ -95,17 +101,44 @@ func verifyLeaderboardEntries(t testing.TB, s *Scenario, idx *recordlayer.Index)
 		if err != nil {
 			return nil, err
 		}
-		return len(entries), nil
+
+		infos := make([]entryInfo, len(entries))
+		for i, e := range entries {
+			pk := e.PrimaryKey()
+			var score int64
+			if len(e.Key) > 0 {
+				switch v := e.Key[0].(type) {
+				case int64:
+					score = v
+				case int:
+					score = int64(v)
+				}
+			}
+			infos[i] = entryInfo{pk: pk, score: score}
+		}
+		return infos, nil
 	})
 	if err != nil {
 		t.Fatalf("chaos: verifyLeaderboardEntries: %v", err)
 	}
 
-	actualCount := result.(int)
+	entries := result.([]entryInfo)
 	expectedCount := int(s.model.Count())
-	if actualCount != expectedCount {
+	if len(entries) != expectedCount {
 		t.Fatalf("chaos: leaderboard entry count mismatch at op %d (seed=%d): expected=%d actual=%d",
-			s.opIndex, s.seed, expectedCount, actualCount)
+			s.opIndex, s.seed, expectedCount, len(entries))
+	}
+
+	// Check each entry's PK exists in the model.
+	modelPKs := make(map[string]bool)
+	for pkKey := range s.model.Records {
+		modelPKs[pkKey] = true
+	}
+	for _, e := range entries {
+		if !modelPKs[string(e.pk.Pack())] {
+			t.Fatalf("chaos: orphan leaderboard entry pk=%v score=%d at op %d (seed=%d)",
+				e.pk, e.score, s.opIndex, s.seed)
+		}
 	}
 }
 
