@@ -186,7 +186,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **SplitKeyExpression** — Batches FanOut results into fixed-size groups. Proto `Split{joined, split_size}`. Overflow-checked. 14 unit tests.
 - [x] **ListKeyExpression** — Cross-product with nested tuple wrapping (unlike Concat which flattens). Proto `List{repeated child}`. FDB tuple.Tuple nesting for proper Pack(). 15 unit tests.
 - [x] **LongArithmeticFunctionKeyExpression** — 14 arithmetic functions (add, sub, subtract, mul, multiply, div, divide, mod, bitand, bitor, bitxor, bitnot, bitmap_bit_position, bitmap_bucket_offset) via FunctionKeyExpression registry. Overflow-checked (Math.*Exact), null propagation, both-function pattern (sub/subtract). 25 unit tests.
-- [ ] **Other expression types** — DimensionsKE, CollateFunctionKE, OrderFunctionKE, AtomKE, InvertibleFunctionKE. **LOW** — only needed for specialized index types.
+- [ ] **Other expression types** — CollateFunctionKE, OrderFunctionKE, AtomKE, InvertibleFunctionKE. **LOW** — only needed for specialized index types. DimensionsKE done.
 
 ### 4. New store APIs
 
@@ -700,7 +700,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — Remaining: DimensionsKE, AtomKE, CollateFunctionKE, OrderFunctionKE, InvertibleFunctionKE. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE. See 4.10.6.0 upgrade assessment §3.
+- [ ] **Missing key expression types** — Remaining: AtomKE, CollateFunctionKE, OrderFunctionKE, InvertibleFunctionKE. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
