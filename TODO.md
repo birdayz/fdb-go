@@ -83,6 +83,63 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. `rtree.go` (insert/delete/scan with overflow/underflow), `rtree_hilbert.go` (N-dimensional Hilbert curve), `rtree_storage.go` (BY_NODE FDB serialization), `rtree_types.go` (Point/MBR/ItemSlot/ChildSlot), `dimensions_key_expression.go` (prefix/dimensions/suffix splitting). 16 tests.
 - [x] **VECTOR/HNSW index** — `hnswGraph` with probabilistic multi-layer insert, greedy kNN search, delete with neighbor cleanup. 3 distance metrics (Euclidean, Cosine, InnerProduct). `vectorIndexMaintainer` with `SearchVectorIndex`/`SearchVectorIndexRecords` store APIs. 16 tests.
 
+### 2a. Post-audit fixes for new index types (2026-03-19 audit)
+
+#### TIME_WINDOW_LEADERBOARD — wire-compatible, needs correctness fixes
+
+- [ ] **CRITICAL — `PerformWindowUpdate` rebuild is broken** — `DeleteWhere(nil)` is called but `store.RebuildIndex()` is never invoked. Data destroyed, never rebuilt. Fix: accept `*FDBRecordStore` in PerformWindowUpdate and call `store.RebuildIndex(index)` after DeleteWhere.
+- [ ] **HIGH — `negateScore` overflows at `math.MinInt64`** — Java converts to `BigInteger.negate()` (returns positive 2^63). Go's `-v` silently wraps to `MinInt64`. Fix: detect MinInt64, return `big.NewInt(0).Neg(big.NewInt(math.MinInt64))` or equivalent.
+- [ ] **HIGH — `negateScoreRange` boundary `<=` vs `<`** — Go checks `len(low) <= groupPrefixSize`, Java checks `low.size() < groupPrefixSize`. When len equals groupPrefixSize, Go enters wrong branch. Fix: change to `<`.
+- [ ] **HIGH — `highScoreFirst` scan checks only low bound** — Java checks both low and high group tuples, falls back to directory default when groups differ. Fix: extract group from both bounds, only resolve per-group when they match.
+- [ ] **HIGH — `Rebuild.NEVER` + highScoreFirst change should error** — Java throws `RecordCoreException`. Go silently creates inconsistent state. Fix: return error when highScoreFirst differs and rebuild is NEVER.
+- [ ] **HIGH — Missing `evaluateRecordFunction`** — RANK, TIME_WINDOW_RANK, TIME_WINDOW_RANK_AND_ENTRY. Primary leaderboard use case ("what's my rank?").
+- [ ] **HIGH — Missing `evaluateAggregateFunction`** — TIME_WINDOW_COUNT, SCORE_FOR_TIME_WINDOW_RANK, TIME_WINDOW_RANK_FOR_SCORE, SCORE_FOR_TIME_WINDOW_RANK_ELSE_SKIP.
+- [ ] **MEDIUM — `Rebuild.IF_OVERLAPPING_CHANGED` misses all-time addendum** — Java also triggers conditional rebuild when adding all-time leaderboard.
+- [ ] **MEDIUM — Missing `SaveSubDirectory`** — Can read per-group highScoreFirst overrides but not write them.
+- [ ] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — corrupt SubspaceKey data causes nil, likely later panics.
+- [ ] **HIGH — No chaos testing** — Need commit-unknown fault injection tests.
+- [ ] **HIGH — No conformance tests** — Need Go↔Java cross-validation.
+- [ ] **HIGH — No OnlineIndexer test** for this index type.
+- [ ] **HIGH — No RebuildIndex test** for this index type.
+
+#### MULTIDIMENSIONAL — wire format INCOMPATIBLE, needs rewrite
+
+- [ ] **CRITICAL — Node serialization format incompatible** — Go uses flat tuple `(kind, slot1_elem1, slot1_elem2, ..., slot2_elem1, ...)`. Java uses nested list `(kind, [slotTuple1, slotTuple2, ...])` via `tuple.getNestedList(1)`. Fix: restructure to 2-element tuple with nested slot list.
+- [ ] **CRITICAL — Intermediate node overflow not handled** — explicit TODO in `overflowLeaf()`. Tree corrupts with >MaxM² items (~1024 with defaults). Fix: implement upward loop matching Java's `AsyncUtil.whileTrue`.
+- [ ] **CRITICAL — Intermediate node underflow not handled** — same gap on the delete path.
+- [ ] **HIGH — `propagateMBRUp` incomplete** — only updates leaf parent ChildSlot, not higher levels. MBR drift accumulates.
+- [ ] **HIGH — No prefix skip-scan in maintainer** — `Scan()` ignores prefix, always scans default R-tree. Wrong results for prefixed indexes.
+- [ ] **HIGH — Continuation tokens incompatible** — Go uses simple int position, Java uses proto `MultidimensionalIndexScanContinuation` with `lastHilbertValue` + `lastKey`.
+- [ ] **HIGH — Scan loads everything into memory** — no streaming, no limit handling. OOM on large trees.
+- [ ] **HIGH — ItemSlot value double-wrapped** — Go writes `(hv, key, ((value)))`, Java writes `(hv, key, (value))`. Extra nesting layer.
+- [ ] **MEDIUM — No `removeCommonEntries` optimization** — every update does full delete+insert even if coordinates unchanged.
+- [ ] **MEDIUM — Silent deserialization failures** — corrupt data produces zero-value slots, no errors returned.
+- [ ] **MEDIUM — `compareHilbertValueAndKey` panics on nil BigInt** — no nil check before `hv1.Cmp(hv2)`.
+- [ ] **CRITICAL — Zero test coverage on split/fuse** — all tests have ≤5 records, never exceeding MaxM=32. Need tests with small MaxM (e.g., 4) to force rebalancing.
+- [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation after wire format fix.
+- [ ] **HIGH — No chaos testing**.
+
+#### VECTOR/HNSW — wire format INCOMPATIBLE, needs ground-up storage rewrite
+
+- [ ] **CRITICAL — Wire format completely incompatible** — different key structure (flat vs per-layer), different value encoding (float64 tuple elements vs byte arrays), different metadata storage, different neighbor representation (with vs without distances). Needs complete storage rewrite to match Java's `CompactStorageAdapter`.
+- [ ] **CRITICAL — Layer assignment non-deterministic** — Go uses `rand.NewSource(42)` global PRNG. Java uses `splitMixDouble(primaryKey.hashCode())` — deterministic per PK. Breaks idempotency on retry, breaks delete correctness. Fix: implement PK-based hash.
+- [ ] **CRITICAL — Delete does NOT repair graph** — just removes connections. Java does multi-phase repair with 1st/2nd degree neighbor reconnection. Progressive quality degradation, unreachable graph islands.
+- [ ] **HIGH — `randomLevel()` can return MaxInt** — `Float64()` returning 0.0 causes `log(0) = -Inf`, integer overflow. Fix: clamp or use `1 - Float64()`.
+- [ ] **HIGH — No duplicate detection on insert** — Java checks `exists()` and returns early. Go blindly inserts, creating stale neighbor pointers.
+- [ ] **HIGH — Missing prefix partitioning** — Java supports independent HNSW per prefix via skip-scan. Go has single global graph.
+- [ ] **HIGH — Missing BY_DISTANCE scan type** — Java has full cursor-based kNN scan with continuation. Go returns errorCursor on Scan().
+- [ ] **HIGH — Missing write locks** — Java uses `LockIdentifier` on insert/delete.
+- [ ] **HIGH — Missing Config validation** — Go allows any values including invalid ones (M=0, efConstruction=-1).
+- [ ] **MEDIUM — Only float64 vectors** — Java supports Float, Double, Half precision via `RealVector` hierarchy.
+- [ ] **MEDIUM — Missing extended neighbor selection heuristic** — Go uses simple top-M. Java supports `extendCandidates` + `keepPrunedConnections`.
+- [ ] **MEDIUM — Cosine distance can return negative** — no clamping for floating-point edge cases.
+- [ ] **MEDIUM — `vectorIndexMaintainer.Update` creates new graph per entry** — resets PRNG state, wasteful.
+- [ ] **LOW — Missing RaBitQ quantization** — optional lossy quantization for large-scale.
+- [ ] **HIGH — No search quality/recall test** — no brute-force comparison to verify results.
+- [ ] **HIGH — No conformance tests** — moot until wire format is fixed.
+- [ ] **HIGH — No chaos testing**.
+- [ ] **HIGH — No high-dimensional vector tests** (128D, 768D).
+
 ### 3. New key expression types
 
 | Expression | Proto Message | Purpose | Priority |
