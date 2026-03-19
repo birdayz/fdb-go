@@ -487,6 +487,8 @@ func createsDuplicates(expr KeyExpression) bool {
 	case *SplitKeyExpression:
 		// Matches Java's SplitKeyExpression.createsDuplicates() which returns true.
 		return true
+	case *DimensionsKeyExpression:
+		return createsDuplicates(e.WholeKey)
 	case *ListKeyExpression:
 		for _, child := range e.children {
 			if createsDuplicates(child) {
@@ -546,6 +548,8 @@ func normalizeKeyForPositions(expr KeyExpression) []KeyExpression {
 			result[i] = e.joined
 		}
 		return result
+	case *DimensionsKeyExpression:
+		return normalizeKeyForPositions(e.WholeKey)
 	case *ListKeyExpression:
 		// Matches Java's ListKeyExpression.normalizeKeyForPositions():
 		// each child is wrapped in a single-child ListKeyExpression to

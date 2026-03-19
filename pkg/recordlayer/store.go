@@ -976,7 +976,7 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	case IndexTypeMultidimensional:
 		numDims := 2 // default; extracted from DimensionsKeyExpression at runtime
-		if d, ok := index.RootExpression.(*DimensionsKeyExpression); ok {
+		if d := extractDimensionsExpression(index.RootExpression); d != nil {
 			numDims = d.DimensionsSize
 		}
 		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims)

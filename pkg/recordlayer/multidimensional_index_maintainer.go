@@ -38,8 +38,8 @@ func newMultidimensionalIndexMaintainer(
 
 // R-tree index option keys for configuring the Hilbert R-tree.
 const (
-	IndexOptionRTreeMaxM  = "rtreeMaxM"
-	IndexOptionRTreeMinM  = "rtreeMinM"
+	IndexOptionRTreeMaxM  = "rtreeMaximumM"
+	IndexOptionRTreeMinM  = "rtreeMinimumM"
 	IndexOptionRTreeSplitS = "rtreeSplitS"
 )
 
@@ -62,13 +62,32 @@ func parseRTreeConfig(index *Index, numDimensions int) RTreeConfig {
 			config.SplitS = n
 		}
 	}
+	if v, ok := index.Options["rtreeStoreHilbertValues"]; ok {
+		if v == "false" {
+			config.StoreHilbertValues = false
+		}
+	}
+	// "rtreeStorage" = "BY_SLOT" is not supported in Go; BY_NODE is the default and recommended.
 	return config
 }
 
 // getDimensionsExpression extracts the DimensionsKeyExpression from the index.
 func (m *multidimensionalIndexMaintainer) getDimensionsExpression() *DimensionsKeyExpression {
-	if d, ok := m.index.RootExpression.(*DimensionsKeyExpression); ok {
-		return d
+	return extractDimensionsExpression(m.index.RootExpression)
+}
+
+// extractDimensionsExpression finds the DimensionsKeyExpression in an expression tree.
+// Handles KeyWithValueExpression wrapping and CompositeKeyExpression (ThenKeyExpression) chains.
+func extractDimensionsExpression(expr KeyExpression) *DimensionsKeyExpression {
+	switch e := expr.(type) {
+	case *DimensionsKeyExpression:
+		return e
+	case *KeyWithValueExpression:
+		return extractDimensionsExpression(e.innerKey)
+	case *CompositeKeyExpression:
+		if len(e.expressions) > 0 {
+			return extractDimensionsExpression(e.expressions[0])
+		}
 	}
 	return nil
 }
@@ -135,14 +154,11 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 		rtSubspace = m.indexSubspace.Sub(prefix...)
 	}
 
-	// Create point from dimensional coordinates.
-	coords := make([]int64, len(dims))
+	// Validate dimensional coordinates are int64.
 	for i, d := range dims {
-		v, ok := asInt64(d)
-		if !ok {
+		if _, ok := asInt64(d); !ok {
 			return fmt.Errorf("MULTIDIMENSIONAL index %q: dimension %d must be int64, got %T", m.index.Name, i, d)
 		}
-		coords[i] = v
 	}
 	point := Point{Coordinates: dims}
 
@@ -166,7 +182,6 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 	if err != nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
 	}
-	_ = coords // used above to validate int64
 	return rtree.InsertOrUpdate(m.tx, point, keySuffix, value)
 }
 
@@ -232,17 +247,20 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	var lastKey tuple.Tuple
 	if len(continuation) > 0 {
 		var cont gen.MultidimensionalIndexScanContinuation
-		if err := proto.Unmarshal(continuation, &cont); err == nil {
-			if cont.LastHilbertValue != nil {
-				lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
+		if err := proto.Unmarshal(continuation, &cont); err != nil {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
 			}
-			if cont.LastKey != nil {
-				var err error
-				lastKey, err = tuple.Unpack(cont.LastKey)
-				if err != nil {
-					return &errorCursor[*IndexEntry]{
-						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
-					}
+		}
+		if cont.LastHilbertValue != nil {
+			lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
+		}
+		if cont.LastKey != nil {
+			var err error
+			lastKey, err = tuple.Unpack(cont.LastKey)
+			if err != nil {
+				return &errorCursor[*IndexEntry]{
+					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
 				}
 			}
 		}
@@ -334,8 +352,13 @@ func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEn
 
 // buildContinuation serializes the position into a MultidimensionalIndexScanContinuation proto.
 func (c *rtreeScanCursor) buildContinuation(idx int) []byte {
+	hvBytes := c.hvs[idx].Bytes()
+	if len(hvBytes) > 0 && hvBytes[0]&0x80 != 0 {
+		// Prepend 0x00 to indicate positive (Java's BigInteger.toByteArray() two's-complement format)
+		hvBytes = append([]byte{0x00}, hvBytes...)
+	}
 	msg := &gen.MultidimensionalIndexScanContinuation{
-		LastHilbertValue: c.hvs[idx].Bytes(),
+		LastHilbertValue: hvBytes,
 		LastKey:          c.keys[idx].Pack(),
 	}
 	data, _ := proto.Marshal(msg)
