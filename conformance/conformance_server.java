@@ -63,6 +63,7 @@ class ConformanceServer {
         new TupleOrderingSteps(),
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
+        new TimeWindowLeaderboardSteps(),
     };
 
     private static class StepEntry {
