@@ -135,8 +135,13 @@ func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNo
 	}
 }
 
-// writeLeafNode writes a leaf node to FDB.
+// writeLeafNode writes a leaf node to FDB. If the node has no slots, it is
+// deleted instead (empty nodes should not exist in the tree).
 func (s *rtreeStorage) writeLeafNode(tx fdb.Transaction, node *leafNode) {
+	if len(node.slots) == 0 {
+		s.deleteNode(tx, node.id)
+		return
+	}
 	key := s.subspace.Pack(tuple.Tuple{node.id})
 	slotList := make(tuple.Tuple, 0, len(node.slots))
 	for _, slot := range node.slots {
@@ -146,8 +151,13 @@ func (s *rtreeStorage) writeLeafNode(tx fdb.Transaction, node *leafNode) {
 	tx.Set(fdb.Key(key), t.Pack())
 }
 
-// writeIntermediateNode writes an intermediate node to FDB.
+// writeIntermediateNode writes an intermediate node to FDB. If the node has no
+// slots, it is deleted instead (empty nodes should not exist in the tree).
 func (s *rtreeStorage) writeIntermediateNode(tx fdb.Transaction, node *intermediateNode) {
+	if len(node.slots) == 0 {
+		s.deleteNode(tx, node.id)
+		return
+	}
 	key := s.subspace.Pack(tuple.Tuple{node.id})
 	slotList := make(tuple.Tuple, 0, len(node.slots))
 	for _, slot := range node.slots {
@@ -282,10 +292,11 @@ func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot,
 }
 
 // clearAll removes all nodes in this R-tree's subspace.
-func (s *rtreeStorage) clearAll(tx fdb.Transaction) {
+func (s *rtreeStorage) clearAll(tx fdb.Transaction) error {
 	r, err := fdb.PrefixRange(s.subspace.Bytes())
 	if err != nil {
-		return
+		return fmt.Errorf("rtree: clearAll prefix range: %w", err)
 	}
 	tx.ClearRange(r)
+	return nil
 }

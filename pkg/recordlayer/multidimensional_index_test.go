@@ -70,7 +70,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_insert_scan")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 3 points.
 			Expect(rt.InsertOrUpdate(rtx.Transaction(),
@@ -119,7 +120,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_delete")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 2 points.
 			Expect(rt.InsertOrUpdate(rtx.Transaction(),
@@ -159,7 +161,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_delete_noop")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			Expect(rt.InsertOrUpdate(rtx.Transaction(),
 				Point{Coordinates: tuple.Tuple{int64(10), int64(20)}},
@@ -190,7 +193,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_update")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert a point with value.
 			Expect(rt.InsertOrUpdate(rtx.Transaction(),
@@ -224,7 +228,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_empty")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -235,14 +240,15 @@ var _ = Describe("RTree", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("scan with MBR predicate filters results", func() {
+	It("scan with MBR predicate prunes subtrees not individual items", func() {
 		ks := specSubspace()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rtree_mbr_predicate")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert points at (10, 20), (50, 60), (100, 200).
 			for _, pt := range []struct {
@@ -259,13 +265,16 @@ var _ = Describe("RTree", func() {
 				)).To(Succeed())
 			}
 
-			// MBR predicate: only points within [0,70] x [0,70].
+			// MBR predicate only prunes intermediate child slots, NOT individual
+			// items in leaf nodes (matches Java). With 3 items in a root leaf,
+			// all items are returned regardless of the predicate.
 			queryMBR := MBR{Low: []int64{0, 0}, High: []int64{70, 70}}
 			items, err := rt.Scan(rtx.Transaction(), nil, nil, func(m MBR) bool {
 				return queryMBR.Overlaps(m)
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(items).To(HaveLen(2))
+			// Root leaf: predicate not applied to items, all 3 returned.
+			Expect(items).To(HaveLen(3))
 
 			pks := make(map[int64]bool)
 			for _, item := range items {
@@ -274,7 +283,7 @@ var _ = Describe("RTree", func() {
 			}
 			Expect(pks).To(HaveKey(int64(1)))
 			Expect(pks).To(HaveKey(int64(2)))
-			Expect(pks).NotTo(HaveKey(int64(3)))
+			Expect(pks).To(HaveKey(int64(3)))
 
 			return nil, nil
 		})
@@ -288,7 +297,8 @@ var _ = Describe("RTree", func() {
 			sub := ks.Sub("rtree_clear")
 			config := DefaultRTreeConfig(2)
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			for i := int64(0); i < 5; i++ {
 				Expect(rt.InsertOrUpdate(rtx.Transaction(),
@@ -302,7 +312,7 @@ var _ = Describe("RTree", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(items).To(HaveLen(5))
 
-			rt.Clear(rtx.Transaction())
+			Expect(rt.Clear(rtx.Transaction())).To(Succeed())
 
 			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -323,7 +333,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 25 items. With MaxM=4:
 			// - root leaf splits at 5 items
@@ -389,7 +400,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 20 items to create a multi-level tree.
 			const n = 20
@@ -463,7 +475,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 60 items. With MaxM=4, each leaf holds up to 4 items.
 			// 60 items / 4 = 15 leaves. 15 children / 4 = ~4 level-2 nodes.
@@ -526,7 +539,7 @@ var _ = Describe("RTree", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("MBR predicate works correctly after rebalancing with small MaxM", func() {
+	It("MBR predicate prunes subtrees after rebalancing with small MaxM", func() {
 		ks := specSubspace()
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -536,7 +549,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 30 items spread across coordinate space.
 			const n = 30
@@ -550,14 +564,18 @@ var _ = Describe("RTree", func() {
 			}
 
 			// Query: points in [0, 100] x [0, 100].
-			// Should include i=0..10 (coordinates 0..100, 0..100).
+			// MBR predicate prunes at child slot level (intermediate nodes).
+			// Items i=0..10 at (0,0)...(100,100) MUST be in the results.
+			// Items beyond the query range MAY also appear if they share a leaf
+			// with qualifying items (MBR predicate does NOT filter individual items,
+			// matching Java behavior).
 			queryMBR := MBR{Low: []int64{0, 0}, High: []int64{100, 100}}
 			items, err := rt.Scan(rtx.Transaction(), nil, nil, func(m MBR) bool {
 				return queryMBR.Overlaps(m)
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Items with coordinates (0,0) through (100,100) = 11 items (i=0..10).
+			// Verify all expected items are present (superset guarantee).
 			expectedPKs := make(map[int64]bool)
 			for i := 0; i <= 10; i++ {
 				expectedPKs[int64(i)] = true
@@ -572,9 +590,13 @@ var _ = Describe("RTree", func() {
 			for pk := range expectedPKs {
 				Expect(gotPKs).To(HaveKey(pk), "expected PK %d in MBR query", pk)
 			}
-			for pk := range gotPKs {
-				Expect(expectedPKs).To(HaveKey(pk), "unexpected PK %d in MBR query", pk)
-			}
+
+			// The result set may be larger than the exact match set — that's correct.
+			// Items in pruned subtrees must NOT appear: items with ALL dimensions
+			// far from the query range (high PKs like 20+) should be absent.
+			// But items near the boundary may appear due to leaf cohabitation.
+			Expect(len(items)).To(BeNumerically(">=", 11))
+			Expect(len(items)).To(BeNumerically("<", n), "MBR pruning should exclude at least some items")
 
 			return nil, nil
 		})
@@ -591,7 +613,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 20 items.
 			const n = 20
@@ -638,7 +661,8 @@ var _ = Describe("RTree", func() {
 				StoreHilbertValues: true, NumDimensions: 2,
 			}
 			storage := newRTreeStorage(sub, config)
-			rt := NewRTree(storage, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Insert 15 items.
 			const n = 15

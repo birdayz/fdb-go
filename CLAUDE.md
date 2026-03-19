@@ -34,6 +34,8 @@ See `TODO.md` in repo root for tracked issues and improvements. Use checkbox for
 
 **Delegation style:** Act as a principal engineer — design, plan, and manage. Delegate implementation grunt work to subagents aggressively. This preserves context window for architectural decisions and quality review. Self-adjust: do critical/tricky pieces yourself, delegate mechanical/boilerplate work. Provide subagents with full context (file paths, code snippets, patterns to follow) so they can work autonomously. Review their output, fix issues, iterate.
 
+**One large task at a time.** Never run two big implementation subagents in parallel (e.g., two rewrites touching different subsystems). Too easy to lose track of details, miss review, or end up with half-finished work. Small research/exploration agents can run in parallel, but any agent that writes significant code should run alone so you can review its output properly before moving on.
+
 **Build & verify:** always use `just test` (not manual bazelisk commands) — it runs everything and the Bazel cache handles incrementality perfectly.
 
 **Run specific Ginkgo tests via Bazel:**

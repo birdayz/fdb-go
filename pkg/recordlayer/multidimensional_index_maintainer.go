@@ -162,7 +162,10 @@ func (m *multidimensionalIndexMaintainer) insertEntry(dimExpr *DimensionsKeyExpr
 	}
 
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	rtree := NewRTree(storage, m.rTreeConfig)
+	rtree, err := NewRTree(storage, m.rTreeConfig)
+	if err != nil {
+		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
+	}
 	_ = coords // used above to validate int64
 	return rtree.InsertOrUpdate(m.tx, point, keySuffix, value)
 }
@@ -187,7 +190,10 @@ func (m *multidimensionalIndexMaintainer) deleteEntry(dimExpr *DimensionsKeyExpr
 	keySuffix = append(keySuffix, trimmedPK...)
 
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	rtree := NewRTree(storage, m.rTreeConfig)
+	rtree, err := NewRTree(storage, m.rTreeConfig)
+	if err != nil {
+		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
+	}
 	return rtree.Delete(m.tx, point, keySuffix)
 }
 
@@ -244,7 +250,10 @@ func (m *multidimensionalIndexMaintainer) Scan(
 
 	// 3. Scan R-tree.
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	rtree := NewRTree(storage, m.rTreeConfig)
+	rtree, err := NewRTree(storage, m.rTreeConfig)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)}
+	}
 	items, err := rtree.Scan(m.tx, lastHV, lastKey, nil)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
@@ -287,9 +296,11 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 		rtSubspace = m.indexSubspace.Sub(prefix...)
 	}
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
-	rtree := NewRTree(storage, m.rTreeConfig)
-	rtree.Clear(m.tx)
-	return nil
+	rtree, err := NewRTree(storage, m.rTreeConfig)
+	if err != nil {
+		return fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)
+	}
+	return rtree.Clear(m.tx)
 }
 
 // rtreeScanCursor wraps materialized R-tree scan results into a RecordCursor

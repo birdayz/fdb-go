@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -197,6 +198,31 @@ func DefaultRTreeConfig(numDimensions int) RTreeConfig {
 		StoreHilbertValues: true,
 		NumDimensions:     numDimensions,
 	}
+}
+
+// ValidateRTreeConfig validates the R-tree configuration parameters.
+// Checks: MinM >= 1, MaxM >= 2, SplitS >= 1, NumDimensions >= 1,
+// and S * MaxM >= (S+1) * MinM (split/fuse ratio constraint).
+func ValidateRTreeConfig(config RTreeConfig) error {
+	if config.NumDimensions < 1 {
+		return fmt.Errorf("rtree: NumDimensions must be >= 1, got %d", config.NumDimensions)
+	}
+	if config.MinM < 1 {
+		return fmt.Errorf("rtree: MinM must be >= 1, got %d", config.MinM)
+	}
+	if config.MaxM < 2 {
+		return fmt.Errorf("rtree: MaxM must be >= 2, got %d", config.MaxM)
+	}
+	if config.SplitS < 1 {
+		return fmt.Errorf("rtree: SplitS must be >= 1, got %d", config.SplitS)
+	}
+	// S * MaxM >= (S+1) * MinM ensures that after a split among S+1 siblings,
+	// each sibling still has at least MinM items.
+	if config.SplitS*config.MaxM < (config.SplitS+1)*config.MinM {
+		return fmt.Errorf("rtree: config violates split constraint: S*MaxM (%d) < (S+1)*MinM (%d)",
+			config.SplitS*config.MaxM, (config.SplitS+1)*config.MinM)
+	}
+	return nil
 }
 
 // leafNode is a leaf-level node containing item slots.

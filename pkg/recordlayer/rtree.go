@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"sort"
 
@@ -16,9 +17,12 @@ type RTree struct {
 	config  RTreeConfig
 }
 
-// NewRTree creates a new R-tree.
-func NewRTree(storage *rtreeStorage, config RTreeConfig) *RTree {
-	return &RTree{storage: storage, config: config}
+// NewRTree creates a new R-tree. Returns an error if config is invalid.
+func NewRTree(storage *rtreeStorage, config RTreeConfig) (*RTree, error) {
+	if err := ValidateRTreeConfig(config); err != nil {
+		return nil, err
+	}
+	return &RTree{storage: storage, config: config}, nil
 }
 
 // InsertOrUpdate inserts a new item or updates an existing one.
@@ -32,7 +36,7 @@ func (rt *RTree) InsertOrUpdate(tx fdb.Transaction, point Point, keySuffix tuple
 	itemKey := tuple.Tuple{point.Coordinates, keySuffix}
 
 	// Walk from root to leaf.
-	path, err := rt.fetchUpdatePathToLeaf(tx, hv, itemKey)
+	path, err := rt.fetchUpdatePathToLeaf(tx, hv, itemKey, true)
 	if err != nil {
 		return err
 	}
@@ -86,14 +90,14 @@ func (rt *RTree) Delete(tx fdb.Transaction, point Point, keySuffix tuple.Tuple) 
 	hv := hilbertValue(coords)
 	itemKey := tuple.Tuple{point.Coordinates, keySuffix}
 
-	path, err := rt.fetchUpdatePathToLeaf(tx, hv, itemKey)
+	path, err := rt.fetchUpdatePathToLeaf(tx, hv, itemKey, false)
 	if err != nil {
 		return err
 	}
 
 	leaf := path.leaf
 	if leaf == nil {
-		return nil // empty tree
+		return nil // empty tree or item not reachable
 	}
 
 	// Find the item.
@@ -129,12 +133,14 @@ func (rt *RTree) Scan(tx fdb.ReadTransaction, lastHV *big.Int, lastKey tuple.Tup
 
 	var result []ItemSlot
 	if leaf != nil {
-		// Root is a leaf — just filter items.
+		// Root is a leaf — return all items past the continuation point.
+		// The MBR predicate is only applied to child slots in intermediate nodes
+		// (for subtree pruning), NOT to individual items. Java: "The predicate is
+		// applied to intermediate nodes as well as leaf nodes, but not to elements
+		// contained by a leaf node." Since a root leaf has no intermediate parent,
+		// no pruning applies.
 		for _, slot := range leaf.slots {
 			if lastHV != nil && compareHilbertValueAndKey(slot.HilbertValue, slot.ItemKey(), lastHV, lastKey) <= 0 {
-				continue
-			}
-			if mbrPredicate != nil && !mbrPredicate(slot.GetMBR()) {
 				continue
 			}
 			result = append(result, slot)
@@ -173,11 +179,11 @@ func (rt *RTree) scanIntermediate(
 			return nil, err
 		}
 		if childLeaf != nil {
+			// MBR predicate already applied to the child slot above — items
+			// inside a leaf are not individually filtered by the predicate
+			// (matches Java: predicate is NOT applied to elements in a leaf).
 			for _, slot := range childLeaf.slots {
 				if lastHV != nil && compareHilbertValueAndKey(slot.HilbertValue, slot.ItemKey(), lastHV, lastKey) <= 0 {
-					continue
-				}
-				if mbrPredicate != nil && !mbrPredicate(slot.GetMBR()) {
 					continue
 				}
 				result = append(result, slot)
@@ -202,7 +208,10 @@ type updatePath struct {
 }
 
 // fetchUpdatePathToLeaf walks from root to the leaf where (hv, key) should live.
-func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.Transaction, hv *big.Int, itemKey tuple.Tuple) (*updatePath, error) {
+// For inserts (isInsert=true), defaults to the last child when no range covers the
+// target. For deletes (isInsert=false), returns a nil-leaf path if no child's range
+// can contain the target item.
+func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.Transaction, hv *big.Int, itemKey tuple.Tuple, isInsert bool) (*updatePath, error) {
 	path := &updatePath{}
 
 	leaf, inter, err := rt.storage.fetchNode(tx, rootNodeID)
@@ -220,12 +229,22 @@ func (rt *RTree) fetchUpdatePathToLeaf(tx fdb.Transaction, hv *big.Int, itemKey 
 	// Walk down intermediate nodes.
 	current := inter
 	for {
-		// Find the child whose range covers (hv, key), or the last child.
-		childIdx := len(current.slots) - 1
+		// Find the child whose range covers (hv, key).
+		childIdx := -1
 		for i, child := range current.slots {
 			if compareHilbertValueAndKey(child.LargestHV, child.LargestKey, hv, itemKey) >= 0 {
 				childIdx = i
 				break
+			}
+		}
+
+		if childIdx < 0 {
+			if isInsert {
+				// Insert: default to the last child (extend rightmost).
+				childIdx = len(current.slots) - 1
+			} else {
+				// Delete: item is beyond all children's ranges — not in tree.
+				return path, nil
 			}
 		}
 
@@ -299,12 +318,9 @@ func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
 	childIdx := path.indices[parentIdx]
 
 	// Gather S siblings centered on childIdx.
-	siblings, startIdx := rt.gatherLeafSiblings(tx, parent, childIdx)
-	if siblings == nil {
-		// Fallback: just write the overflow node.
-		rt.storage.writeLeafNode(tx, path.leaf)
-		rt.propagateMBRUp(tx, path)
-		return nil
+	siblings, startIdx, err := rt.gatherLeafSiblings(tx, parent, childIdx)
+	if err != nil {
+		return err
 	}
 
 	// Replace the re-fetched copy of the overflowing leaf with the in-memory
@@ -395,11 +411,9 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error
 	parent := path.parents[parentIdx]
 	childIdx := path.indices[parentIdx]
 
-	siblings, startIdx := rt.gatherLeafSiblings(tx, parent, childIdx)
-	if siblings == nil {
-		rt.storage.writeLeafNode(tx, leaf)
-		rt.propagateMBRUp(tx, path)
-		return nil
+	siblings, startIdx, err := rt.gatherLeafSiblings(tx, parent, childIdx)
+	if err != nil {
+		return err
 	}
 
 	// Replace the re-fetched copy of the underflowing leaf with the in-memory
@@ -460,7 +474,7 @@ func (rt *RTree) handleLeafUnderflow(tx fdb.Transaction, path *updatePath) error
 }
 
 // gatherLeafSiblings returns S siblings centered on childIdx, loaded from FDB.
-func (rt *RTree) gatherLeafSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*leafNode, int) {
+func (rt *RTree) gatherLeafSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*leafNode, int, error) {
 	s := rt.config.SplitS
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
@@ -478,12 +492,15 @@ func (rt *RTree) gatherLeafSiblings(tx fdb.Transaction, parent *intermediateNode
 	siblings := make([]*leafNode, 0, s)
 	for i := startIdx; i < startIdx+s; i++ {
 		node, err := rt.storage.fetchLeafNode(tx, parent.slots[i].ChildID)
-		if err != nil || node == nil {
-			return nil, 0
+		if err != nil {
+			return nil, 0, fmt.Errorf("rtree: fetch leaf sibling %d: %w", i, err)
+		}
+		if node == nil {
+			return nil, 0, fmt.Errorf("rtree: leaf sibling %d not found", i)
 		}
 		siblings = append(siblings, node)
 	}
-	return siblings, startIdx
+	return siblings, startIdx, nil
 }
 
 // redistributeItems evenly distributes items across sibling leaf nodes.
@@ -635,12 +652,9 @@ func (rt *RTree) overflowIntermediate(tx fdb.Transaction, path *updatePath, leve
 	childIdx := path.indices[grandparentIdx]
 
 	// Gather S siblings centered on childIdx.
-	siblings, startIdx := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
-	if siblings == nil {
-		// Fallback: just write the overflow node.
-		rt.storage.writeIntermediateNode(tx, path.parents[level])
-		rt.propagateParentMBRUp(tx, path, level)
-		return nil
+	siblings, startIdx, err := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
+	if err != nil {
+		return err
 	}
 
 	// Replace the re-fetched copy of the overflowing node with the in-memory
@@ -763,12 +777,9 @@ func (rt *RTree) fuseIntermediate(tx fdb.Transaction, path *updatePath, level in
 	grandparent := path.parents[grandparentIdx]
 	childIdx := path.indices[grandparentIdx]
 
-	siblings, startIdx := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
-	if siblings == nil {
-		// Fallback: just write the underflow node.
-		rt.storage.writeIntermediateNode(tx, path.parents[level])
-		rt.propagateParentMBRUp(tx, path, level)
-		return nil
+	siblings, startIdx, err := rt.gatherIntermediateSiblings(tx, grandparent, childIdx)
+	if err != nil {
+		return err
 	}
 
 	// Replace the re-fetched copy of the underflowing node with the in-memory
@@ -832,7 +843,7 @@ func (rt *RTree) fuseIntermediate(tx fdb.Transaction, path *updatePath, level in
 
 // gatherIntermediateSiblings returns S intermediate siblings centered on childIdx,
 // loaded from FDB. Mirrors gatherLeafSiblings but for intermediate nodes.
-func (rt *RTree) gatherIntermediateSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int) {
+func (rt *RTree) gatherIntermediateSiblings(tx fdb.Transaction, parent *intermediateNode, childIdx int) ([]*intermediateNode, int, error) {
 	s := rt.config.SplitS
 	if s >= len(parent.slots) {
 		s = len(parent.slots)
@@ -850,12 +861,15 @@ func (rt *RTree) gatherIntermediateSiblings(tx fdb.Transaction, parent *intermed
 	siblings := make([]*intermediateNode, 0, s)
 	for i := startIdx; i < startIdx+s; i++ {
 		node, err := rt.storage.fetchIntermediateNode(tx, parent.slots[i].ChildID)
-		if err != nil || node == nil {
-			return nil, 0
+		if err != nil {
+			return nil, 0, fmt.Errorf("rtree: fetch intermediate sibling %d: %w", i, err)
+		}
+		if node == nil {
+			return nil, 0, fmt.Errorf("rtree: intermediate sibling %d not found", i)
 		}
 		siblings = append(siblings, node)
 	}
-	return siblings, startIdx
+	return siblings, startIdx, nil
 }
 
 // redistributeChildSlots evenly distributes child slots across sibling intermediate nodes.
@@ -911,8 +925,8 @@ func (rt *RTree) childSlotForIntermediate(node *intermediateNode) ChildSlot {
 }
 
 // Clear removes all data from the R-tree.
-func (rt *RTree) Clear(tx fdb.Transaction) {
-	rt.storage.clearAll(tx)
+func (rt *RTree) Clear(tx fdb.Transaction) error {
+	return rt.storage.clearAll(tx)
 }
 
 // nodeIDEqual compares two node IDs.
