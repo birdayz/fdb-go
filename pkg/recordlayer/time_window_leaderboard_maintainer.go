@@ -825,66 +825,101 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateRecordFunction(
 	switch fn.Name {
 	case FunctionNameRank:
 		// All-time leaderboard. Matches Java's dispatch for FunctionNames.RANK.
-		return m.timeWindowRank(record, AllTimeLeaderboardType, 0)
-	case FunctionNameTimeWindowRank, FunctionNameTimeWindowRankAndEntry:
-		// These require a TimeWindowForFunction to specify the target time window.
-		// Not yet implemented — return error rather than silently returning wrong data.
-		return nil, fmt.Errorf("leaderboard index %q: %q requires TimeWindowForFunction (not yet implemented)", m.index.Name, fn.Name)
+		rank, _, err := m.timeWindowRankAndEntry(record, AllTimeLeaderboardType, 0)
+		return rank, err
+	case FunctionNameTimeWindowRank:
+		// Per-window rank. Matches Java's cast to TimeWindowRecordFunction<Long>.
+		if fn.TimeWindow == nil {
+			return nil, fmt.Errorf("leaderboard index %q: %q requires TimeWindow", m.index.Name, fn.Name)
+		}
+		rank, _, err := m.timeWindowRankAndEntry(record, fn.TimeWindow.LeaderboardType, fn.TimeWindow.LeaderboardTimestamp)
+		return rank, err
+	case FunctionNameTimeWindowRankAndEntry:
+		// Per-window rank + entry. Matches Java's cast to TimeWindowRecordFunction<Tuple>.
+		if fn.TimeWindow == nil {
+			return nil, fmt.Errorf("leaderboard index %q: %q requires TimeWindow", m.index.Name, fn.Name)
+		}
+		_, _, err := m.timeWindowRankAndEntry(record, fn.TimeWindow.LeaderboardType, fn.TimeWindow.LeaderboardTimestamp)
+		// Note: the Tuple return (rank + entry) requires a different return type.
+		// The store-level API returns *int64. For TIME_WINDOW_RANK_AND_ENTRY,
+		// callers should use EvaluateTimeWindowRankAndEntry directly.
+		return nil, err
 	default:
 		return nil, fmt.Errorf("leaderboard index %q: unsupported record function %q", m.index.Name, fn.Name)
 	}
 }
 
-// timeWindowRank computes the rank of a record's score within a specific time window.
-// Matches Java's TimeWindowLeaderboardIndexMaintainer.timeWindowRankAndEntry().
-func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRank(
+// EvaluateTimeWindowRankAndEntry returns both rank and entry tuple for a record.
+// Returns Tuple{rank, entryElement0, entryElement1, ...} matching Java's
+// Tuple.from(rank).addAll(entry).
+// Matches Java's evaluateRecordFunction for TIME_WINDOW_RANK_AND_ENTRY.
+func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowRankAndEntry(
 	record *FDBStoredRecord[proto.Message],
 	leaderboardType int,
 	leaderboardTimestamp int64,
-) (*int64, error) {
-	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+) (tuple.Tuple, error) {
+	rank, entry, err := m.timeWindowRankAndEntry(record, leaderboardType, leaderboardTimestamp)
 	if err != nil {
 		return nil, err
 	}
-	if dir == nil {
+	if rank == nil {
 		return nil, nil
+	}
+	result := make(tuple.Tuple, 0, 1+len(entry))
+	result = append(result, *rank)
+	result = append(result, entry...)
+	return result, nil
+}
+
+// timeWindowRankAndEntry computes the rank and entry of a record's score within a
+// specific time window. Returns (rank, entry, err) where entry is the un-negated
+// score key (for highScoreFirst, the original non-negated score).
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.timeWindowRankAndEntry().
+func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRankAndEntry(
+	record *FDBStoredRecord[proto.Message],
+	leaderboardType int,
+	leaderboardTimestamp int64,
+) (*int64, tuple.Tuple, error) {
+	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+	if err != nil {
+		return nil, nil, err
+	}
+	if dir == nil {
+		return nil, nil, nil
 	}
 
 	lb := dir.oldestLeaderboardMatching(leaderboardType, leaderboardTimestamp)
 	if lb == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	// Evaluate index entries for this record.
 	entries, err := m.evaluateIndex(record)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(entries) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	groupPrefixSize := m.getGroupingCount()
 
-	// Group and order scores.
 	grouped, _, err := m.groupOrderedScoreIndexKeys(dir, entries, groupPrefixSize)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(grouped) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if len(grouped) > 1 {
-		return nil, fmt.Errorf("record has more than one group of scores")
+		return nil, nil, fmt.Errorf("record has more than one group of scores")
 	}
 
 	gs := grouped[0]
 	bestScore := m.bestContainedScore(lb, gs.scores)
 	if bestScore == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	// Look up the rank in the ranked set.
 	leaderboardGroupKey := make(tuple.Tuple, 0, len(lb.SubspaceKey)+len(gs.groupKey))
 	leaderboardGroupKey = append(leaderboardGroupKey, lb.SubspaceKey...)
 	leaderboardGroupKey = append(leaderboardGroupKey, gs.groupKey...)
@@ -896,8 +931,76 @@ func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRank(
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
 
+	// Rank lookup uses the negated scoreKey (as stored in the ranked set).
 	scoreBytes := bestScore.scoreKey.Pack()
-	return rankedSet.Rank(m.tx, scoreBytes, true)
+	rank, err := rankedSet.Rank(m.tx, scoreBytes, true)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Entry returned to caller is UN-negated. Matches Java's:
+	//   entry = highScoreFirst ? negateScoreForHighScoreFirst(indexKey.scoreKey, 0) : indexKey.scoreKey
+	highScoreFirst, err := m.isHighScoreFirst(dir, gs.groupKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	entry := bestScore.scoreKey
+	if highScoreFirst {
+		entry, err = negateScore(bestScore.scoreKey, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return rank, entry, nil
+}
+
+// TrimScores returns the subset of scores that would be indexed by any active
+// leaderboard window. Scores that are never the "best" for any window are dropped.
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.trimScores().
+func (m *timeWindowLeaderboardIndexMaintainer) TrimScores(scores []tuple.Tuple, includesGroup bool) ([]tuple.Tuple, error) {
+	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+	if err != nil {
+		return nil, err
+	}
+	if dir == nil {
+		return scores, nil // No directory = nothing to trim against.
+	}
+
+	// Convert score tuples to indexEntry format.
+	entries := make([]indexEntry, len(scores))
+	for i, s := range scores {
+		entries[i] = indexEntry{key: s}
+	}
+
+	groupPrefixSize := 0
+	if includesGroup {
+		groupPrefixSize = m.getGroupingCount()
+	}
+
+	grouped, _, err := m.groupOrderedScoreIndexKeys(dir, entries, groupPrefixSize)
+	if err != nil {
+		return nil, err
+	}
+
+	// For each leaderboard x group, find the best contained score.
+	// Use a set (map) to deduplicate.
+	trimmedSet := make(map[string]tuple.Tuple)
+	for _, lb := range dir.allLeaderboards() {
+		for _, gs := range grouped {
+			best := m.bestContainedScore(lb, gs.scores)
+			if best != nil {
+				key := string(best.entry.key.Pack())
+				trimmedSet[key] = best.entry.key
+			}
+		}
+	}
+
+	result := make([]tuple.Tuple, 0, len(trimmedSet))
+	for _, t := range trimmedSet {
+		result = append(result, t)
+	}
+	return result, nil
 }
 
 // Aggregate function name constants for TIME_WINDOW_LEADERBOARD.

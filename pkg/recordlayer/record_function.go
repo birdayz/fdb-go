@@ -20,6 +20,18 @@ type IndexRecordFunction struct {
 	Name    string        // Function name (e.g. "rank")
 	Operand KeyExpression // The operand (typically a GroupingKeyExpression)
 	Index   string        // Optional: explicit index name. Empty = auto-select.
+
+	// TimeWindow specifies the leaderboard time window for TIME_WINDOW_RANK and
+	// TIME_WINDOW_RANK_AND_ENTRY functions. Nil for plain RANK (uses all-time).
+	// Matches Java's TimeWindowRecordFunction.timeWindow (TimeWindowForFunction).
+	TimeWindow *TimeWindowForFunction
+}
+
+// TimeWindowForFunction specifies a leaderboard time window for record/aggregate functions.
+// Matches Java's com.apple.foundationdb.record.provider.foundationdb.leaderboard.TimeWindowForFunction.
+type TimeWindowForFunction struct {
+	LeaderboardType      int
+	LeaderboardTimestamp int64
 }
 
 // EvaluateRecordFunction evaluates an index record function for a specific record.

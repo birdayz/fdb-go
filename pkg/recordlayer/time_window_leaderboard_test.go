@@ -2374,16 +2374,43 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank3).To(Equal(int64(1))) // price=200 → rank 1
 
-			// TIME_WINDOW_RANK requires TimeWindowForFunction (not yet implemented).
-			// Verify it returns a clear error rather than silently returning wrong data.
+			// TIME_WINDOW_RANK for window type=1, timestamp=1500:
+			// Only records 1 and 2 are in this window (timestamps 1500 and 1200).
+			// In the window: (100,1200)→rank 0, (300,1500)→rank 1
 			twFn := &IndexRecordFunction{
 				Name:    FunctionNameTimeWindowRank,
 				Operand: idx.RootExpression,
 				Index:   idx.Name,
+				TimeWindow: &TimeWindowForFunction{
+					LeaderboardType:      1,
+					LeaderboardTimestamp: 1500,
+				},
 			}
-			_, twErr := store.EvaluateRecordFunction(twFn, rec1)
-			Expect(twErr).To(HaveOccurred())
-			Expect(twErr.Error()).To(ContainSubstring("not yet implemented"))
+
+			twRank1, twErr := store.EvaluateRecordFunction(twFn, rec1)
+			Expect(twErr).NotTo(HaveOccurred())
+			Expect(twRank1).NotTo(BeNil())
+			Expect(*twRank1).To(Equal(int64(1))) // price=300 → rank 1 in bounded window
+
+			twRank2, twErr := store.EvaluateRecordFunction(twFn, rec2)
+			Expect(twErr).NotTo(HaveOccurred())
+			Expect(twRank2).NotTo(BeNil())
+			Expect(*twRank2).To(Equal(int64(0))) // price=100 → rank 0 in bounded window
+
+			// Record 3 (timestamp=500) is NOT in window [1000,2000) → should return nil
+			twRank3, twErr := store.EvaluateRecordFunction(twFn, rec3)
+			Expect(twErr).NotTo(HaveOccurred())
+			Expect(twRank3).To(BeNil())
+
+			// Without TimeWindow, TIME_WINDOW_RANK should error.
+			badFn := &IndexRecordFunction{
+				Name:    FunctionNameTimeWindowRank,
+				Operand: idx.RootExpression,
+				Index:   idx.Name,
+			}
+			_, badErr := store.EvaluateRecordFunction(badFn, rec1)
+			Expect(badErr).To(HaveOccurred())
+			Expect(badErr.Error()).To(ContainSubstring("requires TimeWindow"))
 
 			return nil, nil
 		})
