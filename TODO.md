@@ -98,7 +98,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MEDIUM — Missing `SaveSubDirectory`** — Implemented: `SaveSubDirectory(group, highScoreFirst)` on maintainer. 2 tests.
 - [x] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — Fixed: returns error on corrupt SubspaceKey.
 - [x] **HIGH — No chaos testing** — 15 chaos tests: basic, commit-unknown (insert/overwrite/delete), duplicate scores, multiple windows, highScoreFirst, random+heavy stress (200-300 ops, 5-20% fault rate), all fault types.
-- [x] **HIGH — No conformance tests** — 7 conformance specs: Go writes/both scan, Java writes/both scan, mixed writes, cross-language delete (2 specs), rank cross-validation, score update. Java steps: setupLeaderboardWindows, saveOrderWithLeaderboard, deleteOrderWithLeaderboard, scanLeaderboardIndex, leaderboardRankForRecord.
+- [x] **HIGH — No conformance tests** — 11 conformance specs: Go/Java writes+scan, mixed writes, cross-language delete (2), rank, score update, highScoreFirst wire compat, bounded window filtering, Go-creates-windows-Java-reads, BY_RANK cross-language.
 - [x] **HIGH — No OnlineIndexer test** — 2 tests: full build, chunked build with small limit.
 - [x] **HIGH — No RebuildIndex test** — 2 tests: explicit rebuild, PerformWindowUpdate ALWAYS rebuild.
 
