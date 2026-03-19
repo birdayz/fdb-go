@@ -3,11 +3,13 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strconv"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -186,7 +188,8 @@ func (m *multidimensionalIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRec
 }
 
 // Scan scans the R-tree for items matching an MBR predicate.
-// The scanRange is used for prefix filtering. The actual spatial query uses the MBR.
+// The scanRange is used for prefix filtering (first PrefixSize elements scope the R-tree subspace).
+// Supports proto-wrapped continuation tokens (MultidimensionalIndexScanContinuation) and row limits.
 // For basic scans without spatial predicates, returns all items in Hilbert order.
 func (m *multidimensionalIndexMaintainer) Scan(
 	scanRange TupleRange,
@@ -200,21 +203,53 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		}
 	}
 
-	// For now, scan entire R-tree (no prefix skip-scan).
+	// 1. Extract prefix from scanRange to scope the R-tree subspace.
+	var prefix tuple.Tuple
 	rtSubspace := m.indexSubspace
+	if dimExpr.PrefixSize > 0 && scanRange.Low != nil && len(scanRange.Low) >= dimExpr.PrefixSize {
+		prefix = scanRange.Low[:dimExpr.PrefixSize]
+		rtSubspace = m.indexSubspace.Sub(prefix...)
+	}
+
+	// 2. Parse continuation token.
+	var lastHV *big.Int
+	var lastKey tuple.Tuple
+	if len(continuation) > 0 {
+		var cont gen.MultidimensionalIndexScanContinuation
+		if err := proto.Unmarshal(continuation, &cont); err == nil {
+			if cont.LastHilbertValue != nil {
+				lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
+			}
+			if cont.LastKey != nil {
+				var err error
+				lastKey, err = tuple.Unpack(cont.LastKey)
+				if err != nil {
+					return &errorCursor[*IndexEntry]{
+						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Scan R-tree.
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
 	rtree := NewRTree(storage, m.rTreeConfig)
-
-	items, err := rtree.Scan(m.tx, nil, nil, nil)
+	items, err := rtree.Scan(m.tx, lastHV, lastKey, nil)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
 
-	// Convert items to IndexEntry.
+	// 4. Convert to IndexEntry, tracking HV/key for continuations.
 	entries := make([]*IndexEntry, 0, len(items))
+	hvs := make([]*big.Int, 0, len(items))
+	keys := make([]tuple.Tuple, 0, len(items))
 	for _, item := range items {
 		// Reconstruct the full index key: prefix + dims + suffix.
-		key := make(tuple.Tuple, 0, len(item.Point.Coordinates)+len(item.KeySuffix))
+		key := make(tuple.Tuple, 0, len(prefix)+len(item.Point.Coordinates)+len(item.KeySuffix))
+		if len(prefix) > 0 {
+			key = append(key, prefix...)
+		}
 		key = append(key, item.Point.Coordinates...)
 		key = append(key, item.KeySuffix...)
 		entries = append(entries, &IndexEntry{
@@ -222,9 +257,17 @@ func (m *multidimensionalIndexMaintainer) Scan(
 			Key:   key,
 			Value: item.Value,
 		})
+		hvs = append(hvs, item.HilbertValue)
+		keys = append(keys, item.ItemKey())
 	}
 
-	return newSliceCursor(entries)
+	// 5. Apply row limit.
+	limit := 0
+	if scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
+		limit = scanProperties.ExecuteProperties.ReturnedRowLimit
+	}
+
+	return &rtreeScanCursor{items: entries, hvs: hvs, keys: keys, limit: limit}
 }
 
 // DeleteWhere clears all R-tree data for the given prefix.
@@ -239,24 +282,43 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 	return nil
 }
 
-// sliceCursor wraps a slice of IndexEntry into a RecordCursor.
-type sliceCursor struct {
+// rtreeScanCursor wraps materialized R-tree scan results into a RecordCursor
+// with support for row limits and proto-wrapped continuation tokens.
+type rtreeScanCursor struct {
 	items []*IndexEntry
+	hvs   []*big.Int    // parallel: hilbert value for each item
+	keys  []tuple.Tuple // parallel: item key for each item
 	pos   int
+	limit int // 0 = unlimited
 }
 
-func newSliceCursor(items []*IndexEntry) RecordCursor[*IndexEntry] {
-	return &sliceCursor{items: items}
-}
-
-func (c *sliceCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+	// Source exhausted.
 	if c.pos >= len(c.items) {
 		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 	}
+	// Row limit reached.
+	if c.limit > 0 && c.pos >= c.limit {
+		cont := c.buildContinuation(c.pos - 1)
+		return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+	}
+
 	item := c.items[c.pos]
 	c.pos++
-	cont := listCursorContinuation(c.pos)
+
+	// Build continuation for the just-delivered item.
+	cont := c.buildContinuation(c.pos - 1)
 	return NewResultWithValue(item, &BytesContinuation{bytes: cont}), nil
 }
 
-func (c *sliceCursor) Close() error { return nil }
+// buildContinuation serializes the position into a MultidimensionalIndexScanContinuation proto.
+func (c *rtreeScanCursor) buildContinuation(idx int) []byte {
+	msg := &gen.MultidimensionalIndexScanContinuation{
+		LastHilbertValue: c.hvs[idx].Bytes(),
+		LastKey:          c.keys[idx].Pack(),
+	}
+	data, _ := proto.Marshal(msg)
+	return data
+}
+
+func (c *rtreeScanCursor) Close() error { return nil }
