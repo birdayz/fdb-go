@@ -119,85 +119,173 @@ func (rt *RTree) Delete(tx fdb.Transaction, point Point, keySuffix tuple.Tuple) 
 	return rt.handleLeafUnderflow(tx, path)
 }
 
-// Scan returns all items matching the MBR predicate, starting after (lastHV, lastKey).
-// Items are returned in Hilbert value order.
-// Matches Java's RTree.scan().
-func (rt *RTree) Scan(tx fdb.ReadTransaction, lastHV *big.Int, lastKey tuple.Tuple, mbrPredicate func(MBR) bool) ([]ItemSlot, error) {
-	leaf, inter, err := rt.storage.fetchNode(tx, rootNodeID)
-	if err != nil {
-		return nil, err
+// ScanIterator returns a lazy iterator over items matching the MBR predicate,
+// starting after (lastHV, lastKey). Items are yielded one at a time in Hilbert
+// value order. Only fetches leaf nodes from FDB on demand.
+func (rt *RTree) ScanIterator(tx fdb.ReadTransaction, lastHV *big.Int, lastKey tuple.Tuple, mbrPredicate func(MBR) bool) *RTreeIterator {
+	return &RTreeIterator{
+		rt:           rt,
+		tx:           tx,
+		lastHV:       lastHV,
+		lastKey:      lastKey,
+		mbrPredicate: mbrPredicate,
 	}
-	if leaf == nil && inter == nil {
-		return nil, nil // empty tree
-	}
-
-	var result []ItemSlot
-	if leaf != nil {
-		// Root is a leaf — return all items past the continuation point.
-		// The MBR predicate is only applied to child slots in intermediate nodes
-		// (for subtree pruning), NOT to individual items. Java: "The predicate is
-		// applied to intermediate nodes as well as leaf nodes, but not to elements
-		// contained by a leaf node." Since a root leaf has no intermediate parent,
-		// no pruning applies.
-		for _, slot := range leaf.slots {
-			if lastHV != nil && compareHilbertValueAndKey(slot.HilbertValue, slot.ItemKey(), lastHV, lastKey) <= 0 {
-				continue
-			}
-			result = append(result, slot)
-		}
-		return result, nil
-	}
-
-	// Root is intermediate — recursive traversal.
-	return rt.scanIntermediate(tx, inter, lastHV, lastKey, mbrPredicate)
 }
 
-// scanIntermediate recursively scans an intermediate node's subtrees.
-func (rt *RTree) scanIntermediate(
-	tx fdb.ReadTransaction,
-	node *intermediateNode,
-	lastHV *big.Int,
-	lastKey tuple.Tuple,
-	mbrPredicate func(MBR) bool,
-) ([]ItemSlot, error) {
+// Scan returns all items matching the MBR predicate, starting after (lastHV, lastKey).
+// Items are returned in Hilbert value order. Convenience wrapper around ScanIterator.
+func (rt *RTree) Scan(tx fdb.ReadTransaction, lastHV *big.Int, lastKey tuple.Tuple, mbrPredicate func(MBR) bool) ([]ItemSlot, error) {
+	iter := rt.ScanIterator(tx, lastHV, lastKey, mbrPredicate)
 	var result []ItemSlot
-
-	for _, child := range node.slots {
-		// Skip children that are entirely before the continuation point.
-		if lastHV != nil && compareHilbertValueAndKey(child.LargestHV, child.LargestKey, lastHV, lastKey) <= 0 {
-			continue
-		}
-
-		// Skip children whose MBR doesn't match the predicate.
-		if mbrPredicate != nil && !mbrPredicate(child.ChildMBR) {
-			continue
-		}
-
-		// Fetch the child node.
-		childLeaf, childInter, err := rt.storage.fetchNode(tx, child.ChildID)
+	for {
+		item, ok, err := iter.Next()
 		if err != nil {
 			return nil, err
 		}
-		if childLeaf != nil {
-			// MBR predicate already applied to the child slot above — items
-			// inside a leaf are not individually filtered by the predicate
-			// (matches Java: predicate is NOT applied to elements in a leaf).
-			for _, slot := range childLeaf.slots {
-				if lastHV != nil && compareHilbertValueAndKey(slot.HilbertValue, slot.ItemKey(), lastHV, lastKey) <= 0 {
-					continue
-				}
-				result = append(result, slot)
+		if !ok {
+			break
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+// RTreeIterator lazily walks the R-tree depth-first in Hilbert order,
+// fetching one leaf node at a time from FDB.
+type RTreeIterator struct {
+	rt           *RTree
+	tx           fdb.ReadTransaction
+	lastHV       *big.Int
+	lastKey      tuple.Tuple
+	mbrPredicate func(MBR) bool
+
+	// Stack of intermediate nodes with current child position.
+	stack []iterFrame
+	// Current leaf items being yielded.
+	leafItems []ItemSlot
+	leafPos   int
+	// Lifecycle flags.
+	started bool
+	done    bool
+	err     error
+}
+
+// iterFrame tracks position within an intermediate node during iteration.
+type iterFrame struct {
+	node     *intermediateNode
+	childIdx int // next child index to visit
+}
+
+// Next returns the next item from the iterator.
+// Returns (item, true, nil) on success, (zero, false, nil) when exhausted,
+// or (zero, false, err) on error.
+func (it *RTreeIterator) Next() (ItemSlot, bool, error) {
+	for {
+		// Yield from current leaf if available.
+		for it.leafPos < len(it.leafItems) {
+			item := it.leafItems[it.leafPos]
+			it.leafPos++
+			// Skip items at or before continuation point.
+			if it.lastHV != nil && compareHilbertValueAndKey(item.HilbertValue, item.ItemKey(), it.lastHV, it.lastKey) <= 0 {
+				continue
 			}
-		} else if childInter != nil {
-			items, err := rt.scanIntermediate(tx, childInter, lastHV, lastKey, mbrPredicate)
-			if err != nil {
-				return nil, err
+			return item, true, nil
+		}
+
+		if it.done {
+			return ItemSlot{}, false, nil
+		}
+
+		// Initialize: load root on first call.
+		if !it.started {
+			it.started = true
+			if err := it.loadRoot(); err != nil {
+				it.done = true
+				return ItemSlot{}, false, err
 			}
-			result = append(result, items...)
+			// If loadRoot populated leafItems or set done, loop back.
+			continue
+		}
+
+		// Advance to next leaf by walking the stack.
+		if !it.advanceToNextLeaf() {
+			return ItemSlot{}, false, nil
+		}
+		// advanceToNextLeaf may have set an error.
+		if it.err != nil {
+			return ItemSlot{}, false, it.err
 		}
 	}
+}
 
-	return result, nil
+// loadRoot fetches the root node and initializes the iterator state.
+func (it *RTreeIterator) loadRoot() error {
+	leaf, inter, err := it.rt.storage.fetchNode(it.tx, rootNodeID)
+	if err != nil {
+		return err
+	}
+	if leaf == nil && inter == nil {
+		it.done = true
+		return nil
+	}
+	if leaf != nil {
+		it.leafItems = leaf.slots
+		it.leafPos = 0
+		it.done = true // root leaf has no further nodes to visit
+		return nil
+	}
+	// Root is intermediate — push onto stack.
+	it.stack = append(it.stack, iterFrame{node: inter, childIdx: 0})
+	return nil
+}
+
+// advanceToNextLeaf walks the stack to find and load the next leaf node.
+// Returns true if a new leaf was loaded (or an error occurred), false if exhausted.
+func (it *RTreeIterator) advanceToNextLeaf() bool {
+	for len(it.stack) > 0 {
+		frame := &it.stack[len(it.stack)-1]
+
+		// Find next valid child in the current frame.
+		for frame.childIdx < len(frame.node.slots) {
+			child := frame.node.slots[frame.childIdx]
+			frame.childIdx++
+
+			// Skip children entirely before continuation point.
+			if it.lastHV != nil && compareHilbertValueAndKey(child.LargestHV, child.LargestKey, it.lastHV, it.lastKey) <= 0 {
+				continue
+			}
+			// Skip children not matching MBR predicate.
+			if it.mbrPredicate != nil && !it.mbrPredicate(child.ChildMBR) {
+				continue
+			}
+
+			// Fetch child node.
+			childLeaf, childInter, err := it.rt.storage.fetchNode(it.tx, child.ChildID)
+			if err != nil {
+				it.done = true
+				it.err = err
+				return true
+			}
+
+			if childLeaf != nil {
+				it.leafItems = childLeaf.slots
+				it.leafPos = 0
+				return true
+			}
+			if childInter != nil {
+				// Push intermediate child onto stack and continue deeper.
+				it.stack = append(it.stack, iterFrame{node: childInter, childIdx: 0})
+				frame = &it.stack[len(it.stack)-1] // update frame pointer
+			}
+		}
+
+		// No more children in this frame — pop.
+		it.stack = it.stack[:len(it.stack)-1]
+	}
+
+	// Stack empty — exhausted.
+	it.done = true
+	return false
 }
 
 // updatePath represents the path from root to a leaf for insert/delete operations.

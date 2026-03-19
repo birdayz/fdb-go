@@ -266,45 +266,26 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		}
 	}
 
-	// 3. Scan R-tree.
+	// 3. Create R-tree iterator (lazy — fetches leaf nodes on demand).
 	storage := newRTreeStorage(rtSubspace, m.rTreeConfig)
 	rtree, err := NewRTree(storage, m.rTreeConfig)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("MULTIDIMENSIONAL index %q: %w", m.index.Name, err)}
 	}
-	items, err := rtree.Scan(m.tx, lastHV, lastKey, nil)
-	if err != nil {
-		return &errorCursor[*IndexEntry]{err: err}
-	}
+	iter := rtree.ScanIterator(m.tx, lastHV, lastKey, nil)
 
-	// 4. Convert to IndexEntry, tracking HV/key for continuations.
-	entries := make([]*IndexEntry, 0, len(items))
-	hvs := make([]*big.Int, 0, len(items))
-	keys := make([]tuple.Tuple, 0, len(items))
-	for _, item := range items {
-		// Reconstruct the full index key: prefix + dims + suffix.
-		key := make(tuple.Tuple, 0, len(prefix)+len(item.Point.Coordinates)+len(item.KeySuffix))
-		if len(prefix) > 0 {
-			key = append(key, prefix...)
-		}
-		key = append(key, item.Point.Coordinates...)
-		key = append(key, item.KeySuffix...)
-		entries = append(entries, &IndexEntry{
-			Index: m.index,
-			Key:   key,
-			Value: item.Value,
-		})
-		hvs = append(hvs, item.HilbertValue)
-		keys = append(keys, item.ItemKey())
-	}
-
-	// 5. Apply row limit.
+	// 4. Apply row limit.
 	limit := 0
 	if scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
 		limit = scanProperties.ExecuteProperties.ReturnedRowLimit
 	}
 
-	return &rtreeScanCursor{items: entries, hvs: hvs, keys: keys, limit: limit}
+	return &rtreeScanCursor{
+		iter:   iter,
+		index:  m.index,
+		prefix: prefix,
+		limit:  limit,
+	}
 }
 
 // DeleteWhere clears all R-tree data for the given prefix.
@@ -321,38 +302,64 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 	return rtree.Clear(m.tx)
 }
 
-// rtreeScanCursor wraps materialized R-tree scan results into a RecordCursor
-// with support for row limits and proto-wrapped continuation tokens.
+// rtreeScanCursor wraps an RTreeIterator into a RecordCursor with support
+// for row limits and proto-wrapped continuation tokens. Items are fetched
+// lazily — only the leaf nodes needed to satisfy the row limit are read.
 type rtreeScanCursor struct {
-	items []*IndexEntry
-	hvs   []*big.Int    // parallel: hilbert value for each item
-	keys  []tuple.Tuple // parallel: item key for each item
-	pos   int
-	limit int // 0 = unlimited
+	iter      *RTreeIterator
+	index     *Index
+	prefix    tuple.Tuple
+	limit     int // 0 = unlimited
+	delivered int
+	lastHV    *big.Int
+	lastKey   tuple.Tuple
 }
 
 func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
-	// Source exhausted.
-	if c.pos >= len(c.items) {
+	// Get next item from iterator.
+	item, ok, err := c.iter.Next()
+	if err != nil {
+		return RecordCursorResult[*IndexEntry]{}, err
+	}
+	if !ok {
 		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
 	}
-	// Row limit reached.
-	if c.limit > 0 && c.pos >= c.limit {
-		cont := c.buildContinuation(c.pos - 1)
+
+	// Row limit reached — source had more items, so emit ReturnLimitReached
+	// with a continuation pointing to the last delivered item.
+	if c.limit > 0 && c.delivered >= c.limit {
+		cont := c.buildContinuation()
 		return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
 	}
 
-	item := c.items[c.pos]
-	c.pos++
+	// Track position for continuation.
+	c.lastHV = item.HilbertValue
+	c.lastKey = item.ItemKey()
+	c.delivered++
 
-	// Build continuation for the just-delivered item.
-	cont := c.buildContinuation(c.pos - 1)
-	return NewResultWithValue(item, &BytesContinuation{bytes: cont}), nil
+	// Reconstruct the full index key: prefix + dims + suffix.
+	key := make(tuple.Tuple, 0, len(c.prefix)+len(item.Point.Coordinates)+len(item.KeySuffix))
+	if len(c.prefix) > 0 {
+		key = append(key, c.prefix...)
+	}
+	key = append(key, item.Point.Coordinates...)
+	key = append(key, item.KeySuffix...)
+
+	entry := &IndexEntry{
+		Index: c.index,
+		Key:   key,
+		Value: item.Value,
+	}
+	cont := c.buildContinuation()
+	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
 }
 
-// buildContinuation serializes the position into a MultidimensionalIndexScanContinuation proto.
-func (c *rtreeScanCursor) buildContinuation(idx int) []byte {
-	hvBytes := c.hvs[idx].Bytes()
+// buildContinuation serializes the current position into a MultidimensionalIndexScanContinuation proto.
+func (c *rtreeScanCursor) buildContinuation() []byte {
+	if c.lastHV == nil {
+		return nil
+	}
+	hvBytes := c.lastHV.Bytes()
 	if len(hvBytes) == 0 {
 		// big.Int(0).Bytes() returns empty; protobuf treats empty bytes as nil.
 		// Use [0x00] so the round-trip preserves the zero value.
@@ -363,7 +370,7 @@ func (c *rtreeScanCursor) buildContinuation(idx int) []byte {
 	}
 	msg := &gen.MultidimensionalIndexScanContinuation{
 		LastHilbertValue: hvBytes,
-		LastKey:          c.keys[idx].Pack(),
+		LastKey:          c.lastKey.Pack(),
 	}
 	data, err := proto.Marshal(msg)
 	if err != nil {
