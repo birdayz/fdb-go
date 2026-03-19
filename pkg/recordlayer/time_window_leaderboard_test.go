@@ -33,7 +33,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
-			Expect(maintainer.PerformWindowUpdate(update)).To(Succeed())
+			Expect(maintainer.PerformWindowUpdate(update, store)).To(Succeed())
 
 			return nil, nil
 		})
@@ -451,7 +451,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				Specs: []TimeWindowSpec{
 					{Type: 1, BaseTimestamp: 1000, StartIncrement: 1000, Duration: 1000, Count: 2},
 				},
-			})).To(Succeed())
+			}, store)).To(Succeed())
 
 			return nil, nil
 		})

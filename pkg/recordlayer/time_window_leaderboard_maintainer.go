@@ -433,15 +433,27 @@ func (m *timeWindowLeaderboardIndexMaintainer) scanWithTimeWindow(
 	}
 
 	// Determine highScoreFirst.
-	highScoreFirst := dir.HighScoreFirst
+	// Java checks both low and high group tuples and only resolves per-group
+	// highScoreFirst when both are non-nil and equal. Otherwise falls back to
+	// directory default. For BY_RANK scans, highScoreFirst is always false.
+	highScoreFirst := false
 	groupPrefixSize := m.getGroupingCount()
-	if groupPrefixSize > 0 && scoreRange.Low != nil && len(scoreRange.Low) > groupPrefixSize {
-		group := tuple.Tuple(scoreRange.Low[:groupPrefixSize])
-		hsf, err := m.isHighScoreFirst(dir, group)
-		if err != nil {
-			return &errorCursor[*IndexEntry]{err: err}
+	if !isRankScan {
+		highScoreFirst = dir.HighScoreFirst
+		var lowGroup, highGroup tuple.Tuple
+		if scoreRange.Low != nil && len(scoreRange.Low) > groupPrefixSize {
+			lowGroup = tuple.Tuple(scoreRange.Low[:groupPrefixSize])
 		}
-		highScoreFirst = hsf
+		if scoreRange.High != nil && len(scoreRange.High) > groupPrefixSize {
+			highGroup = tuple.Tuple(scoreRange.High[:groupPrefixSize])
+		}
+		if lowGroup != nil && highGroup != nil && tuplesEqual(lowGroup, highGroup) {
+			hsf, err := m.isHighScoreFirst(dir, lowGroup)
+			if err != nil {
+				return &errorCursor[*IndexEntry]{err: err}
+			}
+			highScoreFirst = hsf
+		}
 	}
 
 	// Apply score negation and reverse for highScoreFirst.
@@ -633,30 +645,36 @@ func (m *timeWindowLeaderboardIndexMaintainer) getGroupingCount() int {
 }
 
 // PerformWindowUpdate executes a window update operation on the leaderboard directory.
-// This is called externally to add/remove time windows.
+// store is needed for RebuildIndex when rebuild is triggered.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.performOperation(WindowUpdate).
-func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeWindowLeaderboardWindowUpdate) error {
+func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeWindowLeaderboardWindowUpdate, store *FDBRecordStore) error {
 	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
 	if err != nil {
 		return err
 	}
 
 	changed := false
+	rebuild := false
 
-	// Initialize or validate directory.
+	isRebuildConditional := func() bool {
+		return update.Rebuild == TimeWindowRebuildIfOverlappingChanged
+	}
+
+	// Initialize or validate directory. Matches Java's UpdateState.setDirectory().
+	if dir != nil && dir.HighScoreFirst != update.HighScoreFirst {
+		if update.Rebuild == TimeWindowRebuildNever {
+			return fmt.Errorf("cannot change highScoreFirst without a rebuild")
+		}
+		dir = nil // Force new directory + rebuild.
+	}
 	if dir == nil {
 		dir = &leaderboardDirectory{
-			HighScoreFirst:  update.HighScoreFirst,
-			leaderboards:    make(map[int][]*leaderboard),
-			subdirectories:  make(map[string]*leaderboardSubDirectory),
+			HighScoreFirst: update.HighScoreFirst,
+			leaderboards:   make(map[int][]*leaderboard),
+			subdirectories: make(map[string]*leaderboardSubDirectory),
 		}
-		changed = true
-	} else if dir.HighScoreFirst != update.HighScoreFirst {
-		// highScoreFirst changed → rebuild needed.
-		dir = &leaderboardDirectory{
-			HighScoreFirst:  update.HighScoreFirst,
-			leaderboards:    make(map[int][]*leaderboard),
-			subdirectories:  make(map[string]*leaderboardSubDirectory),
+		if isRebuildConditional() {
+			rebuild = true
 		}
 		changed = true
 	}
@@ -666,7 +684,6 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 	// Delete expired windows.
 	for _, lb := range dir.allLeaderboards() {
 		if lb.Type != AllTimeLeaderboardType && update.DeleteBefore >= lb.EndTimestamp {
-			// Clear B-tree and ranked set data.
 			indexKey := m.indexSubspace.Pack(lb.SubspaceKey)
 			if inc, err := fdb.Strinc(indexKey); err == nil {
 				m.tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(indexKey), End: fdb.Key(inc)})
@@ -686,9 +703,13 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 	}
 
 	// Create all-time leaderboard if requested.
+	// Java also triggers conditional rebuild when adding all-time.
 	if update.AllTime {
 		if dir.findLeaderboard(AllTimeLeaderboardType, math.MinInt64, math.MaxInt64) == nil {
 			dir.addLeaderboard(AllTimeLeaderboardType, math.MinInt64, math.MaxInt64, nlevels)
+			if isRebuildConditional() {
+				rebuild = true
+			}
 			changed = true
 		}
 	}
@@ -709,12 +730,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 		}
 	}
 
-	// Check for rebuild.
-	rebuild := false
+	// Check overlapping records for conditional rebuild.
 	if update.Rebuild == TimeWindowRebuildAlways {
 		rebuild = true
-	} else if update.Rebuild == TimeWindowRebuildIfOverlappingChanged && earliestAddedStart != nil {
-		// Check if any existing records overlap with new windows.
+	} else if isRebuildConditional() && !rebuild && earliestAddedStart != nil {
 		latestBytes, err := m.tx.Get(m.indexSubspace.FDBKey()).Get()
 		if err != nil {
 			return err
@@ -728,15 +747,20 @@ func (m *timeWindowLeaderboardIndexMaintainer) PerformWindowUpdate(update *TimeW
 		}
 	}
 
+	// Execute rebuild: delete all data, save directory, then rebuild index.
+	// Matches Java's UpdateState.save(): deleteWhere → saveDirectory → store.rebuildIndex.
 	if rebuild {
 		if err := m.DeleteWhere(nil); err != nil {
 			return err
 		}
-		// The store should rebuild the index after this.
 	}
-
-	if changed {
+	if changed || rebuild {
 		if err := saveLeaderboardDirectory(m.tx, m.secondarySubspace, dir); err != nil {
+			return err
+		}
+	}
+	if rebuild && store != nil {
+		if err := store.RebuildIndex(m.index); err != nil {
 			return err
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -60,7 +61,7 @@ type leaderboardSubDirectory struct {
 }
 
 // newLeaderboardDirectoryFromProto creates a directory from a proto message.
-func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) *leaderboardDirectory {
+func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) (*leaderboardDirectory, error) {
 	dir := &leaderboardDirectory{
 		HighScoreFirst:  pb.GetHighScoreFirst(),
 		UpdateTimestamp: int64(pb.GetUpdateTimestamp()),
@@ -77,9 +78,10 @@ func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) *l
 		}
 		if lbpb.SubspaceKey != nil {
 			sk, err := tuple.Unpack(lbpb.SubspaceKey)
-			if err == nil {
-				lb.SubspaceKey = sk
+			if err != nil {
+				return nil, fmt.Errorf("leaderboard directory: unpack subspace key: %w", err)
 			}
+			lb.SubspaceKey = sk
 		}
 		dir.leaderboards[lb.Type] = append(dir.leaderboards[lb.Type], lb)
 	}
@@ -93,7 +95,7 @@ func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) *l
 			return lbs[i].EndTimestamp > lbs[j].EndTimestamp
 		})
 	}
-	return dir
+	return dir, nil
 }
 
 // toProto serializes the directory to a proto message.
@@ -224,7 +226,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 	if err := proto.Unmarshal(bytes, pb); err != nil {
 		return nil, fmt.Errorf("loadLeaderboardDirectory: unmarshal: %w", err)
 	}
-	return newLeaderboardDirectoryFromProto(pb), nil
+	return newLeaderboardDirectoryFromProto(pb)
 }
 
 // saveLeaderboardDirectory saves the directory to FDB.
@@ -318,9 +320,22 @@ func negateScore(t tuple.Tuple, position int) tuple.Tuple {
 	copy(result, t)
 	switch v := t[position].(type) {
 	case int64:
-		result[position] = -v
+		if v == math.MinInt64 {
+			// Java: BigInteger.valueOf(Long.MIN_VALUE).negate() → positive 2^63 as BigInteger.
+			result[position] = new(big.Int).Neg(big.NewInt(math.MinInt64))
+		} else {
+			result[position] = -v
+		}
 	case int:
 		result[position] = int64(-v)
+	case *big.Int:
+		negated := new(big.Int).Neg(v)
+		// Java normalizes BigInteger equal to Long.MIN_VALUE back to long.
+		if negated.IsInt64() && negated.Int64() == math.MinInt64 {
+			result[position] = math.MinInt64
+		} else {
+			result[position] = negated
+		}
 	case float64:
 		result[position] = -v
 	case float32:
@@ -338,7 +353,7 @@ func negateScoreRange(r TupleRange, groupPrefixSize int) TupleRange {
 	lowEndpoint := r.LowEndpoint
 	highEndpoint := r.HighEndpoint
 
-	if low == nil || len(low) <= groupPrefixSize {
+	if low == nil || len(low) < groupPrefixSize {
 		if lowEndpoint == EndpointTypeTreeStart {
 			lowEndpoint = EndpointTypeTreeEnd
 		}
@@ -346,7 +361,7 @@ func negateScoreRange(r TupleRange, groupPrefixSize int) TupleRange {
 		low = negateScore(low, groupPrefixSize)
 	}
 
-	if high == nil || len(high) <= groupPrefixSize {
+	if high == nil || len(high) < groupPrefixSize {
 		// NOTE: Java checks lowEndpoint here (not highEndpoint). Matching Java exactly.
 		if lowEndpoint == EndpointTypeTreeEnd {
 			lowEndpoint = EndpointTypeTreeStart
