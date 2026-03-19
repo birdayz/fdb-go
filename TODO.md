@@ -141,9 +141,9 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **LOW — Continuation unmarshal errors swallowed** — Returns error cursor.
 - [x] **LOW — promoteOnlyChild missing child error** — Returns error.
 - 9 new tests: continuation round-trip, row limits, negative/boundary coords, duplicate coords, DeleteAllRecords, RebuildIndex, config validation, tree height transitions, 3D R-tree.
-- [ ] **MEDIUM — Scan materializes all results** — Performance, not correctness. Lazy iterator deferred.
-- [ ] **MEDIUM — No spatial predicate support** — MBR/position/suffix filtering deferred.
-- [ ] **MEDIUM — No prefix skip-scan across all prefixes** — Single-prefix only.
+- [x] **MEDIUM — Scan materializes all results** — Fixed: `RTreeIterator` fetches one leaf at a time via explicit stack. `rtreeScanCursor` wraps iterator directly.
+- [x] **MEDIUM — No spatial predicate support** — Fixed: `buildMBRPredicate()` extracts dimensional bounds from scanRange, passes to iterator for subtree pruning.
+- [x] **MEDIUM — No prefix skip-scan across all prefixes** — Fixed: `prefixSkipScanCursor` enumerates distinct prefixes via FDB key reads + `fdb.Strinc()`. Cross-prefix continuation deferred (proto lacks prefix field).
 
 #### VECTOR/HNSW — wire-compatible, needs conformance + additional features
 
