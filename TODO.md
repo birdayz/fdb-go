@@ -92,8 +92,8 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — `negateScoreRange` boundary `<=` vs `<`** — Fixed: changed to `<` matching Java.
 - [x] **HIGH — `highScoreFirst` scan checks only low bound** — Fixed: checks both low and high group tuples, falls back to directory default when groups differ. BY_RANK always false.
 - [x] **HIGH — `Rebuild.NEVER` + highScoreFirst change should error** — Fixed: returns error matching Java's `RecordCoreException`.
-- [ ] **HIGH — Missing `evaluateRecordFunction`** — RANK, TIME_WINDOW_RANK, TIME_WINDOW_RANK_AND_ENTRY. Primary leaderboard use case ("what's my rank?").
-- [ ] **HIGH — Missing `evaluateAggregateFunction`** — TIME_WINDOW_COUNT, SCORE_FOR_TIME_WINDOW_RANK, TIME_WINDOW_RANK_FOR_SCORE, SCORE_FOR_TIME_WINDOW_RANK_ELSE_SKIP.
+- [x] **HIGH — Missing `evaluateRecordFunction`** — Implemented: RANK (all-time), TIME_WINDOW_RANK. `timeWindowRank()` evaluates entries, finds best contained score, looks up rank in per-window ranked set.
+- [x] **HIGH — Missing `evaluateAggregateFunction`** — Implemented: TIME_WINDOW_COUNT (ranked set size), SCORE_FOR_TIME_WINDOW_RANK/ELSE_SKIP (GetNth + un-negate), TIME_WINDOW_RANK_FOR_SCORE (negate + Rank). Wired into canEvaluateAggregate dispatch.
 - [x] **MEDIUM — `Rebuild.IF_OVERLAPPING_CHANGED` misses all-time addendum** — Fixed: triggers rebuild on initial directory creation and all-time addition.
 - [ ] **MEDIUM — Missing `SaveSubDirectory`** — Can read per-group highScoreFirst overrides but not write them.
 - [x] **MEDIUM — Silent error swallowing in `newLeaderboardDirectoryFromProto`** — Fixed: returns error on corrupt SubspaceKey.
