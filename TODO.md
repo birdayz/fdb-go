@@ -117,7 +117,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MEDIUM — `compareHilbertValueAndKey` panics on nil BigInt** — Fixed: nil guards (both nil → tupleCompare, one nil sorts before non-nil).
 - [x] **CRITICAL — Zero test coverage on split/fuse** — Fixed: 8 new tests with MaxM=4 (25-60 items) exercising leaf split, intermediate overflow, deep trees, underflow/fuse, MBR predicates, scan continuation, full lifecycle, and maintainer integration.
 - [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation.
-- [ ] **HIGH — No chaos testing**.
+- [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (150 ops, 5% fault rate). Model-based verification computes expected entries from model, scans R-tree, set-based diff.
 - [x] **Bug — Overflow/underflow re-fetched stale sibling from FDB** — Fixed: in-memory modified node substituted for its re-fetched copy in all overflow/underflow paths.
 
 #### VECTOR/HNSW — wire format INCOMPATIBLE, needs ground-up storage rewrite
