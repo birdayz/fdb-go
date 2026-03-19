@@ -980,6 +980,9 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 			numDims = d.DimensionsSize
 		}
 		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims)
+	case IndexTypeVector:
+		secSubspace := store.indexSecondarySubspace(index)
+		return newVectorIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

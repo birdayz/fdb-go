@@ -29,6 +29,7 @@ const (
 	IndexTypeText                     = "text"
 	IndexTypeTimeWindowLeaderboard    = "time_window_leaderboard"
 	IndexTypeMultidimensional         = "multidimensional"
+	IndexTypeVector                   = "vector"
 )
 
 // Index option keys matching Java's IndexOptions.
@@ -311,6 +312,22 @@ func NewTimeWindowLeaderboardIndex(name string, rootExpression KeyExpression) *I
 		RootExpression: rootExpression,
 		subspaceKey:    name,
 		Options:        make(map[string]string),
+	}
+}
+
+// NewVectorIndex creates a VECTOR index backed by an HNSW graph.
+// The root expression identifies the vector field to index. numDimensions specifies
+// the vector dimensionality. Supports EUCLIDEAN, COSINE, and INNER_PRODUCT metrics.
+// Matches Java's new Index(name, rootExpression, IndexTypes.VECTOR).
+func NewVectorIndex(name string, rootExpression KeyExpression, numDimensions int) *Index {
+	return &Index{
+		Name:           name,
+		Type:           IndexTypeVector,
+		RootExpression: rootExpression,
+		subspaceKey:    name,
+		Options: map[string]string{
+			IndexOptionVectorNumDimensions: fmt.Sprintf("%d", numDimensions),
+		},
 	}
 }
 
