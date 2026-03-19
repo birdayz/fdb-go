@@ -9,7 +9,9 @@ import (
 
 // Record function name constants matching Java's FunctionNames.
 const (
-	FunctionNameRank = "rank"
+	FunctionNameRank                = "rank"
+	FunctionNameTimeWindowRank      = "time_window_rank"
+	FunctionNameTimeWindowRankAndEntry = "time_window_rank_and_entry"
 )
 
 // IndexRecordFunction specifies a function to evaluate on a record using an index.
@@ -89,6 +91,11 @@ func canEvaluateRecordFunction(fn *IndexRecordFunction, idx *Index) bool {
 	case IndexTypeRank:
 		return fn.Name == FunctionNameRank &&
 			keyExpressionEquals(idx.RootExpression, fn.Operand)
+	case IndexTypeTimeWindowLeaderboard:
+		return (fn.Name == FunctionNameRank ||
+			fn.Name == FunctionNameTimeWindowRank ||
+			fn.Name == FunctionNameTimeWindowRankAndEntry) &&
+			keyExpressionEquals(idx.RootExpression, fn.Operand)
 	default:
 		return false
 	}
@@ -103,6 +110,9 @@ func evaluateRecordFunction(
 ) (*int64, error) {
 	if rm, ok := maintainer.(*rankIndexMaintainer); ok {
 		return rm.EvaluateRecordFunction(fn, record)
+	}
+	if lm, ok := maintainer.(*timeWindowLeaderboardIndexMaintainer); ok {
+		return lm.EvaluateRecordFunction(fn, record)
 	}
 	return nil, fmt.Errorf("index %q (type %s) does not support record function %q", index.Name, index.Type, fn.Name)
 }

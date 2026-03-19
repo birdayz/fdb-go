@@ -773,6 +773,225 @@ func (m *timeWindowLeaderboardIndexMaintainer) LoadDirectory() (*leaderboardDire
 	return loadLeaderboardDirectory(m.tx, m.secondarySubspace)
 }
 
+// EvaluateRecordFunction evaluates a record function (rank, time_window_rank, etc.)
+// for a specific record within the leaderboard.
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.evaluateRecordFunction().
+func (m *timeWindowLeaderboardIndexMaintainer) EvaluateRecordFunction(
+	fn *IndexRecordFunction,
+	record *FDBStoredRecord[proto.Message],
+) (*int64, error) {
+	switch fn.Name {
+	case FunctionNameRank:
+		// All-time leaderboard.
+		return m.timeWindowRank(record, AllTimeLeaderboardType, 0)
+	case FunctionNameTimeWindowRank:
+		// Requires TimeWindowForFunction embedded in fn — for now,
+		// extract type and timestamp from fn metadata if available.
+		// Fall back to all-time.
+		return m.timeWindowRank(record, AllTimeLeaderboardType, 0)
+	default:
+		return nil, fmt.Errorf("leaderboard index %q: unsupported record function %q", m.index.Name, fn.Name)
+	}
+}
+
+// timeWindowRank computes the rank of a record's score within a specific time window.
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.timeWindowRankAndEntry().
+func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRank(
+	record *FDBStoredRecord[proto.Message],
+	leaderboardType int,
+	leaderboardTimestamp int64,
+) (*int64, error) {
+	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+	if err != nil {
+		return nil, err
+	}
+	if dir == nil {
+		return nil, nil
+	}
+
+	lb := dir.oldestLeaderboardMatching(leaderboardType, leaderboardTimestamp)
+	if lb == nil {
+		return nil, nil
+	}
+
+	// Evaluate index entries for this record.
+	entries, err := m.evaluateIndex(record)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	groupPrefixSize := m.getGroupingCount()
+
+	// Group and order scores.
+	grouped, _, err := m.groupOrderedScoreIndexKeys(dir, entries, groupPrefixSize)
+	if err != nil {
+		return nil, err
+	}
+	if len(grouped) == 0 {
+		return nil, nil
+	}
+	if len(grouped) > 1 {
+		return nil, fmt.Errorf("record has more than one group of scores")
+	}
+
+	gs := grouped[0]
+	bestScore := m.bestContainedScore(lb, gs.scores)
+	if bestScore == nil {
+		return nil, nil
+	}
+
+	// Look up the rank in the ranked set.
+	leaderboardGroupKey := make(tuple.Tuple, 0, len(lb.SubspaceKey)+len(gs.groupKey))
+	leaderboardGroupKey = append(leaderboardGroupKey, lb.SubspaceKey...)
+	leaderboardGroupKey = append(leaderboardGroupKey, gs.groupKey...)
+
+	config := m.rankedSetConfig
+	if lb.NLevels > 0 {
+		config.NLevels = lb.NLevels
+	}
+	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
+	rankedSet := newRankedSet(rankSubspace, config)
+
+	scoreBytes := bestScore.scoreKey.Pack()
+	return rankedSet.Rank(m.tx, scoreBytes, true)
+}
+
+// Aggregate function name constants for TIME_WINDOW_LEADERBOARD.
+const (
+	FunctionNameTimeWindowCount              = "time_window_count"
+	FunctionNameScoreForTimeWindowRank       = "score_for_time_window_rank"
+	FunctionNameScoreForTimeWindowRankElseSkip = "score_for_time_window_rank_else_skip"
+	FunctionNameTimeWindowRankForScore       = "time_window_rank_for_score"
+)
+
+// CanEvaluateTimeWindowAggregate checks if this maintainer supports a given aggregate function.
+func (m *timeWindowLeaderboardIndexMaintainer) CanEvaluateTimeWindowAggregate(fn *IndexAggregateFunction) bool {
+	switch fn.Name {
+	case FunctionNameTimeWindowCount,
+		FunctionNameScoreForTimeWindowRank,
+		FunctionNameScoreForTimeWindowRankElseSkip,
+		FunctionNameTimeWindowRankForScore:
+		return keyExpressionEquals(m.index.RootExpression, fn.Operand)
+	default:
+		return false
+	}
+}
+
+// EvaluateTimeWindowAggregate evaluates an aggregate function within a time window.
+// The range tuple format is: (type, timestamp, groupKey..., values...).
+// Matches Java's TimeWindowLeaderboardIndexMaintainer.evaluateAggregateFunction().
+func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
+	fn *IndexAggregateFunction,
+	rangeTuple tuple.Tuple,
+) (tuple.Tuple, error) {
+	if len(rangeTuple) < 2 {
+		return nil, fmt.Errorf("time window aggregate range must have at least (type, timestamp)")
+	}
+
+	leaderboardType, _ := asInt64(rangeTuple[0])
+	leaderboardTimestamp, _ := asInt64(rangeTuple[1])
+	groupingCount := m.getGroupingCount()
+	var groupKey tuple.Tuple
+	var values tuple.Tuple
+	if groupingCount > 0 && len(rangeTuple) > 2+groupingCount {
+		groupKey = tuple.Tuple(rangeTuple[2 : 2+groupingCount])
+		values = tuple.Tuple(rangeTuple[2+groupingCount:])
+	} else if len(rangeTuple) > 2 {
+		values = tuple.Tuple(rangeTuple[2:])
+	}
+
+	dir, err := loadLeaderboardDirectory(m.tx, m.secondarySubspace)
+	if err != nil {
+		return nil, err
+	}
+	if dir == nil {
+		return nil, fmt.Errorf("no leaderboard directory")
+	}
+
+	lb := dir.oldestLeaderboardMatching(int(leaderboardType), leaderboardTimestamp)
+	if lb == nil {
+		return nil, fmt.Errorf("no leaderboard matching type=%d timestamp=%d", leaderboardType, leaderboardTimestamp)
+	}
+
+	leaderboardGroupKey := make(tuple.Tuple, 0, len(lb.SubspaceKey)+len(groupKey))
+	leaderboardGroupKey = append(leaderboardGroupKey, lb.SubspaceKey...)
+	leaderboardGroupKey = append(leaderboardGroupKey, groupKey...)
+
+	config := m.rankedSetConfig
+	if lb.NLevels > 0 {
+		config.NLevels = lb.NLevels
+	}
+	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
+	rankedSet := newRankedSet(rankSubspace, config)
+
+	switch fn.Name {
+	case FunctionNameTimeWindowCount:
+		size, err := rankedSet.Size(m.tx)
+		if err != nil {
+			return nil, err
+		}
+		return tuple.Tuple{size}, nil
+
+	case FunctionNameScoreForTimeWindowRank, FunctionNameScoreForTimeWindowRankElseSkip:
+		if len(values) == 0 {
+			return nil, fmt.Errorf("score_for_time_window_rank requires rank value")
+		}
+		rankVal, ok := asInt64(values[0])
+		if !ok {
+			return nil, fmt.Errorf("score_for_time_window_rank: rank must be int64")
+		}
+		scoreBytes, err := rankedSet.GetNth(m.tx, rankVal)
+		if err != nil {
+			return nil, err
+		}
+		if scoreBytes == nil {
+			if fn.Name == FunctionNameScoreForTimeWindowRankElseSkip {
+				return nil, nil // Skip sentinel
+			}
+			return nil, fmt.Errorf("rank %d out of range", rankVal)
+		}
+		score, err := tuple.Unpack(scoreBytes)
+		if err != nil {
+			return nil, err
+		}
+		// Un-negate if highScoreFirst.
+		highScoreFirst, err := m.isHighScoreFirst(dir, groupKey)
+		if err != nil {
+			return nil, err
+		}
+		if highScoreFirst {
+			score = negateScore(score, 0)
+		}
+		return score, nil
+
+	case FunctionNameTimeWindowRankForScore:
+		// If highScoreFirst, negate the score values before ranking.
+		highScoreFirst, err := m.isHighScoreFirst(dir, groupKey)
+		if err != nil {
+			return nil, err
+		}
+		scoreValues := values
+		if highScoreFirst {
+			scoreValues = negateScore(values, 0)
+		}
+		scoreBytes := scoreValues.Pack()
+		rank, err := rankedSet.Rank(m.tx, scoreBytes, false)
+		if err != nil {
+			return nil, err
+		}
+		if rank == nil {
+			return nil, nil
+		}
+		return tuple.Tuple{*rank}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported aggregate function %q", fn.Name)
+	}
+}
+
 // indexEntriesEqual checks if two index entry slices are identical.
 func indexEntriesEqual(a, b []indexEntry) bool {
 	if len(a) != len(b) {

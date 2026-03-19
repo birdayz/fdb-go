@@ -183,6 +183,16 @@ func canEvaluateAggregate(fn *IndexAggregateFunction, idx *Index) bool {
 		return fn.Name == FunctionNameBitmapValue && isGroupPrefix(fn.Operand, idx.RootExpression)
 	case IndexTypeRank:
 		return canEvaluateRankAggregate(fn, idx)
+	case IndexTypeTimeWindowLeaderboard:
+		switch fn.Name {
+		case FunctionNameTimeWindowCount,
+			FunctionNameScoreForTimeWindowRank,
+			FunctionNameScoreForTimeWindowRankElseSkip,
+			FunctionNameTimeWindowRankForScore:
+			return keyExpressionEquals(idx.RootExpression, fn.Operand)
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -215,6 +225,11 @@ func evaluateAggregate(
 	// For RANK index aggregate functions: delegate to rank-specific evaluation.
 	if rm, ok := maintainer.(*rankIndexMaintainer); ok {
 		return evaluateRankAggregate(fn, rm, scanRange)
+	}
+
+	// For TIME_WINDOW_LEADERBOARD aggregate functions.
+	if lm, ok := maintainer.(*timeWindowLeaderboardIndexMaintainer); ok {
+		return lm.EvaluateTimeWindowAggregate(fn, scanRange.Low)
 	}
 
 	// For atomic mutation indexes (COUNT/SUM/MIN_EVER/MAX_EVER): scan all + reduce
