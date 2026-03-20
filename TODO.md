@@ -164,9 +164,8 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MEDIUM — `vectorIndexMaintainer.Update` creates new graph per entry** — Fixed: single graph instance per maintainer, no PRNG reset.
 - [ ] **LOW — Missing RaBitQ quantization** — optional lossy quantization for large-scale.
 - [ ] **HIGH — No search quality/recall test** — no brute-force comparison to verify results.
-- [ ] **HIGH — No conformance tests** — need Go↔Java cross-validation.
+- [x] **HIGH — No conformance tests** — 11 specs: Go saves→Java reads/saves more, Java saves→Go reads/saves more, cross-language mixed writes, delete cross-language, batch operations, record counting. Found+fixed 6 wire-format bugs: option names (hnsw* not vector*), metric enum values, node key nesting, access info 5-element format, HNSW subspace (primary not secondary), vector bytes extraction.
 - [ ] **HIGH — No chaos testing**.
-- [ ] **HIGH — No high-dimensional vector tests** (128D, 768D).
 - [ ] **HIGH — No high-dimensional vector tests** (128D, 768D).
 
 ### 3. New key expression types
