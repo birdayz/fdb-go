@@ -222,8 +222,8 @@ func ValidateRTreeConfig(config RTreeConfig) error {
 	if config.MinM < 1 {
 		return fmt.Errorf("rtree: MinM must be >= 1, got %d", config.MinM)
 	}
-	if config.MaxM < 2 {
-		return fmt.Errorf("rtree: MaxM must be >= 2, got %d", config.MaxM)
+	if config.MaxM < 2 || config.MaxM > 1000 {
+		return fmt.Errorf("rtree: MaxM must be in [2, 1000], got %d", config.MaxM)
 	}
 	if config.SplitS < 1 {
 		return fmt.Errorf("rtree: SplitS must be >= 1, got %d", config.SplitS)
