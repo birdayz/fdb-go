@@ -154,7 +154,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **CRITICAL — Delete does NOT repair graph** — Fixed: multi-phase repair via `repairNeighbor()`. Finds candidates from neighbors-of-neighbors, selects best by distance, respects M/MMax limits. Entry point promotion on delete.
 - [x] **HIGH — `randomLevel()` can return MaxInt** — Fixed: replaced with `topLayer()` which uses `math.Floor(-math.Log(u) * lambda)` with clamped input (u = 1.0 - splitMixDouble, always > 0).
 - [x] **HIGH — No duplicate detection on insert** — Fixed: checks layer 0 existence before inserting.
-- [ ] **HIGH — Missing prefix partitioning** — Java supports independent HNSW per prefix via skip-scan. Go has single global graph.
+- [x] **HIGH — Missing prefix partitioning** — Fixed: per-prefix HNSW graphs via `getSubspaceForPrefix()`. `ScanVectorIndexWithPrefix`/`SearchVectorIndexWithPrefix` APIs. 10 tests including cross-group isolation, update between groups, 5-group stress.
 - [x] **HIGH — Missing BY_DISTANCE scan type** — Implemented: `ScanVectorIndex()`, `ScanIndexByType(BY_DISTANCE)`, `VectorDistanceScanRange()`. Returns kNN results as cursor with distance in Value. 7 tests.
 - [ ] **HIGH — Missing write locks** — Java uses `LockIdentifier` on insert/delete.
 - [x] **HIGH — Missing Config validation** — Fixed: validates numDimensions >= 1, m in [4,200], mMax in [4,200], mMax0 in [4,300], efConstruction in [100,400].
