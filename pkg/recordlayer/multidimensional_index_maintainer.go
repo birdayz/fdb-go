@@ -262,24 +262,53 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	mbrPredicate := m.buildMBRPredicate(dimExpr, scanRange)
 
 	// 4. Parse continuation token.
+	// Java wraps all MULTIDIMENSIONAL continuations in FlatMapContinuation (from flatMapPipelined).
+	// Try FlatMapContinuation first; fall back to raw MultidimensionalIndexScanContinuation
+	// for backward compatibility with old Go-produced tokens.
 	var lastHV *big.Int
 	var lastKey tuple.Tuple
+	var outerContinuation []byte
 	if len(continuation) > 0 {
-		var cont gen.MultidimensionalIndexScanContinuation
-		if err := proto.Unmarshal(continuation, &cont); err != nil {
-			return &errorCursor[*IndexEntry]{
-				err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
+		var parsed bool
+		var flatMapCont gen.FlatMapContinuation
+		if err := proto.Unmarshal(continuation, &flatMapCont); err == nil && flatMapCont.InnerContinuation != nil {
+			// Java-compatible FlatMapContinuation wrapper.
+			var cont gen.MultidimensionalIndexScanContinuation
+			if err := proto.Unmarshal(flatMapCont.InnerContinuation, &cont); err == nil {
+				if cont.LastHilbertValue != nil {
+					lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
+				}
+				if cont.LastKey != nil {
+					var tupErr error
+					lastKey, tupErr = tuple.Unpack(cont.LastKey)
+					if tupErr != nil {
+						return &errorCursor[*IndexEntry]{
+							err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, tupErr),
+						}
+					}
+				}
+				outerContinuation = flatMapCont.OuterContinuation
+				parsed = true
 			}
 		}
-		if cont.LastHilbertValue != nil {
-			lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
-		}
-		if cont.LastKey != nil {
-			var err error
-			lastKey, err = tuple.Unpack(cont.LastKey)
-			if err != nil {
+		if !parsed {
+			// Fallback: try raw MultidimensionalIndexScanContinuation (old Go format).
+			var cont gen.MultidimensionalIndexScanContinuation
+			if err := proto.Unmarshal(continuation, &cont); err != nil {
 				return &errorCursor[*IndexEntry]{
-					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
+					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
+				}
+			}
+			if cont.LastHilbertValue != nil {
+				lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
+			}
+			if cont.LastKey != nil {
+				var err error
+				lastKey, err = tuple.Unpack(cont.LastKey)
+				if err != nil {
+					return &errorCursor[*IndexEntry]{
+						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
+					}
 				}
 			}
 		}
@@ -303,11 +332,12 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	}
 
 	return &rtreeScanCursor{
-		iter:        iter,
-		index:       m.index,
-		prefix:      prefix,
-		limit:       limit,
-		pointFilter: pointFilter,
+		iter:              iter,
+		index:             m.index,
+		prefix:            prefix,
+		limit:             limit,
+		pointFilter:       pointFilter,
+		outerContinuation: outerContinuation,
 	}
 }
 
@@ -440,6 +470,9 @@ type rtreeScanCursor struct {
 	// Exact point filter: checks each item's coordinates against the scan range.
 	// nil means no filtering (return all items).
 	pointFilter func(Point) bool
+	// outerContinuation carries prefix skip-scan state for FlatMapContinuation.
+	// nil for single-prefix (non-skip-scan) scans.
+	outerContinuation []byte
 }
 
 func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -491,7 +524,8 @@ func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEn
 	}
 }
 
-// buildContinuation serializes the current position into a MultidimensionalIndexScanContinuation proto.
+// buildContinuation serializes the current position into a FlatMapContinuation proto
+// wrapping a MultidimensionalIndexScanContinuation, matching Java's flatMapPipelined cursor.
 func (c *rtreeScanCursor) buildContinuation() []byte {
 	if c.lastHV == nil {
 		return nil
@@ -505,13 +539,24 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 		// Prepend 0x00 to indicate positive (Java's BigInteger.toByteArray() two's-complement format).
 		hvBytes = append([]byte{0x00}, hvBytes...)
 	}
-	msg := &gen.MultidimensionalIndexScanContinuation{
+	inner := &gen.MultidimensionalIndexScanContinuation{
 		LastHilbertValue: hvBytes,
 		LastKey:          c.lastKey.Pack(),
 	}
-	data, err := proto.Marshal(msg)
+	innerBytes, err := proto.Marshal(inner)
 	if err != nil {
-		// Should never happen with simple proto, but don't silently drop.
+		return nil
+	}
+
+	// Wrap in FlatMapContinuation (matching Java's flatMapPipelined cursor).
+	outer := &gen.FlatMapContinuation{
+		InnerContinuation: innerBytes,
+	}
+	if c.outerContinuation != nil {
+		outer.OuterContinuation = c.outerContinuation
+	}
+	data, err := proto.Marshal(outer)
+	if err != nil {
 		return nil
 	}
 	return data
