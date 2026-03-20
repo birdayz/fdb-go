@@ -72,7 +72,7 @@ func verifyMultidimensionalIndexes(ctx context.Context, store *recordlayer.FDBRe
 		}
 
 		// Scan actual R-tree entries via ScanIndex.
-		actual := make(map[string]tuple.Tuple)
+		actual := make(map[string]*recordlayer.IndexEntry)
 		idxCursor := store.ScanIndex(idx, recordlayer.TupleRangeAll, nil, recordlayer.ForwardScan())
 
 		for {
@@ -89,7 +89,7 @@ func verifyMultidimensionalIndexes(ctx context.Context, store *recordlayer.FDBRe
 				break
 			}
 			entry := result.GetValue()
-			actual[string(entry.Key.Pack())] = entry.Key
+			actual[string(entry.Key.Pack())] = entry
 		}
 		_ = idxCursor.Close()
 
@@ -105,12 +105,30 @@ func verifyMultidimensionalIndexes(ctx context.Context, store *recordlayer.FDBRe
 		}
 
 		// Diff: orphan entries (in store but not in model).
-		for key, entryKey := range actual {
+		for key, actualEntry := range actual {
 			if _, ok := expected[key]; !ok {
 				violations = append(violations, Violation{
 					Invariant: "multidimensional_entry_orphan",
-					Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, entryKey),
+					Expected:  fmt.Sprintf("index %q: no entry %v", idx.Name, actualEntry.Key),
 					Actual:    "exists in store but not in model",
+				})
+			}
+		}
+
+		// Value verification: for plain DimensionsKeyExpression (no KeyWithValue),
+		// the value should be an empty tuple.
+		for key, entryKey := range expected {
+			actualEntry, ok := actual[key]
+			if !ok {
+				continue // already reported as missing
+			}
+			expectedValue := tuple.Tuple{}
+			actualValue := actualEntry.Value
+			if string(actualValue.Pack()) != string(expectedValue.Pack()) {
+				violations = append(violations, Violation{
+					Invariant: "multidimensional_entry_value",
+					Expected:  fmt.Sprintf("index %q entry %v: value %v", idx.Name, entryKey, expectedValue),
+					Actual:    fmt.Sprintf("value %v", actualValue),
 				})
 			}
 		}

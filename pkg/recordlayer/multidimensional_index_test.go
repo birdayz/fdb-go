@@ -856,6 +856,122 @@ var _ = Describe("RTree", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("StoreHilbertValues=false — recomputes HV on read", func() {
+		ks := specSubspace()
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			sub := ks.Sub("rtree_no_store_hv")
+			config := RTreeConfig{
+				MinM: 2, MaxM: 4, SplitS: 2,
+				StoreHilbertValues: false, NumDimensions: 2,
+			}
+			storage := newRTreeStorage(sub, config)
+			rt, err := NewRTree(storage, config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 10 items with known coordinates.
+			const n = 10
+			type testItem struct {
+				x, y, pk int64
+			}
+			inserted := make([]testItem, n)
+			for i := 0; i < n; i++ {
+				inserted[i] = testItem{int64(i * 7), int64(i * 13), int64(i)}
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{inserted[i].x, inserted[i].y}},
+					tuple.Tuple{inserted[i].pk},
+					tuple.Tuple{int64(inserted[i].pk * 10)},
+				)).To(Succeed())
+			}
+
+			// Scan — all 10 items must be present.
+			items, err := rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n))
+
+			// Verify all PKs and coordinates round-tripped correctly.
+			pks := make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+
+				// Coordinates must match the original insert.
+				x := item.Point.Coordinate(0)
+				y := item.Point.Coordinate(1)
+				Expect(x).To(Equal(pk * 7))
+				Expect(y).To(Equal(pk * 13))
+
+				// Value must match.
+				Expect(item.Value).To(Equal(tuple.Tuple{int64(pk * 10)}))
+
+				// HilbertValue must have been recomputed (not nil).
+				Expect(item.HilbertValue).NotTo(BeNil())
+
+				// Recomputed HV must match freshly computed HV.
+				expectedHV := hilbertValue([]int64{x, y})
+				Expect(item.HilbertValue.Cmp(expectedHV)).To(Equal(0),
+					"recomputed HV for PK %d should match hilbertValue([%d, %d])", pk, x, y)
+			}
+			for i := 0; i < n; i++ {
+				Expect(pks).To(HaveKey(int64(i)), "missing PK %d", i)
+			}
+
+			// Verify Hilbert ordering (non-decreasing HV).
+			for i := 1; i < len(items); i++ {
+				cmp := items[i-1].HilbertValue.Cmp(items[i].HilbertValue)
+				if cmp == 0 {
+					cmp = tupleCompare(items[i-1].ItemKey(), items[i].ItemKey())
+				}
+				Expect(cmp).To(BeNumerically("<=", 0),
+					"items[%d] should be <= items[%d] in Hilbert order", i-1, i)
+			}
+
+			// Insert more items to force a split, then re-scan.
+			for i := n; i < n+10; i++ {
+				Expect(rt.InsertOrUpdate(rtx.Transaction(),
+					Point{Coordinates: tuple.Tuple{int64(i * 7), int64(i * 13)}},
+					tuple.Tuple{int64(i)},
+					tuple.Tuple{int64(i * 10)},
+				)).To(Succeed())
+			}
+
+			items, err = rt.Scan(rtx.Transaction(), nil, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(items).To(HaveLen(n + 10))
+
+			// Verify all 20 items present with correct recomputed HVs.
+			pks = make(map[int64]bool)
+			for _, item := range items {
+				pk := item.KeySuffix[0].(int64)
+				pks[pk] = true
+
+				Expect(item.HilbertValue).NotTo(BeNil(), "HV should be recomputed for PK %d", pk)
+
+				x := item.Point.Coordinate(0)
+				y := item.Point.Coordinate(1)
+				expectedHV := hilbertValue([]int64{x, y})
+				Expect(item.HilbertValue.Cmp(expectedHV)).To(Equal(0),
+					"recomputed HV for PK %d should match after split", pk)
+			}
+			for i := 0; i < n+10; i++ {
+				Expect(pks).To(HaveKey(int64(i)), "missing PK %d after split", i)
+			}
+
+			// Hilbert order must still hold after split.
+			for i := 1; i < len(items); i++ {
+				cmp := items[i-1].HilbertValue.Cmp(items[i].HilbertValue)
+				if cmp == 0 {
+					cmp = tupleCompare(items[i-1].ItemKey(), items[i].ItemKey())
+				}
+				Expect(cmp).To(BeNumerically("<=", 0),
+					"after split items[%d] should be <= items[%d] in Hilbert order", i-1, i)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("3D R-tree insert, scan, and delete", func() {
 		ks := specSubspace()
 
