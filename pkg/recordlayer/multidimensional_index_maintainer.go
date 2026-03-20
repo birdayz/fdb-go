@@ -293,17 +293,21 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	}
 	iter := rtree.ScanIterator(m.tx, lastHV, lastKey, mbrPredicate)
 
-	// 6. Apply row limit.
+	// 6. Build exact point filter from dimensional bounds (matches Java's containsPosition).
+	pointFilter := m.buildPointFilter(dimExpr, scanRange)
+
+	// 7. Apply row limit.
 	limit := 0
 	if scanProperties.ExecuteProperties.ReturnedRowLimit > 0 {
 		limit = scanProperties.ExecuteProperties.ReturnedRowLimit
 	}
 
 	return &rtreeScanCursor{
-		iter:   iter,
-		index:  m.index,
-		prefix: prefix,
-		limit:  limit,
+		iter:        iter,
+		index:       m.index,
+		prefix:      prefix,
+		limit:       limit,
+		pointFilter: pointFilter,
 	}
 }
 
@@ -349,6 +353,61 @@ func (m *multidimensionalIndexMaintainer) buildMBRPredicate(dimExpr *DimensionsK
 	}
 }
 
+// buildPointFilter creates an exact point-in-range filter from the scanRange
+// dimensional bounds. This is applied per-item after MBR subtree pruning,
+// matching Java's SpatialPredicate.containsPosition() post-filter.
+// Returns nil if scanRange doesn't specify dimensional bounds.
+func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKeyExpression, scanRange TupleRange) func(Point) bool {
+	if dimExpr.DimensionsSize <= 0 {
+		return nil
+	}
+
+	dimStart := dimExpr.PrefixSize
+	dimEnd := dimStart + dimExpr.DimensionsSize
+
+	hasLow := scanRange.Low != nil && len(scanRange.Low) >= dimEnd
+	hasHigh := scanRange.High != nil && len(scanRange.High) >= dimEnd
+
+	if !hasLow && !hasHigh {
+		return nil
+	}
+
+	type bound struct {
+		low, high    int64
+		hasLow, hasHigh bool
+	}
+	bounds := make([]bound, dimExpr.DimensionsSize)
+	for d := 0; d < dimExpr.DimensionsSize; d++ {
+		bounds[d].low = math.MinInt64
+		bounds[d].high = math.MaxInt64
+		if hasLow {
+			if v, ok := asInt64(scanRange.Low[dimStart+d]); ok {
+				bounds[d].low = v
+				bounds[d].hasLow = true
+			}
+		}
+		if hasHigh {
+			if v, ok := asInt64(scanRange.High[dimStart+d]); ok {
+				bounds[d].high = v
+				bounds[d].hasHigh = true
+			}
+		}
+	}
+
+	return func(p Point) bool {
+		for d := 0; d < len(bounds) && d < p.NumDimensions(); d++ {
+			c := p.Coordinate(d)
+			if bounds[d].hasLow && c < bounds[d].low {
+				return false
+			}
+			if bounds[d].hasHigh && c > bounds[d].high {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 // DeleteWhere clears all R-tree data for the given prefix.
 func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	rtSubspace := m.indexSubspace
@@ -364,8 +423,12 @@ func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error 
 }
 
 // rtreeScanCursor wraps an RTreeIterator into a RecordCursor with support
-// for row limits and proto-wrapped continuation tokens. Items are fetched
-// lazily — only the leaf nodes needed to satisfy the row limit are read.
+// for row limits, proto-wrapped continuation tokens, and exact point filtering.
+// Items are fetched lazily — only the leaf nodes needed to satisfy the row limit are read.
+//
+// The R-tree iterator applies MBR overlap pruning at the subtree level (approximate,
+// false positives allowed). This cursor applies exact point-in-range filtering on each
+// item, matching Java's containsPosition() post-filter.
 type rtreeScanCursor struct {
 	iter      *RTreeIterator
 	index     *Index
@@ -374,45 +437,58 @@ type rtreeScanCursor struct {
 	delivered int
 	lastHV    *big.Int
 	lastKey   tuple.Tuple
+	// Exact point filter: checks each item's coordinates against the scan range.
+	// nil means no filtering (return all items).
+	pointFilter func(Point) bool
 }
 
 func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
-	// Get next item from iterator.
-	item, ok, err := c.iter.Next()
-	if err != nil {
-		return RecordCursorResult[*IndexEntry]{}, err
-	}
-	if !ok {
-		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
-	}
+	for {
+		// Get next item from iterator.
+		item, ok, err := c.iter.Next()
+		if err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
+		if !ok {
+			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+		}
 
-	// Row limit reached — source had more items, so emit ReturnLimitReached
-	// with a continuation pointing to the last delivered item.
-	if c.limit > 0 && c.delivered >= c.limit {
+		// Row limit reached — source had more items, so emit ReturnLimitReached
+		// with a continuation pointing to the last delivered item.
+		if c.limit > 0 && c.delivered >= c.limit {
+			cont := c.buildContinuation()
+			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+		}
+
+		// Track position for continuation (even if filtered out, so resume
+		// skips past this item).
+		c.lastHV = item.HilbertValue
+		c.lastKey = item.ItemKey()
+
+		// Exact point filter: skip items whose coordinates don't match the
+		// scan range. This matches Java's containsPosition() post-filter.
+		if c.pointFilter != nil && !c.pointFilter(item.Point) {
+			continue
+		}
+
+		c.delivered++
+
+		// Reconstruct the full index key: prefix + dims + suffix.
+		key := make(tuple.Tuple, 0, len(c.prefix)+len(item.Point.Coordinates)+len(item.KeySuffix))
+		if len(c.prefix) > 0 {
+			key = append(key, c.prefix...)
+		}
+		key = append(key, item.Point.Coordinates...)
+		key = append(key, item.KeySuffix...)
+
+		entry := &IndexEntry{
+			Index: c.index,
+			Key:   key,
+			Value: item.Value,
+		}
 		cont := c.buildContinuation()
-		return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+		return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
 	}
-
-	// Track position for continuation.
-	c.lastHV = item.HilbertValue
-	c.lastKey = item.ItemKey()
-	c.delivered++
-
-	// Reconstruct the full index key: prefix + dims + suffix.
-	key := make(tuple.Tuple, 0, len(c.prefix)+len(item.Point.Coordinates)+len(item.KeySuffix))
-	if len(c.prefix) > 0 {
-		key = append(key, c.prefix...)
-	}
-	key = append(key, item.Point.Coordinates...)
-	key = append(key, item.KeySuffix...)
-
-	entry := &IndexEntry{
-		Index: c.index,
-		Key:   key,
-		Value: item.Value,
-	}
-	cont := c.buildContinuation()
-	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
 }
 
 // buildContinuation serializes the current position into a MultidimensionalIndexScanContinuation proto.

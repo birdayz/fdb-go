@@ -1797,23 +1797,23 @@ var _ = Describe("MultidimensionalIndex", func() {
 			}
 
 			// Scan with only Low bound: [200, 20] to +inf.
+			// Items: (100,10), (200,20), (300,30), (400,40), (500,50)
+			// Filter: coord >= [200, 20] → items 2,3,4,5 match.
 			lowOnly := TupleRange{
 				Low: tuple.Tuple{int64(200), int64(20)},
 			}
 			entries, err := AsList(ctx, store.ScanIndex(mdIdx, lowOnly, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
-
-			// With only 5 items in a root leaf, MBR predicate won't prune
-			// (leaf items aren't filtered by MBR). All 5 should appear.
-			Expect(entries).To(HaveLen(5))
+			Expect(entries).To(HaveLen(4))
 
 			// Scan with only High bound: -inf to [300, 30].
+			// Filter: coord <= [300, 30] → items 1,2,3 match.
 			highOnly := TupleRange{
 				High: tuple.Tuple{int64(300), int64(30)},
 			}
 			entries, err = AsList(ctx, store.ScanIndex(mdIdx, highOnly, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(5))
+			Expect(entries).To(HaveLen(3))
 
 			return nil, nil
 		})
