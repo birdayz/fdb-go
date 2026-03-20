@@ -656,6 +656,7 @@ func (rt *RTree) childSlotForLeaf(leaf *leafNode) ChildSlot {
 
 // propagateMBRUp updates parent ChildSlots with new MBR/HV info after a leaf change.
 // Walks from the leaf parent up to the root, updating each level's ChildSlot.
+// Matches Java's adjustSlotInParent: only writes the parent if the ChildSlot changed.
 func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
 	if len(path.parents) == 0 {
 		return
@@ -668,14 +669,17 @@ func (rt *RTree) propagateMBRUp(tx fdb.Transaction, path *updatePath) {
 		if childIdx >= len(parent.slots) {
 			continue
 		}
+		var newSlot ChildSlot
 		if i == len(path.parents)-1 {
-			// Leaf parent — update from leaf.
-			parent.slots[childIdx] = rt.childSlotForLeaf(leaf)
+			newSlot = rt.childSlotForLeaf(leaf)
 		} else {
-			// Higher level — update from child intermediate node.
 			child := path.parents[i+1]
-			parent.slots[childIdx] = rt.childSlotForIntermediate(child)
+			newSlot = rt.childSlotForIntermediate(child)
 		}
+		if childSlotEqual(parent.slots[childIdx], newSlot) {
+			break // nothing changed at this level, stop propagation
+		}
+		parent.slots[childIdx] = newSlot
 		rt.storage.writeIntermediateNode(tx, parent)
 	}
 }

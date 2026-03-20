@@ -191,6 +191,35 @@ func (s ChildSlot) GetMBR() MBR {
 	return s.ChildMBR
 }
 
+// childSlotEqual compares two ChildSlots for equality.
+// Used by propagateMBRUp to skip writes when nothing changed (matching Java's adjustSlotInParent).
+func childSlotEqual(a, b ChildSlot) bool {
+	if a.SmallestHV == nil && b.SmallestHV != nil || a.SmallestHV != nil && b.SmallestHV == nil {
+		return false
+	}
+	if a.SmallestHV != nil && a.SmallestHV.Cmp(b.SmallestHV) != 0 {
+		return false
+	}
+	if a.LargestHV == nil && b.LargestHV != nil || a.LargestHV != nil && b.LargestHV == nil {
+		return false
+	}
+	if a.LargestHV != nil && a.LargestHV.Cmp(b.LargestHV) != 0 {
+		return false
+	}
+	if tupleCompare(a.SmallestKey, b.SmallestKey) != 0 || tupleCompare(a.LargestKey, b.LargestKey) != 0 {
+		return false
+	}
+	if a.ChildMBR.NumDimensions() != b.ChildMBR.NumDimensions() {
+		return false
+	}
+	for d := 0; d < a.ChildMBR.NumDimensions(); d++ {
+		if a.ChildMBR.Low[d] != b.ChildMBR.Low[d] || a.ChildMBR.High[d] != b.ChildMBR.High[d] {
+			return false
+		}
+	}
+	return true
+}
+
 // RTreeConfig configures the R-tree behavior.
 // Matches Java's RTree.Config.
 type RTreeConfig struct {

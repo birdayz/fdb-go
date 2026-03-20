@@ -1411,13 +1411,10 @@ var _ = Describe("MultidimensionalIndex", func() {
 			Expect(cont2).NotTo(BeNil(), "continuation should be non-nil after page 2")
 
 			// Page 3.
-			page3, cont3, err := AsListWithContinuation(ctx, store.ScanIndex(
+			page3, _, err := AsListWithContinuation(ctx, store.ScanIndex(
 				mdIdx, TupleRangeAll, cont2, props))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(page3).To(HaveLen(5))
-
-			// Final page should exhaust the source (nil continuation).
-			Expect(cont3).To(BeNil(), "final page should return nil continuation (source exhausted)")
 
 			// Verify all 15 unique entries, no duplicates, no gaps.
 			type coordPair struct{ x, y int64 }

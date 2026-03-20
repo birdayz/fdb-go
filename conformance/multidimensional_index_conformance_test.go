@@ -314,10 +314,9 @@ var _ = Describe("MULTIDIMENSIONAL Index Conformance", func() {
 	})
 
 	Describe("Paginated scan with continuation", func() {
-		// NOTE: Cross-language continuation resume is NOT supported for MULTIDIMENSIONAL indexes.
-		// Java wraps continuations in FlatMapContinuation proto (due to flatMapPipelined cursor),
-		// while Go uses raw MultidimensionalIndexScanContinuation. They are not wire-compatible.
-		// Instead, we verify that paginated scans within each language produce the same full result.
+		// Go now wraps continuations in FlatMapContinuation proto (matching Java's flatMapPipelined),
+		// so cross-language continuation resume should work. These tests verify independent pagination
+		// produces identical results; cross-language continuation is tested separately below.
 
 		It("should paginate correctly within Go and produce same results as full scan", func() {
 			// Go saves 10 orders (ids 1-10, coords (id*100, id*200))

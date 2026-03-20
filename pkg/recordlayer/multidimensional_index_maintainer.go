@@ -477,6 +477,13 @@ type rtreeScanCursor struct {
 
 func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
 	for {
+		// Row limit check BEFORE fetching — avoids wasting an FDB read when
+		// the limit is already reached.
+		if c.limit > 0 && c.delivered >= c.limit {
+			cont := c.buildContinuation()
+			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
+		}
+
 		// Get next item from iterator.
 		item, ok, err := c.iter.Next()
 		if err != nil {
@@ -484,13 +491,6 @@ func (c *rtreeScanCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEn
 		}
 		if !ok {
 			return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
-		}
-
-		// Row limit reached — source had more items, so emit ReturnLimitReached
-		// with a continuation pointing to the last delivered item.
-		if c.limit > 0 && c.delivered >= c.limit {
-			cont := c.buildContinuation()
-			return NewResultNoNext[*IndexEntry](ReturnLimitReached, &BytesContinuation{bytes: cont}), nil
 		}
 
 		// Track position for continuation (even if filtered out, so resume

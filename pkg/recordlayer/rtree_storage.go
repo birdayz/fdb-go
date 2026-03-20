@@ -214,13 +214,18 @@ func (s *rtreeStorage) deserializeItemSlots(slotList tuple.Tuple) ([]ItemSlot, e
 		}
 
 		// Item key: (pointCoords, keySuffix)
-		if itemKeyTuple, ok := slotTuple[1].(tuple.Tuple); ok && len(itemKeyTuple) >= 2 {
-			if pointTuple, ok := itemKeyTuple[0].(tuple.Tuple); ok {
-				slots[i].Point = Point{Coordinates: pointTuple}
-			}
-			if suffix, ok := itemKeyTuple[1].(tuple.Tuple); ok {
-				slots[i].KeySuffix = suffix
-			}
+		itemKeyTuple, ok := slotTuple[1].(tuple.Tuple)
+		if !ok {
+			return nil, fmt.Errorf("rtree: slot %d itemKey is not a tuple, got %T", i, slotTuple[1])
+		}
+		if len(itemKeyTuple) < 2 {
+			return nil, fmt.Errorf("rtree: slot %d itemKey has %d elements, need 2", i, len(itemKeyTuple))
+		}
+		if pointTuple, ok := itemKeyTuple[0].(tuple.Tuple); ok {
+			slots[i].Point = Point{Coordinates: pointTuple}
+		}
+		if suffix, ok := itemKeyTuple[1].(tuple.Tuple); ok {
+			slots[i].KeySuffix = suffix
 		}
 
 		// Value — single tuple, no extra wrapping.
