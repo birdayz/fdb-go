@@ -981,8 +981,9 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 		}
 		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims)
 	case IndexTypeVector:
-		secSubspace := store.indexSecondarySubspace(index)
-		return newVectorIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
+		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
+		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
+		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store)
 	default:
 		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
 	}

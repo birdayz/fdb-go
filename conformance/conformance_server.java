@@ -65,6 +65,7 @@ class ConformanceServer {
         new TextIndexSteps(),
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
+        new VectorIndexSteps(),
     };
 
     private static class StepEntry {

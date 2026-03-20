@@ -11,10 +11,12 @@ import (
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
-const IndexOptionVectorNumDimensions = "vectorNumDimensions"
+// Matches Java's IndexOptions.HNSW_NUM_DIMENSIONS.
+const IndexOptionVectorNumDimensions = "hnswNumDimensions"
 
 // IndexOptionVectorMetric specifies the distance metric.
-const IndexOptionVectorMetric = "vectorMetric"
+// Matches Java's IndexOptions.HNSW_METRIC.
+const IndexOptionVectorMetric = "hnswMetric"
 
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
@@ -49,11 +51,15 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	config := DefaultHNSWConfig(numDims)
 	if v, ok := index.Options[IndexOptionVectorMetric]; ok {
 		switch v {
-		case "cosine":
+		case "COSINE_METRIC", "cosine":
 			config.Metric = VectorMetricCosine
-		case "inner_product":
+		case "DOT_PRODUCT_METRIC", "inner_product":
 			config.Metric = VectorMetricInnerProduct
+		case "EUCLIDEAN_SQUARE_METRIC":
+			// Java's EUCLIDEAN_SQUARE uses squared L2 (same as our Euclidean).
+			config.Metric = VectorMetricEuclidean
 		default:
+			// EUCLIDEAN_METRIC and any other value defaults to Euclidean.
 			config.Metric = VectorMetricEuclidean
 		}
 	}
@@ -114,13 +120,33 @@ func extractVector(entry indexEntry) []float64 {
 }
 
 // tupleToVector converts tuple elements to a float64 vector.
+// Handles both raw bytes (from KeyWithValueExpression on a bytes field) and
+// numeric tuple elements (from expressions on int/float fields).
 func tupleToVector(t tuple.Tuple) []float64 {
 	if len(t) == 0 {
 		return nil
 	}
+	// If the tuple contains a single bytes element, treat it as a serialized vector.
+	// This is the common case for KeyWithValueExpression(field("vector_data"), 0)
+	// where vector_data is a bytes proto field.
+	if len(t) == 1 {
+		if b, ok := t[0].([]byte); ok {
+			vec, err := deserializeVector(b)
+			if err == nil {
+				return vec
+			}
+		}
+	}
 	vec := make([]float64, 0, len(t))
 	for _, elem := range t {
 		switch v := elem.(type) {
+		case []byte:
+			// Deserialize bytes as a vector.
+			deserialized, err := deserializeVector(v)
+			if err != nil {
+				return nil
+			}
+			vec = append(vec, deserialized...)
 		case float64:
 			vec = append(vec, v)
 		case float32:

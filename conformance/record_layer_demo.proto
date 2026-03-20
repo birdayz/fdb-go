@@ -14,6 +14,7 @@ message Order {
     optional int32 quantity = 5;
     optional int64 coord_x = 6;
     optional int64 coord_y = 7;
+    optional bytes vector_data = 8;
 }
 
 message Customer {

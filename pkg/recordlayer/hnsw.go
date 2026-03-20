@@ -536,12 +536,11 @@ func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
 }
 
 // saveNodeLayer writes one layer's data for a node in COMPACT format.
-// Key: dataSubspace.Pack(layer, primaryKey...)
+// Key: dataSubspace.Pack(Tuple{layer, primaryKey})  (PK as nested tuple, matching Java)
 // Value: Tuple.Pack(nodeKind, vectorTuple, neighborsTuple)
 func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple) {
-	keyTuple := tuple.Tuple{int64(layer)}
-	keyTuple = append(keyTuple, primaryKey...)
-	key := s.dataSubspace.Pack(keyTuple)
+	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
+	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 
 	neighborList := make(tuple.Tuple, len(neighbors))
 	for i, pk := range neighbors {
@@ -559,9 +558,8 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 // loadNodeLayer reads one layer's data for a node.
 // Returns vector bytes, neighbor PKs, and error (non-nil if not found).
 func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKey tuple.Tuple) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
-	keyTuple := tuple.Tuple{int64(layer)}
-	keyTuple = append(keyTuple, primaryKey...)
-	key := s.dataSubspace.Pack(keyTuple)
+	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
+	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 
 	data, err := tx.Get(fdb.Key(key)).Get()
 	if err != nil {
@@ -607,9 +605,8 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 
 // deleteNodeLayer removes one layer's data for a node.
 func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
-	keyTuple := tuple.Tuple{int64(layer)}
-	keyTuple = append(keyTuple, primaryKey...)
-	key := s.dataSubspace.Pack(keyTuple)
+	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
+	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	tx.Clear(fdb.Key(key))
 }
 
@@ -663,9 +660,17 @@ func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tupl
 }
 
 // saveAccessInfo writes the entry point metadata.
+// Wire-compatible with Java's StorageAdapter.writeAccessInfo:
+// Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
 func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, layer int, pk tuple.Tuple, vectorBytes []byte) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
-	value := tuple.Tuple{int64(layer), pk, tuple.Tuple{vectorBytes}}
+	value := tuple.Tuple{
+		int64(layer),
+		pk,
+		tuple.Tuple{vectorBytes},
+		int64(0), // rotatorSeed (default 0)
+		nil,      // negatedCentroid (null = not computed)
+	}
 	tx.Set(fdb.Key(key), value.Pack())
 }
 
@@ -692,15 +697,16 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		}
 
 		// Extract primary key from the FDB key.
-		// Key format: dataSubspace + (layer, pk...)
+		// Key format: dataSubspace + (layer, nestedPK)
 		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
 		if unpackErr != nil {
 			return nil, nil, unpackErr
 		}
-		// keyTuple[0] = layer, keyTuple[1:] = primary key elements
+		// keyTuple[0] = layer, keyTuple[1] = primaryKey (nested tuple)
 		if len(keyTuple) > 1 {
-			pk = make(tuple.Tuple, len(keyTuple)-1)
-			copy(pk, keyTuple[1:])
+			if pkTuple, ok := keyTuple[1].(tuple.Tuple); ok {
+				pk = pkTuple
+			}
 		}
 
 		// Parse the value for vector bytes.
