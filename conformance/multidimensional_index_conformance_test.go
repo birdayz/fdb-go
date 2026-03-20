@@ -2,6 +2,7 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -448,6 +449,242 @@ var _ = Describe("MULTIDIMENSIONAL Index Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("MBR-bounded scan cross-language", func() {
+		It("should return only points within the bounding box from both Go and Java", func() {
+			// Save 20 records in two spatial clusters:
+			// Cluster A: 10 records at (100+i, 100+i) for i=0..9
+			// Cluster B: 10 records at (900+i, 900+i) for i=0..9
+			for i := int64(0); i < 10; i++ {
+				err := store.SaveOrderGo(ctx, i+1, 100+i, 100+i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			for i := int64(0); i < 10; i++ {
+				err := store.SaveOrderGo(ctx, i+11, 900+i, 900+i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Full scan should see all 20.
+			allEntries, err := store.ScanIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(20))
+
+			// Go bounded scan [50, 200] x [50, 200] — should return exactly the 10 Cluster A entries.
+			goEntries, err := store.ScanIndexGoBounded(ctx, 50, 50, 200, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goEntries).To(HaveLen(10))
+
+			// Verify all Go bounded entries have coordinates in [50, 200] x [50, 200].
+			goPKs := make(map[int64]bool)
+			for _, e := range goEntries {
+				x := toInt64(e.Key[0])
+				y := toInt64(e.Key[1])
+				Expect(x).To(BeNumerically(">=", 50))
+				Expect(x).To(BeNumerically("<=", 200))
+				Expect(y).To(BeNumerically(">=", 50))
+				Expect(y).To(BeNumerically("<=", 200))
+				Expect(e.PrimaryKey).NotTo(BeEmpty())
+				goPKs[toInt64(e.PrimaryKey[0])] = true
+			}
+			Expect(goPKs).To(HaveLen(10))
+
+			// Java bounded scan with the same range — should return the same 10 entries.
+			javaEntries, err := store.ScanIndexJavaBounded(ctx, 50, 50, 200, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaEntries).To(HaveLen(10))
+
+			// Verify Java entries are in-range too.
+			javaPKs := make(map[int64]bool)
+			for _, e := range javaEntries {
+				x := toInt64(e.Key[0])
+				y := toInt64(e.Key[1])
+				Expect(x).To(BeNumerically(">=", 50))
+				Expect(x).To(BeNumerically("<=", 200))
+				Expect(y).To(BeNumerically(">=", 50))
+				Expect(y).To(BeNumerically("<=", 200))
+				Expect(e.PrimaryKey).NotTo(BeEmpty())
+				javaPKs[toInt64(e.PrimaryKey[0])] = true
+			}
+			Expect(javaPKs).To(HaveLen(10))
+
+			// Compare Go vs Java: same set of PKs.
+			for pk := range goPKs {
+				Expect(javaPKs).To(HaveKey(pk), "Go bounded result PK %d missing from Java bounded results", pk)
+			}
+		})
+	})
+
+	Describe("Cross-language continuation resume", func() {
+		It("should resume Go continuation in Java (Go starts, Java finishes)", func() {
+			// Save 10 records.
+			for i := int64(1); i <= 10; i++ {
+				err := store.SaveOrderGo(ctx, i, i*100, i*200)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Go scans with limit=4.
+			goPage1, goCont, goExhausted, err := store.ScanIndexGoWithLimit(ctx, 4, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goPage1).To(HaveLen(4))
+			Expect(goExhausted).To(BeFalse())
+			Expect(goCont).NotTo(BeNil())
+
+			// Pass Go continuation (base64 encoded) to Java to resume.
+			// Use limit=100 (much larger than remaining 6) so that Java reports
+			// SOURCE_EXHAUSTED rather than RETURN_LIMIT_REACHED.
+			goContB64 := base64.StdEncoding.EncodeToString(goCont)
+			javaPage2, _, javaExhausted, err := store.ScanIndexJavaWithLimit(ctx, 100, goContB64)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaPage2).To(HaveLen(6))
+			Expect(javaExhausted).To(BeTrue())
+
+			// Concatenate: 4 + 6 = 10 unique entries.
+			allEntries := append(goPage1, javaPage2...)
+			Expect(allEntries).To(HaveLen(10))
+
+			// Verify all 10 PKs are unique.
+			seenPKs := make(map[int64]bool)
+			for _, e := range allEntries {
+				Expect(e.PrimaryKey).NotTo(BeEmpty())
+				pk := toInt64(e.PrimaryKey[0])
+				Expect(seenPKs).NotTo(HaveKey(pk), "duplicate PK %d in Go→Java continuation resume", pk)
+				seenPKs[pk] = true
+			}
+			Expect(seenPKs).To(HaveLen(10))
+
+			// Also verify against a full Go scan for completeness.
+			fullGoEntries, err := store.ScanIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fullGoEntries).To(HaveLen(10))
+
+			// Same set of PKs.
+			fullPKs := make(map[int64]bool)
+			for _, e := range fullGoEntries {
+				fullPKs[toInt64(e.PrimaryKey[0])] = true
+			}
+			for pk := range seenPKs {
+				Expect(fullPKs).To(HaveKey(pk), "PK %d from paginated scan not in full scan", pk)
+			}
+		})
+
+		It("should resume Java continuation in Go (Java starts, Go finishes)", func() {
+			// Save 10 records.
+			for i := int64(1); i <= 10; i++ {
+				err := store.SaveOrderGo(ctx, i, i*100, i*200)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Java scans with limit=4.
+			javaPage1, javaCont, javaExhausted, err := store.ScanIndexJavaWithLimit(ctx, 4, "")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaPage1).To(HaveLen(4))
+			Expect(javaExhausted).To(BeFalse())
+			Expect(javaCont).NotTo(BeEmpty())
+
+			// Decode Java continuation (base64) to raw bytes for Go.
+			javaContBytes, err := base64.StdEncoding.DecodeString(javaCont)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Go resumes with Java's continuation.
+			// Use limit=100 (much larger than remaining 6) so that Go reports
+			// SOURCE_EXHAUSTED rather than RETURN_LIMIT_REACHED.
+			goPage2, _, goExhausted, err := store.ScanIndexGoWithLimit(ctx, 100, javaContBytes)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goPage2).To(HaveLen(6))
+			Expect(goExhausted).To(BeTrue())
+
+			// Concatenate: 4 + 6 = 10 unique entries.
+			allEntries := append(javaPage1, goPage2...)
+			Expect(allEntries).To(HaveLen(10))
+
+			// Verify all 10 PKs are unique.
+			seenPKs := make(map[int64]bool)
+			for _, e := range allEntries {
+				Expect(e.PrimaryKey).NotTo(BeEmpty())
+				pk := toInt64(e.PrimaryKey[0])
+				Expect(seenPKs).NotTo(HaveKey(pk), "duplicate PK %d in Java→Go continuation resume", pk)
+				seenPKs[pk] = true
+			}
+			Expect(seenPKs).To(HaveLen(10))
+
+			// Also verify against full Java scan.
+			fullJavaEntries, err := store.ScanIndexJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fullJavaEntries).To(HaveLen(10))
+
+			fullPKs := make(map[int64]bool)
+			for _, e := range fullJavaEntries {
+				fullPKs[toInt64(e.PrimaryKey[0])] = true
+			}
+			for pk := range seenPKs {
+				Expect(fullPKs).To(HaveKey(pk), "PK %d from paginated scan not in full scan", pk)
+			}
+		})
+
+		It("should alternate Go and Java across multiple pages", func() {
+			// Save 12 records.
+			for i := int64(1); i <= 12; i++ {
+				err := store.SaveOrderGo(ctx, i, i*100, i*200)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Page 1: Go scans limit=3.
+			page1, cont1Bytes, exhausted1, err := store.ScanIndexGoWithLimit(ctx, 3, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page1).To(HaveLen(3))
+			Expect(exhausted1).To(BeFalse())
+			Expect(cont1Bytes).NotTo(BeNil())
+
+			// Page 2: Java resumes with Go's continuation, limit=3.
+			cont1B64 := base64.StdEncoding.EncodeToString(cont1Bytes)
+			page2, cont2B64, exhausted2, err := store.ScanIndexJavaWithLimit(ctx, 3, cont1B64)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page2).To(HaveLen(3))
+			Expect(exhausted2).To(BeFalse())
+			Expect(cont2B64).NotTo(BeEmpty())
+
+			// Page 3: Go resumes with Java's continuation, limit=3.
+			cont2Bytes, err := base64.StdEncoding.DecodeString(cont2B64)
+			Expect(err).NotTo(HaveOccurred())
+			page3, cont3Bytes, exhausted3, err := store.ScanIndexGoWithLimit(ctx, 3, cont2Bytes)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page3).To(HaveLen(3))
+			Expect(exhausted3).To(BeFalse())
+			Expect(cont3Bytes).NotTo(BeNil())
+
+			// Page 4: Java finishes, limit=10.
+			cont3B64 := base64.StdEncoding.EncodeToString(cont3Bytes)
+			page4, _, exhausted4, err := store.ScanIndexJavaWithLimit(ctx, 10, cont3B64)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(page4).To(HaveLen(3))
+			Expect(exhausted4).To(BeTrue())
+
+			// All 12 unique.
+			allEntries := append(append(append(page1, page2...), page3...), page4...)
+			Expect(allEntries).To(HaveLen(12))
+
+			seenPKs := make(map[int64]bool)
+			for _, e := range allEntries {
+				Expect(e.PrimaryKey).NotTo(BeEmpty())
+				pk := toInt64(e.PrimaryKey[0])
+				Expect(seenPKs).NotTo(HaveKey(pk), "duplicate PK %d in alternating Go/Java scan", pk)
+				seenPKs[pk] = true
+			}
+			Expect(seenPKs).To(HaveLen(12))
+
+			// Verify against full scan: same set of PKs.
+			fullEntries, err := store.ScanIndexGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			fullPKs := make(map[int64]bool)
+			for _, e := range fullEntries {
+				fullPKs[toInt64(e.PrimaryKey[0])] = true
+			}
+			Expect(fullPKs).To(HaveLen(12))
+			for pk := range seenPKs {
+				Expect(fullPKs).To(HaveKey(pk))
+			}
+		})
+	})
 })
 
 // MultidimensionalIndexConformanceStore wraps record operations with a MULTIDIMENSIONAL
@@ -704,4 +941,61 @@ func (s *MultidimensionalIndexConformanceStore) ScanIndexJavaWithLimit(ctx conte
 		results = append(results, entry)
 	}
 	return results, javaResult.Continuation, javaResult.Exhausted, nil
+}
+
+// ScanIndexGoBounded scans the MULTIDIMENSIONAL index with inclusive spatial bounds [lowX, highX] x [lowY, highY].
+func (s *MultidimensionalIndexConformanceStore) ScanIndexGoBounded(ctx context.Context, lowX, lowY, highX, highY int64) ([]IndexEntryResult, error) {
+	var results []IndexEntryResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		// For a 2D MULTIDIMENSIONAL index with PrefixSize=0, the scanRange Low/High tuples
+		// encode the dimensional bounds directly: Low = (lowX, lowY), High = (highX, highY).
+		spatialRange := recordlayer.TupleRange{
+			Low:  tuple.Tuple{lowX, lowY},
+			High: tuple.Tuple{highX, highY},
+		}
+		entries, err := recordlayer.AsList(ctx, store.ScanIndex(s.MDIndex, spatialRange, nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			results = append(results, IndexEntryResult{
+				Key:        tupleToSlice(e.Key),
+				PrimaryKey: tupleToSlice(e.PrimaryKey()),
+			})
+		}
+		return nil, nil
+	})
+	return results, err
+}
+
+// ScanIndexJavaBounded scans the MULTIDIMENSIONAL index via Java with inclusive spatial bounds.
+func (s *MultidimensionalIndexConformanceStore) ScanIndexJavaBounded(ctx context.Context, lowX, lowY, highX, highY int64) ([]IndexEntryResult, error) {
+	params := s.buildJavaParams()
+	params["lowX"] = lowX
+	params["lowY"] = lowY
+	params["highX"] = highX
+	params["highY"] = highY
+
+	var javaResults []map[string]any
+	if err := s.java.InvokeAs(ctx, "scanMultidimensionalIndexBounded", params, &javaResults); err != nil {
+		return nil, fmt.Errorf("java scanMultidimensionalIndexBounded failed: %w", err)
+	}
+
+	var results []IndexEntryResult
+	for _, m := range javaResults {
+		entry := IndexEntryResult{}
+		if keyRaw, ok := m["key"]; ok {
+			entry.Key = toInterfaceSlice(keyRaw)
+		}
+		if pkRaw, ok := m["primaryKey"]; ok {
+			entry.PrimaryKey = toInterfaceSlice(pkRaw)
+		}
+		results = append(results, entry)
+	}
+	return results, nil
 }

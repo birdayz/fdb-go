@@ -21,6 +21,7 @@ import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -216,6 +217,54 @@ class MultidimensionalIndexSteps extends ConformanceBase {
             }
             response.put("exhausted", sourceExhausted);
             return response;
+        });
+    }
+
+    @ConformanceStep("scanMultidimensionalIndexBounded")
+    public List<Map<String, Object>> scanMultidimensionalIndexBounded(
+            String clusterFile, byte[] subspace, long lowX, long lowY, long highX, long highY, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaData metadata = createMultidimensionalMetaData();
+            FDBRecordStore store = FDBRecordStore.newBuilder()
+                .setMetaDataProvider(metadata)
+                .setContext(context)
+                .setSubspace(new Subspace(subspace))
+                .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+                .createOrOpen();
+
+            Index index = metadata.getIndex("order_coord_md");
+
+            // Build a Hypercube spatial predicate with inclusive bounds on both dimensions.
+            MultidimensionalIndexScanBounds.Hypercube hypercube =
+                new MultidimensionalIndexScanBounds.Hypercube(Arrays.asList(
+                    TupleRange.betweenInclusive(Tuple.from(lowX), Tuple.from(highX)),
+                    TupleRange.betweenInclusive(Tuple.from(lowY), Tuple.from(highY))
+                ));
+
+            MultidimensionalIndexScanBounds scanBounds = new MultidimensionalIndexScanBounds(
+                TupleRange.ALL, hypercube, TupleRange.ALL);
+
+            List<IndexEntry> entries = store.scanIndex(
+                index, scanBounds, null, ScanProperties.FORWARD_SCAN)
+                .asList()
+                .join();
+
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> map = new HashMap<>();
+                List<Object> keyValues = new ArrayList<>();
+                for (Object item : entry.getKey()) {
+                    keyValues.add(item);
+                }
+                map.put("key", keyValues);
+                List<Object> pkValues = new ArrayList<>();
+                for (Object item : entry.getPrimaryKey()) {
+                    pkValues.add(item);
+                }
+                map.put("primaryKey", pkValues);
+                result.add(map);
+            }
+            return result;
         });
     }
 }
