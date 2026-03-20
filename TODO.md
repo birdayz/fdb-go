@@ -145,7 +145,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **MEDIUM — No spatial predicate support** — Fixed: `buildMBRPredicate()` extracts dimensional bounds from scanRange, passes to iterator for subtree pruning.
 - [x] **MEDIUM — No prefix skip-scan across all prefixes** — Fixed: `prefixSkipScanCursor` enumerates distinct prefixes via FDB key reads + `fdb.Strinc()`. Cross-prefix continuation deferred (proto lacks prefix field).
 - [ ] **LOW — `propagateMBRUp` always writes parent nodes** — Java's `adjustSlotInParent` compares old/new MBR and only writes if changed. Go always reconstructs the ChildSlot and writes unconditionally. Performance difference only (extra FDB Set calls, increased conflict surface), no correctness impact.
-- **Known limitation**: Cross-language continuation resume not supported. Java wraps MULTIDIMENSIONAL scan continuations in `FlatMapContinuation` proto (from `flatMapPipelined` cursor composition). Go uses raw `MultidimensionalIndexScanContinuation`. Within each language, pagination works correctly.
+- [x] **HIGH — Cross-language continuation format** — Fixed: Go now wraps `MultidimensionalIndexScanContinuation` inside `FlatMapContinuation` proto, matching Java's `flatMapPipelined` cursor composition. Backward-compatible: reads both `FlatMapContinuation` (Java) and raw format (old Go).
 
 #### VECTOR/HNSW — wire-compatible, needs conformance + additional features
 
