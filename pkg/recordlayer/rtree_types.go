@@ -22,10 +22,12 @@ var rootNodeID = make([]byte, 16)
 
 // newRandomNodeID generates a random 16-byte UUID for a new node.
 // Matches Java's NodeHelpers.newRandomNodeId().
-func newRandomNodeID() []byte {
+func newRandomNodeID() ([]byte, error) {
 	id := make([]byte, 16)
-	_, _ = rand.Read(id)
-	return id
+	if _, err := rand.Read(id); err != nil {
+		return nil, fmt.Errorf("rtree: generate node ID: %w", err)
+	}
+	return id, nil
 }
 
 // Point represents an N-dimensional point with int64 coordinates.
@@ -77,8 +79,12 @@ func (m MBR) ContainsPoint(p Point) bool {
 }
 
 // Overlaps returns true if this MBR overlaps with another.
+// Returns false if the MBRs have different numbers of dimensions.
 func (m MBR) Overlaps(other MBR) bool {
-	for d := 0; d < m.NumDimensions() && d < other.NumDimensions(); d++ {
+	if m.NumDimensions() != other.NumDimensions() {
+		return false
+	}
+	for d := 0; d < m.NumDimensions(); d++ {
 		if m.Low[d] > other.High[d] || m.High[d] < other.Low[d] {
 			return false
 		}
@@ -87,8 +93,14 @@ func (m MBR) Overlaps(other MBR) bool {
 }
 
 // Union returns the smallest MBR containing both this and other.
+// If the MBRs have different numbers of dimensions, returns self unchanged.
 func (m MBR) Union(other MBR) MBR {
 	n := m.NumDimensions()
+	if other.NumDimensions() != n {
+		// Should never happen in a well-formed tree.
+		// Fall back to returning self to avoid panic.
+		return m
+	}
 	result := MBR{Low: make([]int64, n), High: make([]int64, n)}
 	for d := 0; d < n; d++ {
 		result.Low[d] = m.Low[d]

@@ -378,8 +378,14 @@ func (rt *RTree) handleLeafOverflow(tx fdb.Transaction, path *updatePath) error 
 func (rt *RTree) splitRootLeaf(tx fdb.Transaction, root *leafNode) error {
 	mid := len(root.slots) / 2
 
-	leftID := newRandomNodeID()
-	rightID := newRandomNodeID()
+	leftID, err := newRandomNodeID()
+	if err != nil {
+		return err
+	}
+	rightID, err := newRandomNodeID()
+	if err != nil {
+		return err
+	}
 
 	left := &leafNode{id: leftID, slots: make([]ItemSlot, mid)}
 	copy(left.slots, root.slots[:mid])
@@ -440,7 +446,11 @@ func (rt *RTree) overflowLeaf(tx fdb.Transaction, path *updatePath) error {
 
 	if needSplit {
 		// Split: create one new sibling, redistribute across S+1 nodes.
-		newSibling := &leafNode{id: newRandomNodeID()}
+		newID, err := newRandomNodeID()
+		if err != nil {
+			return err
+		}
+		newSibling := &leafNode{id: newID}
 		siblings = append(siblings, newSibling)
 	}
 
@@ -710,8 +720,14 @@ func (rt *RTree) handleIntermediateOverflow(tx fdb.Transaction, path *updatePath
 func (rt *RTree) splitRootIntermediate(tx fdb.Transaction, root *intermediateNode) error {
 	mid := len(root.slots) / 2
 
-	leftID := newRandomNodeID()
-	rightID := newRandomNodeID()
+	leftID, err := newRandomNodeID()
+	if err != nil {
+		return err
+	}
+	rightID, err := newRandomNodeID()
+	if err != nil {
+		return err
+	}
 
 	left := &intermediateNode{id: leftID, slots: make([]ChildSlot, mid)}
 	copy(left.slots, root.slots[:mid])
@@ -774,7 +790,11 @@ func (rt *RTree) overflowIntermediate(tx fdb.Transaction, path *updatePath, leve
 
 	if needSplit {
 		// Split: create one new sibling, redistribute across S+1 nodes.
-		newSibling := &intermediateNode{id: newRandomNodeID()}
+		newID, err := newRandomNodeID()
+		if err != nil {
+			return err
+		}
+		newSibling := &intermediateNode{id: newID}
 		siblings = append(siblings, newSibling)
 	}
 
