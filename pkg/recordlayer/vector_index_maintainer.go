@@ -168,15 +168,124 @@ func (m *vectorIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBSt
 	return m.Update(oldRecord, newRecord)
 }
 
-// Scan is not meaningful for VECTOR indexes — use SearchKNN instead.
-// Returns an error cursor directing callers to use the proper scan method.
+// Scan rejects the TupleRange-based scan API for VECTOR indexes.
+// Matches Java's VectorIndexMaintainer.scan(IndexScanType, TupleRange, ...) which
+// throws IllegalStateException("index maintainer does not support this scan api").
+// Use ScanByDistance for kNN search, or SearchKNN for direct results.
 func (m *vectorIndexMaintainer) Scan(
 	scanRange TupleRange,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
 	return &errorCursor[*IndexEntry]{
-		err: fmt.Errorf("VECTOR index %q must be queried with SearchKNN, not Scan", m.index.Name),
+		err: fmt.Errorf("VECTOR index %q does not support TupleRange scan; use ScanVectorIndex with BY_DISTANCE", m.index.Name),
+	}
+}
+
+// VectorScanBounds carries the parameters for a BY_DISTANCE kNN scan.
+// Matches Java's VectorIndexScanBounds (query vector, k limit, efSearch, options).
+type VectorScanBounds struct {
+	QueryVector []float64 // The query vector for similarity search.
+	K           int       // Number of nearest neighbors to return.
+	EfSearch    int       // Search exploration factor (0 = auto from K).
+}
+
+// ScanByDistance performs a kNN search and returns results as a cursor of IndexEntry.
+// Each IndexEntry has Key = primaryKey and Value = tuple{distance}.
+// Matches Java's VectorIndexMaintainer.scan(VectorIndexScanBounds, ...) which
+// returns a ListCursor of IndexEntry from kNearestNeighborsSearch.
+func (m *vectorIndexMaintainer) ScanByDistance(
+	scanRange TupleRange,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	// Extract VectorScanBounds from TupleRange.
+	// Convention: Low = tuple{queryVectorBytes} (serialized vector as []byte),
+	//             High = tuple{k, efSearch} (int64 values).
+	if scanRange.Low == nil || len(scanRange.Low) < 1 {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("VECTOR BY_DISTANCE scan requires query vector in TupleRange.Low"),
+		}
+	}
+
+	vecBytes, ok := scanRange.Low[0].([]byte)
+	if !ok {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("VECTOR BY_DISTANCE scan: TupleRange.Low[0] must be []byte (serialized query vector)"),
+		}
+	}
+
+	queryVector, err := deserializeVector(vecBytes)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR BY_DISTANCE scan: invalid query vector: %w", err)}
+	}
+
+	k := 10 // default
+	efSearch := 0
+	if scanRange.High != nil {
+		if len(scanRange.High) >= 1 {
+			if kVal, ok := asInt64(scanRange.High[0]); ok && kVal > 0 {
+				k = int(kVal)
+			}
+		}
+		if len(scanRange.High) >= 2 {
+			if efVal, ok := asInt64(scanRange.High[1]); ok && efVal > 0 {
+				efSearch = int(efVal)
+			}
+		}
+	}
+
+	if efSearch <= 0 {
+		// Auto-compute efSearch from k, matching Java's heuristic.
+		efSearch = min(max(4*k, 64), max(k, 400))
+	}
+
+	return m.scanByDistanceWithParams(queryVector, k, efSearch, continuation, scanProperties)
+}
+
+// scanByDistanceWithParams performs the actual kNN search and returns a cursor.
+func (m *vectorIndexMaintainer) scanByDistanceWithParams(
+	queryVector []float64,
+	k, efSearch int,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+	graph := NewHNSWGraph(storage, m.hnswConfig)
+
+	results, err := graph.Search(m.tx, queryVector, k, efSearch)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+
+	entries := make([]*IndexEntry, len(results))
+	for i, r := range results {
+		entries[i] = &IndexEntry{
+			Index: m.index,
+			Key:   r.PrimaryKey,
+			Value: tuple.Tuple{r.Distance},
+		}
+	}
+
+	return FromListWithContinuation(entries, continuation)
+}
+
+// VectorDistanceScanRange creates a TupleRange encoding a BY_DISTANCE kNN query.
+// This is the Go equivalent of Java's VectorIndexScanBounds. The query vector,
+// k, and efSearch are encoded into TupleRange fields so they can be passed
+// through the standard ScanIndexByType API.
+//
+// Usage:
+//
+//	store.ScanIndexByType(index, IndexScanByDistance,
+//	    VectorDistanceScanRange(queryVec, 10, 200),
+//	    nil, ForwardScan)
+func VectorDistanceScanRange(queryVector []float64, k, efSearch int) TupleRange {
+	return TupleRange{
+		Low:          tuple.Tuple{serializeVector(queryVector)},
+		High:         tuple.Tuple{int64(k), int64(efSearch)},
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeInclusive,
 	}
 }
 
@@ -212,6 +321,35 @@ func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 type VectorSearchResult struct {
 	PrimaryKey tuple.Tuple
 	Distance   float64
+}
+
+// ScanVectorIndex scans a VECTOR index with BY_DISTANCE semantics, returning
+// results as a cursor. This is the cursor-based API matching Java's
+// VectorIndexMaintainer.scan(VectorIndexScanBounds, ...).
+//
+// Each result is an IndexEntry with Key = primaryKey and Value = tuple{distance}.
+// Results are sorted by distance (closest first).
+func (store *FDBRecordStore) ScanVectorIndex(
+	index *Index,
+	queryVector []float64,
+	k int,
+	efSearch int,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	if !store.IsIndexScannable(index.Name) {
+		return &errorCursor[*IndexEntry]{
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+		}
+	}
+	maintainer := store.getIndexMaintainer(index)
+	vm, ok := maintainer.(*vectorIndexMaintainer)
+	if !ok {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
+		}
+	}
+	return vm.scanByDistanceWithParams(queryVector, k, efSearch, continuation, scanProperties)
 }
 
 // SearchVectorIndex performs a k-nearest-neighbor search on a VECTOR index.

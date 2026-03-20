@@ -39,6 +39,12 @@ const (
 	// leaderboard type and timestamp are provided via TimeWindowScanRange.
 	// Matches Java's IndexScanType.BY_TIME_WINDOW.
 	IndexScanByTimeWindow IndexScanType = "BY_TIME_WINDOW"
+
+	// IndexScanByDistance scans a VECTOR index by distance to a query vector.
+	// Returns results sorted by distance (closest first) as a kNN search.
+	// Must be used with ScanVectorIndex which provides VectorScanBounds.
+	// Matches Java's IndexScanType.BY_DISTANCE.
+	IndexScanByDistance IndexScanType = "BY_DISTANCE"
 )
 
 // TupleRange specifies a range of tuples for index scanning.
@@ -258,6 +264,14 @@ func (store *FDBRecordStore) ScanIndex(
 			err: fmt.Errorf("TEXT index %q must be scanned with BY_TEXT_TOKEN scan type", index.Name),
 		}
 	}
+	// VECTOR indexes must be scanned with BY_DISTANCE via ScanVectorIndex.
+	// Matches Java's VectorIndexMaintainer.scan(IndexScanType, TupleRange, ...) which
+	// throws IllegalStateException("index maintainer does not support this scan api").
+	if index.Type == IndexTypeVector {
+		return &errorCursor[*IndexEntry]{
+			err: fmt.Errorf("VECTOR index %q must be scanned with BY_DISTANCE via ScanVectorIndex", index.Name),
+		}
+	}
 	// TIME_WINDOW_LEADERBOARD indexes should use ScanTimeWindowLeaderboard.
 	// Standard ScanIndex falls back to all-time BY_VALUE which is acceptable.
 	// No rejection here — matches Java's behavior where plain scan() works on all-time.
@@ -316,6 +330,14 @@ func (store *FDBRecordStore) ScanIndexByType(
 				err: fmt.Errorf("index %q (type %s) does not support BY_GROUP scan", index.Name, index.Type),
 			}
 		}
+	case IndexScanByDistance:
+		vm, ok := maintainer.(*vectorIndexMaintainer)
+		if !ok {
+			return &errorCursor[*IndexEntry]{
+				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
+			}
+		}
+		return vm.ScanByDistance(scanRange, continuation, scanProperties)
 	default:
 		return maintainer.Scan(scanRange, continuation, scanProperties)
 	}

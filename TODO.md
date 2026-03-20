@@ -155,7 +155,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — `randomLevel()` can return MaxInt** — Fixed: replaced with `topLayer()` which uses `math.Floor(-math.Log(u) * lambda)` with clamped input (u = 1.0 - splitMixDouble, always > 0).
 - [x] **HIGH — No duplicate detection on insert** — Fixed: checks layer 0 existence before inserting.
 - [ ] **HIGH — Missing prefix partitioning** — Java supports independent HNSW per prefix via skip-scan. Go has single global graph.
-- [ ] **HIGH — Missing BY_DISTANCE scan type** — Java has full cursor-based kNN scan with continuation. Go returns errorCursor on Scan().
+- [x] **HIGH — Missing BY_DISTANCE scan type** — Implemented: `ScanVectorIndex()`, `ScanIndexByType(BY_DISTANCE)`, `VectorDistanceScanRange()`. Returns kNN results as cursor with distance in Value. 7 tests.
 - [ ] **HIGH — Missing write locks** — Java uses `LockIdentifier` on insert/delete.
 - [x] **HIGH — Missing Config validation** — Fixed: validates numDimensions >= 1, m in [4,200], mMax in [4,200], mMax0 in [4,300], efConstruction in [100,400].
 - [ ] **MEDIUM — Only float64 vectors** — Java supports Float, Double, Half precision via `RealVector` hierarchy.
@@ -228,7 +228,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 ### 7. New index scan types
 
 - `BY_TEXT_TOKEN` — TEXT index token searches. **LOW**.
-- `BY_DISTANCE` — VECTOR index similarity search. **LOW**.
+- ~~`BY_DISTANCE`~~ — DONE. Implemented via `ScanVectorIndex()` and `ScanIndexByType(BY_DISTANCE)`.
 - `BY_TIME_WINDOW` — TIME_WINDOW_LEADERBOARD. **LOW**.
 
 ### 8. New aggregate functions

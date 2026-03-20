@@ -760,6 +760,305 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("ScanIndex rejects VECTOR index with error", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// ScanIndex should reject VECTOR indexes, matching Java's behavior.
+			cursor := store.ScanIndex(vecIdx, TupleRangeAll, nil, ForwardScan())
+			_, err = cursor.OnNext(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("BY_DISTANCE"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex returns kNN results as cursor", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 4 orders as 2D points: (price, quantity).
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},
+				{2, 20, 20},
+				{3, 100, 100},
+				{4, 50, 50},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// ScanVectorIndex near (15, 15), k=2.
+			cursor := store.ScanVectorIndex(vecIdx, []float64{15.0, 15.0}, 2, 100, nil, ForwardScan())
+			var entries []*IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			Expect(entries).To(HaveLen(2))
+
+			// Both results should be the two closest points (ids 1 and 2).
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Value contains distance.
+			for _, e := range entries {
+				Expect(e.Value).To(HaveLen(1))
+				dist, ok := e.Value[0].(float64)
+				Expect(ok).To(BeTrue())
+				// dist to (15,15) from (10,10) or (20,20) = 50
+				Expect(dist).To(BeNumerically("~", 50.0, 1e-6))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE returns kNN results", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},
+				{2, 20, 20},
+				{3, 100, 100},
+				{4, 50, 50},
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Use ScanIndexByType with VectorDistanceScanRange helper.
+			scanRange := VectorDistanceScanRange([]float64{15.0, 15.0}, 2, 100)
+			cursor := store.ScanIndexByType(vecIdx, IndexScanByDistance, scanRange, nil, ForwardScan())
+
+			var entries []*IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			Expect(entries).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex on empty index returns no results", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			cursor := store.ScanVectorIndex(vecIdx, []float64{1.0, 2.0}, 5, 100, nil, ForwardScan())
+			result, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.HasNext()).To(BeFalse())
+			Expect(result.GetNoNextReason()).To(Equal(SourceExhausted))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex returns all results when k > count", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 2 records.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Request k=100 but only 2 exist.
+			cursor := store.ScanVectorIndex(vecIdx, []float64{0.0, 0.0}, 100, 200, nil, ForwardScan())
+			var entries []*IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+			Expect(entries).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndex results are sorted by distance ascending", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert points at varying distances from origin.
+			for _, o := range []struct {
+				id       int64
+				price    int32
+				quantity int32
+			}{
+				{1, 10, 10},   // dist^2 = 200
+				{2, 1, 1},     // dist^2 = 2
+				{3, 50, 50},   // dist^2 = 5000
+				{4, 5, 5},     // dist^2 = 50
+				{5, 100, 100}, // dist^2 = 20000
+			} {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Price:    proto.Int32(o.price),
+					Quantity: proto.Int32(o.quantity),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			cursor := store.ScanVectorIndex(vecIdx, []float64{0.0, 0.0}, 5, 200, nil, ForwardScan())
+			var distances []float64
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				dist := result.GetValue().Value[0].(float64)
+				distances = append(distances, dist)
+			}
+
+			Expect(distances).To(HaveLen(5))
+			for i := 1; i < len(distances); i++ {
+				Expect(distances[i]).To(BeNumerically(">=", distances[i-1]),
+					"distance at position %d should be >= position %d", i, i-1)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE on non-VECTOR index returns error", func() {
+		ks := specSubspace()
+
+		valueIdx := NewIndex("Order$price", Field("price"))
+		builder := baseMetaData()
+		builder.AddIndex("Order", valueIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			scanRange := VectorDistanceScanRange([]float64{1.0}, 1, 100)
+			cursor := store.ScanIndexByType(valueIdx, IndexScanByDistance, scanRange, nil, ForwardScan())
+			_, err = cursor.OnNext(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does not support BY_DISTANCE"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("SearchVectorIndex on non-vector index returns error", func() {
 		ks := specSubspace()
 
