@@ -165,7 +165,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [ ] **LOW — Missing RaBitQ quantization** — optional lossy quantization for large-scale.
 - [x] **HIGH — No search quality/recall test** — Fixed: 100 random 8D vectors, brute-force comparison, asserts >= 80% recall for k=10.
 - [x] **HIGH — No conformance tests** — 11 specs: Go saves→Java reads/saves more, Java saves→Go reads/saves more, cross-language mixed writes, delete cross-language, batch operations, record counting. Found+fixed 6 wire-format bugs: option names (hnsw* not vector*), metric enum values, node key nesting, access info 5-element format, HNSW subspace (primary not secondary), vector bytes extraction.
-- [ ] **HIGH — No chaos testing**.
+- [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (100 ops, 5% fault rate). Model-based verification: count, self-search, orphan check.
 - [x] **HIGH — No high-dimensional vector tests** — Fixed: 50 random 128D vectors, search + distance verification.
 
 ### 3. New key expression types
