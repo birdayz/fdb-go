@@ -1323,3 +1323,487 @@ var _ = Describe("Cosine Distance Clamping", func() {
 		Expect(dist).To(BeNumerically("<=", 1e-10))
 	})
 })
+
+var _ = Describe("VectorIndex Prefix Partitioning", func() {
+	ctx := context.Background()
+
+	baseMetaData := func() *RecordMetaDataBuilder {
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		return builder
+	}
+
+	It("grouped VECTOR index stores per-prefix HNSW graphs", func() {
+		ks := specSubspace()
+
+		// Index: KWV(Concat(Field("quantity"), Field("price")), 1)
+		// quantity is the prefix (group key), price is the vector (1D).
+		vecIdx := NewVectorIndex("vec_grouped",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1 (quantity=1): prices 10, 20, 100
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(100), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2 (quantity=2): prices 50, 60
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search in group 1 near price=15: should find id=1(10) and id=2(20), not group 2 records.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{15.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Search in group 2 near price=55: should find id=4(50) and id=5(60) only.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{55.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(2))
+
+			gotIDs2 := make([]int64, len(results2))
+			for i, r := range results2 {
+				gotIDs2[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs2, func(i, j int) bool { return gotIDs2[i] < gotIDs2[j] })
+			Expect(gotIDs2).To(Equal([]int64{4, 5}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("search in empty prefix returns no results", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_empty",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert into group 1 only.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search in group 99 (empty): should return 0 results.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(99)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete record removes from correct prefix graph", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_del",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1 and id=2.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete id=1 from group 1.
+			existed, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(existed).To(BeTrue())
+
+			// Group 1 should only have id=2 now.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(2)))
+
+			// Group 2 should still have id=3 (unaffected by delete in group 1).
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(3)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanVectorIndexWithPrefix returns cursor results scoped to prefix", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_scan",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10), id=2(price=20).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3(price=50).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// ScanVectorIndexWithPrefix for group 1.
+			cursor := store.ScanVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)},
+				[]float64{15.0}, 10, 100, nil, ForwardScan())
+			var entries []*IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			// Should only contain group 1 records.
+			Expect(entries).To(HaveLen(2))
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ScanIndexByType BY_DISTANCE with prefix via VectorDistanceScanRangeWithPrefix", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_scantype",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10), id=2(price=20).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=3(price=50), id=4(price=60).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(60), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Scan group 2 via ScanIndexByType + VectorDistanceScanRangeWithPrefix.
+			scanRange := VectorDistanceScanRangeWithPrefix([]float64{55.0}, 2, 100, tuple.Tuple{int64(2)})
+			cursor := store.ScanIndexByType(vecIdx, IndexScanByDistance, scanRange, nil, ForwardScan())
+
+			var entries []*IndexEntry
+			for {
+				result, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !result.HasNext() {
+					break
+				}
+				entries = append(entries, result.GetValue())
+			}
+
+			// Should only contain group 2 records.
+			Expect(entries).To(HaveLen(2))
+			gotIDs := make([]int64, len(entries))
+			for i, e := range entries {
+				gotIDs[i] = e.Key[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{3, 4}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("update record in grouped index moves between prefix graphs", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_update",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert id=1 in group 1.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify it's in group 1.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
+
+			// Update id=1 to group 2.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1 should now be empty.
+			results1, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results1).To(HaveLen(0))
+
+			// Group 2 should now have id=1.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(1)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("non-KWV index (no prefix) still works via backward-compatible APIs", func() {
+		ks := specSubspace()
+
+		// Non-grouped vector index: Concat(Field("price"), Field("quantity")) as 2D vector.
+		vecIdx := NewVectorIndex("vec_noprefix", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(10)})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20), Quantity: proto.Int32(20)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Backward-compatible API (no prefix) should work.
+			results, err := store.SearchVectorIndex(vecIdx, []float64{15.0, 15.0}, 2, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("SearchVectorIndexRecordsWithPrefix fetches records from correct prefix", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_recs",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 1: id=1(price=10).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(1)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: id=2(price=50).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(50), Quantity: proto.Int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fetch records from group 1.
+			records, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(1)}, []float64{10.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records).To(HaveLen(1))
+			order := records[0].Record.Record.(*gen.Order)
+			Expect(order.GetOrderId()).To(Equal(int64(1)))
+			Expect(order.GetQuantity()).To(Equal(int32(1)))
+
+			// Fetch records from group 2.
+			records2, err := store.SearchVectorIndexRecordsWithPrefix(ctx, vecIdx, tuple.Tuple{int64(2)}, []float64{50.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(records2).To(HaveLen(1))
+			order2 := records2[0].Record.Record.(*gen.Order)
+			Expect(order2.GetOrderId()).To(Equal(int64(2)))
+			Expect(order2.GetQuantity()).To(Equal(int32(2)))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("grouped 2D vector index with bytes vector_data field", func() {
+		ks := specSubspace()
+
+		// Index: KWV(Concat(Field("quantity"), Field("vector_data")), 1)
+		// quantity is the prefix, vector_data (bytes) is the vector.
+		vecIdx := NewVectorIndex("vec_grouped_bytes",
+			KeyWithValue(Concat(Field("quantity"), Field("vector_data")), 1), 3)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			mkVec := func(vals ...float64) []byte {
+				return serializeVector(vals)
+			}
+
+			// Group 1: two 3D vectors.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Quantity: proto.Int32(1),
+				VectorData: mkVec(1.0, 2.0, 3.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(2), Quantity: proto.Int32(1),
+				VectorData: mkVec(4.0, 5.0, 6.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Group 2: one 3D vector.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(3), Quantity: proto.Int32(2),
+				VectorData: mkVec(100.0, 100.0, 100.0),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search group 1 near (2,3,4): should find id=1 and id=2, not id=3.
+			results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(1)}, []float64{2.0, 3.0, 4.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 2}))
+
+			// Search group 2: should only find id=3.
+			results2, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{int64(2)}, []float64{100.0, 100.0, 100.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(1))
+			Expect(results2[0].PrimaryKey[0].(int64)).To(Equal(int64(3)))
+			Expect(results2[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("multiple prefix values do not leak between partitions", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_grouped_isolation",
+			KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert into 5 different groups with 2 records each.
+			for g := int32(1); g <= 5; g++ {
+				for j := int32(0); j < 2; j++ {
+					id := int64(g)*100 + int64(j)
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(id),
+						Price:    proto.Int32(g*10 + j),
+						Quantity: proto.Int32(g),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
+
+			// Search each group: should find exactly 2 records from that group.
+			for g := int64(1); g <= 5; g++ {
+				results, err := store.SearchVectorIndexWithPrefix(vecIdx, tuple.Tuple{g}, []float64{0.0}, 10, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(2), "group %d should have exactly 2 results", g)
+
+				for _, r := range results {
+					// Each result's PK should start with the group's hundred (e.g., group 1 = 100, 101).
+					pk := r.PrimaryKey[0].(int64)
+					Expect(pk / 100).To(Equal(g), "result PK %d should belong to group %d", pk, g)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

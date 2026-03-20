@@ -20,6 +20,12 @@ const IndexOptionVectorMetric = "hnswMetric"
 
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
+//
+// Prefix partitioning: when the index uses a KeyWithValueExpression with
+// splitPoint > 0 (e.g., KWV(Concat(Field("group"), Field("vec")), 1)),
+// each unique prefix (the key portion) gets an independent HNSW graph
+// stored under hnswSubspace.Sub(prefix...). This matches Java's behavior
+// where grouped key expressions produce per-prefix HNSW graphs.
 type vectorIndexMaintainer struct {
 	standardIndexMaintainer
 	hnswSubspace subspace.Subspace
@@ -66,7 +72,41 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	return config
 }
 
+// getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.
+// If the prefix is empty (no grouping), returns the base hnswSubspace.
+// Each unique prefix value gets its own independent HNSW graph.
+func (m *vectorIndexMaintainer) getSubspaceForPrefix(prefix tuple.Tuple) subspace.Subspace {
+	if len(prefix) == 0 {
+		return m.hnswSubspace
+	}
+	// Convert tuple elements to []TupleElement for Sub() variadic call.
+	args := make([]tuple.TupleElement, len(prefix))
+	for i, v := range prefix {
+		args[i] = v
+	}
+	return m.hnswSubspace.Sub(args...)
+}
+
+// splitPrefixAndVector extracts the prefix (grouping key) and vector from an
+// index entry. For KeyWithValueExpression indexes:
+//   - entry.key = prefix columns (the key portion before splitPoint)
+//   - entry.value = vector data (the value portion after splitPoint)
+//
+// For non-KWV indexes (e.g., Concat(Field("x"), Field("y"))):
+//   - entry.key = the entire vector (no prefix)
+//   - entry.value = nil
+func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix tuple.Tuple, vector []float64) {
+	if len(entry.value) > 0 {
+		// KeyWithValue index: key is prefix, value is vector.
+		return entry.key, tupleToVector(entry.value)
+	}
+	// Non-KWV index: no prefix, entire key is the vector.
+	return nil, tupleToVector(entry.key)
+}
+
 // Update handles insert/delete/update for the VECTOR index.
+// When the index has a prefix (via KeyWithValueExpression), each unique prefix
+// value gets its own independent HNSW graph stored at a separate subspace.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord != nil {
 		entries, err := m.evaluateIndex(oldRecord)
@@ -74,11 +114,12 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			vector := extractVector(entry)
+			prefix, vector := m.splitPrefixAndVector(entry)
 			if vector == nil {
 				continue
 			}
-			storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+			ss := m.getSubspaceForPrefix(prefix)
+			storage := newHNSWStorage(ss, m.hnswConfig)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
 			if err := graph.Delete(m.tx, entry.primaryKey, vector); err != nil {
 				return err
@@ -92,11 +133,12 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
 		}
 		for _, entry := range entries {
-			vector := extractVector(entry)
+			prefix, vector := m.splitPrefixAndVector(entry)
 			if vector == nil {
 				continue
 			}
-			storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+			ss := m.getSubspaceForPrefix(prefix)
+			storage := newHNSWStorage(ss, m.hnswConfig)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
 			if err := graph.Insert(m.tx, entry.primaryKey, vector); err != nil {
 				return err
@@ -194,13 +236,16 @@ type VectorScanBounds struct {
 // Each IndexEntry has Key = primaryKey and Value = tuple{distance}.
 // Matches Java's VectorIndexMaintainer.scan(VectorIndexScanBounds, ...) which
 // returns a ListCursor of IndexEntry from kNearestNeighborsSearch.
+//
+// For prefix-partitioned indexes, the prefix is encoded as additional elements
+// at the end of TupleRange.Low (after the query vector bytes).
 func (m *vectorIndexMaintainer) ScanByDistance(
 	scanRange TupleRange,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
 	// Extract VectorScanBounds from TupleRange.
-	// Convention: Low = tuple{queryVectorBytes} (serialized vector as []byte),
+	// Convention: Low = tuple{queryVectorBytes, prefix...} (serialized vector as []byte, followed by optional prefix elements),
 	//             High = tuple{k, efSearch} (int64 values).
 	if scanRange.Low == nil || len(scanRange.Low) < 1 {
 		return &errorCursor[*IndexEntry]{
@@ -218,6 +263,12 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 	queryVector, err := deserializeVector(vecBytes)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR BY_DISTANCE scan: invalid query vector: %w", err)}
+	}
+
+	// Extract optional prefix from remaining Low elements.
+	var prefix tuple.Tuple
+	if len(scanRange.Low) > 1 {
+		prefix = tuple.Tuple(scanRange.Low[1:])
 	}
 
 	k := 10 // default
@@ -240,17 +291,20 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 		efSearch = min(max(4*k, 64), max(k, 400))
 	}
 
-	return m.scanByDistanceWithParams(queryVector, k, efSearch, continuation, scanProperties)
+	return m.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
 }
 
 // scanByDistanceWithParams performs the actual kNN search and returns a cursor.
+// prefix scopes the search to a specific prefix partition (nil for no prefix).
 func (m *vectorIndexMaintainer) scanByDistanceWithParams(
+	prefix tuple.Tuple,
 	queryVector []float64,
 	k, efSearch int,
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+	ss := m.getSubspaceForPrefix(prefix)
+	storage := newHNSWStorage(ss, m.hnswConfig)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
 	results, err := graph.Search(m.tx, queryVector, k, efSearch)
@@ -289,10 +343,34 @@ func VectorDistanceScanRange(queryVector []float64, k, efSearch int) TupleRange 
 	}
 }
 
+// VectorDistanceScanRangeWithPrefix creates a TupleRange encoding a BY_DISTANCE
+// kNN query scoped to a specific prefix partition. The prefix identifies which
+// independent HNSW graph to search (e.g., a specific group_id value).
+//
+// Usage:
+//
+//	store.ScanIndexByType(index, IndexScanByDistance,
+//	    VectorDistanceScanRangeWithPrefix(queryVec, 10, 200, tuple.Tuple{int64(42)}),
+//	    nil, ForwardScan)
+func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, prefix tuple.Tuple) TupleRange {
+	low := tuple.Tuple{serializeVector(queryVector)}
+	for _, elem := range prefix {
+		low = append(low, elem)
+	}
+	return TupleRange{
+		Low:          low,
+		High:         tuple.Tuple{int64(k), int64(efSearch)},
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeInclusive,
+	}
+}
+
 // SearchKNN performs a k-nearest-neighbor search on the HNSW graph.
+// prefix scopes the search to a specific prefix partition (nil for no prefix).
 // Returns results sorted by distance (closest first).
-func (m *vectorIndexMaintainer) SearchKNN(queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
-	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
+	ss := m.getSubspaceForPrefix(prefix)
+	storage := newHNSWStorage(ss, m.hnswConfig)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
 	results, err := graph.Search(m.tx, queryVector, k, efSearch)
@@ -311,8 +389,11 @@ func (m *vectorIndexMaintainer) SearchKNN(queryVector []float64, k, efSearch int
 }
 
 // DeleteWhere clears all HNSW graph data for the given prefix.
+// If the prefix is non-empty, only clears the HNSW graph for that prefix.
+// If the prefix is empty, clears all HNSW graph data.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	storage := newHNSWStorage(m.hnswSubspace, m.hnswConfig)
+	ss := m.getSubspaceForPrefix(prefix)
+	storage := newHNSWStorage(ss, m.hnswConfig)
 	storage.clearAll(m.tx)
 	return nil
 }
@@ -329,8 +410,27 @@ type VectorSearchResult struct {
 //
 // Each result is an IndexEntry with Key = primaryKey and Value = tuple{distance}.
 // Results are sorted by distance (closest first).
+//
+// For prefix-partitioned indexes, use ScanVectorIndexWithPrefix instead.
 func (store *FDBRecordStore) ScanVectorIndex(
 	index *Index,
+	queryVector []float64,
+	k int,
+	efSearch int,
+	continuation []byte,
+	scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
+	return store.ScanVectorIndexWithPrefix(index, nil, queryVector, k, efSearch, continuation, scanProperties)
+}
+
+// ScanVectorIndexWithPrefix scans a VECTOR index with BY_DISTANCE semantics,
+// scoped to a specific prefix partition. Pass nil prefix for non-grouped indexes.
+//
+// Each result is an IndexEntry with Key = primaryKey and Value = tuple{distance}.
+// Results are sorted by distance (closest first).
+func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
+	index *Index,
+	prefix tuple.Tuple,
 	queryVector []float64,
 	k int,
 	efSearch int,
@@ -349,13 +449,27 @@ func (store *FDBRecordStore) ScanVectorIndex(
 			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
 		}
 	}
-	return vm.scanByDistanceWithParams(queryVector, k, efSearch, continuation, scanProperties)
+	return vm.scanByDistanceWithParams(prefix, queryVector, k, efSearch, continuation, scanProperties)
 }
 
 // SearchVectorIndex performs a k-nearest-neighbor search on a VECTOR index.
 // Matches Java's VectorIndexMaintainer scan with VectorIndexScanBounds.
+//
+// For prefix-partitioned indexes, use SearchVectorIndexWithPrefix instead.
 func (store *FDBRecordStore) SearchVectorIndex(
 	index *Index,
+	queryVector []float64,
+	k int,
+	efSearch int,
+) ([]VectorSearchResult, error) {
+	return store.SearchVectorIndexWithPrefix(index, nil, queryVector, k, efSearch)
+}
+
+// SearchVectorIndexWithPrefix performs a k-nearest-neighbor search on a VECTOR
+// index, scoped to a specific prefix partition. Pass nil prefix for non-grouped indexes.
+func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
+	index *Index,
+	prefix tuple.Tuple,
 	queryVector []float64,
 	k int,
 	efSearch int,
@@ -368,10 +482,12 @@ func (store *FDBRecordStore) SearchVectorIndex(
 	if !ok {
 		return nil, fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type)
 	}
-	return vm.SearchKNN(queryVector, k, efSearch)
+	return vm.SearchKNN(prefix, queryVector, k, efSearch)
 }
 
 // SearchVectorIndexRecords performs a kNN search and fetches the corresponding records.
+//
+// For prefix-partitioned indexes, use SearchVectorIndexRecordsWithPrefix instead.
 func (store *FDBRecordStore) SearchVectorIndexRecords(
 	ctx context.Context,
 	index *Index,
@@ -379,7 +495,20 @@ func (store *FDBRecordStore) SearchVectorIndexRecords(
 	k int,
 	efSearch int,
 ) ([]*FDBIndexedRecord, error) {
-	results, err := store.SearchVectorIndex(index, queryVector, k, efSearch)
+	return store.SearchVectorIndexRecordsWithPrefix(ctx, index, nil, queryVector, k, efSearch)
+}
+
+// SearchVectorIndexRecordsWithPrefix performs a kNN search scoped to a prefix
+// partition and fetches the corresponding records.
+func (store *FDBRecordStore) SearchVectorIndexRecordsWithPrefix(
+	ctx context.Context,
+	index *Index,
+	prefix tuple.Tuple,
+	queryVector []float64,
+	k int,
+	efSearch int,
+) ([]*FDBIndexedRecord, error) {
+	results, err := store.SearchVectorIndexWithPrefix(index, prefix, queryVector, k, efSearch)
 	if err != nil {
 		return nil, err
 	}
