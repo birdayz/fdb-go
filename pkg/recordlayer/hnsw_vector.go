@@ -54,7 +54,14 @@ func cosineDistance(a, b []float64) float64 {
 	if normA == 0 || normB == 0 {
 		return 1.0
 	}
-	return 1.0 - dot/(math.Sqrt(normA)*math.Sqrt(normB))
+	sim := dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	// Clamp to [-1, 1] to handle floating-point rounding.
+	if sim > 1.0 {
+		sim = 1.0
+	} else if sim < -1.0 {
+		sim = -1.0
+	}
+	return 1.0 - sim
 }
 
 // innerProductDistance computes negative dot product (for maximization).

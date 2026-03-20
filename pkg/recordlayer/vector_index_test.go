@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"math"
+	"math/rand"
 	"sort"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -805,5 +806,221 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		d := []float64{1.0, 1.0}
 		// cos(45deg) = 1/sqrt(2), distance = 1 - 1/sqrt(2) ~ 0.2929
 		Expect(vectorDistance(c, d, VectorMetricCosine)).To(BeNumerically("~", 1.0-1.0/math.Sqrt(2), 1e-6))
+	})
+})
+
+var _ = Describe("HNSW Search Quality", func() {
+	ctx := context.Background()
+
+	It("search recall matches brute-force for 100 vectors", func() {
+		ss := specSubspace().Sub("hnsw-recall")
+		config := HNSWConfig{
+			NumDimensions:  8,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 100
+		const dims = 8
+		const k = 10
+
+		// Deterministic random vectors.
+		rng := rand.New(rand.NewSource(42))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0 // [-100, 100)
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert all vectors.
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// HNSW search.
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Brute-force: compute all distances, sort, take top k.
+			type distID struct {
+				id   int64
+				dist float64
+			}
+			bruteForce := make([]distID, numVectors)
+			for i, vec := range vectors {
+				bruteForce[i] = distID{int64(i), euclideanDistance(queryVec, vec)}
+			}
+			sort.Slice(bruteForce, func(i, j int) bool {
+				return bruteForce[i].dist < bruteForce[j].dist
+			})
+			topK := make(map[int64]bool, k)
+			for i := 0; i < k; i++ {
+				topK[bruteForce[i].id] = true
+			}
+
+			// Compute recall: how many of the HNSW results are in the brute-force top-k.
+			hnswIDs := make(map[int64]bool, k)
+			for _, r := range results {
+				hnswIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			overlap := 0
+			for id := range hnswIDs {
+				if topK[id] {
+					overlap++
+				}
+			}
+			recall := float64(overlap) / float64(k)
+			GinkgoWriter.Printf("HNSW recall@%d: %.2f (%d/%d match brute-force)\n", k, recall, overlap, k)
+			Expect(recall).To(BeNumerically(">=", 0.8),
+				"HNSW recall should be at least 80%% with efSearch >= k")
+
+			// Verify HNSW results are in ascending distance order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW High-Dimensional Vectors", func() {
+	ctx := context.Background()
+
+	It("handles 128D vectors correctly", func() {
+		ss := specSubspace().Sub("hnsw-128d")
+		config := HNSWConfig{
+			NumDimensions:  128,
+			M:              16,
+			MMax:           16,
+			MMax0:          32,
+			EfConstruction: 200,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 50
+		const dims = 128
+		const k = 5
+
+		// Deterministic random vectors.
+		rng := rand.New(rand.NewSource(7777))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.NormFloat64() // standard normal
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search with a vector from the set (should find itself first).
+			queryVec := vectors[0]
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Distances must be non-negative and sorted ascending.
+			for i, r := range results {
+				Expect(r.Distance).To(BeNumerically(">=", 0.0),
+					"distance at position %d should be non-negative", i)
+				if i > 0 {
+					Expect(r.Distance).To(BeNumerically(">=", results[i-1].Distance),
+						"distances should be sorted ascending at position %d", i)
+				}
+			}
+
+			// First result should be the query vector itself (distance ~0).
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(0)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			// Search with a random query vector not in the set.
+			randomQuery := make([]float64, dims)
+			for d := range dims {
+				randomQuery[d] = rng.NormFloat64()
+			}
+			results2, err := graph.Search(tx, randomQuery, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results2).To(HaveLen(k))
+
+			for i, r := range results2 {
+				Expect(r.Distance).To(BeNumerically(">=", 0.0),
+					"distance at position %d should be non-negative", i)
+				if i > 0 {
+					Expect(r.Distance).To(BeNumerically(">=", results2[i-1].Distance),
+						"distances should be sorted ascending at position %d", i)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("Cosine Distance Clamping", func() {
+	It("cosine distance is non-negative even for identical vectors", func() {
+		v := []float64{1.0, 0.0, 0.0}
+		dist := cosineDistance(v, v)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 0.001)) // should be ~0
+
+		// Test with very similar vectors that could cause floating-point edge cases
+		// where dot/(normA*normB) might exceed 1.0 without clamping.
+		a := []float64{1.0000000000001, 0.9999999999999, 1.0}
+		b := []float64{1.0, 1.0, 1.0}
+		dist = cosineDistance(a, b)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+	})
+
+	It("cosine distance is non-negative for large identical vectors", func() {
+		// Large vectors amplify floating-point accumulation errors.
+		rng := rand.New(rand.NewSource(12345))
+		large := make([]float64, 1000)
+		for i := range large {
+			large[i] = rng.Float64()*2.0 - 1.0
+		}
+		dist := cosineDistance(large, large)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 1e-10))
+	})
+
+	It("cosine distance is non-negative for scaled vectors", func() {
+		// v and 2*v are identical in direction; distance should be 0, not negative.
+		v := []float64{3.0, 4.0, 5.0}
+		scaled := make([]float64, len(v))
+		for i := range v {
+			scaled[i] = v[i] * 2.0
+		}
+		dist := cosineDistance(v, scaled)
+		Expect(dist).To(BeNumerically(">=", 0.0))
+		Expect(dist).To(BeNumerically("<=", 1e-10))
 	})
 })
