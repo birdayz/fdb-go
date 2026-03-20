@@ -617,3 +617,154 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 	t.Logf("completed %d ops with seed=%d, %d faults injected",
 		numOps, s.Seed(), len(s.FaultLog()))
 }
+
+// --- VECTOR (HNSW) index chaos tests ---
+
+// buildVectorMetadata creates metadata with a VECTOR index on Order's
+// price and quantity fields as a 2D vector.
+func buildVectorMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewVectorIndex(
+		"order_vec_idx",
+		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+		2,
+	))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build vector metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestVectorBasicSave verifies the VECTOR (HNSW) index matches the model
+// after simple saves. No fault injection.
+func TestVectorBasicSave(t *testing.T) {
+	t.Parallel()
+	md := buildVectorMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(2),
+		Price:    proto.Int32(200),
+		Quantity: proto.Int32(20),
+	})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(3),
+		Price:    proto.Int32(300),
+		Quantity: proto.Int32(30),
+	})
+	s.Verify()
+}
+
+// TestVectorCommitUnknownInsert injects commit-unknown on an insert.
+// VECTOR/HNSW insert is idempotent (same PK replaces), so retry is safe.
+func TestVectorCommitUnknownInsert(t *testing.T) {
+	t.Parallel()
+	md := buildVectorMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify() // HNSW must have exactly 1 entry, not 2
+}
+
+// TestVectorCommitUnknownOverwrite injects commit-unknown on an overwrite.
+// First save inserts; second save with same PK + commit-unknown does delete+insert
+// which commits, then retry does delete+insert again — idempotent.
+func TestVectorCommitUnknownOverwrite(t *testing.T) {
+	t.Parallel()
+	md := buildVectorMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.Verify()
+
+	// Overwrite with different vector under commit-unknown.
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(999),
+		Quantity: proto.Int32(99),
+	})
+	s.Verify() // Old (100,10) gone, new (999,99) present, exactly 1 entry
+}
+
+// TestVectorCommitUnknownDelete injects commit-unknown on a delete.
+// Delete commits, then retry sees record already gone — no-op.
+func TestVectorCommitUnknownDelete(t *testing.T) {
+	t.Parallel()
+	md := buildVectorMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(1),
+		Price:    proto.Int32(100),
+		Quantity: proto.Int32(10),
+	})
+	s.SaveRecord(&gen.Order{
+		OrderId:  proto.Int64(2),
+		Price:    proto.Int32(200),
+		Quantity: proto.Int32(20),
+	})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify() // Only record 2 remains, HNSW has exactly 1 entry
+}
+
+// TestVectorRandomStress runs random saves and deletes with continuous
+// fault injection against the VECTOR (HNSW) index.
+func TestVectorRandomStress(t *testing.T) {
+	t.Parallel()
+	md := buildVectorMetadata()
+	s := NewScenario(t, testRealDB, md, WithSeed(70707), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 100
+	const verifyEvery = 20
+	maxPK := int64(25)
+
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(maxPK) + 1
+		if s.Rng.Float64() < 0.7 {
+			// 70% saves with random vector coordinates.
+			s.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(pk),
+				Price:    proto.Int32(s.Rng.Int32N(1000)),
+				Quantity: proto.Int32(s.Rng.Int32N(500)),
+			})
+		} else {
+			// 30% deletes.
+			s.DeleteRecord(tuple.Tuple{pk})
+		}
+
+		if (i+1)%verifyEvery == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("completed %d ops with seed=%d, %d faults injected",
+		numOps, s.Seed(), len(s.FaultLog()))
+}

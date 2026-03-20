@@ -39,6 +39,7 @@ func (v Violation) String() string {
 //  8. PERMUTED_MIN/MAX index entries (primary + permuted subspace)
 //  9. VERSION index entries (PK matching + versionstamp consistency)
 // 10. MULTIDIMENSIONAL index entries (R-tree scan vs model, set-based)
+// 11. VECTOR index entries (HNSW self-search + count + orphan check)
 func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
 
@@ -144,6 +145,9 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 
 	// 10. MULTIDIMENSIONAL index verification (R-tree entries vs model, set-based)
 	violations = append(violations, verifyMultidimensionalIndexes(ctx, store, model)...)
+
+	// 11. VECTOR index verification (HNSW self-search + count)
+	violations = append(violations, verifyVectorIndexes(ctx, store, model)...)
 
 	return violations
 }

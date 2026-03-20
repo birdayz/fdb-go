@@ -14,6 +14,7 @@ go_library(
         "verify_multidimensional.go",
         "verify_permuted.go",
         "verify_rank.go",
+        "verify_vector.go",
         "verify_version.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer/chaos",
