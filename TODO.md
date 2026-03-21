@@ -175,7 +175,7 @@ SIFT-1M benchmark: recall@10=0.998 (excellent), 34 QPS (19x slower than Qdrant).
 
 | # | What | Impact | Category | Status |
 |---|---|---|---|---|
-| 1 | Inlining storage adapter (upper layers: range-read vs N point-reads) | HIGH perf | Performance | [ ] |
+| 1 | Inlining storage adapter (upper layers: range-read vs N point-reads) | HIGH perf | Performance | [x] UseInlining config, dispatch by layer |
 | 2 | RaBitQ full transform (FHT-KAC rotation + centroid bootstrapping) | MEDIUM-HIGH quality | Correctness | [ ] |
 | 3 | Delete repair sampling (efRepair=64 limit) | MEDIUM perf | Performance | [x] |
 | 4 | Dual priority queues (max-heap for results) | LOW perf | Performance | [x] binary-insert |
