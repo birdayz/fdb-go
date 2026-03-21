@@ -230,6 +230,13 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		return nil
 	}
 
+	// Preload upper layers used in greedy descent (few nodes each).
+	for layer := epLayer; layer > insertLayer && layer > 0; layer-- {
+		if preloadErr := g.storage.preloadLayer(tx, layer); preloadErr != nil {
+			return preloadErr
+		}
+	}
+
 	// Greedy search from top to insertion layer.
 	var err error
 	currentPK := epPK
@@ -379,6 +386,14 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 	epLayer, epPK, epVecBytes, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
 		return nil, nil // empty graph
+	}
+
+	// Preload upper layers (few nodes each) in one GetRange per layer.
+	// This replaces ~2 round-trips per greedy iteration with zero after preload.
+	for layer := epLayer; layer > 0; layer-- {
+		if preloadErr := g.storage.preloadLayer(tx, layer); preloadErr != nil {
+			return nil, preloadErr
+		}
 	}
 
 	// Greedy descent from top layer to layer 1.
@@ -963,6 +978,35 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 	}
 
 	return results
+}
+
+// preloadLayer reads ALL nodes at the given layer in a single GetRange call
+// and populates the cache. For upper layers (layer > 0) with few nodes, this
+// replaces multiple individual Get() round-trips with one range scan.
+// For a 1K-node graph with M=16: layer 2 has ~4 nodes, layer 1 has ~62 nodes.
+func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
+	r, err := fdb.PrefixRange(prefix)
+	if err != nil {
+		return fmt.Errorf("hnsw: preload layer %d prefix range: %w", layer, err)
+	}
+	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return fmt.Errorf("hnsw: preload layer %d get kv: %w", layer, err)
+		}
+		cacheKey := string(kv.Key)
+		if _, ok := s.cache[cacheKey]; ok {
+			continue // already cached (e.g. from a save earlier in this tx)
+		}
+		vecBytes, neighbors, parseErr := parseNodeValue(kv.Value)
+		if parseErr != nil {
+			continue // skip unparseable entries
+		}
+		s.cache[cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+	}
+	return nil
 }
 
 // deleteNodeLayer removes one layer's data for a node.
