@@ -167,6 +167,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No conformance tests** — 11 specs: Go saves→Java reads/saves more, Java saves→Go reads/saves more, cross-language mixed writes, delete cross-language, batch operations, record counting. Found+fixed 6 wire-format bugs: option names (hnsw* not vector*), metric enum values, node key nesting, access info 5-element format, HNSW subspace (primary not secondary), vector bytes extraction.
 - [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (100 ops, 5% fault rate). Model-based verification: count, self-search, orphan check.
 - [x] **HIGH — No high-dimensional vector tests** — Fixed: 50 random 128D vectors, search + distance verification.
+- [ ] **HIGH — Sequential FDB reads in HNSW search/insert** — Go does blocking sequential `tx.Get()` for each HNSW neighbor traversal (~50-200 reads per operation). Java pipelines with `CompletableFuture`. Benchmark: 1K×128D insert=48 vec/sec, search=14 ops/sec vs Java which pipelines 5-10x faster. Fix: batch neighbor reads using `tx.GetRange()` or FDB read-ahead (`StreamingMode`), or prefetch neighbor lists into a local cache within the transaction.
 
 ### 3. New key expression types
 
