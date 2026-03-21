@@ -195,7 +195,7 @@ Additional Go-specific optimizations (from RFC 007):
 | 13 | Snapshot reads for search (tx.Snapshot()) | HIGH concurrent | [x] |
 | 14 | Avoid visited-set string allocation | 5-8% | [x] cached pkBytes |
 | 15 | Pool/reuse float64 buffers | 10-12% | [x] pre-alloc slices |
-| 16 | GetRange for entire upper layer (greedy descent) | 1-2.5ms saved | [ ] |
+| 16 | GetRange for entire upper layer (greedy descent) | 1-2.5ms saved | [x] preloadLayer |
 
 ### 3. New key expression types
 
