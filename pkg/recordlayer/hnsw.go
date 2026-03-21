@@ -193,7 +193,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
 	if err == nil {
 		// Node exists — delete and re-insert.
-		if delErr := g.Delete(tx, primaryKey, vector); delErr != nil {
+		if delErr := g.Delete(tx, primaryKey); delErr != nil {
 			return delErr
 		}
 	}
@@ -298,7 +298,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 // Delete removes a node from the HNSW graph and repairs neighbor connections.
 // Wire-compatible with Java's HNSW delete (graph repair, entry point update).
-func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
+func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	topLvl := topLayer(primaryKey, g.config.M)
 
 	// Check existence at layer 0.
@@ -948,7 +948,7 @@ func (s *hnswStorage) clearAll(tx fdb.Transaction) {
 // Format: byte 0 = type ordinal (0 for DOUBLE), bytes 1+ = big-endian IEEE 754 float64 values.
 func serializeVector(vec []float64) []byte {
 	buf := make([]byte, 1+8*len(vec))
-	buf[0] = 0 // DOUBLE type ordinal
+	buf[0] = 2 // DOUBLE type ordinal — Java VectorType.DOUBLE.ordinal() = 2
 	for i, v := range vec {
 		binary.BigEndian.PutUint64(buf[1+i*8:], math.Float64bits(v))
 	}
@@ -956,10 +956,10 @@ func serializeVector(vec []float64) []byte {
 }
 
 // deserializeVector deserializes a vector from bytes, returning float64 values.
-// Supports all three Java RealVector types:
-//   - Type 0: DOUBLE (64-bit IEEE 754, 8 bytes per component)
+// Supports all three Java RealVector types (ordinals match Java's VectorType enum):
+//   - Type 0: HALF (16-bit IEEE 754, 2 bytes per component)
 //   - Type 1: SINGLE/FLOAT (32-bit IEEE 754, 4 bytes per component)
-//   - Type 2: HALF (16-bit IEEE 754, 2 bytes per component)
+//   - Type 2: DOUBLE (64-bit IEEE 754, 8 bytes per component)
 func deserializeVector(data []byte) ([]float64, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("hnsw: empty vector data")
@@ -968,26 +968,26 @@ func deserializeVector(data []byte) ([]float64, error) {
 	payload := data[1:]
 
 	switch typeOrdinal {
-	case 0: // DOUBLE (float64)
-		numFloats := len(payload) / 8
+	case 0: // HALF (float16) — Java VectorType.HALF.ordinal() = 0
+		numFloats := len(payload) / 2
 		vec := make([]float64, numFloats)
 		for i := 0; i < numFloats; i++ {
-			vec[i] = math.Float64frombits(binary.BigEndian.Uint64(payload[i*8:]))
+			bits := binary.BigEndian.Uint16(payload[i*2:])
+			vec[i] = float64(halfToFloat32(bits))
 		}
 		return vec, nil
-	case 1: // SINGLE (float32)
+	case 1: // SINGLE (float32) — Java VectorType.SINGLE.ordinal() = 1
 		numFloats := len(payload) / 4
 		vec := make([]float64, numFloats)
 		for i := 0; i < numFloats; i++ {
 			vec[i] = float64(math.Float32frombits(binary.BigEndian.Uint32(payload[i*4:])))
 		}
 		return vec, nil
-	case 2: // HALF (float16)
-		numFloats := len(payload) / 2
+	case 2: // DOUBLE (float64) — Java VectorType.DOUBLE.ordinal() = 2
+		numFloats := len(payload) / 8
 		vec := make([]float64, numFloats)
 		for i := 0; i < numFloats; i++ {
-			bits := binary.BigEndian.Uint16(payload[i*2:])
-			vec[i] = float64(halfToFloat32(bits))
+			vec[i] = math.Float64frombits(binary.BigEndian.Uint64(payload[i*8:]))
 		}
 		return vec, nil
 	case 3: // RABITQ

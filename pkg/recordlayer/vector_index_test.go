@@ -65,8 +65,8 @@ var _ = Describe("Vector Serialization", func() {
 		vec := []float64{1.0, -2.5, 3.14159, 0.0, math.MaxFloat64, math.SmallestNonzeroFloat64}
 		data := serializeVector(vec)
 
-		// First byte is type ordinal 0 (DOUBLE).
-		Expect(data[0]).To(Equal(byte(0)))
+		// First byte is type ordinal 2 (DOUBLE — Java VectorType.DOUBLE.ordinal() = 2).
+		Expect(data[0]).To(Equal(byte(2)))
 		Expect(len(data)).To(Equal(1 + 8*len(vec)))
 
 		got, err := deserializeVector(data)
@@ -79,7 +79,7 @@ var _ = Describe("Vector Serialization", func() {
 
 	It("handles empty vector", func() {
 		data := serializeVector(nil)
-		Expect(data).To(Equal([]byte{0}))
+		Expect(data).To(Equal([]byte{2}))
 
 		got, err := deserializeVector(data)
 		Expect(err).NotTo(HaveOccurred())
@@ -108,7 +108,8 @@ var _ = Describe("Vector Serialization", func() {
 
 	It("deserializes float16 vectors", func() {
 		// float16 for 1.0 = 0x3C00, float16 for 2.0 = 0x4000
-		buf := []byte{2, 0x3C, 0x00, 0x40, 0x00}
+		// HALF ordinal = 0 (Java VectorType.HALF.ordinal() = 0)
+		buf := []byte{0, 0x3C, 0x00, 0x40, 0x00}
 		vec, err := deserializeVector(buf)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(vec).To(HaveLen(2))
@@ -326,7 +327,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Expect(graph.Insert(tx, pk3, vec3)).To(Succeed())
 
 			// Delete pk2.
-			Expect(graph.Delete(tx, pk2, vec2)).To(Succeed())
+			Expect(graph.Delete(tx, pk2)).To(Succeed())
 
 			// Search for all 3 (k=3) near origin. Should only get pk1 and pk3.
 			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
@@ -511,7 +512,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 				Expect(graph.Insert(tx, n.pk, n.vec)).To(Succeed())
 			}
 			for _, n := range nodes {
-				Expect(graph.Delete(tx, n.pk, n.vec)).To(Succeed())
+				Expect(graph.Delete(tx, n.pk)).To(Succeed())
 			}
 
 			// Search should return nil (empty graph).
@@ -618,7 +619,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 			}
 
 			// Delete node 2 (middle). Graph repair should reconnect 1 and 3.
-			Expect(graph.Delete(tx, tuple.Tuple{int64(2)}, []float64{20.0, 0.0})).To(Succeed())
+			Expect(graph.Delete(tx, tuple.Tuple{int64(2)})).To(Succeed())
 
 			// All remaining nodes should still be findable.
 			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
@@ -654,8 +655,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 			Expect(epPK).NotTo(BeNil())
 
 			// Delete it.
-			epID := epPK[0].(int64)
-			Expect(graph.Delete(tx, epPK, []float64{float64(epID), 0.0})).To(Succeed())
+			Expect(graph.Delete(tx, epPK)).To(Succeed())
 
 			// Graph should still have an entry point.
 			_, newEP, _, err := graph.storage.loadAccessInfo(tx)
@@ -786,7 +786,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			}
 
 			// Delete the middle one.
-			Expect(graph.Delete(tx, tuple.Tuple{int64(1)}, []float64{1.0, 0.0, 0.0, 0.0})).To(Succeed())
+			Expect(graph.Delete(tx, tuple.Tuple{int64(1)})).To(Succeed())
 
 			// Search should return only 2 results.
 			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0, 0.0}, 10, 100)
@@ -2492,7 +2492,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 
 			// Delete first 5 vectors.
 			for i := 0; i < 5; i++ {
-				Expect(graph.Delete(tx, tuple.Tuple{int64(i)}, vectors[i])).To(Succeed())
+				Expect(graph.Delete(tx, tuple.Tuple{int64(i)})).To(Succeed())
 			}
 
 			// Remaining 15 vectors should all be findable.

@@ -444,7 +444,7 @@ func (s *VectorIndexConformanceStore) buildJavaParams() map[string]any {
 // serializeVector matches Go's hnsw.serializeVector: type_byte(0) + big-endian float64s.
 func conformanceSerializeVector(vec []float64) []byte {
 	buf := make([]byte, 1+8*len(vec))
-	buf[0] = 0 // DOUBLE type ordinal
+	buf[0] = 2 // VectorType.DOUBLE.ordinal() = 2
 	for i, v := range vec {
 		bits := math.Float64bits(v)
 		buf[1+i*8+0] = byte(bits >> 56)

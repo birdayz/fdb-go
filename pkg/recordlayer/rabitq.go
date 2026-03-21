@@ -149,8 +149,15 @@ func EncodedVectorFromBytes(data []byte, numDimensions, numExBits int) (*Encoded
 // unpackComponents unpacks bit-packed encoded components from a byte slice.
 // Matches Java's EncodedRealVector.unpackComponents().
 func unpackComponents(data []byte, numDimensions, numExBits int) []int {
-	result := make([]int, numDimensions)
+	// Validate packed data length to avoid panics on truncated data.
 	bitsPerComponent := numExBits + 1
+	totalBits := numDimensions * bitsPerComponent
+	expectedBytes := (totalBits + 7) / 8
+	if len(data) < expectedBytes {
+		return make([]int, numDimensions) // return zeros for truncated data
+	}
+
+	result := make([]int, numDimensions)
 	remainingBitsInByte := 8
 	pos := 0
 	currentByte := data[pos]

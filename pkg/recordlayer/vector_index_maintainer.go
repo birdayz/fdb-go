@@ -146,7 +146,7 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			ss := m.getSubspaceForPrefix(prefix)
 			storage := newHNSWStorage(ss, m.hnswConfig)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Delete(m.tx, entry.primaryKey, vector); err != nil {
+			if err := graph.Delete(m.tx, entry.primaryKey); err != nil {
 				return err
 			}
 		}
@@ -542,10 +542,10 @@ func (store *FDBRecordStore) SearchVectorIndexRecordsWithPrefix(
 	for _, r := range results {
 		rec, err := store.LoadRecord(r.PrimaryKey)
 		if err != nil {
-			continue // skip deleted records
+			return nil, fmt.Errorf("search vector index records: load PK %v: %w", r.PrimaryKey, err)
 		}
 		if rec == nil {
-			continue
+			continue // record deleted between search and load, skip
 		}
 		records = append(records, &FDBIndexedRecord{
 			IndexEntry: &IndexEntry{

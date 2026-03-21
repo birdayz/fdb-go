@@ -69,11 +69,11 @@ class VectorIndexSteps extends ConformanceBase {
 
     /**
      * Serialize a double[] vector to bytes in the format used by both Go and Java.
-     * Format: byte[0] = 0 (DOUBLE type ordinal), rest = big-endian float64 values.
+     * Format: byte[0] = VectorType.DOUBLE.ordinal() = 2, rest = big-endian float64 values.
      */
     private static byte[] serializeVector(double[] values) {
         ByteBuffer buf = ByteBuffer.allocate(1 + 8 * values.length);
-        buf.put((byte) 0); // DOUBLE type ordinal
+        buf.put((byte) 2); // VectorType.DOUBLE.ordinal() = 2
         for (double v : values) {
             buf.putDouble(v);
         }
