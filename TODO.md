@@ -156,13 +156,13 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No duplicate detection on insert** — Fixed: checks layer 0 existence before inserting.
 - [x] **HIGH — Missing prefix partitioning** — Fixed: per-prefix HNSW graphs via `getSubspaceForPrefix()`. `ScanVectorIndexWithPrefix`/`SearchVectorIndexWithPrefix` APIs. 10 tests including cross-group isolation, update between groups, 5-group stress.
 - [x] **HIGH — Missing BY_DISTANCE scan type** — Implemented: `ScanVectorIndex()`, `ScanIndexByType(BY_DISTANCE)`, `VectorDistanceScanRange()`. Returns kNN results as cursor with distance in Value. 7 tests.
-- [ ] **HIGH — Missing write locks** — Java uses `LockIdentifier` on insert/delete.
+- [x] **HIGH — Missing write locks** — Not needed: FDB transactions are serializable and atomic. Concurrent HNSW modifications conflict on shared node keys, FDB aborts one, retry is safe (insert is idempotent). Java's `LockIdentifier` is a performance optimization to avoid conflicts, not a correctness requirement.
 - [x] **HIGH — Missing Config validation** — Fixed: validates numDimensions >= 1, m in [4,200], mMax in [4,200], mMax0 in [4,300], efConstruction in [100,400].
-- [ ] **MEDIUM — Only float64 vectors** — Java supports Float, Double, Half precision via `RealVector` hierarchy.
-- [ ] **MEDIUM — Missing extended neighbor selection heuristic** — Go uses simple top-M. Java supports `extendCandidates` + `keepPrunedConnections`.
+- [x] **MEDIUM — Only float64 vectors** — Fixed: `deserializeVector` now handles type 0 (DOUBLE/float64), type 1 (SINGLE/float32), type 2 (HALF/float16). `halfToFloat32` implements IEEE 754 half-precision conversion. Go writes DOUBLE; reads all three types for Java interop. 3 tests.
+- [x] **MEDIUM — Missing extended neighbor selection heuristic** — Fixed: Algorithm 4 from HNSW paper. `selectNeighbors` uses diversity heuristic for Euclidean (satisfies triangle inequality), simple sort for Cosine/InnerProduct (matching Java's `Primitives.selectCandidates`). `extendCandidates` explores 2nd-degree neighbors. `keepPrunedConnections` fills up to M from discarded. `hnswExtendCandidates`/`hnswKeepPrunedConnections` index options. 9 tests.
 - [x] **MEDIUM — Cosine distance can return negative** — Fixed: clamp similarity to [-1, 1] before computing 1-sim. 3 clamping tests.
 - [x] **MEDIUM — `vectorIndexMaintainer.Update` creates new graph per entry** — Fixed: single graph instance per maintainer, no PRNG reset.
-- [ ] **LOW — Missing RaBitQ quantization** — optional lossy quantization for large-scale.
+- [ ] **LOW — Missing RaBitQ quantization** — Optional lossy vector quantization for large-scale approximate search. Java's experimental feature, rarely used.
 - [x] **HIGH — No search quality/recall test** — Fixed: 100 random 8D vectors, brute-force comparison, asserts >= 80% recall for k=10.
 - [x] **HIGH — No conformance tests** — 11 specs: Go saves→Java reads/saves more, Java saves→Go reads/saves more, cross-language mixed writes, delete cross-language, batch operations, record counting. Found+fixed 6 wire-format bugs: option names (hnsw* not vector*), metric enum values, node key nesting, access info 5-element format, HNSW subspace (primary not secondary), vector bytes extraction.
 - [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (100 ops, 5% fault rate). Model-based verification: count, self-search, orphan check.
