@@ -410,16 +410,18 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 		if err != nil {
 			break // no data at this layer
 		}
-		for _, nbPK := range neighbors {
-			nbVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
-			if loadErr != nil {
+
+		// Batch-fetch all neighbor vectors in one round-trip.
+		batchResults := g.storage.loadNodeLayerBatch(tx, layer, neighbors)
+		for _, r := range batchResults {
+			if r.err != nil {
 				continue
 			}
-			dist := g.computeDistance(query, nbVecBytes)
+			dist := g.computeDistance(query, r.vecBytes)
 			if dist < bestDist {
 				bestDist = dist
-				bestPK = nbPK
-				bestVecBytes = nbVecBytes
+				bestPK = r.pk
+				bestVecBytes = r.vecBytes
 				changed = true
 			}
 		}
@@ -470,23 +472,28 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			continue
 		}
 
-		// Explore neighbors.
+		// Collect unvisited neighbors.
+		var toFetch []tuple.Tuple
 		for _, nbPK := range neighbors {
 			key := string(nbPK.Pack())
 			if visited[key] {
 				continue
 			}
 			visited[key] = true
+			toFetch = append(toFetch, nbPK)
+		}
 
-			nbVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
-			if loadErr != nil {
+		// Batch-read all unvisited neighbors at once.
+		batchResults := g.storage.loadNodeLayerBatch(tx, layer, toFetch)
+		for _, r := range batchResults {
+			if r.err != nil {
 				continue
 			}
-			dist := g.computeDistance(query, nbVecBytes)
+			dist := g.computeDistance(query, r.vecBytes)
 
 			if len(results) < ef || dist < results[len(results)-1].dist {
-				heap.Push(candidates, distItem{pk: nbPK, dist: dist})
-				results = append(results, hnswCandidate{pk: nbPK, vecBytes: nbVecBytes, dist: dist})
+				heap.Push(candidates, distItem{pk: r.pk, dist: dist})
+				results = append(results, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist})
 				sort.Slice(results, func(i, j int) bool {
 					return results[i].dist < results[j].dist
 				})
@@ -581,6 +588,9 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	for _, c := range working {
 		seen[string(c.pk.Pack())] = true
 	}
+
+	// Collect all unseen 2nd-degree neighbor PKs.
+	var toFetch []tuple.Tuple
 	for _, c := range candidates {
 		_, neighbors, err := g.storage.loadNodeLayer(tx, layer, c.pk)
 		if err != nil {
@@ -592,13 +602,18 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 				continue
 			}
 			seen[key] = true
-			nbVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
-			if loadErr != nil {
-				continue
-			}
-			dist := g.computeDistance(query, nbVecBytes)
-			working = append(working, hnswCandidate{pk: nbPK, vecBytes: nbVecBytes, dist: dist})
+			toFetch = append(toFetch, nbPK)
 		}
+	}
+
+	// Batch-fetch all 2nd-degree neighbors at once.
+	batchResults := g.storage.loadNodeLayerBatch(tx, layer, toFetch)
+	for _, r := range batchResults {
+		if r.err != nil {
+			continue
+		}
+		dist := g.computeDistance(query, r.vecBytes)
+		working = append(working, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist})
 	}
 
 	return g.selectNeighbors(working, maxConn), nil
@@ -608,13 +623,13 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 // Uses the same heuristic as selectNeighbors (with optional extendCandidates).
 func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
 	var candidates []hnswCandidate
-	for _, pk := range neighborPKs {
-		nbVecBytes, _, err := g.storage.loadNodeLayer(tx, layer, pk)
-		if err != nil {
+	batchResults := g.storage.loadNodeLayerBatch(tx, layer, neighborPKs)
+	for _, r := range batchResults {
+		if r.err != nil {
 			continue
 		}
-		dist := g.computeDistance(nodeVec, nbVecBytes)
-		candidates = append(candidates, hnswCandidate{pk: pk, vecBytes: nbVecBytes, dist: dist})
+		dist := g.computeDistance(nodeVec, r.vecBytes)
+		candidates = append(candidates, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist})
 	}
 
 	var selected []hnswCandidate
@@ -650,14 +665,16 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		}
 	}
 
+	// Batch-load filtered neighbors to get their neighbor lists.
+	filteredBatch := g.storage.loadNodeLayerBatch(tx, layer, filtered)
+
 	// Find candidates from neighbors-of-neighbors.
 	candidateMap := make(map[string]tuple.Tuple)
-	for _, pk := range filtered {
-		_, nbn, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
-		if loadErr != nil {
+	for _, r := range filteredBatch {
+		if r.err != nil {
 			continue
 		}
-		for _, candidate := range nbn {
+		for _, candidate := range r.neighbors {
 			candidateKey := string(candidate.Pack())
 			if !tupleEqual(candidate, neighborPK) && !tupleEqual(candidate, deletedPK) {
 				candidateMap[candidateKey] = candidate
@@ -668,31 +685,37 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	// Build candidate list with distances.
 	nbVec, _ := g.decodeStoredVector(nbVecBytes)
 
-	// Start with existing (filtered) neighbors.
+	// Start with existing (filtered) neighbors (already in cache from batch above).
 	seen := make(map[string]bool)
 	var allCandidates []hnswCandidate
-	for _, pk := range filtered {
-		candidateVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
-		if loadErr != nil {
+	for _, r := range filteredBatch {
+		if r.err != nil {
 			continue
 		}
-		candidateVec, _ := g.decodeStoredVector(candidateVecBytes)
+		candidateVec, _ := g.decodeStoredVector(r.vecBytes)
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vecBytes: candidateVecBytes, vec: candidateVec, dist: dist})
-		seen[string(pk.Pack())] = true
+		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, vec: candidateVec, dist: dist})
+		seen[string(r.pk.Pack())] = true
 	}
-	// Add new candidates from neighbors-of-neighbors.
+
+	// Collect unseen candidates from neighbors-of-neighbors.
+	var newCandidatePKs []tuple.Tuple
 	for key, pk := range candidateMap {
 		if seen[key] {
 			continue
 		}
-		candidateVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
-		if loadErr != nil {
+		newCandidatePKs = append(newCandidatePKs, pk)
+	}
+
+	// Batch-fetch new candidates.
+	newBatch := g.storage.loadNodeLayerBatch(tx, layer, newCandidatePKs)
+	for _, r := range newBatch {
+		if r.err != nil {
 			continue
 		}
-		candidateVec, _ := g.decodeStoredVector(candidateVecBytes)
+		candidateVec, _ := g.decodeStoredVector(r.vecBytes)
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vecBytes: candidateVecBytes, vec: candidateVec, dist: dist})
+		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, vec: candidateVec, dist: dist})
 	}
 
 	// Select best connections using the heuristic.
@@ -728,6 +751,7 @@ type hnswStorage struct {
 	dataSubspace   subspace.Subspace
 	accessSubspace subspace.Subspace
 	config         HNSWConfig
+	cache          map[string][]byte // FDB key → raw value, per-transaction
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -735,6 +759,7 @@ func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
 		dataSubspace:   ss.Sub(int64(0)),
 		accessSubspace: ss.Sub(int64(1)),
 		config:         config,
+		cache:          make(map[string][]byte),
 	}
 }
 
@@ -755,23 +780,16 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 		tuple.Tuple{vectorBytes},  // vector bytes wrapped in tuple
 		neighborList,              // neighbor PKs as nested tuples
 	}
-	tx.Set(fdb.Key(key), value.Pack())
+	packed := value.Pack()
+	tx.Set(fdb.Key(key), packed)
+
+	// Update cache with the written value so subsequent reads see it.
+	s.cache[string(key)] = packed
 }
 
-// loadNodeLayer reads one layer's data for a node.
-// Returns vector bytes, neighbor PKs, and error (non-nil if not found).
-func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKey tuple.Tuple) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
-	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
-	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
-
-	data, err := tx.Get(fdb.Key(key)).Get()
-	if err != nil {
-		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
-	}
-	if data == nil {
-		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
-	}
-
+// parseNodeValue parses the raw FDB value bytes for a node into vector bytes
+// and neighbor PKs. Factored out of loadNodeLayer for reuse by batch loading.
+func parseNodeValue(data []byte) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
 	t, err := tuple.Unpack(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: unpack node layer: %w", err)
@@ -806,11 +824,102 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	return vectorBytes, neighbors, nil
 }
 
+// loadNodeLayer reads one layer's data for a node.
+// Returns vector bytes, neighbor PKs, and error (non-nil if not found).
+// Uses the per-transaction cache to avoid re-reading the same node.
+func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKey tuple.Tuple) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
+	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
+	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	cacheKey := string(key)
+
+	// Check cache first.
+	if cached, ok := s.cache[cacheKey]; ok {
+		if cached == nil {
+			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
+		}
+		return parseNodeValue(cached)
+	}
+
+	data, err := tx.Get(fdb.Key(key)).Get()
+	if err != nil {
+		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
+	}
+	if data == nil {
+		s.cache[cacheKey] = nil // cache negative result
+		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
+	}
+
+	// Populate cache.
+	s.cache[cacheKey] = data
+
+	return parseNodeValue(data)
+}
+
+// nodeResult holds the result of loading one node from FDB.
+type nodeResult struct {
+	pk        tuple.Tuple
+	vecBytes  []byte
+	neighbors []tuple.Tuple
+	err       error
+}
+
+// loadNodeLayerBatch fires all FDB Get() calls for the given PKs at once,
+// then resolves them. FDB pipelines the reads, turning N sequential round-trips
+// into 1 round-trip with N pipelined reads. Populates the per-transaction cache.
+func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks []tuple.Tuple) []nodeResult {
+	results := make([]nodeResult, len(pks))
+	type pending struct {
+		idx    int
+		key    string
+		future fdb.FutureByteSlice
+	}
+	var toFetch []pending
+
+	for i, pk := range pks {
+		results[i].pk = pk
+		key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+		cacheKey := string(key)
+
+		if cached, ok := s.cache[cacheKey]; ok {
+			if cached == nil {
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			} else {
+				results[i].vecBytes, results[i].neighbors, results[i].err = parseNodeValue(cached)
+			}
+			continue
+		}
+
+		// Fire the get — don't resolve yet.
+		toFetch = append(toFetch, pending{idx: i, key: cacheKey, future: tx.Get(fdb.Key(key))})
+	}
+
+	// Resolve all outstanding futures. FDB pipelines these reads.
+	for _, p := range toFetch {
+		data, err := p.future.Get()
+		if err != nil {
+			results[p.idx].err = fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
+			continue
+		}
+		if data == nil {
+			s.cache[p.key] = nil // cache negative result
+			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			continue
+		}
+		s.cache[p.key] = data
+		results[p.idx].vecBytes, results[p.idx].neighbors, results[p.idx].err = parseNodeValue(data)
+	}
+
+	return results
+}
+
 // deleteNodeLayer removes one layer's data for a node.
 func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
 	// Java uses Tuple.from(layer, primaryKey) where primaryKey is nested.
 	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	tx.Clear(fdb.Key(key))
+
+	// Mark as deleted in cache.
+	s.cache[string(key)] = nil
 }
 
 // loadAccessInfo reads the entry point metadata.
