@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"testing"
@@ -53,16 +54,20 @@ func TestSIFTBenchmark(t *testing.T) {
 	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d",
 		n, k, efSearch, m, efConstruction, batchSize, numQueries)
 
-	// Load SIFT data.
-	baseVecs, err := LoadFVecs("testdata/sift_base.fvecs", n)
+	// Load SIFT data. Use SIFT_DATA_DIR env var or default to testdata/.
+	siftDir := os.Getenv("SIFT_DATA_DIR")
+	if siftDir == "" {
+		siftDir = "testdata"
+	}
+	baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
 	if err != nil {
 		t.Fatalf("Failed to load base vectors: %v\n\nRun scripts/download-sift.sh first.", err)
 	}
-	queryVecs, err := LoadFVecs("testdata/sift_query.fvecs", 0) // all 10K queries
+	queryVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_query.fvecs"), 0) // all 10K queries
 	if err != nil {
 		t.Fatalf("Failed to load query vectors: %v", err)
 	}
-	groundTruth, err := LoadIVecs("testdata/sift_groundtruth.ivecs", 0) // all 10K ground truth
+	groundTruth, err := LoadIVecs(filepath.Join(siftDir, "sift_groundtruth.ivecs"), 0) // all 10K ground truth
 	if err != nil {
 		t.Fatalf("Failed to load ground truth: %v", err)
 	}
