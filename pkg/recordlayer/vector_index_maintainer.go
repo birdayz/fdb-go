@@ -85,6 +85,15 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
 		config.KeepPrunedConnections = v == "true"
 	}
+	if v, ok := index.Options["hnswUseRaBitQ"]; ok {
+		config.UseRaBitQ = v == "true"
+	}
+	if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
+		var numExBits int
+		if n, _ := fmt.Sscanf(v, "%d", &numExBits); n == 1 && numExBits >= 1 && numExBits <= 8 {
+			config.RaBitQNumExBits = numExBits
+		}
+	}
 	return config
 }
 

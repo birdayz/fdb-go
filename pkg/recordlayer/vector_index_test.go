@@ -674,6 +674,319 @@ var _ = Describe("HNSW Graph Direct", func() {
 	})
 })
 
+var _ = Describe("HNSW with RaBitQ", func() {
+	ctx := context.Background()
+
+	// Helper: create an isolated HNSW graph with RaBitQ enabled.
+	makeRaBitQGraph := func(dims, numExBits int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-rabitq")
+		config := HNSWConfig{
+			NumDimensions:   dims,
+			M:               4,
+			MMax:            4,
+			MMax0:           8,
+			EfConstruction:  100,
+			Metric:          VectorMetricEuclidean,
+			UseRaBitQ:       true,
+			RaBitQNumExBits: numExBits,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("insert single node and search returns it", func() {
+		graph := makeRaBitQGraph(8, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec := []float64{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			results, err := graph.Search(tx, vec, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			// Self-distance should be approximately zero (RaBitQ approximation).
+			Expect(results[0].Distance).To(BeNumerically("<", 0.5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("stores RaBitQ-encoded bytes in FDB", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(42)}
+			vec := []float64{1.0, 2.0, 3.0, 4.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			// Load the node and verify the stored bytes have type ordinal 3 (RABITQ).
+			vecBytes, _, err := graph.storage.loadNodeLayer(tx, 0, pk)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(vecBytes)).To(BeNumerically(">", 0))
+			Expect(vecBytes[0]).To(Equal(byte(3)), "stored vector should have RABITQ type ordinal")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 5 nodes and kNN k=3 returns 3 closest", func() {
+		graph := makeRaBitQGraph(4, 6)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 points in 4D (well-separated).
+			points := [][]float64{
+				{0.0, 0.0, 0.0, 0.0},     // id=0
+				{1.0, 0.0, 0.0, 0.0},     // id=1
+				{2.0, 0.0, 0.0, 0.0},     // id=2
+				{100.0, 0.0, 0.0, 0.0},   // id=3 (far)
+				{1000.0, 0.0, 0.0, 0.0},  // id=4 (very far)
+			}
+			for i, p := range points {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, p)).To(Succeed())
+			}
+
+			// Query near origin, k=3 should return ids 0,1,2.
+			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete works with RaBitQ", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 nodes.
+			for i := int64(0); i < 3; i++ {
+				vec := []float64{float64(i), 0.0, 0.0, 0.0}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, vec)).To(Succeed())
+			}
+
+			// Delete the middle one.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(1)}, []float64{1.0, 0.0, 0.0, 0.0})).To(Succeed())
+
+			// Search should return only 2 results.
+			results, err := graph.Search(tx, []float64{0.0, 0.0, 0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("update (re-insert) works with RaBitQ", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec1 := []float64{1.0, 0.0, 0.0, 0.0}
+			Expect(graph.Insert(tx, pk, vec1)).To(Succeed())
+
+			// Re-insert with a different vector (update semantics).
+			vec2 := []float64{100.0, 0.0, 0.0, 0.0}
+			Expect(graph.Insert(tx, pk, vec2)).To(Succeed())
+
+			// Search near new position should find it close.
+			results, err := graph.Search(tx, vec2, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("<", 1.0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("recall is reasonable with 20 random 8D vectors", func() {
+		dims := 8
+		numVectors := 20
+		k := 5
+		numExBits := 6
+		graph := makeRaBitQGraph(dims, numExBits)
+
+		rng := rand.New(rand.NewSource(42))
+		vectors := make([][]float64, numVectors)
+		for i := 0; i < numVectors; i++ {
+			vectors[i] = make([]float64, dims)
+			for j := 0; j < dims; j++ {
+				vectors[i][j] = rng.NormFloat64() * 10
+			}
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, v := range vectors {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, v)).To(Succeed())
+			}
+
+			// Query with vector[0], find k nearest.
+			query := vectors[0]
+			results, err := graph.Search(tx, query, k, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Compute brute-force k nearest.
+			type idDist struct {
+				id   int64
+				dist float64
+			}
+			var all []idDist
+			for i, v := range vectors {
+				d := euclideanDistance(query, v)
+				all = append(all, idDist{id: int64(i), dist: d})
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].dist < all[j].dist })
+			trueKNN := make(map[int64]bool)
+			for i := 0; i < k; i++ {
+				trueKNN[all[i].id] = true
+			}
+
+			// Count recall.
+			hits := 0
+			for _, r := range results {
+				if trueKNN[r.PrimaryKey[0].(int64)] {
+					hits++
+				}
+			}
+			recall := float64(hits) / float64(k)
+			// With RaBitQ, approximate distances may reorder slightly.
+			// Require at least 60% recall (lenient due to approximation + small dataset).
+			Expect(recall).To(BeNumerically(">=", 0.6),
+				"RaBitQ recall should be >= 60%% (got %.0f%%)", recall*100)
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("decodeStoredVector reconstructs approximate vector from RaBitQ bytes", func() {
+		dims := 8
+		numExBits := 7
+		graph := makeRaBitQGraph(dims, numExBits)
+
+		original := []float64{1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0}
+		encoded := graph.encodeVectorBytes(original)
+		Expect(encoded[0]).To(Equal(byte(3))) // RABITQ
+
+		decoded, err := graph.decodeStoredVector(encoded)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(decoded).To(HaveLen(dims))
+
+		// Decoded should approximate the original direction.
+		// Compute cosine similarity.
+		origNorm := normalizeVector(original)
+		decNorm := normalizeVector(decoded)
+		cosSim := dot(origNorm, decNorm)
+		Expect(cosSim).To(BeNumerically(">", 0.9),
+			"decoded vector should approximate original direction (cosine=%.3f)", cosSim)
+	})
+
+	It("parseHNSWConfig reads RaBitQ options", func() {
+		idx := &Index{
+			Name: "test_vec",
+			Type: IndexTypeVector,
+			Options: map[string]string{
+				"hnswNumDimensions":   "32",
+				"hnswUseRaBitQ":      "true",
+				"hnswRaBitQNumExBits": "6",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.UseRaBitQ).To(BeTrue())
+		Expect(config.RaBitQNumExBits).To(Equal(6))
+		Expect(config.NumDimensions).To(Equal(32))
+	})
+
+	It("parseHNSWConfig defaults when RaBitQ options absent", func() {
+		idx := &Index{
+			Name:    "test_vec",
+			Type:    IndexTypeVector,
+			Options: map[string]string{},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.UseRaBitQ).To(BeFalse())
+		Expect(config.RaBitQNumExBits).To(Equal(0))
+	})
+
+	It("parseHNSWConfig ignores invalid numExBits", func() {
+		idx := &Index{
+			Name: "test_vec",
+			Type: IndexTypeVector,
+			Options: map[string]string{
+				"hnswUseRaBitQ":      "true",
+				"hnswRaBitQNumExBits": "99",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.UseRaBitQ).To(BeTrue())
+		Expect(config.RaBitQNumExBits).To(Equal(0)) // out of range, not set
+	})
+
+	It("computeDistance handles both raw and RaBitQ vectors", func() {
+		dims := 4
+		graph := makeRaBitQGraph(dims, 4)
+
+		query := []float64{1.0, 2.0, 3.0, 4.0}
+
+		// Raw DOUBLE vector.
+		rawBytes := serializeVector([]float64{2.0, 3.0, 4.0, 5.0})
+		distRaw := graph.computeDistance(query, rawBytes)
+		expected := euclideanDistance(query, []float64{2.0, 3.0, 4.0, 5.0})
+		Expect(distRaw).To(BeNumerically("~", expected, 1e-9))
+
+		// RaBitQ encoded vector.
+		q := NewRaBitQuantizer(VectorMetricEuclidean, 4)
+		encoded := q.Encode([]float64{2.0, 3.0, 4.0, 5.0})
+		rabitqBytes := encoded.ToBytes()
+		distRaBitQ := graph.computeDistance(query, rabitqBytes)
+		// Should be finite and reasonably close to exact.
+		Expect(math.IsInf(distRaBitQ, 0)).To(BeFalse())
+		Expect(math.IsNaN(distRaBitQ)).To(BeFalse())
+		Expect(distRaBitQ).To(BeNumerically("~", expected, expected*0.5))
+	})
+
+	It("empty graph returns nil results", func() {
+		graph := makeRaBitQGraph(4, 4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			results, err := graph.Search(tx, []float64{1.0, 2.0, 3.0, 4.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
 var _ = Describe("VectorIndex Store Integration", func() {
 	ctx := context.Background()
 

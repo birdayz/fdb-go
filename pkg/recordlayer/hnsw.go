@@ -44,6 +44,8 @@ type HNSWConfig struct {
 	Metric                VectorMetric // Distance metric
 	ExtendCandidates      bool         // Extend candidate set with 2nd-degree neighbors (default false)
 	KeepPrunedConnections bool         // Retain pruned candidates to fill up to M (default false)
+	UseRaBitQ             bool         // Enable RaBitQ quantization for approximate distance (default false)
+	RaBitQNumExBits       int          // Bits per dimension for quantization (1-8, default 4)
 }
 
 // ValidateHNSWConfig validates the HNSW configuration.
@@ -94,11 +96,98 @@ func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 	}
 }
 
+// encodeVectorBytes returns the bytes to store for a vector.
+// When UseRaBitQ is enabled, returns RaBitQ-encoded bytes; otherwise returns
+// the raw DOUBLE-serialized bytes.
+func (g *hnswGraph) encodeVectorBytes(vector []float64) []byte {
+	if g.config.UseRaBitQ {
+		numExBits := g.config.RaBitQNumExBits
+		if numExBits < 1 || numExBits > 8 {
+			numExBits = 4
+		}
+		q := NewRaBitQuantizer(g.config.Metric, numExBits)
+		return q.Encode(vector).ToBytes()
+	}
+	return serializeVector(vector)
+}
+
+// computeDistance computes the distance between a raw query vector and stored
+// vector bytes. When the stored bytes are RaBitQ-encoded (type ordinal 3),
+// uses the RaBitEstimator for fast approximate distance. Otherwise
+// deserializes and computes exact distance.
+func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) float64 {
+	if len(storedVecBytes) > 0 && storedVecBytes[0] == vectorTypeRABITQ {
+		numExBits := g.config.RaBitQNumExBits
+		if numExBits < 1 || numExBits > 8 {
+			numExBits = 4
+		}
+		encoded, err := EncodedVectorFromBytes(storedVecBytes, g.config.NumDimensions, numExBits)
+		if err != nil {
+			return math.Inf(1)
+		}
+		est := NewRaBitEstimator(g.config.Metric, numExBits)
+		return est.Distance(query, encoded)
+	}
+	vec, err := deserializeVector(storedVecBytes)
+	if err != nil {
+		return math.Inf(1)
+	}
+	return vectorDistance(query, vec, g.config.Metric)
+}
+
+// decodeStoredVector extracts an approximate []float64 from stored vector bytes.
+// For raw vectors (DOUBLE/FLOAT/HALF), this is exact deserialization.
+// For RaBitQ-encoded vectors, this reconstructs an approximate vector from
+// the quantized representation, suitable for pairwise distance computations
+// in the neighbor selection heuristic.
+func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error) {
+	if len(storedVecBytes) == 0 {
+		return nil, fmt.Errorf("hnsw: empty vector bytes")
+	}
+	if storedVecBytes[0] != vectorTypeRABITQ {
+		return deserializeVector(storedVecBytes)
+	}
+
+	numExBits := g.config.RaBitQNumExBits
+	if numExBits < 1 || numExBits > 8 {
+		numExBits = 4
+	}
+	encoded, err := EncodedVectorFromBytes(storedVecBytes, g.config.NumDimensions, numExBits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconstruct approximate vector: un-center the quantized codes.
+	// code[i] = signedLevel + sign * 2^numExBits, centered around cb.
+	// xuc[i] = code[i] - cb approximates the direction of the original vector.
+	// Scale by sqrt(fAddEx) / ||xuc|| to approximate the original magnitude.
+	cb := float64(int(1)<<numExBits) - 0.5
+	dims := encoded.NumDimensions()
+	xuc := make([]float64, dims)
+	var xucNormSqr float64
+	for i := 0; i < dims; i++ {
+		xuc[i] = float64(encoded.Encoded[i]) - cb
+		xucNormSqr += xuc[i] * xuc[i]
+	}
+
+	// Scale to approximate original norm (sqrt(fAddEx) = ||original||).
+	origNorm := math.Sqrt(encoded.FAddEx)
+	xucNorm := math.Sqrt(xucNormSqr)
+	if xucNorm > 0 && origNorm > 0 {
+		scale := origNorm / xucNorm
+		for i := range xuc {
+			xuc[i] *= scale
+		}
+	}
+
+	return xuc, nil
+}
+
 // Insert adds a vector to the HNSW graph.
 // primaryKey identifies the record. vector is the float64 vector to index.
 // Wire-compatible with Java's HNSW insert (COMPACT node format, deterministic layer assignment).
 func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
-	vecBytes := serializeVector(vector)
+	vecBytes := g.encodeVectorBytes(vector)
 
 	// Check if node already exists — if so, delete first (update semantics).
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
@@ -125,13 +214,11 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		return nil
 	}
 
-	epVec, _ := deserializeVector(epVecBytes)
-
 	// Greedy search from top to insertion layer.
 	currentPK := epPK
-	currentVec := epVec
+	currentVecBytes := epVecBytes
 	for layer := epLayer; layer > insertLayer; layer-- {
-		currentPK, currentVec, err = g.searchLayerGreedy(tx, vector, currentPK, currentVec, layer)
+		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, vector, currentPK, currentVecBytes, layer)
 		if err != nil {
 			return err
 		}
@@ -140,7 +227,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	// Insert at each layer from min(insertLayer, epLayer) down to 0.
 	for layer := min(insertLayer, epLayer); layer >= 0; layer-- {
 		// Find ef_construction nearest neighbors at this layer.
-		neighbors, err := g.searchLayerMulti(tx, vector, currentPK, currentVec, g.config.EfConstruction, layer)
+		neighbors, err := g.searchLayerMulti(tx, vector, currentPK, currentVecBytes, g.config.EfConstruction, layer)
 		if err != nil {
 			return err
 		}
@@ -181,7 +268,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 			// Prune if over limit.
 			if len(nbNeighbors) > maxConn {
-				nbVec, _ := deserializeVector(nbVecBytes)
+				nbVec, _ := g.decodeStoredVector(nbVecBytes)
 				nbNeighbors, err = g.pruneNeighbors(tx, nbVec, nbNeighbors, maxConn, layer)
 				if err != nil {
 					return err
@@ -194,7 +281,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		if len(neighbors) > 0 {
 			// Use nearest neighbor as entry point for next layer down.
 			currentPK = neighbors[0].pk
-			currentVec = neighbors[0].vec
+			currentVecBytes = neighbors[0].vecBytes
 		}
 	}
 
@@ -277,20 +364,18 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 		return nil, nil // empty graph
 	}
 
-	epVec, _ := deserializeVector(epVecBytes)
-
 	// Greedy descent from top layer to layer 1.
 	currentPK := epPK
-	currentVec := epVec
+	currentVecBytes := epVecBytes
 	for layer := epLayer; layer > 0; layer-- {
-		currentPK, currentVec, err = g.searchLayerGreedy(tx, query, currentPK, currentVec, layer)
+		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, query, currentPK, currentVecBytes, layer)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// Search at layer 0 with efSearch.
-	candidates, err := g.searchLayerMulti(tx, query, currentPK, currentVec, max(efSearch, k), 0)
+	candidates, err := g.searchLayerMulti(tx, query, currentPK, currentVecBytes, max(efSearch, k), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -311,10 +396,11 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 }
 
 // searchLayerGreedy finds the single nearest neighbor at a given layer (greedy descent).
-func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVec []float64, layer int) (tuple.Tuple, []float64, error) {
+// Returns the best PK, its stored vector bytes, and error.
+func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVecBytes []byte, layer int) (tuple.Tuple, []byte, error) {
 	bestPK := epPK
-	bestVec := epVec
-	bestDist := vectorDistance(query, epVec, g.config.Metric)
+	bestVecBytes := epVecBytes
+	bestDist := g.computeDistance(query, epVecBytes)
 	changed := true
 
 	for changed {
@@ -328,34 +414,34 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 			if loadErr != nil {
 				continue
 			}
-			nbVec, _ := deserializeVector(nbVecBytes)
-			dist := vectorDistance(query, nbVec, g.config.Metric)
+			dist := g.computeDistance(query, nbVecBytes)
 			if dist < bestDist {
 				bestDist = dist
 				bestPK = nbPK
-				bestVec = nbVec
+				bestVecBytes = nbVecBytes
 				changed = true
 			}
 		}
 	}
 
-	return bestPK, bestVec, nil
+	return bestPK, bestVecBytes, nil
 }
 
-// hnswCandidate represents a search candidate with its primary key, vector, and distance.
+// hnswCandidate represents a search candidate with its primary key, vector bytes, and distance.
 type hnswCandidate struct {
-	pk   tuple.Tuple
-	vec  []float64
-	dist float64
+	pk       tuple.Tuple
+	vecBytes []byte    // stored vector bytes (raw or RaBitQ-encoded)
+	vec      []float64 // decoded vector (lazy, for heuristic pairwise distances)
+	dist     float64
 }
 
 // searchLayerMulti finds the ef nearest neighbors at a given layer.
-func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVec []float64, ef, layer int) ([]hnswCandidate, error) {
+func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVecBytes []byte, ef, layer int) ([]hnswCandidate, error) {
 	if epPK == nil {
 		return nil, nil
 	}
 
-	epDist := vectorDistance(query, epVec, g.config.Metric)
+	epDist := g.computeDistance(query, epVecBytes)
 
 	// Candidates (min-heap by distance) and visited set.
 	candidates := &distHeap{}
@@ -364,7 +450,7 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	visited := map[string]bool{string(epPK.Pack()): true}
 
 	var results []hnswCandidate
-	results = append(results, hnswCandidate{pk: epPK, vec: epVec, dist: epDist})
+	results = append(results, hnswCandidate{pk: epPK, vecBytes: epVecBytes, dist: epDist})
 
 	for candidates.Len() > 0 {
 		closest := heap.Pop(candidates).(distItem)
@@ -395,12 +481,11 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			if loadErr != nil {
 				continue
 			}
-			nbVec, _ := deserializeVector(nbVecBytes)
-			dist := vectorDistance(query, nbVec, g.config.Metric)
+			dist := g.computeDistance(query, nbVecBytes)
 
 			if len(results) < ef || dist < results[len(results)-1].dist {
 				heap.Push(candidates, distItem{pk: nbPK, dist: dist})
-				results = append(results, hnswCandidate{pk: nbPK, vec: nbVec, dist: dist})
+				results = append(results, hnswCandidate{pk: nbPK, vecBytes: nbVecBytes, dist: dist})
 				sort.Slice(results, func(i, j int) bool {
 					return results[i].dist < results[j].dist
 				})
@@ -439,25 +524,33 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 	var result []hnswCandidate
 	var discarded []hnswCandidate
 
-	for _, candidate := range candidates {
+	for i := range candidates {
 		if len(result) >= maxConn {
 			break
 		}
 
+		// Lazily decode vector for heuristic pairwise distance.
+		if candidates[i].vec == nil && candidates[i].vecBytes != nil {
+			candidates[i].vec, _ = g.decodeStoredVector(candidates[i].vecBytes)
+		}
+
 		// Check if candidate is closer to query than to any already-selected neighbor.
 		shouldSelect := true
-		for _, selected := range result {
-			distToSelected := vectorDistance(candidate.vec, selected.vec, g.config.Metric)
-			if distToSelected < candidate.dist {
+		for j := range result {
+			if result[j].vec == nil && result[j].vecBytes != nil {
+				result[j].vec, _ = g.decodeStoredVector(result[j].vecBytes)
+			}
+			distToSelected := vectorDistance(candidates[i].vec, result[j].vec, g.config.Metric)
+			if distToSelected < candidates[i].dist {
 				shouldSelect = false
 				break
 			}
 		}
 
 		if shouldSelect {
-			result = append(result, candidate)
+			result = append(result, candidates[i])
 		} else if g.config.KeepPrunedConnections {
-			discarded = append(discarded, candidate)
+			discarded = append(discarded, candidates[i])
 		}
 	}
 
@@ -498,13 +591,12 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 				continue
 			}
 			seen[key] = true
-			vecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
+			nbVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
 			if loadErr != nil {
 				continue
 			}
-			vec, _ := deserializeVector(vecBytes)
-			dist := vectorDistance(query, vec, g.config.Metric)
-			working = append(working, hnswCandidate{pk: nbPK, vec: vec, dist: dist})
+			dist := g.computeDistance(query, nbVecBytes)
+			working = append(working, hnswCandidate{pk: nbPK, vecBytes: nbVecBytes, dist: dist})
 		}
 	}
 
@@ -516,13 +608,12 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
 	var candidates []hnswCandidate
 	for _, pk := range neighborPKs {
-		vecBytes, _, err := g.storage.loadNodeLayer(tx, layer, pk)
+		nbVecBytes, _, err := g.storage.loadNodeLayer(tx, layer, pk)
 		if err != nil {
 			continue
 		}
-		vec, _ := deserializeVector(vecBytes)
-		dist := vectorDistance(nodeVec, vec, g.config.Metric)
-		candidates = append(candidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
+		dist := g.computeDistance(nodeVec, nbVecBytes)
+		candidates = append(candidates, hnswCandidate{pk: pk, vecBytes: nbVecBytes, dist: dist})
 	}
 
 	var selected []hnswCandidate
@@ -574,19 +665,19 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	}
 
 	// Build candidate list with distances.
-	nbVec, _ := deserializeVector(nbVecBytes)
+	nbVec, _ := g.decodeStoredVector(nbVecBytes)
 
 	// Start with existing (filtered) neighbors.
 	seen := make(map[string]bool)
 	var allCandidates []hnswCandidate
 	for _, pk := range filtered {
-		vecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
+		candidateVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
 		if loadErr != nil {
 			continue
 		}
-		vec, _ := deserializeVector(vecBytes)
-		dist := vectorDistance(nbVec, vec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
+		candidateVec, _ := g.decodeStoredVector(candidateVecBytes)
+		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
+		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vecBytes: candidateVecBytes, vec: candidateVec, dist: dist})
 		seen[string(pk.Pack())] = true
 	}
 	// Add new candidates from neighbors-of-neighbors.
@@ -594,13 +685,13 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		if seen[key] {
 			continue
 		}
-		vecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
+		candidateVecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
 		if loadErr != nil {
 			continue
 		}
-		vec, _ := deserializeVector(vecBytes)
-		dist := vectorDistance(nbVec, vec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
+		candidateVec, _ := g.decodeStoredVector(candidateVecBytes)
+		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
+		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vecBytes: candidateVecBytes, vec: candidateVec, dist: dist})
 	}
 
 	// Select best connections using the heuristic.
