@@ -112,6 +112,9 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 			config.EfRepair = efRepair
 		}
 	}
+	if v, ok := index.Options["hnswUseInlining"]; ok {
+		config.UseInlining = v == "true"
+	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok {
 		config.UseRaBitQ = v == "true"
 	}

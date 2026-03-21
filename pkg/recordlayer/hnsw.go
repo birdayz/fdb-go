@@ -46,6 +46,7 @@ type HNSWConfig struct {
 	ExtendCandidates      bool         // Extend candidate set with 2nd-degree neighbors (default false)
 	KeepPrunedConnections bool         // Retain pruned candidates to fill up to M (default false)
 	EfRepair              int          // Max candidates for delete repair (default 64, 0 = no limit)
+	UseInlining           bool         // Use inlining storage for layers > 0 (default false)
 	UseRaBitQ             bool         // Enable RaBitQ quantization for approximate distance (default false)
 	RaBitQNumExBits       int          // Bits per dimension for quantization (1-8, default 4)
 
@@ -200,11 +201,13 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 
 // Insert adds a vector to the HNSW graph.
 // primaryKey identifies the record. vector is the float64 vector to index.
-// Wire-compatible with Java's HNSW insert (COMPACT node format, deterministic layer assignment).
+// Wire-compatible with Java's HNSW insert (compact + inlining node formats,
+// deterministic layer assignment).
 func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
 	vecBytes := g.encodeVectorBytes(vector)
 
 	// Fire both existence check and access info read as parallel futures.
+	// Existence check uses layer 0 (always compact format).
 	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
 	existFuture := tx.Get(fdb.Key(existKey))
 	accessKey := g.storage.accessSubspace.Pack(tuple.Tuple{})
@@ -235,7 +238,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		// No entry point — this is the first node.
 		// Save node at all layers from 0 to insertLayer.
 		for layer := 0; layer <= insertLayer; layer++ {
-			g.storage.saveNodeLayer(tx, layer, primaryKey, vecBytes, nil)
+			g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
 		}
 		g.storage.saveAccessInfo(tx, insertLayer, primaryKey, vecBytes)
 		return nil
@@ -243,7 +246,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 	// Preload upper layers used in greedy descent (few nodes each).
 	for layer := epLayer; layer > insertLayer && layer > 0; layer-- {
-		if preloadErr := g.storage.preloadLayer(tx, layer); preloadErr != nil {
+		if preloadErr := g.storage.preloadLayerDispatch(tx, layer); preloadErr != nil {
 			return preloadErr
 		}
 	}
@@ -289,11 +292,11 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		}
 
 		// Save new node at this layer.
-		g.storage.saveNodeLayer(tx, layer, primaryKey, vecBytes, newNodeNeighbors)
+		g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, newNodeNeighbors)
 
 		// Add reverse connections to each neighbor.
 		for _, nb := range selected {
-			nbVecBytes, nbNeighbors, loadErr := g.storage.loadNodeLayer(tx, layer, nb.pk)
+			nbVecBytes, nbNeighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, nb.pk)
 			if loadErr != nil {
 				continue
 			}
@@ -303,14 +306,16 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 			// Prune if over limit.
 			if len(nbNeighbors) > maxConn {
-				nbVec, _ := g.decodeStoredVector(nbVecBytes)
+				// Resolve vector bytes (at inlining layers, own vector is at layer 0).
+				resolvedVec := g.storage.resolveVectorBytes(layer, nb.pk, nbVecBytes)
+				nbVec, _ := g.decodeStoredVector(resolvedVec)
 				nbNeighbors, err = g.pruneNeighbors(tx, nbVec, nbNeighbors, maxConn, layer)
 				if err != nil {
 					return err
 				}
 			}
 
-			g.storage.saveNodeLayer(tx, layer, nb.pk, nbVecBytes, nbNeighbors)
+			g.storage.saveNodeLayerDispatch(tx, layer, nb.pk, nbVecBytes, nbNeighbors)
 		}
 
 		if len(neighbors) > 0 {
@@ -323,7 +328,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	// If new node has layers above the entry point, save those layers too.
 	if insertLayer > epLayer {
 		for layer := epLayer + 1; layer <= insertLayer; layer++ {
-			g.storage.saveNodeLayer(tx, layer, primaryKey, vecBytes, nil)
+			g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
 		}
 		g.storage.saveAccessInfo(tx, insertLayer, primaryKey, vecBytes)
 	}
@@ -334,14 +339,15 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 // Delete removes a node from the HNSW graph and repairs neighbor connections.
 // Wire-compatible with Java's HNSW delete (graph repair, entry point update).
 //
-// Optimization: pipelines the initial layer reads across all layers at once,
-// reducing sequential round-trips from O(topLvl) to O(1) for the read phase.
+// Optimization: for compact layers, pipelines the initial reads across all layers
+// at once, reducing sequential round-trips from O(topLvl) to O(1) for the read phase.
+// For inlining layers, uses preloadLayerDispatch (already done during search/insert).
 // Repairs are still sequential (each needs neighbor data from FDB).
 func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	topLvl := topLayer(primaryKey, g.config.M)
 
-	// Pipeline: fire all layer reads at once via loadNodeLayerBatch-style approach.
-	// Build keys for all layers and fire Get() futures before resolving any.
+	// Pipeline: fire all compact-layer reads at once.
+	// Inlining layers use range reads via loadNodeLayerDispatch.
 	type layerFuture struct {
 		layer  int
 		key    string
@@ -350,6 +356,9 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	var futures []layerFuture
 
 	for layer := 0; layer <= topLvl; layer++ {
+		if g.storage.isInliningLayer(layer) {
+			continue // inlining layers use range reads, not single-key gets
+		}
 		key := g.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 		cacheKey := string(key)
 		if _, ok := g.storage.cache[cacheKey]; ok {
@@ -362,7 +371,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		})
 	}
 
-	// Resolve all futures — FDB pipelines these reads into ~1 round-trip.
+	// Resolve all compact-layer futures — FDB pipelines these reads into ~1 round-trip.
 	for _, f := range futures {
 		data, err := f.future.Get()
 		if err != nil {
@@ -379,20 +388,20 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
 	}
 
-	// Check existence at layer 0 (now served from cache).
+	// Check existence at layer 0 (always compact, now served from cache).
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
 	if err != nil {
 		return nil // already deleted or doesn't exist
 	}
 
-	// Delete from all layers and repair (reads now come from cache).
+	// Delete from all layers and repair.
 	for layer := 0; layer <= topLvl; layer++ {
-		_, neighbors, loadErr := g.storage.loadNodeLayer(tx, layer, primaryKey)
+		_, neighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, primaryKey)
 		if loadErr != nil {
 			continue // not present at this layer
 		}
 
-		g.storage.deleteNodeLayer(tx, layer, primaryKey)
+		g.storage.deleteNodeLayerDispatch(tx, layer, primaryKey)
 
 		// Repair: for each neighbor, reconnect.
 		for _, nbPK := range neighbors {
@@ -416,7 +425,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 
 		for layer := epLayer; layer >= 0 && newEntryPK == nil; layer-- {
 			// Find any node at this layer.
-			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayer(tx, layer)
+			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayerDispatch(tx, layer)
 			if scanErr == nil && foundPK != nil {
 				newEntryPK = foundPK
 				newEntryVecBytes = foundVec
@@ -445,7 +454,7 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 	// Preload upper layers (few nodes each) in one GetRange per layer.
 	// This replaces ~2 round-trips per greedy iteration with zero after preload.
 	for layer := epLayer; layer > 0; layer-- {
-		if preloadErr := g.storage.preloadLayer(tx, layer); preloadErr != nil {
+		if preloadErr := g.storage.preloadLayerDispatch(tx, layer); preloadErr != nil {
 			return nil, preloadErr
 		}
 	}
@@ -491,13 +500,14 @@ func (g *hnswGraph) searchLayerGreedy(tx fdb.ReadTransaction, query []float64, e
 
 	for changed {
 		changed = false
-		_, neighbors, err := g.storage.loadNodeLayer(tx, layer, bestPK)
+		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, bestPK)
 		if err != nil {
 			break // no data at this layer
 		}
 
-		// Batch-fetch all neighbor vectors in one round-trip.
-		batchResults := g.storage.loadNodeLayerBatch(tx, layer, neighbors)
+		// Batch-fetch all neighbor vectors.
+		// For inlining layers, neighbor vectors are already cached from the range read.
+		batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, neighbors)
 		for _, r := range batchResults {
 			if r.err != nil {
 				continue
@@ -558,7 +568,7 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		}
 
 		// Load the node's neighbors at this layer.
-		_, neighbors, err := g.storage.loadNodeLayer(tx, layer, closest.pk)
+		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, closest.pk)
 		if err != nil {
 			continue
 		}
@@ -575,7 +585,8 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		}
 
 		// Batch-read all unvisited neighbors at once.
-		batchResults := g.storage.loadNodeLayerBatch(tx, layer, toFetch)
+		// For inlining layers, neighbor vectors are already cached from the range read.
+		batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, toFetch)
 		for _, r := range batchResults {
 			if r.err != nil {
 				continue
@@ -687,7 +698,7 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	// Collect all unseen 2nd-degree neighbor PKs.
 	var toFetch []tuple.Tuple
 	for _, c := range candidates {
-		_, neighbors, err := g.storage.loadNodeLayer(tx, layer, c.pk)
+		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, c.pk)
 		if err != nil {
 			continue
 		}
@@ -702,7 +713,7 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 	}
 
 	// Batch-fetch all 2nd-degree neighbors at once.
-	batchResults := g.storage.loadNodeLayerBatch(tx, layer, toFetch)
+	batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, toFetch)
 	for _, r := range batchResults {
 		if r.err != nil {
 			continue
@@ -718,7 +729,7 @@ func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []flo
 // Uses the same heuristic as selectNeighbors (with optional extendCandidates).
 func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
 	var candidates []hnswCandidate
-	batchResults := g.storage.loadNodeLayerBatch(tx, layer, neighborPKs)
+	batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, neighborPKs)
 	for _, r := range batchResults {
 		if r.err != nil {
 			continue
@@ -747,7 +758,7 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 
 // repairNeighbor removes a deleted node from a neighbor's list and finds replacement connections.
 func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, deletedPK tuple.Tuple) error {
-	nbVecBytes, nbNeighbors, err := g.storage.loadNodeLayer(tx, layer, neighborPK)
+	nbVecBytes, nbNeighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, neighborPK)
 	if err != nil {
 		return nil // neighbor doesn't exist
 	}
@@ -761,7 +772,7 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	}
 
 	// Batch-load filtered neighbors to get their neighbor lists.
-	filteredBatch := g.storage.loadNodeLayerBatch(tx, layer, filtered)
+	filteredBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, filtered)
 
 	// Find candidates from neighbors-of-neighbors.
 	candidateMap := make(map[string]tuple.Tuple)
@@ -778,7 +789,9 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	}
 
 	// Build candidate list with distances.
-	nbVec, _ := g.decodeStoredVector(nbVecBytes)
+	// For inlining layers, own vector is at layer 0.
+	resolvedVec := g.storage.resolveVectorBytes(layer, neighborPK, nbVecBytes)
+	nbVec, _ := g.decodeStoredVector(resolvedVec)
 
 	// Start with existing (filtered) neighbors (already in cache from batch above).
 	seen := make(map[string]bool)
@@ -787,9 +800,10 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		if r.err != nil {
 			continue
 		}
-		candidateVec, _ := g.decodeStoredVector(r.vecBytes)
+		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
+		candidateVec, _ := g.decodeStoredVector(resolvedCandidateVec)
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, vec: candidateVec, dist: dist})
+		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
 		seen[string(r.pk.Pack())] = true
 	}
 
@@ -812,14 +826,15 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	}
 
 	// Batch-fetch new candidates.
-	newBatch := g.storage.loadNodeLayerBatch(tx, layer, newCandidatePKs)
+	newBatch := g.storage.loadNodeLayerBatchDispatch(tx, layer, newCandidatePKs)
 	for _, r := range newBatch {
 		if r.err != nil {
 			continue
 		}
-		candidateVec, _ := g.decodeStoredVector(r.vecBytes)
+		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
+		candidateVec, _ := g.decodeStoredVector(resolvedCandidateVec)
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
-		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, vec: candidateVec, dist: dist})
+		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
 	}
 
 	// Select best connections using the heuristic.
@@ -835,7 +850,7 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		newNeighbors[i] = c.pk
 	}
 
-	g.storage.saveNodeLayer(tx, layer, neighborPK, nbVecBytes, newNeighbors)
+	g.storage.saveNodeLayerDispatch(tx, layer, neighborPK, nbVecBytes, newNeighbors)
 	return nil
 }
 
@@ -852,11 +867,15 @@ type parsedNode struct {
 }
 
 // hnswStorage handles FDB storage of HNSW graph nodes.
-// Wire-compatible with Java's COMPACT node format.
+// Supports two storage formats:
+//   - COMPACT (default): (layer, pk) → (nodeKind, vectorTuple, neighborsTuple)
+//   - INLINING (layers > 0 when UseInlining=true): (layer, pk, neighborPK) → neighborVector
+//
+// Wire-compatible with Java's CompactStorageAdapter and InliningStorageAdapter.
 //
 // Subspace layout:
 //
-//	Sub(0) — data: (layer, primaryKey) -> (nodeKind, vectorTuple, neighborsTuple)
+//	Sub(0) — data: compact or inlining KVs
 //	Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
 type hnswStorage struct {
 	dataSubspace   subspace.Subspace
@@ -1206,6 +1225,378 @@ func (s *hnswStorage) clearAll(tx fdb.Transaction) {
 		}
 		tx.ClearRange(r)
 	}
+}
+
+// --- Inlining storage format ---
+// Wire-compatible with Java's InliningStorageAdapter.
+//
+// Key: dataSubspace.Pack(Tuple{layer, sourcePK, neighborPK})
+// Value: Tuple{neighborVecBytes}.Pack()
+//
+// Used for layers > 0 when UseInlining is enabled. Layer 0 always uses compact format.
+
+// isInliningLayer returns true if the given layer should use the inlining storage format.
+func (s *hnswStorage) isInliningLayer(layer int) bool {
+	return s.config.UseInlining && layer > 0
+}
+
+// saveNodeLayerInlining writes a node's edges in inlining format.
+// Each neighbor is a separate KV: (layer, pk, neighborPK) → tuple-packed neighborVector.
+// The node's own vector is not stored at inlining layers — it's stored at layer 0 (compact).
+func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, neighbors []tuple.Tuple) {
+	// Clear all existing edges for this node at this layer.
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	r, err := fdb.PrefixRange(prefix)
+	if err == nil {
+		tx.ClearRange(r)
+	}
+
+	// Write each edge with the neighbor's vector.
+	for _, nbPK := range neighbors {
+		// Look up neighbor's vector from cache. During insert, neighbors were just
+		// loaded by loadNodeLayer/loadNodeLayerBatch, so they're in cache.
+		nbVecBytes := s.getVectorBytesFromCache(layer, nbPK)
+		if nbVecBytes == nil {
+			// Fallback: try layer 0 (compact format always has the vector).
+			nbVecBytes = s.getVectorBytesFromCache(0, nbPK)
+		}
+		if nbVecBytes == nil {
+			continue // neighbor not in cache — should not happen during normal operation
+		}
+
+		edgeKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey, nbPK})
+		edgeValue := tuple.Tuple{nbVecBytes}.Pack()
+		tx.Set(fdb.Key(edgeKey), edgeValue)
+	}
+
+	// Update the cache for this node so loadNodeLayerDispatch returns
+	// neighbors from cache without hitting FDB.
+	compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	// For inlining layers, vecBytes is nil (vector lives at layer 0).
+	// Use empty slice (not nil) when no neighbors, so cache knows the node
+	// exists but has no neighbors (nil neighbors means "unknown, needs range read").
+	cachedNeighbors := neighbors
+	if cachedNeighbors == nil {
+		cachedNeighbors = []tuple.Tuple{}
+	}
+	s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: cachedNeighbors}
+}
+
+// getVectorBytesFromCache looks up a node's vector bytes from the cache at a given layer.
+func (s *hnswStorage) getVectorBytesFromCache(layer int, pk tuple.Tuple) []byte {
+	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+	if cached, ok := s.cache[string(key)]; ok && cached != nil {
+		return cached.vecBytes
+	}
+	return nil
+}
+
+// resolveVectorBytes returns the vector bytes for a node. If vecBytes is non-nil, returns it.
+// Otherwise looks up the vector from the cache, trying the given layer then falling back
+// to layer 0 (where the compact format always stores the vector).
+func (s *hnswStorage) resolveVectorBytes(layer int, pk tuple.Tuple, vecBytes []byte) []byte {
+	if vecBytes != nil {
+		return vecBytes
+	}
+	// Try current layer cache.
+	if vb := s.getVectorBytesFromCache(layer, pk); vb != nil {
+		return vb
+	}
+	// Fall back to layer 0 (compact format always has the vector).
+	return s.getVectorBytesFromCache(0, pk)
+}
+
+// loadNodeLayerInlining reads a node's neighbors using inlining format.
+// A single GetRange on (layer, pk, *) returns all neighbor PKs + their vectors.
+// Also populates the cache with each neighbor's vector for subsequent distance lookups.
+func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, primaryKey tuple.Tuple) ([]byte, []tuple.Tuple, error) {
+	// Check cache first (populated by saveNodeLayerInlining, preloadLayerInlining,
+	// or a prior loadNodeLayerInlining call).
+	compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	cacheKey := string(compactKey)
+	if cached, ok := s.cache[cacheKey]; ok {
+		if cached == nil {
+			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+		}
+		// If we have neighbors, return immediately. If neighbors is nil, this was
+		// a vector-only cache entry from an edge read — we need to fetch the actual
+		// neighbor list via a range read below.
+		if cached.neighbors != nil {
+			return cached.vecBytes, cached.neighbors, nil
+		}
+	}
+
+	// Range read: all KVs under (layer, pk, *).
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	r, err := fdb.PrefixRange(prefix)
+	if err != nil {
+		return nil, nil, fmt.Errorf("hnsw: inlining prefix range layer %d: %w", layer, err)
+	}
+
+	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	var neighbors []tuple.Tuple
+
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return nil, nil, fmt.Errorf("hnsw: inlining get kv layer %d: %w", layer, err)
+		}
+
+		// Unpack the key to get (layer, sourcePK, neighborPK).
+		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		if unpackErr != nil || len(keyTuple) < 3 {
+			continue
+		}
+
+		nbPK, ok := keyTuple[2].(tuple.Tuple)
+		if !ok {
+			continue
+		}
+
+		// Value is tuple-packed neighbor vector bytes.
+		valueTuple, valErr := tuple.Unpack(kv.Value)
+		if valErr != nil || len(valueTuple) < 1 {
+			continue
+		}
+		nbVecBytes, ok := valueTuple[0].([]byte)
+		if !ok {
+			continue
+		}
+
+		neighbors = append(neighbors, nbPK)
+
+		// Cache the neighbor's data at this layer so loadNodeLayerBatch hits cache.
+		// We don't know the neighbor's own neighbors yet, but we have its vector.
+		nbCompactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), nbPK})
+		nbCacheKey := string(nbCompactKey)
+		if _, alreadyCached := s.cache[nbCacheKey]; !alreadyCached {
+			// Store a partial cache entry with the vector but no neighbors.
+			// This is enough for loadNodeLayerBatch to return vecBytes.
+			s.cache[nbCacheKey] = &parsedNode{vecBytes: nbVecBytes, neighbors: nil}
+		}
+	}
+
+	if len(neighbors) == 0 {
+		// No edges found — node doesn't exist at this layer.
+		s.cache[cacheKey] = nil
+		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+	}
+
+	// Cache the full node. Preserve any existing vecBytes from a prior
+	// vector-only cache entry (from edge reads).
+	var existingVec []byte
+	if existing, ok := s.cache[cacheKey]; ok && existing != nil {
+		existingVec = existing.vecBytes
+	}
+	s.cache[cacheKey] = &parsedNode{vecBytes: existingVec, neighbors: neighbors}
+	return existingVec, neighbors, nil
+}
+
+// deleteNodeLayerInlining removes all edges for a node at an inlining layer.
+// Also clears incoming edges (where this node is a neighbor of other nodes).
+func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
+	// Clear outgoing edges: (layer, pk, *).
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+	r, err := fdb.PrefixRange(prefix)
+	if err == nil {
+		tx.ClearRange(r)
+	}
+
+	// Mark as deleted in cache.
+	s.cache[string(prefix)] = nil
+}
+
+// preloadLayerInlining reads ALL nodes at the given inlining layer in a single GetRange,
+// groups edges by source node, and populates the cache.
+func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) error {
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
+	r, err := fdb.PrefixRange(prefix)
+	if err != nil {
+		return fmt.Errorf("hnsw: preload inlining layer %d prefix range: %w", layer, err)
+	}
+
+	// Group edges by source PK.
+	type edgeInfo struct {
+		neighborPK tuple.Tuple
+		vecBytes   []byte
+	}
+	nodeEdges := make(map[string][]edgeInfo)   // source PK packed bytes → edges
+	nodePKs := make(map[string]tuple.Tuple)     // source PK packed bytes → source PK
+
+	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return fmt.Errorf("hnsw: preload inlining layer %d get kv: %w", layer, err)
+		}
+
+		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		if unpackErr != nil || len(keyTuple) < 3 {
+			continue
+		}
+
+		sourcePK, ok := keyTuple[1].(tuple.Tuple)
+		if !ok {
+			continue
+		}
+		nbPK, ok := keyTuple[2].(tuple.Tuple)
+		if !ok {
+			continue
+		}
+
+		valueTuple, valErr := tuple.Unpack(kv.Value)
+		if valErr != nil || len(valueTuple) < 1 {
+			continue
+		}
+		nbVecBytes, ok := valueTuple[0].([]byte)
+		if !ok {
+			continue
+		}
+
+		sourceKey := string(sourcePK.Pack())
+		nodeEdges[sourceKey] = append(nodeEdges[sourceKey], edgeInfo{neighborPK: nbPK, vecBytes: nbVecBytes})
+		nodePKs[sourceKey] = sourcePK
+	}
+
+	// Populate cache: one entry per source node with its neighbor list.
+	for sourceKey, edges := range nodeEdges {
+		sourcePK := nodePKs[sourceKey]
+		compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), sourcePK})
+		if _, ok := s.cache[string(compactKey)]; ok {
+			continue // already cached
+		}
+
+		neighbors := make([]tuple.Tuple, len(edges))
+		for i, e := range edges {
+			neighbors[i] = e.neighborPK
+
+			// Also cache each neighbor's vector.
+			nbCompactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), e.neighborPK})
+			nbCacheKey := string(nbCompactKey)
+			if _, alreadyCached := s.cache[nbCacheKey]; !alreadyCached {
+				s.cache[nbCacheKey] = &parsedNode{vecBytes: e.vecBytes, neighbors: nil}
+			}
+		}
+
+		s.cache[string(compactKey)] = &parsedNode{vecBytes: nil, neighbors: neighbors}
+	}
+
+	return nil
+}
+
+// findAnyNodeAtLayerInlining finds any node present at the given inlining layer.
+func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer int) (pk tuple.Tuple, vectorBytes []byte, err error) {
+	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
+	r, rangeErr := fdb.PrefixRange(prefix)
+	if rangeErr != nil {
+		return nil, nil, rangeErr
+	}
+
+	// Read just 1 KV to find any node.
+	ri := tx.GetRange(r, fdb.RangeOptions{Limit: 1}).Iterator()
+	if ri.Advance() {
+		kv, getErr := ri.Get()
+		if getErr != nil {
+			return nil, nil, getErr
+		}
+
+		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		if unpackErr != nil || len(keyTuple) < 2 {
+			return nil, nil, fmt.Errorf("hnsw: inlining key too short at layer %d", layer)
+		}
+
+		if pkTuple, ok := keyTuple[1].(tuple.Tuple); ok {
+			// For inlining layers, the node's own vector is at layer 0.
+			// Return nil vectorBytes — the caller should have the entry point vector
+			// from the access info, or can look it up at layer 0.
+			return pkTuple, nil, nil
+		}
+	}
+
+	return nil, nil, fmt.Errorf("hnsw: no nodes at layer %d", layer)
+}
+
+// --- Dispatch methods ---
+// These choose between compact and inlining format based on layer and config.
+
+// saveNodeLayerDispatch saves a node's layer data in the appropriate format.
+func (s *hnswStorage) saveNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple, vectorBytes []byte, neighbors []tuple.Tuple) {
+	if s.isInliningLayer(layer) {
+		s.saveNodeLayerInlining(tx, layer, primaryKey, neighbors)
+	} else {
+		s.saveNodeLayer(tx, layer, primaryKey, vectorBytes, neighbors)
+	}
+}
+
+// loadNodeLayerDispatch loads a node's layer data from the appropriate format.
+func (s *hnswStorage) loadNodeLayerDispatch(tx fdb.ReadTransaction, layer int, primaryKey tuple.Tuple) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
+	if s.isInliningLayer(layer) {
+		return s.loadNodeLayerInlining(tx, layer, primaryKey)
+	}
+	return s.loadNodeLayer(tx, layer, primaryKey)
+}
+
+// loadNodeLayerBatchDispatch batch-loads nodes from the appropriate format.
+// For inlining layers, individual loadNodeLayerInlining calls are still used but the
+// neighbor vectors are already cached from the first range read.
+func (s *hnswStorage) loadNodeLayerBatchDispatch(tx fdb.ReadTransaction, layer int, pks []tuple.Tuple) []nodeResult {
+	if !s.isInliningLayer(layer) {
+		return s.loadNodeLayerBatch(tx, layer, pks)
+	}
+
+	// For inlining layers, the cache is already populated by loadNodeLayerInlining/preloadLayerInlining.
+	// We just need to look up each PK in the cache.
+	results := make([]nodeResult, len(pks))
+	for i, pk := range pks {
+		results[i].pk = pk
+		results[i].pkBytes = string(pk.Pack())
+
+		compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+		if cached, ok := s.cache[string(compactKey)]; ok {
+			if cached == nil {
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
+			} else {
+				results[i].vecBytes = cached.vecBytes
+				results[i].neighbors = cached.neighbors
+			}
+			continue
+		}
+
+		// Not cached yet — do a range read (this should be rare after preload).
+		vecBytes, neighbors, err := s.loadNodeLayerInlining(tx, layer, pk)
+		if err != nil {
+			results[i].err = err
+		} else {
+			results[i].vecBytes = vecBytes
+			results[i].neighbors = neighbors
+		}
+	}
+	return results
+}
+
+// deleteNodeLayerDispatch deletes a node's layer data in the appropriate format.
+func (s *hnswStorage) deleteNodeLayerDispatch(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
+	if s.isInliningLayer(layer) {
+		s.deleteNodeLayerInlining(tx, layer, primaryKey)
+	} else {
+		s.deleteNodeLayer(tx, layer, primaryKey)
+	}
+}
+
+// preloadLayerDispatch preloads a layer in the appropriate format.
+func (s *hnswStorage) preloadLayerDispatch(tx fdb.ReadTransaction, layer int) error {
+	if s.isInliningLayer(layer) {
+		return s.preloadLayerInlining(tx, layer)
+	}
+	return s.preloadLayer(tx, layer)
+}
+
+// findAnyNodeAtLayerDispatch finds any node at a layer in the appropriate format.
+func (s *hnswStorage) findAnyNodeAtLayerDispatch(tx fdb.ReadTransaction, layer int) (pk tuple.Tuple, vectorBytes []byte, err error) {
+	if s.isInliningLayer(layer) {
+		return s.findAnyNodeAtLayerInlining(tx, layer)
+	}
+	return s.findAnyNodeAtLayer(tx, layer)
 }
 
 // --- Vector serialization ---

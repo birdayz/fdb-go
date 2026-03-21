@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
@@ -667,6 +668,300 @@ var _ = Describe("HNSW Graph Direct", func() {
 			results, searchErr := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
 			Expect(searchErr).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(4))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW Inlining Storage", func() {
+	ctx := context.Background()
+
+	// Helper: create an isolated HNSW graph with inlining enabled.
+	makeInliningGraph := func(dims int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-inlining")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			UseInlining:    true,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("insert single node, search returns it (inlining)", func() {
+		graph := makeInliningGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(1)}
+			vec := []float64{1.0, 2.0, 3.0}
+			Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{1.0, 2.0, 3.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert 5 nodes, kNN k=3 returns 3 closest (inlining)", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			points := [][]float64{
+				{0.0, 0.0},   // id=0
+				{1.0, 0.0},   // id=1
+				{2.0, 0.0},   // id=2
+				{10.0, 0.0},  // id=3 (far)
+				{100.0, 0.0}, // id=4 (very far)
+			}
+			for i, p := range points {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, p)).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert then delete, search does not return deleted node (inlining)", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk1 := tuple.Tuple{int64(1)}
+			pk2 := tuple.Tuple{int64(2)}
+			pk3 := tuple.Tuple{int64(3)}
+
+			Expect(graph.Insert(tx, pk1, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk2, []float64{1.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk3, []float64{2.0, 0.0})).To(Succeed())
+
+			Expect(graph.Delete(tx, pk2)).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{1, 3}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("insert same PK twice (update) with inlining", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			pk := tuple.Tuple{int64(42)}
+
+			Expect(graph.Insert(tx, pk, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, pk, []float64{5.0, 5.0})).To(Succeed())
+
+			results, err := graph.Search(tx, []float64{5.0, 5.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("inlining storage format: layer 0 uses compact, layers > 0 use inlining", func() {
+		// Use M=4 which gives some nodes at layer > 0.
+		// With many nodes, some will deterministically land on upper layers.
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 20 points. With M=4, some will be on layer 1+.
+			for i := 0; i < 20; i++ {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i), float64(i * 2)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Verify layer 0 uses compact format: check that a key at
+			// (0, pk) exists and has compact format value.
+			layer0Key := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(0), tuple.Tuple{int64(0)}})
+			layer0Data, err := tx.Get(fdb.Key(layer0Key)).Get()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(layer0Data).NotTo(BeNil(), "layer 0 should use compact format (single KV)")
+
+			// Parse it as compact format — should succeed.
+			_, _, parseErr := parseNodeValue(layer0Data)
+			Expect(parseErr).NotTo(HaveOccurred())
+
+			// Find a node at layer > 0 by checking which PKs have topLayer > 0.
+			var upperLayerPK tuple.Tuple
+			for i := 0; i < 20; i++ {
+				pk := tuple.Tuple{int64(i)}
+				if topLayer(pk, graph.config.M) > 0 {
+					upperLayerPK = pk
+					break
+				}
+			}
+
+			if upperLayerPK != nil {
+				layer := topLayer(upperLayerPK, graph.config.M)
+				// At inlining layer, the compact-format key should NOT exist.
+				compactKey := graph.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), upperLayerPK})
+				compactData, err := tx.Get(fdb.Key(compactKey)).Get()
+				Expect(err).NotTo(HaveOccurred())
+				// In inlining format, the compact key doesn't exist — instead, edges
+				// are stored at (layer, pk, neighborPK) keys.
+				Expect(compactData).To(BeNil(), "inlining layer should NOT have compact format key")
+
+				// Verify that the node is loadable from the dispatch layer.
+				_, neighbors, loadErr := graph.storage.loadNodeLayerDispatch(tx, layer, upperLayerPK)
+				Expect(loadErr).NotTo(HaveOccurred())
+				// Node at upper layer should have been saved (may have 0 or more neighbors).
+				_ = neighbors
+			}
+
+			// Search should still work correctly.
+			results, err := graph.Search(tx, []float64{5.0, 10.0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("larger graph with inlining produces correct search results", func() {
+		graph := makeInliningGraph(4)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 50 nodes in 4D.
+			for i := 0; i < 50; i++ {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i), float64(i * 3), float64(i * 7), float64(i * 11)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search near origin: should find id=0 as the closest.
+			results, err := graph.Search(tx, []float64{0, 0, 0, 0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// id=0 should be the nearest (at the origin).
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(0)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+
+			// Distances should be in ascending order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("parseHNSWConfig reads hnswUseInlining option", func() {
+		idx := &Index{
+			Name:    "test_vec",
+			Type:    IndexTypeVector,
+			Options: map[string]string{
+				IndexOptionVectorNumDimensions: "128",
+				"hnswUseInlining":             "true",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.UseInlining).To(BeTrue())
+		Expect(config.NumDimensions).To(Equal(128))
+
+		// Without the option, should default to false.
+		idx2 := &Index{
+			Name:    "test_vec2",
+			Type:    IndexTypeVector,
+			Options: map[string]string{
+				IndexOptionVectorNumDimensions: "128",
+			},
+		}
+		config2 := parseHNSWConfig(idx2)
+		Expect(config2.UseInlining).To(BeFalse())
+	})
+
+	It("isInliningLayer returns correct values", func() {
+		ssInlining := specSubspace().Sub("hnsw-inlining-check")
+		configInlining := HNSWConfig{UseInlining: true}
+		storageInlining := newHNSWStorage(ssInlining, configInlining)
+
+		Expect(storageInlining.isInliningLayer(0)).To(BeFalse(), "layer 0 is always compact")
+		Expect(storageInlining.isInliningLayer(1)).To(BeTrue(), "layer 1 should be inlining")
+		Expect(storageInlining.isInliningLayer(5)).To(BeTrue(), "layer 5 should be inlining")
+
+		ssCompact := specSubspace().Sub("hnsw-compact-check")
+		configCompact := HNSWConfig{UseInlining: false}
+		storageCompact := newHNSWStorage(ssCompact, configCompact)
+
+		Expect(storageCompact.isInliningLayer(0)).To(BeFalse(), "layer 0 is always compact")
+		Expect(storageCompact.isInliningLayer(1)).To(BeFalse(), "layer 1 should be compact when UseInlining=false")
+	})
+
+	It("delete all nodes with inlining leaves empty graph", func() {
+		graph := makeInliningGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 nodes.
+			for i := 0; i < 5; i++ {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{float64(i), float64(i)})).To(Succeed())
+			}
+
+			// Delete all nodes.
+			for i := 0; i < 5; i++ {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Delete(tx, pk)).To(Succeed())
+			}
+
+			// Search should return no results.
+			results, err := graph.Search(tx, []float64{0, 0}, 3, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeNil())
 
 			return nil, nil
 		})
