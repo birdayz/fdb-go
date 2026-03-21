@@ -104,6 +104,24 @@ func vecRandomVector(rng *rand.Rand, dims int) []float64 {
 	return v
 }
 
+// extractPKInt64 extracts an int64 primary key from a tuple.Tuple, handling nested tuples.
+func extractPKInt64(pk tuple.Tuple) int64 {
+	if len(pk) == 0 {
+		return -1
+	}
+	switch v := pk[0].(type) {
+	case int64:
+		return v
+	case tuple.Tuple:
+		if len(v) > 0 {
+			if id, ok := v[0].(int64); ok {
+				return id
+			}
+		}
+	}
+	return -1
+}
+
 // vecBruteForceKNN computes exact k nearest neighbors by scanning all vectors.
 // Returns order_id values (int64) sorted by distance (ascending).
 func vecBruteForceKNN(query []float64, vectors [][]float64, k int) []int64 {
@@ -132,11 +150,10 @@ func vecBenchSubspace(name string) subspace.Subspace {
 }
 
 // vecBuildMetaData builds metadata with a VECTOR index on Order.vector_data.
-// Uses KWV(Concat(Field("order_id"), Field("vector_data")), 1) so that
-// order_id is the prefix/PK and vector_data is the indexed vector bytes.
+// Uses KWV(Field("vector_data"), 0) — all vectors in one HNSW graph (no prefix grouping).
 func vecBuildMetaData(dims int, useRaBitQ bool) (*RecordMetaData, *Index) {
 	vecIdx := NewVectorIndex("vec_data",
-		KeyWithValue(Concat(Field("order_id"), Field("vector_data")), 1), dims)
+		KeyWithValue(Field("vector_data"), 0), dims)
 	if useRaBitQ {
 		vecIdx.Options["hnswUseRaBitQ"] = "true"
 	}
@@ -512,7 +529,8 @@ func TestVectorStressManual(t *testing.T) {
 	insertRate := float64(size) / insertDuration.Seconds()
 	t.Logf("  Inserted %d vectors in %v (%.1f vec/sec)", size, insertDuration, insertRate)
 
-	// Phase 2: Sequential search throughput + recall.
+
+// Phase 2: Sequential search throughput + recall.
 	t.Log("Phase 2: Sequential search throughput...")
 	const seqSearchOps = 100
 	queryRng := rand.New(rand.NewSource(99))
@@ -525,12 +543,15 @@ func TestVectorStressManual(t *testing.T) {
 		var results []VectorSearchResult
 		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
-				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("open store: %w", err)
 			}
 			results, err = store.SearchVectorIndex(vecIdx, q, k, efSearch)
-			return nil, err
+			if err != nil {
+				return nil, fmt.Errorf("search: %w", err)
+			}
+			return nil, nil
 		})
 		if err != nil {
 			t.Fatalf("sequential search %d: %v", i, err)
@@ -545,10 +566,9 @@ func TestVectorStressManual(t *testing.T) {
 		}
 		hits := 0
 		for _, r := range results {
-			if len(r.PrimaryKey) > 0 {
-				if id, ok := r.PrimaryKey[0].(int64); ok && expectedSet[id] {
-					hits++
-				}
+			pk := extractPKInt64(r.PrimaryKey)
+			if pk >= 0 && expectedSet[pk] {
+				hits++
 			}
 		}
 		if len(expected) > 0 {

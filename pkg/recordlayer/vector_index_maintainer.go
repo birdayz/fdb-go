@@ -394,6 +394,15 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
 // Returns results sorted by distance (closest first).
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
+	// Guard: if index has a prefix (KWV splitPoint > 0), caller MUST provide one.
+	// Searching without a prefix on a grouped index returns empty (queries the
+	// base subspace which has no data), silently producing wrong results.
+	if len(prefix) == 0 {
+		if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok && kwv.SplitPoint() > 0 {
+			return nil, fmt.Errorf("VECTOR index %q is prefix-partitioned (splitPoint=%d): "+
+				"use SearchVectorIndexWithPrefix to provide a prefix", m.index.Name, kwv.SplitPoint())
+		}
+	}
 	ss := m.getSubspaceForPrefix(prefix)
 	storage := newHNSWStorage(ss, m.hnswConfig)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
