@@ -112,9 +112,19 @@ func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 	}
 }
 
+// buildTransform creates a transform from access info and the current config.
+// Returns nil if no transform is needed (either RaBitQ is off, or no centroid yet for Euclidean).
+func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
+	if info == nil || !info.canUseRaBitQ() {
+		return nil
+	}
+	normalize := g.config.Metric == VectorMetricCosine
+	return newHNSWTransform(info.rotatorSeed, info.centroid, g.config.NumDimensions, normalize)
+}
+
 // encodeVectorBytes returns the bytes to store for a vector.
-// When UseRaBitQ is enabled, returns RaBitQ-encoded bytes; otherwise returns
-// the raw DOUBLE-serialized bytes.
+// When UseRaBitQ is enabled and a transform is active, the caller must apply the
+// transform before calling this. Returns RaBitQ-encoded bytes or raw DOUBLE-serialized bytes.
 func (g *hnswGraph) encodeVectorBytes(vector []float64) []byte {
 	if g.config.UseRaBitQ {
 		numExBits := g.config.RaBitQNumExBits
@@ -202,10 +212,8 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 // Insert adds a vector to the HNSW graph.
 // primaryKey identifies the record. vector is the float64 vector to index.
 // Wire-compatible with Java's HNSW insert (compact + inlining node formats,
-// deterministic layer assignment).
+// deterministic layer assignment, FHT-KAC rotation for RaBitQ).
 func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
-	vecBytes := g.encodeVectorBytes(vector)
-
 	// Fire both existence check and access info read as parallel futures.
 	// Existence check uses layer 0 (always compact format).
 	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
@@ -232,17 +240,27 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 	// Resolve access info.
 	accessData, _ := accessFuture.Get()
-	epLayer, epPK, epVecBytes, epErr := g.storage.parseAccessInfo(accessData)
+	accessInfo, epErr := g.storage.parseAccessInfo(accessData)
 
 	if epErr != nil {
-		// No entry point — this is the first node.
-		// Save node at all layers from 0 to insertLayer.
-		for layer := 0; layer <= insertLayer; layer++ {
-			g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
-		}
-		g.storage.saveAccessInfo(tx, insertLayer, primaryKey, vecBytes)
-		return nil
+		// No entry point — first node in the graph.
+		return g.firstInsert(tx, primaryKey, vector, insertLayer)
 	}
+
+	// Build transform from access info (nil if no rotation configured).
+	transform := g.buildTransform(accessInfo)
+
+	// Transform vector for storage and search.
+	// All vectors in the graph are stored in the transformed coordinate system.
+	queryVec := vector
+	if transform != nil {
+		queryVec = transform.apply(vector)
+	}
+	vecBytes := g.encodeVectorBytes(queryVec)
+
+	epLayer := accessInfo.layer
+	epPK := accessInfo.pk
+	epVecBytes := accessInfo.vectorBytes
 
 	// Preload upper layers used in greedy descent (few nodes each).
 	for layer := epLayer; layer > insertLayer && layer > 0; layer-- {
@@ -252,11 +270,12 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	}
 
 	// Greedy search from top to insertion layer.
+	// Search uses the transformed query vector.
 	var err error
 	currentPK := epPK
 	currentVecBytes := epVecBytes
 	for layer := epLayer; layer > insertLayer; layer-- {
-		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, vector, currentPK, currentVecBytes, layer)
+		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, queryVec, currentPK, currentVecBytes, layer)
 		if err != nil {
 			return err
 		}
@@ -265,7 +284,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	// Insert at each layer from min(insertLayer, epLayer) down to 0.
 	for layer := min(insertLayer, epLayer); layer >= 0; layer-- {
 		// Find ef_construction nearest neighbors at this layer.
-		neighbors, err := g.searchLayerMulti(tx, vector, currentPK, currentVecBytes, g.config.EfConstruction, layer)
+		neighbors, err := g.searchLayerMulti(tx, queryVec, currentPK, currentVecBytes, g.config.EfConstruction, layer)
 		if err != nil {
 			return err
 		}
@@ -277,7 +296,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		}
 		var selected []hnswCandidate
 		if g.config.ExtendCandidates {
-			selected, err = g.selectNeighborsHeuristic(tx, vector, neighbors, maxConn, layer)
+			selected, err = g.selectNeighborsHeuristic(tx, queryVec, neighbors, maxConn, layer)
 			if err != nil {
 				return err
 			}
@@ -325,14 +344,62 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		}
 	}
 
-	// If new node has layers above the entry point, save those layers too.
+	// If new node has layers above the entry point, save those layers too
+	// and update the entry point.
 	if insertLayer > epLayer {
 		for layer := epLayer + 1; layer <= insertLayer; layer++ {
 			g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
 		}
-		g.storage.saveAccessInfo(tx, insertLayer, primaryKey, vecBytes)
+		accessInfo.layer = insertLayer
+		accessInfo.pk = primaryKey
+		accessInfo.vectorBytes = vecBytes
+		g.storage.saveAccessInfo(tx, accessInfo)
 	}
 
+	return nil
+}
+
+// firstInsert handles the first-ever insertion into the graph.
+// When RaBitQ is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
+// initializes the FHT-KAC rotator immediately with a zero centroid.
+// Matches Java's Insert.firstInsert().
+func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
+	info := &hnswAccessInfo{
+		layer:       insertLayer,
+		pk:          primaryKey,
+		rotatorSeed: -1,
+	}
+
+	queryVec := vector
+
+	if g.config.UseRaBitQ && !g.config.Metric.satisfiesPreservedUnderTranslation() {
+		// Cosine/DotProduct: activate rotation immediately.
+		// Generate deterministic seed from primary key, matching Java's:
+		//   SplittableRandom random = new SplittableRandom(splitMixLong(pk.hashCode()));
+		//   rotatorSeed = random.nextLong();
+		// SplittableRandom.nextLong() for the first call = splitMixLong(initialSeed)
+		packed := primaryKey.Pack()
+		h := javaHashCode(packed)
+		initialSeed := splitMixLong(int64(h))
+		info.rotatorSeed = splitMixLong(initialSeed)
+
+		// Zero centroid = no translation, rotation only.
+		info.centroid = make([]float64, g.config.NumDimensions)
+
+		// Apply transform before encoding.
+		transform := g.buildTransform(info)
+		if transform != nil {
+			queryVec = transform.apply(vector)
+		}
+	}
+
+	vecBytes := g.encodeVectorBytes(queryVec)
+	info.vectorBytes = vecBytes
+
+	for layer := 0; layer <= insertLayer; layer++ {
+		g.storage.saveNodeLayerDispatch(tx, layer, primaryKey, vecBytes, nil)
+	}
+	g.storage.saveAccessInfo(tx, info)
 	return nil
 }
 
@@ -412,18 +479,18 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	// Update entry point if needed.
-	epLayer, epPK, _, epErr := g.storage.loadAccessInfo(tx)
+	currentAccessInfo, epErr := g.storage.loadAccessInfo(tx)
 	if epErr != nil {
 		return nil // no entry point
 	}
-	if tupleEqual(epPK, primaryKey) {
+	if tupleEqual(currentAccessInfo.pk, primaryKey) {
 		// Find a replacement entry point by scanning for any remaining node,
 		// starting from the highest layer and working down.
 		var newEntryPK tuple.Tuple
 		var newEntryVecBytes []byte
 		newEntryLayer := 0
 
-		for layer := epLayer; layer >= 0 && newEntryPK == nil; layer-- {
+		for layer := currentAccessInfo.layer; layer >= 0 && newEntryPK == nil; layer-- {
 			// Find any node at this layer.
 			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayerDispatch(tx, layer)
 			if scanErr == nil && foundPK != nil {
@@ -434,7 +501,11 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 		}
 
 		if newEntryPK != nil {
-			g.storage.saveAccessInfo(tx, newEntryLayer, newEntryPK, newEntryVecBytes)
+			// Preserve transform state (rotatorSeed, centroid) when updating entry point.
+			currentAccessInfo.layer = newEntryLayer
+			currentAccessInfo.pk = newEntryPK
+			currentAccessInfo.vectorBytes = newEntryVecBytes
+			g.storage.saveAccessInfo(tx, currentAccessInfo)
 		} else {
 			g.storage.clearAccessInfo(tx)
 		}
@@ -446,31 +517,39 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 // Search finds the k nearest neighbors to the query vector.
 // Returns results sorted by distance (closest first).
 func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch int) ([]hnswSearchResult, error) {
-	epLayer, epPK, epVecBytes, err := g.storage.loadAccessInfo(tx)
+	accessInfo, err := g.storage.loadAccessInfo(tx)
 	if err != nil {
 		return nil, nil // empty graph
 	}
 
+	// Apply transform to query vector so it's in the same coordinate system
+	// as the stored vectors. Matches Java's StorageTransform.transform(queryVector).
+	transform := g.buildTransform(accessInfo)
+	searchQuery := query
+	if transform != nil {
+		searchQuery = transform.apply(query)
+	}
+
 	// Preload upper layers (few nodes each) in one GetRange per layer.
 	// This replaces ~2 round-trips per greedy iteration with zero after preload.
-	for layer := epLayer; layer > 0; layer-- {
+	for layer := accessInfo.layer; layer > 0; layer-- {
 		if preloadErr := g.storage.preloadLayerDispatch(tx, layer); preloadErr != nil {
 			return nil, preloadErr
 		}
 	}
 
 	// Greedy descent from top layer to layer 1.
-	currentPK := epPK
-	currentVecBytes := epVecBytes
-	for layer := epLayer; layer > 0; layer-- {
-		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, query, currentPK, currentVecBytes, layer)
+	currentPK := accessInfo.pk
+	currentVecBytes := accessInfo.vectorBytes
+	for layer := accessInfo.layer; layer > 0; layer-- {
+		currentPK, currentVecBytes, err = g.searchLayerGreedy(tx, searchQuery, currentPK, currentVecBytes, layer)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// Search at layer 0 with efSearch.
-	candidates, err := g.searchLayerMulti(tx, query, currentPK, currentVecBytes, max(efSearch, k), 0)
+	candidates, err := g.searchLayerMulti(tx, searchQuery, currentPK, currentVecBytes, max(efSearch, k), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -1092,57 +1171,90 @@ func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey 
 	s.cache[string(key)] = nil
 }
 
+// hnswAccessInfo holds the parsed entry point metadata and transform state.
+// Matches Java's com.apple.foundationdb.async.hnsw.AccessInfo.
+type hnswAccessInfo struct {
+	layer       int
+	pk          tuple.Tuple
+	vectorBytes []byte
+	rotatorSeed int64     // -1 = no rotator, other = FhtKacRotator seed
+	centroid    []float64 // nil = no centroid (negated centroid from Java)
+}
+
 // parseAccessInfo parses the entry point metadata from raw bytes.
-// Returns layer, primary key, vector bytes, and error (non-nil if no entry point).
-func (s *hnswStorage) parseAccessInfo(data []byte) (layer int, pk tuple.Tuple, vectorBytes []byte, err error) {
+// Wire format: Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
+func (s *hnswStorage) parseAccessInfo(data []byte) (*hnswAccessInfo, error) {
 	if data == nil {
-		return 0, nil, nil, fmt.Errorf("hnsw: no entry point")
+		return nil, fmt.Errorf("hnsw: no entry point")
 	}
 
 	t, unpackErr := tuple.Unpack(data)
 	if unpackErr != nil {
-		return 0, nil, nil, fmt.Errorf("hnsw: unpack access info: %w", unpackErr)
+		return nil, fmt.Errorf("hnsw: unpack access info: %w", unpackErr)
 	}
 	if len(t) < 3 {
-		return 0, nil, nil, fmt.Errorf("hnsw: access info too short: %d elements", len(t))
+		return nil, fmt.Errorf("hnsw: access info too short: %d elements", len(t))
+	}
+
+	info := &hnswAccessInfo{
+		rotatorSeed: -1, // default: no rotator
 	}
 
 	// t[0] = entryPointLayer
-	// t[1] = entryPointPK (tuple)
-	// t[2] = entryPointVectorTuple (tuple containing vector bytes)
-
 	if l, ok := asInt64(t[0]); ok {
-		layer = int(l)
+		info.layer = int(l)
 	}
 
-	switch pkVal := t[1].(type) {
-	case tuple.Tuple:
-		pk = pkVal
+	// t[1] = entryPointPK (tuple)
+	if pkVal, ok := t[1].(tuple.Tuple); ok {
+		info.pk = pkVal
 	}
 
-	switch vt := t[2].(type) {
-	case tuple.Tuple:
-		if len(vt) > 0 {
-			if vb, ok := vt[0].([]byte); ok {
-				vectorBytes = vb
+	// t[2] = entryPointVectorTuple (tuple containing vector bytes)
+	if vt, ok := t[2].(tuple.Tuple); ok && len(vt) > 0 {
+		if vb, ok := vt[0].([]byte); ok {
+			info.vectorBytes = vb
+		}
+	}
+
+	// t[3] = rotatorSeed (int64)
+	if len(t) > 3 {
+		if seed, ok := asInt64(t[3]); ok {
+			info.rotatorSeed = seed
+		}
+	}
+
+	// t[4] = negatedCentroid (tuple containing vector bytes, or nil)
+	if len(t) > 4 && t[4] != nil {
+		if ct, ok := t[4].(tuple.Tuple); ok && len(ct) > 0 {
+			if cb, ok := ct[0].([]byte); ok {
+				centroidVec, decErr := deserializeVector(cb)
+				if decErr == nil {
+					info.centroid = centroidVec
+				}
 			}
 		}
 	}
 
-	if pk == nil {
-		return 0, nil, nil, fmt.Errorf("hnsw: access info has nil PK")
+	if info.pk == nil {
+		return nil, fmt.Errorf("hnsw: access info has nil PK")
 	}
 
-	return layer, pk, vectorBytes, nil
+	return info, nil
+}
+
+// canUseRaBitQ reports whether the access info has transform data for RaBitQ.
+// Matches Java's AccessInfo.canUseRaBitQ() — true when negatedCentroid is non-null.
+func (a *hnswAccessInfo) canUseRaBitQ() bool {
+	return a.centroid != nil
 }
 
 // loadAccessInfo reads the entry point metadata from FDB.
-// Returns layer, primary key, vector bytes, and error (non-nil if no entry point).
-func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tuple.Tuple, vectorBytes []byte, err error) {
+func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (*hnswAccessInfo, error) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
 	data, getErr := tx.Get(fdb.Key(key)).Get()
 	if getErr != nil {
-		return 0, nil, nil, fmt.Errorf("hnsw: get access info: %w", getErr)
+		return nil, fmt.Errorf("hnsw: get access info: %w", getErr)
 	}
 	return s.parseAccessInfo(data)
 }
@@ -1150,14 +1262,21 @@ func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tupl
 // saveAccessInfo writes the entry point metadata.
 // Wire-compatible with Java's StorageAdapter.writeAccessInfo:
 // Tuple.from(layer, primaryKey, vectorTuple, rotatorSeed, centroidOrNull)
-func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, layer int, pk tuple.Tuple, vectorBytes []byte) {
+func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, info *hnswAccessInfo) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
+
+	// Serialize centroid as a vector tuple (or nil).
+	var centroidElement interface{}
+	if info.centroid != nil {
+		centroidElement = tuple.Tuple{serializeVector(info.centroid)}
+	}
+
 	value := tuple.Tuple{
-		int64(layer),
-		pk,
-		tuple.Tuple{vectorBytes},
-		int64(0), // rotatorSeed (default 0)
-		nil,      // negatedCentroid (null = not computed)
+		int64(info.layer),
+		info.pk,
+		tuple.Tuple{info.vectorBytes},
+		info.rotatorSeed,
+		centroidElement,
 	}
 	tx.Set(fdb.Key(key), value.Pack())
 }

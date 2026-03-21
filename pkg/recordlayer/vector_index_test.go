@@ -468,11 +468,11 @@ var _ = Describe("HNSW Graph Direct", func() {
 			}
 
 			// Verify the graph has an entry point.
-			epLayer, epPK, _, epErr := graph.storage.loadAccessInfo(tx)
+			epInfo, epErr := graph.storage.loadAccessInfo(tx)
 			Expect(epErr).NotTo(HaveOccurred())
-			Expect(epPK).NotTo(BeNil())
+			Expect(epInfo.pk).NotTo(BeNil())
 			// With M=4 and 30 nodes, max layer should be >= 0.
-			Expect(epLayer).To(BeNumerically(">=", 0))
+			Expect(epInfo.layer).To(BeNumerically(">=", 0))
 
 			// Verify search still works correctly across layers.
 			results, err := graph.Search(tx, []float64{0.0, 0.0}, 5, 100)
@@ -587,17 +587,22 @@ var _ = Describe("HNSW Graph Direct", func() {
 			pk := tuple.Tuple{int64(42)}
 			vecBytes := serializeVector([]float64{1.0, 2.0})
 
-			storage.saveAccessInfo(tx, 3, pk, vecBytes)
+			storage.saveAccessInfo(tx, &hnswAccessInfo{
+				layer:       3,
+				pk:          pk,
+				vectorBytes: vecBytes,
+				rotatorSeed: -1,
+			})
 
-			layer, gotPK, gotVec, err := storage.loadAccessInfo(tx)
+			gotInfo, err := storage.loadAccessInfo(tx)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(layer).To(Equal(3))
-			Expect(tupleEqual(gotPK, pk)).To(BeTrue())
-			Expect(gotVec).To(Equal(vecBytes))
+			Expect(gotInfo.layer).To(Equal(3))
+			Expect(tupleEqual(gotInfo.pk, pk)).To(BeTrue())
+			Expect(gotInfo.vectorBytes).To(Equal(vecBytes))
 
 			// Clear and verify.
 			storage.clearAccessInfo(tx)
-			_, _, _, err = storage.loadAccessInfo(tx)
+			_, err = storage.loadAccessInfo(tx)
 			Expect(err).To(HaveOccurred())
 
 			return nil, nil
@@ -652,17 +657,17 @@ var _ = Describe("HNSW Graph Direct", func() {
 			}
 
 			// Find the current entry point.
-			_, epPK, _, _ := graph.storage.loadAccessInfo(tx)
-			Expect(epPK).NotTo(BeNil())
+			epInfo, _ := graph.storage.loadAccessInfo(tx)
+			Expect(epInfo.pk).NotTo(BeNil())
 
 			// Delete it.
-			Expect(graph.Delete(tx, epPK)).To(Succeed())
+			Expect(graph.Delete(tx, epInfo.pk)).To(Succeed())
 
 			// Graph should still have an entry point.
-			_, newEP, _, err := graph.storage.loadAccessInfo(tx)
+			newInfo, err := graph.storage.loadAccessInfo(tx)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(newEP).NotTo(BeNil())
-			Expect(tupleEqual(newEP, epPK)).To(BeFalse(), "entry point should change after deletion")
+			Expect(newInfo.pk).NotTo(BeNil())
+			Expect(tupleEqual(newInfo.pk, epInfo.pk)).To(BeFalse(), "entry point should change after deletion")
 
 			// Search should still work.
 			results, searchErr := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)

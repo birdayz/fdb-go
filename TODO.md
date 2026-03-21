@@ -176,7 +176,7 @@ SIFT-1M benchmark: recall@10=0.998 (excellent), 34 QPS (19x slower than Qdrant).
 | # | What | Impact | Category | Status |
 |---|---|---|---|---|
 | 1 | Inlining storage adapter (upper layers: range-read vs N point-reads) | HIGH perf | Performance | [x] UseInlining config, dispatch by layer |
-| 2 | RaBitQ full transform (FHT-KAC rotation + centroid bootstrapping) | MEDIUM-HIGH quality | Correctness | [ ] |
+| 2 | RaBitQ FHT-KAC rotation (centroid bootstrapping deferred) | MEDIUM-HIGH quality | Correctness | [x] FHT-KAC rotator, Java Random compat, transform pipeline, access info wire format |
 | 3 | Delete repair sampling (efRepair=64 limit) | MEDIUM perf | Performance | [x] |
 | 4 | Dual priority queues (max-heap for results) | LOW perf | Performance | [x] binary-insert |
 | 5 | Parallel existence + access info fetch on insert | LOW perf | Performance | [x] |

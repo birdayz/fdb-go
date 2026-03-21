@@ -11,6 +11,23 @@ const (
 	VectorMetricInnerProduct
 )
 
+// satisfiesPreservedUnderTranslation reports whether distances are preserved
+// under vector translation. Matches Java's MetricDefinition.satisfiesPreservedUnderTranslation():
+//   - Euclidean: true (default)
+//   - Cosine: false (CosineMetric overrides)
+//   - InnerProduct (DotProduct): false (DotProductMetric overrides)
+//
+// When false and RaBitQ is enabled, vectors are rotated immediately from the first
+// insert (with zero centroid). When true, centroid bootstrapping is needed first.
+func (m VectorMetric) satisfiesPreservedUnderTranslation() bool {
+	switch m {
+	case VectorMetricCosine, VectorMetricInnerProduct:
+		return false
+	default:
+		return true
+	}
+}
+
 // satisfiesTriangleInequality reports whether this metric satisfies the triangle inequality.
 // Matches Java's MetricDefinition.satisfiesTriangleInequality():
 //   - Euclidean (L2, not squared): true (default in Java)
