@@ -899,6 +899,8 @@ func deserializeVector(data []byte) ([]float64, error) {
 			vec[i] = float64(halfToFloat32(bits))
 		}
 		return vec, nil
+	case 3: // RABITQ
+		return nil, fmt.Errorf("hnsw: RaBitQ vectors must be decoded via EncodedVectorFromBytes, not deserializeVector")
 	default:
 		return nil, fmt.Errorf("hnsw: unsupported vector type ordinal %d", typeOrdinal)
 	}
