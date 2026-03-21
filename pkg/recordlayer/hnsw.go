@@ -1,5 +1,26 @@
 package recordlayer
 
+// Write locks (Java's LockIdentifier / LockRegistry) are NOT needed in Go.
+//
+// Java's VectorIndexMaintainer wraps HNSW insert/delete in doWithWriteLock()
+// and scans in acquireReadLock(). These are purely in-memory, in-process async
+// read/write locks (ConcurrentHashMap<LockIdentifier, AsyncLock>) that live on
+// FDBRecordContext. They coordinate concurrent CompletableFuture chains sharing
+// the same FDB transaction — e.g., pipelined updateIndexAsync calls that could
+// otherwise interleave reads and writes to the same HNSW partition subspace.
+//
+// This problem does not exist in Go:
+//   - Go's FDB bindings are synchronous. Each Insert/Delete/Search call runs
+//     sequentially on the same fdb.Transaction. There are no concurrent async
+//     futures within a single transaction.
+//   - Cross-transaction correctness is handled by FDB's serializable isolation.
+//     Concurrent transactions modifying the same HNSW nodes conflict on shared
+//     keys, FDB aborts one, and the retry loop re-executes. Insert is idempotent
+//     (checks existence first), so retries are safe.
+//
+// In short: Java needs the lock because of its async concurrency model within a
+// single transaction. Go's synchronous model eliminates the problem entirely.
+
 import (
 	"container/heap"
 	"encoding/binary"
