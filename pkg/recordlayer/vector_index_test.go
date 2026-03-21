@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"math/rand"
 	"sort"
@@ -88,6 +89,38 @@ var _ = Describe("Vector Serialization", func() {
 	It("deserialize rejects empty data", func() {
 		_, err := deserializeVector(nil)
 		Expect(err).To(HaveOccurred())
+	})
+
+	It("deserializes float32 vectors", func() {
+		buf := make([]byte, 1+4*3)
+		buf[0] = 1 // SINGLE type
+		binary.BigEndian.PutUint32(buf[1:], math.Float32bits(1.0))
+		binary.BigEndian.PutUint32(buf[5:], math.Float32bits(2.5))
+		binary.BigEndian.PutUint32(buf[9:], math.Float32bits(-0.5))
+
+		vec, err := deserializeVector(buf)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vec).To(HaveLen(3))
+		Expect(vec[0]).To(BeNumerically("~", 1.0, 1e-6))
+		Expect(vec[1]).To(BeNumerically("~", 2.5, 1e-6))
+		Expect(vec[2]).To(BeNumerically("~", -0.5, 1e-6))
+	})
+
+	It("deserializes float16 vectors", func() {
+		// float16 for 1.0 = 0x3C00, float16 for 2.0 = 0x4000
+		buf := []byte{2, 0x3C, 0x00, 0x40, 0x00}
+		vec, err := deserializeVector(buf)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vec).To(HaveLen(2))
+		Expect(vec[0]).To(BeNumerically("~", 1.0, 0.01))
+		Expect(vec[1]).To(BeNumerically("~", 2.0, 0.01))
+	})
+
+	It("rejects unknown vector type", func() {
+		buf := []byte{99, 0x00}
+		_, err := deserializeVector(buf)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("unsupported vector type"))
 	})
 })
 
@@ -1805,5 +1838,414 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
+	})
+})
+
+var _ = Describe("HNSW Extended Neighbor Selection", func() {
+	ctx := context.Background()
+
+	It("selectNeighbors heuristic prefers diverse directions", func() {
+		// Unit test: 5 candidates, maxConn=2.
+		// Candidate A is closest, candidate B is close but near A,
+		// candidate C is farther but in a different direction.
+		// The heuristic should pick A and C (diverse), not A and B (clustered).
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean, // satisfies triangle inequality
+		}
+		ss := specSubspace().Sub("hnsw-heuristic-unit")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// Query at origin (0,0). Distances are squared Euclidean.
+		// A = (1, 0)  -> dist = 1
+		// B = (1.1, 0) -> dist = 1.21 (very close to A)
+		// C = (0, 2)  -> dist = 4    (different direction from A)
+		// D = (0, 2.1) -> dist = 4.41 (close to C)
+		// E = (3, 3)  -> dist = 18   (far away)
+		candidates := []hnswCandidate{
+			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
+			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 1.21},
+			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 4.0},
+			{pk: tuple.Tuple{int64(4)}, vec: []float64{0, 2.1}, dist: 4.41},
+			{pk: tuple.Tuple{int64(5)}, vec: []float64{3, 3}, dist: 18.0},
+		}
+
+		selected := graph.selectNeighbors(candidates, 2)
+		Expect(selected).To(HaveLen(2))
+
+		// First should be A (closest).
+		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
+		// Second should be C (diverse direction), not B (clustered with A).
+		// dist(B, A) = (0.1)^2 = 0.01 < B.dist=1.21 -> B is pruned
+		// dist(C, A) = 1 + 4 = 5 > C.dist=4 -> C is selected
+		Expect(selected[1].pk[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("keepPrunedConnections fills up to maxConn", func() {
+		config := HNSWConfig{
+			NumDimensions:         2,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			KeepPrunedConnections: true,
+		}
+		ss := specSubspace().Sub("hnsw-keep-pruned-unit")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// Query at origin. All candidates are on the X axis (same direction).
+		// Heuristic will pick only the closest, prune the rest.
+		// With keepPrunedConnections, pruned ones fill up to maxConn.
+		candidates := []hnswCandidate{
+			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 1.0},
+			{pk: tuple.Tuple{int64(2)}, vec: []float64{2, 0}, dist: 4.0},
+			{pk: tuple.Tuple{int64(3)}, vec: []float64{3, 0}, dist: 9.0},
+			{pk: tuple.Tuple{int64(4)}, vec: []float64{4, 0}, dist: 16.0},
+			{pk: tuple.Tuple{int64(5)}, vec: []float64{5, 0}, dist: 25.0},
+		}
+
+		// maxConn=3: heuristic selects only id=1 (closest), then prunes 2,3,4,5.
+		// keepPrunedConnections adds back 2, 3 to fill up to 3.
+		selected := graph.selectNeighbors(candidates, 3)
+		Expect(selected).To(HaveLen(3))
+		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
+		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
+		Expect(selected[2].pk[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("heuristic is skipped for cosine metric (no triangle inequality)", func() {
+		config := HNSWConfig{
+			NumDimensions:  2,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricCosine, // does NOT satisfy triangle inequality
+		}
+		ss := specSubspace().Sub("hnsw-cosine-no-heuristic")
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		// With cosine metric, selectNeighbors should do simple sort-and-truncate,
+		// NOT the diversity heuristic.
+		candidates := []hnswCandidate{
+			{pk: tuple.Tuple{int64(1)}, vec: []float64{1, 0}, dist: 0.1},
+			{pk: tuple.Tuple{int64(2)}, vec: []float64{1.1, 0}, dist: 0.2},
+			{pk: tuple.Tuple{int64(3)}, vec: []float64{0, 2}, dist: 0.5},
+		}
+
+		selected := graph.selectNeighbors(candidates, 2)
+		Expect(selected).To(HaveLen(2))
+		// Simple sort: takes the two closest by dist.
+		Expect(selected[0].pk[0].(int64)).To(Equal(int64(1)))
+		Expect(selected[1].pk[0].(int64)).To(Equal(int64(2)))
+	})
+
+	It("extendCandidates explores 2nd-degree neighbors during insert", func() {
+		ss := specSubspace().Sub("hnsw-extend-insert")
+		config := HNSWConfig{
+			NumDimensions:    8,
+			M:                16,
+			MMax:             16,
+			MMax0:            32,
+			EfConstruction:   200,
+			Metric:           VectorMetricEuclidean,
+			ExtendCandidates: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 50
+		const dims = 8
+		const k = 5
+
+		rng := rand.New(rand.NewSource(99))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Results must be sorted by distance.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("keepPrunedConnections maintains graph connectivity after inserts", func() {
+		ss := specSubspace().Sub("hnsw-keep-pruned-insert")
+		config := HNSWConfig{
+			NumDimensions:         8,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 30
+		const dims = 8
+		const k = 5
+
+		rng := rand.New(rand.NewSource(2024))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Every inserted vector should be findable by searching for itself.
+			for i, vec := range vectors {
+				results, err := graph.Search(tx, vec, 1, 200)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1), "vector %d should be findable", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)),
+					"vector %d should find itself as nearest neighbor", i)
+				Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("both extendCandidates and keepPrunedConnections together", func() {
+		ss := specSubspace().Sub("hnsw-both-options")
+		config := HNSWConfig{
+			NumDimensions:         8,
+			M:                     8,
+			MMax:                  8,
+			MMax0:                 16,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			ExtendCandidates:      true,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 60
+		const dims = 8
+		const k = 10
+
+		rng := rand.New(rand.NewSource(31337))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*200.0 - 100.0
+			}
+			vectors[i] = vec
+		}
+		queryVec := make([]float64, dims)
+		for d := range dims {
+			queryVec[d] = rng.Float64()*200.0 - 100.0
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Search with both options.
+			results, err := graph.Search(tx, queryVec, k, 200)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(k))
+
+			// Verify sorted order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			// Brute-force recall check.
+			type distID struct {
+				id   int64
+				dist float64
+			}
+			bruteForce := make([]distID, numVectors)
+			for i, vec := range vectors {
+				bruteForce[i] = distID{int64(i), euclideanDistance(queryVec, vec)}
+			}
+			sort.Slice(bruteForce, func(i, j int) bool {
+				return bruteForce[i].dist < bruteForce[j].dist
+			})
+			topK := make(map[int64]bool, k)
+			for i := 0; i < k; i++ {
+				topK[bruteForce[i].id] = true
+			}
+
+			hnswIDs := make(map[int64]bool, k)
+			for _, r := range results {
+				hnswIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			overlap := 0
+			for id := range hnswIDs {
+				if topK[id] {
+					overlap++
+				}
+			}
+			recall := float64(overlap) / float64(k)
+			GinkgoWriter.Printf("HNSW (extend+keepPruned) recall@%d: %.2f\n", k, recall)
+			Expect(recall).To(BeNumerically(">=", 0.7))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete works correctly with heuristic neighbor selection", func() {
+		ss := specSubspace().Sub("hnsw-heuristic-delete")
+		config := HNSWConfig{
+			NumDimensions:         4,
+			M:                     4,
+			MMax:                  4,
+			MMax0:                 8,
+			EfConstruction:        100,
+			Metric:                VectorMetricEuclidean,
+			ExtendCandidates:      true,
+			KeepPrunedConnections: true,
+		}
+		storage := newHNSWStorage(ss, config)
+		graph := NewHNSWGraph(storage, config)
+
+		const numVectors = 20
+		const dims = 4
+
+		rng := rand.New(rand.NewSource(555))
+		vectors := make([][]float64, numVectors)
+		for i := range numVectors {
+			vec := make([]float64, dims)
+			for d := range dims {
+				vec[d] = rng.Float64()*100.0 - 50.0
+			}
+			vectors[i] = vec
+		}
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert all vectors.
+			for i, vec := range vectors {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Delete first 5 vectors.
+			for i := 0; i < 5; i++ {
+				Expect(graph.Delete(tx, tuple.Tuple{int64(i)}, vectors[i])).To(Succeed())
+			}
+
+			// Remaining 15 vectors should all be findable.
+			for i := 5; i < numVectors; i++ {
+				results, err := graph.Search(tx, vectors[i], 1, 100)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(1), "vector %d should be findable after deletes", i)
+				Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(i)))
+			}
+
+			// Deleted vectors should not appear in search results.
+			for i := 0; i < 5; i++ {
+				results, err := graph.Search(tx, vectors[i], numVectors, 200)
+				Expect(err).NotTo(HaveOccurred())
+				for _, r := range results {
+					Expect(r.PrimaryKey[0].(int64)).To(BeNumerically(">=", int64(5)),
+						"deleted vector %d should not appear in results", i)
+				}
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("parseHNSWConfig reads extendCandidates and keepPrunedConnections options", func() {
+		idx := &Index{
+			Name: "test_vec",
+			Options: map[string]string{
+				IndexOptionVectorNumDimensions:         "64",
+				IndexOptionVectorExtendCandidates:      "true",
+				IndexOptionVectorKeepPrunedConnections: "true",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.NumDimensions).To(Equal(64))
+		Expect(config.ExtendCandidates).To(BeTrue())
+		Expect(config.KeepPrunedConnections).To(BeTrue())
+
+		// Default (false) when not set.
+		idx2 := &Index{
+			Name: "test_vec2",
+			Options: map[string]string{
+				IndexOptionVectorNumDimensions: "32",
+			},
+		}
+		config2 := parseHNSWConfig(idx2)
+		Expect(config2.ExtendCandidates).To(BeFalse())
+		Expect(config2.KeepPrunedConnections).To(BeFalse())
+
+		// Explicit "false" value.
+		idx3 := &Index{
+			Name: "test_vec3",
+			Options: map[string]string{
+				IndexOptionVectorExtendCandidates:      "false",
+				IndexOptionVectorKeepPrunedConnections: "false",
+			},
+		}
+		config3 := parseHNSWConfig(idx3)
+		Expect(config3.ExtendCandidates).To(BeFalse())
+		Expect(config3.KeepPrunedConnections).To(BeFalse())
+	})
+
+	It("satisfiesTriangleInequality returns correct values per metric", func() {
+		Expect(VectorMetricEuclidean.satisfiesTriangleInequality()).To(BeTrue())
+		Expect(VectorMetricCosine.satisfiesTriangleInequality()).To(BeFalse())
+		Expect(VectorMetricInnerProduct.satisfiesTriangleInequality()).To(BeFalse())
 	})
 })

@@ -11,6 +11,25 @@ const (
 	VectorMetricInnerProduct
 )
 
+// satisfiesTriangleInequality reports whether this metric satisfies the triangle inequality.
+// Matches Java's MetricDefinition.satisfiesTriangleInequality():
+//   - Euclidean (L2, not squared): true (default in Java)
+//   - Cosine: false (CosineMetric overrides)
+//   - InnerProduct (DotProduct): false (DotProductMetric overrides)
+//
+// Note: Go's VectorMetricEuclidean actually computes squared L2 (matching Java's
+// EuclideanSquareMetric). However, the Java HNSW Config defaults to EUCLIDEAN_METRIC
+// (true metric, satisfies triangle inequality), so we return true here to match
+// the default behavior users get.
+func (m VectorMetric) satisfiesTriangleInequality() bool {
+	switch m {
+	case VectorMetricCosine, VectorMetricInnerProduct:
+		return false
+	default:
+		return true
+	}
+}
+
 // vectorDistance computes the distance between two vectors using the given metric.
 func vectorDistance(a, b []float64, metric VectorMetric) float64 {
 	switch metric {

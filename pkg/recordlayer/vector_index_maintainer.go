@@ -18,6 +18,16 @@ const IndexOptionVectorNumDimensions = "hnswNumDimensions"
 // Matches Java's IndexOptions.HNSW_METRIC.
 const IndexOptionVectorMetric = "hnswMetric"
 
+// IndexOptionVectorExtendCandidates controls whether the candidate set is extended
+// with neighbors-of-neighbors during neighbor selection (2nd-degree exploration).
+// Matches Java's IndexOptions.HNSW_EXTEND_CANDIDATES.
+const IndexOptionVectorExtendCandidates = "hnswExtendCandidates"
+
+// IndexOptionVectorKeepPrunedConnections controls whether pruned candidates are
+// added back to fill up to M neighbors when the heuristic selection produces too few.
+// Matches Java's IndexOptions.HNSW_KEEP_PRUNED_CONNECTIONS.
+const IndexOptionVectorKeepPrunedConnections = "hnswKeepPrunedConnections"
+
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
 //
@@ -68,6 +78,12 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 			// EUCLIDEAN_METRIC and any other value defaults to Euclidean.
 			config.Metric = VectorMetricEuclidean
 		}
+	}
+	if v, ok := index.Options[IndexOptionVectorExtendCandidates]; ok {
+		config.ExtendCandidates = v == "true"
+	}
+	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
+		config.KeepPrunedConnections = v == "true"
 	}
 	return config
 }

@@ -15,12 +15,14 @@ import (
 // HNSWConfig configures an HNSW graph.
 // Matches Java's com.apple.foundationdb.async.hnsw.Config.
 type HNSWConfig struct {
-	NumDimensions  int
-	M              int          // Connectivity factor (default 16)
-	MMax           int          // Max connections for non-zero layers (default M)
-	MMax0          int          // Max connections for layer 0 (default 2*M)
-	EfConstruction int          // Insertion search factor (default 200)
-	Metric         VectorMetric // Distance metric
+	NumDimensions         int
+	M                     int          // Connectivity factor (default 16)
+	MMax                  int          // Max connections for non-zero layers (default M)
+	MMax0                 int          // Max connections for layer 0 (default 2*M)
+	EfConstruction        int          // Insertion search factor (default 200)
+	Metric                VectorMetric // Distance metric
+	ExtendCandidates      bool         // Extend candidate set with 2nd-degree neighbors (default false)
+	KeepPrunedConnections bool         // Retain pruned candidates to fill up to M (default false)
 }
 
 // ValidateHNSWConfig validates the HNSW configuration.
@@ -127,7 +129,15 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		if layer == 0 {
 			maxConn = g.config.MMax0
 		}
-		selected := g.selectNeighbors(neighbors, maxConn)
+		var selected []hnswCandidate
+		if g.config.ExtendCandidates {
+			selected, err = g.selectNeighborsHeuristic(tx, vector, neighbors, maxConn, layer)
+			if err != nil {
+				return err
+			}
+		} else {
+			selected = g.selectNeighbors(neighbors, maxConn)
+		}
 
 		// Build neighbor list for the new node at this layer.
 		newNodeNeighbors := make([]tuple.Tuple, len(selected))
@@ -383,24 +393,107 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	return results, nil
 }
 
-// selectNeighbors returns the best maxConn neighbors by distance.
-func (g *hnswGraph) selectNeighbors(neighbors []hnswCandidate, maxConn int) []hnswCandidate {
-	if len(neighbors) <= maxConn {
-		return neighbors
+// selectNeighbors selects the best maxConn neighbors from candidates.
+// Uses the HNSW paper's Algorithm 4 heuristic: for metrics that satisfy
+// triangle inequality (Euclidean), candidates are selected greedily to
+// prefer diverse directions. For other metrics (Cosine, InnerProduct),
+// falls back to simple distance-based selection.
+// Matches Java's Primitives.selectCandidates().
+func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []hnswCandidate {
+	if len(candidates) <= maxConn {
+		return candidates
 	}
-	sort.Slice(neighbors, func(i, j int) bool {
-		return neighbors[i].dist < neighbors[j].dist
+
+	// Sort candidates by distance (ascending).
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
 	})
-	return neighbors[:maxConn]
+
+	// Only apply the heuristic for metrics satisfying triangle inequality.
+	// Matches Java: if (metric.satisfiesTriangleInequality()) { ... }
+	if !g.config.Metric.satisfiesTriangleInequality() {
+		return candidates[:maxConn]
+	}
+
+	var result []hnswCandidate
+	var discarded []hnswCandidate
+
+	for _, candidate := range candidates {
+		if len(result) >= maxConn {
+			break
+		}
+
+		// Check if candidate is closer to query than to any already-selected neighbor.
+		shouldSelect := true
+		for _, selected := range result {
+			distToSelected := vectorDistance(candidate.vec, selected.vec, g.config.Metric)
+			if distToSelected < candidate.dist {
+				shouldSelect = false
+				break
+			}
+		}
+
+		if shouldSelect {
+			result = append(result, candidate)
+		} else if g.config.KeepPrunedConnections {
+			discarded = append(discarded, candidate)
+		}
+	}
+
+	// Fill with pruned connections if keepPrunedConnections is enabled.
+	if g.config.KeepPrunedConnections {
+		for _, d := range discarded {
+			if len(result) >= maxConn {
+				break
+			}
+			result = append(result, d)
+		}
+	}
+
+	return result
+}
+
+// selectNeighborsHeuristic extends the candidate set with 2nd-degree neighbors
+// (when ExtendCandidates is true), then applies the heuristic selection.
+// This is the full Algorithm 4 from the HNSW paper.
+// Matches Java's Primitives.extendCandidatesIfNecessary() + selectCandidates().
+func (g *hnswGraph) selectNeighborsHeuristic(tx fdb.ReadTransaction, query []float64, candidates []hnswCandidate, maxConn, layer int) ([]hnswCandidate, error) {
+	working := make([]hnswCandidate, len(candidates))
+	copy(working, candidates)
+
+	// Extend with 2nd-degree neighbors.
+	seen := make(map[string]bool, len(working))
+	for _, c := range working {
+		seen[string(c.pk.Pack())] = true
+	}
+	for _, c := range candidates {
+		_, neighbors, err := g.storage.loadNodeLayer(tx, layer, c.pk)
+		if err != nil {
+			continue
+		}
+		for _, nbPK := range neighbors {
+			key := string(nbPK.Pack())
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			vecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, nbPK)
+			if loadErr != nil {
+				continue
+			}
+			vec, _ := deserializeVector(vecBytes)
+			dist := vectorDistance(query, vec, g.config.Metric)
+			working = append(working, hnswCandidate{pk: nbPK, vec: vec, dist: dist})
+		}
+	}
+
+	return g.selectNeighbors(working, maxConn), nil
 }
 
 // pruneNeighbors re-selects the best maxConn neighbors for a node by computing distances.
+// Uses the same heuristic as selectNeighbors (with optional extendCandidates).
 func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, neighborPKs []tuple.Tuple, maxConn, layer int) ([]tuple.Tuple, error) {
-	type entry struct {
-		pk   tuple.Tuple
-		dist float64
-	}
-	var entries []entry
+	var candidates []hnswCandidate
 	for _, pk := range neighborPKs {
 		vecBytes, _, err := g.storage.loadNodeLayer(tx, layer, pk)
 		if err != nil {
@@ -408,17 +501,23 @@ func (g *hnswGraph) pruneNeighbors(tx fdb.ReadTransaction, nodeVec []float64, ne
 		}
 		vec, _ := deserializeVector(vecBytes)
 		dist := vectorDistance(nodeVec, vec, g.config.Metric)
-		entries = append(entries, entry{pk: pk, dist: dist})
+		candidates = append(candidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].dist < entries[j].dist
-	})
-	if len(entries) > maxConn {
-		entries = entries[:maxConn]
+
+	var selected []hnswCandidate
+	if g.config.ExtendCandidates {
+		var err error
+		selected, err = g.selectNeighborsHeuristic(tx, nodeVec, candidates, maxConn, layer)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		selected = g.selectNeighbors(candidates, maxConn)
 	}
-	result := make([]tuple.Tuple, len(entries))
-	for i, e := range entries {
-		result[i] = e.pk
+
+	result := make([]tuple.Tuple, len(selected))
+	for i, s := range selected {
+		result[i] = s.pk
 	}
 	return result, nil
 }
@@ -456,13 +555,9 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	// Build candidate list with distances.
 	nbVec, _ := deserializeVector(nbVecBytes)
 
-	type candidateEntry struct {
-		pk   tuple.Tuple
-		dist float64
-	}
 	// Start with existing (filtered) neighbors.
 	seen := make(map[string]bool)
-	var allCandidates []candidateEntry
+	var allCandidates []hnswCandidate
 	for _, pk := range filtered {
 		vecBytes, _, loadErr := g.storage.loadNodeLayer(tx, layer, pk)
 		if loadErr != nil {
@@ -470,7 +565,7 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		}
 		vec, _ := deserializeVector(vecBytes)
 		dist := vectorDistance(nbVec, vec, g.config.Metric)
-		allCandidates = append(allCandidates, candidateEntry{pk: pk, dist: dist})
+		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
 		seen[string(pk.Pack())] = true
 	}
 	// Add new candidates from neighbors-of-neighbors.
@@ -484,24 +579,19 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		}
 		vec, _ := deserializeVector(vecBytes)
 		dist := vectorDistance(nbVec, vec, g.config.Metric)
-		allCandidates = append(allCandidates, candidateEntry{pk: pk, dist: dist})
+		allCandidates = append(allCandidates, hnswCandidate{pk: pk, vec: vec, dist: dist})
 	}
 
-	// Select best connections.
+	// Select best connections using the heuristic.
 	maxConn := g.config.MMax
 	if layer == 0 {
 		maxConn = g.config.MMax0
 	}
 
-	sort.Slice(allCandidates, func(i, j int) bool {
-		return allCandidates[i].dist < allCandidates[j].dist
-	})
-	if len(allCandidates) > maxConn {
-		allCandidates = allCandidates[:maxConn]
-	}
+	selected := g.selectNeighbors(allCandidates, maxConn)
 
-	newNeighbors := make([]tuple.Tuple, len(allCandidates))
-	for i, c := range allCandidates {
+	newNeighbors := make([]tuple.Tuple, len(selected))
+	for i, c := range selected {
 		newNeighbors[i] = c.pk
 	}
 
@@ -753,18 +843,73 @@ func serializeVector(vec []float64) []byte {
 	return buf
 }
 
-// deserializeVector deserializes a float64 vector from bytes.
+// deserializeVector deserializes a vector from bytes, returning float64 values.
+// Supports all three Java RealVector types:
+//   - Type 0: DOUBLE (64-bit IEEE 754, 8 bytes per component)
+//   - Type 1: SINGLE/FLOAT (32-bit IEEE 754, 4 bytes per component)
+//   - Type 2: HALF (16-bit IEEE 754, 2 bytes per component)
 func deserializeVector(data []byte) ([]float64, error) {
 	if len(data) < 1 {
 		return nil, fmt.Errorf("hnsw: empty vector data")
 	}
-	// data[0] = type byte, rest is float64 values
-	numFloats := (len(data) - 1) / 8
-	vec := make([]float64, numFloats)
-	for i := 0; i < numFloats; i++ {
-		vec[i] = math.Float64frombits(binary.BigEndian.Uint64(data[1+i*8:]))
+	typeOrdinal := data[0]
+	payload := data[1:]
+
+	switch typeOrdinal {
+	case 0: // DOUBLE (float64)
+		numFloats := len(payload) / 8
+		vec := make([]float64, numFloats)
+		for i := 0; i < numFloats; i++ {
+			vec[i] = math.Float64frombits(binary.BigEndian.Uint64(payload[i*8:]))
+		}
+		return vec, nil
+	case 1: // SINGLE (float32)
+		numFloats := len(payload) / 4
+		vec := make([]float64, numFloats)
+		for i := 0; i < numFloats; i++ {
+			vec[i] = float64(math.Float32frombits(binary.BigEndian.Uint32(payload[i*4:])))
+		}
+		return vec, nil
+	case 2: // HALF (float16)
+		numFloats := len(payload) / 2
+		vec := make([]float64, numFloats)
+		for i := 0; i < numFloats; i++ {
+			bits := binary.BigEndian.Uint16(payload[i*2:])
+			vec[i] = float64(halfToFloat32(bits))
+		}
+		return vec, nil
+	default:
+		return nil, fmt.Errorf("hnsw: unsupported vector type ordinal %d", typeOrdinal)
 	}
-	return vec, nil
+}
+
+// halfToFloat32 converts an IEEE 754 half-precision (16-bit) float to float32.
+func halfToFloat32(h uint16) float32 {
+	sign := uint32(h>>15) << 31
+	exp := uint32(h>>10) & 0x1f
+	frac := uint32(h & 0x3ff)
+
+	switch {
+	case exp == 0: // subnormal or zero
+		if frac == 0 {
+			return math.Float32frombits(sign)
+		}
+		// Subnormal: normalize
+		for frac&0x400 == 0 {
+			frac <<= 1
+			exp--
+		}
+		exp++
+		frac &= 0x3ff
+		return math.Float32frombits(sign | ((exp + 112) << 23) | (frac << 13))
+	case exp == 0x1f: // Inf or NaN
+		if frac == 0 {
+			return math.Float32frombits(sign | 0x7f800000)
+		}
+		return math.Float32frombits(sign | 0x7f800000 | (frac << 13))
+	default: // normalized
+		return math.Float32frombits(sign | ((exp + 112) << 23) | (frac << 13))
+	}
 }
 
 // --- Layer assignment ---
