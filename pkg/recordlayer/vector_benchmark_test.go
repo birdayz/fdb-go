@@ -1,0 +1,719 @@
+package recordlayer
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"math/rand"
+	"os"
+	"sort"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+)
+
+// --- Self-contained FDB init for the standalone manual target ---
+
+var (
+	vectorBenchDB     *FDBDatabase
+	vectorBenchDBOnce sync.Once
+)
+
+// ensureVectorBenchDB initializes the FDB database for vector benchmarks.
+// Starts its own FDB testcontainer. Safe to call multiple times (sync.Once).
+func ensureVectorBenchDB(tb testing.TB) {
+	tb.Helper()
+	vectorBenchDBOnce.Do(func() {
+		if vectorBenchDB != nil {
+			return
+		}
+		ctx := context.Background()
+		container, err := foundationdbtc.Run(ctx, "",
+			foundationdbtc.WithAPIVersion(720),
+		)
+		if err != nil {
+			tb.Fatalf("failed to start FDB container: %v", err)
+		}
+		if err := container.InitializeDatabase(ctx); err != nil {
+			tb.Fatalf("failed to init FDB: %v", err)
+		}
+		clusterFile, err := container.ClusterFile(ctx)
+		if err != nil {
+			tb.Fatalf("failed to get cluster file: %v", err)
+		}
+		tmpFile, err := os.CreateTemp("", "fdb_vecbench_*.txt")
+		if err != nil {
+			tb.Fatalf("failed to create temp file: %v", err)
+		}
+		if _, err := tmpFile.WriteString(clusterFile); err != nil {
+			tb.Fatalf("failed to write cluster file: %v", err)
+		}
+		tmpFile.Close()
+		fdb.MustAPIVersion(720)
+		dbConn, err := fdb.OpenDatabase(tmpFile.Name())
+		if err != nil {
+			tb.Fatalf("failed to open FDB: %v", err)
+		}
+		vectorBenchDB = NewFDBDatabase(dbConn)
+	})
+	if vectorBenchDB == nil {
+		tb.Fatal("vectorBenchDB initialization failed")
+	}
+}
+
+// --- Configuration via environment variables ---
+
+func vecEnvInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
+func vecEnvBool(key string, defaultVal bool) bool {
+	if v := os.Getenv(key); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err == nil {
+			return b
+		}
+	}
+	return defaultVal
+}
+
+// --- Helpers ---
+
+// vecRandomVector generates a random float64 vector of the given dimensions
+// using the provided PRNG source for reproducibility.
+func vecRandomVector(rng *rand.Rand, dims int) []float64 {
+	v := make([]float64, dims)
+	for i := range v {
+		v[i] = rng.NormFloat64()
+	}
+	return v
+}
+
+// vecBruteForceKNN computes exact k nearest neighbors by scanning all vectors.
+// Returns order_id values (int64) sorted by distance (ascending).
+func vecBruteForceKNN(query []float64, vectors [][]float64, k int) []int64 {
+	type distIdx struct {
+		dist float64
+		id   int64
+	}
+	dists := make([]distIdx, len(vectors))
+	for i, v := range vectors {
+		dists[i] = distIdx{dist: euclideanDistance(query, v), id: int64(i)}
+	}
+	sort.Slice(dists, func(a, b int) bool { return dists[a].dist < dists[b].dist })
+	if k > len(dists) {
+		k = len(dists)
+	}
+	result := make([]int64, k)
+	for i := 0; i < k; i++ {
+		result[i] = dists[i].id
+	}
+	return result
+}
+
+// vecBenchSubspace returns a unique subspace for the given benchmark or test.
+func vecBenchSubspace(name string) subspace.Subspace {
+	return subspace.FromBytes(tuple.Tuple{name, time.Now().UnixNano()}.Pack())
+}
+
+// vecBuildMetaData builds metadata with a VECTOR index on Order.vector_data.
+// Uses KWV(Concat(Field("order_id"), Field("vector_data")), 1) so that
+// order_id is the prefix/PK and vector_data is the indexed vector bytes.
+func vecBuildMetaData(dims int, useRaBitQ bool) (*RecordMetaData, *Index) {
+	vecIdx := NewVectorIndex("vec_data",
+		KeyWithValue(Concat(Field("order_id"), Field("vector_data")), 1), dims)
+	if useRaBitQ {
+		vecIdx.Options["hnswUseRaBitQ"] = "true"
+	}
+
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.AddIndex("Order", vecIdx)
+	md, err := builder.Build()
+	if err != nil {
+		panic(fmt.Sprintf("failed to build vector metadata: %v", err))
+	}
+	return md, vecIdx
+}
+
+// vecInsertVectors inserts n vectors into the store in batches to avoid FDB
+// transaction size limits. Returns the vectors that were inserted (indexed by
+// their order_id starting at 0).
+func vecInsertVectors(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss subspace.Subspace, n, dims int, rng *rand.Rand) [][]float64 {
+	tb.Helper()
+	ctx := context.Background()
+	vectors := make([][]float64, n)
+	for i := 0; i < n; i++ {
+		vectors[i] = vecRandomVector(rng, dims)
+	}
+
+	// Batch insert to stay under FDB transaction limits.
+	// HNSW inserts are expensive (graph traversal), so keep batches small.
+	batchSize := 50
+	for batch := 0; batch*batchSize < n; batch++ {
+		start := batch * batchSize
+		end := start + batchSize
+		if end > n {
+			end = n
+		}
+		_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(md).
+				SetSubspace(ss).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := start; i < end; i++ {
+				_, err := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(int64(i)),
+					Price:      proto.Int32(int32(i % 1000)),
+					VectorData: serializeVector(vectors[i]),
+				})
+				if err != nil {
+					return nil, fmt.Errorf("insert vector %d: %w", i, err)
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			tb.Fatalf("batch %d: %v", batch, err)
+		}
+	}
+	return vectors
+}
+
+// --- Benchmarks ---
+
+// BenchmarkVectorInsert measures the cost of inserting a single vector into an
+// HNSW index. Each iteration is one FDB transaction with one record save.
+func BenchmarkVectorInsert(b *testing.B) {
+	ensureVectorBenchDB(b)
+
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+	md, _ := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(b.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Pre-create the store.
+	_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	// Pre-generate all vectors.
+	vectors := make([][]float64, b.N)
+	for i := range vectors {
+		vectors[i] = vecRandomVector(rng, dims)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(&gen.Order{
+				OrderId:    proto.Int64(int64(i)),
+				Price:      proto.Int32(100),
+				VectorData: serializeVector(vectors[i]),
+			})
+		})
+		if err != nil {
+			b.Fatalf("insert %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkVectorSearch measures kNN search latency with a pre-populated HNSW
+// index. Also reports recall vs brute-force for a sample of queries.
+func BenchmarkVectorSearch(b *testing.B) {
+	ensureVectorBenchDB(b)
+
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	k := vecEnvInt("VECTOR_BENCH_K", 10)
+	efSearch := vecEnvInt("VECTOR_BENCH_EF_SEARCH", 64)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+	md, vecIdx := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(b.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Insert N vectors.
+	vectors := vecInsertVectors(b, vectorBenchDB, md, ss, size, dims, rng)
+
+	// Pre-generate query vectors for all iterations.
+	queryRng := rand.New(rand.NewSource(99))
+	queries := make([][]float64, b.N)
+	for i := range queries {
+		queries[i] = vecRandomVector(queryRng, dims)
+	}
+
+	// Measure recall on a sample before timing.
+	const recallSampleSize = 10
+	sampleRng := rand.New(rand.NewSource(77))
+	var totalRecall float64
+	for s := 0; s < recallSampleSize; s++ {
+		q := vecRandomVector(sampleRng, dims)
+		expected := vecBruteForceKNN(q, vectors, k)
+		expectedSet := make(map[int64]bool)
+		for _, id := range expected {
+			expectedSet[id] = true
+		}
+		var results []VectorSearchResult
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			results, err = store.SearchVectorIndex(vecIdx, q, k, efSearch)
+			return nil, err
+		})
+		if err != nil {
+			b.Fatalf("recall measurement: %v", err)
+		}
+		hits := 0
+		for _, r := range results {
+			if len(r.PrimaryKey) > 0 {
+				if id, ok := r.PrimaryKey[0].(int64); ok && expectedSet[id] {
+					hits++
+				}
+			}
+		}
+		if len(expected) > 0 {
+			totalRecall += float64(hits) / float64(len(expected))
+		}
+	}
+	avgRecall := totalRecall / float64(recallSampleSize)
+	b.ReportMetric(avgRecall, "recall")
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SearchVectorIndex(vecIdx, queries[i], k, efSearch)
+			return nil, err
+		})
+		if err != nil {
+			b.Fatalf("search %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkVectorDelete measures the cost of deleting a single vector from the
+// HNSW index (reconnecting neighbors).
+func BenchmarkVectorDelete(b *testing.B) {
+	ensureVectorBenchDB(b)
+
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+	md, _ := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(b.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Insert b.N vectors.
+	vecInsertVectors(b, vectorBenchDB, md, ss, b.N, dims, rng)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.DeleteRecord(tuple.Tuple{int64(i)})
+			return nil, err
+		})
+		if err != nil {
+			b.Fatalf("delete %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkVectorConcurrentSearch measures concurrent kNN search throughput.
+// With N vectors inserted, R goroutines continuously search for a fixed
+// duration and report total ops, ops/sec, and latency percentiles.
+func BenchmarkVectorConcurrentSearch(b *testing.B) {
+	ensureVectorBenchDB(b)
+
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 1000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	k := vecEnvInt("VECTOR_BENCH_K", 10)
+	efSearch := vecEnvInt("VECTOR_BENCH_EF_SEARCH", 64)
+	readers := vecEnvInt("VECTOR_BENCH_READERS", 10)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+	md, vecIdx := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(b.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Insert N vectors.
+	vecInsertVectors(b, vectorBenchDB, md, ss, size, dims, rng)
+
+	// Each goroutine gets its own PRNG for query generation.
+	const duration = 10 * time.Second
+	var totalOps atomic.Int64
+	var mu sync.Mutex
+	var latencies []time.Duration
+
+	b.ResetTimer()
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	deadline := start.Add(duration)
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			localRng := rand.New(rand.NewSource(int64(workerID * 1000)))
+			var localLatencies []time.Duration
+
+			for time.Now().Before(deadline) {
+				q := vecRandomVector(localRng, dims)
+				opStart := time.Now()
+				_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SearchVectorIndex(vecIdx, q, k, efSearch)
+					return nil, err
+				})
+				elapsed := time.Since(opStart)
+				if err != nil {
+					// FDB conflicts under contention are expected; count but don't fail.
+					continue
+				}
+				totalOps.Add(1)
+				localLatencies = append(localLatencies, elapsed)
+			}
+
+			mu.Lock()
+			latencies = append(latencies, localLatencies...)
+			mu.Unlock()
+		}(r)
+	}
+
+	wg.Wait()
+	b.StopTimer()
+
+	elapsed := time.Since(start)
+	ops := totalOps.Load()
+	opsPerSec := float64(ops) / elapsed.Seconds()
+
+	// Compute percentiles.
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	p50 := vecLatencyPercentile(latencies, 0.50)
+	p99 := vecLatencyPercentile(latencies, 0.99)
+
+	b.ReportMetric(opsPerSec, "ops/sec")
+	b.ReportMetric(float64(p50.Microseconds()), "p50_us")
+	b.ReportMetric(float64(p99.Microseconds()), "p99_us")
+	b.ReportMetric(float64(readers), "readers")
+
+	b.Logf("Concurrent search: %d ops in %v (%.1f ops/sec), p50=%v p99=%v, %d readers",
+		ops, elapsed, opsPerSec, p50, p99, readers)
+}
+
+func vecLatencyPercentile(sorted []time.Duration, p float64) time.Duration {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+// --- Manual stress test ---
+
+// TestVectorStressManual is a comprehensive vector index stress test.
+// Skipped unless VECTOR_STRESS=1 is set. Tagged as manual in Bazel.
+//
+// Run explicitly:
+//
+//	bazelisk test //pkg/recordlayer:vector_benchmark_test \
+//	  --test_arg="-test.run=TestVectorStressManual" --test_output=streamed \
+//	  --test_env=VECTOR_STRESS=1
+//
+// Configure via environment:
+//
+//	VECTOR_BENCH_SIZE=10000 VECTOR_BENCH_DIMS=128 VECTOR_BENCH_K=10
+//	VECTOR_BENCH_EF_SEARCH=64 VECTOR_BENCH_READERS=100
+func TestVectorStressManual(t *testing.T) {
+	if os.Getenv("VECTOR_STRESS") != "1" {
+		t.Skip("skipping manual vector stress test (set VECTOR_STRESS=1 to run)")
+	}
+	ensureVectorBenchDB(t)
+
+	size := vecEnvInt("VECTOR_BENCH_SIZE", 10000)
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	k := vecEnvInt("VECTOR_BENCH_K", 10)
+	efSearch := vecEnvInt("VECTOR_BENCH_EF_SEARCH", 64)
+	readers := vecEnvInt("VECTOR_BENCH_READERS", 100)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+
+	t.Logf("Vector stress test: size=%d dims=%d k=%d ef=%d readers=%d rabitq=%v",
+		size, dims, k, efSearch, readers, useRaBitQ)
+
+	md, vecIdx := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(t.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Phase 1: Insert vectors.
+	t.Log("Phase 1: Inserting vectors...")
+	insertStart := time.Now()
+	vectors := vecInsertVectors(t, vectorBenchDB, md, ss, size, dims, rng)
+	insertDuration := time.Since(insertStart)
+	insertRate := float64(size) / insertDuration.Seconds()
+	t.Logf("  Inserted %d vectors in %v (%.1f vec/sec)", size, insertDuration, insertRate)
+
+	// Phase 2: Sequential search throughput + recall.
+	t.Log("Phase 2: Sequential search throughput...")
+	const seqSearchOps = 100
+	queryRng := rand.New(rand.NewSource(99))
+	var seqLatencies []time.Duration
+	var totalRecall float64
+
+	for i := 0; i < seqSearchOps; i++ {
+		q := vecRandomVector(queryRng, dims)
+		opStart := time.Now()
+		var results []VectorSearchResult
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			results, err = store.SearchVectorIndex(vecIdx, q, k, efSearch)
+			return nil, err
+		})
+		if err != nil {
+			t.Fatalf("sequential search %d: %v", i, err)
+		}
+		seqLatencies = append(seqLatencies, time.Since(opStart))
+
+		// Compute recall for this query.
+		expected := vecBruteForceKNN(q, vectors, k)
+		expectedSet := make(map[int64]bool)
+		for _, id := range expected {
+			expectedSet[id] = true
+		}
+		hits := 0
+		for _, r := range results {
+			if len(r.PrimaryKey) > 0 {
+				if id, ok := r.PrimaryKey[0].(int64); ok && expectedSet[id] {
+					hits++
+				}
+			}
+		}
+		if len(expected) > 0 {
+			totalRecall += float64(hits) / float64(len(expected))
+		}
+	}
+
+	sort.Slice(seqLatencies, func(i, j int) bool { return seqLatencies[i] < seqLatencies[j] })
+	seqP50 := vecLatencyPercentile(seqLatencies, 0.50)
+	seqP99 := vecLatencyPercentile(seqLatencies, 0.99)
+	avgRecall := totalRecall / float64(seqSearchOps)
+	seqOpsPerSec := float64(seqSearchOps) / vecSumDurations(seqLatencies).Seconds()
+
+	t.Logf("  %d searches: %.1f ops/sec, p50=%v, p99=%v, recall=%.3f",
+		seqSearchOps, seqOpsPerSec, seqP50, seqP99, avgRecall)
+
+	// Phase 3: Concurrent search at multiple concurrency levels.
+	for _, numReaders := range []int{10, readers} {
+		if numReaders <= 0 {
+			continue
+		}
+		t.Logf("Phase 3: Concurrent search (%d readers, 10s)...", numReaders)
+		concResult := vecRunConcurrentSearch(t, vectorBenchDB, md, vecIdx, ss, dims, k, efSearch, numReaders, 10*time.Second)
+		t.Logf("  %d ops in %v (%.1f ops/sec), p50=%v, p99=%v",
+			concResult.ops, concResult.elapsed, concResult.opsPerSec,
+			concResult.p50, concResult.p99)
+	}
+
+	// Phase 4: Write throughput (insert + delete cycle).
+	t.Log("Phase 4: Write throughput (insert+delete cycle)...")
+	const writeCycleOps = 200
+	writeRng := rand.New(rand.NewSource(777))
+	writeStart := time.Now()
+	baseID := int64(size) // Start after existing records.
+	for i := 0; i < writeCycleOps; i++ {
+		id := baseID + int64(i)
+		vec := vecRandomVector(writeRng, dims)
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:    proto.Int64(id),
+				Price:      proto.Int32(100),
+				VectorData: serializeVector(vec),
+			})
+			return nil, err
+		})
+		if err != nil {
+			t.Fatalf("write cycle insert %d: %v", i, err)
+		}
+
+		_, err = vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.DeleteRecord(tuple.Tuple{id})
+			return nil, err
+		})
+		if err != nil {
+			t.Fatalf("write cycle delete %d: %v", i, err)
+		}
+	}
+	writeDuration := time.Since(writeStart)
+	writeOpsPerSec := float64(writeCycleOps*2) / writeDuration.Seconds()
+
+	t.Logf("  %d insert+delete pairs in %v (%.1f ops/sec)", writeCycleOps, writeDuration, writeOpsPerSec)
+
+	// Summary table.
+	t.Log("")
+	t.Log("=== VECTOR BENCHMARK SUMMARY ===")
+	t.Logf("  Dataset:          %d vectors x %d dims", size, dims)
+	t.Logf("  RaBitQ:           %v", useRaBitQ)
+	t.Logf("  k=%d, efSearch=%d", k, efSearch)
+	t.Log("  ------------------------------------------------")
+	t.Logf("  Insert:           %.1f vec/sec (%d vectors in %v)", insertRate, size, insertDuration)
+	t.Logf("  Seq search:       %.1f ops/sec, p50=%v, p99=%v", seqOpsPerSec, seqP50, seqP99)
+	t.Logf("  Recall@%d:        %.3f", k, avgRecall)
+	t.Logf("  Write cycle:      %.1f ops/sec (%d pairs in %v)", writeOpsPerSec, writeCycleOps, writeDuration)
+	t.Log("  ================================================")
+}
+
+type vecConcurrentResult struct {
+	ops       int64
+	elapsed   time.Duration
+	opsPerSec float64
+	p50       time.Duration
+	p99       time.Duration
+}
+
+func vecRunConcurrentSearch(
+	tb testing.TB,
+	db *FDBDatabase,
+	md *RecordMetaData,
+	vecIdx *Index,
+	ss subspace.Subspace,
+	dims, k, efSearch, numReaders int,
+	dur time.Duration,
+) vecConcurrentResult {
+	tb.Helper()
+	ctx := context.Background()
+	var totalOps atomic.Int64
+	var mu sync.Mutex
+	var allLatencies []time.Duration
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	deadline := start.Add(dur)
+
+	for r := 0; r < numReaders; r++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			localRng := rand.New(rand.NewSource(int64(workerID*1000 + 7)))
+			var local []time.Duration
+
+			for time.Now().Before(deadline) {
+				q := vecRandomVector(localRng, dims)
+				opStart := time.Now()
+				_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SearchVectorIndex(vecIdx, q, k, efSearch)
+					return nil, err
+				})
+				elapsed := time.Since(opStart)
+				if err != nil {
+					continue
+				}
+				totalOps.Add(1)
+				local = append(local, elapsed)
+			}
+
+			mu.Lock()
+			allLatencies = append(allLatencies, local...)
+			mu.Unlock()
+		}(r)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+	ops := totalOps.Load()
+
+	sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
+
+	return vecConcurrentResult{
+		ops:       ops,
+		elapsed:   elapsed,
+		opsPerSec: float64(ops) / elapsed.Seconds(),
+		p50:       vecLatencyPercentile(allLatencies, 0.50),
+		p99:       vecLatencyPercentile(allLatencies, 0.99),
+	}
+}
+
+func vecSumDurations(ds []time.Duration) time.Duration {
+	var total time.Duration
+	for _, d := range ds {
+		total += d
+	}
+	return total
+}

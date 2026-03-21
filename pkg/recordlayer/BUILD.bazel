@@ -219,6 +219,7 @@ go_test(
         "typed_api_test.go",
         "typed_store_conformance_test.go",
         "unique_index_concurrent_test.go",
+        "vector_benchmark_test.go",
         "vector_index_test.go",
         "version_bug_verify_test.go",
         "version_index_test.go",
@@ -251,6 +252,27 @@ go_test(
         "//pkg/testcontainers/foundationdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
         "@com_github_stretchr_testify//assert",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# Vector/HNSW benchmarks — excluded from //... (long-running, needs large dataset).
+# Run benchmarks:
+#   bazelisk test //pkg/recordlayer:vector_benchmark_test --test_arg="-test.bench=." --test_output=streamed
+# Run stress test:
+#   bazelisk test //pkg/recordlayer:vector_benchmark_test --test_arg="-test.run=TestVectorStressManual" --test_output=streamed --test_env=VECTOR_STRESS=1
+go_test(
+    name = "vector_benchmark_test",
+    timeout = "eternal",
+    srcs = ["vector_benchmark_test.go"],
+    embed = [":recordlayer"],
+    tags = ["manual"],
+    deps = [
+        "//gen",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
         "@org_golang_google_protobuf//proto",
     ],
 )
