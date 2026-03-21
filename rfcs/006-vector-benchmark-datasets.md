@@ -4,107 +4,149 @@
 
 Current VECTOR/HNSW benchmarks use random vectors (`rand.NormFloat64()`). Random high-dimensional vectors have poor locality structure — distances are nearly uniform, making HNSW traversal artificially easy. Real-world vector distributions have clusters, outliers, and varying density. Our benchmarks don't reflect production recall/latency characteristics.
 
-## Proposal
+## Industry Standard: ann-benchmarks.com
 
-Use industry-standard ANN benchmark datasets for realistic evaluation. Two options:
+The definitive ANN benchmark suite ([ann-benchmarks.com](http://ann-benchmarks.com/), [github.com/erikbern/ann-benchmarks](https://github.com/erikbern/ann-benchmarks)) evaluates 38 implementations across 14 datasets. Standard metric: Recall@k vs QPS.
 
-### Option A: ANN Benchmarks (ann-benchmarks.com)
+### Datasets
 
-Standard datasets used by all ANN papers/libraries:
-
-| Dataset | Vectors | Dims | Metric | Size | Source |
-|---|---|---|---|---|---|
-| **SIFT-1M** | 1,000,000 | 128 | L2 | 512MB | [fvecs format](http://corpus-texmex.irisa.fr/) |
-| **GIST-1M** | 1,000,000 | 960 | L2 | 3.6GB | Same source |
-| **GloVe-1.2M** | 1,183,514 | 200 | Angular | 900MB | [Stanford NLP](https://nlp.stanford.edu/projects/glove/) |
-| **Fashion-MNIST** | 60,000 | 784 | L2 | 180MB | [Zalando](https://github.com/zalandoresearch/fashion-mnist) |
-| **NYT-256** | 290,000 | 256 | Angular | 280MB | ann-benchmarks.com |
-
-**SIFT-1M** is the gold standard — every ANN paper reports numbers on it. 128D L2 matches our default configuration.
-
-### Option B: HuggingFace Embedding Datasets
-
-Real embedding vectors from production models:
-
-| Dataset | Vectors | Dims | Model | Source |
+| Dataset | Vectors | Dims | Metric | Download |
 |---|---|---|---|---|
-| **mteb/stsbenchmark** | 8,628 | 768 | sentence-transformers | HuggingFace |
-| **Cohere/wikipedia-22-12-en-embeddings** | 35M | 768 | Cohere embed | HuggingFace |
-| **sentence-transformers/all-MiniLM-L6-v2** | varies | 384 | MiniLM | HuggingFace |
+| **SIFT-1M** | 1,000,000 | 128 | L2 | [corpus-texmex.irisa.fr](http://corpus-texmex.irisa.fr/) |
+| GIST-1M | 1,000,000 | 960 | L2 | Same |
+| GloVe-25/50/100/200 | 1,183,514 | 25-200 | Angular | [Stanford NLP](https://nlp.stanford.edu/projects/glove/) |
+| Fashion-MNIST | 60,000 | 784 | L2 | [Zalando](https://github.com/zalandoresearch/fashion-mnist) |
+| NYTimes | 290,000 | 256 | Angular | ann-benchmarks.com |
+| DEEP1B (subset) | 9,990,000 | 96 | Angular | ann-benchmarks.com |
 
-These have realistic cluster structure from actual language models. 768D is production-standard.
+### Published HNSW results on SIFT-1M (k=10)
 
-### Recommendation
+From ann-benchmarks.com (hnswlib, M=16, efConstruction=500):
 
-**Start with SIFT-1M** (Option A):
-1. Well-understood baseline — published results from every ANN library (FAISS, Annoy, ScaNN, etc.)
-2. 128D matches our default `VECTOR_BENCH_DIMS=128`
-3. L2 metric matches our default `VectorMetricEuclidean`
-4. Includes pre-computed ground-truth kNN for recall measurement
-5. Small enough to run in CI (512MB download, feasible for testcontainer)
+| Recall@10 | QPS (single thread) |
+|---|---|
+| 0.80 | ~12,177 |
+| 0.93 | ~6,669 |
+| 0.96 | ~5,065 |
+| 0.98 | ~3,349 |
+| 0.99 | ~2,964 |
+| 0.999 | ~1,122 |
+| 1.000 | ~555 |
 
-**Add GloVe-1.2M or Cohere embeddings later** for angular/cosine metric evaluation.
+### Production HNSW recall baselines
 
-## Implementation Plan
+| System | Recall@10 | QPS | Notes |
+|---|---|---|---|
+| hnswlib (original) | 0.95 | 5,065 | M=16, ef=150, single-thread |
+| FAISS HNSW | 0.978 (Recall@1) | — | M=32, ef=64, 20 threads |
+| Weaviate | 0.984 | 10,940 | ef=64, p99=3.1ms |
+| Qdrant | 0.995 | 626 | p99=38.7ms |
+| Pinecone | 0.991 | — | 1M SBERT embeddings |
 
-### 1. Dataset loader (`pkg/recordlayer/testdata/`)
+**Our current result: Recall@10 = 0.980 on 1K random 128D vectors, 14 QPS.** The recall is competitive; the QPS gap is due to sequential FDB reads (see TODO).
 
-```go
-// LoadSIFTVectors loads vectors from the standard fvecs binary format.
-// Format: [dim (int32)] [vec0_f32...] [dim] [vec1_f32...] ...
-func LoadSIFTVectors(path string) ([][]float64, error)
+## Recommendation: SIFT-1M
 
-// LoadSIFTGroundTruth loads pre-computed kNN from ivecs format.
-func LoadSIFTGroundTruth(path string) ([][]int, error)
-```
+**Start with SIFT-1M.** It's the gold standard — every ANN paper, library, and database reports numbers on it.
 
-### 2. Download script
+**Why SIFT-1M:**
+- 128D L2 matches our default config
+- 10K pre-computed queries with 100-NN ground truth
+- 500MB download, feasible for CI/manual tests
+- Published baselines from every competitor
+- Citation: Jegou et al., "Product quantization for nearest neighbor search" (IEEE TPAMI, 2010)
 
+**Download:**
 ```sh
-#!/bin/bash
-# scripts/download-sift.sh
-curl -O http://corpus-texmex.irisa.fr/ftp/sift.tar.gz
-tar xzf sift.tar.gz -C pkg/recordlayer/testdata/
-# Creates: sift_base.fvecs (1M vectors), sift_query.fvecs (10K queries),
-#          sift_groundtruth.ivecs (10K x 100 ground truth)
+# INRIA TEXMEX (canonical source)
+curl -O ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
+# HuggingFace mirror
+huggingface-cli download qbo-odp/sift1m
 ```
 
-### 3. Benchmark integration
+### File format: fvecs/ivecs
+
+Binary, no header, little-endian. Each vector:
+```
+[dim: int32LE] [component_0: float32LE] ... [component_{dim-1}: float32LE]
+```
+
+| File | Format | Vectors | Dims | Bytes/vec | Total |
+|---|---|---|---|---|---|
+| `sift_base.fvecs` | float32 | 1,000,000 | 128 | 516 | ~492 MB |
+| `sift_query.fvecs` | float32 | 10,000 | 128 | 516 | ~4.9 MB |
+| `sift_groundtruth.ivecs` | int32 | 10,000 | 100 | 404 | ~3.9 MB |
+
+### Go loader
 
 ```go
-func BenchmarkVectorSIFT(b *testing.B) {
-    vectors := LoadSIFTVectors("testdata/sift_base.fvecs")
-    queries := LoadSIFTVectors("testdata/sift_query.fvecs")
-    groundTruth := LoadSIFTGroundTruth("testdata/sift_groundtruth.ivecs")
-
-    // Insert first N vectors (parameterized)
-    // Search with queries
-    // Measure recall@1, recall@10, recall@100 vs ground truth
-    // Report ops/sec, latency percentiles
+func LoadFVecs(path string) ([][]float32, error) {
+    f, _ := os.Open(path)
+    defer f.Close()
+    var vectors [][]float32
+    for {
+        var dim int32
+        if err := binary.Read(f, binary.LittleEndian, &dim); err == io.EOF {
+            break
+        }
+        vec := make([]float32, dim)
+        binary.Read(f, binary.LittleEndian, &vec)
+        vectors = append(vectors, vec)
+    }
+    return vectors, nil
 }
 ```
 
-### 4. Reporting format
+## Phase 2: HuggingFace Embedding Datasets
 
-```
-=== SIFT-1M BENCHMARK (N=10000, k=10, ef=64) ===
-  Recall@1:  0.95
-  Recall@10: 0.92
-  Recall@100: 0.85
-  QPS:       14.2
-  p50:       68ms
-  p99:       95ms
-  Build:     48 vec/sec (3.5 min for 10K)
-```
+Real embedding vectors from production models for cosine/inner-product evaluation:
+
+| Dataset | Vectors | Dims | Model | Ground Truth |
+|---|---|---|---|---|
+| [Cohere/wikipedia-22-12-en-embeddings](https://huggingface.co/datasets/Cohere/wikipedia-22-12-en-embeddings) | 35M | 768 | Cohere embed | No |
+| [KShivendu/dbpedia-entities-openai-1M](https://huggingface.co/datasets/KShivendu/dbpedia-entities-openai-1M) | 1M | 1536 | text-embedding-ada-002 | Yes (brute-force) |
+| [Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M](https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-3-large-3072-1M) | 1M | 3072 | text-embedding-3-large | Yes |
+
+## Phase 3: Billion-Scale (NeurIPS Big-ANN)
+
+For cluster-grade testing. [big-ann-benchmarks.com](https://big-ann-benchmarks.com/):
+
+| Dataset | Dims | Type | Vectors | Target QPS |
+|---|---|---|---|---|
+| BIGANN | 128 | uint8 | 1B | 10,000 (T1) |
+| DEEP-1B | 96 | float32 | 1B | 10,000 (T1) |
+| MS SPACEV-1B | 100 | int8 | 1B | 10,000 (T1) |
+| Cohere Wikipedia | 768 | float32 | 35M | NeurIPS 2023 |
+
+Subsets available: 1M, 10M, 100M.
+
+## Implementation Plan
+
+### Phase 1: SIFT-1M integration (immediate)
+
+1. Add `scripts/download-sift.sh` + `testdata/` gitignore
+2. `LoadFVecs` / `LoadIVecs` loaders in test utils
+3. `BenchmarkVectorSIFT` — parameterized by N (10K default, 100K, 1M)
+4. Report: Recall@1/10/100, QPS, p50/p99, build time
+5. Compare against published hnswlib/FAISS numbers
+
+### Phase 2: GloVe angular (after Phase 1)
+
+6. GloVe-100 (angular/cosine metric) — validates cosine distance path
+7. Recall comparison against ann-benchmarks.com published results
+
+### Phase 3: Production embeddings (after Phase 2)
+
+8. DBPedia OpenAI 1M (1536D) — high-dimensional production vectors
+9. Cohere Wikipedia 35M subset — scale test
 
 ## Success Criteria
 
-- Recall@10 ≥ 0.90 on SIFT-1M (first 10K vectors)
-- Recall@10 ≥ 0.85 on SIFT-1M (first 100K vectors)
-- Results comparable to published HNSW numbers (adjusting for FDB overhead)
+| Dataset | Recall@10 Target | Notes |
+|---|---|---|
+| SIFT-1M (10K subset) | ≥ 0.92 | ef=64, M=16 |
+| SIFT-1M (100K subset) | ≥ 0.90 | Same params |
+| SIFT-1M (1M full) | ≥ 0.85 | With FDB overhead |
+| GloVe-100 (angular) | ≥ 0.85 | Cosine metric |
 
-## Deferred
-
-- Billion-scale datasets (DEEP-1B, SPACEV-1B) — requires real FDB cluster
-- GPU-accelerated distance computation
-- Quantized recall benchmarks (RaBitQ on SIFT)
+QPS targets deferred until sequential FDB reads are optimized (TODO HIGH).
