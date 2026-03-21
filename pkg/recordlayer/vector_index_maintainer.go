@@ -28,6 +28,25 @@ const IndexOptionVectorExtendCandidates = "hnswExtendCandidates"
 // Matches Java's IndexOptions.HNSW_KEEP_PRUNED_CONNECTIONS.
 const IndexOptionVectorKeepPrunedConnections = "hnswKeepPrunedConnections"
 
+// IndexOptionHNSWMaxNumConcurrentNodeFetches controls the maximum number of
+// concurrent node fetches during search and modification operations.
+// In Go's synchronous model this is not used for concurrency control, but is
+// stored for Java round-trip compatibility.
+// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES.
+const IndexOptionHNSWMaxNumConcurrentNodeFetches = "hnswMaxNumConcurrentNodeFetches"
+
+// IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches controls the maximum number of
+// concurrent neighborhood fetches during insert when neighbors are pruned.
+// Stored for Java round-trip compatibility.
+// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NEIGHBORHOOD_FETCHES.
+const IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches = "hnswMaxNumConcurrentNeighborhoodFetches"
+
+// IndexOptionHNSWMaxNumConcurrentDeleteFromLayer controls the maximum number of
+// concurrent layer deletions during deletion of a record.
+// Stored for Java round-trip compatibility.
+// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_DELETE_FROM_LAYER.
+const IndexOptionHNSWMaxNumConcurrentDeleteFromLayer = "hnswMaxNumConcurrentDeleteFromLayer"
+
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
 //
@@ -100,6 +119,27 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 		var numExBits int
 		if n, _ := fmt.Sscanf(v, "%d", &numExBits); n == 1 && numExBits >= 1 && numExBits <= 8 {
 			config.RaBitQNumExBits = numExBits
+		}
+	}
+	// Concurrency limits — stored for Java round-trip compatibility.
+	// Go's synchronous FDB model doesn't use these for concurrency control.
+	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
+	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNodeFetches]; ok {
+		var n int
+		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 64 {
+			config.MaxNumConcurrentNodeFetches = n
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches]; ok {
+		var n int
+		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 20 {
+			config.MaxNumConcurrentNeighborhoodFetches = n
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentDeleteFromLayer]; ok {
+		var n int
+		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 10 {
+			config.MaxNumConcurrentDeleteFromLayer = n
 		}
 	}
 	return config
@@ -340,6 +380,11 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 
 // scanByDistanceWithParams performs the actual kNN search and returns a cursor.
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
+//
+// Supports continuation-based pagination: the continuation encodes (distance, pkBytes)
+// so the cursor can skip already-returned results when resumed. The search is always
+// performed with the full efSearch/k, and results at or before the continuation point
+// are filtered out.
 func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	prefix tuple.Tuple,
 	queryVector []float64,
@@ -355,6 +400,7 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		return &errorCursor[*IndexEntry]{err: err}
 	}
 
+	// Convert to IndexEntry slice.
 	entries := make([]*IndexEntry, len(results))
 	for i, r := range results {
 		entries[i] = &IndexEntry{
@@ -364,7 +410,117 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		}
 	}
 
-	return FromListWithContinuation(entries, continuation)
+	return newVectorSearchCursor(entries, continuation)
+}
+
+// vectorSearchCursor is a cursor over vector search results that supports
+// distance-based continuation tokens. Unlike the position-based listCursor,
+// this cursor encodes continuation as tuple{distance, pkBytes}, enabling
+// pagination across transactions for kNN search results.
+//
+// When a continuation is provided, results at or before the continuation point
+// are skipped (same distance + same or earlier PK, or strictly smaller distance).
+type vectorSearchCursor struct {
+	entries []*IndexEntry
+	pos     int
+	closed  bool
+}
+
+// newVectorSearchCursor creates a vector search cursor from search results.
+// If continuation is non-nil, skips entries at or before the continuation point.
+func newVectorSearchCursor(entries []*IndexEntry, continuation []byte) *vectorSearchCursor {
+	startPos := 0
+	if len(continuation) > 0 {
+		lastDist, lastPKBytes, err := parseVectorContinuation(continuation)
+		if err == nil {
+			// Skip entries already returned: distance < lastDist, or
+			// distance == lastDist and PK bytes <= lastPKBytes.
+			for startPos < len(entries) {
+				entryDist := extractDistance(entries[startPos])
+				if entryDist > lastDist {
+					break
+				}
+				if entryDist == lastDist {
+					entryPKBytes := entries[startPos].Key.Pack()
+					if bytesCompare(entryPKBytes, lastPKBytes) > 0 {
+						break
+					}
+				}
+				startPos++
+			}
+		}
+	}
+	return &vectorSearchCursor{entries: entries, pos: startPos}
+}
+
+func (c *vectorSearchCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
+	if c.closed || c.pos >= len(c.entries) {
+		return NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{}), nil
+	}
+	entry := c.entries[c.pos]
+	c.pos++
+	cont := encodeVectorContinuation(extractDistance(entry), entry.Key.Pack())
+	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
+}
+
+func (c *vectorSearchCursor) Close() error {
+	c.closed = true
+	return nil
+}
+
+// extractDistance pulls the distance float64 from an IndexEntry's Value tuple.
+func extractDistance(entry *IndexEntry) float64 {
+	if len(entry.Value) > 0 {
+		if d, ok := entry.Value[0].(float64); ok {
+			return d
+		}
+	}
+	return 0
+}
+
+// encodeVectorContinuation encodes (distance, pkBytes) as a tuple-packed continuation.
+func encodeVectorContinuation(distance float64, pkBytes []byte) []byte {
+	return tuple.Tuple{distance, pkBytes}.Pack()
+}
+
+// parseVectorContinuation decodes (distance, pkBytes) from a tuple-packed continuation.
+func parseVectorContinuation(data []byte) (float64, []byte, error) {
+	t, err := tuple.Unpack(data)
+	if err != nil {
+		return 0, nil, fmt.Errorf("parse vector continuation: %w", err)
+	}
+	if len(t) < 2 {
+		return 0, nil, fmt.Errorf("parse vector continuation: expected 2 elements, got %d", len(t))
+	}
+	dist, ok := t[0].(float64)
+	if !ok {
+		return 0, nil, fmt.Errorf("parse vector continuation: element 0 not float64")
+	}
+	pkBytes, ok := t[1].([]byte)
+	if !ok {
+		return 0, nil, fmt.Errorf("parse vector continuation: element 1 not []byte")
+	}
+	return dist, pkBytes, nil
+}
+
+// bytesCompare compares two byte slices lexicographically.
+// Returns -1, 0, or 1.
+func bytesCompare(a, b []byte) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
 }
 
 // VectorDistanceScanRange creates a TupleRange encoding a BY_DISTANCE kNN query.

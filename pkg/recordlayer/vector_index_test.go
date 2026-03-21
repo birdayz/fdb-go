@@ -2561,4 +2561,385 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		Expect(VectorMetricCosine.satisfiesTriangleInequality()).To(BeFalse())
 		Expect(VectorMetricInnerProduct.satisfiesTriangleInequality()).To(BeFalse())
 	})
+
+	It("parses configurable fetch limits from index options", func() {
+		idx := &Index{
+			Name: "test_vec_fetch_limits",
+			Options: map[string]string{
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "32",
+				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "15",
+				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "5",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(32))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(15))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(5))
+	})
+
+	It("uses default fetch limits when options are absent", func() {
+		idx := &Index{
+			Name:    "test_vec_default_limits",
+			Options: map[string]string{},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(10))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(2))
+	})
+
+	It("rejects out-of-range fetch limits and keeps defaults", func() {
+		idx := &Index{
+			Name: "test_vec_bad_limits",
+			Options: map[string]string{
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "0",    // below min (must be > 0)
+				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "21",   // above max (must be <= 20)
+				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "-1",   // negative
+			},
+		}
+		config := parseHNSWConfig(idx)
+		// Out-of-range values should leave defaults unchanged.
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(10))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(2))
+	})
+
+	It("rejects non-numeric fetch limit values and keeps defaults", func() {
+		idx := &Index{
+			Name: "test_vec_nonnumeric_limits",
+			Options: map[string]string{
+				IndexOptionHNSWMaxNumConcurrentNodeFetches: "abc",
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
+	})
+
+	It("accepts boundary fetch limit values", func() {
+		idx := &Index{
+			Name: "test_vec_boundary_limits",
+			Options: map[string]string{
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "64",  // max valid
+				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",   // min valid
+				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10",  // max valid
+			},
+		}
+		config := parseHNSWConfig(idx)
+		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(64))
+		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(1))
+		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(10))
+	})
+})
+
+var _ = Describe("Vector Search Cursor Continuation", func() {
+	ctx := context.Background()
+
+	It("returns all results without continuation", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{3.0}},
+		}
+		cursor := newVectorSearchCursor(entries, nil)
+
+		var results []*IndexEntry
+		for {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				Expect(r.GetNoNextReason()).To(Equal(SourceExhausted))
+				break
+			}
+			results = append(results, r.GetValue())
+		}
+		Expect(results).To(HaveLen(3))
+		Expect(results[0].Key[0].(int64)).To(Equal(int64(1)))
+		Expect(results[1].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(results[2].Key[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("resumes from continuation by skipping already-returned entries", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{3.0}},
+			{Key: tuple.Tuple{int64(4)}, Value: tuple.Tuple{4.0}},
+		}
+
+		// Get first result and its continuation.
+		cursor := newVectorSearchCursor(entries, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+		Expect(r.GetValue().Key[0].(int64)).To(Equal(int64(1)))
+
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume from continuation — should skip entry 1.
+		cursor2 := newVectorSearchCursor(entries, cont)
+		var remaining []*IndexEntry
+		for {
+			r, err := cursor2.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			remaining = append(remaining, r.GetValue())
+		}
+		Expect(remaining).To(HaveLen(3))
+		Expect(remaining[0].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(remaining[1].Key[0].(int64)).To(Equal(int64(3)))
+		Expect(remaining[2].Key[0].(int64)).To(Equal(int64(4)))
+	})
+
+	It("handles continuation at same distance with different PKs", func() {
+		// Two entries at distance 1.0 with different primary keys.
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{1.0}}, // same distance
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{2.0}},
+		}
+
+		// Read first entry, get continuation.
+		cursor := newVectorSearchCursor(entries, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume — should skip entry with PK 1 (same dist, PK <= continuation PK).
+		// Entry with PK 2 at same distance should still be returned.
+		cursor2 := newVectorSearchCursor(entries, cont)
+		var remaining []*IndexEntry
+		for {
+			r, err := cursor2.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			remaining = append(remaining, r.GetValue())
+		}
+		Expect(remaining).To(HaveLen(2))
+		Expect(remaining[0].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(remaining[1].Key[0].(int64)).To(Equal(int64(3)))
+	})
+
+	It("continuation at the end returns empty on resume", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+		}
+
+		// Read the only entry.
+		cursor := newVectorSearchCursor(entries, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		cont, err := r.GetContinuation().ToBytes()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Resume — should return empty.
+		cursor2 := newVectorSearchCursor(entries, cont)
+		r, err = cursor2.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(SourceExhausted))
+	})
+
+	It("empty entries returns exhausted", func() {
+		cursor := newVectorSearchCursor([]*IndexEntry{}, nil)
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+		Expect(r.GetNoNextReason()).To(Equal(SourceExhausted))
+	})
+
+	It("invalid continuation is treated as no continuation", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+		}
+
+		// Pass garbage continuation bytes — should start from beginning.
+		cursor := newVectorSearchCursor(entries, []byte{0xff, 0xfe})
+		var results []*IndexEntry
+		for {
+			r, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if !r.HasNext() {
+				break
+			}
+			results = append(results, r.GetValue())
+		}
+		Expect(results).To(HaveLen(2))
+	})
+
+	It("page-by-page pagination collects all results", func() {
+		// Simulate paginated scanning: read 2 at a time.
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(10)}, Value: tuple.Tuple{0.5}},
+			{Key: tuple.Tuple{int64(20)}, Value: tuple.Tuple{1.5}},
+			{Key: tuple.Tuple{int64(30)}, Value: tuple.Tuple{2.5}},
+			{Key: tuple.Tuple{int64(40)}, Value: tuple.Tuple{3.5}},
+			{Key: tuple.Tuple{int64(50)}, Value: tuple.Tuple{4.5}},
+		}
+
+		var allResults []*IndexEntry
+		var cont []byte
+
+		for {
+			cursor := newVectorSearchCursor(entries, cont)
+			pageCount := 0
+			var lastCont RecordCursorContinuation
+			for pageCount < 2 {
+				r, err := cursor.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					lastCont = nil
+					break
+				}
+				allResults = append(allResults, r.GetValue())
+				lastCont = r.GetContinuation()
+				pageCount++
+			}
+			cursor.Close()
+
+			if lastCont == nil {
+				break
+			}
+			var err error
+			cont, err = lastCont.ToBytes()
+			Expect(err).NotTo(HaveOccurred())
+			if cont == nil {
+				break
+			}
+		}
+
+		Expect(allResults).To(HaveLen(5))
+		Expect(allResults[0].Key[0].(int64)).To(Equal(int64(10)))
+		Expect(allResults[1].Key[0].(int64)).To(Equal(int64(20)))
+		Expect(allResults[2].Key[0].(int64)).To(Equal(int64(30)))
+		Expect(allResults[3].Key[0].(int64)).To(Equal(int64(40)))
+		Expect(allResults[4].Key[0].(int64)).To(Equal(int64(50)))
+	})
+
+	It("encodeVectorContinuation and parseVectorContinuation round-trip", func() {
+		dist := 3.14
+		pk := tuple.Tuple{int64(42)}.Pack()
+
+		encoded := encodeVectorContinuation(dist, pk)
+		gotDist, gotPK, err := parseVectorContinuation(encoded)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(gotDist).To(BeNumerically("~", dist, 1e-15))
+		Expect(gotPK).To(Equal(pk))
+	})
+
+	It("close prevents further results", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{1.0}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{2.0}},
+		}
+		cursor := newVectorSearchCursor(entries, nil)
+
+		r, err := cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeTrue())
+
+		Expect(cursor.Close()).To(Succeed())
+
+		// After close, should return exhausted.
+		r, err = cursor.OnNext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(r.HasNext()).To(BeFalse())
+	})
+})
+
+var _ = Describe("HNSW Pipelined Multi-Layer Deletion", func() {
+	ctx := context.Background()
+
+	makeGraph := func(dims int) *hnswGraph {
+		ss := specSubspace().Sub("hnsw-pipeline-delete")
+		config := HNSWConfig{
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+		}
+		storage := newHNSWStorage(ss, config)
+		return NewHNSWGraph(storage, config)
+	}
+
+	It("delete works correctly with pipelined reads", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert several nodes to build a multi-layer graph.
+			for i := int64(1); i <= 20; i++ {
+				vec := []float64{float64(i), float64(i * 2), float64(i * 3)}
+				Expect(graph.Insert(tx, tuple.Tuple{i}, vec)).To(Succeed())
+			}
+
+			// Delete a node — should work with pipelined reads.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(5)})).To(Succeed())
+
+			// Verify the node is gone.
+			results, err := graph.Search(tx, []float64{5.0, 10.0, 15.0}, 20, 100)
+			Expect(err).NotTo(HaveOccurred())
+			for _, r := range results {
+				Expect(tupleEqual(r.PrimaryKey, tuple.Tuple{int64(5)})).To(BeFalse(),
+					"deleted node should not appear in search results")
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete non-existent node is a no-op", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			Expect(graph.Insert(tx, tuple.Tuple{int64(1)}, []float64{1, 2, 3})).To(Succeed())
+
+			// Delete a node that doesn't exist — should not error.
+			Expect(graph.Delete(tx, tuple.Tuple{int64(999)})).To(Succeed())
+
+			// Original node should still be searchable.
+			results, err := graph.Search(tx, []float64{1, 2, 3}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(tupleEqual(results[0].PrimaryKey, tuple.Tuple{int64(1)})).To(BeTrue())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete all nodes leaves empty graph", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			for i := int64(1); i <= 5; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{i}, []float64{float64(i), 0, 0})).To(Succeed())
+			}
+
+			for i := int64(1); i <= 5; i++ {
+				Expect(graph.Delete(tx, tuple.Tuple{i})).To(Succeed())
+			}
+
+			results, err := graph.Search(tx, []float64{1, 0, 0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

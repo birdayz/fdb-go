@@ -48,6 +48,14 @@ type HNSWConfig struct {
 	EfRepair              int          // Max candidates for delete repair (default 64, 0 = no limit)
 	UseRaBitQ             bool         // Enable RaBitQ quantization for approximate distance (default false)
 	RaBitQNumExBits       int          // Bits per dimension for quantization (1-8, default 4)
+
+	// Concurrency limits — Java uses these to limit async pipeline parallelism.
+	// Go's synchronous FDB model doesn't use these for concurrency control, but
+	// we store and round-trip them so Java-written configs are preserved.
+	// Matches Java's Config.maxNumConcurrentNodeFetches etc.
+	MaxNumConcurrentNodeFetches          int // (0, 64], default 16 — node fetch parallelism in Java
+	MaxNumConcurrentNeighborhoodFetches  int // (0, 20], default 10 — neighborhood fetch parallelism in Java
+	MaxNumConcurrentDeleteFromLayer      int // (0, 10], default 2  — layer deletion parallelism in Java
 }
 
 // ValidateHNSWConfig validates the HNSW configuration.
@@ -74,14 +82,17 @@ func ValidateHNSWConfig(c HNSWConfig) error {
 // DefaultHNSWConfig returns a default HNSW configuration.
 func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 	return HNSWConfig{
-		NumDimensions:   numDimensions,
-		M:               16,
-		MMax:            16,
-		MMax0:           32,
-		EfConstruction:  200,
-		EfRepair:        64,
-		Metric:          VectorMetricEuclidean,
-		RaBitQNumExBits: 4,
+		NumDimensions:                       numDimensions,
+		M:                                   16,
+		MMax:                                16,
+		MMax0:                               32,
+		EfConstruction:                      200,
+		EfRepair:                            64,
+		Metric:                              VectorMetricEuclidean,
+		RaBitQNumExBits:                     4,
+		MaxNumConcurrentNodeFetches:         16,
+		MaxNumConcurrentNeighborhoodFetches: 10,
+		MaxNumConcurrentDeleteFromLayer:     2,
 	}
 }
 
@@ -322,16 +333,59 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 
 // Delete removes a node from the HNSW graph and repairs neighbor connections.
 // Wire-compatible with Java's HNSW delete (graph repair, entry point update).
+//
+// Optimization: pipelines the initial layer reads across all layers at once,
+// reducing sequential round-trips from O(topLvl) to O(1) for the read phase.
+// Repairs are still sequential (each needs neighbor data from FDB).
 func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	topLvl := topLayer(primaryKey, g.config.M)
 
-	// Check existence at layer 0.
+	// Pipeline: fire all layer reads at once via loadNodeLayerBatch-style approach.
+	// Build keys for all layers and fire Get() futures before resolving any.
+	type layerFuture struct {
+		layer  int
+		key    string
+		future fdb.FutureByteSlice
+	}
+	var futures []layerFuture
+
+	for layer := 0; layer <= topLvl; layer++ {
+		key := g.storage.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
+		cacheKey := string(key)
+		if _, ok := g.storage.cache[cacheKey]; ok {
+			continue // already cached, no need to fetch
+		}
+		futures = append(futures, layerFuture{
+			layer:  layer,
+			key:    cacheKey,
+			future: tx.Get(fdb.Key(key)),
+		})
+	}
+
+	// Resolve all futures — FDB pipelines these reads into ~1 round-trip.
+	for _, f := range futures {
+		data, err := f.future.Get()
+		if err != nil {
+			continue
+		}
+		if data == nil {
+			g.storage.cache[f.key] = nil // negative cache
+			continue
+		}
+		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		if parseErr != nil {
+			continue
+		}
+		g.storage.cache[f.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+	}
+
+	// Check existence at layer 0 (now served from cache).
 	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
 	if err != nil {
 		return nil // already deleted or doesn't exist
 	}
 
-	// Delete from all layers and repair.
+	// Delete from all layers and repair (reads now come from cache).
 	for layer := 0; layer <= topLvl; layer++ {
 		_, neighbors, loadErr := g.storage.loadNodeLayer(tx, layer, primaryKey)
 		if loadErr != nil {
