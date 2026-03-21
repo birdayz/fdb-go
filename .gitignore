@@ -39,6 +39,10 @@ service-account*.json
 .claude
 fdb-record-layer
 
+# SIFT-1M benchmark data
+pkg/recordlayer/testdata/*.fvecs
+pkg/recordlayer/testdata/*.ivecs
+
 # Bazel symlinks
 bazel-bin
 bazel-out

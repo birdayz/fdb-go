@@ -276,3 +276,30 @@ go_test(
         "@org_golang_google_protobuf//proto",
     ],
 )
+
+# SIFT-1M benchmark — excluded from //... (needs downloaded dataset + long-running).
+# Prerequisites: run scripts/download-sift.sh to download SIFT-1M (~500MB)
+# Run:
+#   bazelisk test //pkg/recordlayer:sift_benchmark_test \
+#     --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed \
+#     --test_env=SIFT_BENCH=1
+# Configure via env: SIFT_N, SIFT_K, SIFT_EF, SIFT_BATCH_SIZE, SIFT_NUM_QUERIES
+go_test(
+    name = "sift_benchmark_test",
+    timeout = "eternal",
+    srcs = [
+        "sift_benchmark_test.go",
+        "sift_loader_test.go",
+        "vector_benchmark_test.go",
+    ],
+    embed = [":recordlayer"],
+    tags = ["manual"],
+    deps = [
+        "//gen",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
