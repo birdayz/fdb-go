@@ -56,30 +56,9 @@ func TestSIFTBenchmark(t *testing.T) {
 
 	// Resolve SIFT data directory. Priority:
 	// 1. SIFT_DATA_DIR env var (explicit override)
-	// 2. Bazel runfiles (@sift1m repository)
-	// 3. Local testdata/ fallback
-	siftDir := os.Getenv("SIFT_DATA_DIR")
-	if siftDir == "" {
-		// Try Bazel runfiles: @sift1m files land under the runfiles tree.
-		if runfilesDir := os.Getenv("RUNFILES_DIR"); runfilesDir != "" {
-			candidate := filepath.Join(runfilesDir, "sift1m")
-			if _, err := os.Stat(filepath.Join(candidate, "sift_base.fvecs")); err == nil {
-				siftDir = candidate
-			}
-		}
-	}
-	if siftDir == "" {
-		// Try test srcdir (Bazel sandbox working directory).
-		if testSrcdir := os.Getenv("TEST_SRCDIR"); testSrcdir != "" {
-			candidate := filepath.Join(testSrcdir, "sift1m")
-			if _, err := os.Stat(filepath.Join(candidate, "sift_base.fvecs")); err == nil {
-				siftDir = candidate
-			}
-		}
-	}
-	if siftDir == "" {
-		siftDir = "testdata"
-	}
+	// 2. Bazel runfiles (@sift1m repository — auto-downloaded by Bazel)
+	// 3. Local testdata/ fallback (from scripts/download-sift.sh)
+	siftDir := resolveSIFTDir()
 	baseVecs, err := LoadFVecs(filepath.Join(siftDir, "sift_base.fvecs"), n)
 	if err != nil {
 		t.Fatalf("Failed to load base vectors: %v\n\nRun scripts/download-sift.sh first.", err)
@@ -355,4 +334,32 @@ func TestSIFTLoaderUnit(t *testing.T) {
 			}
 		}
 	})
+}
+
+// resolveSIFTDir finds the SIFT data files from env, Bazel runfiles, or local testdata.
+func resolveSIFTDir() string {
+	// 1. Explicit override.
+	if dir := os.Getenv("SIFT_DATA_DIR"); dir != "" {
+		return dir
+	}
+	// 2. Bazel runfiles: @sift1m data lands under the runfiles tree.
+	//    bzlmod canonicalizes the repo name to "+sift_dataset+sift1m".
+	candidates := []string{
+		"+sift_dataset+sift1m", // bzlmod canonical
+		"sift1m",              // workspace name fallback
+	}
+	for _, envKey := range []string{"RUNFILES_DIR", "TEST_SRCDIR"} {
+		base := os.Getenv(envKey)
+		if base == "" {
+			continue
+		}
+		for _, repoName := range candidates {
+			dir := filepath.Join(base, repoName)
+			if _, err := os.Stat(filepath.Join(dir, "sift_base.fvecs")); err == nil {
+				return dir
+			}
+		}
+	}
+	// 3. Local testdata/ (from scripts/download-sift.sh).
+	return "testdata"
 }

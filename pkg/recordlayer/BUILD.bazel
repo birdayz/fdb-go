@@ -278,12 +278,11 @@ go_test(
 )
 
 # SIFT-1M benchmark — excluded from //... (manual tag).
-# Prerequisites: scripts/download-sift.sh (downloads 500MB SIFT-1M dataset from INRIA)
+# Bazel auto-downloads 500MB SIFT-1M dataset from INRIA on first build (cached).
 # Run:
-#   scripts/download-sift.sh  # one-time download, cached in testdata/
 #   bazelisk test //pkg/recordlayer:sift_benchmark_test \
 #     --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed \
-#     --test_env=SIFT_BENCH=1 --test_env=SIFT_DATA_DIR=$PWD/pkg/recordlayer/testdata
+#     --test_env=SIFT_BENCH=1
 # Configure via env: SIFT_N, SIFT_K, SIFT_EF, SIFT_BATCH_SIZE, SIFT_NUM_QUERIES
 go_test(
     name = "sift_benchmark_test",
@@ -293,6 +292,7 @@ go_test(
         "sift_loader_test.go",
         "vector_benchmark_test.go",
     ],
+    data = ["@sift1m//:data"],
     embed = [":recordlayer"],
     tags = ["manual"],
     deps = [
