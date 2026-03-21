@@ -40,6 +40,7 @@ type vectorIndexMaintainer struct {
 	standardIndexMaintainer
 	hnswSubspace subspace.Subspace
 	hnswConfig   HNSWConfig
+	storageCache map[string]*hnswStorage // subspace bytes → cached storage
 }
 
 func newVectorIndexMaintainer(
@@ -53,6 +54,7 @@ func newVectorIndexMaintainer(
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		hnswSubspace:            hnswSubspace,
 		hnswConfig:              config,
+		storageCache:            make(map[string]*hnswStorage),
 	}
 }
 
@@ -85,6 +87,12 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
 		config.KeepPrunedConnections = v == "true"
 	}
+	if v, ok := index.Options["hnswEfRepair"]; ok {
+		var efRepair int
+		if n, _ := fmt.Sscanf(v, "%d", &efRepair); n == 1 && efRepair >= 0 {
+			config.EfRepair = efRepair
+		}
+	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok {
 		config.UseRaBitQ = v == "true"
 	}
@@ -110,6 +118,19 @@ func (m *vectorIndexMaintainer) getSubspaceForPrefix(prefix tuple.Tuple) subspac
 		args[i] = v
 	}
 	return m.hnswSubspace.Sub(args...)
+}
+
+// getStorageForPrefix returns a cached hnswStorage for the given prefix subspace.
+// Reuses existing storage (and its parsed node cache) within the same maintainer lifetime.
+func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswStorage {
+	ss := m.getSubspaceForPrefix(prefix)
+	key := string(ss.Bytes())
+	if cached, ok := m.storageCache[key]; ok {
+		return cached
+	}
+	storage := newHNSWStorage(ss, m.hnswConfig)
+	m.storageCache[key] = storage
+	return storage
 }
 
 // splitPrefixAndVector extracts the prefix (grouping key) and vector from an
@@ -143,8 +164,7 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if vector == nil {
 				continue
 			}
-			ss := m.getSubspaceForPrefix(prefix)
-			storage := newHNSWStorage(ss, m.hnswConfig)
+			storage := m.getStorageForPrefix(prefix)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
 			if err := graph.Delete(m.tx, entry.primaryKey); err != nil {
 				return err
@@ -162,8 +182,7 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if vector == nil {
 				continue
 			}
-			ss := m.getSubspaceForPrefix(prefix)
-			storage := newHNSWStorage(ss, m.hnswConfig)
+			storage := m.getStorageForPrefix(prefix)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
 			if err := graph.Insert(m.tx, entry.primaryKey, vector); err != nil {
 				return err
@@ -328,11 +347,10 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	ss := m.getSubspaceForPrefix(prefix)
-	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(m.tx, queryVector, k, efSearch)
+	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
@@ -403,11 +421,10 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 				"use SearchVectorIndexWithPrefix to provide a prefix", m.index.Name, kwv.SplitPoint())
 		}
 	}
-	ss := m.getSubspaceForPrefix(prefix)
-	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
-	results, err := graph.Search(m.tx, queryVector, k, efSearch)
+	results, err := graph.Search(m.tx.Snapshot(), queryVector, k, efSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -426,8 +443,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // If the prefix is non-empty, only clears the HNSW graph for that prefix.
 // If the prefix is empty, clears all HNSW graph data.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	ss := m.getSubspaceForPrefix(prefix)
-	storage := newHNSWStorage(ss, m.hnswConfig)
+	storage := m.getStorageForPrefix(prefix)
 	storage.clearAll(m.tx)
 	return nil
 }

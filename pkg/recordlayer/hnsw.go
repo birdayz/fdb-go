@@ -26,6 +26,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -44,6 +45,7 @@ type HNSWConfig struct {
 	Metric                VectorMetric // Distance metric
 	ExtendCandidates      bool         // Extend candidate set with 2nd-degree neighbors (default false)
 	KeepPrunedConnections bool         // Retain pruned candidates to fill up to M (default false)
+	EfRepair              int          // Max candidates for delete repair (default 64, 0 = no limit)
 	UseRaBitQ             bool         // Enable RaBitQ quantization for approximate distance (default false)
 	RaBitQNumExBits       int          // Bits per dimension for quantization (1-8, default 4)
 }
@@ -77,6 +79,7 @@ func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 		MMax:            16,
 		MMax0:           32,
 		EfConstruction:  200,
+		EfRepair:        64,
 		Metric:          VectorMetricEuclidean,
 		RaBitQNumExBits: 4,
 	}
@@ -190,20 +193,32 @@ func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error)
 func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64) error {
 	vecBytes := g.encodeVectorBytes(vector)
 
-	// Check if node already exists — if so, delete first (update semantics).
-	_, _, err := g.storage.loadNodeLayer(tx, 0, primaryKey)
-	if err == nil {
-		// Node exists — delete and re-insert.
+	// Fire both existence check and access info read as parallel futures.
+	existKey := g.storage.dataSubspace.Pack(tuple.Tuple{int64(0), primaryKey})
+	existFuture := tx.Get(fdb.Key(existKey))
+	accessKey := g.storage.accessSubspace.Pack(tuple.Tuple{})
+	accessFuture := tx.Get(fdb.Key(accessKey))
+
+	// Resolve existence check.
+	existData, _ := existFuture.Get()
+	if existData != nil {
+		// Node exists — populate cache with parsed data, delete and re-insert.
+		if vb, nb, parseErr := parseNodeValue(existData); parseErr == nil {
+			g.storage.cache[string(existKey)] = &parsedNode{vecBytes: vb, neighbors: nb}
+		}
 		if delErr := g.Delete(tx, primaryKey); delErr != nil {
 			return delErr
 		}
+		// Re-read access info after delete (may have changed entry point).
+		accessFuture = tx.Get(fdb.Key(accessKey))
 	}
 
 	// Determine insertion layer (deterministic per PK).
 	insertLayer := topLayer(primaryKey, g.config.M)
 
-	// Load access info (entry point).
-	epLayer, epPK, epVecBytes, epErr := g.storage.loadAccessInfo(tx)
+	// Resolve access info.
+	accessData, _ := accessFuture.Get()
+	epLayer, epPK, epVecBytes, epErr := g.storage.parseAccessInfo(accessData)
 
 	if epErr != nil {
 		// No entry point — this is the first node.
@@ -216,6 +231,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	}
 
 	// Greedy search from top to insertion layer.
+	var err error
 	currentPK := epPK
 	currentVecBytes := epVecBytes
 	for layer := epLayer; layer > insertLayer; layer-- {
@@ -445,15 +461,21 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	}
 
 	epDist := g.computeDistance(query, epVecBytes)
+	epPKBytes := string(epPK.Pack())
 
 	// Candidates (min-heap by distance) and visited set.
 	candidates := &distHeap{}
-	heap.Push(candidates, distItem{pk: epPK, dist: epDist})
+	heap.Push(candidates, distItem{pk: epPK, dist: epDist, pkBytes: epPKBytes})
 
-	visited := map[string]bool{string(epPK.Pack()): true}
+	visited := make(map[string]bool, ef*2)
+	visited[epPKBytes] = true
 
-	var results []hnswCandidate
-	results = append(results, hnswCandidate{pk: epPK, vecBytes: epVecBytes, dist: epDist})
+	// Pre-allocate results to expected capacity (ef).
+	results := make([]hnswCandidate, 1, ef)
+	results[0] = hnswCandidate{pk: epPK, vecBytes: epVecBytes, dist: epDist}
+
+	// Pre-allocate toFetch to typical neighbor count (M).
+	toFetch := make([]tuple.Tuple, 0, g.config.M)
 
 	for candidates.Len() > 0 {
 		closest := heap.Pop(candidates).(distItem)
@@ -472,8 +494,8 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			continue
 		}
 
-		// Collect unvisited neighbors.
-		var toFetch []tuple.Tuple
+		// Collect unvisited neighbors — reuse toFetch slice.
+		toFetch = toFetch[:0]
 		for _, nbPK := range neighbors {
 			key := string(nbPK.Pack())
 			if visited[key] {
@@ -492,11 +514,15 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			dist := g.computeDistance(query, r.vecBytes)
 
 			if len(results) < ef || dist < results[len(results)-1].dist {
-				heap.Push(candidates, distItem{pk: r.pk, dist: dist})
-				results = append(results, hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist})
-				sort.Slice(results, func(i, j int) bool {
-					return results[i].dist < results[j].dist
+				heap.Push(candidates, distItem{pk: r.pk, dist: dist, pkBytes: r.pkBytes})
+				// Binary-search insertion into sorted results (O(log n) find + O(n) shift).
+				c := hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist}
+				pos := sort.Search(len(results), func(i int) bool {
+					return results[i].dist > dist
 				})
+				results = append(results, hnswCandidate{})
+				copy(results[pos+1:], results[pos:])
+				results[pos] = c
 				if len(results) > ef {
 					results = results[:ef]
 				}
@@ -707,6 +733,15 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 		newCandidatePKs = append(newCandidatePKs, pk)
 	}
 
+	// Sample down new candidates if efRepair is set (matches Java's
+	// shouldUseSecondaryCandidateForRepair() which limits repair exploration).
+	if g.config.EfRepair > 0 && len(newCandidatePKs) > g.config.EfRepair {
+		rand.Shuffle(len(newCandidatePKs), func(i, j int) {
+			newCandidatePKs[i], newCandidatePKs[j] = newCandidatePKs[j], newCandidatePKs[i]
+		})
+		newCandidatePKs = newCandidatePKs[:g.config.EfRepair]
+	}
+
 	// Batch-fetch new candidates.
 	newBatch := g.storage.loadNodeLayerBatch(tx, layer, newCandidatePKs)
 	for _, r := range newBatch {
@@ -741,17 +776,24 @@ type hnswSearchResult struct {
 	Distance   float64
 }
 
+// parsedNode holds pre-parsed node data to avoid repeated tuple.Unpack on cache hits.
+type parsedNode struct {
+	vecBytes  []byte
+	neighbors []tuple.Tuple
+}
+
 // hnswStorage handles FDB storage of HNSW graph nodes.
 // Wire-compatible with Java's COMPACT node format.
 //
 // Subspace layout:
-//   Sub(0) — data: (layer, primaryKey) -> (nodeKind, vectorTuple, neighborsTuple)
-//   Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
+//
+//	Sub(0) — data: (layer, primaryKey) -> (nodeKind, vectorTuple, neighborsTuple)
+//	Sub(1) — access info: () -> (entryPointLayer, entryPointPK, entryPointVectorTuple)
 type hnswStorage struct {
 	dataSubspace   subspace.Subspace
 	accessSubspace subspace.Subspace
 	config         HNSWConfig
-	cache          map[string][]byte // FDB key → raw value, per-transaction
+	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -759,7 +801,7 @@ func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
 		dataSubspace:   ss.Sub(int64(0)),
 		accessSubspace: ss.Sub(int64(1)),
 		config:         config,
-		cache:          make(map[string][]byte),
+		cache:          make(map[string]*parsedNode),
 	}
 }
 
@@ -780,11 +822,10 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 		tuple.Tuple{vectorBytes},  // vector bytes wrapped in tuple
 		neighborList,              // neighbor PKs as nested tuples
 	}
-	packed := value.Pack()
-	tx.Set(fdb.Key(key), packed)
+	tx.Set(fdb.Key(key), value.Pack())
 
-	// Update cache with the written value so subsequent reads see it.
-	s.cache[string(key)] = packed
+	// Update cache with parsed data so subsequent reads skip tuple.Unpack.
+	s.cache[string(key)] = &parsedNode{vecBytes: vectorBytes, neighbors: neighbors}
 }
 
 // parseNodeValue parses the raw FDB value bytes for a node into vector bytes
@@ -832,12 +873,12 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	cacheKey := string(key)
 
-	// Check cache first.
+	// Check cache first — returns pre-parsed data, no tuple.Unpack needed.
 	if cached, ok := s.cache[cacheKey]; ok {
 		if cached == nil {
 			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
 		}
-		return parseNodeValue(cached)
+		return cached.vecBytes, cached.neighbors, nil
 	}
 
 	data, err := tx.Get(fdb.Key(key)).Get()
@@ -849,15 +890,19 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
 	}
 
-	// Populate cache.
-	s.cache[cacheKey] = data
-
-	return parseNodeValue(data)
+	// Parse and cache the result.
+	vectorBytes, neighbors, err = parseNodeValue(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.cache[cacheKey] = &parsedNode{vecBytes: vectorBytes, neighbors: neighbors}
+	return vectorBytes, neighbors, nil
 }
 
 // nodeResult holds the result of loading one node from FDB.
 type nodeResult struct {
 	pk        tuple.Tuple
+	pkBytes   string // cached pk.Pack() to avoid repeated allocation
 	vecBytes  []byte
 	neighbors []tuple.Tuple
 	err       error
@@ -877,6 +922,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 
 	for i, pk := range pks {
 		results[i].pk = pk
+		results[i].pkBytes = string(pk.Pack())
 		key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
 		cacheKey := string(key)
 
@@ -884,7 +930,8 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			if cached == nil {
 				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
 			} else {
-				results[i].vecBytes, results[i].neighbors, results[i].err = parseNodeValue(cached)
+				results[i].vecBytes = cached.vecBytes
+				results[i].neighbors = cached.neighbors
 			}
 			continue
 		}
@@ -905,8 +952,14 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
 			continue
 		}
-		s.cache[p.key] = data
-		results[p.idx].vecBytes, results[p.idx].neighbors, results[p.idx].err = parseNodeValue(data)
+		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		if parseErr != nil {
+			results[p.idx].err = parseErr
+			continue
+		}
+		s.cache[p.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
+		results[p.idx].vecBytes = vecBytes
+		results[p.idx].neighbors = neighbors
 	}
 
 	return results
@@ -918,18 +971,13 @@ func (s *hnswStorage) deleteNodeLayer(tx fdb.Transaction, layer int, primaryKey 
 	key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	tx.Clear(fdb.Key(key))
 
-	// Mark as deleted in cache.
+	// Mark as deleted in cache (nil *parsedNode = negative cache entry).
 	s.cache[string(key)] = nil
 }
 
-// loadAccessInfo reads the entry point metadata.
+// parseAccessInfo parses the entry point metadata from raw bytes.
 // Returns layer, primary key, vector bytes, and error (non-nil if no entry point).
-func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tuple.Tuple, vectorBytes []byte, err error) {
-	key := s.accessSubspace.Pack(tuple.Tuple{})
-	data, getErr := tx.Get(fdb.Key(key)).Get()
-	if getErr != nil {
-		return 0, nil, nil, fmt.Errorf("hnsw: get access info: %w", getErr)
-	}
+func (s *hnswStorage) parseAccessInfo(data []byte) (layer int, pk tuple.Tuple, vectorBytes []byte, err error) {
 	if data == nil {
 		return 0, nil, nil, fmt.Errorf("hnsw: no entry point")
 	}
@@ -969,6 +1017,17 @@ func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tupl
 	}
 
 	return layer, pk, vectorBytes, nil
+}
+
+// loadAccessInfo reads the entry point metadata from FDB.
+// Returns layer, primary key, vector bytes, and error (non-nil if no entry point).
+func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (layer int, pk tuple.Tuple, vectorBytes []byte, err error) {
+	key := s.accessSubspace.Pack(tuple.Tuple{})
+	data, getErr := tx.Get(fdb.Key(key)).Get()
+	if getErr != nil {
+		return 0, nil, nil, fmt.Errorf("hnsw: get access info: %w", getErr)
+	}
+	return s.parseAccessInfo(data)
 }
 
 // saveAccessInfo writes the entry point metadata.
@@ -1185,8 +1244,9 @@ func javaHashCode(data []byte) int32 {
 type distHeap []distItem
 
 type distItem struct {
-	pk   tuple.Tuple
-	dist float64
+	pk      tuple.Tuple
+	dist    float64
+	pkBytes string // cached pk.Pack() to avoid repeated allocation
 }
 
 func (h distHeap) Len() int            { return len(h) }
