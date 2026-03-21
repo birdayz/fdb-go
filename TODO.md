@@ -167,7 +167,35 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No conformance tests** — 11 specs: Go saves→Java reads/saves more, Java saves→Go reads/saves more, cross-language mixed writes, delete cross-language, batch operations, record counting. Found+fixed 6 wire-format bugs: option names (hnsw* not vector*), metric enum values, node key nesting, access info 5-element format, HNSW subspace (primary not secondary), vector bytes extraction.
 - [x] **HIGH — No chaos testing** — 5 chaos tests: basic save, commit-unknown (insert/overwrite/delete), random stress (100 ops, 5% fault rate). Model-based verification: count, self-search, orphan check.
 - [x] **HIGH — No high-dimensional vector tests** — Fixed: 50 random 128D vectors, search + distance verification.
-- [ ] **HIGH — Sequential FDB reads in HNSW search/insert** — Go does blocking sequential `tx.Get()` for each HNSW neighbor traversal (~50-200 reads per operation). Java pipelines with `CompletableFuture`. Benchmark: 1K×128D insert=48 vec/sec, search=14 ops/sec vs Java which pipelines 5-10x faster. Fix: batch neighbor reads using `tx.GetRange()` or FDB read-ahead (`StreamingMode`), or prefetch neighbor lists into a local cache within the transaction.
+- [x] **HIGH — Sequential FDB reads in HNSW search/insert** — Fixed: `loadNodeLayerBatch` pipelines FDB futures (fire all `tx.Get()` before resolving). 2.1x search speedup (16→34 QPS). Transaction-local node cache added. Remaining gap vs Qdrant (19x) is inherent to FDB's network model.
+
+#### VECTOR/HNSW — Java alignment gaps + optimization roadmap (RFC 007)
+
+SIFT-1M benchmark: recall@10=0.998 (excellent), 34 QPS (19x slower than Qdrant). See `rfcs/007-hnsw-performance-optimizations.md` for full analysis.
+
+| # | What | Impact | Category | Status |
+|---|---|---|---|---|
+| 1 | Inlining storage adapter (upper layers: range-read vs N point-reads) | HIGH perf | Performance | [ ] |
+| 2 | RaBitQ full transform (FHT-KAC rotation + centroid bootstrapping) | MEDIUM-HIGH quality | Correctness | [ ] |
+| 3 | Delete repair sampling (efRepair=64 limit) | MEDIUM perf | Performance | [ ] |
+| 4 | Dual priority queues (max-heap for results) | LOW perf | Performance | [ ] |
+| 5 | Parallel existence + access info fetch on insert | LOW perf | Performance | [ ] |
+| 6 | Ring search + outward traversal iterator (BY_DISTANCE pagination) | Feature gap | Feature | [ ] |
+| 7 | Concurrent multi-layer deletion | LOW perf | Performance | [ ] |
+| 8 | ChangeSet incremental writes (needs #1) | LOW perf | Performance | [ ] |
+| 9 | Snapshot reads for sampled vectors (needs #2) | LOW perf | Performance | [ ] |
+| 10 | Configurable fetch limits (maxConcurrentNodeFetches etc.) | LOW perf | Config | [ ] |
+
+Additional Go-specific optimizations (from RFC 007):
+
+| # | What | Impact | Status |
+|---|---|---|---|
+| 11 | Persist hnswStorage cache across ops in same transaction | 30-50% batch insert | [ ] |
+| 12 | Cache parsed node data, not raw bytes | 15-20% search | [ ] |
+| 13 | Snapshot reads for search (tx.Snapshot()) | HIGH concurrent | [ ] |
+| 14 | Avoid visited-set string allocation | 5-8% | [ ] |
+| 15 | Pool/reuse float64 buffers | 10-12% | [ ] |
+| 16 | GetRange for entire upper layer (greedy descent) | 1-2.5ms saved | [ ] |
 
 ### 3. New key expression types
 
