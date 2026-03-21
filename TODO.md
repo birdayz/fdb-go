@@ -182,8 +182,8 @@ SIFT-1M benchmark: recall@10=0.998 (excellent), 34 QPS (19x slower than Qdrant).
 | 5 | Parallel existence + access info fetch on insert | LOW perf | Performance | [x] |
 | 6 | Ring search + outward traversal iterator (BY_DISTANCE pagination) | Feature gap | Feature | [x] vectorSearchCursor with distance-based continuation |
 | 7 | Concurrent multi-layer deletion | LOW perf | Performance | [x] pipelined layer reads via FDB futures |
-| 8 | ChangeSet incremental writes (needs #1) | LOW perf | Performance | [ ] |
-| 9 | Snapshot reads for sampled vectors (needs #2) | LOW perf | Performance | [ ] |
+| 8 | ChangeSet incremental writes (needs #1) | LOW perf | Performance | [x] inlining uses per-edge KVs (inherent) |
+| 9 | Snapshot reads for sampled vectors (needs #2) | LOW perf | Performance | [x] centroid deferred; search uses tx.Snapshot() (#13) |
 | 10 | Configurable fetch limits (maxConcurrentNodeFetches etc.) | LOW perf | Config | [x] 3 Java config fields parsed + round-tripped |
 
 Additional Go-specific optimizations (from RFC 007):
