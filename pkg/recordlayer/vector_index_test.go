@@ -933,7 +933,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		}
 		config := parseHNSWConfig(idx)
 		Expect(config.UseRaBitQ).To(BeFalse())
-		Expect(config.RaBitQNumExBits).To(Equal(0))
+		Expect(config.RaBitQNumExBits).To(Equal(4)) // default
 	})
 
 	It("parseHNSWConfig ignores invalid numExBits", func() {
@@ -947,7 +947,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		}
 		config := parseHNSWConfig(idx)
 		Expect(config.UseRaBitQ).To(BeTrue())
-		Expect(config.RaBitQNumExBits).To(Equal(0)) // out of range, not set
+		Expect(config.RaBitQNumExBits).To(Equal(4)) // out of range, keeps default
 	})
 
 	It("computeDistance handles both raw and RaBitQ vectors", func() {

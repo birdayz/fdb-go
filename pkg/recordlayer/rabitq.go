@@ -270,10 +270,12 @@ func (q *RaBitQuantizer) encodeInternal(data []float64) *rabitqResult {
 		ipResidualXuCbSafe = math.Inf(1)
 	}
 
-	tmpError := residualL2Norm * rabitqEPS0 *
-		math.Sqrt(((residualL2Sqr*xuCbNormSqr)/
-			(ipResidualXuCbSafe*ipResidualXuCbSafe)-1.0)/
-			float64(max(1, dims-1)))
+	// Clamp to 0 to handle floating-point rounding where Cauchy-Schwarz
+	// ratio is slightly < 1.0, making the expression negative.
+	sqrtArg := ((residualL2Sqr * xuCbNormSqr) /
+		(ipResidualXuCbSafe * ipResidualXuCbSafe) - 1.0) /
+		float64(max(1, dims-1))
+	tmpError := residualL2Norm * rabitqEPS0 * math.Sqrt(math.Max(0.0, sqrtArg))
 
 	// All supported metrics use the same formula (matching Java switch).
 	fAddEx := residualL2Sqr

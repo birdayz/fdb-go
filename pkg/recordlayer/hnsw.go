@@ -72,12 +72,13 @@ func ValidateHNSWConfig(c HNSWConfig) error {
 // DefaultHNSWConfig returns a default HNSW configuration.
 func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 	return HNSWConfig{
-		NumDimensions:  numDimensions,
-		M:              16,
-		MMax:           16,
-		MMax0:          32,
-		EfConstruction: 200,
-		Metric:         VectorMetricEuclidean,
+		NumDimensions:   numDimensions,
+		M:               16,
+		MMax:            16,
+		MMax0:           32,
+		EfConstruction:  200,
+		Metric:          VectorMetricEuclidean,
+		RaBitQNumExBits: 4,
 	}
 }
 
