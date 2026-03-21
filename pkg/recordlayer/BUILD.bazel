@@ -277,12 +277,13 @@ go_test(
     ],
 )
 
-# SIFT-1M benchmark — excluded from //... (needs downloaded dataset + long-running).
-# Prerequisites: run scripts/download-sift.sh to download SIFT-1M (~500MB)
+# SIFT-1M benchmark — excluded from //... (manual tag).
+# Prerequisites: scripts/download-sift.sh (downloads 500MB SIFT-1M dataset from INRIA)
 # Run:
+#   scripts/download-sift.sh  # one-time download, cached in testdata/
 #   bazelisk test //pkg/recordlayer:sift_benchmark_test \
 #     --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed \
-#     --test_env=SIFT_BENCH=1
+#     --test_env=SIFT_BENCH=1 --test_env=SIFT_DATA_DIR=$PWD/pkg/recordlayer/testdata
 # Configure via env: SIFT_N, SIFT_K, SIFT_EF, SIFT_BATCH_SIZE, SIFT_NUM_QUERIES
 go_test(
     name = "sift_benchmark_test",

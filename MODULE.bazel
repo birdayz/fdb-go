@@ -57,3 +57,9 @@ maven.install(
     ],
 )
 use_repo(maven, "maven")
+
+
+# SIFT-1M benchmark dataset: download separately via scripts/download-sift.sh
+# then pass --test_env=SIFT_DATA_DIR=/path/to/testdata to the benchmark test.
+# Bazel http_archive doesn't support FTP (INRIA source), and the HTTP mirror
+# uses HDF5 format. Keeping download external avoids 500MB in the Bazel cache.

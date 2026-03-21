@@ -54,8 +54,29 @@ func TestSIFTBenchmark(t *testing.T) {
 	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d",
 		n, k, efSearch, m, efConstruction, batchSize, numQueries)
 
-	// Load SIFT data. Use SIFT_DATA_DIR env var or default to testdata/.
+	// Resolve SIFT data directory. Priority:
+	// 1. SIFT_DATA_DIR env var (explicit override)
+	// 2. Bazel runfiles (@sift1m repository)
+	// 3. Local testdata/ fallback
 	siftDir := os.Getenv("SIFT_DATA_DIR")
+	if siftDir == "" {
+		// Try Bazel runfiles: @sift1m files land under the runfiles tree.
+		if runfilesDir := os.Getenv("RUNFILES_DIR"); runfilesDir != "" {
+			candidate := filepath.Join(runfilesDir, "sift1m")
+			if _, err := os.Stat(filepath.Join(candidate, "sift_base.fvecs")); err == nil {
+				siftDir = candidate
+			}
+		}
+	}
+	if siftDir == "" {
+		// Try test srcdir (Bazel sandbox working directory).
+		if testSrcdir := os.Getenv("TEST_SRCDIR"); testSrcdir != "" {
+			candidate := filepath.Join(testSrcdir, "sift1m")
+			if _, err := os.Stat(filepath.Join(candidate, "sift_base.fvecs")); err == nil {
+				siftDir = candidate
+			}
+		}
+	}
 	if siftDir == "" {
 		siftDir = "testdata"
 	}
