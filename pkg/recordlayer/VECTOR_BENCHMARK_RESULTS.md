@@ -23,12 +23,13 @@
 | hnswlib | 0.95 | 5,065 | In-memory | M=16, ef=150, single-thread |
 | Weaviate | 0.984 | 10,940 | In-memory | ef=64, p99=3.1ms |
 | Qdrant | 0.995 | 626 | Disk-backed | p99=38.7ms |
-| **FDB Go (1K, v1)** | 1.000 | 16 | FDB-backed | Sequential reads |
-| **FDB Go (1K, v2)** | **1.000** | **34** | FDB-backed | **Batched FDB futures** |
-| **FDB Go (10K, v1)** | 0.998 | 8 | FDB-backed | Sequential reads |
+| **FDB Go (1K, v0)** | 1.000 | 16 | FDB-backed | Sequential reads |
+| **FDB Go (1K, v1)** | 1.000 | 34 | FDB-backed | Batched FDB futures |
+| **FDB Go (1K, v2)** | **1.000** | **39** | FDB-backed | **+8 optimizations (RFC 007)** |
+| **FDB Go (10K, v0)** | 0.998 | 8 | FDB-backed | Sequential reads |
 
 **Recall is excellent** — 1.000 on SIFT-1M 1K, beats Weaviate (0.984) and matches Qdrant (0.995).
-**v2 (batched futures)**: 2.1x speedup over v1. Gap vs Qdrant: 19x (was 39x).
+**v2 (all quick wins)**: 2.4x total speedup. Build: 35→70 vec/sec (2x). p50: 62→26ms. Gap vs Qdrant: 16x.
 
 ## Results: 1K × 128D (Double precision, no RaBitQ)
 

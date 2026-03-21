@@ -177,9 +177,9 @@ SIFT-1M benchmark: recall@10=0.998 (excellent), 34 QPS (19x slower than Qdrant).
 |---|---|---|---|---|
 | 1 | Inlining storage adapter (upper layers: range-read vs N point-reads) | HIGH perf | Performance | [ ] |
 | 2 | RaBitQ full transform (FHT-KAC rotation + centroid bootstrapping) | MEDIUM-HIGH quality | Correctness | [ ] |
-| 3 | Delete repair sampling (efRepair=64 limit) | MEDIUM perf | Performance | [ ] |
-| 4 | Dual priority queues (max-heap for results) | LOW perf | Performance | [ ] |
-| 5 | Parallel existence + access info fetch on insert | LOW perf | Performance | [ ] |
+| 3 | Delete repair sampling (efRepair=64 limit) | MEDIUM perf | Performance | [x] |
+| 4 | Dual priority queues (max-heap for results) | LOW perf | Performance | [x] binary-insert |
+| 5 | Parallel existence + access info fetch on insert | LOW perf | Performance | [x] |
 | 6 | Ring search + outward traversal iterator (BY_DISTANCE pagination) | Feature gap | Feature | [ ] |
 | 7 | Concurrent multi-layer deletion | LOW perf | Performance | [ ] |
 | 8 | ChangeSet incremental writes (needs #1) | LOW perf | Performance | [ ] |
@@ -190,11 +190,11 @@ Additional Go-specific optimizations (from RFC 007):
 
 | # | What | Impact | Status |
 |---|---|---|---|
-| 11 | Persist hnswStorage cache across ops in same transaction | 30-50% batch insert | [ ] |
-| 12 | Cache parsed node data, not raw bytes | 15-20% search | [ ] |
-| 13 | Snapshot reads for search (tx.Snapshot()) | HIGH concurrent | [ ] |
-| 14 | Avoid visited-set string allocation | 5-8% | [ ] |
-| 15 | Pool/reuse float64 buffers | 10-12% | [ ] |
+| 11 | Persist hnswStorage cache across ops in same transaction | 30-50% batch insert | [x] |
+| 12 | Cache parsed node data, not raw bytes | 15-20% search | [x] |
+| 13 | Snapshot reads for search (tx.Snapshot()) | HIGH concurrent | [x] |
+| 14 | Avoid visited-set string allocation | 5-8% | [x] cached pkBytes |
+| 15 | Pool/reuse float64 buffers | 10-12% | [x] pre-alloc slices |
 | 16 | GetRange for entire upper layer (greedy descent) | 1-2.5ms saved | [ ] |
 
 ### 3. New key expression types
