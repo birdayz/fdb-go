@@ -610,7 +610,8 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	epPKBytes := string(epPK.Pack())
 
 	// Candidates (min-heap by distance) and visited set.
-	candidates := &distHeap{}
+	backing := make(distHeap, 0, ef)
+	candidates := &backing
 	heap.Push(candidates, distItem{pk: epPK, dist: epDist, pkBytes: epPKBytes})
 
 	visited := make(map[string]bool, ef*2)
