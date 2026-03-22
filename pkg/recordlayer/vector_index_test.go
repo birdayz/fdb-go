@@ -679,6 +679,134 @@ var _ = Describe("HNSW Graph Direct", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("all nodes reachable from entry point via BFS", func() {
+		graph := makeGraph(3)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 20 vectors at distinct positions.
+			for i := range 20 {
+				pk := tuple.Tuple{int64(i)}
+				vec := []float64{float64(i) * 5.0, float64(i) * 3.0, float64(i) * 7.0}
+				Expect(graph.Insert(tx, pk, vec)).To(Succeed())
+			}
+
+			// Load entry point.
+			epInfo, err := graph.storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(epInfo.pk).NotTo(BeNil())
+
+			// BFS from entry point through layer 0 neighbors.
+			visited := make(map[string]bool)
+			queue := []tuple.Tuple{epInfo.pk}
+			visited[string(epInfo.pk.Pack())] = true
+
+			for len(queue) > 0 {
+				current := queue[0]
+				queue = queue[1:]
+
+				_, neighbors, loadErr := graph.storage.loadNodeLayerDispatch(tx, 0, current)
+				if loadErr != nil {
+					continue // node might not exist at layer 0 (shouldn't happen for layer 0)
+				}
+				for _, neighbor := range neighbors {
+					if !visited[string(neighbor.Pack())] {
+						visited[string(neighbor.Pack())] = true
+						queue = append(queue, neighbor)
+					}
+				}
+			}
+
+			// Every inserted PK must be reachable.
+			for i := range 20 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(visited[string(pk.Pack())]).To(BeTrue(), "node %d should be reachable from entry point via BFS", i)
+			}
+			Expect(visited).To(HaveLen(20))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("delete entry point then reinsert same PK", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 3 vectors.
+			Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, []float64{0.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, tuple.Tuple{int64(1)}, []float64{10.0, 0.0})).To(Succeed())
+			Expect(graph.Insert(tx, tuple.Tuple{int64(2)}, []float64{20.0, 0.0})).To(Succeed())
+
+			// Find current entry point (likely PK=0, the first inserted).
+			epInfo, _ := graph.storage.loadAccessInfo(tx)
+			Expect(epInfo.pk).NotTo(BeNil())
+
+			// Delete PK=0 (entry point).
+			Expect(graph.Delete(tx, tuple.Tuple{int64(0)})).To(Succeed())
+
+			// Search should work with remaining 2 nodes.
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+
+			// Re-insert PK=0 with the same vector.
+			Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, []float64{0.0, 0.0})).To(Succeed())
+
+			// All 3 should now be findable.
+			results, err = graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			gotIDs := make([]int64, len(results))
+			for i, r := range results {
+				gotIDs[i] = r.PrimaryKey[0].(int64)
+			}
+			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
+			Expect(gotIDs).To(Equal([]int64{0, 1, 2}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("handles all identical vectors", func() {
+		graph := makeGraph(2)
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+
+			// Insert 5 vectors all at the same position (1.0, 1.0).
+			for i := range 5 {
+				pk := tuple.Tuple{int64(i)}
+				Expect(graph.Insert(tx, pk, []float64{1.0, 1.0})).To(Succeed())
+			}
+
+			// Search for (1.0, 1.0) with k=5: all 5 should be returned.
+			results, err := graph.Search(tx, []float64{1.0, 1.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// All distances should be ~0.
+			for _, r := range results {
+				Expect(r.Distance).To(BeNumerically("~", 0.0, 1e-9))
+			}
+
+			// All PKs should be distinct.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("HNSW Inlining Storage", func() {
@@ -1744,6 +1872,200 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		d := []float64{1.0, 1.0}
 		// cos(45deg) = 1/sqrt(2), distance = 1 - 1/sqrt(2) ~ 0.2929
 		Expect(vectorDistance(c, d, VectorMetricCosine)).To(BeNumerically("~", 1.0-1.0/math.Sqrt(2), 1e-6))
+	})
+
+	It("wrong dimension query returns error", func() {
+		ks := specSubspace()
+
+		// Create a 128D VECTOR index.
+		vecIdx := NewVectorIndex("vec_128d", KeyWithValue(Field("vector_data"), 0), 128)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert a record with 128D vector.
+			vec128 := make([]byte, 1+8*128)
+			vec128[0] = 2 // DOUBLE type
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:    proto.Int64(1),
+				VectorData: vec128,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search with a 3D query vector (wrong dimension).
+			_, searchErr := store.SearchVectorIndex(vecIdx, []float64{1.0, 2.0, 3.0}, 1, 100)
+			Expect(searchErr).To(HaveOccurred())
+			Expect(searchErr.Error()).To(ContainSubstring("128"))
+			Expect(searchErr.Error()).To(ContainSubstring("3"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("old vector position not returned after update", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_update_pos", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert PK=1 at (0, 0).
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(0), Quantity: proto.Int32(0)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert PK=2 at (100, 100) — far away.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update PK=1 to (100, 100) — move it far from origin.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(100)})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Search near (0, 0) with k=1: should NOT find PK=1 (it moved).
+			results, err := store.SearchVectorIndex(vecIdx, []float64{0.0, 0.0}, 1, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			// The closest to origin should be one of the two records at (100,100),
+			// NOT at the old position (0,0). Distance to (100,100) = 100^2 + 100^2 = 20000.
+			Expect(results[0].Distance).To(BeNumerically("~", 20000.0, 1e-6))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("handles 768-dimensional vectors", func() {
+		ks := specSubspace()
+
+		// Create 768D VECTOR index using KWV(Field("vector_data"), 0).
+		vecIdx := NewVectorIndex("vec_768d", KeyWithValue(Field("vector_data"), 0), 768)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Generate 10 random 768D vectors.
+			rng := rand.New(rand.NewSource(42))
+			for i := int64(0); i < 10; i++ {
+				vec := make([]float64, 768)
+				for d := range vec {
+					vec[d] = rng.NormFloat64()
+				}
+				vecBytes := serializeVector(vec)
+
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(i + 1),
+					VectorData: vecBytes,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Search with k=5: should return 5 results.
+			queryVec := make([]float64, 768)
+			for d := range queryVec {
+				queryVec[d] = rng.NormFloat64()
+			}
+			results, err := store.SearchVectorIndex(vecIdx, queryVec, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Verify 5 distinct PKs.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+
+			// Distances should be in ascending order.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("RebuildIndex rebuilds VECTOR index", func() {
+		ks := specSubspace()
+
+		vecIdx := NewVectorIndex("vec_rebuild", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Insert 5 records.
+			for i := int64(1); i <= 5; i++ {
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(i),
+					Price:    proto.Int32(int32(i * 10)),
+					Quantity: proto.Int32(int32(i * 10)),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Verify search works before rebuild.
+			results, err := store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Manually clear the index data subspace (corrupt the index).
+			idxSubspace := store.indexSubspace(vecIdx)
+			pr, prErr := fdb.PrefixRange(idxSubspace.Bytes())
+			Expect(prErr).NotTo(HaveOccurred())
+			rtx.Transaction().ClearRange(pr)
+
+			// Search after corruption should return no results (empty graph).
+			results, err = store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(0))
+
+			// Rebuild the index.
+			Expect(store.RebuildIndex(vecIdx)).To(Succeed())
+
+			// Search should find all 5 records again.
+			results, err = store.SearchVectorIndex(vecIdx, []float64{10.0, 10.0}, 5, 100)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+
+			// Verify all 5 distinct PKs are present.
+			pkSet := make(map[int64]bool)
+			for _, r := range results {
+				pkSet[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(pkSet).To(HaveLen(5))
+			for i := int64(1); i <= 5; i++ {
+				Expect(pkSet[i]).To(BeTrue(), "PK=%d should be found after rebuild", i)
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
 

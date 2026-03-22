@@ -459,6 +459,10 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
+	if len(queryVector) != m.hnswConfig.NumDimensions {
+		return &errorCursor[*IndexEntry]{err: fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
+			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))}
+	}
 	storage := m.getStorageForPrefix(prefix)
 	graph := NewHNSWGraph(storage, m.hnswConfig)
 
@@ -656,6 +660,11 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 // reconstructs full primary keys using getEntryPrimaryKey so callers can use
 // them directly with LoadRecord.
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
+	// Guard: query vector dimension must match the index's configured dimensions.
+	if len(queryVector) != m.hnswConfig.NumDimensions {
+		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",
+			m.index.Name, m.hnswConfig.NumDimensions, len(queryVector))
+	}
 	// Guard: if index has a prefix (KWV splitPoint > 0), caller MUST provide one.
 	// Searching without a prefix on a grouped index returns empty (queries the
 	// base subspace which has no data), silently producing wrong results.
