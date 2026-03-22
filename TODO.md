@@ -1496,7 +1496,7 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Qdrant is structural — HNSW has O(√N) irreducible sequential FDB round-trips at layer 0. No amount of Go-side optimization closes this. These target ~30-40% improvement within the HNSW architecture.
 
 - [x] **~210KB garbage/query from RaBitQ distance** — Fixed: fused xuc computation into single-pass dot product in `EstimateDistance`, eliminating `make([]float64, dims)` per call (~100KB/query saved). `EncodedVectorFromBytes` `make([]int, dims)` remains (needed for bit unpacking).
-- [ ] **No cross-transaction entry point cache** — every query reads access info from FDB (1 RT). Use `MetaDataVersionStampStoreStateCache` pattern already proven in codebase. Biggest single latency win for read-heavy workloads.
+- [x] **~~No cross-transaction entry point cache~~** — Removed. Saves 0.08ms (0.5% of 18ms query). Not worth the complexity. Java doesn't do it either. Within-transaction cache already handles repeated reads.
 - [x] **Quantizer/Estimator recreated per call** — Fixed by RaBitQ extraction: `VectorQuantizer` interface stored on `HNSWConfig`, dispatched through once-created instance.
 - [x] **`deserializeVector` allocates every call** — Not an issue: when quantizer is set, `computeDistance` takes the quantizer path and never calls `deserializeVector`. Raw-vector path allocation is unavoidable but infrequent.
 - [x] **distHeap not pre-allocated** — Fixed: backing slice pre-allocated to capacity `ef`.
