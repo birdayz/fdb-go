@@ -1486,10 +1486,10 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 
 #### HIGH — correctness bugs (not Java-specific)
 
-- [ ] **Entry point invisible in inlining mode** — `hnsw.go:351` saves nil neighbors for new entry point at upper layers → 0 KVs in inlining mode → `loadNodeLayerInlining` (`hnsw.go:1498-1501`) returns "not found". Breaks hierarchical search when `UseInlining=true` and entry point has layers above all others.
-- [ ] **FDB errors silently swallowed** — `hnsw.go:225,242,319,443,466,582,728,734`: `_ = future.Get()` throughout. Masks transaction conflicts, timeouts. Graph proceeds with partial/corrupted state.
-- [ ] **Delete uses computed topLayer, not actual** — `hnsw.go:414`: recomputes top layer from PK hash instead of scanning actual layers. Config change or cross-language M mismatch → orphaned edges at unscanned layers.
-- [ ] **Inlining `deleteNodeLayerInlining` comment lies** — `hnsw.go:1514-1526`: comment says "clears incoming edges" but only clears outgoing edges `(layer, pk, *)`. Incoming edges cleaned up by `repairNeighbor` but comment is misleading.
+- [x] **Entry point invisible in inlining mode** — Fixed: sentinel KV at `(layer, pk)` written when saving node with 0 neighbors in inlining mode. `loadNodeLayerInlining` now distinguishes "0 neighbors" from "not found".
+- [x] **FDB errors silently swallowed** — Fixed: `existFuture.Get()` and `accessFuture.Get()` in Insert now propagate errors. Reverse connection load errors propagate instead of `continue`.
+- [x] **Delete uses computed topLayer, not actual** — Fixed: Delete now scans from `epLayer` down to 0 to find actual layers, instead of computing from PK hash.
+- [x] **Inlining `deleteNodeLayerInlining` comment lies** — Fixed: comment now correctly says "clears outgoing edges".
 
 #### Performance
 
