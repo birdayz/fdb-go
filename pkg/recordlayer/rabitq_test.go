@@ -114,7 +114,10 @@ func TestQuantizerEncodeSelfDistanceNearZero(t *testing.T) {
 					encoded := q.Encode(v)
 
 					est := NewRaBitEstimator(VectorMetricEuclidean, nb)
-					dist := est.Distance(v, encoded)
+					dist, err := est.Distance(v, encoded)
+					if err != nil {
+						t.Fatalf("Distance returned error: %v", err)
+					}
 
 					if dist > 0.01 {
 						t.Fatalf("self-distance should be near 0, got %v (dims=%d, exBits=%d)", dist, dim, nb)
@@ -374,7 +377,10 @@ func TestAllSameValueVector(t *testing.T) {
 
 	// Self-distance should be near zero.
 	est := NewRaBitEstimator(VectorMetricEuclidean, 5)
-	dist := est.Distance(v, encoded)
+	dist, err := est.Distance(v, encoded)
+	if err != nil {
+		t.Fatalf("Distance returned error: %v", err)
+	}
 	if dist > 0.01 {
 		t.Fatalf("self-distance should be near 0, got %v", dist)
 	}
@@ -397,7 +403,10 @@ func TestBitPackingSmall(t *testing.T) {
 	}
 
 	// Unpack and verify.
-	unpacked := unpackComponents(buf, 3, 1)
+	unpacked, err := unpackComponents(buf, 3, 1)
+	if err != nil {
+		t.Fatalf("unpackComponents: %v", err)
+	}
 	for i, want := range encoded {
 		if unpacked[i] != want {
 			t.Fatalf("unpacked[%d] = %d, want %d", i, unpacked[i], want)
@@ -417,7 +426,10 @@ func TestBitPackingCrossByteBoundary(t *testing.T) {
 	packEncodedComponents(encoded, bitsPerComponent, buf)
 
 	// Unpack and verify round-trip.
-	unpacked := unpackComponents(buf, 3, 4)
+	unpacked, err := unpackComponents(buf, 3, 4)
+	if err != nil {
+		t.Fatalf("unpackComponents: %v", err)
+	}
 	for i, want := range encoded {
 		if unpacked[i] != want {
 			t.Fatalf("unpacked[%d] = %d, want %d", i, unpacked[i], want)
@@ -545,7 +557,10 @@ func TestMultipleExBitsPrecision(t *testing.T) {
 		q := NewRaBitQuantizer(VectorMetricEuclidean, nb)
 		encoded := q.Encode(v)
 		est := NewRaBitEstimator(VectorMetricEuclidean, nb)
-		dist := est.Distance(v, encoded)
+		dist, err := est.Distance(v, encoded)
+		if err != nil {
+			t.Fatalf("Distance returned error with %d ex bits: %v", nb, err)
+		}
 		// Self-distance should generally decrease with more bits,
 		// though not strictly monotonic for all vectors.
 		_ = prevDist

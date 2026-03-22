@@ -152,7 +152,11 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 			return math.Inf(1)
 		}
 		est := NewRaBitEstimator(g.config.Metric, numExBits)
-		return est.Distance(query, encoded)
+		dist, err := est.Distance(query, encoded)
+		if err != nil {
+			return math.Inf(1)
+		}
+		return dist
 	}
 	vec, err := deserializeVector(storedVecBytes)
 	if err != nil {

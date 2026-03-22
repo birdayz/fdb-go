@@ -8,6 +8,8 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
@@ -46,6 +48,22 @@ const IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches = "hnswMaxNumConcurrent
 // Stored for Java round-trip compatibility.
 // Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_DELETE_FROM_LAYER.
 const IndexOptionHNSWMaxNumConcurrentDeleteFromLayer = "hnswMaxNumConcurrentDeleteFromLayer"
+
+// IndexOptionHNSWM specifies the connectivity factor M for the HNSW graph.
+// Matches Java's IndexOptions.HNSW_M.
+const IndexOptionHNSWM = "hnswM"
+
+// IndexOptionHNSWMMax specifies the maximum number of connections for non-zero layers.
+// Matches Java's IndexOptions.HNSW_M_MAX.
+const IndexOptionHNSWMMax = "hnswMMax"
+
+// IndexOptionHNSWMMax0 specifies the maximum number of connections for layer 0.
+// Matches Java's IndexOptions.HNSW_M_MAX_0.
+const IndexOptionHNSWMMax0 = "hnswMMax0"
+
+// IndexOptionHNSWEfConstruction specifies the search factor used during index construction.
+// Matches Java's IndexOptions.HNSW_EF_CONSTRUCTION.
+const IndexOptionHNSWEfConstruction = "hnswEfConstruction"
 
 // vectorIndexMaintainer maintains a VECTOR index using an HNSW graph.
 // Wire-compatible with Java's VectorIndexMaintainer.
@@ -124,6 +142,30 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 			config.RaBitQNumExBits = numExBits
 		}
 	}
+	if v, ok := index.Options[IndexOptionHNSWM]; ok {
+		var m int
+		if n, _ := fmt.Sscanf(v, "%d", &m); n == 1 && m >= 2 && m <= 128 {
+			config.M = m
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMMax]; ok {
+		var mMax int
+		if n, _ := fmt.Sscanf(v, "%d", &mMax); n == 1 && mMax >= 2 && mMax <= 256 {
+			config.MMax = mMax
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWMMax0]; ok {
+		var mMax0 int
+		if n, _ := fmt.Sscanf(v, "%d", &mMax0); n == 1 && mMax0 >= 2 && mMax0 <= 512 {
+			config.MMax0 = mMax0
+		}
+	}
+	if v, ok := index.Options[IndexOptionHNSWEfConstruction]; ok {
+		var efConstruction int
+		if n, _ := fmt.Sscanf(v, "%d", &efConstruction); n == 1 && efConstruction >= 1 && efConstruction <= 2000 {
+			config.EfConstruction = efConstruction
+		}
+	}
 	// Concurrency limits — stored for Java round-trip compatibility.
 	// Go's synchronous FDB model doesn't use these for concurrency control.
 	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
@@ -184,6 +226,12 @@ func (m *vectorIndexMaintainer) getStorageForPrefix(prefix tuple.Tuple) *hnswSto
 // For non-KWV indexes (e.g., Concat(Field("x"), Field("y"))):
 //   - entry.key = the entire vector (no prefix)
 //   - entry.value = nil
+//
+// NOTE: Java divergence — Java's VectorIndexMaintainer.getKeyWithValueExpression()
+// at line 375 throws if the root expression is not a KeyWithValueExpression.
+// We accept non-KWV expressions for backwards compatibility with existing tests
+// that use Concat/Field directly as the root expression. This is more permissive
+// than Java but functionally equivalent for non-grouped vector indexes.
 func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix tuple.Tuple, vector []float64) {
 	if len(entry.value) > 0 {
 		// KeyWithValue index: key is prefix, value is vector.
@@ -442,43 +490,39 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 }
 
 // vectorSearchCursor is a cursor over vector search results that supports
-// distance-based continuation tokens. Unlike the position-based listCursor,
-// this cursor encodes continuation as tuple{distance, pkBytes}, enabling
-// pagination across transactions for kNN search results.
+// continuation tokens matching Java's VectorIndexScanContinuation protobuf.
 //
-// When a continuation is provided, results at or before the continuation point
-// are skipped (same distance + same or earlier PK, or strictly smaller distance).
+// Java's approach: serialize ALL remaining result entries into the continuation.
+// On resume, deserialize and replay from the saved list (no re-search needed).
+// This matches VectorIndexMaintainer.java lines 182-197 (resume) and 516-528 (create).
 type vectorSearchCursor struct {
-	entries []*IndexEntry
-	pos     int
-	closed  bool
+	entries    []*IndexEntry
+	allEntries []*IndexEntry // all entries for continuation encoding
+	pos        int
+	closed     bool
 }
 
 // newVectorSearchCursor creates a vector search cursor from search results.
-// If continuation is non-nil, skips entries at or before the continuation point.
+// If continuation is non-nil, it is parsed as a VectorIndexScanContinuation
+// protobuf (Java format). On resume, results are replayed from the continuation
+// rather than re-searching.
 func newVectorSearchCursor(entries []*IndexEntry, continuation []byte) *vectorSearchCursor {
-	startPos := 0
 	if len(continuation) > 0 {
-		lastDist, lastPKBytes, err := parseVectorContinuation(continuation)
-		if err == nil {
-			// Skip entries already returned: distance < lastDist, or
-			// distance == lastDist and PK bytes <= lastPKBytes.
-			for startPos < len(entries) {
-				entryDist := extractDistance(entries[startPos])
-				if entryDist > lastDist {
-					break
-				}
-				if entryDist == lastDist {
-					entryPKBytes := entries[startPos].Key.Pack()
-					if bytesCompare(entryPKBytes, lastPKBytes) > 0 {
-						break
-					}
-				}
-				startPos++
+		// Resume from continuation: parse the proto and replay saved entries.
+		resumed, innerPos := parseVectorScanContinuation(continuation, entries)
+		if resumed != nil {
+			return &vectorSearchCursor{
+				entries:    resumed,
+				allEntries: resumed,
+				pos:        innerPos,
 			}
 		}
 	}
-	return &vectorSearchCursor{entries: entries, pos: startPos}
+	return &vectorSearchCursor{
+		entries:    entries,
+		allEntries: entries,
+		pos:        0,
+	}
 }
 
 func (c *vectorSearchCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry], error) {
@@ -487,7 +531,10 @@ func (c *vectorSearchCursor) OnNext(_ context.Context) (RecordCursorResult[*Inde
 	}
 	entry := c.entries[c.pos]
 	c.pos++
-	cont := encodeVectorContinuation(extractDistance(entry), entry.Key.Pack())
+
+	// Encode continuation matching Java's Continuation class.
+	// Includes ALL entries (for replay on resume) + inner position.
+	cont := encodeVectorScanContinuation(c.allEntries, c.pos)
 	return NewResultWithValue(entry, &BytesContinuation{bytes: cont}), nil
 }
 
@@ -496,59 +543,66 @@ func (c *vectorSearchCursor) Close() error {
 	return nil
 }
 
-// extractDistance pulls the distance float64 from an IndexEntry's Value tuple.
-func extractDistance(entry *IndexEntry) float64 {
-	if len(entry.Value) > 0 {
-		if d, ok := entry.Value[0].(float64); ok {
-			return d
-		}
+// encodeVectorScanContinuation creates a VectorIndexScanContinuation protobuf.
+// Matches Java's Continuation.toByteString() which serializes all entries +
+// the inner ListCursor continuation (position as packed int tuple).
+func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
+	contProto := &gen.VectorIndexScanContinuation{}
+	for _, e := range entries {
+		contProto.IndexEntries = append(contProto.IndexEntries,
+			&gen.VectorIndexScanContinuation_IndexEntry{
+				Key:   e.Key.Pack(),
+				Value: e.Value.Pack(),
+			})
 	}
-	return 0
-}
+	// Inner continuation: the ListCursor position as a packed int tuple.
+	// Java's ListCursor continuation is just the position encoded as bytes.
+	contProto.InnerContinuation = tuple.Tuple{int64(innerPos)}.Pack()
 
-// encodeVectorContinuation encodes (distance, pkBytes) as a tuple-packed continuation.
-func encodeVectorContinuation(distance float64, pkBytes []byte) []byte {
-	return tuple.Tuple{distance, pkBytes}.Pack()
-}
-
-// parseVectorContinuation decodes (distance, pkBytes) from a tuple-packed continuation.
-func parseVectorContinuation(data []byte) (float64, []byte, error) {
-	t, err := tuple.Unpack(data)
+	data, err := proto.Marshal(contProto)
 	if err != nil {
-		return 0, nil, fmt.Errorf("parse vector continuation: %w", err)
+		return nil
 	}
-	if len(t) < 2 {
-		return 0, nil, fmt.Errorf("parse vector continuation: expected 2 elements, got %d", len(t))
-	}
-	dist, ok := t[0].(float64)
-	if !ok {
-		return 0, nil, fmt.Errorf("parse vector continuation: element 0 not float64")
-	}
-	pkBytes, ok := t[1].([]byte)
-	if !ok {
-		return 0, nil, fmt.Errorf("parse vector continuation: element 1 not []byte")
-	}
-	return dist, pkBytes, nil
+	return data
 }
 
-// bytesCompare compares two byte slices lexicographically.
-// Returns -1, 0, or 1.
-func bytesCompare(a, b []byte) int {
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] < b[i] {
-			return -1
+// parseVectorScanContinuation parses a VectorIndexScanContinuation protobuf.
+// Returns the saved entries and the inner cursor position.
+// If parsing fails, returns nil (caller falls back to fresh search).
+func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, int) {
+	var contProto gen.VectorIndexScanContinuation
+	if err := proto.Unmarshal(data, &contProto); err != nil {
+		return nil, 0
+	}
+
+	entries := make([]*IndexEntry, 0, len(contProto.IndexEntries))
+	for _, ie := range contProto.IndexEntries {
+		key, err := tuple.Unpack(ie.GetKey())
+		if err != nil {
+			return nil, 0
 		}
-		if a[i] > b[i] {
-			return 1
+		value, err := tuple.Unpack(ie.GetValue())
+		if err != nil {
+			return nil, 0
+		}
+		entries = append(entries, &IndexEntry{
+			Key:   key,
+			Value: value,
+		})
+	}
+
+	// Parse inner continuation (position).
+	innerPos := 0
+	if inner := contProto.GetInnerContinuation(); len(inner) > 0 {
+		t, err := tuple.Unpack(inner)
+		if err == nil && len(t) > 0 {
+			if pos, ok := t[0].(int64); ok {
+				innerPos = int(pos)
+			}
 		}
 	}
-	if len(a) < len(b) {
-		return -1
-	}
-	if len(a) > len(b) {
-		return 1
-	}
-	return 0
+
+	return entries, innerPos
 }
 
 // VectorDistanceScanRange creates a TupleRange encoding a BY_DISTANCE kNN query.

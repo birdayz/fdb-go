@@ -136,7 +136,10 @@ func EncodedVectorFromBytes(data []byte, numDimensions, numExBits int) (*Encoded
 	fRescaleEx := math.Float64frombits(binary.BigEndian.Uint64(data[9:]))
 	fErrorEx := math.Float64frombits(binary.BigEndian.Uint64(data[17:]))
 
-	components := unpackComponents(data[25:], numDimensions, numExBits)
+	components, err := unpackComponents(data[25:], numDimensions, numExBits)
+	if err != nil {
+		return nil, err
+	}
 	return &EncodedVector{
 		Encoded:    components,
 		FAddEx:     fAddEx,
@@ -148,13 +151,13 @@ func EncodedVectorFromBytes(data []byte, numDimensions, numExBits int) (*Encoded
 
 // unpackComponents unpacks bit-packed encoded components from a byte slice.
 // Matches Java's EncodedRealVector.unpackComponents().
-func unpackComponents(data []byte, numDimensions, numExBits int) []int {
+func unpackComponents(data []byte, numDimensions, numExBits int) ([]int, error) {
 	// Validate packed data length to avoid panics on truncated data.
 	bitsPerComponent := numExBits + 1
 	totalBits := numDimensions * bitsPerComponent
 	expectedBytes := (totalBits + 7) / 8
 	if len(data) < expectedBytes {
-		return make([]int, numDimensions) // return zeros for truncated data
+		return nil, fmt.Errorf("rabitq: truncated encoded vector data: got %d bytes, need %d", len(data), expectedBytes)
 	}
 
 	result := make([]int, numDimensions)
@@ -190,7 +193,7 @@ func unpackComponents(data []byte, numDimensions, numExBits int) []int {
 			currentByte = data[pos]
 		}
 	}
-	return result
+	return result, nil
 }
 
 // --- RaBitQ Quantizer ---
@@ -547,11 +550,12 @@ func (e *RaBitEstimator) EstimateDistance(query []float64, encoded *EncodedVecto
 }
 
 // Distance returns the estimated distance between a raw query and an encoded vector.
-// If the result is non-finite, returns +Inf.
-func (e *RaBitEstimator) Distance(query []float64, encoded *EncodedVector) float64 {
+// Returns an error if the result is non-finite (Inf or NaN), matching Java's
+// behavior of throwing on non-finite distance estimates.
+func (e *RaBitEstimator) Distance(query []float64, encoded *EncodedVector) (float64, error) {
 	est := e.EstimateDistance(query, encoded)
 	if math.IsInf(est.Distance, 0) || math.IsNaN(est.Distance) {
-		return math.Inf(1)
+		return 0, fmt.Errorf("rabitq: distance estimate is not finite: %v", est.Distance)
 	}
-	return est.Distance
+	return est.Distance, nil
 }

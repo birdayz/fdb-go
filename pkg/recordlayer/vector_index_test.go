@@ -3118,15 +3118,20 @@ var _ = Describe("Vector Search Cursor Continuation", func() {
 		Expect(allResults[4].Key[0].(int64)).To(Equal(int64(50)))
 	})
 
-	It("encodeVectorContinuation and parseVectorContinuation round-trip", func() {
-		dist := 3.14
-		pk := tuple.Tuple{int64(42)}.Pack()
+	It("encodeVectorScanContinuation and parseVectorScanContinuation round-trip", func() {
+		entries := []*IndexEntry{
+			{Key: tuple.Tuple{int64(1)}, Value: tuple.Tuple{nil}},
+			{Key: tuple.Tuple{int64(2)}, Value: tuple.Tuple{nil}},
+			{Key: tuple.Tuple{int64(3)}, Value: tuple.Tuple{nil}},
+		}
 
-		encoded := encodeVectorContinuation(dist, pk)
-		gotDist, gotPK, err := parseVectorContinuation(encoded)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(gotDist).To(BeNumerically("~", dist, 1e-15))
-		Expect(gotPK).To(Equal(pk))
+		encoded := encodeVectorScanContinuation(entries, 1)
+		parsed, innerPos := parseVectorScanContinuation(encoded, nil)
+		Expect(parsed).To(HaveLen(3))
+		Expect(innerPos).To(Equal(1))
+		Expect(parsed[0].Key[0].(int64)).To(Equal(int64(1)))
+		Expect(parsed[1].Key[0].(int64)).To(Equal(int64(2)))
+		Expect(parsed[2].Key[0].(int64)).To(Equal(int64(3)))
 	})
 
 	It("close prevents further results", func() {
