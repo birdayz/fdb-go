@@ -1448,3 +1448,72 @@ Comprehensive 10-agent quality assessment across test coverage, Java conformance
 
 - [x] **Index maintainer code duplication** — Consolidated 8 atomic index maintainers into unified `atomicMutationIndexMaintainer` with `AtomicMutation` strategy interface. Each index type (COUNT, SUM, MIN_EVER, MAX_EVER, COUNT_NOT_NULL, COUNT_UPDATES, MIN_EVER_TUPLE, MAX_EVER_TUPLE) is now a struct implementing `AtomicMutation` (getMutationType, getMutationParam, isIdempotent, skipUpdateForUnchangedKeys). Single maintainer, single factory dispatch, eliminated ~1000+ lines of duplication.
 - [x] **Metadata builder API footguns** — `RecordMetaDataBuilder.GetRecordType()` now panics with `MetaDataError` for unknown type names, matching Java's `MetaDataException("Unknown record type " + name)`. Previously returned nil causing opaque nil deref on `.SetPrimaryKey()` chains. `KeyExpression.Validate(descriptor)` already implemented (called from `Build()`). Typed store type name derivation deferred (nice-to-have, not a footgun).
+
+---
+
+## HNSW Vector Index Review (2026-03-22)
+
+5-agent deep review of HNSW/vector index implementation. Covers algorithm correctness, Java compatibility, RaBitQ quantization, performance, and test coverage.
+
+Wire format verified correct: subspace layout (data=0, access=1), compact node format, inlining edge format, access info format, vector serialization (HALF/SINGLE/DOUBLE/RABITQ type ordinals) all match Java. Layer assignment via SplitMix64 hash of `javaHashCode(pk.Pack())` matches Java's `SplittableRandom`. RaBitQ/FHT-KAC wire-compatible with Java's `fdb-extensions` (bit packing, FHT butterfly, Givens rotation, Java Random LCG all verified; cross-validated against hardcoded Java reference values).
+
+### Phase 1: Java conformance + RaBitQ extraction (do first)
+
+#### CRITICAL — Java interop (all fixed)
+
+- [x] **PK trimming missing** — Fixed: `Update()` now calls `m.index.TrimPrimaryKey()` before HNSW Insert/Delete. `SearchKNN` reconstructs full PKs via `getEntryPrimaryKey()`.
+- [x] **Continuation token format incompatible** — Fixed: now uses `VectorIndexScanContinuation` protobuf matching Java. All entries serialized into continuation for replay on resume.
+- [x] **IndexEntry format mismatch** — Fixed: Key = `(prefix..., trimmedPK...)`, Value = `(vectorBytes | nil)` matching Java's `toIndexEntry()`.
+
+#### HIGH — Java behavioral alignment (all fixed)
+
+- [x] **Missing HNSW config parsing** — Fixed: `hnswM`, `hnswMMax`, `hnswMMax0`, `hnswEfConstruction` now parsed from index options.
+- [x] **Java requires KeyWithValueExpression** — Documented divergence. Go allows non-KWV for backwards compat. Many existing tests use `Concat()`.
+- [x] **`unpackComponents` returns zeros on truncated data** — Fixed: now returns `([]int, error)`. Callers handle error.
+- [x] **Non-finite distance returns +Inf, Java throws** — Fixed: `Distance()` now returns `(float64, error)` on non-finite results.
+
+#### Conformance test gaps (must add for Phase 1)
+
+- [ ] **No Java kNN search conformance** — Can Java search a Go-written HNSW graph? Only record load is tested, not search. Most critical conformance gap.
+- [ ] **No RaBitQ cross-language byte-level conformance test** — Go→Java and Java→Go RaBitQ encoded vector round-trip untested.
+- [ ] **`TestMultipleExBitsPrecision` has dead assertions** — `rabitq_test.go:551-552`: computes `prevDist` and `dist` but never checks them. Fix or remove.
+
+#### Architecture — RaBitQ extraction
+
+- [ ] **Extract RaBitQ into separate package** — In Java, RaBitQ lives in `fdb-extensions` (opt-in dependency), not `fdb-record-layer-core`. Go has it baked into `pkg/recordlayer/`. Extract `rabitq.go` + `fht_kac_rotator.go` into `pkg/extensions/rabitq/`, define a quantizer interface in `pkg/recordlayer/` that HNSW dispatches through. Coupling points are clean: `encodeVectorBytes`, `computeDistance`, `decodeStoredVector` in `hnsw.go`.
+
+### Phase 2: Go-side improvements (after Java conformance is solid)
+
+#### HIGH — correctness bugs (not Java-specific)
+
+- [ ] **Entry point invisible in inlining mode** — `hnsw.go:351` saves nil neighbors for new entry point at upper layers → 0 KVs in inlining mode → `loadNodeLayerInlining` (`hnsw.go:1498-1501`) returns "not found". Breaks hierarchical search when `UseInlining=true` and entry point has layers above all others.
+- [ ] **FDB errors silently swallowed** — `hnsw.go:225,242,319,443,466,582,728,734`: `_ = future.Get()` throughout. Masks transaction conflicts, timeouts. Graph proceeds with partial/corrupted state.
+- [ ] **Delete uses computed topLayer, not actual** — `hnsw.go:414`: recomputes top layer from PK hash instead of scanning actual layers. Config change or cross-language M mismatch → orphaned edges at unscanned layers.
+- [ ] **Inlining `deleteNodeLayerInlining` comment lies** — `hnsw.go:1514-1526`: comment says "clears incoming edges" but only clears outgoing edges `(layer, pk, *)`. Incoming edges cleaned up by `repairNeighbor` but comment is misleading.
+
+#### Performance
+
+Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Qdrant is structural — HNSW has O(√N) irreducible sequential FDB round-trips at layer 0. No amount of Go-side optimization closes this. These target ~30-40% improvement within the HNSW architecture.
+
+- [ ] **~210KB garbage/query from RaBitQ distance** — `rabitq.go:519` allocates `xuc` (`make([]float64, dims)`) per distance call. `EncodedVectorFromBytes` allocates `make([]int, dims)` per call. ~100 calls/search = ~210KB throwaway. Fix: cache `EncodedVector` on `parsedNode`, pool `xuc` scratch buffer on `hnswGraph`.
+- [ ] **No cross-transaction entry point cache** — `hnsw.go:1253-1260`: every query reads access info from FDB (1 RT). Use `MetaDataVersionStampStoreStateCache` pattern already proven in codebase. Biggest single latency win for read-heavy workloads.
+- [ ] **Quantizer/Estimator recreated per call** — `hnsw.go:134,154`: `NewRaBitQuantizer` and `NewRaBitEstimator` created in tight loops. Cache on `hnswGraph` struct.
+- [ ] **`deserializeVector` allocates every call** — `hnsw.go:1765-1768`: `make([]float64, numFloats)` with no pooling. Use `sync.Pool` or scratch buffer.
+- [ ] **distHeap not pre-allocated** — `hnsw.go:625`: starts empty, ~8 reallocations per search. Fix: `make([]distItem, 0, ef)`.
+- [ ] **Double Pack() for visited set** — `hnsw.go:658`: `string(nbPK.Pack())` allocates new string for every neighbor check (500-1000/search). Return packed key from batch load, reuse.
+
+#### Additional test coverage
+
+- [ ] **No graph structure verification** — No test does BFS from entry point to assert all layer-0 nodes are reachable. Silent graph corruption undetectable.
+- [ ] **No delete-then-reinsert same PK test** — Entry point edge case: delete entry point, re-insert same PK+vector.
+- [ ] **No all-identical-vectors degenerate case** — Zero-distance handling, PK ordering, graph integrity untested.
+- [ ] **No wrong-dimension query test** — 3D query against 128D index should error, might panic.
+- [ ] **No old-position search after update** — Update test verifies new vector found but doesn't verify old position NOT returned.
+- [ ] **No high-dimensional FDB integration (768D+)** — Serialization and FDB key/value sizes untested at realistic embedding dimensions.
+- [ ] **No OnlineIndexer/RebuildIndex for VECTOR** — Schema evolution path untested.
+- [ ] **No CI-run medium-scale test (500+ vectors)** — Largest CI graph is 100 vectors.
+- [ ] **Chaos tests only use 2D vectors** — No chaos testing with high-dim, RaBitQ, or prefix-partitioned HNSW.
+
+#### Architectural note: HNSW vs IVF on FDB
+
+HNSW is a fundamentally poor fit for networked KV stores due to O(√N) sequential round-trip dependency at layer 0 (data-dependent graph traversal — each hop must wait for previous results). IVF reduces this to O(log N) fixed phases using range reads (FDB's strength). Java also only has HNSW — no IVF. A future `IndexType_VECTOR_IVF` (per RFC 005) would be a Go-only performance feature, not a Java port. See distributed systems analysis in conversation 2026-03-22.
