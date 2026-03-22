@@ -1495,12 +1495,12 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 
 Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Qdrant is structural — HNSW has O(√N) irreducible sequential FDB round-trips at layer 0. No amount of Go-side optimization closes this. These target ~30-40% improvement within the HNSW architecture.
 
-- [ ] **~210KB garbage/query from RaBitQ distance** — `rabitq.go:519` allocates `xuc` (`make([]float64, dims)`) per distance call. `EncodedVectorFromBytes` allocates `make([]int, dims)` per call. ~100 calls/search = ~210KB throwaway. Fix: cache `EncodedVector` on `parsedNode`, pool `xuc` scratch buffer on `hnswGraph`.
-- [ ] **No cross-transaction entry point cache** — `hnsw.go:1253-1260`: every query reads access info from FDB (1 RT). Use `MetaDataVersionStampStoreStateCache` pattern already proven in codebase. Biggest single latency win for read-heavy workloads.
-- [ ] **Quantizer/Estimator recreated per call** — `hnsw.go:134,154`: `NewRaBitQuantizer` and `NewRaBitEstimator` created in tight loops. Cache on `hnswGraph` struct.
-- [ ] **`deserializeVector` allocates every call** — `hnsw.go:1765-1768`: `make([]float64, numFloats)` with no pooling. Use `sync.Pool` or scratch buffer.
-- [ ] **distHeap not pre-allocated** — `hnsw.go:625`: starts empty, ~8 reallocations per search. Fix: `make([]distItem, 0, ef)`.
-- [ ] **Double Pack() for visited set** — `hnsw.go:658`: `string(nbPK.Pack())` allocates new string for every neighbor check (500-1000/search). Return packed key from batch load, reuse.
+- [ ] **~210KB garbage/query from RaBitQ distance** — `rabitq.go` allocates `xuc` (`make([]float64, dims)`) per distance call. `EncodedVectorFromBytes` allocates `make([]int, dims)` per call. ~100 calls/search = ~210KB throwaway. Fix: cache `EncodedVector` on `parsedNode`, pool scratch buffer.
+- [ ] **No cross-transaction entry point cache** — every query reads access info from FDB (1 RT). Use `MetaDataVersionStampStoreStateCache` pattern already proven in codebase. Biggest single latency win for read-heavy workloads.
+- [x] **Quantizer/Estimator recreated per call** — Fixed by RaBitQ extraction: `VectorQuantizer` interface stored on `HNSWConfig`, dispatched through once-created instance.
+- [x] **`deserializeVector` allocates every call** — Not an issue: when quantizer is set, `computeDistance` takes the quantizer path and never calls `deserializeVector`. Raw-vector path allocation is unavoidable but infrequent.
+- [x] **distHeap not pre-allocated** — Fixed: backing slice pre-allocated to capacity `ef`.
+- [ ] **Double Pack() for visited set** — `string(nbPK.Pack())` allocates new string for every neighbor check (500-1000/search). Return packed key from batch load, reuse.
 
 #### Additional test coverage
 
