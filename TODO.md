@@ -1480,7 +1480,7 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 
 #### Architecture — RaBitQ extraction
 
-- [ ] **Extract RaBitQ into separate package** — In Java, RaBitQ lives in `fdb-extensions` (opt-in dependency), not `fdb-record-layer-core`. Go has it baked into `pkg/recordlayer/`. Extract `rabitq.go` + `fht_kac_rotator.go` into `pkg/extensions/rabitq/`, define a quantizer interface in `pkg/recordlayer/` that HNSW dispatches through. Coupling points are clean: `encodeVectorBytes`, `computeDistance`, `decodeStoredVector` in `hnsw.go`.
+- [x] **Extract RaBitQ into separate package** — Done: `pkg/rabitq/` with `VectorQuantizer` interface in `pkg/recordlayer/hnsw.go`. HNSW dispatches through interface (`Encode`, `Distance`, `Decode`, `GetTypeByte`). No import cycle: `rabitq` defines its own `Metric` type, `recordlayer` imports `rabitq` only in `vector_index_maintainer.go`. `fht_kac_rotator.go` stays in `recordlayer` (HNSW-core, not RaBitQ-specific).
 
 ### Phase 2: Go-side improvements (after Java conformance is solid)
 
