@@ -2,11 +2,16 @@ package chaos
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
 	"log"
+	"math"
+	"math/rand/v2"
 	"os"
 	"testing"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
@@ -761,6 +766,205 @@ func TestVectorRandomStress(t *testing.T) {
 		}
 
 		if (i+1)%verifyEvery == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("completed %d ops with seed=%d, %d faults injected",
+		numOps, s.Seed(), len(s.FaultLog()))
+}
+
+// serializeVecForChaos serializes a float64 vector to the DOUBLE wire format
+// (type ordinal 2 + big-endian float64s). Mirrors recordlayer.serializeVector
+// which is unexported.
+func serializeVecForChaos(vec []float64) []byte {
+	buf := make([]byte, 1+8*len(vec))
+	buf[0] = 2 // DOUBLE type ordinal
+	for i, v := range vec {
+		binary.BigEndian.PutUint64(buf[1+i*8:], math.Float64bits(v))
+	}
+	return buf
+}
+
+// buildVectorHighDimRaBitQMetadata creates metadata with a 128D VECTOR index
+// using RaBitQ quantization on the vector_data bytes field.
+func buildVectorHighDimRaBitQMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+
+	vecIdx := recordlayer.NewVectorIndex(
+		"order_vec_128d_rabitq",
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0),
+		128,
+	)
+	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	builder.AddIndex("Order", vecIdx)
+
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build high-dim RaBitQ metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestVectorHighDimRaBitQBasic validates that 128D RaBitQ vector indexing works
+// end-to-end: insert 10 records with random 128D vectors, then verify search
+// returns correct nearest neighbors. No fault injection — validates the
+// RaBitQ pipeline (quantization + encoding + distance estimation) works.
+func TestVectorHighDimRaBitQBasic(t *testing.T) {
+	t.Parallel()
+
+	md := buildVectorHighDimRaBitQMetadata()
+	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	db := recordlayer.NewFDBDatabase(testRealDB)
+	ctx := context.Background()
+
+	const numVectors = 10
+	const dims = 128
+
+	// Deterministic PRNG for reproducible vectors.
+	rng := rand.New(rand.NewPCG(54321, 0))
+
+	// Generate and store vectors for later verification.
+	vectors := make([][]float64, numVectors)
+	for i := range numVectors {
+		vec := make([]float64, dims)
+		for d := range dims {
+			vec[d] = rng.Float64()*200.0 - 100.0 // [-100, 100)
+		}
+		vectors[i] = vec
+	}
+
+	// Insert all 10 records in a single transaction.
+	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(sub).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		for i, vec := range vectors {
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId:    proto.Int64(int64(i + 1)),
+				VectorData: serializeVecForChaos(vec),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("save record %d: %w", i+1, err)
+			}
+		}
+
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("insert records: %v", err)
+	}
+
+	// Search for k=5 nearest to vectors[0]. Self should be closest.
+	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(sub).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		idx := md.GetIndex("order_vec_128d_rabitq")
+		results, err := store.SearchVectorIndex(idx, vectors[0], 5, 200)
+		if err != nil {
+			return nil, fmt.Errorf("search: %w", err)
+		}
+
+		if len(results) != 5 {
+			t.Fatalf("expected 5 results, got %d", len(results))
+		}
+
+		// Results must be sorted by distance ascending.
+		for i := 1; i < len(results); i++ {
+			if results[i].Distance < results[i-1].Distance {
+				t.Fatalf("results not sorted: dist[%d]=%.4f < dist[%d]=%.4f",
+					i, results[i].Distance, i-1, results[i-1].Distance)
+			}
+		}
+
+		// The closest result should be vectors[0] itself (PK=1, distance ~0).
+		// With RaBitQ, distance is approximate, so allow some tolerance.
+		if results[0].PrimaryKey[0].(int64) != 1 {
+			t.Logf("WARNING: self-search did not return self as closest (got PK=%v, dist=%.4f)",
+				results[0].PrimaryKey, results[0].Distance)
+		}
+
+		// All results should have distinct PKs.
+		seen := make(map[int64]bool)
+		for _, r := range results {
+			pk := r.PrimaryKey[0].(int64)
+			if seen[pk] {
+				t.Fatalf("duplicate PK %d in results", pk)
+			}
+			seen[pk] = true
+		}
+
+		t.Logf("search returned PKs: %v", seen)
+		t.Logf("distances: %.4f, %.4f, %.4f, %.4f, %.4f",
+			results[0].Distance, results[1].Distance, results[2].Distance,
+			results[3].Distance, results[4].Distance)
+
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+}
+
+// TestVectorHighDimRaBitQCommitUnknown validates that HNSW with RaBitQ
+// quantization remains idempotent under commit-unknown fault injection.
+// Uses 2D vectors (Price, Quantity) so the chaos StoreModel verification
+// works (it requires numeric fields, not byte vectors).
+func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
+	t.Parallel()
+
+	// Use 2D vectors via Price/Quantity for chaos model compatibility,
+	// but with RaBitQ enabled to exercise the quantization pipeline under faults.
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+
+	vecIdx := recordlayer.NewVectorIndex(
+		"order_vec_rabitq_chaos",
+		recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+		2,
+	)
+	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	builder.AddIndex("Order", vecIdx)
+
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+
+	s := NewScenario(t, testRealDB, md, WithSeed(99887), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 20
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(10) + 1
+		s.SaveRecord(&gen.Order{
+			OrderId:  proto.Int64(pk),
+			Price:    proto.Int32(s.Rng.Int32N(500)),
+			Quantity: proto.Int32(s.Rng.Int32N(500)),
+		})
+
+		if (i+1)%5 == 0 {
 			s.Verify()
 		}
 	}

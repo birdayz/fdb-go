@@ -2067,6 +2067,88 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("medium-scale search with 500 vectors", func() {
+		ks := specSubspace()
+
+		// 2D HNSW index on (price, quantity).
+		vecIdx := NewVectorIndex("vec_500", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseMetaData()
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Insert 500 vectors in batches of 50 to stay under FDB transaction limits.
+		const totalVectors = 500
+		const batchSize = 50
+
+		for batchStart := 0; batchStart < totalVectors; batchStart += batchSize {
+			batchEnd := batchStart + batchSize
+			if batchEnd > totalVectors {
+				batchEnd = totalVectors
+			}
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := batchStart; i < batchEnd; i++ {
+					// Deterministic spread: (i*2, i*3) gives distinct 2D positions.
+					_, err = store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(int64(i + 1)),
+						Price:    proto.Int32(int32(i * 2)),
+						Quantity: proto.Int32(int32(i * 3)),
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Search for k=10 nearest to (500, 750).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			results, err := store.SearchVectorIndex(vecIdx, []float64{500.0, 750.0}, 10, 64)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(10))
+
+			// Results must be sorted by distance ascending.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance),
+					"result %d (dist=%.2f) should be >= result %d (dist=%.2f)",
+					i, results[i].Distance, i-1, results[i-1].Distance)
+			}
+
+			// The query point (500, 750) maps to i=250 (price=500, qty=750).
+			// Nearby vectors: i=249 (498, 747), i=251 (502, 753), i=248 (496, 744), ...
+			// Verify the closest results are geometrically near i=250.
+			// All 10 results should have IDs in the range [241, 261] (i.e., within ~10 of 250).
+			for _, r := range results {
+				id := r.PrimaryKey[0].(int64)
+				// The vector at id maps to i = id-1.
+				// Distance from i=250: price diff = (i-250)*2, qty diff = (i-250)*3
+				// Squared distance = ((i-250)*2)^2 + ((i-250)*3)^2 = (i-250)^2 * 13
+				// For the 10 nearest, |i-250| <= 9, so id in [242, 260].
+				Expect(id).To(BeNumerically(">=", int64(242)),
+					"result id=%d should be near the query point (id >= 242)", id)
+				Expect(id).To(BeNumerically("<=", int64(260)),
+					"result id=%d should be near the query point (id <= 260)", id)
+			}
+
+			// Verify the closest result: i=250, id=251, vector=(500, 750), distance=0.
+			Expect(results[0].PrimaryKey[0].(int64)).To(Equal(int64(251)))
+			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-6))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
 
 var _ = Describe("HNSW Search Quality", func() {
