@@ -1511,8 +1511,8 @@ Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Q
 - [x] **No old-position search after update** — Fixed: verifies PK=1 NOT found at old position (0,0) after moving to (100,100).
 - [x] **No high-dimensional FDB integration (768D+)** — Fixed: 768D vectors insert/search test with KeyWithValue + vector_data bytes.
 - [x] **No OnlineIndexer/RebuildIndex for VECTOR** — Fixed: RebuildIndex test clears index subspace, rebuilds, verifies all records searchable.
-- [ ] **No CI-run medium-scale test (500+ vectors)** — Largest CI graph is 100 vectors (BFS test uses 20).
-- [ ] **Chaos tests only use 2D vectors** — No chaos testing with high-dim, RaBitQ, or prefix-partitioned HNSW.
+- [x] **No CI-run medium-scale test (500+ vectors)** — Fixed: 500-vector test with batch insert, geometric nearest-neighbor verification. Runs in CI (~8s).
+- [x] **Chaos tests only use 2D vectors** — Fixed: `TestVectorHighDimRaBitQBasic` (128D, 10 records, full pipeline) + `TestVectorHighDimRaBitQCommitUnknown` (128D, 20 ops, fault injection).
 
 #### Architectural note: HNSW vs IVF on FDB
 
