@@ -118,8 +118,11 @@ func (store *FDBRecordStore) FirstUnbuiltRange(index *Index) (*RangeSetRange, er
 }
 
 // IsCacheable returns whether the store state is marked as cacheable in the header.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().getStoreHeader().getCacheable().
 func (store *FDBRecordStore) IsCacheable() bool {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
 		return false
 	}
@@ -127,8 +130,11 @@ func (store *FDBRecordStore) IsCacheable() bool {
 }
 
 // GetStoreHeader returns a copy of the current store header proto.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().getStoreHeader().
 func (store *FDBRecordStore) GetStoreHeader() *gen.DataStoreInfo {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
 		return nil
 	}
@@ -136,8 +142,11 @@ func (store *FDBRecordStore) GetStoreHeader() *gen.DataStoreInfo {
 }
 
 // GetAllIndexStatesMap returns a copy of the raw index states map (non-READABLE only).
+// Goroutine-safe via stateMu (read lock).
 // For a complete map including defaulted READABLE states, use GetAllIndexStates().
 func (store *FDBRecordStore) GetAllIndexStatesMap() map[string]IndexState {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.indexStates == nil {
 		return make(map[string]IndexState)
 	}
@@ -147,14 +156,13 @@ func (store *FDBRecordStore) GetAllIndexStatesMap() map[string]IndexState {
 // OverrideLockSaveRecord saves a record even when the store is locked for record updates
 // (FORBID_RECORD_UPDATE). This is used by the OnlineIndexer to write index maintenance
 // records while the store is locked.
+// Goroutine-safe: uses parameter-based override instead of mutable field.
 // Matches Java's FDBRecordStore.overrideLockSaveRecordAsync().
 func (store *FDBRecordStore) OverrideLockSaveRecord(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	store.overrideLock = true
-	defer func() { store.overrideLock = false }()
-	return store.SaveRecordWithOptions(record, existenceCheck)
+	return store.saveRecordInternal(record, existenceCheck, true)
 }
 
 // GetRecordMetaData returns the metadata associated with this store.

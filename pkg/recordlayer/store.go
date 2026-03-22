@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"sync"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -93,17 +94,22 @@ type FDBRecordStore struct {
 	indexStates        map[string]IndexState  // Cached index states, loaded on Open/Create
 	indexRebuildPolicy IndexRebuildPolicy     // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
-	overrideLock       bool                   // When true, skip validateRecordUpdateAllowed (for OverrideLockSaveRecord)
+	stateMu            sync.RWMutex           // protects storeHeader + indexStates
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
 // Returns StoreIsLockedForRecordUpdatesError if the store header has
 // StoreLockState set to FORBID_RECORD_UPDATE.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
-	if store.overrideLock {
-		return nil
-	}
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.validateRecordUpdateAllowedLocked()
+}
+
+// validateRecordUpdateAllowedLocked is the same check but caller must hold stateMu.
+func (store *FDBRecordStore) validateRecordUpdateAllowedLocked() error {
 	if store.storeHeader == nil {
 		return nil
 	}
@@ -357,6 +363,17 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
+	return store.saveRecordInternal(record, existenceCheck, false)
+}
+
+// saveRecordInternal implements the save logic with an explicit overrideLock parameter.
+// When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
+// This eliminates the goroutine-unsafe overrideLock field pattern.
+func (store *FDBRecordStore) saveRecordInternal(
+	record proto.Message,
+	existenceCheck RecordExistenceCheck,
+	overrideLock bool,
+) (*FDBStoredRecord[proto.Message], error) {
 	if record == nil {
 		return nil, fmt.Errorf("cannot save nil record")
 	}
@@ -446,8 +463,10 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	// Check lock state AFTER load and existence checks but BEFORE write,
 	// matching Java's saveRecordAsync() error precedence: existence/type
 	// errors take priority over lock errors.
-	if err := store.validateRecordUpdateAllowed(); err != nil {
-		return nil, err
+	if !overrideLock {
+		if err := store.validateRecordUpdateAllowed(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Wrap the record in a UnionDescriptor like Java Record Layer does
@@ -788,6 +807,11 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 		return nil
 	}
 
+	// Hold read lock for entire index update — matches Java's
+	// beginRecordStoreStateRead() wrapping updateSecondaryIndexes.
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+
 	// Fast path: same type (or one side nil) — no three-way split needed.
 	sameType := oldRecord == nil || newRecord == nil || oldRecord.RecordType.Name == newRecord.RecordType.Name
 	if sameType {
@@ -892,9 +916,10 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 
 // updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
 // Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
+// updateOneIndex updates a single index. Caller must hold stateMu (read or write).
 func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	maintainer := store.getIndexMaintainer(index)
-	if store.IsIndexWriteOnly(index.Name) {
+	if store.getIndexStateLocked(index.Name) == IndexStateWriteOnly {
 		return maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
 	}
 	return maintainer.Update(oldRecord, newRecord)
@@ -990,12 +1015,14 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
 }
 
 // indexStoreContext interface implementation for FDBRecordStore.
+// These are called from index maintainers during updateSecondaryIndexes,
+// which holds stateMu.RLock() — so they use getIndexStateLocked.
 func (store *FDBRecordStore) isIndexWriteOnly(index *Index) bool {
-	return store.IsIndexWriteOnly(index.Name)
+	return store.getIndexStateLocked(index.Name) == IndexStateWriteOnly
 }
 
 func (store *FDBRecordStore) isIndexReadableUniquePending(index *Index) bool {
-	return store.GetIndexState(index.Name) == IndexStateReadableUniquePending
+	return store.getIndexStateLocked(index.Name) == IndexStateReadableUniquePending
 }
 
 func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error {
@@ -1005,6 +1032,12 @@ func (store *FDBRecordStore) addUniquenessViolation(index *Index, indexKey tuple
 func (store *FDBRecordStore) removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error {
 	return store.ResolveUniquenessViolation(index, indexKey, primaryKey)
 }
+
+// lockRegistry delegation — matches Java's LockRegistry on FDBRecordContext.
+func (store *FDBRecordStore) AcquireWriteLock(key string) { store.context.locks.WriteLock(key) }
+func (store *FDBRecordStore) ReleaseWriteLock(key string) { store.context.locks.WriteUnlock(key) }
+func (store *FDBRecordStore) AcquireReadLock(key string)  { store.context.locks.ReadLock(key) }
+func (store *FDBRecordStore) ReleaseReadLock(key string)  { store.context.locks.ReadUnlock(key) }
 
 func (store *FDBRecordStore) isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error) {
 	irs := NewIndexingRangeSet(store.subspace, index)
@@ -1120,8 +1153,15 @@ func (r *FDBStoredRecord[M]) HasVersion() bool {
 }
 
 // GetFormatVersion returns the store format version.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getFormatVersion().
 func (store *FDBRecordStore) GetFormatVersion() int32 {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.getFormatVersionLocked()
+}
+
+func (store *FDBRecordStore) getFormatVersionLocked() int32 {
 	if store.storeHeader != nil && store.storeHeader.FormatVersion != nil {
 		return *store.storeHeader.FormatVersion
 	}
@@ -1129,8 +1169,11 @@ func (store *FDBRecordStore) GetFormatVersion() int32 {
 }
 
 // GetUserVersion returns the user-defined store version.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getUserVersion().
 func (store *FDBRecordStore) GetUserVersion() int32 {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.UserVersion != nil {
 		return *store.storeHeader.UserVersion
 	}
@@ -1138,8 +1181,11 @@ func (store *FDBRecordStore) GetUserVersion() int32 {
 }
 
 // SetUserVersion updates the user-defined store version and writes it to FDB.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.setUserVersion().
 func (store *FDBRecordStore) SetUserVersion(version int32) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1150,7 +1196,10 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 }
 
 // GetMetaDataVersion returns the metadata version stored in the header.
+// Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetMetaDataVersion() int32 {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.MetaDataversion != nil {
 		return *store.storeHeader.MetaDataversion
 	}
@@ -1159,8 +1208,11 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 
 // GetIncarnation returns the incarnation counter from the store header.
 // Used for cross-cluster data migration versioning.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getIncarnation().
 func (store *FDBRecordStore) GetIncarnation() int32 {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil {
 		return store.storeHeader.GetIncarnation()
 	}
@@ -1169,11 +1221,14 @@ func (store *FDBRecordStore) GetIncarnation() int32 {
 
 // UpdateIncarnation atomically updates the incarnation counter using the provided
 // function. The new value must be strictly greater than the current value.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.updateIncarnation().
 func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32) error {
 	if updater == nil {
 		return fmt.Errorf("updater must not be nil")
 	}
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1188,8 +1243,11 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 
 // GetHeaderUserField returns a user-defined field from the store header.
 // Returns nil if the field is not set.
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getHeaderUserField().
 func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
 		return nil
 	}
@@ -1204,8 +1262,11 @@ func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
 // SetHeaderUserField sets a user-defined field in the store header.
 // The value is persisted immediately. Keep values small since the entire
 // header is loaded on every store open.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.setHeaderUserField().
 func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1224,8 +1285,11 @@ func (store *FDBRecordStore) SetHeaderUserField(key string, value []byte) error 
 }
 
 // ClearHeaderUserField removes a user-defined field from the store header.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.clearHeaderUserField().
 func (store *FDBRecordStore) ClearHeaderUserField(key string) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1247,8 +1311,11 @@ type RecordStoreState struct {
 }
 
 // GetRecordStoreState returns the current state of the store (header + index states).
+// Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().
 func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	states := make(map[string]IndexState, len(store.indexStates))
 	maps.Copy(states, store.indexStates)
 	return &RecordStoreState{
@@ -1260,8 +1327,11 @@ func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
 // SetStoreLockState sets the store lock state in the header and persists it.
 // Use FORBID_RECORD_UPDATE to prevent record mutations, or FULL_STORE to
 // prevent the store from being opened entirely.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.setStoreLockStateAsync().
 func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLockState_State, reason string) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1275,8 +1345,11 @@ func (store *FDBRecordStore) SetStoreLockState(state gen.DataStoreInfo_StoreLock
 }
 
 // ClearStoreLockState removes the lock state from the store header.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.clearStoreLockStateAsync().
 func (store *FDBRecordStore) ClearStoreLockState() error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}
@@ -1286,6 +1359,7 @@ func (store *FDBRecordStore) ClearStoreLockState() error {
 
 // ReloadRecordStoreState forces a reload of the store state from FDB.
 // Useful when another transaction may have changed the state.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.loadRecordStoreStateAsync() force reload path.
 func (store *FDBRecordStore) ReloadRecordStoreState() error {
 	exists, header, err := store.checkStoreExists()
@@ -1295,13 +1369,17 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 	if !exists {
 		return &RecordStoreDoesNotExistError{}
 	}
+	store.stateMu.Lock()
 	store.storeHeader = header
+	store.stateMu.Unlock()
 	return store.loadIndexStates()
 }
 
 // loadStoreState loads store state via the cache or directly from FDB.
 // When bypassFullStoreLockReason is set, the cache is bypassed entirely
 // (matching Java's checkVersion which skips cache on lock bypass).
+// Called during store Build() before concurrent access, but uses stateMu
+// for consistency.
 func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason string) error {
 	if bypassReason != "" {
 		// Bypass cache when using lock bypass — need fresh state to validate lock.
@@ -1309,8 +1387,10 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 		if err != nil {
 			return err
 		}
+		store.stateMu.Lock()
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
+		store.stateMu.Unlock()
 		return nil
 	}
 
@@ -1322,11 +1402,13 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 	// Clone cached state so store mutations don't corrupt the cache entry.
 	// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
 	cachedState := entry.GetRecordStoreState()
+	store.stateMu.Lock()
 	store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
 	store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
 	for k, v := range cachedState.IndexStates {
 		store.indexStates[k] = v
 	}
+	store.stateMu.Unlock()
 	return nil
 }
 
@@ -1334,8 +1416,11 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 // transactions. When enabled, the metadata version stamp is initialized so
 // cache invalidation can work. Requires FormatVersion >= CACHEABLE_STATE (7).
 // Returns true if the cacheability was changed, false if already at the desired state.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.setStateCacheabilityAsync().
 func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return false, &RecordStoreStateNotLoadedError{}
 	}
@@ -1354,7 +1439,10 @@ func (store *FDBRecordStore) SetStateCacheability(cacheable bool) (bool, error) 
 }
 
 // IsStateCacheable returns whether this store's state is currently cacheable.
+// Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) IsStateCacheable() bool {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	return store.storeHeader != nil && store.storeHeader.GetCacheable()
 }
 

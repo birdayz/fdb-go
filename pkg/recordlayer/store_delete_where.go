@@ -28,6 +28,11 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		return err
 	}
 
+	// Hold read lock for entire operation — matches Java's beginRead()/endRead()
+	// wrapping RecordsWhereDeleter.run().
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+
 	tx := store.context.Transaction()
 
 	// Determine which record types match this prefix.
@@ -45,7 +50,7 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	var actions []indexAction
 
 	for _, idx := range store.metaData.GetAllIndexes() {
-		if store.IsIndexDisabled(idx.Name) {
+		if store.getIndexStateLocked(idx.Name).IsDisabled() {
 			continue
 		}
 

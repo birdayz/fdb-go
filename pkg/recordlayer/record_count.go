@@ -38,8 +38,11 @@ func decodeRecordCount(b []byte) int64 {
 }
 
 // isRecordCountDisabled returns true if the record count state is DISABLED.
-// Matches Java's check: header.getRecordCountState() != DISABLED.
+// Goroutine-safe via stateMu (read lock).
+// Matches Java's addRecordCount which wraps the check in beginRecordStoreStateRead().
 func (store *FDBRecordStore) isRecordCountDisabled() bool {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
 		return false
 	}
@@ -97,8 +100,15 @@ func (store *FDBRecordStore) GetSnapshotRecordCount(countKey tuple.Tuple) (int64
 	if store.metaData.GetRecordCountKey() == nil {
 		return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil)")
 	}
-	if store.storeHeader != nil && store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_READABLE {
-		return 0, fmt.Errorf("record count is not readable (state: %s)", store.storeHeader.GetRecordCountState())
+	store.stateMu.RLock()
+	countDisabled := store.storeHeader != nil && store.storeHeader.GetRecordCountState() != gen.DataStoreInfo_READABLE
+	var countState gen.DataStoreInfo_RecordCountState
+	if store.storeHeader != nil {
+		countState = store.storeHeader.GetRecordCountState()
+	}
+	store.stateMu.RUnlock()
+	if countDisabled {
+		return 0, fmt.Errorf("record count is not readable (state: %s)", countState)
 	}
 
 	countSubspace := store.subspace.Sub(RecordCountKey)
@@ -141,8 +151,11 @@ func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName 
 // UpdateRecordCountState transitions the record count state.
 // Valid transitions: READABLE↔WRITE_ONLY, any→DISABLED. DISABLED is terminal.
 // When transitioning to DISABLED, clears all count data.
+// Goroutine-safe via stateMu (write lock).
 // Matches Java's FDBRecordStore.updateRecordCountStateAsync().
 func (store *FDBRecordStore) UpdateRecordCountState(newState gen.DataStoreInfo_RecordCountState) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	if store.storeHeader == nil {
 		return &RecordStoreStateNotLoadedError{}
 	}

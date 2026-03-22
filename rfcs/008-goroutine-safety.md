@@ -1,6 +1,6 @@
 # RFC 008: Goroutine Safety for FDBRecordStore
 
-## Status: WIP
+## Status: IMPLEMENTED (Phases 1-4)
 
 ## Problem
 
@@ -310,13 +310,17 @@ Summary: only tree-structured indexes (HNSW, R-tree) need write locks. RANK and 
 5. Concurrent stress test with `-race`
 6. Run full test suite with `-race` to prove no remaining races
 
+## Resolved questions
+
+1. **`sync.Map` vs mutex-protected map**: Chose mutex-protected maps (`sync.Mutex`). Simpler to reason about for range-delete operations, and version caches are write-heavy during saves. `sync.Map` is optimized for the opposite pattern.
+
+2. **Should we parallelize `updateSecondaryIndexes`?** Not yet. Deferred until measured need. If we do, RANK and TIME_WINDOW_LEADERBOARD would need LockRegistry protection.
+
+3. **`overrideLock` refactor**: Matched Java exactly — `overrideLock` is now a parameter to `saveRecordInternal()`, not a mutable field. `SaveRecordWithOptions` passes `false`, `OverrideLockSaveRecord` passes `true`. Same as Java's `saveTypedRecord(..., boolean overrideLock)`.
+
 ## Open questions
 
-1. **`sync.Map` vs mutex-protected map** for version caches. `sync.Map` is optimized for read-heavy, write-rare workloads. Version caches are write-heavy during saves. A plain map behind a `sync.Mutex` might be faster. Benchmark both.
-
-2. **Should we parallelize `updateSecondaryIndexes`?** Java does (`AsyncUtil.whenAll(futures)`). If we do, RANK and TIME_WINDOW_LEADERBOARD would need LockRegistry protection. Defer until there's a measured need.
-
-3. **`overrideLock` refactor scope.** Changing from field to parameter touches `SaveRecord`, `OverrideLockSaveRecord`, and `validateRecordUpdateAllowed`. Small surface but needs careful review.
+1. **R-tree `Scan` read lock**: Java holds a read lock for the entire scan cursor lifetime. Go's lazy cursor model makes this harder — the caller would need to hold the lock while iterating. Currently only `Update` has write locks; scan on snapshot reads gets a consistent FDB view. Track if this causes issues.
 
 ## References
 

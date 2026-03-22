@@ -72,7 +72,16 @@ func indexStateFromCode(code int64) (IndexState, error) {
 
 // GetIndexState returns the state of the given index. Returns READABLE if no
 // explicit state is stored (matching Java's default behavior).
+// Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetIndexState(indexName string) IndexState {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.getIndexStateLocked(indexName)
+}
+
+// getIndexStateLocked returns index state without acquiring stateMu.
+// Caller must hold stateMu (read or write).
+func (store *FDBRecordStore) getIndexStateLocked(indexName string) IndexState {
 	if store.indexStates == nil {
 		return IndexStateReadable
 	}
@@ -248,8 +257,12 @@ func (store *FDBRecordStore) ClearAndMarkIndexWriteOnly(indexName string) (bool,
 // Key format: subspace[IndexStateSpaceKey][indexName]
 // Value format: tuple.Tuple{int64(state)}.Pack() — matches Java's Tuple.from(state.code()).pack()
 // Also handles cache invalidation: sets dirty store state and bumps metadata version
-// stamp when the store is cacheable. Matches Java's FDBRecordStore.updateIndexState().
+// stamp when the store is cacheable.
+// Goroutine-safe via stateMu (write lock) — matches Java's beginRecordStoreStateWrite().
+// Matches Java's FDBRecordStore.updateIndexState().
 func (store *FDBRecordStore) setIndexState(indexName string, state IndexState) {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
 	key := store.indexStateSubspace().Pack(tuple.Tuple{indexName})
 
 	if state == IndexStateReadable {
@@ -339,7 +352,9 @@ func (store *FDBRecordStore) loadIndexStates() error {
 	if err != nil {
 		return err
 	}
+	store.stateMu.Lock()
 	store.indexStates = states
+	store.stateMu.Unlock()
 	return nil
 }
 
@@ -485,8 +500,10 @@ func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) error {
 // shouldMaintainIndex returns true if the index should be updated on record changes.
 // DISABLED indexes are skipped entirely. READABLE, WRITE_ONLY, and READABLE_UNIQUE_PENDING
 // all receive updates.
+// Caller must hold stateMu (read or write) — called from updateSecondaryIndexes which
+// holds the read lock for the entire operation, matching Java's beginRecordStoreStateRead().
 func (store *FDBRecordStore) shouldMaintainIndex(indexName string) bool {
-	return !store.GetIndexState(indexName).IsDisabled()
+	return !store.getIndexStateLocked(indexName).IsDisabled()
 }
 
 // checkIndexBuilt verifies that the index range set is complete (no unbuilt ranges).

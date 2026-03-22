@@ -251,6 +251,12 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	// Acquire write lock on HNSW subspace — serialize graph mutations.
+	// Matches Java's VectorIndexMaintainer.updateIndexKeys() which acquires
+	// a write lock via context.doWithWriteLock(LockIdentifier).
+	lockKey := string(m.hnswSubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	if oldRecord != nil {
 		entries, err := m.evaluateIndex(oldRecord)
 		if err != nil {
@@ -660,6 +666,12 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 // reconstructs full primary keys using getEntryPrimaryKey so callers can use
 // them directly with LoadRecord.
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
+	// Acquire read lock on HNSW subspace — prevent graph mutations during search.
+	// Matches Java's VectorIndexMaintainer.scan() which acquires a read lock.
+	lockKey := string(m.hnswSubspace.Bytes())
+	m.store.AcquireReadLock(lockKey)
+	defer m.store.ReleaseReadLock(lockKey)
+
 	// Guard: query vector dimension must match the index's configured dimensions.
 	if len(queryVector) != m.hnswConfig.NumDimensions {
 		return nil, fmt.Errorf("VECTOR index %q expects %d dimensions, but query vector has %d",

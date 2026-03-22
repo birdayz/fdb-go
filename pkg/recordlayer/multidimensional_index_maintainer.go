@@ -94,8 +94,13 @@ func extractDimensionsExpression(expr KeyExpression) *DimensionsKeyExpression {
 }
 
 // Update handles insert/delete/update for the MULTIDIMENSIONAL index.
-// Matches Java's MultidimensionalIndexMaintainer.updateIndexKeys().
+// Acquires write lock to serialize R-tree mutations.
+// Matches Java's MultidimensionalIndexMaintainer.updateIndex() which acquires
+// a write lock via context.doWithWriteLock(LockIdentifier).
 func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	lockKey := string(m.indexSubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	dimExpr := m.getDimensionsExpression()
 	if dimExpr == nil {
 		return fmt.Errorf("MULTIDIMENSIONAL index %q: root expression must be DimensionsKeyExpression", m.index.Name)

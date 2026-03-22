@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -222,30 +224,46 @@ type versionMutation struct {
 
 // FDBRecordContext represents a transactional context for record operations.
 // It wraps an FDB transaction and provides additional record layer functionality.
+// Goroutine-safe: all mutable fields are protected by atomics, mutexes, or the
+// lockRegistry. Multiple goroutines may safely operate on the same context
+// within a single FDB transaction (matching Java's CompletableFuture model).
 // Matches Java's FDBRecordContext.
 type FDBRecordContext struct {
 	tx  fdb.Transaction
 	ctx context.Context
 
-	// Version management — matches Java's FDBRecordContext
-	localVersion      int32                      // per-transaction local version counter
+	// Version management — matches Java's FDBRecordContext.
+	// Java uses AtomicInteger + ConcurrentSkipListMap.
+	// Go uses atomic.Int32 + mutex-protected maps.
+	localVersion      atomic.Int32               // per-transaction local version counter
+	versionMu         sync.Mutex                 // protects localVersionCache + versionMutations
 	localVersionCache map[string]int             // key (string) → local version (int)
 	versionMutations  map[string]versionMutation // key (string) → mutation (type + value)
 
-	// Commit hooks — matches Java's CommitCheckAsync / PostCommit
+	// Commit hooks — matches Java's CommitCheckAsync / PostCommit.
+	// Java uses synchronized blocks on all access.
+	commitMu     sync.Mutex
 	commitChecks []CommitCheckFunc
 	postCommits  []PostCommitFunc
 
 	// Diagnostic: tracked read conflict ranges for debugging
+	conflictMu     sync.Mutex
 	conflictRanges []fdb.KeyRange
 
-	// Store state cache invalidation tracking — matches Java's FDBRecordContext
-	dirtyStoreState            bool // set when any store header or index state is modified
-	dirtyMetaDataVersionStamp  bool // set when SetMetaDataVersionStamp() is called
+	// Store state cache invalidation tracking — matches Java's FDBRecordContext.
+	// Java leaves these unprotected (benign single-word writes).
+	// Go uses atomics for race-detector cleanliness.
+	dirtyStoreState           atomic.Bool // set when any store header or index state is modified
+	dirtyMetaDataVersionStamp atomic.Bool // set when SetMetaDataVersionStamp() is called
+
+	// Per-subspace read-write locks for tree-structured indexes (HNSW, R-tree).
+	// Matches Java's LockRegistry on FDBRecordContext.
+	locks lockRegistry
 
 	// Instrumentation timer — matches Java's FDBRecordContext.timer field.
-	// Nil means no instrumentation (all timer methods are nil-safe no-ops).
-	timer *StoreTimer
+	// Set once during construction, nil means no instrumentation.
+	// Atomic for race-detector cleanliness (concurrent reads from goroutines).
+	timer atomic.Pointer[StoreTimer]
 }
 
 // NewFDBRecordContext creates a new FDBRecordContext wrapping an FDB transaction.
@@ -286,16 +304,17 @@ func (rc *FDBRecordContext) Cancel() {
 }
 
 // ClaimLocalVersion atomically claims the next local version number.
-// Matches Java's FDBRecordContext.claimLocalVersion().
+// Goroutine-safe via atomic.Int32 (matches Java's AtomicInteger.getAndIncrement()).
 func (rc *FDBRecordContext) ClaimLocalVersion() int {
-	v := rc.localVersion
-	rc.localVersion++
-	return int(v) // returns 0, 1, 2, ...
+	return int(rc.localVersion.Add(1) - 1) // returns 0, 1, 2, ...
 }
 
 // AddToLocalVersionCache caches a local version for a version key within this transaction.
+// Goroutine-safe via versionMu.
 // Matches Java's FDBRecordContext.addToLocalVersionCache().
 func (rc *FDBRecordContext) AddToLocalVersionCache(versionKey []byte, localVersion int) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	if rc.localVersionCache == nil {
 		rc.localVersionCache = make(map[string]int)
 	}
@@ -304,21 +323,30 @@ func (rc *FDBRecordContext) AddToLocalVersionCache(versionKey []byte, localVersi
 
 // GetLocalVersion retrieves a cached local version for the given key.
 // Returns (localVersion, true) if found, (0, false) otherwise.
+// Goroutine-safe via versionMu.
 func (rc *FDBRecordContext) GetLocalVersion(versionKey []byte) (int, bool) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	v, ok := rc.localVersionCache[string(versionKey)]
 	return v, ok
 }
 
 // RemoveLocalVersion removes a cached local version entry.
+// Goroutine-safe via versionMu.
 func (rc *FDBRecordContext) RemoveLocalVersion(versionKey []byte) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	delete(rc.localVersionCache, string(versionKey))
 }
 
 // AddVersionMutation queues a versionstamp mutation to be applied at commit.
 // mutationType selects SET_VERSIONSTAMPED_KEY or SET_VERSIONSTAMPED_VALUE.
 // The key or value (depending on type) must include the versionstamp placeholder bytes.
+// Goroutine-safe via versionMu.
 // Matches Java's FDBRecordContext.addVersionMutation(MutationType, key, value).
 func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	if rc.versionMutations == nil {
 		rc.versionMutations = make(map[string]versionMutation)
 	}
@@ -330,8 +358,11 @@ func (rc *FDBRecordContext) AddVersionMutation(mutationType VersionMutationType,
 
 // UpdateVersionMutation queues or updates a versionstamp mutation with a merge function.
 // If a mutation for the same key already exists, the merge function decides which value to keep.
+// Goroutine-safe via versionMu.
 // Matches Java's FDBRecordContext.updateVersionMutation(MutationType, key, value, BiFunction).
 func (rc *FDBRecordContext) UpdateVersionMutation(mutationType VersionMutationType, versionKey []byte, value []byte, merge func(oldValue, newValue []byte) []byte) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	if rc.versionMutations == nil {
 		rc.versionMutations = make(map[string]versionMutation)
 	}
@@ -351,13 +382,19 @@ func (rc *FDBRecordContext) UpdateVersionMutation(mutationType VersionMutationTy
 }
 
 // RemoveVersionMutation removes a queued version mutation.
+// Goroutine-safe via versionMu.
 func (rc *FDBRecordContext) RemoveVersionMutation(versionKey []byte) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	delete(rc.versionMutations, string(versionKey))
 }
 
 // RemoveVersionMutationsInRange removes all queued version mutations whose key
-// falls in [begin, end). Matches Java's FDBRecordContext.removeVersionMutationRange().
+// falls in [begin, end). Goroutine-safe via versionMu.
+// Matches Java's FDBRecordContext.removeVersionMutationRange().
 func (rc *FDBRecordContext) RemoveVersionMutationsInRange(begin, end fdb.Key) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	for k := range rc.versionMutations {
 		kb := []byte(k)
 		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
@@ -367,8 +404,11 @@ func (rc *FDBRecordContext) RemoveVersionMutationsInRange(begin, end fdb.Key) {
 }
 
 // RemoveLocalVersionsInRange removes all cached local versions whose key
-// falls in [begin, end). Matches Java's FDBRecordContext.removeLocalVersionRange().
+// falls in [begin, end). Goroutine-safe via versionMu.
+// Matches Java's FDBRecordContext.removeLocalVersionRange().
 func (rc *FDBRecordContext) RemoveLocalVersionsInRange(begin, end fdb.Key) {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	for k := range rc.localVersionCache {
 		kb := []byte(k)
 		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
@@ -380,7 +420,10 @@ func (rc *FDBRecordContext) RemoveLocalVersionsInRange(begin, end fdb.Key) {
 // flushVersionMutations applies all queued versionstamp mutations
 // to the underlying FDB transaction. Called before commit.
 // Dispatches to SetVersionstampedKey or SetVersionstampedValue based on mutation type.
+// Goroutine-safe via versionMu (though typically called after all goroutines are done).
 func (rc *FDBRecordContext) flushVersionMutations() {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	for key, mut := range rc.versionMutations {
 		switch mut.mutationType {
 		case MutationTypeSetVersionstampedKey:
@@ -394,22 +437,34 @@ func (rc *FDBRecordContext) flushVersionMutations() {
 // AddCommitCheck registers a pre-commit check function.
 // All checks run before the transaction commits. If any returns an error,
 // the commit is aborted with that error.
+// Goroutine-safe via commitMu (matches Java's synchronized blocks).
 // Matches Java's FDBRecordContext.addCommitCheck(CommitCheckAsync).
 func (rc *FDBRecordContext) AddCommitCheck(check CommitCheckFunc) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
 	rc.commitChecks = append(rc.commitChecks, check)
 }
 
 // AddPostCommit registers a post-commit callback.
 // All callbacks run after the transaction successfully commits.
+// Goroutine-safe via commitMu (matches Java's synchronized blocks).
 // Matches Java's FDBRecordContext.addPostCommit(PostCommit).
 func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
+	rc.commitMu.Lock()
+	defer rc.commitMu.Unlock()
 	rc.postCommits = append(rc.postCommits, hook)
 }
 
 // runCommitChecks runs all registered pre-commit checks.
 // Returns the first error encountered, or nil if all pass.
+// Called at commit time when all goroutines should be done; holds commitMu
+// for race-detector cleanliness.
 func (rc *FDBRecordContext) runCommitChecks() error {
-	for _, check := range rc.commitChecks {
+	rc.commitMu.Lock()
+	checks := make([]CommitCheckFunc, len(rc.commitChecks))
+	copy(checks, rc.commitChecks)
+	rc.commitMu.Unlock()
+	for _, check := range checks {
 		if err := check(); err != nil {
 			return err
 		}
@@ -418,8 +473,14 @@ func (rc *FDBRecordContext) runCommitChecks() error {
 }
 
 // runPostCommits runs all registered post-commit callbacks.
+// Called after commit when all goroutines should be done; holds commitMu
+// for race-detector cleanliness.
 func (rc *FDBRecordContext) runPostCommits() {
-	for _, hook := range rc.postCommits {
+	rc.commitMu.Lock()
+	hooks := make([]PostCommitFunc, len(rc.postCommits))
+	copy(hooks, rc.postCommits)
+	rc.commitMu.Unlock()
+	for _, hook := range hooks {
 		hook()
 	}
 }
@@ -454,54 +515,67 @@ func (rc *FDBRecordContext) SetTransactionPriority(priority TransactionPriority)
 
 // GetConflictingKeys attempts to identify conflicting keys after a commit failure.
 // Reads the transaction's read conflict ranges. This is a best-effort diagnostic tool.
-// Note: FDB does not natively expose which specific keys conflicted. This method
-// provides the read conflict ranges that were registered, which may help debugging.
+// Goroutine-safe via conflictMu.
 // Matches Java's FDBRecordContext.reportConflictingKeys() (diagnostic, not exact).
 func (rc *FDBRecordContext) GetConflictingKeys() []fdb.KeyRange {
-	return rc.conflictRanges
+	rc.conflictMu.Lock()
+	defer rc.conflictMu.Unlock()
+	result := make([]fdb.KeyRange, len(rc.conflictRanges))
+	copy(result, rc.conflictRanges)
+	return result
 }
 
 // AddReadConflictRange adds a read conflict range and tracks it for diagnostics.
+// Goroutine-safe via conflictMu (FDB transaction is already goroutine-safe).
 func (rc *FDBRecordContext) AddReadConflictRange(r fdb.ExactRange) error {
 	if err := rc.tx.AddReadConflictRange(r); err != nil {
 		return err
 	}
 	begin, end := r.FDBRangeKeys()
+	rc.conflictMu.Lock()
 	rc.conflictRanges = append(rc.conflictRanges, fdb.KeyRange{
 		Begin: begin.FDBKey(),
 		End:   end.FDBKey(),
 	})
+	rc.conflictMu.Unlock()
 	return nil
 }
 
 // HasVersionMutations returns true if there are pending version mutations.
+// Goroutine-safe via versionMu.
 func (rc *FDBRecordContext) HasVersionMutations() bool {
+	rc.versionMu.Lock()
+	defer rc.versionMu.Unlock()
 	return len(rc.versionMutations) > 0
 }
 
 // Timer returns the instrumentation timer for this context, or nil if not set.
+// Goroutine-safe via atomic.Pointer.
 // Matches Java's FDBRecordContext.getTimer().
 func (rc *FDBRecordContext) Timer() *StoreTimer {
-	return rc.timer
+	return rc.timer.Load()
 }
 
 // SetTimer sets the instrumentation timer for this context.
+// Goroutine-safe via atomic.Pointer.
 // Matches Java's FDBRecordContext.setTimer().
 func (rc *FDBRecordContext) SetTimer(timer *StoreTimer) {
-	rc.timer = timer
+	rc.timer.Store(timer)
 }
 
 // HasDirtyStoreState returns true if any store state was modified in this transaction.
 // When true, cached store state should not be used.
+// Goroutine-safe via atomic.Bool.
 // Matches Java's FDBRecordContext.hasDirtyStoreState().
 func (rc *FDBRecordContext) HasDirtyStoreState() bool {
-	return rc.dirtyStoreState
+	return rc.dirtyStoreState.Load()
 }
 
 // SetDirtyStoreState marks that store state was modified in this transaction.
+// Goroutine-safe via atomic.Bool.
 // Matches Java's FDBRecordContext.setDirtyStoreState().
 func (rc *FDBRecordContext) SetDirtyStoreState(dirty bool) {
-	rc.dirtyStoreState = dirty
+	rc.dirtyStoreState.Store(dirty)
 }
 
 // metaDataVersionStampValue is 14 zero bytes: 10 bytes for the global versionstamp
@@ -518,18 +592,20 @@ var metaDataVersionKey = append([]byte{0xFF}, []byte("/metadataVersion")...)
 // SetMetaDataVersionStamp schedules a SET_VERSIONSTAMPED_VALUE mutation on the
 // metadata version key. After commit, this key will contain the commit versionstamp,
 // which invalidates any cached store state entries with older stamps.
+// Goroutine-safe via atomic.Bool + goroutine-safe FDB transaction.
 // Matches Java's FDBRecordContext.setMetaDataVersionStamp().
 func (rc *FDBRecordContext) SetMetaDataVersionStamp() {
-	rc.dirtyMetaDataVersionStamp = true
+	rc.dirtyMetaDataVersionStamp.Store(true)
 	rc.tx.SetVersionstampedValue(fdb.Key(metaDataVersionKey), metaDataVersionStampValue[:])
 }
 
 // GetMetaDataVersionStamp reads the metadata version stamp at snapshot isolation.
 // Returns nil if the stamp was written in this transaction (dirty) or doesn't exist.
 // On ACCESSED_UNREADABLE errors (FDB code 1036), marks the stamp as dirty and returns nil.
-// Propagates all other errors. Matches Java's FDBRecordContext.getMetaDataVersionStampAsync().
+// Goroutine-safe via atomic.Bool + goroutine-safe FDB transaction.
+// Matches Java's FDBRecordContext.getMetaDataVersionStampAsync().
 func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
-	if rc.dirtyMetaDataVersionStamp {
+	if rc.dirtyMetaDataVersionStamp.Load() {
 		return nil, nil
 	}
 	val, err := rc.tx.Snapshot().Get(fdb.Key(metaDataVersionKey)).Get()
@@ -539,7 +615,7 @@ func (rc *FDBRecordContext) GetMetaDataVersionStamp() ([]byte, error) {
 		// Matches Java's handle() which catches this specific error code.
 		var fdbErr fdb.Error
 		if errors.As(err, &fdbErr) && fdbErr.Code == 1036 {
-			rc.dirtyMetaDataVersionStamp = true
+			rc.dirtyMetaDataVersionStamp.Store(true)
 			return nil, nil
 		}
 		// For genuine errors (network, transaction_too_old, etc.), propagate.
@@ -607,4 +683,48 @@ func buildVersionstampedValue(version *FDBRecordVersion) ([]byte, error) {
 	// TransactionVersion is all 0xFF for incomplete versionstamps (placeholder)
 	copy(vs.TransactionVersion[:], incompleteGlobalVersionMarker[:])
 	return tuple.Tuple{vs}.PackWithVersionstamp(nil)
+}
+
+// lockRegistry provides per-key read-write locks within a transaction context.
+// Matches Java's LockRegistry (ConcurrentHashMap<LockIdentifier, AtomicReference<AsyncLock>>).
+// Used by tree-structured indexes (HNSW, R-tree) to serialize mutations.
+type lockRegistry struct {
+	mu    sync.Mutex
+	locks map[string]*sync.RWMutex
+}
+
+func (r *lockRegistry) getOrCreate(key string) *sync.RWMutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.locks == nil {
+		r.locks = make(map[string]*sync.RWMutex)
+	}
+	if m, ok := r.locks[key]; ok {
+		return m
+	}
+	m := &sync.RWMutex{}
+	r.locks[key] = m
+	return m
+}
+
+// WriteLock acquires an exclusive lock for the given key.
+// Matches Java's FDBRecordContext.doWithWriteLock(LockIdentifier).
+func (r *lockRegistry) WriteLock(key string) {
+	r.getOrCreate(key).Lock()
+}
+
+// WriteUnlock releases the exclusive lock for the given key.
+func (r *lockRegistry) WriteUnlock(key string) {
+	r.getOrCreate(key).Unlock()
+}
+
+// ReadLock acquires a shared lock for the given key.
+// Matches Java's FDBRecordContext.doWithReadLock(LockIdentifier).
+func (r *lockRegistry) ReadLock(key string) {
+	r.getOrCreate(key).RLock()
+}
+
+// ReadUnlock releases the shared lock for the given key.
+func (r *lockRegistry) ReadUnlock(key string) {
+	r.getOrCreate(key).RUnlock()
 }

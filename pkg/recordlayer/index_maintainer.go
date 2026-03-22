@@ -44,6 +44,17 @@ type indexStoreContext interface {
 	// (COUNT) during WRITE_ONLY to avoid double-counting.
 	// Matches Java's standardIndexMaintainer.addedRangeWithKey().
 	isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error)
+
+	// AcquireWriteLock acquires an exclusive lock for the given subspace key.
+	// Used by tree-structured indexes (HNSW, R-tree) to serialize mutations.
+	// Matches Java's FDBRecordContext.doWithWriteLock(LockIdentifier).
+	AcquireWriteLock(key string)
+	ReleaseWriteLock(key string)
+	// AcquireReadLock acquires a shared lock for the given subspace key.
+	// Used by tree-structured indexes to allow concurrent reads during scans.
+	// Matches Java's FDBRecordContext.doWithReadLock(LockIdentifier).
+	AcquireReadLock(key string)
+	ReleaseReadLock(key string)
 }
 
 // standardIndexMaintainer handles VALUE index maintenance.
