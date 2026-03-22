@@ -1157,18 +1157,44 @@ Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
 
 Full public API comparison across 5 areas. Wire-level compatibility is 100% — all gaps are API surface / feature gaps, not wire format. Go and Java can share the same FDB cluster today.
 
+### CRITICAL GAP: Async API pattern (identified 2026-03-22)
+
+**Every public method in Java Record Layer has an `*Async` variant** returning `CompletableFuture`. The sync methods are thin wrappers calling `context.asyncToSync()`. This is not a missing method — it's a missing paradigm. Our Go port only has sync versions.
+
+Affected methods: `saveRecordAsync`, `loadRecordAsync`, `deleteRecordAsync`, `scanRecordsAsync`, `getRecordCountAsync`, `rebuildIndexAsync`, `scanIndexAsync`, and ~30 more.
+
+**Impact**: batched operations (e.g., 50 inserts in one transaction) cannot overlap their FDB reads. Each `SaveRecord` blocks on its full HNSW graph traversal / index update before the next one starts. Java can interleave multiple records' FDB reads within one transaction.
+
+**Why it matters**: single-record operations are unaffected (both Java and Go block on one operation). Batched workloads are 2-3x slower in Go due to serialized I/O. Most visible with HNSW inserts (200 beam search iterations per insert, serialized across batch), but affects all index types.
+
+**Go equivalent**: not straightforward. FDB transactions aren't goroutine-safe. Options:
+- Fire FDB `Get()` futures across multiple records before resolving any (already done in `loadNodeLayerBatch` for one operation, but not across operations)
+- Restructure `SaveRecord` into a "prepare reads" + "resolve + write" two-phase pattern
+- Accept the gap for now — single-record path (production default) is unaffected
+
+- [ ] **HIGH** — Goroutine safety: FDB Transaction is documented goroutine-safe, but our entire layer on top is NOT. Concurrent `SaveRecord` goroutines within one transaction will data-race on:
+  - `FDBRecordContext.localVersionCache` (plain map) — Java uses `ConcurrentSkipListMap`
+  - `FDBRecordContext.versionMutations` (plain map) — Java uses `ConcurrentSkipListMap`
+  - `FDBRecordContext.localVersion` (plain int) — Java uses `AtomicInteger`
+  - `FDBRecordContext.commitChecks/postCommits` — Java uses `synchronized` blocks
+  - `FDBRecordStore.indexStates` (plain map, read during save)
+  - HNSW `storage.cache` (plain map, written during graph traversal)
+  - Java's solution: `ConcurrentSkipListMap` / `AtomicInteger` / `synchronized` for context state, `LockRegistry` (per-context `ConcurrentHashMap<LockIdentifier, AtomicReference<AsyncLock>>`) for HNSW write serialization.
+  - Go fix: either (a) make all shared maps `sync.Map` or mutex-protected + add `LockRegistry` equivalent on `FDBRecordContext`, OR (b) document that `FDBRecordStore` is NOT goroutine-safe (simpler but diverges from Java's concurrent contract).
+  - **Minimum viable**: document the restriction NOW, fix properly later.
+
 ### Coverage summary
 
 | Area | Coverage | Key Gaps |
 |---|---|---|
-| FDBRecordStore (CRUD) | ~83% | `preloadRecordAsync`, query planning methods, synthetic records |
+| FDBRecordStore (CRUD) | ~83% | **Async API pattern (see above)**, query planning methods, synthetic records |
 | Index types | 19/19 | **ALL COMPLETE** |
 | IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
 | Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
 | ScanProperties/ExecuteProperties | ~95% | `isDryRun`, convenience clear methods |
 | Continuations (wire format) | ~90% | Wire-compatible. Go writes TO_OLD, reads both TO_OLD and TO_NEW |
-| FDBDatabase/Context/Runner | ~60% | Async API (by design), weak read semantics, MDC, executor control |
+| FDBDatabase/Context/Runner | ~60% | **Async API (see above)**, weak read semantics, MDC, executor control |
 | Key expressions | ~80% | CollateFunctionKE, OrderFunctionKE, DimensionsKE, InvertibleFunctionKE |
 
 ### FDBRecordStore — missing public methods
