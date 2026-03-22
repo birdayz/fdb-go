@@ -203,6 +203,119 @@ class VectorIndexSteps extends ConformanceBase {
         });
     }
 
+    // --- RaBitQ-enabled VECTOR index steps ---
+
+    private static final int RABITQ_NUM_DIMENSIONS = 8;
+
+    /**
+     * Create metadata with a VECTOR index that enables RaBitQ quantization.
+     * Uses COSINE_METRIC so RaBitQ activates immediately from the first insert
+     * (Euclidean requires centroid sampling which needs 1000+ vectors).
+     */
+    private static RecordMetaData createVectorMetaDataWithRaBitQ() {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
+        metaDataBuilder.addIndex("Order", new Index("order_vector_rabitq",
+            new KeyWithValueExpression(Key.Expressions.field("vector_data"), 0),
+            IndexTypes.VECTOR,
+            Map.of(
+                IndexOptions.HNSW_NUM_DIMENSIONS, String.valueOf(RABITQ_NUM_DIMENSIONS),
+                IndexOptions.HNSW_METRIC, "COSINE_METRIC",
+                IndexOptions.HNSW_USE_RABITQ, "true",
+                IndexOptions.HNSW_RABITQ_NUM_EX_BITS, "4"
+            )));
+        return metaDataBuilder.build();
+    }
+
+    private static FDBRecordStore openVectorStoreWithRaBitQ(FDBRecordContext context, byte[] subspace) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(createVectorMetaDataWithRaBitQ())
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    @ConformanceStep("saveOrderWithRaBitQIndex")
+    public void saveOrderWithRaBitQIndex(String clusterFile, byte[] subspace,
+            long orderId, String vectorJson, String tenantName) {
+        double[] vector = parseVector(vectorJson);
+        byte[] vectorBytes = serializeVector(vector);
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStoreWithRaBitQ(context, subspace);
+            Order order = Order.newBuilder()
+                .setOrderId(orderId)
+                .setVectorData(ByteString.copyFrom(vectorBytes))
+                .build();
+            store.saveRecord(order);
+            return null;
+        });
+    }
+
+    @ConformanceStep("loadOrderWithRaBitQIndex")
+    public Map<String, Object> loadOrderWithRaBitQIndex(String clusterFile, byte[] subspace,
+            long orderId, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStoreWithRaBitQ(context, subspace);
+            FDBStoredRecord<Message> record = store.loadRecord(Tuple.from(orderId));
+            if (record == null) {
+                return null;
+            }
+            Order order = Order.newBuilder().mergeFrom(record.getRecord()).build();
+            Map<String, Object> result = new HashMap<>();
+            result.put("orderId", order.getOrderId());
+            if (order.hasVectorData()) {
+                result.put("vectorData", encodeVector(order.getVectorData().toByteArray()));
+            }
+            return result;
+        });
+    }
+
+    @ConformanceStep("countRecordsWithRaBitQIndex")
+    public long countRecordsWithRaBitQIndex(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStoreWithRaBitQ(context, subspace);
+            return store.scanRecords(null, ScanProperties.FORWARD_SCAN)
+                .getCount()
+                .join();
+        });
+    }
+
+    @ConformanceStep("searchRaBitQIndex")
+    public List<Map<String, Object>> searchRaBitQIndex(String clusterFile, byte[] subspace,
+            String vectorJson, long k, String tenantName) {
+        double[] queryVec = parseVector(vectorJson);
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStoreWithRaBitQ(context, subspace);
+            RecordMetaData md = createVectorMetaDataWithRaBitQ();
+            Index index = md.getIndex("order_vector_rabitq");
+            RealVector queryVector = new DoubleRealVector(queryVec);
+            VectorIndexScanBounds bounds = new VectorIndexScanBounds(
+                TupleRange.ALL,
+                Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL,
+                queryVector,
+                (int) k,
+                VectorIndexScanOptions.empty());
+            RecordCursor<IndexEntry> cursor = store.scanIndex(
+                index, bounds, null, ScanProperties.FORWARD_SCAN);
+            List<IndexEntry> entries = cursor.asList().join();
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> m = new HashMap<>();
+                Tuple pk = entry.getPrimaryKey();
+                m.put("orderId", pk.getLong(0));
+                results.add(m);
+            }
+            return results;
+        });
+    }
+
     /**
      * Parse a JSON array of doubles, e.g. "[1.0, 2.0, 3.0]".
      */

@@ -723,3 +723,398 @@ func (s *VectorIndexConformanceStore) SaveMultipleOrdersJava(ctx context.Context
 	params["ordersJson"] = string(ordersJSON)
 	return s.java.InvokeAs(ctx, "saveMultipleOrdersWithVectorIndex", params, nil)
 }
+
+// =============================================================================
+// RaBitQ VECTOR Index Conformance
+// =============================================================================
+
+var _ = Describe("RaBitQ VECTOR Index Conformance", func() {
+	var (
+		ctx   context.Context
+		env   *TenantEnvironment
+		store *RaBitQConformanceStore
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		tenantName := fmt.Sprintf("rq_%s", uuid.New().String())
+
+		var err error
+		env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+
+		store, err = NewRaBitQConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		if env != nil {
+			_ = env.Cleanup(ctx)
+		}
+	})
+
+	Describe("Go writes RaBitQ, Java reads", func() {
+		It("should allow Java to load records from a Go-written RaBitQ HNSW graph", func() {
+			// Go inserts 5 records with 8D vectors, RaBitQ-encoded.
+			vectors := []struct {
+				id  int64
+				vec []float64
+			}{
+				{1, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{2, []float64{0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{3, []float64{0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{4, []float64{1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{5, []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0}},
+			}
+			for _, v := range vectors {
+				err := store.SaveOrderGo(ctx, v.id, v.vec)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Java loads each record — proves Java can open a store
+			// whose HNSW graph was built with Go's RaBitQ encoding.
+			for _, v := range vectors {
+				result, err := store.LoadOrderJava(ctx, v.id)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.OrderID).To(Equal(v.id))
+				// Record data (the raw protobuf with vector_data bytes) survives
+				// cross-language round-trip. The vector_data field is opaque bytes
+				// stored in the record, not in the HNSW graph.
+				Expect(result.Vector).To(HaveLen(8))
+				for i, val := range v.vec {
+					Expect(result.Vector[i]).To(BeNumerically("~", val, 1e-9))
+				}
+			}
+
+			// Java can count all records in the store.
+			javaCount, err := store.CountRecordsJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaCount).To(Equal(int64(5)))
+		})
+	})
+
+	Describe("Java writes RaBitQ, Go reads", func() {
+		It("should allow Go to load records from a Java-written RaBitQ HNSW graph", func() {
+			// Java inserts 5 records with 8D vectors, RaBitQ-encoded.
+			vectors := []struct {
+				id  int64
+				vec []float64
+			}{
+				{10, []float64{0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{20, []float64{0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{30, []float64{0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0}},
+				{40, []float64{0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0}},
+				{50, []float64{0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0}},
+			}
+			for _, v := range vectors {
+				err := store.SaveOrderJava(ctx, v.id, v.vec)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Go loads each record — proves Go can open a store
+			// whose HNSW graph was built with Java's RaBitQ encoding.
+			for _, v := range vectors {
+				result, err := store.LoadOrderGo(ctx, v.id)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.OrderID).To(Equal(v.id))
+				Expect(result.Vector).To(HaveLen(8))
+				for i, val := range v.vec {
+					Expect(result.Vector[i]).To(BeNumerically("~", val, 1e-9))
+				}
+			}
+
+			// Go can count all records.
+			goCount, err := store.CountRecordsGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goCount).To(Equal(5))
+		})
+	})
+
+	Describe("Cross-language RaBitQ search", func() {
+		It("Go inserts with RaBitQ, Java searches with kNN", func() {
+			// Go inserts 5 well-separated 8D points.
+			points := []struct {
+				id  int64
+				vec []float64
+			}{
+				{1, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{2, []float64{0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{3, []float64{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0}},
+				{4, []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0}},
+				{5, []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0}},
+			}
+			for _, p := range points {
+				err := store.SaveOrderGo(ctx, p.id, p.vec)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Java searches for 2 nearest neighbors to [1,0,0,...].
+			// With cosine metric, ids 1 and 2 are closest (nearly aligned).
+			ids, err := store.SearchJava(ctx, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ids).To(HaveLen(2))
+			idSet := make(map[int64]bool)
+			for _, id := range ids {
+				idSet[id] = true
+			}
+			Expect(idSet).To(HaveKey(int64(1)))
+			Expect(idSet).To(HaveKey(int64(2)))
+		})
+
+		It("Java inserts with RaBitQ, Go searches with kNN", func() {
+			// Java inserts 5 well-separated 8D points.
+			points := []struct {
+				id  int64
+				vec []float64
+			}{
+				{10, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{20, []float64{0.9, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}},
+				{30, []float64{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0}},
+				{40, []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0}},
+				{50, []float64{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0}},
+			}
+			for _, p := range points {
+				err := store.SaveOrderJava(ctx, p.id, p.vec)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Go searches for 2 nearest neighbors to [1,0,0,...].
+			// With cosine metric, ids 10 and 20 are closest.
+			results, err := store.SearchGo(ctx, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(2))
+			gotIDs := make(map[int64]bool)
+			for _, r := range results {
+				gotIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(gotIDs).To(HaveKey(int64(10)))
+			Expect(gotIDs).To(HaveKey(int64(20)))
+		})
+	})
+
+	Describe("Mixed writes with RaBitQ", func() {
+		It("Go and Java both insert into the same RaBitQ HNSW graph", func() {
+			// Go inserts 3 records.
+			err := store.SaveOrderGo(ctx, 1, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0})
+			Expect(err).NotTo(HaveOccurred())
+			err = store.SaveOrderGo(ctx, 2, []float64{0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0})
+			Expect(err).NotTo(HaveOccurred())
+			err = store.SaveOrderGo(ctx, 3, []float64{0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Java inserts 2 more into the same RaBitQ graph.
+			err = store.SaveOrderJava(ctx, 4, []float64{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0})
+			Expect(err).NotTo(HaveOccurred())
+			err = store.SaveOrderJava(ctx, 5, []float64{0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Both sides see all 5 records.
+			goCount, err := store.CountRecordsGo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goCount).To(Equal(5))
+
+			javaCount, err := store.CountRecordsJava(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaCount).To(Equal(int64(5)))
+
+			// Go search returns results from both Go and Java writes.
+			results, err := store.SearchGo(ctx, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 5)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(5))
+		})
+	})
+})
+
+// --- RaBitQ conformance store wrapper ---
+
+// RaBitQConformanceStore wraps record operations with a VECTOR (HNSW) index
+// that has RaBitQ quantization enabled. Uses Cosine metric + 8 dimensions.
+type RaBitQConformanceStore struct {
+	RecordDB    *recordlayer.FDBDatabase
+	MetaData    *recordlayer.RecordMetaData
+	VecIndex    *recordlayer.Index
+	Keyspace    subspace.Subspace
+	java        *JavaInvoker
+	clusterFile string
+	tenantName  string
+}
+
+func NewRaBitQConformanceStore(recordDB *recordlayer.FDBDatabase, keyspace subspace.Subspace, clusterFile string, tenantName string) (*RaBitQConformanceStore, error) {
+	vecIdx := recordlayer.NewVectorIndex("order_vector_rabitq",
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 8)
+	vecIdx.Options[recordlayer.IndexOptionVectorMetric] = "COSINE_METRIC"
+	vecIdx.Options["hnswUseRaBitQ"] = "true"
+	vecIdx.Options["hnswRaBitQNumExBits"] = "4"
+
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.AddIndex("Order", vecIdx)
+	md, err := builder.Build()
+	if err != nil {
+		return nil, err
+	}
+
+	ks := keyspace
+	if tenantName != "" {
+		ks = subspace.Sub(tuple.Tuple{})
+	}
+
+	return &RaBitQConformanceStore{
+		RecordDB:    recordDB,
+		MetaData:    md,
+		VecIndex:    vecIdx,
+		Keyspace:    ks,
+		java:        NewJavaInvoker(),
+		clusterFile: clusterFile,
+		tenantName:  tenantName,
+	}, nil
+}
+
+func (s *RaBitQConformanceStore) buildJavaParams() map[string]any {
+	params := map[string]any{
+		"clusterFile": s.clusterFile,
+		"subspace":    BytesToIntArray(s.Keyspace.Bytes()),
+	}
+	if s.tenantName != "" {
+		params["tenantName"] = s.tenantName
+	}
+	return params
+}
+
+func (s *RaBitQConformanceStore) SaveOrderGo(ctx context.Context, orderID int64, vec []float64) error {
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		vectorBytes := conformanceSerializeVector(vec)
+		_, err = store.SaveRecord(&gen.Order{
+			OrderId:    proto.Int64(orderID),
+			VectorData: vectorBytes,
+		})
+		return nil, err
+	})
+	return err
+}
+
+func (s *RaBitQConformanceStore) LoadOrderGo(ctx context.Context, orderID int64) (*VectorOrderResult, error) {
+	var result *VectorOrderResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		rec, err := store.LoadRecord(tuple.Tuple{orderID})
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			return nil, nil
+		}
+		order := rec.Record.(*gen.Order)
+		result = &VectorOrderResult{
+			OrderID: order.GetOrderId(),
+			Vector:  deserializeVectorConformance(order.GetVectorData()),
+		}
+		return nil, nil
+	})
+	return result, err
+}
+
+func (s *RaBitQConformanceStore) CountRecordsGo(ctx context.Context) (int, error) {
+	var count int
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		records, err := recordlayer.AsList(ctx, store.ScanRecords(nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return nil, err
+		}
+		count = len(records)
+		return nil, nil
+	})
+	return count, err
+}
+
+func (s *RaBitQConformanceStore) SearchGo(ctx context.Context, query []float64, k int) ([]recordlayer.VectorSearchResult, error) {
+	var results []recordlayer.VectorSearchResult
+	_, err := s.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := recordlayer.NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(s.MetaData).SetSubspace(s.Keyspace).Open()
+		if err != nil {
+			return nil, err
+		}
+		results, err = store.SearchVectorIndex(s.VecIndex, query, k, 100)
+		return nil, err
+	})
+	return results, err
+}
+
+// --- RaBitQ Java step wrappers ---
+
+func (s *RaBitQConformanceStore) SaveOrderJava(ctx context.Context, orderID int64, vec []float64) error {
+	params := s.buildJavaParams()
+	params["orderId"] = orderID
+	vecJSON, _ := json.Marshal(vec)
+	params["vectorJson"] = string(vecJSON)
+	return s.java.InvokeAs(ctx, "saveOrderWithRaBitQIndex", params, nil)
+}
+
+func (s *RaBitQConformanceStore) LoadOrderJava(ctx context.Context, orderID int64) (*VectorOrderResult, error) {
+	params := s.buildJavaParams()
+	params["orderId"] = orderID
+	var raw map[string]any
+	if err := s.java.InvokeAs(ctx, "loadOrderWithRaBitQIndex", params, &raw); err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	result := &VectorOrderResult{
+		OrderID: int64(raw["orderId"].(float64)),
+	}
+	if vecData, ok := raw["vectorData"]; ok {
+		vecSlice := vecData.([]any)
+		result.Vector = make([]float64, len(vecSlice))
+		for i, v := range vecSlice {
+			result.Vector[i] = v.(float64)
+		}
+	}
+	return result, nil
+}
+
+func (s *RaBitQConformanceStore) CountRecordsJava(ctx context.Context) (int64, error) {
+	params := s.buildJavaParams()
+	var count float64
+	if err := s.java.InvokeAs(ctx, "countRecordsWithRaBitQIndex", params, &count); err != nil {
+		return 0, err
+	}
+	return int64(count), nil
+}
+
+func (s *RaBitQConformanceStore) SearchJava(ctx context.Context, query []float64, k int) ([]int64, error) {
+	params := s.buildJavaParams()
+	vecJSON, _ := json.Marshal(query)
+	params["vectorJson"] = string(vecJSON)
+	params["k"] = int64(k)
+	var raw []any
+	if err := s.java.InvokeAs(ctx, "searchRaBitQIndex", params, &raw); err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, entry := range raw {
+		m := entry.(map[string]any)
+		ids = append(ids, int64(m["orderId"].(float64)))
+	}
+	return ids, nil
+}
