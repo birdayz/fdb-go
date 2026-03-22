@@ -541,6 +541,7 @@ func TestMultipleExBitsPrecision(t *testing.T) {
 	v := randomVector(rng, 128)
 
 	var prevDist float64 = math.MaxFloat64
+	improvements := 0
 	for _, nb := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
 		q := NewRaBitQuantizer(MetricEuclidean, nb)
 		encoded := q.Encode(v)
@@ -549,14 +550,19 @@ func TestMultipleExBitsPrecision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Distance returned error with %d ex bits: %v", nb, err)
 		}
-		// Self-distance should generally decrease with more bits,
-		// though not strictly monotonic for all vectors.
-		_ = prevDist
-		_ = dist
-		// Just verify it doesn't explode.
 		if dist > 1.0 {
 			t.Fatalf("self-distance too large with %d ex bits: %v", nb, dist)
 		}
+		if dist < prevDist {
+			improvements++
+		}
+		prevDist = dist
+	}
+	// Higher bits should generally improve precision. Not strictly monotonic
+	// for all vectors due to quantization noise, but the overall trend should
+	// show some improvement (at least 2 of 7 transitions).
+	if improvements < 2 {
+		t.Fatalf("expected higher numExBits to generally improve precision, got only %d/7 improvements", improvements)
 	}
 }
 

@@ -1474,9 +1474,9 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 
 #### Conformance test gaps (must add for Phase 1)
 
-- [ ] **No Java kNN search conformance** — Can Java search a Go-written HNSW graph? Only record load is tested, not search. Most critical conformance gap.
+- [x] **No Java kNN search conformance** — Fixed: 2 new cross-language specs (Java searches Go graph, Go searches Java graph). 13 vector conformance tests total.
 - [ ] **No RaBitQ cross-language byte-level conformance test** — Go→Java and Java→Go RaBitQ encoded vector round-trip untested.
-- [ ] **`TestMultipleExBitsPrecision` has dead assertions** — `rabitq_test.go:551-552`: computes `prevDist` and `dist` but never checks them. Fix or remove.
+- [ ] **`TestMultipleExBitsPrecision` has dead assertions** — `rabitq_test.go`: computes `prevDist` and `dist` but never checks them. Fix or remove.
 
 #### Architecture — RaBitQ extraction
 
