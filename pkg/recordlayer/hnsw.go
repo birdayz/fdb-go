@@ -133,6 +133,11 @@ func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 	}
 }
 
+// SetStats attaches I/O counters for profiling. Pass nil to disable.
+func (g *hnswGraph) SetStats(stats *HNSWStats) {
+	g.storage.stats = stats
+}
+
 // buildTransform creates a transform from access info and the current config.
 // Returns nil if no transform is needed (either no quantizer, or no centroid yet for Euclidean).
 func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
@@ -950,6 +955,7 @@ type hnswStorage struct {
 	accessSubspace subspace.Subspace
 	config         HNSWConfig
 	cache          map[string]*parsedNode // FDB key → parsed node (nil = not found)
+	stats          *HNSWStats             // optional I/O counters (nil = no tracking)
 }
 
 func newHNSWStorage(ss subspace.Subspace, config HNSWConfig) *hnswStorage {
@@ -1031,12 +1037,14 @@ func (s *hnswStorage) loadNodeLayer(tx fdb.ReadTransaction, layer int, primaryKe
 
 	// Check cache first — returns pre-parsed data, no tuple.Unpack needed.
 	if cached, ok := s.cache[cacheKey]; ok {
+		hnswStatCacheHit(s.stats)
 		if cached == nil {
 			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d", layer)
 		}
 		return cached.vecBytes, cached.neighbors, nil
 	}
 
+	hnswStatGet(s.stats)
 	data, err := tx.Get(fdb.Key(key)).Get()
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
@@ -1083,6 +1091,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 		cacheKey := string(key)
 
 		if cached, ok := s.cache[cacheKey]; ok {
+			hnswStatCacheHit(s.stats)
 			if cached == nil {
 				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
 			} else {
@@ -1094,6 +1103,11 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 
 		// Fire the get — don't resolve yet.
 		toFetch = append(toFetch, pending{idx: i, key: cacheKey, future: tx.Get(fdb.Key(key))})
+	}
+
+	// Count as 1 batch round-trip (all Gets pipelined).
+	if len(toFetch) > 0 {
+		hnswStatBatchGet(s.stats)
 	}
 
 	// Resolve all outstanding futures. FDB pipelines these reads.
@@ -1126,6 +1140,7 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 // replaces multiple individual Get() round-trips with one range scan.
 // For a 1K-node graph with M=16: layer 2 has ~4 nodes, layer 1 has ~62 nodes.
 func (s *hnswStorage) preloadLayer(tx fdb.ReadTransaction, layer int) error {
+	hnswStatRangeRead(s.stats)
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
 	r, err := fdb.PrefixRange(prefix)
 	if err != nil {
@@ -1240,6 +1255,7 @@ func (a *hnswAccessInfo) hasTransform() bool {
 
 // loadAccessInfo reads the entry point metadata from FDB.
 func (s *hnswStorage) loadAccessInfo(tx fdb.ReadTransaction) (*hnswAccessInfo, error) {
+	hnswStatGet(s.stats)
 	key := s.accessSubspace.Pack(tuple.Tuple{})
 	data, getErr := tx.Get(fdb.Key(key)).Get()
 	if getErr != nil {
@@ -1430,6 +1446,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	compactKey := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	cacheKey := string(compactKey)
 	if cached, ok := s.cache[cacheKey]; ok {
+		hnswStatCacheHit(s.stats)
 		if cached == nil {
 			return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
 		}
@@ -1442,6 +1459,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	}
 
 	// Range read: all KVs under (layer, pk, *).
+	hnswStatRangeRead(s.stats)
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
 	r, err := fdb.PrefixRange(prefix)
 	if err != nil {
@@ -1529,6 +1547,7 @@ func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.Transaction, layer int, pri
 // preloadLayerInlining reads ALL nodes at the given inlining layer in a single GetRange,
 // groups edges by source node, and populates the cache.
 func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) error {
+	hnswStatRangeRead(s.stats)
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer)})
 	r, err := fdb.PrefixRange(prefix)
 	if err != nil {

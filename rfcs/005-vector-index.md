@@ -24,7 +24,14 @@ Graph traversal = sequential random reads with data-dependent access patterns. E
 
 Systems that hit this wall and switched to partitions: **Turbopuffer** (explicitly rejected HNSW for object storage), **CockroachDB** (C-SPANN over their KV layer), **PlanetScale** (SPANN over InnoDB).
 
-Even Java Record Layer's own `VectorIndexMaintainer` uses HNSW with each node as a single KV pair — functional but will hit scaling walls at billion scale on a networked KV store.
+Java Record Layer's own `VectorIndexMaintainer` uses HNSW with each node as a single KV pair — functional but will hit scaling walls at billion scale on a networked KV store. Apple published the official HNSW design document in [PR #3997](https://github.com/FoundationDB/fdb-record-layer/pull/3997) (commit `57822e649`, 2026-03-10), available at [foundationdb.github.io/fdb-record-layer/architecture/vector-index-design.html](https://foundationdb.github.io/fdb-record-layer/architecture/vector-index-design.html). The feature is marked `@API(API.Status.EXPERIMENTAL)`. The design doc does not discuss the round-trip scaling concern or compare against partition-based alternatives.
+
+**Our measurements confirm the problem** (2026-03-22, 1K vectors, 128D, RaBitQ, ef=64):
+- 68 sequential FDB round-trips per query (~0.27ms each)
+- 96% of latency is layer-0 beam search (15.7ms of 16.3ms total)
+- Latency scales linearly with ef: ef=10→17 RTs (6.6ms), ef=64→68 RTs (18ms)
+- On real clusters with ~1ms/RT (K8s, cross-AZ), this becomes 32-68ms per query
+- Throughput scales linearly with concurrency (10 readers → 167 QPS) — FDB's strength
 
 ### The C-SPANN blueprint (CockroachDB, 2025)
 
@@ -53,6 +60,137 @@ CockroachDB built exactly what we need on a distributed transactional KV store w
 | **C-SPANN** (CockroachDB '25) | 2025 | SPANN adapted for distributed transactional KV. RaBitQ. Background fixups. | Direct blueprint |
 | **Turbopuffer** | 2024 | SPFresh-based centroids on S3. 10B+ vectors. Notion/Cursor/Linear. | Validates partitions on high-latency storage |
 | **PlanetScale** | 2025 | SPANN+LIRE on InnoDB B-tree. Handles 6x RAM indexes with 30% overhead. | Validates partitions on traditional DBMS |
+| **FDB Record Layer HNSW** ([design doc](https://foundationdb.github.io/fdb-record-layer/architecture/vector-index-design.html)) | 2026 | Apple's HNSW on FDB. Experimental. CompactNode/InliningNode storage, RaBitQ via fdb-extensions. No round-trip analysis. | Reference implementation we're compatible with |
+
+## HNSW on FDB: measured tradeoffs (2026-03-22)
+
+We implemented HNSW with full Java wire compatibility, then profiled it extensively. These measurements inform why we're pursuing IVF as an alternative.
+
+### How HNSW works on FDB
+
+HNSW is a hierarchy of sparse-to-dense graphs. Upper layers have few nodes (express routing), layer 0 has every vector. Search descends from the top layer to layer 0, then does a beam search at layer 0 to find the k nearest neighbors.
+
+```
+Layer 2:   A ---- B                          (~4 nodes, preloaded in 1 range read)
+Layer 1:   A ---- B ---- C ---- D            (~60 nodes, preloaded in 1 range read)
+Layer 0:   A-B-C-D-E-F-G-H-I-J-K-...        (all N nodes, beam search with ef iterations)
+```
+
+Each beam search iteration at layer 0:
+1. Pop closest unvisited candidate from priority queue
+2. **Read its ~M=16 neighbors from FDB** (1 batch round-trip, ~0.3ms)
+3. Compute distances to each neighbor (CPU, microseconds)
+4. Push good candidates onto queue
+5. Repeat until `ef` candidates explored
+
+The iteration count equals `ef` because each iteration explores one candidate. **Each iteration is a sequential FDB round-trip** — you can't prefetch because the next read depends on which candidate the priority queue yields.
+
+### Measured round-trip counts (1K vectors, 128D, RaBitQ)
+
+```
+ef    FDB round-trips              breakdown                    latency   recall@10
+      (sequential)
+─────────────────────────────────────────────────────────────────────────────────────
+10    16.6            2 point + 12.6 batch + 2 range             6.6ms    0.68
+16    22.4            2 point + 18.4 batch + 2 range             8.3ms    0.80
+32    37.0            2 point + 33.0 batch + 2 range            12.9ms    0.90
+64    68.0            2 point + 64.0 batch + 2 range            18.1ms    0.93
+200   ~200            2 point + ~196 batch + 2 range            29.3ms    0.95
+```
+
+- **2 point reads** = loadAccessInfo + 1 existence check (fixed overhead)
+- **2 range reads** = 2 upper layer preloads (fixed, cached for greedy descent)
+- **N batch reads** = layer 0 beam search, one per iteration, scales linearly with ef
+- **~0.27-0.39ms per round-trip** on FDB testcontainer (Docker local network)
+
+### Latency breakdown
+
+```
+Phase                    Time         %
+─────────────────────────────────────────
+Access info (1 Get)      0.08ms      0.5%
+Preload 2 upper layers   0.47ms      2.9%
+Greedy descent (cached)  0.04ms      0.3%
+Layer 0 beam search     15.71ms     96.4%   ← the bottleneck
+─────────────────────────────────────────
+Total (in-tx)           16.30ms
+Tx/store overhead        1.86ms
+```
+
+96% of time is in the layer 0 beam search. CPU distance computation is negligible (~1μs per vector with RaBitQ). **The latency is almost entirely FDB network round-trips.**
+
+### The ef tradeoff
+
+`ef` (exploration factor) controls recall vs latency. Higher ef explores more of the graph, finding more true nearest neighbors but requiring more FDB round-trips.
+
+- **ef < k is meaningless** — you can't find 10 neighbors by exploring fewer than 10 candidates
+- **ef = k** — minimum viable, low recall (~68% for k=10)
+- **ef = 4*k** — decent recall (~90%), the practical sweet spot
+- **ef > 8*k** — diminishing returns, recall plateaus due to RaBitQ's approximate distances
+
+Recall plateaus around 0.94-0.95 regardless of ef because RaBitQ's distance estimates have a noise floor — some true neighbors are never explored because their approximate distance is overestimated. The only way past this ceiling is exact (non-quantized) distance computation or higher-bit RaBitQ (4-bit instead of 1-bit).
+
+### Throughput vs latency
+
+FDB's design philosophy: **throughput over latency**. Scale horizontally, accept per-request latency, compensate with massive concurrency.
+
+```
+Sequential:    53 QPS, 18ms p50
+10 readers:   167 QPS, 60ms p50
+```
+
+Snapshot reads don't conflict. More readers = linearly more QPS. On a real cluster with 100 concurrent readers: ~1000+ QPS, each at 18ms. This is fine for many use cases (background ranking, batch processing, recommendation feeds). Problematic only for latency-sensitive paths (autocomplete, real-time search).
+
+### Real-world latency projections
+
+The testcontainer measures ~0.3ms/RT (Docker local networking). Real deployments have higher network latency:
+
+| Environment | ~ms/RT | ef=64 latency | ef=32 latency |
+|---|---|---|---|
+| Testcontainer (Docker) | 0.3 | 18ms | 13ms |
+| Same-AZ K8s pods | 0.5-1.0 | 34-68ms | 19-37ms |
+| Cross-AZ | 1-2 | 68-136ms | 37-74ms |
+
+### Why this motivates IVF
+
+IVF replaces the sequential graph walk with 2 parallel range reads:
+
+| | HNSW (ef=64) | IVF (nprobe=10) |
+|---|---|---|
+| Sequential round-trips | 68 | 2 |
+| At 0.3ms/RT | 18ms | 0.6ms |
+| At 1ms/RT | 68ms | 2ms |
+| Scales with N | O(√N) more hops | O(1) reads |
+
+The gap widens with dataset size and network latency — exactly the conditions of production FDB deployments. HNSW is viable for small datasets or latency-tolerant workloads. IVF is needed for large datasets or latency-sensitive paths.
+
+### HNSW's advantage: zero maintenance
+
+IVF partitions drift as data distribution changes. Centroids computed during training become stale. Hot partitions grow oversized. Recall degrades without periodic rebalancing (split/merge/reassign).
+
+HNSW has none of this. Every insert/delete updates the graph locally. No global rebalancing, no retraining, no background maintenance. For workloads with high write rates and moderate query latency requirements, HNSW's operational simplicity is valuable.
+
+| | HNSW | IVF |
+|---|---|---|
+| Insert cost | Expensive (graph walk + rewire) | Cheap (append to partition) |
+| Delete cost | Expensive (neighbor repair) | Cheap (clear entry) |
+| Maintenance | None | Periodic split/merge/reassign |
+| Recall stability | Stable (graph adapts locally) | Degrades without maintenance |
+| Query latency | 18-68ms (ef-dependent) | 1-5ms (nprobe-dependent) |
+
+### Coexistence strategy
+
+Both index types serve different needs. Ship both:
+
+```go
+// HNSW — Java-compatible, zero maintenance, higher latency
+NewVectorIndex("vec", expr, dims)                    // IndexType = VECTOR
+
+// IVF — Go-only, needs maintenance, much lower latency
+NewIVFVectorIndex("vec_ivf", expr, dims, nCentroids) // IndexType = VECTOR_IVF
+```
+
+Same store, same records. User picks based on their latency/maintenance tradeoff.
 
 ## Architecture: Hierarchical IVF + RaBitQ
 
@@ -128,32 +266,97 @@ With fanout ~100 and 1B vectors:
 - Rerank reads: ~10-50 point reads (for top-K)
 - **Total: 8-12 FDB reads, most parallelizable**
 
-### Background maintenance (LIRE-inspired)
+### Maintenance strategy
 
-Separate goroutine performing partition health operations in independent transactions:
+IVF partitions drift as data distribution evolves. Centroids become stale, partitions grow unbalanced, recall degrades. Unlike HNSW (which self-maintains per write), IVF needs periodic maintenance.
 
-**Split** (partition exceeds size threshold, e.g., 500 vectors):
-1. Read partition (1 range read)
-2. Run balanced K-means bisection on full vectors (fetch from records if needed, or use quantized approximations)
-3. Create 2 new partitions + update parent centroid node
+**Key insight: every maintenance operation fits in a single FDB transaction.** No distributed coordination, no locks, no downtime. The index is always queryable — maintenance just improves quality incrementally.
+
+#### In-place maintenance (foreground, in write transactions)
+
+**Partition split on insert** — when an insert causes a partition to exceed the size threshold (~500 vectors), split it in the same transaction:
+
+1. Read the oversized partition (~500 vectors × 100 bytes = 50KB)
+2. Run k-means bisection (K=2, N=500 — converges in <10ms CPU)
+3. Write 2 new partitions + update parent centroid node
 4. Update reverse map entries for moved vectors
-5. Delete old partition
+5. Clear old partition
+6. Commit
 
-Fits in one 5s txn for partitions of ~500 vectors with RaBitQ compression (~100 KB total).
+Normal insert: ~0.1ms. Insert that triggers split: ~30ms. Happens every ~500 writes. Variance is high but always under 5s. No background infrastructure needed.
 
-**Merge** (two small adjacent partitions, e.g., <50 vectors each):
-1. Read both partitions + parent
-2. Combine into one partition + update parent
-3. Single txn
+Merges and reassigns are deferred — they're quality improvements, not correctness requirements. A too-small partition wastes a nprobe slot; a misassigned boundary vector reduces recall by ~0.1%. Neither causes wrong results.
 
-**Reassign** (SPFresh LIRE — fix boundary vectors after split/merge):
-1. For each neighbor partition of a recently-split partition
-2. Check if any vectors are now closer to the new centroid than their current one
-3. Move them in small batches (1 txn per batch)
+#### CLI-driven maintenance (out-of-band, on-demand)
 
-**Adaptive scheduling** (Ada-IVF-inspired):
-- Track per-partition "temperature" (insert count since last maintenance) as an atomic counter
-- Only maintain hot + imbalanced partitions
+The Record Layer is a library, not a service. The application owns the lifecycle. Maintenance is just another FDB client running transactions — a CLI command, a cron job, or a management API call.
+
+```
+$ reclay index maintain my_vector_index --once
+Scanning partition health...
+  Partition 47: 823 vectors (threshold 500) → splitting
+  Partition 12: 3 vectors → merging with partition 13
+  2 splits, 1 merge in 3 transactions (0.4s)
+
+$ reclay index repartition my_vector_index
+  Sampling 5000 vectors... (txn 1)
+  Training 200 centroids... (txn 2)
+  Reassigning partitions... (txn 3-89, 12.4s)
+  Swapping to new tree... (txn 90)
+  Done. Recall improved from 0.87 → 0.95
+
+$ reclay index stats my_vector_index
+  Partitions: 203, Vectors: 98,412
+  Avg size: 485, Max: 612, Min: 28
+  Centroid staleness: 12 days
+```
+
+Run it manually when recall drops. Put it in a cron. Or don't — the index still works, just with slightly lower recall.
+
+#### Large operations decompose into small transactions
+
+Operations too big for one 5s transaction decompose naturally:
+
+**Initial centroid training** (OnlineIndexer pattern):
+```
+Txn 1:   sample 1000 random vectors → temp subspace
+Txn 2:   read samples, run k-means, write centroids + empty partitions
+Txn 3-N: scan records in chunks, assign each to nearest partition
+Final:   mark index READABLE
+```
+
+**Full repartition** (rolling rebuild, zero downtime):
+```
+Txn 1:     create new centroid tree v2 alongside old v1
+Txn 2-100: for each old partition, reassign vectors to v2 partitions
+Txn 101:   swap v2 to active, clear v1
+```
+
+Readers see the old tree until the final swap. If the process crashes at txn 47, resume from where it left off — each transaction left the index in a valid state. This is exactly how OnlineIndexer already works for building new indexes.
+
+#### Impact on concurrent readers and writers
+
+**Readers: zero impact.** Snapshot reads see a consistent point-in-time view. Maintenance transactions are invisible to concurrent readers. A reader mid-query gets old partitions or new partitions, never a mix.
+
+**Writers: near-zero impact.** Conflict only if a user write and maintenance transaction touch the same partition in the same 5s window. With 200 partitions, collision probability is ~0.5% per write. FDB detects the conflict, the loser retries automatically (~20ms). Nobody notices.
+
+**During full repartition** (90 transactions over ~15s): each maintenance transaction touches 2-3 partitions. With 200 partitions and 100 concurrent writers, ~1-2 conflicts per maintenance transaction. Total repartition takes 15s instead of 12s. Writers see an extra retry once per few hundred writes.
+
+#### Maintenance operations reference
+
+| Operation | Trigger | Fits in 1 txn? | Impact on queries |
+|---|---|---|---|
+| **Split** | Partition > 500 vectors | Yes (~30ms) | In-place on insert, or CLI |
+| **Merge** | Partition < 50 vectors | Yes (~5ms) | CLI only, deferred |
+| **Reassign boundary** | After split/merge | Yes (batch of 20) | CLI only, improves recall |
+| **Full repartition** | Centroid staleness | No — decompose into N txns | CLI, zero downtime |
+| **Initial training** | New index build | No — OnlineIndexer pattern | WRITE_ONLY until done |
+
+#### Adaptive scheduling (Ada-IVF-inspired)
+
+Track per-partition "temperature" (insert count since last maintenance) as an FDB atomic counter. The CLI `maintain` command reads temperatures and prioritizes:
+- Hot + oversized → split immediately
+- Cold + small → merge eventually
 - 80% of updates affect cold partitions — skip them
 
 ### Multi-tenancy
