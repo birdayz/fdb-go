@@ -1476,7 +1476,7 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 
 - [x] **No Java kNN search conformance** — Fixed: 2 new cross-language specs (Java searches Go graph, Go searches Java graph). 13 vector conformance tests total.
 - [ ] **No RaBitQ cross-language byte-level conformance test** — Go→Java and Java→Go RaBitQ encoded vector round-trip untested.
-- [ ] **`TestMultipleExBitsPrecision` has dead assertions** — `rabitq_test.go`: computes `prevDist` and `dist` but never checks them. Fix or remove.
+- [x] **`TestMultipleExBitsPrecision` has dead assertions** — Fixed: now tracks improvement count and asserts at least 2/7 transitions show improved self-distance.
 
 #### Architecture — RaBitQ extraction
 
@@ -1504,14 +1504,14 @@ Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Q
 
 #### Additional test coverage
 
-- [ ] **No graph structure verification** — No test does BFS from entry point to assert all layer-0 nodes are reachable. Silent graph corruption undetectable.
-- [ ] **No delete-then-reinsert same PK test** — Entry point edge case: delete entry point, re-insert same PK+vector.
-- [ ] **No all-identical-vectors degenerate case** — Zero-distance handling, PK ordering, graph integrity untested.
-- [ ] **No wrong-dimension query test** — 3D query against 128D index should error, might panic.
-- [ ] **No old-position search after update** — Update test verifies new vector found but doesn't verify old position NOT returned.
-- [ ] **No high-dimensional FDB integration (768D+)** — Serialization and FDB key/value sizes untested at realistic embedding dimensions.
-- [ ] **No OnlineIndexer/RebuildIndex for VECTOR** — Schema evolution path untested.
-- [ ] **No CI-run medium-scale test (500+ vectors)** — Largest CI graph is 100 vectors.
+- [x] **No graph structure verification** — Fixed: BFS reachability test verifies all 20 nodes reachable from entry point at layer 0.
+- [x] **No delete-then-reinsert same PK test** — Fixed: delete entry point, verify 2 remain, re-insert same PK, verify all 3 found.
+- [x] **No all-identical-vectors degenerate case** — Fixed: 5 identical vectors, all returned with distance ~0, distinct PKs.
+- [x] **No wrong-dimension query test** — Fixed: 3D query against 128D index returns clear error. Added dimension validation in SearchKNN and scanByDistanceWithParams.
+- [x] **No old-position search after update** — Fixed: verifies PK=1 NOT found at old position (0,0) after moving to (100,100).
+- [x] **No high-dimensional FDB integration (768D+)** — Fixed: 768D vectors insert/search test with KeyWithValue + vector_data bytes.
+- [x] **No OnlineIndexer/RebuildIndex for VECTOR** — Fixed: RebuildIndex test clears index subspace, rebuilds, verifies all records searchable.
+- [ ] **No CI-run medium-scale test (500+ vectors)** — Largest CI graph is 100 vectors (BFS test uses 20).
 - [ ] **Chaos tests only use 2D vectors** — No chaos testing with high-dim, RaBitQ, or prefix-partitioned HNSW.
 
 #### Architectural note: HNSW vs IVF on FDB
