@@ -42,6 +42,7 @@ go_test(
         "chaos_unique_test.go",
         "chaos_version_test.go",
         "concurrent_test.go",
+        "race_test.go",
         "random_test.go",
     ],
     embed = [":chaos"],

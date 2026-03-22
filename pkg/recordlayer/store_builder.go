@@ -396,6 +396,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 // writeStoreHeader writes the store header to FDB and handles cache invalidation.
 // When the store is cacheable, bumps the metadata version stamp so other transactions
 // will see the change. Matches Java's FDBRecordStore.updateStoreHeaderAsync().
+// Caller must hold stateMu (write lock) or be in a builder path (pre-concurrent access).
 func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
 	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()
 
