@@ -1486,13 +1486,10 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
 			Expect(gotIDs).To(Equal([]int64{1, 2}))
 
-			// Value contains distance.
+			// Value is tuple{nil} (matching Java's toIndexEntry format).
 			for _, e := range entries {
 				Expect(e.Value).To(HaveLen(1))
-				dist, ok := e.Value[0].(float64)
-				Expect(ok).To(BeTrue())
-				// dist to (15,15) from (10,10) or (20,20) = 50
-				Expect(dist).To(BeNumerically("~", 50.0, 1e-6))
+				Expect(e.Value[0]).To(BeNil())
 			}
 
 			return nil, nil
@@ -1658,22 +1655,19 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			}
 
 			cursor := store.ScanVectorIndex(vecIdx, []float64{0.0, 0.0}, 5, 200, nil, ForwardScan())
-			var distances []float64
+			var gotIDs []int64
 			for {
 				result, err := cursor.OnNext(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				if !result.HasNext() {
 					break
 				}
-				dist := result.GetValue().Value[0].(float64)
-				distances = append(distances, dist)
+				gotIDs = append(gotIDs, result.GetValue().Key[0].(int64))
 			}
 
-			Expect(distances).To(HaveLen(5))
-			for i := 1; i < len(distances); i++ {
-				Expect(distances[i]).To(BeNumerically(">=", distances[i-1]),
-					"distance at position %d should be >= position %d", i, i-1)
-			}
+			// Expected order by squared distance from origin:
+			// id=2(1,1)=2, id=4(5,5)=50, id=1(10,10)=200, id=3(50,50)=5000, id=5(100,100)=20000
+			Expect(gotIDs).To(Equal([]int64{2, 4, 1, 3, 5}))
 
 			return nil, nil
 		})
@@ -2156,10 +2150,11 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			}
 
 			// Should only contain group 1 records.
+			// Key = (prefix..., trimmedPK...) — for splitPoint=1, PK is at Key[1].
 			Expect(entries).To(HaveLen(2))
 			gotIDs := make([]int64, len(entries))
 			for i, e := range entries {
-				gotIDs[i] = e.Key[0].(int64)
+				gotIDs[i] = e.Key[1].(int64)
 			}
 			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
 			Expect(gotIDs).To(Equal([]int64{1, 2}))
@@ -2211,10 +2206,11 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 			}
 
 			// Should only contain group 2 records.
+			// Key = (prefix..., trimmedPK...) — for splitPoint=1, PK is at Key[1].
 			Expect(entries).To(HaveLen(2))
 			gotIDs := make([]int64, len(entries))
 			for i, e := range entries {
-				gotIDs[i] = e.Key[0].(int64)
+				gotIDs[i] = e.Key[1].(int64)
 			}
 			sort.Slice(gotIDs, func(i, j int) bool { return gotIDs[i] < gotIDs[j] })
 			Expect(gotIDs).To(Equal([]int64{3, 4}))

@@ -196,6 +196,10 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // Update handles insert/delete/update for the VECTOR index.
 // When the index has a prefix (via KeyWithValueExpression), each unique prefix
 // value gets its own independent HNSW graph stored at a separate subspace.
+//
+// Primary keys are trimmed via Index.TrimPrimaryKey() before storing in the HNSW
+// graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
+// state.index.trimPrimaryKey(primaryKeyParts) at line 343.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord != nil {
 		entries, err := m.evaluateIndex(oldRecord)
@@ -207,9 +211,13 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if vector == nil {
 				continue
 			}
+			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
+			if err != nil {
+				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
+			}
 			storage := m.getStorageForPrefix(prefix)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Delete(m.tx, entry.primaryKey); err != nil {
+			if err := graph.Delete(m.tx, trimmedPK); err != nil {
 				return err
 			}
 		}
@@ -225,9 +233,13 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			if vector == nil {
 				continue
 			}
+			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
+			if err != nil {
+				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
+			}
 			storage := m.getStorageForPrefix(prefix)
 			graph := NewHNSWGraph(storage, m.hnswConfig)
-			if err := graph.Insert(m.tx, entry.primaryKey, vector); err != nil {
+			if err := graph.Insert(m.tx, trimmedPK, vector); err != nil {
 				return err
 			}
 		}
@@ -384,10 +396,12 @@ func (m *vectorIndexMaintainer) ScanByDistance(
 // scanByDistanceWithParams performs the actual kNN search and returns a cursor.
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
 //
-// Supports continuation-based pagination: the continuation encodes (distance, pkBytes)
-// so the cursor can skip already-returned results when resumed. The search is always
-// performed with the full efSearch/k, and results at or before the continuation point
-// are filtered out.
+// Each IndexEntry matches Java's VectorIndexMaintainer.toIndexEntry():
+//   - Key = (prefix..., trimmedPK...) — prefix prepended to the PK from HNSW
+//   - Value = (vectorRawBytes) or (nil) — the vector data, or nil for RaBitQ
+//
+// Supports continuation-based pagination via VectorIndexScanContinuation protobuf,
+// matching Java's continuation format.
 func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 	prefix tuple.Tuple,
 	queryVector []float64,
@@ -403,13 +417,24 @@ func (m *vectorIndexMaintainer) scanByDistanceWithParams(
 		return &errorCursor[*IndexEntry]{err: err}
 	}
 
-	// Convert to IndexEntry slice.
+	// Convert to IndexEntry slice matching Java's toIndexEntry() format:
+	// Key = (prefix..., trimmedPK...), Value = (vectorRawData | nil)
 	entries := make([]*IndexEntry, len(results))
 	for i, r := range results {
+		// Build key: prepend prefix to the PK (which is already trimmed in HNSW).
+		key := make(tuple.Tuple, 0, len(prefix)+len(r.PrimaryKey))
+		key = append(key, prefix...)
+		key = append(key, r.PrimaryKey...)
+
+		// Value: Java puts vector raw bytes here (or null if returnVectors=false/RaBitQ).
+		// Our hnswSearchResult doesn't carry vector bytes through search, so always nil.
+		// This matches Java's behavior when RaBitQ is enabled or returnVectors=false.
+		value := tuple.Tuple{nil}
+
 		entries[i] = &IndexEntry{
 			Index: m.index,
-			Key:   r.PrimaryKey,
-			Value: tuple.Tuple{r.Distance},
+			Key:   key,
+			Value: value,
 		}
 	}
 
@@ -570,6 +595,10 @@ func VectorDistanceScanRangeWithPrefix(queryVector []float64, k, efSearch int, p
 // SearchKNN performs a k-nearest-neighbor search on the HNSW graph.
 // prefix scopes the search to a specific prefix partition (nil for no prefix).
 // Returns results sorted by distance (closest first).
+//
+// The HNSW graph stores trimmed primary keys (via TrimPrimaryKey). This method
+// reconstructs full primary keys using getEntryPrimaryKey so callers can use
+// them directly with LoadRecord.
 func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []float64, k, efSearch int) ([]VectorSearchResult, error) {
 	// Guard: if index has a prefix (KWV splitPoint > 0), caller MUST provide one.
 	// Searching without a prefix on a grouped index returns empty (queries the
@@ -590,8 +619,22 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 
 	vResults := make([]VectorSearchResult, len(results))
 	for i, r := range results {
+		// Reconstruct full PK from the trimmed PK stored in HNSW.
+		// When primaryKeyComponentPositions is set (PK overlaps index expression),
+		// some PK components are in the prefix (index key) and need reconstruction.
+		// Otherwise, the PK in HNSW is already the full PK.
+		var fullPK tuple.Tuple
+		if m.index.HasPrimaryKeyComponentPositions() {
+			entryKey := make(tuple.Tuple, 0, len(prefix)+len(r.PrimaryKey))
+			entryKey = append(entryKey, prefix...)
+			entryKey = append(entryKey, r.PrimaryKey...)
+			fullPK = m.index.getEntryPrimaryKey(entryKey)
+		} else {
+			fullPK = r.PrimaryKey
+		}
+
 		vResults[i] = VectorSearchResult{
-			PrimaryKey: r.PrimaryKey,
+			PrimaryKey: fullPK,
 			Distance:   r.Distance,
 		}
 	}
