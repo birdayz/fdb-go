@@ -200,7 +200,10 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	accessFuture := tx.Get(fdb.Key(accessKey))
 
 	// Resolve existence check.
-	existData, _ := existFuture.Get()
+	existData, existErr := existFuture.Get()
+	if existErr != nil {
+		return fmt.Errorf("hnsw insert: existence check: %w", existErr)
+	}
 	if existData != nil {
 		// Node exists — populate cache with parsed data, delete and re-insert.
 		if vb, nb, parseErr := parseNodeValue(existData); parseErr == nil {
@@ -217,7 +220,10 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 	insertLayer := topLayer(primaryKey, g.config.M)
 
 	// Resolve access info.
-	accessData, _ := accessFuture.Get()
+	accessData, accessErr := accessFuture.Get()
+	if accessErr != nil {
+		return fmt.Errorf("hnsw insert: access info read: %w", accessErr)
+	}
 	accessInfo, epErr := g.storage.parseAccessInfo(accessData)
 
 	if epErr != nil {
@@ -295,7 +301,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 		for _, nb := range selected {
 			nbVecBytes, nbNeighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, nb.pk)
 			if loadErr != nil {
-				continue
+				return fmt.Errorf("hnsw insert: load neighbor %v at layer %d for reverse connection: %w", nb.pk, layer, loadErr)
 			}
 
 			// Add the new node as a neighbor.
@@ -389,7 +395,15 @@ func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vect
 // For inlining layers, uses preloadLayerDispatch (already done during search/insert).
 // Repairs are still sequential (each needs neighbor data from FDB).
 func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
-	topLvl := topLayer(primaryKey, g.config.M)
+	// Load access info first to get the max layer in the graph.
+	// We scan from epLayer down to 0 to find where the node actually exists,
+	// rather than computing topLayer from PK hash (which would be wrong if M
+	// changed or the node was inserted with a different M).
+	accessInfo, accessErr := g.storage.loadAccessInfo(tx)
+	if accessErr != nil {
+		return nil // empty graph, nothing to delete
+	}
+	epLayer := accessInfo.layer
 
 	// Pipeline: fire all compact-layer reads at once.
 	// Inlining layers use range reads via loadNodeLayerDispatch.
@@ -400,7 +414,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 	var futures []layerFuture
 
-	for layer := 0; layer <= topLvl; layer++ {
+	for layer := 0; layer <= epLayer; layer++ {
 		if g.storage.isInliningLayer(layer) {
 			continue // inlining layers use range reads, not single-key gets
 		}
@@ -440,7 +454,7 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	// Delete from all layers and repair.
-	for layer := 0; layer <= topLvl; layer++ {
+	for layer := 0; layer <= epLayer; layer++ {
 		_, neighbors, loadErr := g.storage.loadNodeLayerDispatch(tx, layer, primaryKey)
 		if loadErr != nil {
 			continue // not present at this layer
@@ -457,18 +471,14 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 	}
 
 	// Update entry point if needed.
-	currentAccessInfo, epErr := g.storage.loadAccessInfo(tx)
-	if epErr != nil {
-		return nil // no entry point
-	}
-	if tupleEqual(currentAccessInfo.pk, primaryKey) {
+	if tupleEqual(accessInfo.pk, primaryKey) {
 		// Find a replacement entry point by scanning for any remaining node,
 		// starting from the highest layer and working down.
 		var newEntryPK tuple.Tuple
 		var newEntryVecBytes []byte
 		newEntryLayer := 0
 
-		for layer := currentAccessInfo.layer; layer >= 0 && newEntryPK == nil; layer-- {
+		for layer := accessInfo.layer; layer >= 0 && newEntryPK == nil; layer-- {
 			// Find any node at this layer.
 			foundPK, foundVec, scanErr := g.storage.findAnyNodeAtLayerDispatch(tx, layer)
 			if scanErr == nil && foundPK != nil {
@@ -480,10 +490,10 @@ func (g *hnswGraph) Delete(tx fdb.Transaction, primaryKey tuple.Tuple) error {
 
 		if newEntryPK != nil {
 			// Preserve transform state (rotatorSeed, centroid) when updating entry point.
-			currentAccessInfo.layer = newEntryLayer
-			currentAccessInfo.pk = newEntryPK
-			currentAccessInfo.vectorBytes = newEntryVecBytes
-			g.storage.saveAccessInfo(tx, currentAccessInfo)
+			accessInfo.layer = newEntryLayer
+			accessInfo.pk = newEntryPK
+			accessInfo.vectorBytes = newEntryVecBytes
+			g.storage.saveAccessInfo(tx, accessInfo)
 		} else {
 			g.storage.clearAccessInfo(tx)
 		}
@@ -1348,6 +1358,13 @@ func (s *hnswStorage) saveNodeLayerInlining(tx fdb.Transaction, layer int, prima
 		tx.ClearRange(r)
 	}
 
+	// If no neighbors, write a sentinel KV at the exact prefix key to mark node existence.
+	// Without this, loadNodeLayerInlining's range read finds 0 KVs and returns "not found",
+	// which breaks greedy descent when the entry point has layers above all other nodes.
+	if len(neighbors) == 0 {
+		tx.Set(fdb.Key(prefix), []byte{})
+	}
+
 	// Write each edge with the neighbor's vector.
 	for _, nbPK := range neighbors {
 		// Look up neighbor's vector from cache. During insert, neighbors were just
@@ -1432,16 +1449,20 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 
 	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
 	var neighbors []tuple.Tuple
+	foundAnyKV := false
 
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
 			return nil, nil, fmt.Errorf("hnsw: inlining get kv layer %d: %w", layer, err)
 		}
+		foundAnyKV = true
 
 		// Unpack the key to get (layer, sourcePK, neighborPK).
 		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
 		if unpackErr != nil || len(keyTuple) < 3 {
+			// Sentinel KV at (layer, pk) has only 2 elements — skip it.
+			// This marks the node's existence with 0 neighbors.
 			continue
 		}
 
@@ -1473,8 +1494,8 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		}
 	}
 
-	if len(neighbors) == 0 {
-		// No edges found — node doesn't exist at this layer.
+	if !foundAnyKV {
+		// No KVs at all — node truly doesn't exist at this layer.
 		s.cache[cacheKey] = nil
 		return nil, nil, fmt.Errorf("hnsw: node not found at layer %d (inlining)", layer)
 	}
@@ -1489,8 +1510,9 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 	return existingVec, neighbors, nil
 }
 
-// deleteNodeLayerInlining removes all edges for a node at an inlining layer.
-// Also clears incoming edges (where this node is a neighbor of other nodes).
+// deleteNodeLayerInlining clears outgoing edges for this node at the given
+// inlining layer via a (layer, pk, *) prefix range clear. Incoming edges
+// (where this node is a neighbor of others) are cleaned up by repairNeighbor.
 func (s *hnswStorage) deleteNodeLayerInlining(tx fdb.Transaction, layer int, primaryKey tuple.Tuple) {
 	// Clear outgoing edges: (layer, pk, *).
 	prefix := s.dataSubspace.Pack(tuple.Tuple{int64(layer), primaryKey})
