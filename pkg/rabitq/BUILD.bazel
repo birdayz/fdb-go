@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rabitq",
+    srcs = ["rabitq.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/rabitq",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "rabitq_test",
+    srcs = ["rabitq_test.go"],
+    embed = [":rabitq"],
+)

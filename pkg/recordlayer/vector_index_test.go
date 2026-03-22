@@ -10,6 +10,7 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -981,14 +982,13 @@ var _ = Describe("HNSW with RaBitQ", func() {
 	makeRaBitQGraph := func(dims, numExBits int) *hnswGraph {
 		ss := specSubspace().Sub("hnsw-rabitq")
 		config := HNSWConfig{
-			NumDimensions:   dims,
-			M:               4,
-			MMax:            4,
-			MMax0:           8,
-			EfConstruction:  100,
-			Metric:          VectorMetricEuclidean,
-			UseRaBitQ:       true,
-			RaBitQNumExBits: numExBits,
+			NumDimensions:  dims,
+			M:              4,
+			MMax:           4,
+			MMax0:          8,
+			EfConstruction: 100,
+			Metric:         VectorMetricEuclidean,
+			Quantizer:      rabitq.NewQuantizer(rabitq.MetricEuclidean, numExBits),
 		}
 		storage := newHNSWStorage(ss, config)
 		return NewHNSWGraph(storage, config)
@@ -1220,8 +1220,8 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			},
 		}
 		config := parseHNSWConfig(idx)
-		Expect(config.UseRaBitQ).To(BeTrue())
-		Expect(config.RaBitQNumExBits).To(Equal(6))
+		Expect(config.Quantizer).NotTo(BeNil())
+		Expect(config.Quantizer.GetTypeByte()).To(Equal(byte(3)))
 		Expect(config.NumDimensions).To(Equal(32))
 	})
 
@@ -1232,8 +1232,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Options: map[string]string{},
 		}
 		config := parseHNSWConfig(idx)
-		Expect(config.UseRaBitQ).To(BeFalse())
-		Expect(config.RaBitQNumExBits).To(Equal(4)) // default
+		Expect(config.Quantizer).To(BeNil())
 	})
 
 	It("parseHNSWConfig ignores invalid numExBits", func() {
@@ -1246,8 +1245,8 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			},
 		}
 		config := parseHNSWConfig(idx)
-		Expect(config.UseRaBitQ).To(BeTrue())
-		Expect(config.RaBitQNumExBits).To(Equal(4)) // out of range, keeps default
+		Expect(config.Quantizer).NotTo(BeNil())
+		// Out-of-range numExBits defaults to 4 inside the Quantizer
 	})
 
 	It("computeDistance handles both raw and RaBitQ vectors", func() {
@@ -1263,8 +1262,8 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(distRaw).To(BeNumerically("~", expected, 1e-9))
 
 		// RaBitQ encoded vector.
-		q := NewRaBitQuantizer(VectorMetricEuclidean, 4)
-		encoded := q.Encode([]float64{2.0, 3.0, 4.0, 5.0})
+		rq := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, 4)
+		encoded := rq.Encode([]float64{2.0, 3.0, 4.0, 5.0})
 		rabitqBytes := encoded.ToBytes()
 		distRaBitQ := graph.computeDistance(query, rabitqBytes)
 		// Should be finite and reasonably close to exact.

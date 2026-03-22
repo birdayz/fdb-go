@@ -1,4 +1,4 @@
-package recordlayer
+package rabitq
 
 import (
 	"container/heap"
@@ -7,23 +7,101 @@ import (
 	"math"
 )
 
-// vectorTypeRABITQ is the wire ordinal for RaBitQ-encoded vectors.
+// TypeByte is the wire ordinal for RaBitQ-encoded vectors.
 // Matches Java's VectorType.RABITQ.ordinal() = 3.
-const vectorTypeRABITQ byte = 3
+const TypeByte byte = 3
 
-// rabitqEPS is the epsilon used for floor quantization.
-const rabitqEPS = 1e-5
+// Metric identifies a distance metric for RaBitQ quantization.
+// Values match recordlayer.VectorMetric so that a simple type conversion works.
+type Metric int
 
-// rabitqEPS0 is the error scaling constant from the RaBitQ paper.
-const rabitqEPS0 = 1.9
+const (
+	MetricEuclidean    Metric = iota
+	MetricCosine
+	MetricInnerProduct
+)
 
-// rabitqNEnum controls the sweep range extension for bestRescaleFactor.
-const rabitqNEnum = 10
+// eps is the epsilon used for floor quantization.
+const eps = 1e-5
 
-// rabitqTightStart defines the sweep start fractions per numExBits.
+// eps0 is the error scaling constant from the RaBitQ paper.
+const eps0 = 1.9
+
+// nEnum controls the sweep range extension for bestRescaleFactor.
+const nEnum = 10
+
+// tightStart defines the sweep start fractions per numExBits.
 // Index 0 unused; defined up to 8 extra bits (matching Java/C++ source).
-var rabitqTightStart = [9]float64{
+var tightStart = [9]float64{
 	0.00, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81,
+}
+
+// Quantizer implements recordlayer.VectorQuantizer using RaBitQ.
+type Quantizer struct {
+	metric    Metric
+	numExBits int
+}
+
+// NewQuantizer creates a new RaBitQ quantizer implementing VectorQuantizer.
+// numExBits is clamped to [1, 8]; out-of-range values default to 4.
+func NewQuantizer(metric Metric, numExBits int) *Quantizer {
+	if numExBits < 1 || numExBits > 8 {
+		numExBits = 4
+	}
+	return &Quantizer{metric: metric, numExBits: numExBits}
+}
+
+// Encode quantizes a float64 vector into compact bytes for storage.
+func (q *Quantizer) Encode(vector []float64) []byte {
+	rq := NewRaBitQuantizer(q.metric, q.numExBits)
+	return rq.Encode(vector).ToBytes()
+}
+
+// Distance estimates the distance between a raw query vector and stored
+// quantized bytes. Returns the estimated distance.
+func (q *Quantizer) Distance(query []float64, storedBytes []byte, numDimensions int) (float64, error) {
+	encoded, err := EncodedVectorFromBytes(storedBytes, numDimensions, q.numExBits)
+	if err != nil {
+		return 0, err
+	}
+	est := NewRaBitEstimator(q.metric, q.numExBits)
+	return est.Distance(query, encoded)
+}
+
+// Decode reconstructs an approximate float64 vector from stored quantized bytes.
+// Used for pairwise distance in the neighbor selection heuristic.
+func (q *Quantizer) Decode(storedBytes []byte, numDimensions int) ([]float64, error) {
+	encoded, err := EncodedVectorFromBytes(storedBytes, numDimensions, q.numExBits)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reconstruct approximate vector: un-center the quantized codes.
+	cb := float64(int(1)<<q.numExBits) - 0.5
+	dims := encoded.NumDimensions()
+	xuc := make([]float64, dims)
+	var xucNormSqr float64
+	for i := 0; i < dims; i++ {
+		xuc[i] = float64(encoded.Encoded[i]) - cb
+		xucNormSqr += xuc[i] * xuc[i]
+	}
+
+	// Scale to approximate original norm (sqrt(fAddEx) = ||original||).
+	origNorm := math.Sqrt(encoded.FAddEx)
+	xucNorm := math.Sqrt(xucNormSqr)
+	if xucNorm > 0 && origNorm > 0 {
+		scale := origNorm / xucNorm
+		for i := range xuc {
+			xuc[i] *= scale
+		}
+	}
+
+	return xuc, nil
+}
+
+// GetTypeByte returns the type ordinal byte used as the first byte of encoded data.
+func (q *Quantizer) GetTypeByte() byte {
+	return TypeByte
 }
 
 // EncodedVector is the quantized representation of a real vector using RaBitQ.
@@ -71,7 +149,7 @@ func (e *EncodedVector) ToBytes() []byte {
 	length := 25 + packedLen
 	buf := make([]byte, length)
 
-	buf[0] = vectorTypeRABITQ
+	buf[0] = TypeByte
 	binary.BigEndian.PutUint64(buf[1:], math.Float64bits(e.FAddEx))
 	binary.BigEndian.PutUint64(buf[9:], math.Float64bits(e.FRescaleEx))
 	binary.BigEndian.PutUint64(buf[17:], math.Float64bits(e.FErrorEx))
@@ -128,8 +206,8 @@ func EncodedVectorFromBytes(data []byte, numDimensions, numExBits int) (*Encoded
 	if len(data) < 25 {
 		return nil, fmt.Errorf("rabitq: data too short: %d bytes", len(data))
 	}
-	if data[0] != vectorTypeRABITQ {
-		return nil, fmt.Errorf("rabitq: expected type ordinal %d, got %d", vectorTypeRABITQ, data[0])
+	if data[0] != TypeByte {
+		return nil, fmt.Errorf("rabitq: expected type ordinal %d, got %d", TypeByte, data[0])
 	}
 
 	fAddEx := math.Float64frombits(binary.BigEndian.Uint64(data[1:]))
@@ -203,12 +281,12 @@ func unpackComponents(data []byte, numDimensions, numExBits int) ([]int, error) 
 // Matches Java's RaBitQuantizer.
 type RaBitQuantizer struct {
 	NumExBits int
-	Metric    VectorMetric
+	Metric    Metric
 }
 
 // NewRaBitQuantizer creates a new quantizer with the given metric and bit precision.
 // numExBits must be in [1, 8].
-func NewRaBitQuantizer(metric VectorMetric, numExBits int) *RaBitQuantizer {
+func NewRaBitQuantizer(metric Metric, numExBits int) *RaBitQuantizer {
 	if numExBits < 1 || numExBits > 8 {
 		panic(fmt.Sprintf("rabitq: numExBits must be in [1, 8], got %d", numExBits))
 	}
@@ -278,7 +356,7 @@ func (q *RaBitQuantizer) encodeInternal(data []float64) *rabitqResult {
 	sqrtArg := ((residualL2Sqr * xuCbNormSqr) /
 		(ipResidualXuCbSafe * ipResidualXuCbSafe) - 1.0) /
 		float64(max(1, dims-1))
-	tmpError := residualL2Norm * rabitqEPS0 * math.Sqrt(math.Max(0.0, sqrtArg))
+	tmpError := residualL2Norm * eps0 * math.Sqrt(math.Max(0.0, sqrtArg))
 
 	// All supported metrics use the same formula (matching Java switch).
 	fAddEx := residualL2Sqr
@@ -333,7 +411,7 @@ func (q *RaBitQuantizer) quantizeEx(oAbs []float64) *quantizeExResult {
 	var ipNorm float64
 	code := make([]int, dim)
 	for i := 0; i < dim; i++ {
-		k := int(math.Floor(t*oAbs[i] + rabitqEPS))
+		k := int(math.Floor(t*oAbs[i] + eps))
 		if k > maxLevel {
 			k = maxLevel
 		}
@@ -342,7 +420,7 @@ func (q *RaBitQuantizer) quantizeEx(oAbs []float64) *quantizeExResult {
 	}
 
 	var ipNormInv float64
-	if ipNorm > 0.0 && math.IsInf(ipNorm, 0) == false && !math.IsNaN(ipNorm) {
+	if ipNorm > 0.0 && !math.IsInf(ipNorm, 0) && !math.IsNaN(ipNorm) {
 		ipNormInv = 1.0 / ipNorm
 		if math.IsInf(ipNormInv, 0) || ipNormInv == 0.0 {
 			ipNormInv = 1.0
@@ -392,15 +470,15 @@ func (q *RaBitQuantizer) bestRescaleFactor(oAbs []float64) float64 {
 	}
 
 	maxLevel := (1 << q.NumExBits) - 1
-	tEnd := float64(maxLevel+rabitqNEnum) / maxO
-	tStart := tEnd * rabitqTightStart[q.NumExBits]
+	tEnd := float64(maxLevel+nEnum) / maxO
+	tStart := tEnd * tightStart[q.NumExBits]
 
 	curOB := make([]int, numDimensions)
 	sqrDen := float64(numDimensions) * 0.25
 	var numer float64
 
 	for i := 0; i < numDimensions; i++ {
-		cur := int(tStart*oAbs[i] + rabitqEPS)
+		cur := int(tStart*oAbs[i] + eps)
 		curOB[i] = cur
 		sqrDen += float64(cur)*float64(cur) + float64(cur)
 		numer += (float64(cur) + 0.5) * oAbs[i]
@@ -484,12 +562,12 @@ func dot(a, b []float64) float64 {
 // RaBitEstimator estimates distance between a raw query vector and an encoded vector.
 // Matches Java's RaBitEstimator.
 type RaBitEstimator struct {
-	Metric    VectorMetric
+	Metric    Metric
 	NumExBits int
 }
 
 // NewRaBitEstimator creates a new estimator with the given metric and precision.
-func NewRaBitEstimator(metric VectorMetric, numExBits int) *RaBitEstimator {
+func NewRaBitEstimator(metric Metric, numExBits int) *RaBitEstimator {
 	return &RaBitEstimator{
 		Metric:    metric,
 		NumExBits: numExBits,
@@ -506,7 +584,7 @@ type DistanceEstimate struct {
 // encoded vector, returning both the estimated distance and the error bound.
 // Matches Java's RaBitEstimator.estimateDistanceAndErrorBound().
 func (e *RaBitEstimator) EstimateDistance(query []float64, encoded *EncodedVector) DistanceEstimate {
-	if e.Metric == VectorMetricCosine {
+	if e.Metric == MetricCosine {
 		qNormSqr := dot(query, query)
 		if !(qNormSqr > 0.0) || math.IsInf(qNormSqr, 0) || math.IsNaN(qNormSqr) {
 			return DistanceEstimate{Distance: math.NaN(), Error: 0.0}
@@ -529,19 +607,19 @@ func (e *RaBitEstimator) EstimateDistance(query []float64, encoded *EncodedVecto
 	euclideanSquareError := encoded.FErrorEx * gError
 
 	switch e.Metric {
-	case VectorMetricCosine:
+	case MetricCosine:
 		return DistanceEstimate{
 			Distance: 0.5 * euclideanSquare,
 			Error:    0.5 * euclideanSquareError,
 		}
-	case VectorMetricInnerProduct:
+	case MetricInnerProduct:
 		// Java: DOT_PRODUCT_METRIC => 0.5 * euclideanSquare - 1
 		return DistanceEstimate{
 			Distance: 0.5*euclideanSquare - 1,
 			Error:    0.5 * euclideanSquareError,
 		}
 	default:
-		// VectorMetricEuclidean (squared L2) — matches Java's EUCLIDEAN_SQUARE_METRIC.
+		// MetricEuclidean (squared L2) — matches Java's EUCLIDEAN_SQUARE_METRIC.
 		return DistanceEstimate{
 			Distance: euclideanSquare,
 			Error:    euclideanSquareError,

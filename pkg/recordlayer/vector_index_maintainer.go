@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
@@ -133,14 +134,15 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options["hnswUseInlining"]; ok {
 		config.UseInlining = v == "true"
 	}
-	if v, ok := index.Options["hnswUseRaBitQ"]; ok {
-		config.UseRaBitQ = v == "true"
-	}
-	if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
-		var numExBits int
-		if n, _ := fmt.Sscanf(v, "%d", &numExBits); n == 1 && numExBits >= 1 && numExBits <= 8 {
-			config.RaBitQNumExBits = numExBits
+	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
+		numExBits := 4
+		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
+			var n int
+			if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
+				numExBits = n
+			}
 		}
+		config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(config.Metric), numExBits)
 	}
 	if v, ok := index.Options[IndexOptionHNSWM]; ok {
 		var m int

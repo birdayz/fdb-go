@@ -4,6 +4,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/rabitq"
 )
 
 // --- Java Random compatibility tests ---
@@ -412,11 +414,11 @@ func TestTransformImprovesRaBitQEstimation(t *testing.T) {
 		rq := rotator.apply(q)
 
 		// Encode rotated v.
-		quantizer := NewRaBitQuantizer(VectorMetricEuclidean, numExBits)
+		quantizer := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, numExBits)
 		encoded := quantizer.Encode(rv)
 
 		// Estimate distance between rotated q and encoded rotated v.
-		estimator := NewRaBitEstimator(VectorMetricEuclidean, numExBits)
+		estimator := rabitq.NewRaBitEstimator(rabitq.MetricEuclidean, numExBits)
 		result := estimator.EstimateDistance(rq, encoded)
 
 		// True distance (rotation preserves distances).

@@ -34,21 +34,43 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 )
 
+// VectorQuantizer is an optional quantization strategy for HNSW vector storage.
+// When set on HNSWConfig, HNSW uses it for encoding, distance estimation, and
+// vector reconstruction instead of raw float64 storage.
+//
+// This interface allows quantization implementations (like RaBitQ) to live in
+// separate packages, matching Java's architecture where RaBitQ is in fdb-extensions.
+type VectorQuantizer interface {
+	// Encode quantizes a float64 vector into compact bytes for storage.
+	Encode(vector []float64) []byte
+
+	// Distance estimates the distance between a raw query vector and stored
+	// quantized bytes. Returns the estimated distance.
+	Distance(query []float64, storedBytes []byte, numDimensions int) (float64, error)
+
+	// Decode reconstructs an approximate float64 vector from stored quantized bytes.
+	// Used for pairwise distance in the neighbor selection heuristic.
+	Decode(storedBytes []byte, numDimensions int) ([]float64, error)
+
+	// GetTypeByte returns the type ordinal byte used as the first byte of encoded data.
+	// This is used to dispatch between raw and quantized storage.
+	GetTypeByte() byte
+}
+
 // HNSWConfig configures an HNSW graph.
 // Matches Java's com.apple.foundationdb.async.hnsw.Config.
 type HNSWConfig struct {
 	NumDimensions         int
-	M                     int          // Connectivity factor (default 16)
-	MMax                  int          // Max connections for non-zero layers (default M)
-	MMax0                 int          // Max connections for layer 0 (default 2*M)
-	EfConstruction        int          // Insertion search factor (default 200)
-	Metric                VectorMetric // Distance metric
-	ExtendCandidates      bool         // Extend candidate set with 2nd-degree neighbors (default false)
-	KeepPrunedConnections bool         // Retain pruned candidates to fill up to M (default false)
-	EfRepair              int          // Max candidates for delete repair (default 64, 0 = no limit)
-	UseInlining           bool         // Use inlining storage for layers > 0 (default false)
-	UseRaBitQ             bool         // Enable RaBitQ quantization for approximate distance (default false)
-	RaBitQNumExBits       int          // Bits per dimension for quantization (1-8, default 4)
+	M                     int              // Connectivity factor (default 16)
+	MMax                  int              // Max connections for non-zero layers (default M)
+	MMax0                 int              // Max connections for layer 0 (default 2*M)
+	EfConstruction        int              // Insertion search factor (default 200)
+	Metric                VectorMetric     // Distance metric
+	ExtendCandidates      bool             // Extend candidate set with 2nd-degree neighbors (default false)
+	KeepPrunedConnections bool             // Retain pruned candidates to fill up to M (default false)
+	EfRepair              int              // Max candidates for delete repair (default 64, 0 = no limit)
+	UseInlining           bool             // Use inlining storage for layers > 0 (default false)
+	Quantizer             VectorQuantizer  // Optional quantizer (nil = raw float64 storage)
 
 	// Concurrency limits — Java uses these to limit async pipeline parallelism.
 	// Go's synchronous FDB model doesn't use these for concurrency control, but
@@ -90,7 +112,6 @@ func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 		EfConstruction:                      200,
 		EfRepair:                            64,
 		Metric:                              VectorMetricEuclidean,
-		RaBitQNumExBits:                     4,
 		MaxNumConcurrentNodeFetches:         16,
 		MaxNumConcurrentNeighborhoodFetches: 10,
 		MaxNumConcurrentDeleteFromLayer:     2,
@@ -113,9 +134,9 @@ func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 }
 
 // buildTransform creates a transform from access info and the current config.
-// Returns nil if no transform is needed (either RaBitQ is off, or no centroid yet for Euclidean).
+// Returns nil if no transform is needed (either no quantizer, or no centroid yet for Euclidean).
 func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
-	if info == nil || !info.canUseRaBitQ() {
+	if info == nil || !info.hasTransform() {
 		return nil
 	}
 	normalize := g.config.Metric == VectorMetricCosine
@@ -123,36 +144,22 @@ func (g *hnswGraph) buildTransform(info *hnswAccessInfo) *hnswTransform {
 }
 
 // encodeVectorBytes returns the bytes to store for a vector.
-// When UseRaBitQ is enabled and a transform is active, the caller must apply the
-// transform before calling this. Returns RaBitQ-encoded bytes or raw DOUBLE-serialized bytes.
+// When a quantizer is configured and a transform is active, the caller must apply the
+// transform before calling this. Returns quantized bytes or raw DOUBLE-serialized bytes.
 func (g *hnswGraph) encodeVectorBytes(vector []float64) []byte {
-	if g.config.UseRaBitQ {
-		numExBits := g.config.RaBitQNumExBits
-		if numExBits < 1 || numExBits > 8 {
-			numExBits = 4
-		}
-		q := NewRaBitQuantizer(g.config.Metric, numExBits)
-		return q.Encode(vector).ToBytes()
+	if g.config.Quantizer != nil {
+		return g.config.Quantizer.Encode(vector)
 	}
 	return serializeVector(vector)
 }
 
 // computeDistance computes the distance between a raw query vector and stored
-// vector bytes. When the stored bytes are RaBitQ-encoded (type ordinal 3),
-// uses the RaBitEstimator for fast approximate distance. Otherwise
+// vector bytes. When a quantizer is configured and the stored bytes match its
+// type byte, uses the quantizer for fast approximate distance. Otherwise
 // deserializes and computes exact distance.
 func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) float64 {
-	if len(storedVecBytes) > 0 && storedVecBytes[0] == vectorTypeRABITQ {
-		numExBits := g.config.RaBitQNumExBits
-		if numExBits < 1 || numExBits > 8 {
-			numExBits = 4
-		}
-		encoded, err := EncodedVectorFromBytes(storedVecBytes, g.config.NumDimensions, numExBits)
-		if err != nil {
-			return math.Inf(1)
-		}
-		est := NewRaBitEstimator(g.config.Metric, numExBits)
-		dist, err := est.Distance(query, encoded)
+	if g.config.Quantizer != nil && len(storedVecBytes) > 0 && storedVecBytes[0] == g.config.Quantizer.GetTypeByte() {
+		dist, err := g.config.Quantizer.Distance(query, storedVecBytes, g.config.NumDimensions)
 		if err != nil {
 			return math.Inf(1)
 		}
@@ -167,50 +174,17 @@ func (g *hnswGraph) computeDistance(query []float64, storedVecBytes []byte) floa
 
 // decodeStoredVector extracts an approximate []float64 from stored vector bytes.
 // For raw vectors (DOUBLE/FLOAT/HALF), this is exact deserialization.
-// For RaBitQ-encoded vectors, this reconstructs an approximate vector from
-// the quantized representation, suitable for pairwise distance computations
+// For quantized vectors, delegates to the configured quantizer's Decode method
+// to reconstruct an approximate vector for pairwise distance computations
 // in the neighbor selection heuristic.
 func (g *hnswGraph) decodeStoredVector(storedVecBytes []byte) ([]float64, error) {
 	if len(storedVecBytes) == 0 {
 		return nil, fmt.Errorf("hnsw: empty vector bytes")
 	}
-	if storedVecBytes[0] != vectorTypeRABITQ {
-		return deserializeVector(storedVecBytes)
+	if g.config.Quantizer != nil && storedVecBytes[0] == g.config.Quantizer.GetTypeByte() {
+		return g.config.Quantizer.Decode(storedVecBytes, g.config.NumDimensions)
 	}
-
-	numExBits := g.config.RaBitQNumExBits
-	if numExBits < 1 || numExBits > 8 {
-		numExBits = 4
-	}
-	encoded, err := EncodedVectorFromBytes(storedVecBytes, g.config.NumDimensions, numExBits)
-	if err != nil {
-		return nil, err
-	}
-
-	// Reconstruct approximate vector: un-center the quantized codes.
-	// code[i] = signedLevel + sign * 2^numExBits, centered around cb.
-	// xuc[i] = code[i] - cb approximates the direction of the original vector.
-	// Scale by sqrt(fAddEx) / ||xuc|| to approximate the original magnitude.
-	cb := float64(int(1)<<numExBits) - 0.5
-	dims := encoded.NumDimensions()
-	xuc := make([]float64, dims)
-	var xucNormSqr float64
-	for i := 0; i < dims; i++ {
-		xuc[i] = float64(encoded.Encoded[i]) - cb
-		xucNormSqr += xuc[i] * xuc[i]
-	}
-
-	// Scale to approximate original norm (sqrt(fAddEx) = ||original||).
-	origNorm := math.Sqrt(encoded.FAddEx)
-	xucNorm := math.Sqrt(xucNormSqr)
-	if xucNorm > 0 && origNorm > 0 {
-		scale := origNorm / xucNorm
-		for i := range xuc {
-			xuc[i] *= scale
-		}
-	}
-
-	return xuc, nil
+	return deserializeVector(storedVecBytes)
 }
 
 // Insert adds a vector to the HNSW graph.
@@ -364,7 +338,7 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 }
 
 // firstInsert handles the first-ever insertion into the graph.
-// When RaBitQ is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
+// When a quantizer is enabled and the metric doesn't preserve translation (Cosine/DotProduct),
 // initializes the FHT-KAC rotator immediately with a zero centroid.
 // Matches Java's Insert.firstInsert().
 func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []float64, insertLayer int) error {
@@ -376,7 +350,7 @@ func (g *hnswGraph) firstInsert(tx fdb.Transaction, primaryKey tuple.Tuple, vect
 
 	queryVec := vector
 
-	if g.config.UseRaBitQ && !g.config.Metric.satisfiesPreservedUnderTranslation() {
+	if g.config.Quantizer != nil && !g.config.Metric.satisfiesPreservedUnderTranslation() {
 		// Cosine/DotProduct: activate rotation immediately.
 		// Generate deterministic seed from primary key, matching Java's:
 		//   SplittableRandom random = new SplittableRandom(splitMixLong(pk.hashCode()));
@@ -1247,9 +1221,9 @@ func (s *hnswStorage) parseAccessInfo(data []byte) (*hnswAccessInfo, error) {
 	return info, nil
 }
 
-// canUseRaBitQ reports whether the access info has transform data for RaBitQ.
+// hasTransform reports whether the access info has transform data (centroid + rotator).
 // Matches Java's AccessInfo.canUseRaBitQ() — true when negatedCentroid is non-null.
-func (a *hnswAccessInfo) canUseRaBitQ() bool {
+func (a *hnswAccessInfo) hasTransform() bool {
 	return a.centroid != nil
 }
 
@@ -1772,7 +1746,7 @@ func deserializeVector(data []byte) ([]float64, error) {
 		}
 		return vec, nil
 	case 3: // RABITQ
-		return nil, fmt.Errorf("hnsw: RaBitQ vectors must be decoded via EncodedVectorFromBytes, not deserializeVector")
+		return nil, fmt.Errorf("hnsw: RaBitQ vectors must be decoded via the VectorQuantizer interface, not deserializeVector")
 	default:
 		return nil, fmt.Errorf("hnsw: unsupported vector type ordinal %d", typeOrdinal)
 	}
