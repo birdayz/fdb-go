@@ -1475,7 +1475,7 @@ Wire format verified correct: subspace layout (data=0, access=1), compact node f
 #### Conformance test gaps (must add for Phase 1)
 
 - [x] **No Java kNN search conformance** — Fixed: 2 new cross-language specs (Java searches Go graph, Go searches Java graph). 13 vector conformance tests total.
-- [ ] **No RaBitQ cross-language byte-level conformance test** — Go→Java and Java→Go RaBitQ encoded vector round-trip untested.
+- [x] **No RaBitQ cross-language byte-level conformance test** — Fixed: 5 conformance specs with Cosine metric (activates RaBitQ immediately). Go→Java write+read, Java→Go write+search, cross-language kNN search. 8D vectors, numExBits=4.
 - [x] **`TestMultipleExBitsPrecision` has dead assertions** — Fixed: now tracks improvement count and asserts at least 2/7 transitions show improved self-distance.
 
 #### Architecture — RaBitQ extraction
