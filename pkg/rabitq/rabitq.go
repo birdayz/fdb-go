@@ -595,13 +595,13 @@ func (e *RaBitEstimator) EstimateDistance(query []float64, encoded *EncodedVecto
 	gAdd := dot(query, query)
 	gError := math.Sqrt(gAdd)
 
-	// xuc[i] = encoded[i] - cb
+	// Compute dot(query, xuc) where xuc[i] = encoded[i] - cb.
+	// Fused into single pass to avoid allocating a dims-sized []float64.
 	dims := encoded.NumDimensions()
-	xuc := make([]float64, dims)
-	for i := 0; i < dims; i++ {
-		xuc[i] = float64(encoded.Encoded[i]) - cb
+	var dotProduct float64
+	for i := 0; i < dims && i < len(query); i++ {
+		dotProduct += query[i] * (float64(encoded.Encoded[i]) - cb)
 	}
-	dotProduct := dot(query, xuc)
 
 	euclideanSquare := encoded.FAddEx + gAdd + encoded.FRescaleEx*dotProduct
 	euclideanSquareError := encoded.FErrorEx * gError

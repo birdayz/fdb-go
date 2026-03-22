@@ -647,6 +647,8 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 		}
 
 		// Collect unvisited neighbors — reuse toFetch slice.
+		// Pack each PK once and reuse the packed bytes for both the visited
+		// set check and the batch result's pkBytes (avoids double Pack()).
 		toFetch = toFetch[:0]
 		for _, nbPK := range neighbors {
 			key := string(nbPK.Pack())
@@ -667,6 +669,7 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 			dist := g.computeDistance(query, r.vecBytes)
 
 			if len(results) < ef || dist < results[len(results)-1].dist {
+				// r.pkBytes is already computed by loadNodeLayerBatch — no double Pack().
 				heap.Push(candidates, distItem{pk: r.pk, dist: dist, pkBytes: r.pkBytes})
 				// Binary-search insertion into sorted results (O(log n) find + O(n) shift).
 				c := hnswCandidate{pk: r.pk, vecBytes: r.vecBytes, dist: dist}
