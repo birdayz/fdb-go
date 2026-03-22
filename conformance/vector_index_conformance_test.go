@@ -351,6 +351,76 @@ var _ = Describe("VECTOR Index Conformance", func() {
 		})
 	})
 
+	Describe("Java searches Go-written HNSW graph", func() {
+		It("should return the k closest neighbors", func() {
+			// Go inserts 5 well-separated points.
+			points := []struct {
+				id  int64
+				vec []float64
+			}{
+				{1, []float64{0.0, 0.0, 0.0}},
+				{2, []float64{1.0, 1.0, 1.0}},
+				{3, []float64{10.0, 10.0, 10.0}},
+				{4, []float64{100.0, 100.0, 100.0}},
+				{5, []float64{1000.0, 1000.0, 1000.0}},
+			}
+			for _, p := range points {
+				err := store.SaveOrderGo(ctx, p.id, p.vec)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Java searches for 3 nearest neighbors to origin.
+			ids, err := store.SearchJava(ctx, []float64{0.0, 0.0, 0.0}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ids).To(HaveLen(3))
+
+			// The 3 closest: id=1 (dist=0), id=2 (dist=3), id=3 (dist=300).
+			idSet := make(map[int64]bool)
+			for _, id := range ids {
+				idSet[id] = true
+			}
+			Expect(idSet).To(HaveKey(int64(1)))
+			Expect(idSet).To(HaveKey(int64(2)))
+			Expect(idSet).To(HaveKey(int64(3)))
+		})
+	})
+
+	Describe("Go searches Java-written HNSW graph", func() {
+		It("should return the k closest neighbors", func() {
+			// Java inserts 5 well-separated points in one transaction.
+			err := store.SaveMultipleOrdersJava(ctx, []struct {
+				ID     int64
+				Vector []float64
+			}{
+				{1, []float64{0.0, 0.0, 0.0}},
+				{2, []float64{1.0, 1.0, 1.0}},
+				{3, []float64{10.0, 10.0, 10.0}},
+				{4, []float64{100.0, 100.0, 100.0}},
+				{5, []float64{1000.0, 1000.0, 1000.0}},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Go searches for 3 nearest neighbors to origin.
+			results, err := store.SearchGo(ctx, []float64{0.0, 0.0, 0.0}, 3)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+
+			// The 3 closest: id=1 (dist=0), id=2 (dist=3), id=3 (dist=300).
+			gotIDs := make(map[int64]bool)
+			for _, r := range results {
+				gotIDs[r.PrimaryKey[0].(int64)] = true
+			}
+			Expect(gotIDs).To(HaveKey(int64(1)))
+			Expect(gotIDs).To(HaveKey(int64(2)))
+			Expect(gotIDs).To(HaveKey(int64(3)))
+
+			// Results should be sorted by distance ascending.
+			for i := 1; i < len(results); i++ {
+				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance-1e-9))
+			}
+		})
+	})
+
 	Describe("Vector serialization round-trip", func() {
 		It("should preserve vector values across Go write and Java read", func() {
 			// Use values that exercise floating-point edge cases (3 dimensions to match index config).
@@ -614,6 +684,23 @@ func (s *VectorIndexConformanceStore) DeleteOrderJava(ctx context.Context, order
 		return false, err
 	}
 	return deleted, nil
+}
+
+func (s *VectorIndexConformanceStore) SearchJava(ctx context.Context, query []float64, k int) ([]int64, error) {
+	params := s.buildJavaParams()
+	vecJSON, _ := json.Marshal(query)
+	params["vectorJson"] = string(vecJSON)
+	params["k"] = int64(k)
+	var raw []any
+	if err := s.java.InvokeAs(ctx, "searchVectorIndex", params, &raw); err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for _, entry := range raw {
+		m := entry.(map[string]any)
+		ids = append(ids, int64(m["orderId"].(float64)))
+	}
+	return ids, nil
 }
 
 func (s *VectorIndexConformanceStore) SaveMultipleOrdersJava(ctx context.Context, orders []struct {

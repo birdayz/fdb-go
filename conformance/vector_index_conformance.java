@@ -1,7 +1,11 @@
 package com.birdayz.conformance;
 
+import com.apple.foundationdb.record.IndexEntry;
+import com.apple.foundationdb.record.RecordCursor;
 import com.apple.foundationdb.record.RecordMetaData;
 import com.apple.foundationdb.record.RecordMetaDataBuilder;
+import com.apple.foundationdb.record.ScanProperties;
+import com.apple.foundationdb.record.TupleRange;
 import com.apple.foundationdb.record.metadata.Index;
 import com.apple.foundationdb.record.metadata.IndexOptions;
 import com.apple.foundationdb.record.metadata.IndexTypes;
@@ -10,8 +14,13 @@ import com.apple.foundationdb.record.metadata.expressions.KeyWithValueExpression
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.FDBStoredRecord;
+import com.apple.foundationdb.record.provider.foundationdb.VectorIndexScanBounds;
+import com.apple.foundationdb.record.provider.foundationdb.VectorIndexScanOptions;
+import com.apple.foundationdb.record.query.expressions.Comparisons;
 import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Order;
+import com.apple.foundationdb.linear.DoubleRealVector;
+import com.apple.foundationdb.linear.RealVector;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.ByteString;
@@ -162,6 +171,35 @@ class VectorIndexSteps extends ConformanceBase {
                 store.saveRecord(order);
             }
             return null;
+        });
+    }
+
+    @ConformanceStep("searchVectorIndex")
+    public List<Map<String, Object>> searchVectorIndex(String clusterFile, byte[] subspace,
+            String vectorJson, long k, String tenantName) {
+        double[] queryVec = parseVector(vectorJson);
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStore(context, subspace);
+            RecordMetaData md = createVectorMetaData();
+            Index index = md.getIndex("order_vector");
+            RealVector queryVector = new DoubleRealVector(queryVec);
+            VectorIndexScanBounds bounds = new VectorIndexScanBounds(
+                TupleRange.ALL,
+                Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL,
+                queryVector,
+                (int) k,
+                VectorIndexScanOptions.empty());
+            RecordCursor<IndexEntry> cursor = store.scanIndex(
+                index, bounds, null, ScanProperties.FORWARD_SCAN);
+            List<IndexEntry> entries = cursor.asList().join();
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> m = new HashMap<>();
+                Tuple pk = entry.getPrimaryKey();
+                m.put("orderId", pk.getLong(0));
+                results.add(m);
+            }
+            return results;
         });
     }
 
