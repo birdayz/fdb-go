@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,9 +51,10 @@ func TestSIFTBenchmark(t *testing.T) {
 	efConstruction := siftEnvInt("SIFT_EF_CONSTRUCTION", 200)
 	batchSize := siftEnvInt("SIFT_BATCH_SIZE", 50)
 	numQueries := siftEnvInt("SIFT_NUM_QUERIES", 100)
+	parallelism := siftEnvInt("SIFT_PARALLELISM", 10)
 
-	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d",
-		n, k, efSearch, m, efConstruction, batchSize, numQueries)
+	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d, parallelism=%d",
+		n, k, efSearch, m, efConstruction, batchSize, numQueries, parallelism)
 
 	// Resolve SIFT data directory. Priority:
 	// 1. SIFT_DATA_DIR env var (explicit override)
@@ -120,10 +122,10 @@ func TestSIFTBenchmark(t *testing.T) {
 	buildStart := time.Now()
 
 	for batch := 0; batch*batchSize < n; batch++ {
-		start := batch * batchSize
-		end := start + batchSize
-		if end > n {
-			end = n
+		batchStart := batch * batchSize
+		batchEnd := batchStart + batchSize
+		if batchEnd > n {
+			batchEnd = n
 		}
 		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
@@ -131,14 +133,41 @@ func TestSIFTBenchmark(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			for i := start; i < end; i++ {
-				_, err := store.SaveRecord(&gen.Order{
-					OrderId:    proto.Int64(int64(i)),
-					Price:      proto.Int32(int32(i % 1000)),
-					VectorData: serializeVectorF32(baseVecs[i]),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("insert vector %d: %w", i, err)
+			if parallelism <= 1 {
+				for i := batchStart; i < batchEnd; i++ {
+					_, err := store.SaveRecord(&gen.Order{
+						OrderId:    proto.Int64(int64(i)),
+						Price:      proto.Int32(int32(i % 1000)),
+						VectorData: serializeVectorF32(baseVecs[i]),
+					})
+					if err != nil {
+						return nil, fmt.Errorf("insert vector %d: %w", i, err)
+					}
+				}
+			} else {
+				var wg sync.WaitGroup
+				errs := make(chan error, batchEnd-batchStart)
+				sem := make(chan struct{}, parallelism)
+				for i := batchStart; i < batchEnd; i++ {
+					wg.Add(1)
+					sem <- struct{}{}
+					go func(id int) {
+						defer wg.Done()
+						defer func() { <-sem }()
+						_, err := store.SaveRecord(&gen.Order{
+							OrderId:    proto.Int64(int64(id)),
+							Price:      proto.Int32(int32(id % 1000)),
+							VectorData: serializeVectorF32(baseVecs[id]),
+						})
+						if err != nil {
+							errs <- fmt.Errorf("insert vector %d: %w", id, err)
+						}
+					}(i)
+				}
+				wg.Wait()
+				close(errs)
+				for err := range errs {
+					return nil, err
 				}
 			}
 			return nil, nil
@@ -148,11 +177,12 @@ func TestSIFTBenchmark(t *testing.T) {
 		}
 
 		// Progress reporting every 10 batches.
-		inserted := end
-		if (batch+1)%10 == 0 || end == n {
+		inserted := batchEnd
+		if (batch+1)%10 == 0 || batchEnd == n {
 			elapsed := time.Since(buildStart)
 			rate := float64(inserted) / elapsed.Seconds()
-			t.Logf("  Inserted %d/%d vectors (%.1f vec/sec, elapsed %v)", inserted, n, rate, elapsed.Round(time.Millisecond))
+			t.Logf("  Inserted %d/%d vectors (%.1f vec/sec, elapsed %v, parallelism=%d)",
+				inserted, n, rate, elapsed.Round(time.Millisecond), parallelism)
 		}
 	}
 
@@ -253,7 +283,7 @@ func TestSIFTBenchmark(t *testing.T) {
 	t.Logf("  Config:        M=%d, efConstruction=%d, efSearch=%d", m, efConstruction, efSearch)
 	t.Logf("  Dimensions:    128 (float32->float64)")
 	t.Log("  ------------------------------------------------")
-	t.Logf("  Build:         %.1f vec/sec (%d vectors in %v)", buildRate, n, buildDuration.Round(time.Millisecond))
+	t.Logf("  Build:         %.1f vec/sec (%d vectors in %v, parallelism=%d)", buildRate, n, buildDuration.Round(time.Millisecond), parallelism)
 	t.Log("  ------------------------------------------------")
 	t.Logf("  Recall@1:      %.3f (%s)", recall1, recallMethod)
 	t.Logf("  Recall@10:     %.3f", recall10)
