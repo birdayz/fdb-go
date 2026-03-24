@@ -172,8 +172,16 @@ func vecBuildMetaData(dims int, useRaBitQ bool) (*RecordMetaData, *Index) {
 
 // vecInsertVectors inserts n vectors into the store in batches to avoid FDB
 // transaction size limits. Returns the vectors that were inserted (indexed by
-// their order_id starting at 0).
+// their order_id starting at 0). Sequential inserts within each batch.
 func vecInsertVectors(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss subspace.Subspace, n, dims int, rng *rand.Rand) [][]float64 {
+	return vecInsertVectorsParallel(tb, db, md, ss, n, dims, 1, rng)
+}
+
+// vecInsertVectorsParallel inserts n vectors with configurable intra-transaction
+// parallelism. When parallelism > 1, each batch fires that many goroutines
+// sharing one FDBRecordStore within a single FDB transaction. The HNSW write
+// lock serializes graph mutations, but FDB I/O is pipelined across goroutines.
+func vecInsertVectorsParallel(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss subspace.Subspace, n, dims, parallelism int, rng *rand.Rand) [][]float64 {
 	tb.Helper()
 	ctx := context.Background()
 	vectors := make([][]float64, n)
@@ -185,10 +193,10 @@ func vecInsertVectors(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss sub
 	// HNSW inserts are expensive (graph traversal), so keep batches small.
 	batchSize := 50
 	for batch := 0; batch*batchSize < n; batch++ {
-		start := batch * batchSize
-		end := start + batchSize
-		if end > n {
-			end = n
+		batchStart := batch * batchSize
+		batchEnd := batchStart + batchSize
+		if batchEnd > n {
+			batchEnd = n
 		}
 		_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
@@ -199,14 +207,45 @@ func vecInsertVectors(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss sub
 			if err != nil {
 				return nil, err
 			}
-			for i := start; i < end; i++ {
-				_, err := store.SaveRecord(&gen.Order{
-					OrderId:    proto.Int64(int64(i)),
-					Price:      proto.Int32(int32(i % 1000)),
-					VectorData: serializeVector(vectors[i]),
-				})
-				if err != nil {
-					return nil, fmt.Errorf("insert vector %d: %w", i, err)
+
+			if parallelism <= 1 {
+				// Sequential path.
+				for i := batchStart; i < batchEnd; i++ {
+					_, err := store.SaveRecord(&gen.Order{
+						OrderId:    proto.Int64(int64(i)),
+						Price:      proto.Int32(int32(i % 1000)),
+						VectorData: serializeVector(vectors[i]),
+					})
+					if err != nil {
+						return nil, fmt.Errorf("insert vector %d: %w", i, err)
+					}
+				}
+			} else {
+				// Concurrent path: fire goroutines within one transaction.
+				var wg sync.WaitGroup
+				errs := make(chan error, batchEnd-batchStart)
+				sem := make(chan struct{}, parallelism)
+
+				for i := batchStart; i < batchEnd; i++ {
+					wg.Add(1)
+					sem <- struct{}{} // limit concurrency
+					go func(id int) {
+						defer wg.Done()
+						defer func() { <-sem }()
+						_, err := store.SaveRecord(&gen.Order{
+							OrderId:    proto.Int64(int64(id)),
+							Price:      proto.Int32(int32(id % 1000)),
+							VectorData: serializeVector(vectors[id]),
+						})
+						if err != nil {
+							errs <- fmt.Errorf("insert vector %d: %w", id, err)
+						}
+					}(i)
+				}
+				wg.Wait()
+				close(errs)
+				for err := range errs {
+					return nil, err
 				}
 			}
 			return nil, nil
@@ -347,6 +386,88 @@ func BenchmarkVectorSearch(b *testing.B) {
 		})
 		if err != nil {
 			b.Fatalf("search %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkVectorInsertParallel measures concurrent vector insert throughput.
+// Multiple goroutines insert into the same HNSW graph within one transaction.
+// The HNSW write lock serializes graph mutations, but FDB I/O is pipelined.
+//
+// Configure via environment:
+//
+//	VECTOR_BENCH_PARALLELISM=4  (default: 4, goroutines per transaction)
+//	VECTOR_BENCH_DIMS=128       (default: 128)
+//	VECTOR_BENCH_RABITQ=true    (default: false)
+func BenchmarkVectorInsertParallel(b *testing.B) {
+	ensureVectorBenchDB(b)
+
+	dims := vecEnvInt("VECTOR_BENCH_DIMS", 128)
+	parallelism := vecEnvInt("VECTOR_BENCH_PARALLELISM", 4)
+	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
+	md, _ := vecBuildMetaData(dims, useRaBitQ)
+	ss := vecBenchSubspace(b.Name())
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(42))
+
+	// Pre-create the store.
+	_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	// Pre-generate all vectors.
+	vectors := make([][]float64, b.N)
+	for i := range vectors {
+		vectors[i] = vecRandomVector(rng, dims)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.ReportMetric(float64(parallelism), "parallelism")
+
+	// Insert in batches of `parallelism` goroutines per transaction.
+	batchSize := parallelism
+	for batchStart := 0; batchStart < b.N; batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > b.N {
+			batchEnd = b.N
+		}
+		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			var wg sync.WaitGroup
+			errs := make(chan error, batchEnd-batchStart)
+			for i := batchStart; i < batchEnd; i++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+					_, err := store.SaveRecord(&gen.Order{
+						OrderId:    proto.Int64(int64(id)),
+						Price:      proto.Int32(100),
+						VectorData: serializeVector(vectors[id]),
+					})
+					if err != nil {
+						errs <- err
+					}
+				}(i)
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				return nil, err
+			}
+			return nil, nil
+		})
+		if err != nil {
+			b.Fatalf("batch at %d: %v", batchStart, err)
 		}
 	}
 }
@@ -513,8 +634,10 @@ func TestVectorStressManual(t *testing.T) {
 	readers := vecEnvInt("VECTOR_BENCH_READERS", 100)
 	useRaBitQ := vecEnvBool("VECTOR_BENCH_RABITQ", false)
 
-	t.Logf("Vector stress test: size=%d dims=%d k=%d ef=%d readers=%d rabitq=%v",
-		size, dims, k, efSearch, readers, useRaBitQ)
+	parallelism := vecEnvInt("VECTOR_BENCH_PARALLELISM", 1)
+
+	t.Logf("Vector stress test: size=%d dims=%d k=%d ef=%d readers=%d rabitq=%v parallelism=%d",
+		size, dims, k, efSearch, readers, useRaBitQ, parallelism)
 
 	md, vecIdx := vecBuildMetaData(dims, useRaBitQ)
 	ss := vecBenchSubspace(t.Name())
@@ -524,10 +647,10 @@ func TestVectorStressManual(t *testing.T) {
 	// Phase 1: Insert vectors.
 	t.Log("Phase 1: Inserting vectors...")
 	insertStart := time.Now()
-	vectors := vecInsertVectors(t, vectorBenchDB, md, ss, size, dims, rng)
+	vectors := vecInsertVectorsParallel(t, vectorBenchDB, md, ss, size, dims, parallelism, rng)
 	insertDuration := time.Since(insertStart)
 	insertRate := float64(size) / insertDuration.Seconds()
-	t.Logf("  Inserted %d vectors in %v (%.1f vec/sec)", size, insertDuration, insertRate)
+	t.Logf("  Inserted %d vectors in %v (%.1f vec/sec, parallelism=%d)", size, insertDuration, insertRate, parallelism)
 
 
 // Phase 2: Sequential search throughput + recall.
