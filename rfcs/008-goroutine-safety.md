@@ -282,13 +282,13 @@ Run with `-race` and `-count=100` to surface intermittent races.
 | COUNT, SUM, MIN_EVER, MAX_EVER | No | FDB atomic mutations — commutative, order-independent |
 | COUNT_NOT_NULL, COUNT_UPDATES | No | Same — atomic mutations |
 | MIN_EVER_TUPLE, MAX_EVER_TUPLE | No | Same — atomic mutations |
-| RANK | **Maybe** | Ranked set read-then-write on shared B-tree. Two concurrent RANK updates for different records could interleave. Currently safe because `updateSecondaryIndexes` is sequential. If we parallelize index updates (match Java's `AsyncUtil.whenAll`), RANK would need locking. |
+| RANK | **Yes** | Ranked set does read-modify-write on skip list — concurrent updates cause lost updates. Confirmed by TestConcurrentSave200. Write lock on secondarySubspace. |
 | VERSION | No | Writes to `FDBRecordContext.versionMutations` which will be `sync.Map`. Atomic operations only. |
 | MAX_EVER_VERSION | No | Same — writes to version mutation cache |
 | TEXT | No | BunchedMap operations on independent key ranges per record |
 | BITMAP_VALUE | No | Stateless — atomic OR mutations on bitmap entries |
 | PERMUTED_MIN, PERMUTED_MAX | No | Stateless — `tx.Set()`/`tx.Clear()` on independent keys |
-| TIME_WINDOW_LEADERBOARD | **Maybe** | Uses ranked set (same concern as RANK) |
+| TIME_WINDOW_LEADERBOARD | **Yes** | Uses ranked set (same concern as RANK). Write lock on secondarySubspace. |
 | **VECTOR (HNSW)** | **Yes** | Graph mutations are read-modify-write on shared structure |
 | **MULTIDIMENSIONAL (R-tree)** | **Yes** | Tree mutations are read-modify-write on shared structure |
 

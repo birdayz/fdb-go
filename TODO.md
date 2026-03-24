@@ -156,7 +156,7 @@ New fields in wire format (all optional, safe to round-trip via protobuf):
 - [x] **HIGH — No duplicate detection on insert** — Fixed: checks layer 0 existence before inserting.
 - [x] **HIGH — Missing prefix partitioning** — Fixed: per-prefix HNSW graphs via `getSubspaceForPrefix()`. `ScanVectorIndexWithPrefix`/`SearchVectorIndexWithPrefix` APIs. 10 tests including cross-group isolation, update between groups, 5-group stress.
 - [x] **HIGH — Missing BY_DISTANCE scan type** — Implemented: `ScanVectorIndex()`, `ScanIndexByType(BY_DISTANCE)`, `VectorDistanceScanRange()`. Returns kNN results as cursor with distance in Value. 7 tests.
-- [x] **HIGH — Missing write locks** — Not needed: FDB transactions are serializable and atomic. Concurrent HNSW modifications conflict on shared node keys, FDB aborts one, retry is safe (insert is idempotent). Java's `LockIdentifier` is a performance optimization to avoid conflicts, not a correctness requirement.
+- [x] **HIGH — Missing write locks** — Implemented in RFC 008: `lockRegistry` on `FDBRecordContext` provides per-subspace RW locks matching Java's `LockRegistry`. `vectorIndexMaintainer.Update()` acquires write lock, `SearchKNN()` acquires read lock. Prevents intra-transaction graph corruption when multiple goroutines share one store.
 - [x] **HIGH — Missing Config validation** — Fixed: validates numDimensions >= 1, m in [4,200], mMax in [4,200], mMax0 in [4,300], efConstruction in [100,400].
 - [x] **MEDIUM — Only float64 vectors** — Fixed: `deserializeVector` now handles type 0 (DOUBLE/float64), type 1 (SINGLE/float32), type 2 (HALF/float16). `halfToFloat32` implements IEEE 754 half-precision conversion. Go writes DOUBLE; reads all three types for Java interop. 3 tests.
 - [x] **MEDIUM — Missing extended neighbor selection heuristic** — Fixed: Algorithm 4 from HNSW paper. `selectNeighbors` uses diversity heuristic for Euclidean (satisfies triangle inequality), simple sort for Cosine/InnerProduct (matching Java's `Primitives.selectCandidates`). `extendCandidates` explores 2nd-degree neighbors. `keepPrunedConnections` fills up to M from discarded. `hnswExtendCandidates`/`hnswKeepPrunedConnections` index options. 9 tests.
@@ -1157,37 +1157,35 @@ Test file: `pkg/recordlayer/bug_bounty3_metadata_test.go`
 
 Full public API comparison across 5 areas. Wire-level compatibility is 100% — all gaps are API surface / feature gaps, not wire format. Go and Java can share the same FDB cluster today.
 
-### CRITICAL GAP: Async API pattern (identified 2026-03-22)
+### RESOLVED: Async API pattern / concurrent batched operations (2026-03-22 → 2026-03-24)
 
-**Every public method in Java Record Layer has an `*Async` variant** returning `CompletableFuture`. The sync methods are thin wrappers calling `context.asyncToSync()`. This is not a missing method — it's a missing paradigm. Our Go port only has sync versions.
+**Original concern:** Java has `*Async` variants returning `CompletableFuture` for every public method, enabling interleaved FDB I/O across multiple records in one transaction.
 
-Affected methods: `saveRecordAsync`, `loadRecordAsync`, `deleteRecordAsync`, `scanRecordsAsync`, `getRecordCountAsync`, `rebuildIndexAsync`, `scanIndexAsync`, and ~30 more.
+**Resolution:** RFC 008 made `FDBRecordStore` goroutine-safe. Users can now run concurrent `SaveRecord`/`LoadRecord`/etc. from multiple goroutines within one `db.Run()` callback. FDB's `Transaction` is documented goroutine-safe, so concurrent goroutines naturally pipeline their FDB reads/writes — achieving the same I/O interleaving as Java's `CompletableFuture` model without needing explicit async APIs.
 
-**Impact**: batched operations (e.g., 50 inserts in one transaction) cannot overlap their FDB reads. Each `SaveRecord` blocks on its full HNSW graph traversal / index update before the next one starts. Java can interleave multiple records' FDB reads within one transaction.
+```go
+db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+    store, _ := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+    var wg sync.WaitGroup
+    for _, record := range batch {
+        wg.Add(1)
+        go func(r proto.Message) {
+            defer wg.Done()
+            store.SaveRecord(r) // goroutine-safe, FDB pipelines I/O
+        }(record)
+    }
+    wg.Wait()
+    return nil, nil
+})
+```
 
-**Why it matters**: single-record operations are unaffected (both Java and Go block on one operation). Batched workloads are 2-3x slower in Go due to serialized I/O. Most visible with HNSW inserts (200 beam search iterations per insert, serialized across batch), but affects all index types.
-
-**Go equivalent**: not straightforward. FDB transactions aren't goroutine-safe. Options:
-- Fire FDB `Get()` futures across multiple records before resolving any (already done in `loadNodeLayerBatch` for one operation, but not across operations)
-- Restructure `SaveRecord` into a "prepare reads" + "resolve + write" two-phase pattern
-- Accept the gap for now — single-record path (production default) is unaffected
-
-- [ ] **HIGH** — Goroutine safety: FDB Transaction is documented goroutine-safe, but our entire layer on top is NOT. Concurrent `SaveRecord` goroutines within one transaction will data-race on:
-  - `FDBRecordContext.localVersionCache` (plain map) — Java uses `ConcurrentSkipListMap`
-  - `FDBRecordContext.versionMutations` (plain map) — Java uses `ConcurrentSkipListMap`
-  - `FDBRecordContext.localVersion` (plain int) — Java uses `AtomicInteger`
-  - `FDBRecordContext.commitChecks/postCommits` — Java uses `synchronized` blocks
-  - `FDBRecordStore.indexStates` (plain map, read during save)
-  - HNSW `storage.cache` (plain map, written during graph traversal)
-  - Java's solution: `ConcurrentSkipListMap` / `AtomicInteger` / `synchronized` for context state, `LockRegistry` (per-context `ConcurrentHashMap<LockIdentifier, AtomicReference<AsyncLock>>`) for HNSW write serialization.
-  - Go fix: either (a) make all shared maps `sync.Map` or mutex-protected + add `LockRegistry` equivalent on `FDBRecordContext`, OR (b) document that `FDBRecordStore` is NOT goroutine-safe (simpler but diverges from Java's concurrent contract).
-  - **Minimum viable**: document the restriction NOW, fix properly later.
+- [x] **HIGH** — Goroutine safety (RFC 008): `FDBRecordContext` uses atomic.Int32, mutex-protected maps, commitMu, lockRegistry. `FDBRecordStore` uses sync.RWMutex for store state. HNSW/R-tree use per-subspace write/read locks. Intra-transaction race test passes with `-race`. 15 subagent reviews confirmed correctness.
 
 ### Coverage summary
 
 | Area | Coverage | Key Gaps |
 |---|---|---|
-| FDBRecordStore (CRUD) | ~83% | **Async API pattern (see above)**, query planning methods, synthetic records |
+| FDBRecordStore (CRUD) | ~90% | Query planning methods, synthetic records |
 | Index types | 19/19 | **ALL COMPLETE** |
 | IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |

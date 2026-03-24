@@ -91,8 +91,14 @@ func (m *rankIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 
 // Update handles insert/delete/update for the RANK index.
 // Maintains both the primary B-tree and the secondary ranked set.
-// Matches Java's rankIndexMaintainer.updateIndexKeys().
+// Acquires write lock because the ranked set does read-modify-write on the
+// skip list structure — concurrent updates cause lost updates.
+// Matches Java where per-record index updates are serialized via the
+// CompletableFuture pipeline.
 func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	lockKey := string(m.secondarySubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {

@@ -40,8 +40,13 @@ func newTimeWindowLeaderboardIndexMaintainer(
 
 // Update handles insert/delete/update for the TIME_WINDOW_LEADERBOARD index.
 // For each record, finds the best score per leaderboard and updates B-tree + RankedSet.
+// Acquires write lock because the ranked set does read-modify-write on the
+// skip list structure — concurrent updates cause lost updates.
 // Matches Java's TimeWindowLeaderboardIndexMaintainer.updateIndexKeys().
 func (m *timeWindowLeaderboardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	lockKey := string(m.secondarySubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
