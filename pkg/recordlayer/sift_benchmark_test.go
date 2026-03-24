@@ -52,9 +52,10 @@ func TestSIFTBenchmark(t *testing.T) {
 	batchSize := siftEnvInt("SIFT_BATCH_SIZE", 50)
 	numQueries := siftEnvInt("SIFT_NUM_QUERIES", 100)
 	parallelism := siftEnvInt("SIFT_PARALLELISM", 10)
+	useRaBitQ := os.Getenv("SIFT_RABITQ") == "1"
 
-	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d, parallelism=%d",
-		n, k, efSearch, m, efConstruction, batchSize, numQueries, parallelism)
+	t.Logf("SIFT benchmark config: N=%d, K=%d, efSearch=%d, M=%d, efConstruction=%d, batch=%d, queries=%d, parallelism=%d, rabitq=%v",
+		n, k, efSearch, m, efConstruction, batchSize, numQueries, parallelism, useRaBitQ)
 
 	// Resolve SIFT data directory. Priority:
 	// 1. SIFT_DATA_DIR env var (explicit override)
@@ -101,7 +102,7 @@ func TestSIFTBenchmark(t *testing.T) {
 	// Build metadata with VECTOR index.
 	// Note: M and efConstruction are controlled by DefaultHNSWConfig defaults
 	// (M=16, efConstruction=200). These match the env var defaults.
-	md, vecIdx := vecBuildMetaData(128, false)
+	md, vecIdx := vecBuildMetaData(128, useRaBitQ)
 	ss := vecBenchSubspace("sift-benchmark")
 
 	// Create store.
