@@ -133,6 +133,11 @@ func (m *textIndexMaintainer) clearRecordTokenizerVersion(primaryKey tuple.Tuple
 // Handles tokenizer version tracking and re-indexing on version change.
 // Matches Java's TextIndexMaintainer.update().
 func (m *textIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	// BunchedMap does read-modify-write (snapshot read → deserialize → modify → write).
+	// Concurrent updates to the same bunched entry cause lost updates.
+	lockKey := string(m.indexSubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	if oldRecord == nil && newRecord != nil {
 		// Insert: write tokenizer version, then index.
 		m.writeRecordTokenizerVersion(newRecord.PrimaryKey)

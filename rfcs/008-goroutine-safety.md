@@ -285,9 +285,9 @@ Run with `-race` and `-count=100` to surface intermittent races.
 | RANK | **Yes** | Ranked set does read-modify-write on skip list — concurrent updates cause lost updates. Confirmed by TestConcurrentSave200. Write lock on secondarySubspace. |
 | VERSION | No | Writes to `FDBRecordContext.versionMutations` which will be `sync.Map`. Atomic operations only. |
 | MAX_EVER_VERSION | No | Same — writes to version mutation cache |
-| TEXT | No | BunchedMap operations on independent key ranges per record |
+| TEXT | **Yes** | BunchedMap does read-modify-write (snapshot read → deserialize → modify → write). Write lock on indexSubspace. |
 | BITMAP_VALUE | No | Stateless — atomic OR mutations on bitmap entries |
-| PERMUTED_MIN, PERMUTED_MAX | No | Stateless — `tx.Set()`/`tx.Clear()` on independent keys |
+| PERMUTED_MIN, PERMUTED_MAX | **Yes** | getExtremum reads current min/max, then clear+set — read-modify-write. Write lock on secondarySubspace. |
 | TIME_WINDOW_LEADERBOARD | **Yes** | Uses ranked set (same concern as RANK). Write lock on secondarySubspace. |
 | **VECTOR (HNSW)** | **Yes** | Graph mutations are read-modify-write on shared structure |
 | **MULTIDIMENSIONAL (R-tree)** | **Yes** | Tree mutations are read-modify-write on shared structure |

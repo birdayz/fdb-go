@@ -106,6 +106,11 @@ func compareTuples(a, b tuple.Tuple) int {
 // then processing the delete path for old groups that the new record no longer
 // belongs to.
 func (m *permutedMinMaxIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	// getExtremum reads current min/max, then clear+set — read-modify-write.
+	// Concurrent updates to the same group cause lost extremum updates.
+	lockKey := string(m.secondarySubspace.Bytes())
+	m.store.AcquireWriteLock(lockKey)
+	defer m.store.ReleaseWriteLock(lockKey)
 	groupPrefixSize := m.getGroupingCount()
 	totalSize := m.index.RootExpression.ColumnSize()
 	permutePosition := groupPrefixSize - m.permutedSize
