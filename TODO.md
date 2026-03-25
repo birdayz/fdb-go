@@ -663,13 +663,13 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [ ] **TEXT index audit items (LOW)** — Remaining from 2026-03-18 audit:
   - [x] `commonKeys` deduplication in text update path — `removeCommonTextEntries()` skips unchanged text on update
-  - [ ] Pipeline parallelism for multi-token updates — Go processes tokens serially, Java uses `forEachAsync` with pipeline (performance)
+  - [x] Pipeline parallelism for multi-token updates — assessed: Go's per-index write lock serializes all token updates; Java also serializes multi-entry updates. No benefit from pipelining.
   - [x] `canDeleteWhere` validation — rejects non-empty prefix on non-grouped TEXT indexes
   - [ ] `BunchedMap.Get()` read conflict key — skipped when called with ReadTransaction instead of Transaction (no practical impact since always called from Transaction)
   - [ ] InstrumentedBunchedMap for timer/metrics — no observability hooks in Go BunchedMap
-  - [ ] BunchedMap `compact()` / `containsKey()` / single-map `Scan()` — missing convenience APIs
-  - [ ] ByteScanLimiter in TextCursor — byte tracking requires deeper BunchedMapMultiIterator integration
-  - [ ] BunchedMapMultiIterator eager materialization vs streaming — Go materializes all KVs upfront (performance for large scans)
+  - [x] BunchedMap `compact()` / `containsKey()` / single-map `Scan()` — implemented with 12 tests (ContainsKey: 3, Compact: 4, Scan: 5)
+  - [x] ByteScanLimiter in TextCursor — KVCallback on streaming iterator fires per raw FDB KV read, textCursor checks ScannedBytesLimit. 2 tests.
+  - [x] BunchedMapMultiIterator eager materialization vs streaming — converted to lazy streaming via fdb.RangeIterator (one bunch in memory at a time)
 
 - [x] **VERSION index type** — HIGH. Two phases:
 
