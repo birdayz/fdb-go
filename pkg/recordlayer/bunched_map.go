@@ -35,9 +35,13 @@ type bunchedEntry = BunchedEntry[tuple.Tuple, []int]
 // Wire-compatible with Java's com.apple.foundationdb.map.BunchedMap.
 //
 // Currently specialized for TEXT index use (K = tuple.Tuple, V = []int).
+//
+// When a StoreTimer is set, BunchedMap instruments all writes, deletes, and
+// range reads with index-level counters matching Java's InstrumentedBunchedMap.
 type BunchedMap struct {
 	serializer *TextIndexBunchedSerializer
 	bunchSize  int
+	timer      *StoreTimer
 }
 
 // NewBunchedMap creates a new BunchedMap with the given bunch size.
@@ -45,6 +49,56 @@ func NewBunchedMap(bunchSize int) *BunchedMap {
 	return &BunchedMap{
 		serializer: TextIndexBunchedSerializerInstance(),
 		bunchSize:  bunchSize,
+	}
+}
+
+// NewInstrumentedBunchedMap creates a BunchedMap with instrumentation enabled.
+// Matches Java's InstrumentedBunchedMap which wraps BunchedMap with timer hooks.
+func NewInstrumentedBunchedMap(bunchSize int, timer *StoreTimer) *BunchedMap {
+	return &BunchedMap{
+		serializer: TextIndexBunchedSerializerInstance(),
+		bunchSize:  bunchSize,
+		timer:      timer,
+	}
+}
+
+// instrumentWrite records a write operation in the timer.
+// Matches Java's InstrumentedBunchedMap.instrumentWrite().
+func (m *BunchedMap) instrumentWrite(key, value, oldValue []byte) {
+	if m.timer == nil {
+		return
+	}
+	m.timer.Increment(CountSaveIndexKey)
+	m.timer.IncrementBy(CountSaveIndexKeyBytes, int64(len(key)))
+	m.timer.IncrementBy(CountSaveIndexValueBytes, int64(len(value)))
+	if oldValue != nil {
+		m.timer.IncrementBy(CountDeleteIndexValueBytes, int64(len(oldValue)))
+	}
+}
+
+// instrumentDelete records a delete operation in the timer.
+// Matches Java's InstrumentedBunchedMap.instrumentDelete().
+func (m *BunchedMap) instrumentDelete(key, oldValue []byte) {
+	if m.timer == nil {
+		return
+	}
+	m.timer.Increment(CountDeleteIndexKey)
+	m.timer.IncrementBy(CountDeleteIndexKeyBytes, int64(len(key)))
+	if oldValue != nil {
+		m.timer.IncrementBy(CountDeleteIndexValueBytes, int64(len(oldValue)))
+	}
+}
+
+// instrumentRangeRead records a range read result in the timer.
+// Matches Java's InstrumentedBunchedMap.instrumentRangeRead().
+func (m *BunchedMap) instrumentRangeRead(kvs []fdb.KeyValue) {
+	if m.timer == nil {
+		return
+	}
+	for _, kv := range kvs {
+		m.timer.Increment(CountLoadIndexKey)
+		m.timer.IncrementBy(CountLoadIndexKeyBytes, int64(len(kv.Key)))
+		m.timer.IncrementBy(CountLoadIndexValueBytes, int64(len(kv.Value)))
 	}
 }
 
@@ -63,8 +117,9 @@ func joinBytes(slices ...[]byte) []byte {
 
 // Get retrieves the value associated with a key from the map.
 // Returns (value, true, nil) if found, (nil, false, nil) if not found.
-// Matches Java's BunchedMap.get().
-func (m *BunchedMap) Get(tx fdb.ReadTransaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
+// Always adds a read conflict key on the map key for serializability,
+// matching Java's BunchedMap.get() which takes TransactionContext.
+func (m *BunchedMap) Get(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
 	subspaceKey := ss.Bytes()
 	kv, found, err := m.entryForKey(tx, subspaceKey, key)
 	if err != nil {
@@ -107,6 +162,7 @@ func (m *BunchedMap) Put(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tup
 	if err != nil {
 		return nil, false, err
 	}
+	m.instrumentRangeRead(keyValues)
 
 	var kvBefore, kvAfter *fdb.KeyValue
 	for i := range keyValues {
@@ -178,6 +234,7 @@ func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.
 
 	if len(entryList) == 1 {
 		// Only entry — just delete the signpost.
+		m.instrumentDelete(kv.Key, kv.Value)
 		tx.Clear(fdb.Key(kv.Key))
 	} else {
 		// Remove the entry and re-serialize.
@@ -188,6 +245,7 @@ func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.
 		var newKey []byte
 		if foundIndex == 0 {
 			// Removed first entry: signpost must change to the new first entry.
+			m.instrumentDelete(kv.Key, kv.Value)
 			tx.Clear(fdb.Key(kv.Key))
 			newKey = joinBytes(subspaceKey, m.serializer.SerializeKey(newEntryList[0].Key))
 		} else {
@@ -195,6 +253,7 @@ func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.
 		}
 
 		newValue := m.serializer.SerializeEntries(newEntryList)
+		m.instrumentWrite(newKey, newValue, kv.Value)
 		tx.Set(fdb.Key(newKey), newValue)
 	}
 
@@ -211,6 +270,7 @@ func (m *BunchedMap) VerifyIntegrity(tx fdb.ReadTransaction, ss subspace.Subspac
 	if err != nil {
 		return err
 	}
+	m.instrumentRangeRead(kvs)
 
 	var lastKey []byte // packed key for comparison
 	for _, kv := range kvs {
@@ -236,23 +296,19 @@ func (m *BunchedMap) VerifyIntegrity(tx fdb.ReadTransaction, ss subspace.Subspac
 // entryForKey finds the signpost (FDB key-value pair) that should contain
 // the given map key. Uses snapshot read + explicit read conflict key.
 // Matches Java's BunchedMap.entryForKey().
-func (m *BunchedMap) entryForKey(tx fdb.ReadTransaction, subspaceKey []byte, key tuple.Tuple) (fdb.KeyValue, bool, error) {
+//
+// Always adds a read conflict key on the map key, matching Java's
+// "Grand Theory of Conflict Ranges" (BunchedMap.java lines 234-270):
+// "When reading a map key, add a read conflict key to the corresponding
+// key in the DB regardless of DB keys actually read."
+func (m *BunchedMap) entryForKey(tx fdb.Transaction, subspaceKey []byte, key tuple.Tuple) (fdb.KeyValue, bool, error) {
 	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 
 	// Add a read conflict key for the map key being accessed.
-	// ReadTransaction may be a Snapshot which doesn't support AddReadConflictKey,
-	// but the callers (Get uses ReadTransaction, Put/Remove use Transaction) handle this.
-	// For Get, we skip the conflict key since it's a read-only operation using the
-	// snapshot directly from entryForKey. For Put/Remove, the Transaction is used.
-	//
-	// Java always adds the read conflict key via tr (the Transaction).
-	// For Get, Java passes the transaction into entryForKey (which adds the conflict key),
-	// but Get is wrapped in runAsync which takes a TransactionContext.
-	// Since Go's Get takes a ReadTransaction, we conditionally add the conflict key.
-	if txn, ok := tx.(fdb.Transaction); ok {
-		if err := txn.AddReadConflictKey(fdb.Key(keyBytes)); err != nil {
-			return fdb.KeyValue{}, false, err
-		}
+	// This is unconditional, matching Java's entryForKey() which always
+	// calls tr.addReadConflictKey(keyBytes).
+	if err := tx.AddReadConflictKey(fdb.Key(keyBytes)); err != nil {
+		return fdb.KeyValue{}, false, err
 	}
 
 	// Snapshot range read: lastLessOrEqual(keyBytes) to firstGreaterThan(keyBytes).
@@ -268,6 +324,7 @@ func (m *BunchedMap) entryForKey(tx fdb.ReadTransaction, subspaceKey []byte, key
 	if err != nil {
 		return fdb.KeyValue{}, false, err
 	}
+	m.instrumentRangeRead(keyValues)
 
 	if len(keyValues) == 0 {
 		return fdb.KeyValue{}, false, nil
@@ -304,6 +361,7 @@ func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.Transaction, subspaceK
 func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunchedEntry) {
 	_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
 	valueBytes := m.serializer.SerializeEntries([]bunchedEntry{entry})
+	m.instrumentWrite(keyBytes, valueBytes, nil)
 	tx.Set(fdb.Key(keyBytes), valueBytes)
 }
 
@@ -318,9 +376,15 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceK
 	m.addEntryListReadConflictRange(tx, subspaceKey, newKey, entryList)
 
 	if oldKv != nil && !bytes.Equal(oldKv.Key, newKey) {
+		m.instrumentDelete(oldKv.Key, oldKv.Value)
 		tx.Clear(fdb.Key(oldKv.Key))
 	}
 
+	var oldValue []byte
+	if oldKv != nil && bytes.Equal(oldKv.Key, newKey) {
+		oldValue = oldKv.Value
+	}
+	m.instrumentWrite(newKey, serializedBytes, oldValue)
 	tx.Set(fdb.Key(newKey), serializedBytes)
 
 	if !bytes.Equal(keyBytes, newKey) {

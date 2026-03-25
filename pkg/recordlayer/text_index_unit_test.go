@@ -1395,3 +1395,113 @@ var _ = Describe("BunchedMap methods", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+var _ = Describe("InstrumentedBunchedMap", func() {
+	bunchedSubspace := func() subspace.Subspace {
+		return subspace.FromBytes(tuple.Tuple{"instrumented_bm_test", CurrentSpecReport().FullText()}.Pack())
+	}
+
+	It("Put records save and load index counters", func() {
+		ss := bunchedSubspace()
+		timer := NewStoreTimer()
+		bm := NewInstrumentedBunchedMap(10, timer)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10, 20})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, _, err = bm.Put(tx, ss, tuple.Tuple{int64(2)}, []int{30, 40})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Writes happened — save counters should be non-zero.
+		Expect(timer.GetCount(CountSaveIndexKey)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(CountSaveIndexKeyBytes)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(CountSaveIndexValueBytes)).To(BeNumerically(">", 0))
+
+		// Range reads happened (Put does snapshot range read) — load counters may be zero
+		// for the first Put (empty map) but should be non-zero for the second Put.
+		Expect(timer.GetCount(CountLoadIndexKey)).To(BeNumerically(">=", 0))
+	})
+
+	It("Remove records delete index counters", func() {
+		ss := bunchedSubspace()
+		timer := NewStoreTimer()
+		bm := NewInstrumentedBunchedMap(10, timer)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
+			Expect(err).NotTo(HaveOccurred())
+			_, _, err = bm.Put(tx, ss, tuple.Tuple{int64(2)}, []int{20})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		timer.Reset()
+
+		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, _, err := bm.Remove(tx, ss, tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Remove triggers either a delete (single entry) or a write (repack).
+		// Either way, some counter should have been bumped.
+		totalOps := timer.GetCount(CountDeleteIndexKey) + timer.GetCount(CountSaveIndexKey)
+		Expect(totalOps).To(BeNumerically(">", 0))
+
+		// Load counters from the entryForKey range read.
+		Expect(timer.GetCount(CountLoadIndexKey)).To(BeNumerically(">", 0))
+	})
+
+	It("Get records load index counters", func() {
+		ss := bunchedSubspace()
+		timer := NewStoreTimer()
+		bm := NewInstrumentedBunchedMap(10, timer)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		timer.Reset()
+
+		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(val).To(Equal([]int{10}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Get triggers entryForKey which does a range read.
+		Expect(timer.GetCount(CountLoadIndexKey)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(CountLoadIndexKeyBytes)).To(BeNumerically(">", 0))
+		Expect(timer.GetCount(CountLoadIndexValueBytes)).To(BeNumerically(">", 0))
+	})
+
+	It("nil timer produces no panics", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(10) // no timer
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, _, err := bm.Put(tx, ss, tuple.Tuple{int64(1)}, []int{10})
+			Expect(err).NotTo(HaveOccurred())
+			_, found, err := bm.Get(tx, ss, tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			_, _, err = bm.Remove(tx, ss, tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

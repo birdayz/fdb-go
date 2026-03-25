@@ -35,8 +35,21 @@ type textIndexMaintainer struct {
 }
 
 func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *textIndexMaintainer {
+	return newTextIndexMaintainerWithTimer(index, indexSubspace, secSubspace, tx, store, nil)
+}
+
+func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, timer *StoreTimer) *textIndexMaintainer {
 	tokenizer := getTextTokenizer(index)
 	tokenizerVersion := getTextTokenizerVersion(index)
+
+	// Matches Java's TextIndexMaintainer.getBunchedMap(context):
+	// if context.getTimer() != null, use InstrumentedBunchedMap.
+	var bm *BunchedMap
+	if timer != nil {
+		bm = NewInstrumentedBunchedMap(textIndexBunchSize, timer)
+	} else {
+		bm = NewBunchedMap(textIndexBunchSize)
+	}
 
 	return &textIndexMaintainer{
 		index:                       index,
@@ -48,7 +61,7 @@ func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSu
 		tokenizerVersion:            tokenizerVersion,
 		addAggressiveConflictRanges: getTextAggressiveConflictRanges(index),
 		omitPositionLists:           getTextOmitPositions(index),
-		bunchedMap:                  NewBunchedMap(textIndexBunchSize),
+		bunchedMap:                  bm,
 	}
 }
 
