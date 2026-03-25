@@ -9,7 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // ---------------------------------------------------------------------------
@@ -1064,3 +1068,330 @@ type emptyIter struct{}
 
 func (e *emptyIter) HasNext() bool { return false }
 func (e *emptyIter) Next() string  { panic("no more tokens") }
+
+// ===========================================================================
+// BunchedMap: ContainsKey, Compact, Scan — integration tests (require FDB)
+// ===========================================================================
+
+var _ = Describe("BunchedMap methods", func() {
+	// bunchedSubspace returns a unique subspace for each spec to avoid cross-contamination.
+	bunchedSubspace := func() subspace.Subspace {
+		return subspace.FromBytes(tuple.Tuple{"bunched_map_test", CurrentSpecReport().FullText()}.Pack())
+	}
+
+	// putEntries inserts N entries with sequential int64 keys into the map within
+	// a single transaction. Each entry's value is a position list [key*10, key*10+1].
+	putEntries := func(bm *BunchedMap, ss subspace.Subspace, n int) {
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			for i := 0; i < n; i++ {
+				k := tuple.Tuple{int64(i)}
+				v := []int{i * 10, i*10 + 1}
+				_, _, err := bm.Put(tx, ss, k, v)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	// collectAll drains a BunchedMapIterator into a slice of entries.
+	collectAll := func(it *BunchedMapIterator) []bunchedEntry {
+		var result []bunchedEntry
+		for it.HasNext() {
+			e := it.Next()
+			result = append(result, *e)
+		}
+		return result
+	}
+
+	// =========================================================================
+	// ContainsKey
+	// =========================================================================
+
+	It("ContainsKey: key exists returns true", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(10)
+
+		putEntries(bm, ss, 5)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(3)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ContainsKey: key does not exist returns false", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(10)
+
+		putEntries(bm, ss, 5)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(99)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("ContainsKey: empty map returns false", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(10)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			found, err := bm.ContainsKey(tx, ss, tuple.Tuple{int64(0)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// Compact
+	// =========================================================================
+
+	It("Compact: entries still accessible via Get after compaction", func() {
+		ss := bunchedSubspace()
+		// Small bunch size forces many FDB keys.
+		bm := NewBunchedMap(2)
+		n := 20
+
+		putEntries(bm, ss, n)
+
+		// Compact with keyLimit=0 (all at once).
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			cont, err := bm.Compact(tx, ss, 0, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cont).To(BeNil(), "keyLimit=0 should complete in one call")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify all entries still accessible.
+		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			for i := 0; i < n; i++ {
+				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue(), "key %d should exist after compact", i)
+				Expect(val).To(Equal([]int{i * 10, i*10 + 1}))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Compact: keyLimit=0 returns nil continuation", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(2)
+
+		putEntries(bm, ss, 10)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			cont, err := bm.Compact(tx, ss, 0, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cont).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Compact: small keyLimit requires multiple calls to complete", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(2)
+		n := 20
+
+		putEntries(bm, ss, n)
+
+		// Compact with small keyLimit — expect non-nil continuation on first call.
+		var continuation []byte
+		calls := 0
+		for {
+			var cont []byte
+			_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+				var err error
+				cont, err = bm.Compact(tx, ss, 3, continuation)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			calls++
+			continuation = cont
+			if continuation == nil {
+				break
+			}
+			// Safety valve: don't loop forever.
+			Expect(calls).To(BeNumerically("<", 100), "compaction should terminate")
+		}
+		Expect(calls).To(BeNumerically(">", 1), "small keyLimit should need multiple calls")
+
+		// Verify all entries still readable.
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			for i := 0; i < n; i++ {
+				val, found, err := bm.Get(tx, ss, tuple.Tuple{int64(i)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue(), "key %d should exist after multi-call compact", i)
+				Expect(val).To(Equal([]int{i * 10, i*10 + 1}))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Compact: VerifyIntegrity passes after compaction", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(2)
+
+		putEntries(bm, ss, 30)
+
+		// Compact all.
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			_, err := bm.Compact(tx, ss, 0, nil)
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// VerifyIntegrity should pass.
+		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			err := bm.VerifyIntegrity(tx, ss)
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// Scan
+	// =========================================================================
+
+	It("Scan: forward returns all entries in order", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(3)
+		n := 10
+
+		putEntries(bm, ss, n)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, nil, 0, false)
+			entries := collectAll(it)
+			Expect(entries).To(HaveLen(n))
+
+			// Verify ascending order.
+			for i, e := range entries {
+				Expect(e.Key).To(Equal(tuple.Tuple{int64(i)}))
+				Expect(e.Value).To(Equal([]int{i * 10, i*10 + 1}))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Scan: reverse returns entries in reverse order", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(3)
+		n := 10
+
+		putEntries(bm, ss, n)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, nil, 0, true)
+			entries := collectAll(it)
+			Expect(entries).To(HaveLen(n))
+
+			// Verify descending order.
+			for i, e := range entries {
+				expectedKey := int64(n - 1 - i)
+				Expect(e.Key).To(Equal(tuple.Tuple{expectedKey}))
+				Expect(e.Value).To(Equal([]int{int(expectedKey) * 10, int(expectedKey)*10 + 1}))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Scan: limit returns only limit entries and valid continuation", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(3)
+		n := 10
+		limit := 4
+
+		putEntries(bm, ss, n)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, nil, limit, false)
+			entries := collectAll(it)
+			Expect(entries).To(HaveLen(limit))
+
+			// Should be the first 4 entries.
+			for i, e := range entries {
+				Expect(e.Key).To(Equal(tuple.Tuple{int64(i)}))
+			}
+
+			// Continuation should be non-nil (more entries remain).
+			cont := it.GetContinuation()
+			Expect(cont).NotTo(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Scan: resume with continuation returns remaining entries", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(3)
+		n := 10
+		limit := 4
+
+		putEntries(bm, ss, n)
+
+		// First scan: get first 4 entries.
+		var continuation []byte
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, nil, limit, false)
+			entries := collectAll(it)
+			Expect(entries).To(HaveLen(limit))
+			continuation = it.GetContinuation()
+			Expect(continuation).NotTo(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Second scan: resume from continuation, get remaining 6 entries.
+		_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, continuation, 0, false)
+			entries := collectAll(it)
+			Expect(entries).To(HaveLen(n - limit))
+
+			// Should start from key 4 (first key after the limit).
+			for i, e := range entries {
+				Expect(e.Key).To(Equal(tuple.Tuple{int64(i + limit)}))
+			}
+
+			// No more entries — continuation should be nil.
+			cont := it.GetContinuation()
+			Expect(cont).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("Scan: empty map returns no entries", func() {
+		ss := bunchedSubspace()
+		bm := NewBunchedMap(10)
+
+		_, err := sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+			it := bm.Scan(tx, ss, nil, 0, false)
+			entries := collectAll(it)
+			Expect(entries).To(BeEmpty())
+
+			cont := it.GetContinuation()
+			Expect(cont).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})

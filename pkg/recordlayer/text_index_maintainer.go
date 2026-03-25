@@ -404,7 +404,13 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 		readTx = m.tx
 	}
 
-	iterator := NewBunchedMapMultiIterator(
+	// Create the cursor first to get the byte-tracking callback, then
+	// pass the callback to the iterator. This matches Java's pattern
+	// where scanMulti() receives a Consumer<KeyValue> that feeds the
+	// ByteScanLimiter.
+	textCur, kvCallback := newTextCursorWithByteTracking(m.index, scanProperties)
+
+	iterator := NewBunchedMapMultiIteratorWithCallback(
 		readTx,
 		m.indexSubspace,
 		splitter,
@@ -412,11 +418,13 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 		[]byte(byteRange.End.FDBKey()),
 		continuation,
 		adjustedLimit,
+		kvCallback,
 		scanProperties.IsReverse(),
 		TextIndexBunchedSerializerInstance(),
 	)
+	textCur.setUnderlying(iterator)
 
-	var cursor RecordCursor[*IndexEntry] = newTextCursor(iterator, m.index, scanProperties)
+	var cursor RecordCursor[*IndexEntry] = textCur
 	if skip > 0 {
 		cursor = SkipCursor(cursor, skip)
 	}

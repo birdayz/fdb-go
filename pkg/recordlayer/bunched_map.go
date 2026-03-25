@@ -484,6 +484,276 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 	return nil, false
 }
 
+// ContainsKey checks if a key exists in the map.
+// Matches Java's BunchedMap.containsKey().
+func (m *BunchedMap) ContainsKey(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tuple) (bool, error) {
+	subspaceKey := ss.Bytes()
+	kv, found, err := m.entryForKey(tx, subspaceKey, key)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+	keys := m.serializer.DeserializeKeys(mapKey, kv.Value)
+	for _, k := range keys {
+		if tupleEqual(k, key) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Compact repacks entries in the map to minimize the number of FDB keys used.
+// Each call processes up to keyLimit FDB keys (0 = all keys) and returns a
+// continuation token for multi-transaction compaction. Returns (nil, nil) when
+// compaction is complete.
+// Matches Java's BunchedMap.compact().
+func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit int, continuation []byte) ([]byte, error) {
+	subspaceKey := ss.Bytes()
+
+	// Build range to read.
+	var rr fdb.RangeResult
+	if continuation == nil {
+		rr = tx.GetRange(ss, fdb.RangeOptions{Limit: keyLimit})
+	} else {
+		contKey := append(append([]byte{}, subspaceKey...), continuation...)
+		_, endKey := ss.FDBRangeKeys()
+		rr = tx.GetRange(fdb.KeyRange{
+			Begin: fdb.Key(contKey),
+			End:   endKey,
+		}, fdb.RangeOptions{Limit: keyLimit})
+	}
+
+	kvs, err := rr.GetSliceWithError()
+	if err != nil {
+		return nil, err
+	}
+	if len(kvs) == 0 {
+		return nil, nil
+	}
+
+	// Accumulate all entries from the read keys, then rewrite in optimal bunches.
+	var allEntries []bunchedEntry
+	for _, kv := range kvs {
+		mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+		entries := m.serializer.DeserializeEntries(mapKey, kv.Value)
+		allEntries = append(allEntries, entries...)
+		// Clear old key.
+		tx.Clear(fdb.Key(kv.Key))
+	}
+
+	// Rewrite in bunchSize-aligned groups, respecting MAX_VALUE_SIZE.
+	for len(allEntries) > 0 {
+		end := m.bunchSize
+		if end > len(allEntries) {
+			end = len(allEntries)
+		}
+
+		bunch := allEntries[:end]
+		serialized := m.serializer.SerializeEntries(bunch)
+
+		// If serialized size exceeds limit, reduce bunch size until it fits.
+		for len(serialized) > bunchedMapMaxValueSize && end > 1 {
+			end--
+			bunch = allEntries[:end]
+			serialized = m.serializer.SerializeEntries(bunch)
+		}
+
+		newKey := joinBytes(subspaceKey, m.serializer.SerializeKey(bunch[0].Key))
+		tx.Set(fdb.Key(newKey), serialized)
+		allEntries = allEntries[end:]
+	}
+
+	// Return continuation if we might have more data.
+	if keyLimit > 0 && len(kvs) == keyLimit {
+		lastKV := kvs[len(kvs)-1]
+		return lastKV.Key[len(subspaceKey):], nil
+	}
+	return nil, nil
+}
+
+// BunchedMapIterator iterates over a single BunchedMap's entries.
+// Matches Java's BunchedMapIterator.
+type BunchedMapIterator struct {
+	serializer    *TextIndexBunchedSerializer
+	subspaceKey   []byte
+	rangeIter     *fdb.RangeIterator
+	reverse       bool
+	limit         int
+	continuation  []byte
+
+	currentEntries []bunchedEntry
+	entryIndex     int
+	lastKey        tuple.Tuple
+	returned       int
+	done           bool
+	nextEntry      *bunchedEntry
+}
+
+// Scan iterates over all entries in a single BunchedMap within the given subspace.
+// Supports continuation, limit, and reverse scan.
+// Matches Java's BunchedMap.scan().
+func (m *BunchedMap) Scan(tx fdb.ReadTransaction, ss subspace.Subspace, continuation []byte, limit int, reverse bool) *BunchedMapIterator {
+	subspaceKey := ss.Bytes()
+
+	var rangeResult fdb.RangeResult
+	if continuation == nil {
+		rangeResult = tx.GetRange(ss, fdb.RangeOptions{Reverse: reverse})
+	} else {
+		contKey := joinBytes(subspaceKey, continuation)
+		if reverse {
+			rangeResult = tx.GetRange(fdb.KeyRange{
+				Begin: fdb.Key(subspaceKey),
+				End:   fdb.Key(contKey),
+			}, fdb.RangeOptions{Reverse: true})
+		} else {
+			rangeResult = tx.GetRange(fdb.SelectorRange{
+				Begin: fdb.LastLessThan(fdb.Key(contKey)),
+				End:   fdb.FirstGreaterOrEqual(fdb.Key(append(subspaceKey, 0xff))),
+			}, fdb.RangeOptions{Reverse: false})
+		}
+	}
+
+	it := &BunchedMapIterator{
+		serializer:  m.serializer,
+		subspaceKey: subspaceKey,
+		rangeIter:   rangeResult.Iterator(),
+		reverse:     reverse,
+		limit:       limit,
+		continuation: continuation,
+		entryIndex:  -1,
+	}
+	return it
+}
+
+// HasNext returns true if there are more entries.
+func (it *BunchedMapIterator) HasNext() bool {
+	if it.done {
+		return false
+	}
+	if it.nextEntry != nil {
+		return true
+	}
+	it.advance()
+	return it.nextEntry != nil
+}
+
+// Next returns the next entry.
+func (it *BunchedMapIterator) Next() *bunchedEntry {
+	if !it.HasNext() {
+		return nil
+	}
+	entry := it.nextEntry
+	it.lastKey = entry.Key
+	it.nextEntry = nil
+	it.returned++
+	if it.limit > 0 && it.returned >= it.limit {
+		it.done = true
+	}
+	return entry
+}
+
+// advance finds the next valid entry.
+func (it *BunchedMapIterator) advance() {
+	for {
+		// Try next entry from current bunch.
+		if it.currentEntries != nil {
+			idx := it.entryIndex
+			if it.reverse {
+				idx--
+			} else {
+				idx++
+			}
+			if idx >= 0 && idx < len(it.currentEntries) {
+				it.entryIndex = idx
+				e := it.currentEntries[idx]
+				it.nextEntry = &e
+				return
+			}
+			it.currentEntries = nil
+		}
+
+		// Stream next KV from FDB.
+		if !it.rangeIter.Advance() {
+			it.done = true
+			return
+		}
+		kv, err := it.rangeIter.Get()
+		if err != nil {
+			it.done = true
+			return
+		}
+		if !bytes.HasPrefix(kv.Key, it.subspaceKey) {
+			it.done = true
+			return
+		}
+
+		boundaryKey := it.serializer.DeserializeKey(kv.Key, len(it.subspaceKey), len(kv.Key)-len(it.subspaceKey))
+		entries := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+		if len(entries) == 0 {
+			continue
+		}
+
+		// Handle continuation: skip entries up to and including the continuation key.
+		// Keep checking until we find a bunch with a valid entry past the
+		// continuation point — don't clear the flag until we've found one.
+		if it.continuation != nil {
+			contKey := it.serializer.DeserializeKey(it.continuation, 0, len(it.continuation))
+			startIdx := -1
+			if it.reverse {
+				for i := len(entries) - 1; i >= 0; i-- {
+					if compareTuples(contKey, entries[i].Key) > 0 {
+						startIdx = i
+						break
+					}
+				}
+			} else {
+				for i := 0; i < len(entries); i++ {
+					if compareTuples(contKey, entries[i].Key) < 0 {
+						startIdx = i
+						break
+					}
+				}
+			}
+			if startIdx < 0 {
+				// No entries past the continuation in this bunch — keep
+				// continuation active and try the next bunch.
+				continue
+			}
+			it.continuation = nil // Found a valid entry, stop skipping.
+			it.currentEntries = entries
+			it.entryIndex = startIdx
+			e := entries[startIdx]
+			it.nextEntry = &e
+			return
+		}
+
+		it.currentEntries = entries
+		startIdx := 0
+		if it.reverse {
+			startIdx = len(entries) - 1
+		}
+		it.entryIndex = startIdx
+		e := entries[startIdx]
+		it.nextEntry = &e
+		return
+	}
+}
+
+// GetContinuation returns a continuation token for resuming the scan.
+func (it *BunchedMapIterator) GetContinuation() []byte {
+	if it.lastKey == nil {
+		return nil
+	}
+	if it.done && (it.limit <= 0 || it.returned < it.limit) {
+		return nil
+	}
+	return it.serializer.SerializeKey(it.lastKey)
+}
+
 // tupleEqual compares two tuples for equality by comparing their packed representations.
 func tupleEqual(a, b tuple.Tuple) bool {
 	return bytes.Equal(a.Pack(), b.Pack())

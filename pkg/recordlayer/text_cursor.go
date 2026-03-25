@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -11,27 +12,42 @@ import (
 // Matches Java's TextCursor, which uses CursorLimitManager to enforce record scan,
 // time, and byte scan limits.
 //
-// Note: ByteScanLimiter is not tracked here because BunchedMap entries are already
-// deserialized by the time they reach this cursor. Accurate byte tracking would
-// require deeper integration with BunchedMapMultiIterator to report raw FDB bytes
-// read. ScannedRecordsLimit and TimeLimit are fully enforced.
+// ByteScanLimiter is tracked via a KVCallback on the BunchedMapMultiIterator.
+// The callback fires per raw FDB key-value read (before deserialization) and
+// accumulates key+value bytes into bytesScanned. This matches Java's approach
+// of passing a Consumer<KeyValue> to scanMulti() that calls
+// byteScanLimiter.registerScannedBytes(key.length + value.length).
 type textCursor struct {
-	underlying  *BunchedMapMultiIterator
-	index       *Index
-	scanProps   ScanProperties
-	closed      bool
-	lastResult  *RecordCursorResult[*IndexEntry]
-	recordsRead int       // entries returned (for scan limit tracking)
-	startTime   time.Time // for time limit enforcement
+	underlying   *BunchedMapMultiIterator
+	index        *Index
+	scanProps    ScanProperties
+	closed       bool
+	lastResult   *RecordCursorResult[*IndexEntry]
+	recordsRead  int       // entries returned (for scan limit tracking)
+	bytesScanned int64     // raw FDB bytes read (accumulated via callback)
+	startTime    time.Time // for time limit enforcement
 }
 
-func newTextCursor(underlying *BunchedMapMultiIterator, index *Index, scanProps ScanProperties) *textCursor {
-	return &textCursor{
-		underlying: underlying,
-		index:      index,
-		scanProps:  scanProps,
-		startTime:  time.Now(),
+// newTextCursorWithByteTracking creates a textCursor and a KVCallback that
+// accumulates raw FDB bytes into the cursor's bytesScanned counter.
+// The callback must be passed to NewBunchedMapMultiIteratorWithCallback.
+func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties) (*textCursor, KVCallback) {
+	c := &textCursor{
+		index:     index,
+		scanProps: scanProps,
+		startTime: time.Now(),
 	}
+	// Use atomic add so the callback is safe even though in practice
+	// the iterator and cursor run on the same goroutine.
+	callback := func(keyLen, valueLen int) {
+		atomic.AddInt64(&c.bytesScanned, int64(keyLen+valueLen))
+	}
+	return c, callback
+}
+
+// setUnderlying sets the iterator after construction.
+func (c *textCursor) setUnderlying(it *BunchedMapMultiIterator) {
+	c.underlying = it
 }
 
 // OnNext returns the next IndexEntry from the text index scan.
@@ -47,6 +63,15 @@ func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry],
 	}
 
 	executeProps := c.scanProps.GetExecuteProperties()
+
+	// Check byte scan limit BEFORE reading next entry (free initial pass for first record).
+	// Matches Java's CursorLimitManager.tryRecordScan() which checks
+	// byteScanLimiter.hasBytesRemaining() with usedInitialPass guard.
+	if executeProps.ScannedBytesLimit > 0 && c.recordsRead > 0 && atomic.LoadInt64(&c.bytesScanned) >= executeProps.ScannedBytesLimit {
+		result := NewResultNoNext[*IndexEntry](ByteLimitReached, c.limitContinuation())
+		c.lastResult = &result
+		return result, nil
+	}
 
 	// Check time limit BEFORE reading next entry (free initial pass for first record).
 	// Matches Java's CursorLimitManager.tryRecordScan() which checks

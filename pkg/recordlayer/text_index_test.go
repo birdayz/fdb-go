@@ -2001,4 +2001,122 @@ var _ = Describe("TEXT index", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	// =========================================================================
+	// ByteScanLimit in TEXT index scans
+	// =========================================================================
+	It("TEXT scan stops at byte scan limit and resumes with continuation", func() {
+		ks := specSubspace()
+
+		idx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save 3 customers with distinct single-token names to produce
+			// 3 separate BunchedMap entries (each in its own token subspace).
+			for i := int64(1); i <= 3; i++ {
+				names := []string{"alpha", "bravo", "charlie"}
+				_, err = store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(i),
+					Name:       proto.String(names[i-1]),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Scan all tokens without limit — should find 3 entries.
+			allEntries, err := AsList(ctx, store.ScanIndexByType(
+				idx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allEntries).To(HaveLen(3))
+
+			// Scan with a very small byte limit (1 byte) — should return
+			// exactly 1 entry (free initial pass) then stop.
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithScannedBytesLimit(1),
+			}
+			cursor := store.ScanIndexByType(idx, IndexScanByTextToken, TupleRangeAll, nil, props)
+			result, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.HasNext()).To(BeTrue(), "free initial pass should return first entry")
+			firstToken := result.GetValue().Key[0]
+
+			// Second call should hit byte limit.
+			result, err = cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.HasNext()).To(BeFalse())
+			Expect(result.GetNoNextReason()).To(Equal(ByteLimitReached))
+			cont, contErr := result.GetContinuation().ToBytes()
+			Expect(contErr).NotTo(HaveOccurred())
+			Expect(cont).NotTo(BeNil())
+			cursor.Close()
+
+			// Resume with continuation — should get remaining entries.
+			var remaining []*IndexEntry
+			props2 := ForwardScan()
+			cursor2 := store.ScanIndexByType(idx, IndexScanByTextToken, TupleRangeAll, cont, props2)
+			for {
+				r, err := cursor2.OnNext(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				if !r.HasNext() {
+					Expect(r.GetNoNextReason()).To(Equal(SourceExhausted))
+					break
+				}
+				remaining = append(remaining, r.GetValue())
+			}
+			cursor2.Close()
+
+			Expect(len(remaining)).To(Equal(2), "should get remaining 2 entries after resume")
+			// Verify no duplicates — first token should not appear in remaining.
+			for _, e := range remaining {
+				Expect(e.Key[0]).NotTo(Equal(firstToken))
+			}
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("TEXT scan with byte limit returns all entries when limit is large", func() {
+		ks := specSubspace()
+
+		idx := NewTextIndex("customer_name_text", Field("name"))
+		builder := baseMetaData()
+		builder.AddIndex("Customer", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := int64(1); i <= 3; i++ {
+				names := []string{"alpha", "bravo", "charlie"}
+				_, err = store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(i),
+					Name:       proto.String(names[i-1]),
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Large byte limit should not interfere — all 3 entries returned.
+			props := ScanProperties{
+				ExecuteProperties: DefaultExecuteProperties().WithScannedBytesLimit(1_000_000),
+			}
+			entries, err := AsList(ctx, store.ScanIndexByType(
+				idx, IndexScanByTextToken, TupleRangeAll, nil, props))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(3))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })

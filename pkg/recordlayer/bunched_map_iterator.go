@@ -72,42 +72,51 @@ type BunchedMapScanEntry struct {
 	Value       []int
 }
 
+// KVCallback is called for each raw FDB key-value pair read during iteration.
+// Used for byte scan limiting — the callback receives the raw key and value
+// lengths before deserialization. Matches Java's Consumer<KeyValue> callback
+// passed to BunchedMapMultiIterator.
+type KVCallback func(keyLen, valueLen int)
+
 // BunchedMapMultiIterator iterates over multiple BunchedMaps within a parent subspace.
 // Entries are returned sorted first by subspace, then by key within subspace.
+// Streams from FDB lazily — only one bunch is in memory at a time.
 // Matches Java's BunchedMapMultiIterator.
 type BunchedMapMultiIterator struct {
-	serializer    *TextIndexBunchedSerializer
-	splitter      SubspaceSplitter
-	parentKey     []byte // parent subspace bytes
-	reverse       bool
-	limit         int
-	continuation  []byte
+	serializer *TextIndexBunchedSerializer
+	splitter   SubspaceSplitter
+	parentKey  []byte // parent subspace bytes
+	reverse    bool
+	limit      int
+	callback   KVCallback // per-KV callback for byte tracking
 
-	// FDB range iterator state
-	kvs           []fdb.KeyValue // all KVs from the range read
-	kvIndex       int
-	bunchSize     int
+	// FDB streaming iterator
+	rangeIter *fdb.RangeIterator
+	iterErr   error // sticky error from Advance/Get
+
+	// Continuation state
+	continuation          []byte
+	continuationSatisfied bool
 
 	// Current subspace state
-	currentSubspace    subspace.Subspace
-	currentSubspaceKey []byte
+	currentSubspace       subspace.Subspace
+	currentSubspaceKey    []byte
 	currentSubspaceSuffix []byte
-	currentSubspaceTag tuple.Tuple
+	currentSubspaceTag    tuple.Tuple
 
 	// Current bunch state
 	currentEntries []BunchedEntry[tuple.Tuple, []int]
 	entryIndex     int
 
 	// Iteration state
-	continuationSatisfied bool
-	lastKey               tuple.Tuple
-	returned              int
-	done                  bool
-	nextEntry             *BunchedMapScanEntry
+	lastKey   tuple.Tuple
+	returned  int
+	done      bool
+	nextEntry *BunchedMapScanEntry
 }
 
 // NewBunchedMapMultiIterator creates a multi-map iterator.
-// It reads all relevant KVs upfront (FDB handles streaming).
+// Streams from FDB lazily — only one bunch in memory at a time.
 func NewBunchedMapMultiIterator(
 	tx fdb.ReadTransaction,
 	parentSubspace subspace.Subspace,
@@ -118,12 +127,35 @@ func NewBunchedMapMultiIterator(
 	reverse bool,
 	serializer *TextIndexBunchedSerializer,
 ) *BunchedMapMultiIterator {
+	return NewBunchedMapMultiIteratorWithCallback(
+		tx, parentSubspace, splitter,
+		beginBytes, endBytes, continuation,
+		limit, nil, reverse, serializer,
+	)
+}
+
+// NewBunchedMapMultiIteratorWithCallback creates a multi-map iterator with a
+// per-KV callback for byte tracking. The callback fires once per raw FDB
+// key-value pair read, before deserialization. Matches Java's scanMulti()
+// with Consumer<KeyValue> callback parameter.
+func NewBunchedMapMultiIteratorWithCallback(
+	tx fdb.ReadTransaction,
+	parentSubspace subspace.Subspace,
+	splitter SubspaceSplitter,
+	beginBytes, endBytes []byte,
+	continuation []byte,
+	limit int,
+	callback KVCallback,
+	reverse bool,
+	serializer *TextIndexBunchedSerializer,
+) *BunchedMapMultiIterator {
 	it := &BunchedMapMultiIterator{
 		serializer:            serializer,
 		splitter:              splitter,
 		parentKey:             parentSubspace.Bytes(),
 		reverse:               reverse,
 		limit:                 limit,
+		callback:              callback,
 		continuation:          continuation,
 		continuationSatisfied: continuation == nil,
 		entryIndex:            -1,
@@ -158,14 +190,7 @@ func NewBunchedMapMultiIterator(
 		}
 	}
 
-	// Materialize the range result.
-	kvs, err := rangeResult.GetSliceWithError()
-	if err != nil {
-		it.done = true
-		return it
-	}
-	it.kvs = kvs
-
+	it.rangeIter = rangeResult.Iterator()
 	return it
 }
 
@@ -196,6 +221,25 @@ func (it *BunchedMapMultiIterator) Next() *BunchedMapScanEntry {
 	return entry
 }
 
+// nextKV reads the next key-value from the FDB range iterator.
+// Returns (kv, true) on success, (zero, false) when exhausted or on error.
+// Fires the KV callback if set.
+func (it *BunchedMapMultiIterator) nextKV() (fdb.KeyValue, bool) {
+	if !it.rangeIter.Advance() {
+		return fdb.KeyValue{}, false
+	}
+	kv, err := it.rangeIter.Get()
+	if err != nil {
+		it.iterErr = err
+		it.done = true
+		return fdb.KeyValue{}, false
+	}
+	if it.callback != nil {
+		it.callback(len(kv.Key), len(kv.Value))
+	}
+	return kv, true
+}
+
 // advance finds the next valid entry.
 func (it *BunchedMapMultiIterator) advance() {
 	for {
@@ -223,14 +267,12 @@ func (it *BunchedMapMultiIterator) advance() {
 			it.currentEntries = nil
 		}
 
-		// Need next KV from FDB range.
-		if it.kvIndex >= len(it.kvs) {
+		// Need next KV from FDB range iterator (streaming).
+		kv, ok := it.nextKV()
+		if !ok {
 			it.done = true
 			return
 		}
-
-		kv := it.kvs[it.kvIndex]
-		it.kvIndex++
 
 		// Check if this key is in the parent subspace.
 		if !bytes.HasPrefix(kv.Key, it.parentKey) {
