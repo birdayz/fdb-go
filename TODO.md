@@ -661,12 +661,12 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **All 19 index types implemented** — VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR.
 
-- [ ] **TEXT index audit items (LOW)** — Remaining from 2026-03-18 audit:
+- [x] **TEXT index audit items (LOW)** — All items from 2026-03-18 audit complete:
   - [x] `commonKeys` deduplication in text update path — `removeCommonTextEntries()` skips unchanged text on update
   - [x] Pipeline parallelism for multi-token updates — assessed: Go's per-index write lock serializes all token updates; Java also serializes multi-entry updates. No benefit from pipelining.
   - [x] `canDeleteWhere` validation — rejects non-empty prefix on non-grouped TEXT indexes
-  - [ ] `BunchedMap.Get()` read conflict key — skipped when called with ReadTransaction instead of Transaction (no practical impact since always called from Transaction)
-  - [ ] InstrumentedBunchedMap for timer/metrics — no observability hooks in Go BunchedMap
+  - [x] `BunchedMap.Get()` read conflict key — fixed: `Get()` now takes `fdb.Transaction`, `entryForKey()` unconditionally adds read conflict key matching Java's "Grand Theory of Conflict Ranges"
+  - [x] InstrumentedBunchedMap for timer/metrics — `NewInstrumentedBunchedMap` wraps with StoreTimer hooks (write/delete/read counters). 9 index-level counter events. `textIndexMaintainer` auto-instruments when context has timer. 4 tests.
   - [x] BunchedMap `compact()` / `containsKey()` / single-map `Scan()` — implemented with 12 tests (ContainsKey: 3, Compact: 4, Scan: 5)
   - [x] ByteScanLimiter in TextCursor — KVCallback on streaming iterator fires per raw FDB KV read, textCursor checks ScannedBytesLimit. 2 tests.
   - [x] BunchedMapMultiIterator eager materialization vs streaming — converted to lazy streaming via fdb.RangeIterator (one bunch in memory at a time)
