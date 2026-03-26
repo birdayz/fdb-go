@@ -72,7 +72,6 @@ func main() {
 			},
 		}
 
-
 		fmt.Printf("Saving order: %v\n", order)
 		savedRecord, err := store.SaveRecord(order)
 		if err != nil {
