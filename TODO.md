@@ -13,6 +13,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 - [x] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Fixed: added loop over `rt.multiTypeIndexes` matching single-type pattern. 2 regression tests. Found 2026-03-26 via 10-agent audit.
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
+- [ ] **HIGH** — Missing cross-cutting test matrix: index registration method (single-type, multi-type, universal) × feature (PK dedup, scan, save/delete, rebuild, online build, DeleteAllRecords, DeleteRecordsWhere). Tests grew organically per-feature; intersections like multi-type + PK dedup fell through the cracks. Root cause of the CRITICAL multi-type PK dedup bug above. Need a systematic `index_matrix_test.go` that covers all 3×7 combinations with a shared test helper.
 
 ---
 
