@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	gen "github.com/birdayz/fdb-record-layer-go/gen"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -66,6 +67,12 @@ type Index struct {
 	// If nil, all records are indexed. If set, only records where
 	// Predicate returns true are indexed (sparse/filtered index).
 	Predicate IndexPredicate
+
+	// predicateProto stores the proto representation of the predicate
+	// for round-tripping. Set when loading from proto (Java-defined predicates)
+	// or when using SetPredicateProto(). Nil for programmatic Go predicates
+	// set via SetPredicate().
+	predicateProto *gen.Predicate
 
 	// primaryKeyComponentPositions tracks overlap between index key and primary key.
 	// Each element corresponds to a primary key component:
@@ -398,9 +405,33 @@ func (idx *Index) GetBooleanOption(key string, defaultVal bool) bool {
 
 // SetPredicate sets a filter predicate for sparse/filtered indexes.
 // Only records where the predicate returns true will have index entries.
+// Note: programmatic Go predicates cannot be serialized to proto. Use
+// SetPredicateProto for predicates that must survive metadata round-tripping.
 func (idx *Index) SetPredicate(p IndexPredicate) *Index {
 	idx.Predicate = p
 	return idx
+}
+
+// SetPredicateProto sets a predicate from a proto message. This both stores
+// the proto for round-tripping and builds an evaluator function.
+func (idx *Index) SetPredicateProto(p *gen.Predicate) error {
+	idx.predicateProto = p
+	if p != nil {
+		fn, err := predicateFromProto(p)
+		if err != nil {
+			return fmt.Errorf("index %s: predicate: %w", idx.Name, err)
+		}
+		idx.Predicate = fn
+	} else {
+		idx.Predicate = nil
+	}
+	return nil
+}
+
+// GetPredicateProto returns the proto representation of the predicate, if any.
+// Returns nil for programmatic Go predicates set via SetPredicate().
+func (idx *Index) GetPredicateProto() *gen.Predicate {
+	return idx.predicateProto
 }
 
 // PrimaryKeyComponentPositions returns the overlap mapping between index key and primary key.

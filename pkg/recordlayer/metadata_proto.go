@@ -252,6 +252,11 @@ func indexToProto(idx *Index) (*gen.Index, error) {
 		})
 	}
 
+	// Predicate (proto round-trip)
+	if idx.predicateProto != nil {
+		p.Predicate = idx.predicateProto
+	}
+
 	return p, nil
 }
 
@@ -294,6 +299,13 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 
 	for _, opt := range p.Options {
 		idx.Options[opt.GetKey()] = opt.GetValue()
+	}
+
+	// Predicate: store proto and build evaluator
+	if p.Predicate != nil {
+		if err := idx.SetPredicateProto(p.Predicate); err != nil {
+			return nil, err
+		}
 	}
 
 	return idx, nil
