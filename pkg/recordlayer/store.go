@@ -1089,15 +1089,17 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 	prefixLength := len(recordsSubspace.FDBKey())
 
 	return &keyValueCursor{
-		store:          store,
-		low:            low,
-		high:           high,
-		lowEndpoint:    lowEndpoint,
-		highEndpoint:   highEndpoint,
-		continuation:   continuation,
-		scanProperties: scanProperties,
-		prefixLength:   prefixLength,
-		startTime:      time.Now(),
+		store:               store,
+		low:                 low,
+		high:                high,
+		lowEndpoint:         lowEndpoint,
+		highEndpoint:        highEndpoint,
+		continuation:        continuation,
+		scanProperties:      scanProperties,
+		prefixLength:        prefixLength,
+		startTime:           time.Now(),
+		recordsSubspace:     recordsSubspace,
+		storeRecordVersions: store.metaData.IsStoreRecordVersions(),
 	}
 }
 

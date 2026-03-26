@@ -142,12 +142,12 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkSaveRecordWithCountAndIndex` | Save with COUNT + VALUE index |
 
 **Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer):
-- Save: ~2.35ms/op, 100 allocs
-- Load: ~0.43ms/op, 92 allocs
-- Scan 100: ~0.75ms/op, 3112 allocs
-- Split save 250KB: ~2.93ms/op, 121 allocs
+- Save: ~2.19ms/op, 100 allocs
+- Load: ~0.42ms/op, 92 allocs
+- Scan 100: ~0.67ms/op, 2014 allocs
+- Split save 250KB: ~2.54ms/op, 121 allocs
 - Store open: ~0.35ms/op, 69 allocs
-- Save with count+index: ~2.33ms/op, 129 allocs
+- Save with count+index: ~2.24ms/op, 130 allocs
 
 ### Debugging Bazel cache invalidation
 
