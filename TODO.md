@@ -15,7 +15,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
 - [x] **HIGH** — Missing cross-cutting test matrix. Fixed: `index_registration_matrix_test.go` with 3×7 matrix (21 specs, 1 skipped). **Found and fixed another bug**: `DeleteRecordsWhere` fully cleared multi-type indexes instead of scoping by PK prefix. Added `hasRecordTypeKeyPrefix()` helper + scoped clear for multi-type indexes with RecordTypeKey prefix, error for multi-type without. Matches Java's `canDeleteWhereForIndexOnStoredTypes`.
 - [x] **HIGH** — `store_delete_where.go`: `DeleteRecordsWhere` fully cleared multi-type indexes (destroyed non-target type entries) instead of scoping by PK prefix. Fixed: multi-type with RecordTypeKey prefix → scoped clear, without → error. Found 2026-03-26 by test matrix.
-- [ ] **HIGH** — CI red: SIFT/vector benchmark test files (`sift_benchmark_test.go`, `sift_loader_test.go`, `vector_benchmark_test.go`) are in the main `recordlayer_test` target, pulling in `data = glob(["testdata/**"])` which fails on CI (gitignored binary blobs). Also `gofmt` failures across many files. Fix: extract benchmarks into `pkg/recordlayer/bench/` package with own BUILD.bazel, run `gofmt -w` on all touched files.
+- [x] **HIGH** — CI red: SIFT/vector benchmark test files extracted to `pkg/recordlayer/bench/` with own BUILD.bazel. gofmt fixed. Commits `d1d632a`, `3914be8`, `23c4ff7`, `4239e55`.
 
 ---
 
@@ -226,7 +226,9 @@ Additional Go-specific optimizations (from RFC 007):
 - [x] **SplitKeyExpression** — Batches FanOut results into fixed-size groups. Proto `Split{joined, split_size}`. Overflow-checked. 14 unit tests.
 - [x] **ListKeyExpression** — Cross-product with nested tuple wrapping (unlike Concat which flattens). Proto `List{repeated child}`. FDB tuple.Tuple nesting for proper Pack(). 15 unit tests.
 - [x] **LongArithmeticFunctionKeyExpression** — 14 arithmetic functions (add, sub, subtract, mul, multiply, div, divide, mod, bitand, bitor, bitxor, bitnot, bitmap_bit_position, bitmap_bucket_offset) via FunctionKeyExpression registry. Overflow-checked (Math.*Exact), null propagation, both-function pattern (sub/subtract). 25 unit tests.
-- [ ] **Other expression types** — CollateFunctionKE, OrderFunctionKE, AtomKE, InvertibleFunctionKE. **LOW** — only needed for specialized index types. DimensionsKE done.
+- [x] **OrderFunctionKE + InvertibleFunctionKE** — Implemented: 4 order functions (order_asc_nulls_first/last, order_desc_nulls_first/last) registered in global function registry. TupleOrdering byte encoding with 7-bit inversion for DESC and 0xFE null substitution for NULLS_LAST. Pack/unpack, invert/uninvert, tuple element boundary parsing. 31 tests. **MEDIUM-HIGH**.
+- [x] **CollateFunctionKE** — Implemented: `collate_jre` and `collate_icu` registered using `golang.org/x/text/collate`. Supports locale + 3 strength levels (PRIMARY/SECONDARY/TERTIARY). Collators pooled via sync.Pool (not goroutine-safe). NOTE: sort key bytes differ from Java — Go-only clusters work, shared Java/Go clusters should avoid collated indexes. 21 tests. **MEDIUM**.
+- [ ] **AtomKE** — Compile-time Java interface, not persisted. No wire format impact. **LOW**.
 
 ### 4. New store APIs
 
@@ -245,7 +247,7 @@ Additional Go-specific optimizations (from RFC 007):
 
 ### 5. Metadata & schema evolution changes
 
-- [ ] **Index predicates (IndexPredicate)** — Sparse/filtered indexes with boolean conditions. `shouldIndexThisRecord()` evaluation. We have a simple function-based predicate; Java has a full predicate hierarchy (And/Or/Not/Constant/Value). **LOW** (our function-based approach works, full predicate tree is query-planner level).
+- [x] **Index predicates (IndexPredicate)** — Proto round-trip implemented: indexFromProto reads Predicate AST, builds evaluator function, stores proto for serialization. indexToProto serializes back. Supports all 5 predicate types (And, Or, Not, Constant, Value) with 9 comparison operators. SetPredicateProto/GetPredicateProto on Index. 52 tests. **MEDIUM**.
 - [x] **Index replacement lifecycle** — `GetReplacedByIndexNames()`, replacement-exists validation, chained-replacement rejection. 7 tests. **LOW**.
 - [ ] **Synthetic record types** — `JoinedRecordType` (equi-join with outer join support), `UnnestedRecordType` (repeated message fan-out). Proto fields 12-13 in MetaData. 11+ Java classes. **LOW** (large feature, experimental API).
 - [ ] **Views** — `PView` in MetaData proto (field 15). Name + SQL definition text. **LOW**.
@@ -273,8 +275,8 @@ Additional Go-specific optimizations (from RFC 007):
 ### 8. New aggregate functions
 
 - [x] **MAX_EVER_VERSION** — via MAX_EVER_VERSION index type. Aggregate support via `FunctionNameMaxEver`/`IndexTypeMaxEverVersion`. **MEDIUM**.
-- [ ] **BITMAP_VALUE, BITMAP_BIT_POSITION, BITMAP_BUCKET_OFFSET** — for BITMAP_VALUE indexes. **LOW**.
-- [ ] **TIME_WINDOW_RANK, TIME_WINDOW_COUNT** — for leaderboard indexes. **LOW**.
+- [x] **BITMAP_VALUE, BITMAP_BIT_POSITION, BITMAP_BUCKET_OFFSET** — Already implemented (BITMAP_VALUE aggregate + LongArithmeticFunctionKE covers bit_position/bucket_offset).
+- [x] **TIME_WINDOW_RANK, TIME_WINDOW_COUNT** — Already implemented in `evaluateAggregateFunction` and `evaluateRecordFunction` dispatch.
 
 ### 9. SQL / Relational layer
 
@@ -740,7 +742,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — Remaining: AtomKE, CollateFunctionKE, OrderFunctionKE, InvertibleFunctionKE. Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE. See 4.10.6.0 upgrade assessment §3.
+- [ ] **Missing key expression types** — AtomKE (LOW, Java interface only). Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE, OrderFunctionKE, CollateFunctionKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
@@ -1197,13 +1199,13 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 |---|---|---|
 | FDBRecordStore (CRUD) | ~90% | Query planning methods, synthetic records |
 | Index types | 19/19 | **ALL COMPLETE** |
-| IndexMaintainer interface | Core done | `scanUniquenessViolations`, `validateEntries`, `mergeIndex`, `performOperation` |
+| IndexMaintainer interface | Core done | `mergeIndex`, `performOperation` (scanUniquenessViolations + validateEntries already shipped on store) |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
 | Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
 | ScanProperties/ExecuteProperties | ~95% | `isDryRun`, convenience clear methods |
 | Continuations (wire format) | ~90% | Wire-compatible. Go writes TO_OLD, reads both TO_OLD and TO_NEW |
 | FDBDatabase/Context/Runner | ~60% | **Async API (see above)**, weak read semantics, MDC, executor control |
-| Key expressions | ~80% | CollateFunctionKE, OrderFunctionKE, DimensionsKE, InvertibleFunctionKE |
+| Key expressions | ~85% | OrderFunctionKE + InvertibleFunctionKE (**MEDIUM-HIGH**), CollateFunctionKE (**MEDIUM**), AtomKE (LOW). DimensionsKE done. |
 
 ### FDBRecordStore — missing public methods
 
@@ -1214,8 +1216,8 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### Index API — missing methods on IndexMaintainer interface
 
-- [ ] **`scanUniquenessViolations()` / `clearUniquenessViolations()`** — On maintainer interface (store-level `ScanUniquenessViolationsForValue` already exists). **LOW**.
-- [ ] **`validateEntries()`** — Index entry validation cursor (store-level `ValidateIndex` exists). **LOW**.
+- [x] **`scanUniquenessViolations()` / `clearUniquenessViolations()`** — Already implemented as `ScanUniquenessViolations()` / `ScanUniquenessViolationsForValue()` / `ResolveUniquenessViolation()` on store. Maintainer-level variant not needed (store dispatches internally).
+- [x] **`validateEntries()`** — Already implemented as `ValidateIndex()` in `index_validation.go` (3-phase: scan records → build expected → diff against actual).
 - [ ] **`canDeleteWhere()` with QueryToKeyMatcher** — Go uses structural expression matching instead. **LOW**.
 - [ ] **`scanRemoteFetch()`** — Experimental Java feature. **LOW**.
 - [ ] **`mergeIndex()` / `performOperation()`** — Generic index operation dispatch. **LOW**.
@@ -1223,11 +1225,11 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### Index types — 4 missing
 
-- [ ] **TEXT index** — Tokenizer infrastructure, BunchedMap storage, BY_TEXT_TOKEN scan. Large scope. **LOW**.
+- [x] **TEXT index** — Done. 115 unit + 34 integration + 7 conformance tests.
 - [x] **BITMAP_VALUE index** — Done. 27 unit tests + 6 conformance specs.
 - [x] **MULTIDIMENSIONAL index** — Hilbert R-tree spatial indexing. 16 tests.
 - [x] **VECTOR/HNSW index** — HNSW graph with 3 distance metrics. 16 tests.
-- [ ] **TIME_WINDOW_LEADERBOARD** — Sliding time window score tracking. 12+ Java classes. **LOW**.
+- [x] **TIME_WINDOW_LEADERBOARD** — Done. 22 tests + 11 conformance specs.
 
 ### Index scanning — API gaps
 
@@ -1300,10 +1302,10 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### Key expressions — 5 missing types
 
-- [ ] **`CollateFunctionKeyExpression`** — Locale-aware string sorting. **LOW**.
-- [ ] **`OrderFunctionKeyExpression`** — Custom sort order functions. **LOW**.
+- [x] **`CollateFunctionKeyExpression`** — Implemented (collate_jre/collate_icu). 21 tests.
+- [x] **`OrderFunctionKeyExpression`** — Implemented (4 order functions). 31 tests.
 - [x] **`DimensionsKeyExpression`** — Multidimensional indexing. **DONE**.
-- [ ] **`InvertibleFunctionKeyExpression`** — Bidirectional function evaluation. **LOW**.
+- [x] **`InvertibleFunctionKeyExpression`** — Abstract in Java; evaluation side implemented via OrderFunctionKE. Inverse (for query planning) deferred.
 - [ ] **`AtomKeyExpression`** — Atom-level expressions. **LOW**.
 
 ### OnlineIndexer — missing config options

@@ -421,4 +421,4 @@ Use chaos tests to verify our behavior matches Java's. Example: COUNT_UPDATES is
 
 See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction
-- **Key gaps**: more key expression types
+- **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner
