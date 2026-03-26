@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -419,6 +420,65 @@ func TestCollateEvaluatorNilLocale(t *testing.T) {
 	key2 := r2[0][0].([]byte)
 	if !bytes.Equal(key, key2) {
 		t.Error("nil locale should produce same key as default (no locale)")
+	}
+}
+
+func TestCollateConcurrentStress(t *testing.T) {
+	t.Parallel()
+
+	eval := makeCollateEvaluator()
+
+	// Hammer the collation evaluator from 50 goroutines with various inputs.
+	// This verifies the sync.Pool-based Collator management is goroutine-safe.
+	// Without the pool fix, this panics with "index out of range" in colltab.Iter.Next.
+	const goroutines = 50
+	const iterations = 100
+
+	inputs := []string{
+		"hello", "world", "HELLO", "WORLD",
+		"\u00f6", // ö
+		"\u00e9", // é
+		"e\u0301", // decomposed é
+		"Stra\u00dfe", // Straße
+		"", // empty
+		"日本語", // Japanese
+		"العربية", // Arabic
+	}
+	strengths := []int64{0, 1, 2}
+	locales := []string{"", "en_US", "fr_CA", "de_DE", "ja_JP"}
+
+	errs := make(chan error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(id int) {
+			defer func() {
+				if r := recover(); r != nil {
+					errs <- fmt.Errorf("goroutine %d panicked: %v", id, r)
+					return
+				}
+				errs <- nil
+			}()
+			for i := 0; i < iterations; i++ {
+				input := inputs[(id+i)%len(inputs)]
+				strength := strengths[(id+i)%len(strengths)]
+				locale := locales[(id+i)%len(locales)]
+				args := [][]any{{input, locale, strength}}
+				results, err := eval(nil, nil, args)
+				if err != nil {
+					errs <- fmt.Errorf("goroutine %d iteration %d: %w", id, i, err)
+					return
+				}
+				if len(results) != 1 || results[0][0] == nil {
+					errs <- fmt.Errorf("goroutine %d iteration %d: nil result", id, i)
+					return
+				}
+			}
+		}(g)
+	}
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

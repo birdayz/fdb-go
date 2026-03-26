@@ -706,6 +706,111 @@ func TestTupleElementEndPosUnterminatedString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// packNullsLast / unpackNullsLast with nested tuples
+// ---------------------------------------------------------------------------
+
+func TestPackNullsLastNestedTuple(t *testing.T) {
+	t.Parallel()
+
+	// Nested tuple with nil elements inside
+	inner := tuple.Tuple{int64(1), nil, "hello"}
+	original := tuple.Tuple{inner, int64(42)}
+
+	packed := packNullsLast(original)
+	unpacked, err := unpackNullsLast(packed)
+	if err != nil {
+		t.Fatalf("unpackNullsLast: %v", err)
+	}
+	if len(unpacked) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(unpacked))
+	}
+	// Second element should be int64(42)
+	if unpacked[1] != int64(42) {
+		t.Errorf("expected 42, got %v", unpacked[1])
+	}
+}
+
+func TestPackNullsLastAllNulls(t *testing.T) {
+	t.Parallel()
+
+	original := tuple.Tuple{nil, nil, nil}
+	packed := packNullsLast(original)
+
+	// Each null should be a single 0xFE byte
+	if len(packed) != 3 {
+		t.Fatalf("expected 3 bytes for 3 nulls, got %d: %x", len(packed), packed)
+	}
+	for i, b := range packed {
+		if b != 0xFE {
+			t.Errorf("byte %d: expected 0xFE, got 0x%02X", i, b)
+		}
+	}
+
+	unpacked, err := unpackNullsLast(packed)
+	if err != nil {
+		t.Fatalf("unpackNullsLast: %v", err)
+	}
+	if len(unpacked) != 3 {
+		t.Fatalf("expected 3 elements, got %d", len(unpacked))
+	}
+	for i, v := range unpacked {
+		if v != nil {
+			t.Errorf("element %d: expected nil, got %v", i, v)
+		}
+	}
+}
+
+func TestPackNullsLastMixedTypesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cases := []tuple.Tuple{
+		{nil, int64(0), nil, "", nil},
+		{int64(-1), nil, true, nil, []byte{0x00}},
+		{float64(3.14), nil, "café", nil},
+	}
+
+	for i, original := range cases {
+		packed := packNullsLast(original)
+		unpacked, err := unpackNullsLast(packed)
+		if err != nil {
+			t.Fatalf("case %d: unpackNullsLast: %v", i, err)
+		}
+		if len(unpacked) != len(original) {
+			t.Fatalf("case %d: expected %d elements, got %d", i, len(original), len(unpacked))
+		}
+		for j := range original {
+			if original[j] == nil {
+				if unpacked[j] != nil {
+					t.Errorf("case %d element %d: expected nil, got %v", i, j, unpacked[j])
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// invertBytes edge cases
+// ---------------------------------------------------------------------------
+
+func TestInvertBytesLargeInput(t *testing.T) {
+	t.Parallel()
+
+	// 1000-byte input to verify no overflow in the 7-bit packing
+	input := make([]byte, 1000)
+	for i := range input {
+		input[i] = byte(i % 256)
+	}
+	inverted := invertBytes(input)
+	result, err := uninvertBytes(inverted)
+	if err != nil {
+		t.Fatalf("uninvertBytes: %v", err)
+	}
+	if !bytes.Equal(input, result) {
+		t.Fatal("round-trip failed for 1000-byte input")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // orderDirectionFromName
 // ---------------------------------------------------------------------------
 
