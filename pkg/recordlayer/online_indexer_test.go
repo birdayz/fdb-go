@@ -3,8 +3,10 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	. "github.com/onsi/ginkgo/v2"
@@ -3129,6 +3131,408 @@ var _ = Describe("OnlineIndexer", func() {
 			allReady, err := indexer.MarkReadableIfBuilt(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(allReady).To(BeTrue())
+		})
+	})
+
+	Describe("MutualIndexing", func() {
+		// Helper: create metadata with a VALUE index.
+		mutualMetaData := func() (*RecordMetaData, *Index) {
+			_, builder := baseMetaData()
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder.AddIndex("Order", priceIndex)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			return md, priceIndex
+		}
+
+		Describe("Heartbeat", func() {
+			It("heartbeat write and read round-trip", func() {
+				ks := specSubspace()
+				md, priceIndex := mutualMetaData()
+
+				// Create the store so the subspace exists.
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					_, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				hb := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
+
+				// Write heartbeat in a transaction.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, hb.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Read it back.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					heartbeats, indexerIDs, err := ReadHeartbeats(tx, ks, priceIndex)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(heartbeats).To(HaveLen(1))
+					Expect(indexerIDs).To(HaveLen(1))
+
+					Expect(indexerIDs[0]).To(Equal(hb.indexerID.String()))
+					Expect(heartbeats[0].GetInfo()).To(Equal("MUTUAL_BY_RECORDS"))
+					Expect(heartbeats[0].GetCreateTimeMilliseconds()).To(Equal(hb.createTimeMs))
+					Expect(heartbeats[0].GetHeartbeatTimeMilliseconds()).To(BeNumerically(">", 0))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("exclusive mode rejects active peer heartbeat", func() {
+				ks := specSubspace()
+				md, priceIndex := mutualMetaData()
+
+				// Create the store.
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					_, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				hb1 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false) // exclusive
+				hb2 := NewIndexingHeartbeat("BY_RECORDS", 30_000, false) // exclusive
+
+				// First heartbeat writes successfully.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, hb1.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Second exclusive heartbeat should fail with SynchronizedSessionLockedError.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, hb2.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).To(HaveOccurred())
+				var lockErr *SynchronizedSessionLockedError
+				Expect(errors.As(err, &lockErr)).To(BeTrue(), "expected SynchronizedSessionLockedError, got %v", err)
+				Expect(lockErr.ExistingIndexerID).To(Equal(hb1.indexerID.String()))
+				Expect(lockErr.ExistingInfo).To(Equal("BY_RECORDS"))
+			})
+
+			It("mutual mode allows concurrent heartbeats", func() {
+				ks := specSubspace()
+				md, priceIndex := mutualMetaData()
+
+				// Create the store.
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					_, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				hb1 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
+				hb2 := NewIndexingHeartbeat("MUTUAL_BY_RECORDS", 30_000, true)
+
+				// First heartbeat writes.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, hb1.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Second mutual heartbeat should also succeed (no lock check).
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, hb2.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify both heartbeats are present.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					heartbeats, indexerIDs, err := ReadHeartbeats(tx, ks, priceIndex)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(heartbeats).To(HaveLen(2))
+					Expect(indexerIDs).To(ContainElement(hb1.indexerID.String()))
+					Expect(indexerIDs).To(ContainElement(hb2.indexerID.String()))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("stale heartbeat is ignored", func() {
+				ks := specSubspace()
+				md, priceIndex := mutualMetaData()
+
+				// Create the store.
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					_, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Write a heartbeat with an old timestamp (beyond the 10s lease).
+				staleHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					// Manually write a heartbeat proto with an old timestamp.
+					hbProto := &gen.IndexBuildHeartbeat{
+						Info:                      proto.String("BY_RECORDS"),
+						CreateTimeMilliseconds:    proto.Int64(staleHB.createTimeMs),
+						HeartbeatTimeMilliseconds: proto.Int64(time.Now().Add(-20 * time.Second).UnixMilli()), // 20s ago > 10s lease
+					}
+					data, marshalErr := proto.Marshal(hbProto)
+					Expect(marshalErr).NotTo(HaveOccurred())
+					tx.Set(staleHB.heartbeatKey(ks, priceIndex), data)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// A new exclusive heartbeat should succeed because the existing one is stale.
+				freshHB := NewIndexingHeartbeat("BY_RECORDS", 10_000, false)
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					return nil, freshHB.CheckAndUpdate(tx, ks, priceIndex)
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Describe("Mutual build", func() {
+			It("mutual BuildIndex produces complete index", func() {
+				ks := specSubspace()
+
+				// Phase 1: Insert 20 records WITHOUT any index.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 20; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Phase 2: Build index with SetMutualIndexing().
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				indexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(priceIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					SetLimit(5). // Force multiple transactions.
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				total, err := indexer.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(total).To(BeNumerically(">=", 20))
+
+				// Phase 3: Verify index is READABLE and all 20 entries present.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(20))
+
+					// Verify sorted order.
+					for i, entry := range entries {
+						expectedPrice := int64((i + 1) * 100)
+						Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("two concurrent mutual builders produce complete index", func() {
+				ks := specSubspace()
+
+				// Phase 1: Insert 50 records WITHOUT any index.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 50; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Phase 2: Build index concurrently with TWO mutual indexers.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				var wg sync.WaitGroup
+				errs := make([]error, 2)
+
+				for g := 0; g < 2; g++ {
+					wg.Add(1)
+					go func(idx int) {
+						defer wg.Done()
+						defer GinkgoRecover()
+
+						indexer, buildErr := NewOnlineIndexerBuilder().
+							SetDatabase(sharedDB).
+							SetMetaData(mdWithIndex).
+							SetIndex(priceIndex).
+							SetSubspace(ks).
+							SetMutualIndexing().
+							SetLimit(10).
+							Build()
+						if buildErr != nil {
+							errs[idx] = buildErr
+							return
+						}
+
+						_, errs[idx] = indexer.BuildIndex(ctx)
+					}(g)
+				}
+				wg.Wait()
+
+				Expect(errs[0]).NotTo(HaveOccurred())
+				Expect(errs[1]).NotTo(HaveOccurred())
+
+				// Phase 3: Verify all 50 entries present.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(50))
+
+					// Verify sorted order: 10, 20, ..., 500.
+					for i, entry := range entries {
+						expectedPrice := int64((i + 1) * 10)
+						Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("mutual builder stamp is MUTUAL_BY_RECORDS", func() {
+				ks := specSubspace()
+
+				// Insert some records.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 5; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Build with mutual mode.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				indexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(priceIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = indexer.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify the stamp is MUTUAL_BY_RECORDS.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+
+					stamp, err := store.LoadIndexingTypeStamp(priceIndex)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(stamp).NotTo(BeNil())
+					Expect(stamp.GetMethod()).To(Equal(gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS))
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("mutual builder cleans up heartbeat on completion", func() {
+				ks := specSubspace()
+
+				// Insert some records.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 5; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Build with mutual mode.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				indexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(priceIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = indexer.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Verify no heartbeats remain after build completes.
+				_, err = sharedDB.db.Transact(func(tx fdb.Transaction) (any, error) {
+					heartbeats, _, err := ReadHeartbeats(tx, ks, priceIndex)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(heartbeats).To(BeEmpty())
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
 		})
 	})
 })

@@ -48,6 +48,12 @@ func (irs *IndexingRangeSet) ListMissingRanges(tr fdb.Transaction) ([]RangeSetRa
 	return irs.rangeSet.MissingRanges(tr, nil, nil, 0)
 }
 
+// ListMissingRangesInBytes returns missing ranges within the given byte boundaries.
+// Used by mutual indexing to check missing ranges within a fragment.
+func (irs *IndexingRangeSet) ListMissingRangesInBytes(tr fdb.Transaction, begin, end []byte) ([]RangeSetRange, error) {
+	return irs.rangeSet.MissingRanges(tr, begin, end, 0)
+}
+
 // IsComplete returns true if all ranges have been built.
 func (irs *IndexingRangeSet) IsComplete(tr fdb.Transaction) (bool, error) {
 	first, err := irs.FirstMissingRange(tr)

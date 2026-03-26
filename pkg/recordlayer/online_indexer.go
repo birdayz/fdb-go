@@ -195,13 +195,14 @@ func (e *TimeLimitExceededError) Error() string {
 // Each transaction processes a chunk of records, tracks progress via IndexingRangeSet,
 // and the build resumes from where it left off if interrupted.
 //
-// Supports three modes:
+// Supports four modes:
 //   - BY_RECORDS (default, single target): scans all records in primary key order
 //   - BY_INDEX (single target): scans an existing readable VALUE index to find records
 //   - MULTI_TARGET_BY_RECORDS: scans records once, builds multiple indexes simultaneously
+//   - MUTUAL_BY_RECORDS: concurrent multi-process building with fragment-based work division
 //
 // Matches Java's OnlineIndexer with IndexingByRecords, IndexingByIndex,
-// and IndexingMultiTargetByRecords.
+// IndexingMultiTargetByRecords, and IndexingMutuallyByRecords.
 type OnlineIndexer struct {
 	db               *FDBDatabase
 	metaData         *RecordMetaData
@@ -215,6 +216,9 @@ type OnlineIndexer struct {
 	recordTypes      []string        // record types to index (empty = all types; not allowed with multi-target)
 	policy           *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
 	throttle         *indexingThrottle // adaptive throttle (created at Build time)
+	mutual            bool              // true = MUTUAL_BY_RECORDS (concurrent building)
+	mutualBoundaries  [][]byte          // pre-set fragment boundaries (nil = single fragment)
+	leaseLengthMs     int64             // heartbeat lease duration in ms (default 30000)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -341,6 +345,35 @@ func (b *OnlineIndexerBuilder) SetPolicy(policy *IndexingPolicy) *OnlineIndexerB
 	return b
 }
 
+// SetMutualIndexing enables concurrent/mutual index building mode.
+// Multiple indexer processes can run simultaneously, each building different
+// fragments of the key space. Fragments are determined by FDB shard boundaries.
+// Matches Java's OnlineIndexer.Builder.setMutualIndexing().
+func (b *OnlineIndexerBuilder) SetMutualIndexing() *OnlineIndexerBuilder {
+	b.indexer.mutual = true
+	return b
+}
+
+// SetMutualIndexingBoundaries enables mutual mode with pre-set fragment boundaries.
+// Each boundary is a packed tuple representing a primary key at which to split
+// the key space. If nil/empty, the entire key space is treated as a single fragment.
+// Matches Java's OnlineIndexer.Builder.setMutualIndexingBoundaries().
+func (b *OnlineIndexerBuilder) SetMutualIndexingBoundaries(boundaries [][]byte) *OnlineIndexerBuilder {
+	b.indexer.mutual = true
+	b.indexer.mutualBoundaries = boundaries
+	return b
+}
+
+// SetLeaseLengthMs sets the heartbeat lease duration in milliseconds. If a
+// heartbeat is not updated within this duration, the process is presumed dead.
+// Default is 30000 (30 seconds). Only relevant for non-mutual mode; in mutual
+// mode heartbeats are written but not checked.
+// Matches Java's OnlineIndexer.IndexingPolicy.setLeaseLengthMillis().
+func (b *OnlineIndexerBuilder) SetLeaseLengthMs(ms int64) *OnlineIndexerBuilder {
+	b.indexer.leaseLengthMs = ms
+	return b
+}
+
 // Build creates the OnlineIndexer.
 // Matches Java's OnlineIndexer.Builder.build(): validates, deduplicates, and sorts
 // target indexes by name (the alphabetically-first index becomes the "primary"
@@ -396,12 +429,12 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 	}
 
 	// Multi-target restrictions (matches Java's IndexingCommon).
-	if isMulti {
+	if isMulti || b.indexer.mutual {
 		if len(b.indexer.recordTypes) > 0 {
-			return nil, fmt.Errorf("online indexer: preset record types not allowed with multi-target indexing")
+			return nil, fmt.Errorf("online indexer: preset record types not allowed with multi-target/mutual indexing")
 		}
 		if b.indexer.sourceIndex != nil {
-			return nil, fmt.Errorf("online indexer: source index (BY_INDEX) not allowed with multi-target indexing")
+			return nil, fmt.Errorf("online indexer: source index (BY_INDEX) not allowed with multi-target/mutual indexing")
 		}
 	}
 
@@ -409,6 +442,11 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 		if err := b.validateSourceIndex(); err != nil {
 			return nil, err
 		}
+	}
+
+	// Default lease length: 30 seconds.
+	if b.indexer.leaseLengthMs == 0 {
+		b.indexer.leaseLengthMs = 30_000
 	}
 
 	// Create adaptive throttle (matches Java's IndexingThrottle initialization)
@@ -490,6 +528,10 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	}
 
 	// Step 2: Build in chunks across multiple transactions.
+	if oi.mutual {
+		return oi.buildIndexMutual(ctx, startTime)
+	}
+
 	buildFn := oi.buildRange
 	if oi.sourceIndex != nil {
 		buildFn = oi.buildRangeByIndex
@@ -519,6 +561,50 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	}
 
 	// Step 3: Mark all target indexes as READABLE.
+	if err := oi.markReadable(ctx); err != nil {
+		return totalRecords, fmt.Errorf("mark readable: %w", err)
+	}
+
+	return totalRecords, nil
+}
+
+// buildIndexMutual runs the mutual (concurrent) build path.
+func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
+	mutual, err := newMutualIndexBuilder(oi)
+	if err != nil {
+		return 0, fmt.Errorf("init mutual builder: %w", err)
+	}
+	defer mutual.cleanup(ctx)
+
+	var totalRecords int64
+	for {
+		n, hasMore, err := mutual.buildMutual(ctx)
+		if err != nil {
+			return totalRecords, fmt.Errorf("mutual build range: %w", err)
+		}
+		totalRecords += n
+		if !hasMore {
+			break
+		}
+
+		// Check time limit.
+		if oi.timeLimit > 0 {
+			elapsed := time.Since(startTime)
+			if elapsed >= oi.timeLimit {
+				return totalRecords, &TimeLimitExceededError{
+					TimeLimit: oi.timeLimit,
+					Elapsed:   elapsed,
+				}
+			}
+		}
+
+		// Inter-transaction throttle.
+		if oi.throttle != nil {
+			oi.throttle.waitForRateLimit()
+		}
+	}
+
+	// Mark all target indexes as READABLE.
 	if err := oi.markReadable(ctx); err != nil {
 		return totalRecords, fmt.Errorf("mark readable: %w", err)
 	}
@@ -920,21 +1006,26 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 		}
 	}
 
-	if len(oi.targetIndexes) == 1 {
+	if len(oi.targetIndexes) == 1 && !oi.mutual {
 		return &gen.IndexBuildIndexingStamp{
 			Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 		}
 	}
 
-	// Multi-target: index names in stamp (already sorted by Build()).
+	// Multi-target or mutual: index names in stamp (already sorted by Build()).
 	// Matches Java's compileTargetIndexesLegacyIndexingTypeStamp().
 	names := make([]string, len(oi.targetIndexes))
 	for i, idx := range oi.targetIndexes {
 		names[i] = idx.Name
 	}
 
+	method := gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS
+	if oi.mutual {
+		method = gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS
+	}
+
 	return &gen.IndexBuildIndexingStamp{
-		Method:      gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS.Enum(),
+		Method:      method.Enum(),
 		TargetIndex: names,
 	}
 }

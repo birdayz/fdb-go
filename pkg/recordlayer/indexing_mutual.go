@@ -1,0 +1,379 @@
+package recordlayer
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"math/big"
+	"math/rand"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+)
+
+// fragmentIterationType represents the phase of mutual index building.
+// Matches Java's IndexingMutuallyByRecords.FragmentIterationType.
+type fragmentIterationType int
+
+const (
+	// fragmentFull only builds fully unbuilt fragments (no partial).
+	fragmentFull fragmentIterationType = iota
+	// fragmentAny builds any fragment with missing ranges.
+	fragmentAny
+	// fragmentRecover means all phases exhausted — manual recovery needed.
+	fragmentRecover
+)
+
+// mutualIndexBuilder builds indexes concurrently with other processes.
+// Each builder divides the key space into fragments (by FDB shard boundaries)
+// and iterates them in a unique random order (prime-step modular arithmetic).
+// Matches Java's IndexingMutuallyByRecords.
+type mutualIndexBuilder struct {
+	indexer   *OnlineIndexer
+	heartbeat *IndexingHeartbeat
+
+	// Fragment state
+	boundaries    [][]byte // raw FDB keys — shard boundaries within records subspace
+	fragmentCount int
+	fragmentStep  int // prime, not a divisor of fragmentCount
+	fragmentFirst int // random starting fragment
+	fragmentCur   int // current fragment index
+	iterType      fragmentIterationType
+}
+
+// newMutualIndexBuilder initializes the mutual builder.
+// Fetches FDB shard boundaries to determine fragments.
+func newMutualIndexBuilder(oi *OnlineIndexer) (*mutualIndexBuilder, error) {
+	hb := NewIndexingHeartbeat(
+		"MUTUAL_BY_RECORDS",
+		oi.leaseLengthMs,
+		true, // allowMutual
+	)
+
+	m := &mutualIndexBuilder{
+		indexer:   oi,
+		heartbeat: hb,
+		iterType:  fragmentFull,
+	}
+
+	// Compute fragment boundaries from FDB shard splits.
+	if err := m.computeFragments(); err != nil {
+		return nil, fmt.Errorf("compute fragments: %w", err)
+	}
+
+	return m, nil
+}
+
+// computeFragments fetches FDB shard boundaries for the records subspace
+// and sets up the fragment iteration order.
+//
+// Matches Java's IndexingMutuallyByRecords.getPrimaryKeyBoundaries() which:
+// 1. Calls store.getPrimaryKeyBoundaries() → LocalityUtil.getBoundaryKeys()
+// 2. If empty (single-node FDB), injects [null, null] as endpoints
+// 3. Always ensures at least 2 boundary points → at least 1 fragment
+//
+// On single-node FDB clusters (including testcontainers), getBoundaryKeys
+// returns no results, so we degrade to 1 fragment covering the entire range.
+func (m *mutualIndexBuilder) computeFragments() error {
+	// Java uses LocalityUtil.getBoundaryKeys(transaction, begin, end) which is
+	// a non-blocking async API. Go's FDB binding exposes LocalityGetBoundaryKeys
+	// on fdb.Database as a synchronous blocking C FFI call that hangs on
+	// single-node clusters (testcontainers). We use pre-set boundaries from
+	// the builder if provided, otherwise fall back to a single fragment.
+	//
+	// This matches Java's behavior on single-node FDB: when getBoundaryKeys
+	// returns nothing, getPrimaryKeyBoundaries() injects [null, null] and
+	// the entire key space becomes one fragment.
+
+	// Fragment boundaries are in the RangeSet key space (raw PK bytes),
+	// NOT FDB absolute key space. RangeSet operates in [\x00, \xff).
+	// Matching Java where getPrimaryKeyBoundaries returns Tuple boundaries
+	// and fragmentGet converts null → {0x00}/{0xff}.
+	m.boundaries = make([][]byte, 0, len(m.indexer.mutualBoundaries)+2)
+	m.boundaries = append(m.boundaries, rangeSetFirstKey) // \x00
+	for _, b := range m.indexer.mutualBoundaries {
+		m.boundaries = append(m.boundaries, b)
+	}
+	m.boundaries = append(m.boundaries, rangeSetFinalKey) // \xff
+
+	// Deduplicate consecutive equal boundaries.
+	deduped := m.boundaries[:1]
+	for i := 1; i < len(m.boundaries); i++ {
+		if !bytes.Equal(m.boundaries[i], deduped[len(deduped)-1]) {
+			deduped = append(deduped, m.boundaries[i])
+		}
+	}
+	m.boundaries = deduped
+
+	m.fragmentCount = len(m.boundaries) - 1
+	if m.fragmentCount <= 0 {
+		m.fragmentCount = 1
+	}
+
+	// Random starting point and step.
+	// Step must be coprime with fragmentCount (use a prime that doesn't divide it).
+	// Matches Java's getPrimeStep(fragmentNum, rn).
+	rng := rand.New(rand.NewSource(rand.Int63()))
+	m.fragmentFirst = rng.Intn(m.fragmentCount)
+	m.fragmentCur = m.fragmentFirst
+	m.fragmentStep = findCoprimeStep(m.fragmentCount, rng)
+
+	return nil
+}
+
+// findCoprimeStep finds a step value coprime with n for uniform iteration.
+// Uses small primes first, then random primes.
+// Matches Java's random-prime-not-divisor-of(fragmentNum) approach.
+func findCoprimeStep(n int, rng *rand.Rand) int {
+	if n <= 1 {
+		return 1
+	}
+
+	primes := []int{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47}
+	// Collect primes that don't divide n.
+	var candidates []int
+	for _, p := range primes {
+		if n%p != 0 {
+			candidates = append(candidates, p)
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[rng.Intn(len(candidates))]
+	}
+
+	// n is divisible by all small primes — use a large prime.
+	// This is extremely unlikely for realistic fragment counts.
+	bigN := big.NewInt(int64(n))
+	for p := int64(53); ; p += 2 {
+		bp := big.NewInt(p)
+		if bp.ProbablyPrime(10) && new(big.Int).Mod(bigN, bp).Int64() != 0 {
+			return int(p)
+		}
+	}
+}
+
+// fragmentRange returns the byte range [begin, end) for the current fragment.
+func (m *mutualIndexBuilder) fragmentRange() ([]byte, []byte) {
+	if m.fragmentCount <= 1 {
+		return m.boundaries[0], m.boundaries[len(m.boundaries)-1]
+	}
+	idx := m.fragmentCur
+	if idx >= m.fragmentCount {
+		idx = m.fragmentCount - 1
+	}
+	return m.boundaries[idx], m.boundaries[idx+1]
+}
+
+// fragmentAdvance moves to the next fragment using modular prime-step.
+// Returns true if we've completed a full cycle.
+func (m *mutualIndexBuilder) fragmentAdvance() bool {
+	m.fragmentCur = (m.fragmentCur + m.fragmentStep) % m.fragmentCount
+	return m.fragmentCur == m.fragmentFirst
+}
+
+// buildMutual runs the mutual index build: iterates fragments, builds missing
+// ranges, advances through FULL → ANY phases.
+// Returns (recordsProcessed, hasMore, error).
+func (m *mutualIndexBuilder) buildMutual(ctx context.Context) (int64, bool, error) {
+	var recordsProcessed int64
+	var hasMore bool
+
+	_, err := m.indexer.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		recordsProcessed = 0
+		hasMore = false
+
+		store, err := m.indexer.openStore(rtx)
+		if err != nil {
+			return nil, err
+		}
+
+		// Update heartbeat every transaction.
+		if err := m.heartbeat.CheckAndUpdate(rtx.Transaction(), m.indexer.subspace, m.indexer.primaryIndex()); err != nil {
+			return nil, err
+		}
+
+		primaryRangeSet := NewIndexingRangeSet(store.subspace, m.indexer.primaryIndex())
+
+		// Try the current fragment first (may have remaining work from last call),
+		// then advance through other fragments if needed.
+		cyclesWithoutWork := 0
+		for cyclesWithoutWork <= m.fragmentCount {
+			fragBegin, fragEnd := m.fragmentRange()
+
+			rangeToBuild, err := m.findRangeInFragment(rtx.Transaction(), primaryRangeSet, fragBegin, fragEnd)
+			if err != nil {
+				return nil, err
+			}
+
+			if rangeToBuild != nil {
+				n, err := m.buildFragmentRange(ctx, store, primaryRangeSet, rangeToBuild)
+				if err != nil {
+					return nil, err
+				}
+				recordsProcessed = n
+				// Don't advance fragment — stay here for the next call
+				// in case there's more work in this fragment.
+				hasMore = true
+				return nil, nil
+			}
+
+			// No work in this fragment — advance to the next one.
+			cyclesWithoutWork++
+			if m.fragmentAdvance() {
+				// Completed a full cycle — advance phase.
+				m.iterType++
+				if m.iterType >= fragmentRecover {
+					// All phases exhausted. Check if truly complete.
+					missing, err := primaryRangeSet.FirstMissingRange(rtx.Transaction())
+					if err != nil {
+						return nil, err
+					}
+					hasMore = missing != nil
+					return nil, nil
+				}
+				// Reset counter for the new phase.
+				cyclesWithoutWork = 0
+			}
+		}
+
+		// Exhausted all fragments — check if build is complete.
+		missing, err := primaryRangeSet.FirstMissingRange(rtx.Transaction())
+		if err != nil {
+			return nil, err
+		}
+		hasMore = missing != nil
+		return nil, nil
+	})
+
+	return recordsProcessed, hasMore, err
+}
+
+// findRangeInFragment finds a missing range within the fragment boundaries.
+// In FULL phase, only returns fully unbuilt fragments.
+// In ANY phase, returns any fragment with missing ranges.
+func (m *mutualIndexBuilder) findRangeInFragment(tx fdb.Transaction, rangeSet *IndexingRangeSet, fragBegin, fragEnd []byte) (*RangeSetRange, error) {
+	missing, err := rangeSet.ListMissingRangesInBytes(tx, fragBegin, fragEnd)
+	if err != nil {
+		return nil, err
+	}
+	if len(missing) == 0 {
+		return nil, nil
+	}
+
+	if m.iterType == fragmentFull {
+		// FULL phase: only build if the ENTIRE fragment is unbuilt.
+		// A single missing range spanning the whole fragment means fully unbuilt.
+		if len(missing) == 1 && bytes.Compare(missing[0].Begin, fragBegin) <= 0 && bytes.Compare(missing[0].End, fragEnd) >= 0 {
+			return &RangeSetRange{Begin: fragBegin, End: fragEnd}, nil
+		}
+		return nil, nil // Partially built — skip in FULL phase.
+	}
+
+	// ANY phase: return the first missing range within the fragment.
+	return &missing[0], nil
+}
+
+// buildFragmentRange builds records within the given range, same as buildRange
+// but scoped to a fragment. Reuses the indexer's existing buildRange logic.
+func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBRecordStore, primaryRangeSet *IndexingRangeSet, r *RangeSetRange) (int64, error) {
+	var rangeStart, rangeEnd tuple.Tuple
+
+	if !bytes.Equal(r.Begin, rangeSetFirstKey) {
+		var err error
+		rangeStart, err = tuple.Unpack(r.Begin)
+		if err != nil {
+			// Might be a raw key from boundary — use it as range start.
+			rangeStart = nil
+		}
+	}
+	if !bytes.Equal(r.End, rangeSetFinalKey) {
+		var err error
+		rangeEnd, err = tuple.Unpack(r.End)
+		if err != nil {
+			rangeEnd = nil
+		}
+	}
+
+	scanProps := ForwardScan()
+	scanProps.ExecuteProperties.ReturnedRowLimit = m.indexer.limit + 1
+	if m.indexer.allTargetIndexesIdempotent() {
+		scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
+	}
+
+	lowEp := EndpointTypeRangeInclusive
+	highEp := EndpointTypeRangeExclusive
+	if rangeStart == nil {
+		lowEp = EndpointTypeTreeStart
+	}
+	if rangeEnd == nil {
+		highEp = EndpointTypeTreeEnd
+	}
+
+	cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
+
+	var scannedCount int
+	var recordsProcessed int64
+	var extraPK tuple.Tuple
+
+	for rec, iterErr := range Seq2(cursor, ctx) {
+		if iterErr != nil {
+			return 0, iterErr
+		}
+		scannedCount++
+		if scannedCount > m.indexer.limit {
+			extraPK = rec.PrimaryKey
+			break
+		}
+
+		for _, idx := range m.indexer.targetIndexes {
+			if !m.indexer.shouldIndexRecordForIndex(rec, idx) {
+				continue
+			}
+			maintainer := store.GetIndexMaintainer(idx)
+			if err := maintainer.Update(nil, rec); err != nil {
+				return 0, fmt.Errorf("index %q update: %w", idx.Name, err)
+			}
+		}
+		recordsProcessed++
+	}
+
+	// Mark the built range.
+	var endKey []byte
+	if extraPK != nil {
+		endKey = extraPK.Pack()
+	} else if rangeEnd != nil {
+		endKey = rangeEnd.Pack()
+	} else {
+		endKey = rangeSetFinalKey
+	}
+
+	beginKey := r.Begin
+	if rangeStart != nil && bytes.Equal(beginKey, rangeSetFirstKey) {
+		beginKey = rangeStart.Pack()
+	}
+
+	for _, idx := range m.indexer.targetIndexes {
+		idxRangeSet := NewIndexingRangeSet(store.subspace, idx)
+		_, err := idxRangeSet.InsertRange(store.context.Transaction(), beginKey, endKey, true)
+		if err != nil {
+			return 0, fmt.Errorf("insert range for index %q: %w", idx.Name, err)
+		}
+	}
+
+	// Track progress.
+	if recordsProcessed > 0 {
+		for _, idx := range m.indexer.targetIndexes {
+			store.AddBuildProgress(idx, recordsProcessed)
+		}
+	}
+
+	return recordsProcessed, nil
+}
+
+// cleanup removes this builder's heartbeat.
+func (m *mutualIndexBuilder) cleanup(ctx context.Context) {
+	_, _ = m.indexer.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		m.heartbeat.Cleanup(rtx.Transaction(), m.indexer.subspace, m.indexer.primaryIndex())
+		return nil, nil
+	})
+}
