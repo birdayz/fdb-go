@@ -461,7 +461,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 0, // unlimited
 					},
 				}
@@ -486,7 +486,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 1,
 					},
 				}
@@ -513,7 +513,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 3,
 					},
 				}
@@ -652,7 +652,7 @@ var _ = Describe("KeyValueCursor", func() {
 				// Read 3 records, get continuation
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 3,
 					},
 				}
@@ -759,7 +759,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 2,
 					},
 				}
@@ -1039,7 +1039,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 2,
 					},
 				}
@@ -1240,7 +1240,7 @@ var _ = Describe("KeyValueCursor", func() {
 
 				props := ScanProperties{
 					ExecuteProperties: ExecuteProperties{
-						IsolationLevel:  SerializableIsolation,
+						IsolationLevel:   SerializableIsolation,
 						ReturnedRowLimit: 2,
 					},
 				}

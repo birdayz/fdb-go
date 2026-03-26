@@ -200,7 +200,7 @@ func TestBugBounty3Cursor_AutoContinuingWouldInfiniteLoop(t *testing.T) {
 	// for scan/time/byte limits. AutoContinuingCursor would loop forever on such input.
 	// Java's equivalent would have the same behavior (retry with null continuation = restart).
 	if !cont.IsEnd() && contBytes == nil {
-		t.Logf("Known limitation: HasStoppedBeforeEnd()=true but continuation bytes=nil.\n"+
+		t.Logf("Known limitation: HasStoppedBeforeEnd()=true but continuation bytes=nil.\n" +
 			"AutoContinuingCursor would loop. This combination doesn't occur with real cursors.")
 	}
 
@@ -225,7 +225,7 @@ func TestBugBounty3Cursor_AutoContinuingWouldInfiniteLoop(t *testing.T) {
 	}
 
 	if iterations == 3 {
-		t.Logf("Confirmed: 3 iterations of the same pattern, each producing\n"+
+		t.Logf("Confirmed: 3 iterations of the same pattern, each producing\n" +
 			"HasStoppedBeforeEnd with nil continuation bytes → infinite loop in AutoContinuingCursor.")
 	}
 }
@@ -558,7 +558,7 @@ func TestBugBounty3Cursor_DedupDropsContinuationOnEndContStop(t *testing.T) {
 	// Java's DedupCursor has the same pass-through behavior for inner continuations.
 	cont := result.GetContinuation()
 	if cont == nil || cont.IsEnd() {
-		t.Logf("Known limitation (matches Java): DedupCursor returned EndContinuation "+
+		t.Logf("Known limitation (matches Java): DedupCursor returned EndContinuation " +
 			"for ScanLimitReached. Real cursors always provide valid continuations.")
 	}
 }

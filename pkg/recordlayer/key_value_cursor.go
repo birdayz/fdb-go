@@ -63,10 +63,10 @@ type keyValueCursor struct {
 	// Internal state
 	iterator       *fdb.RangeIterator
 	closed         bool
-	recordsRead    int   // Records returned to the caller
-	recordsScanned int   // Records scanned (including skipped ones)
+	recordsRead    int // Records returned to the caller
+	recordsScanned int // Records scanned (including skipped ones)
 	bytesScanned   int64
-	prefixLength   int // Length of the subspace prefix for continuation handling
+	prefixLength   int       // Length of the subspace prefix for continuation handling
 	startTime      time.Time // For time limit enforcement
 
 	// Buffered KV pair for split record handling.

@@ -39,8 +39,8 @@ func newMultidimensionalIndexMaintainer(
 
 // R-tree index option keys for configuring the Hilbert R-tree.
 const (
-	IndexOptionRTreeMaxM  = "rtreeMaximumM"
-	IndexOptionRTreeMinM  = "rtreeMinimumM"
+	IndexOptionRTreeMaxM   = "rtreeMaximumM"
+	IndexOptionRTreeMinM   = "rtreeMinimumM"
 	IndexOptionRTreeSplitS = "rtreeSplitS"
 )
 
@@ -246,11 +246,11 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	// 1. Check if prefix skip-scan is needed: PrefixSize > 0 but no prefix provided in scanRange.
 	if dimExpr.PrefixSize > 0 && (scanRange.Low == nil || len(scanRange.Low) < dimExpr.PrefixSize) {
 		return &prefixSkipScanCursor{
-			m:              m,
-			dimExpr:        dimExpr,
-			scanRange:      scanRange,
-			continuation:   continuation,
-			scanProperties: scanProperties,
+			m:               m,
+			dimExpr:         dimExpr,
+			scanRange:       scanRange,
+			continuation:    continuation,
+			scanProperties:  scanProperties,
 			nextPrefixStart: fdb.Key(m.indexSubspace.Bytes()),
 		}
 	}
@@ -408,7 +408,7 @@ func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKe
 	}
 
 	type bound struct {
-		low, high    int64
+		low, high       int64
 		hasLow, hasHigh bool
 	}
 	bounds := make([]bound, dimExpr.DimensionsSize)

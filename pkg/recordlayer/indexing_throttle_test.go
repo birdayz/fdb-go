@@ -389,7 +389,7 @@ func TestWaitForRateLimit(t *testing.T) {
 	t.Run("first call with no prior timestamp does not sleep when expected zero", func(t *testing.T) {
 		t.Parallel()
 		th := newIndexingThrottle(100, 3, 1000000) // very high rate
-		th.recordsScannedSinceForcedDelay = 1       // 1 record at 1M/sec = ~0ms
+		th.recordsScannedSinceForcedDelay = 1      // 1 record at 1M/sec = ~0ms
 		start := time.Now()
 		th.waitForRateLimit()
 		elapsed := time.Since(start)
@@ -422,4 +422,3 @@ func TestNewIndexingThrottle(t *testing.T) {
 		t.Errorf("consecutiveSuccessCount = %d, want 0", th.consecutiveSuccessCount)
 	}
 }
-

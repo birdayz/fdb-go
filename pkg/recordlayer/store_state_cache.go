@@ -43,9 +43,9 @@ const (
 // the metadata version stamp that was current when the state was loaded.
 // Matches Java's FDBRecordStoreStateCacheEntry.
 type FDBRecordStoreStateCacheEntry struct {
-	subspaceKey         string // subspace.Bytes() as cache key
-	subspace            subspace.Subspace
-	recordStoreState    *RecordStoreState
+	subspaceKey          string // subspace.Bytes() as cache key
+	subspace             subspace.Subspace
+	recordStoreState     *RecordStoreState
 	metaDataVersionStamp []byte // nullable — nil if dirty during load
 }
 
@@ -166,10 +166,10 @@ func (c *PassThroughRecordStoreStateCache) Clear() {}
 // using FDB's metadata version stamp (a system key that changes on every mutation).
 // Matches Java's MetaDataVersionStampStoreStateCache.
 type MetaDataVersionStampStoreStateCache struct {
-	mu           sync.Mutex
-	entries      map[string]*cacheItem // subspace bytes → cache item
-	maxSize      int
-	expireAfter  time.Duration
+	mu          sync.Mutex
+	entries     map[string]*cacheItem // subspace bytes → cache item
+	maxSize     int
+	expireAfter time.Duration
 }
 
 type cacheItem struct {

@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("MAX_EVER_LONG Index Conformance", func() {
@@ -447,7 +447,7 @@ var _ = Describe("MIN_EVER_LONG Index Conformance", func() {
 // MinMaxEverIndexEntryResult represents a single MIN/MAX_EVER_LONG index entry.
 type MinMaxEverIndexEntryResult struct {
 	Key   []any // Grouping key (empty for ungrouped)
-	Value int64         // Min or max value for this grouping key
+	Value int64 // Min or max value for this grouping key
 }
 
 // MaxEverLongIndexConformanceStore wraps record operations with a MAX_EVER_LONG

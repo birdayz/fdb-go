@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"math"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
-	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -45,7 +45,7 @@ var _ = Describe("Index Entry Conformance", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			// Save 5 orders with Go — each gets an index entry on price
 			for i := int64(1); i <= 5; i++ {
-				order := NewOrder(i).WithPrice(int32(i * 100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -81,7 +81,7 @@ var _ = Describe("Index Entry Conformance", func() {
 		It("should produce identical index entries visible to both Go and Java", func() {
 			// Save 3 orders with Java
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i * 200)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", gen.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -178,7 +178,7 @@ var _ = Describe("Index Entry Conformance", func() {
 			// Insert orders with non-sequential prices to verify sort order
 			prices := []int32{500, 100, 300, 200, 400}
 			for i, price := range prices {
-				order := NewOrder(int64(i + 1)).WithPrice(price).WithFlower("Mix", gen.Color_RED).Build()
+				order := NewOrder(int64(i+1)).WithPrice(price).WithFlower("Mix", gen.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}

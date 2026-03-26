@@ -691,7 +691,9 @@ type GroupingKeyExpression struct {
 // GroupBy creates a GroupingKeyExpression that groups by the given expressions
 // and treats the receiver as the aggregated value.
 // Example: Field("score").GroupBy(Field("game_id")) →
-//   wholeKey = Concat(game_id, score), groupedCount = 1
+//
+//	wholeKey = Concat(game_id, score), groupedCount = 1
+//
 // Matches Java's KeyExpression.groupBy().
 func GroupBy(grouped KeyExpression, groupBy ...KeyExpression) *GroupingKeyExpression {
 	groupedColCount := grouped.ColumnSize()

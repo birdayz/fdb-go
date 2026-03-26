@@ -6,7 +6,7 @@ import "math"
 type VectorMetric int
 
 const (
-	VectorMetricEuclidean    VectorMetric = iota
+	VectorMetricEuclidean VectorMetric = iota
 	VectorMetricCosine
 	VectorMetricInnerProduct
 )

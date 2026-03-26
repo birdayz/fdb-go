@@ -1773,7 +1773,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries).To(HaveLen(1))
 			// Key: [group, score, ts]. Score should be un-negated.
-			Expect(entries[0].Key[0]).To(Equal(int64(1)))  // group
+			Expect(entries[0].Key[0]).To(Equal(int64(1)))   // group
 			Expect(entries[0].Key[1]).To(Equal(int64(100))) // un-negated score
 
 			return nil, nil

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sync"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // TestJavaEquivalent: FDBRecordStoreCrudTest.java:103-128 writeCheckExistsConcurrently()
@@ -36,7 +36,7 @@ var _ = Describe("Isolation Level Conformance", func() {
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)  // Deletes tenant only
+			_ = env.Cleanup(ctx) // Deletes tenant only
 		}
 	})
 

@@ -19,16 +19,16 @@ import (
 // Record Layer format versions - should match Java FormatVersion enum.
 // See FormatVersion.java for the full list.
 const (
-	formatVersionInfoAdded                 = 1  // Minimum version (INFO_ADDED in Java)
-	formatVersionHeaderUserFields          = 8  // User-defined key→bytes map in store header
-	formatVersionReadableUniquePending     = 9  // READABLE_UNIQUE_PENDING index state
-	formatVersionCheckIndexBuildType       = 10 // Non-idempotent index build-from-source validation
-	formatVersionRecordCountState          = 11 // RecordCountState enum (READABLE/WRITE_ONLY/DISABLED)
-	formatVersionStoreLockState            = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
-	formatVersionIncarnation               = 13 // Incarnation counter for cross-cluster migration
-	formatVersionFullStoreLock             = 14 // Unknown lock states prevent store opening
-	formatVersionCurrent                   = formatVersionFullStoreLock
-	formatVersionMinimum                   = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
+	formatVersionInfoAdded             = 1  // Minimum version (INFO_ADDED in Java)
+	formatVersionHeaderUserFields      = 8  // User-defined key→bytes map in store header
+	formatVersionReadableUniquePending = 9  // READABLE_UNIQUE_PENDING index state
+	formatVersionCheckIndexBuildType   = 10 // Non-idempotent index build-from-source validation
+	formatVersionRecordCountState      = 11 // RecordCountState enum (READABLE/WRITE_ONLY/DISABLED)
+	formatVersionStoreLockState        = 12 // StoreLockState with FORBID_RECORD_UPDATE + FULL_STORE
+	formatVersionIncarnation           = 13 // Incarnation counter for cross-cluster migration
+	formatVersionFullStoreLock         = 14 // Unknown lock states prevent store opening
+	formatVersionCurrent               = formatVersionFullStoreLock
+	formatVersionMinimum               = formatVersionInfoAdded // Matches Java's FormatVersion.getMinimumVersion()
 )
 
 // StoreIsLockedForRecordUpdatesError is returned when attempting to modify records
@@ -67,7 +67,6 @@ func (e *UnknownStoreLockStateError) Error() string {
 	return fmt.Sprintf("Store has unknown lock state: %d", e.LockStateValue)
 }
 
-
 // formatVersionCacheableState is the minimum format version required for
 // store state cacheability. Matches Java's FormatVersion.CACHEABLE_STATE.
 const formatVersionCacheableState = 7
@@ -90,11 +89,11 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
-	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create
-	indexStates        map[string]IndexState  // Cached index states, loaded on Open/Create
-	indexRebuildPolicy IndexRebuildPolicy     // Policy for rebuilding indexes on metadata version change
+	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create
+	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create
+	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
-	stateMu            sync.RWMutex           // protects storeHeader + indexStates
+	stateMu            sync.RWMutex             // protects storeHeader + indexStates
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.

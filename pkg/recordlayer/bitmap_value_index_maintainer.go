@@ -363,49 +363,49 @@ func (m *bitmapValueIndexMaintainer) ScanByGroup(scanRange TupleRange, continuat
 
 	return &filterCursor[*IndexEntry]{
 		inner: MapErrCursor(cursor, func(entry *IndexEntry) (*IndexEntry, error) {
-		if gs >= len(entry.Key) || len(entry.Value) == 0 {
-			return entry, nil
-		}
-		entryStart, err := toInt64(entry.Key[gs])
-		if err != nil {
-			return entry, nil
-		}
-		bitmapBytes, ok := entry.Value[0].([]byte)
-		if !ok {
-			return entry, nil
-		}
-		entryEnd := entryStart + int64(len(bitmapBytes))*8
-
-		// Check if trimming is needed.
-		if entryStart >= sp && entryEnd <= ep {
-			return entry, nil
-		}
-
-		trimmedStart := max64(entryStart, sp)
-		trimmedEnd := min64(entryEnd, ep)
-		if trimmedStart >= trimmedEnd {
-			return nil, nil // Empty after trim — will be filtered.
-		}
-
-		trimmedBitmap := make([]byte, (trimmedEnd-trimmedStart+7)/8)
-		for i := trimmedStart; i < trimmedEnd; i++ {
-			srcOffset := int(i - entryStart)
-			if (bitmapBytes[srcOffset/8] & (1 << (srcOffset % 8))) != 0 {
-				dstOffset := int(i - trimmedStart)
-				trimmedBitmap[dstOffset/8] |= 1 << (dstOffset % 8)
+			if gs >= len(entry.Key) || len(entry.Value) == 0 {
+				return entry, nil
 			}
-		}
+			entryStart, err := toInt64(entry.Key[gs])
+			if err != nil {
+				return entry, nil
+			}
+			bitmapBytes, ok := entry.Value[0].([]byte)
+			if !ok {
+				return entry, nil
+			}
+			entryEnd := entryStart + int64(len(bitmapBytes))*8
 
-		trimmedKey := make(tuple.Tuple, len(entry.Key))
-		copy(trimmedKey, entry.Key)
-		trimmedKey[gs] = trimmedStart
+			// Check if trimming is needed.
+			if entryStart >= sp && entryEnd <= ep {
+				return entry, nil
+			}
 
-		return &IndexEntry{
-			Index: entry.Index,
-			Key:   trimmedKey,
-			Value: tuple.Tuple{trimmedBitmap},
-		}, nil
-	}),
+			trimmedStart := max64(entryStart, sp)
+			trimmedEnd := min64(entryEnd, ep)
+			if trimmedStart >= trimmedEnd {
+				return nil, nil // Empty after trim — will be filtered.
+			}
+
+			trimmedBitmap := make([]byte, (trimmedEnd-trimmedStart+7)/8)
+			for i := trimmedStart; i < trimmedEnd; i++ {
+				srcOffset := int(i - entryStart)
+				if (bitmapBytes[srcOffset/8] & (1 << (srcOffset % 8))) != 0 {
+					dstOffset := int(i - trimmedStart)
+					trimmedBitmap[dstOffset/8] |= 1 << (dstOffset % 8)
+				}
+			}
+
+			trimmedKey := make(tuple.Tuple, len(entry.Key))
+			copy(trimmedKey, entry.Key)
+			trimmedKey[gs] = trimmedStart
+
+			return &IndexEntry{
+				Index: entry.Index,
+				Key:   trimmedKey,
+				Value: tuple.Tuple{trimmedBitmap},
+			}, nil
+		}),
 		predicate: func(entry *IndexEntry) bool {
 			return entry != nil
 		},

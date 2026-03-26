@@ -282,7 +282,7 @@ var _ = Describe("SplitHelper", func() {
 
 				// KeySize = sum of both packed key lengths
 				key1 := rs.Pack(appendToTuple(pk, startSplitRecord))
-				key2 := rs.Pack(appendToTuple(pk, startSplitRecord + 1))
+				key2 := rs.Pack(appendToTuple(pk, startSplitRecord+1))
 				Expect(si.KeySize).To(Equal(len(key1) + len(key2)))
 
 				return nil, nil

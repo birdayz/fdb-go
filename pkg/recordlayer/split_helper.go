@@ -11,10 +11,10 @@ import (
 // sizeInfo tracks the storage metrics for a record.
 // Matches Java's SplitHelper.sizeInfo / FDBStoredSizes.
 type sizeInfo struct {
-	KeyCount       int
-	KeySize        int
-	ValueSize      int
-	IsSplit        bool
+	KeyCount        int
+	KeySize         int
+	ValueSize       int
+	IsSplit         bool
 	VersionedInline bool
 }
 

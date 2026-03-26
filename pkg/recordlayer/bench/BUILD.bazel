@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "bench_test",
+    timeout = "eternal",
+    srcs = [
+        "hnsw_profile_test.go",
+        "sift_benchmark_test.go",
+        "sift_loader_test.go",
+        "vector_benchmark_test.go",
+    ],
+    data = ["@sift1m//:data"],
+    tags = ["manual"],
+    deps = [
+        "//gen",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

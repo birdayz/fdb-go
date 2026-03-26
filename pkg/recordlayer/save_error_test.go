@@ -70,7 +70,8 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			}
 			_, err = store.InsertRecord(order2)
 			Expect(err).To(HaveOccurred())
-			var existsErr *RecordAlreadyExistsError; Expect(errors.As(err, &existsErr)).To(BeTrue())
+			var existsErr *RecordAlreadyExistsError
+			Expect(errors.As(err, &existsErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -90,7 +91,8 @@ var _ = Describe("SaveRecordWithOptions_ErrorPaths", func() {
 			}
 			_, err = store.UpdateRecord(order)
 			Expect(err).To(HaveOccurred())
-			var notExistErr *RecordDoesNotExistError; Expect(errors.As(err, &notExistErr)).To(BeTrue())
+			var notExistErr *RecordDoesNotExistError
+			Expect(errors.As(err, &notExistErr)).To(BeTrue())
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

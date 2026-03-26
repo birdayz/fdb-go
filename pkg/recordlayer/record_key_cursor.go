@@ -21,15 +21,15 @@ type recordKeyCursor struct {
 	scanProperties ScanProperties
 
 	// Internal state
-	iterator       *fdb.RangeIterator
-	closed         bool
-	keysReturned   int
-	keysScanned    int
-	bytesScanned   int64
-	prefixLength   int
-	startTime      time.Time
-	lastPK         tuple.Tuple // for dedup of adjacent duplicate PKs
-	peekedHasMore  *bool       // non-nil when hasMore() has been called but result not consumed
+	iterator      *fdb.RangeIterator
+	closed        bool
+	keysReturned  int
+	keysScanned   int
+	bytesScanned  int64
+	prefixLength  int
+	startTime     time.Time
+	lastPK        tuple.Tuple // for dedup of adjacent duplicate PKs
+	peekedHasMore *bool       // non-nil when hasMore() has been called but result not consumed
 }
 
 func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.Tuple], error) {
@@ -172,4 +172,3 @@ func (c *recordKeyCursor) Close() error {
 	c.closed = true
 	return nil
 }
-

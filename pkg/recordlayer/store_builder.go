@@ -277,7 +277,7 @@ func (store *FDBRecordStore) checkPossiblyRebuildRecordCounts(storeHeader *gen.D
 // Matches Java's FDBRecordStore.addRebuildRecordCountsJob().
 func (store *FDBRecordStore) rebuildRecordCounts(countKey KeyExpression) error {
 	ctx := context.Background()
-	counts := make(map[string]int64) // packed count key → count
+	counts := make(map[string]int64)       // packed count key → count
 	keyMap := make(map[string]tuple.Tuple) // packed → tuple (for FDB writes)
 
 	cursor := store.ScanRecords(nil, ForwardScan())
@@ -455,13 +455,13 @@ func AlwaysRebuildPolicy(_ *Index, _ int64, _ bool) IndexState {
 // StoreBuilder builds an FDBRecordStore with configuration options.
 // This follows the builder pattern from Java exactly.
 type StoreBuilder struct {
-	context                    *FDBRecordContext
-	metaData                   *RecordMetaData
-	subspace                   subspace.Subspace
-	indexRebuildPolicy         IndexRebuildPolicy
-	bypassFullStoreLockReason  string
-	storeStateCache            FDBRecordStoreStateCache // per-store override; nil = use db cache
-	database                   *FDBDatabase             // for inheriting cache
+	context                   *FDBRecordContext
+	metaData                  *RecordMetaData
+	subspace                  subspace.Subspace
+	indexRebuildPolicy        IndexRebuildPolicy
+	bypassFullStoreLockReason string
+	storeStateCache           FDBRecordStoreStateCache // per-store override; nil = use db cache
+	database                  *FDBDatabase             // for inheriting cache
 }
 
 // NewStoreBuilder creates a new store builder

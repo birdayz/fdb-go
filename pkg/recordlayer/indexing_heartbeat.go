@@ -26,11 +26,11 @@ const (
 //
 // Matches Java's IndexingHeartbeat.
 type IndexingHeartbeat struct {
-	indexerID       uuid.UUID
-	info            string // method description (e.g. "MUTUAL_BY_RECORDS")
-	createTimeMs    int64  // epoch ms when this indexer was created
-	leaseLengthMs   int64  // heartbeat lease duration in ms
-	allowMutual     bool   // true for mutual/concurrent mode
+	indexerID     uuid.UUID
+	info          string // method description (e.g. "MUTUAL_BY_RECORDS")
+	createTimeMs  int64  // epoch ms when this indexer was created
+	leaseLengthMs int64  // heartbeat lease duration in ms
+	allowMutual   bool   // true for mutual/concurrent mode
 }
 
 // NewIndexingHeartbeat creates a heartbeat manager for an indexer.

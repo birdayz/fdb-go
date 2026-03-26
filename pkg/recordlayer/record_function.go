@@ -9,8 +9,8 @@ import (
 
 // Record function name constants matching Java's FunctionNames.
 const (
-	FunctionNameRank                = "rank"
-	FunctionNameTimeWindowRank      = "time_window_rank"
+	FunctionNameRank                   = "rank"
+	FunctionNameTimeWindowRank         = "time_window_rank"
 	FunctionNameTimeWindowRankAndEntry = "time_window_rank_and_entry"
 )
 

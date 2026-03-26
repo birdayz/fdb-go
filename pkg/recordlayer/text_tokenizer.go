@@ -265,8 +265,10 @@ type TextTokenizerFactory interface {
 // DefaultTextTokenizerFactory creates DefaultTextTokenizer instances.
 type DefaultTextTokenizerFactory struct{}
 
-func (f *DefaultTextTokenizerFactory) Name() string               { return DefaultTextTokenizerName }
-func (f *DefaultTextTokenizerFactory) GetTokenizer() TextTokenizer { return defaultTextTokenizerInstance }
+func (f *DefaultTextTokenizerFactory) Name() string { return DefaultTextTokenizerName }
+func (f *DefaultTextTokenizerFactory) GetTokenizer() TextTokenizer {
+	return defaultTextTokenizerInstance
+}
 
 // TextTokenizerRegistry manages TextTokenizer instances by name.
 // Matches Java's TextTokenizerRegistry / TextTokenizerRegistryImpl.

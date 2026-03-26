@@ -69,7 +69,6 @@ func indexStateFromCode(code int64) (IndexState, error) {
 	}
 }
 
-
 // GetIndexState returns the state of the given index. Returns READABLE if no
 // explicit state is stored (matching Java's default behavior).
 // Goroutine-safe via stateMu (read lock).

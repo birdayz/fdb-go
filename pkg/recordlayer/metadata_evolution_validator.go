@@ -738,4 +738,3 @@ func buildFormerIndexMap(indexes []*FormerIndex) map[string]*FormerIndex {
 func ValidateEvolution(oldMetaData, newMetaData *RecordMetaData) error {
 	return DefaultMetaDataEvolutionValidator().Validate(oldMetaData, newMetaData)
 }
-

@@ -1,4 +1,4 @@
-package recordlayer
+package bench
 
 import (
 	"encoding/binary"
@@ -6,6 +6,8 @@ import (
 	"io"
 	"math"
 	"os"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 // LoadFVecs reads vectors from the fvecs binary format.
@@ -86,7 +88,7 @@ func float32sToFloat64s(v []float32) []float64 {
 
 // siftRecallAtK computes recall@k: the fraction of ground-truth nearest neighbors
 // that appear in the search results.
-func siftRecallAtK(searchResults []VectorSearchResult, groundTruth []int32, k int) float64 {
+func siftRecallAtK(searchResults []recordlayer.VectorSearchResult, groundTruth []int32, k int) float64 {
 	gtSet := make(map[int64]bool, k)
 	for i := 0; i < k && i < len(groundTruth); i++ {
 		gtSet[int64(groundTruth[i])] = true
@@ -113,7 +115,7 @@ func siftRecallAtK(searchResults []VectorSearchResult, groundTruth []int32, k in
 // This is used as a sanity check when ground truth file may not align with
 // our subset (e.g., ground truth was computed against all 1M vectors but we
 // only indexed n < 1M).
-func siftBruteForceRecall(searchResults []VectorSearchResult, queryVec []float64, allVecs [][]float64, k int) float64 {
+func siftBruteForceRecall(searchResults []recordlayer.VectorSearchResult, queryVec []float64, allVecs [][]float64, k int) float64 {
 	expected := vecBruteForceKNN(queryVec, allVecs, k)
 	expectedSet := make(map[int64]bool, len(expected))
 	for _, id := range expected {
@@ -174,4 +176,3 @@ func deserializeToFloat64(data []byte) ([]float64, error) {
 	}
 	return result, nil
 }
-

@@ -38,6 +38,7 @@ func (v Violation) String() string {
 //  7. RANK index entries + ranked set consistency
 //  8. PERMUTED_MIN/MAX index entries (primary + permuted subspace)
 //  9. VERSION index entries (PK matching + versionstamp consistency)
+//
 // 10. MULTIDIMENSIONAL index entries (R-tree scan vs model, set-based)
 // 11. VECTOR index entries (HNSW self-search + count + orphan check)
 func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {

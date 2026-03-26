@@ -11,39 +11,39 @@ import (
 
 // Index type constants matching Java's IndexTypes.
 const (
-	IndexTypeValue        = "value"
-	IndexTypeCount        = "count"
-	IndexTypeCountNotNull = "count_not_null"
-	IndexTypeCountUpdates = "count_updates"
-	IndexTypeSum          = "sum"
-	IndexTypeMaxEverLong  = "max_ever_long"
-	IndexTypeMinEverLong  = "min_ever_long"
-	IndexTypeMaxEverTuple = "max_ever_tuple"
-	IndexTypeMinEverTuple = "min_ever_tuple"
-	IndexTypeRank             = "rank"
-	IndexTypeVersion          = "version"
-	IndexTypeMaxEverVersion   = "max_ever_version"
-	IndexTypePermutedMin      = "permuted_min"
-	IndexTypePermutedMax      = "permuted_max"
-	IndexTypeBitmapValue              = "bitmap_value"
-	IndexTypeText                     = "text"
-	IndexTypeTimeWindowLeaderboard    = "time_window_leaderboard"
-	IndexTypeMultidimensional         = "multidimensional"
-	IndexTypeVector                   = "vector"
+	IndexTypeValue                 = "value"
+	IndexTypeCount                 = "count"
+	IndexTypeCountNotNull          = "count_not_null"
+	IndexTypeCountUpdates          = "count_updates"
+	IndexTypeSum                   = "sum"
+	IndexTypeMaxEverLong           = "max_ever_long"
+	IndexTypeMinEverLong           = "min_ever_long"
+	IndexTypeMaxEverTuple          = "max_ever_tuple"
+	IndexTypeMinEverTuple          = "min_ever_tuple"
+	IndexTypeRank                  = "rank"
+	IndexTypeVersion               = "version"
+	IndexTypeMaxEverVersion        = "max_ever_version"
+	IndexTypePermutedMin           = "permuted_min"
+	IndexTypePermutedMax           = "permuted_max"
+	IndexTypeBitmapValue           = "bitmap_value"
+	IndexTypeText                  = "text"
+	IndexTypeTimeWindowLeaderboard = "time_window_leaderboard"
+	IndexTypeMultidimensional      = "multidimensional"
+	IndexTypeVector                = "vector"
 )
 
 // Index option keys matching Java's IndexOptions.
 const (
-	IndexOptionUnique              = "unique"
-	IndexOptionClearWhenZero       = "clearWhenZero"
-	IndexOptionReplacedByPrefix    = "replacedBy"
+	IndexOptionUnique               = "unique"
+	IndexOptionClearWhenZero        = "clearWhenZero"
+	IndexOptionReplacedByPrefix     = "replacedBy"
 	IndexOptionBitmapValueEntrySize = "bitmapValueEntrySize"
 
 	// TEXT index options matching Java's IndexOptions.
-	IndexOptionTextTokenizerName              = "textTokenizerName"
-	IndexOptionTextTokenizerVersion           = "textTokenizerVersion"
+	IndexOptionTextTokenizerName               = "textTokenizerName"
+	IndexOptionTextTokenizerVersion            = "textTokenizerVersion"
 	IndexOptionTextAddAggressiveConflictRanges = "textAddAggressiveConflictRanges"
-	IndexOptionTextOmitPositions              = "textOmitPositions"
+	IndexOptionTextOmitPositions               = "textOmitPositions"
 )
 
 // IndexPredicate is a function that determines whether a record should be indexed.
@@ -54,12 +54,12 @@ type IndexPredicate func(msg proto.Message) bool
 // Index represents a secondary index definition.
 // Matches Java's com.apple.foundationdb.record.metadata.Index.
 type Index struct {
-	Name           string
-	Type           string
-	RootExpression KeyExpression
-	subspaceKey    any
-	Options        map[string]string
-	AddedVersion   int
+	Name                string
+	Type                string
+	RootExpression      KeyExpression
+	subspaceKey         any
+	Options             map[string]string
+	AddedVersion        int
 	LastModifiedVersion int
 
 	// Predicate filters which records are included in this index.

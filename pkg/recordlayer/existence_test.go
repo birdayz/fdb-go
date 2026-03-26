@@ -250,7 +250,8 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 
 			_, err = store.SaveRecordWithOptions(order, RecordExistenceCheckErrorIfExists)
 			Expect(err).To(HaveOccurred())
-			var existsErr *RecordAlreadyExistsError; Expect(errors.As(err, &existsErr)).To(BeTrue())
+			var existsErr *RecordAlreadyExistsError
+			Expect(errors.As(err, &existsErr)).To(BeTrue())
 
 			return nil, nil
 		})
@@ -347,7 +348,8 @@ var _ = Describe("InsertRecord", func() {
 
 			_, err = store.InsertRecord(order)
 			Expect(err).To(HaveOccurred())
-			var existsErr *RecordAlreadyExistsError; Expect(errors.As(err, &existsErr)).To(BeTrue())
+			var existsErr *RecordAlreadyExistsError
+			Expect(errors.As(err, &existsErr)).To(BeTrue())
 
 			return nil, nil
 		})
@@ -394,7 +396,8 @@ var _ = Describe("UpdateRecord", func() {
 
 			_, err = store.UpdateRecord(order)
 			Expect(err).To(HaveOccurred())
-			var notExistErr *RecordDoesNotExistError; Expect(errors.As(err, &notExistErr)).To(BeTrue())
+			var notExistErr *RecordDoesNotExistError
+			Expect(errors.As(err, &notExistErr)).To(BeTrue())
 
 			return nil, nil
 		})

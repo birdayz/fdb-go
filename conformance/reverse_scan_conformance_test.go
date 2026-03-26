@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Reverse Scan Conformance", func() {
@@ -236,9 +236,9 @@ var _ = Describe("Reverse Scan Conformance", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			var page1 struct {
-				Orders         []scanOrderResult `json:"orders"`
-				Continuation   string            `json:"continuation"`
-				SourceExhausted bool             `json:"sourceExhausted"`
+				Orders          []scanOrderResult `json:"orders"`
+				Continuation    string            `json:"continuation"`
+				SourceExhausted bool              `json:"sourceExhausted"`
 			}
 			err = json.Unmarshal(raw, &page1)
 			Expect(err).NotTo(HaveOccurred())

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -921,9 +921,9 @@ func (s *MultidimensionalIndexConformanceStore) ScanIndexJavaWithLimit(ctx conte
 	}
 
 	var javaResult struct {
-		Entries     []map[string]any `json:"entries"`
-		Continuation string          `json:"continuation"`
-		Exhausted    bool            `json:"exhausted"`
+		Entries      []map[string]any `json:"entries"`
+		Continuation string           `json:"continuation"`
+		Exhausted    bool             `json:"exhausted"`
 	}
 	if err := s.java.InvokeAs(ctx, "scanMultidimensionalIndexWithLimit", params, &javaResult); err != nil {
 		return nil, "", false, fmt.Errorf("java scanMultidimensionalIndexWithLimit failed: %w", err)

@@ -653,8 +653,8 @@ func TestBug8_AggregateFieldNameMatchingIsWrong(t *testing.T) {
 
 	// isGroupPrefix compares by field names, so Field("flower") matches the
 	// first name of Nest("flower", ...). But these are structurally different!
-	operand := GroupAll(fieldExpr)          // Grouping all of Field("flower")
-	indexRoot := GroupAll(nestExpr)          // Grouping all of Nest("flower", Field("type"))
+	operand := GroupAll(fieldExpr)  // Grouping all of Field("flower")
+	indexRoot := GroupAll(nestExpr) // Grouping all of Nest("flower", Field("type"))
 
 	// isGroupPrefix should return false (different expressions), but since
 	// it uses FieldNames, it matches "flower" == "flower" and returns true.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 var (

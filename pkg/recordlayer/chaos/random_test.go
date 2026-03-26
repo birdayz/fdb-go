@@ -94,10 +94,10 @@ func buildFullRandomMetadata() *recordlayer.RecordMetaData {
 func TestRandomBasicCRUD(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildRecordCountOnlyMetadata(), RandomConfig{
-		Seed:    1001,
-		NumOps:  500,
-		MaxPKs:  30,
-		Faults:  FaultsNone,
+		Seed:   1001,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsNone,
 	})
 }
 
@@ -106,10 +106,10 @@ func TestRandomBasicCRUD(t *testing.T) {
 func TestRandomValueIndex(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildValueIndexMetadata(), RandomConfig{
-		Seed:    2002,
-		NumOps:  500,
-		MaxPKs:  30,
-		Faults:  FaultsNone,
+		Seed:   2002,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsNone,
 	})
 }
 
@@ -118,10 +118,10 @@ func TestRandomValueIndex(t *testing.T) {
 func TestRandomValueIndexWithFaults(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildValueIndexMetadata(), RandomConfig{
-		Seed:    3003,
-		NumOps:  500,
-		MaxPKs:  30,
-		Faults:  FaultsRetryHeavy,
+		Seed:   3003,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
 	})
 }
 
@@ -130,10 +130,10 @@ func TestRandomValueIndexWithFaults(t *testing.T) {
 func TestRandomCountIndex(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildCountIndexMetadata(), RandomConfig{
-		Seed:    4004,
-		NumOps:  500,
-		MaxPKs:  30,
-		Faults:  FaultsRetryHeavy,
+		Seed:   4004,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
 	})
 }
 
@@ -142,10 +142,10 @@ func TestRandomCountIndex(t *testing.T) {
 func TestRandomSumIndex(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildSumIndexMetadata(), RandomConfig{
-		Seed:    5005,
-		NumOps:  500,
-		MaxPKs:  30,
-		Faults:  FaultsRetryHeavy,
+		Seed:   5005,
+		NumOps: 500,
+		MaxPKs: 30,
+		Faults: FaultsRetryHeavy,
 	})
 }
 
@@ -154,10 +154,10 @@ func TestRandomSumIndex(t *testing.T) {
 func TestRandomMultiIndex(t *testing.T) {
 	t.Parallel()
 	RunRandom(t, testRealDB, buildFullRandomMetadata(), RandomConfig{
-		Seed:    6006,
-		NumOps:  1000,
-		MaxPKs:  50,
-		Faults:  FaultsRetryHeavy,
+		Seed:   6006,
+		NumOps: 1000,
+		MaxPKs: 50,
+		Faults: FaultsRetryHeavy,
 	})
 }
 

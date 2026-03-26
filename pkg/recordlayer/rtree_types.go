@@ -223,21 +223,21 @@ func childSlotEqual(a, b ChildSlot) bool {
 // RTreeConfig configures the R-tree behavior.
 // Matches Java's RTree.Config.
 type RTreeConfig struct {
-	MinM              int  // Min slots per non-root node (default 16)
-	MaxM              int  // Max slots per node (default 32)
-	SplitS            int  // Siblings involved in split/fuse (default 2)
+	MinM               int  // Min slots per non-root node (default 16)
+	MaxM               int  // Max slots per node (default 32)
+	SplitS             int  // Siblings involved in split/fuse (default 2)
 	StoreHilbertValues bool // Store HV in leaf slots (default true)
-	NumDimensions     int  // Number of spatial dimensions
+	NumDimensions      int  // Number of spatial dimensions
 }
 
 // DefaultRTreeConfig returns the default R-tree configuration.
 func DefaultRTreeConfig(numDimensions int) RTreeConfig {
 	return RTreeConfig{
-		MinM:              16,
-		MaxM:              32,
-		SplitS:            2,
+		MinM:               16,
+		MaxM:               32,
+		SplitS:             2,
 		StoreHilbertValues: true,
-		NumDimensions:     numDimensions,
+		NumDimensions:      numDimensions,
 	}
 }
 

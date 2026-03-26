@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"math"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -221,19 +221,19 @@ var _ = Describe("TypedRecord Conformance — FDB tuple encoding of all proto fi
 	Describe("Go writes, Java reads indexes", func() {
 		It("basic values — all field types produce identical index entries", func() {
 			rec := buildTypedRecord(
-				1,              // id
-				42,             // int32
-				1000000,        // int64
-				-42,            // sint32
-				-1000000,       // sint64
-				-42,            // sfixed32
-				-1000000,       // sfixed64
-				3.14,           // float
-				2.718281828,    // double
-				true,           // bool
-				"hello",        // string
+				1,                  // id
+				42,                 // int32
+				1000000,            // int64
+				-42,                // sint32
+				-1000000,           // sint64
+				-42,                // sfixed32
+				-1000000,           // sfixed64
+				3.14,               // float
+				2.718281828,        // double
+				true,               // bool
+				"hello",            // string
 				[]byte{0xDE, 0xAD}, // bytes
-				gen.Color_RED,  // enum
+				gen.Color_RED,      // enum
 			)
 			err := store.SaveGo(ctx, rec)
 			Expect(err).NotTo(HaveOccurred())

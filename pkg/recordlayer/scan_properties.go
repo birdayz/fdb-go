@@ -90,26 +90,26 @@ func (m CursorStreamingMode) ToFDB() fdb.StreamingMode {
 type ExecuteProperties struct {
 	// IsolationLevel for the execution
 	IsolationLevel IsolationLevel
-	
+
 	// ReturnedRowLimit is the maximum number of records to return
 	// 0 or negative means no limit
 	ReturnedRowLimit int
-	
+
 	// ScannedRecordsLimit is the maximum number of records to scan
 	// 0 or negative means no limit
 	ScannedRecordsLimit int
-	
+
 	// ScannedBytesLimit is the maximum number of bytes to scan
 	// 0 or negative means no limit
 	ScannedBytesLimit int64
-	
+
 	// TimeLimit is the maximum time for the operation
 	// Zero duration means no limit
 	TimeLimit time.Duration
-	
+
 	// DefaultCursorStreamingMode is the default streaming mode for cursors
 	DefaultCursorStreamingMode CursorStreamingMode
-	
+
 	// FailOnScanLimitReached determines if hitting scan limits should fail the operation
 	FailOnScanLimitReached bool
 
@@ -187,10 +187,10 @@ func (e ExecuteProperties) ClearSkipAndLimit() ExecuteProperties {
 type ScanProperties struct {
 	// ExecuteProperties holds the execution-level properties
 	ExecuteProperties ExecuteProperties
-	
+
 	// Reverse indicates if the scan should be in reverse order
 	Reverse bool
-	
+
 	// CursorStreamingMode overrides the default streaming mode
 	CursorStreamingMode CursorStreamingMode
 }

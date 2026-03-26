@@ -1177,7 +1177,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		})
 
 		It("round-trips negative values", func() {
-			for _, v := range []int64{-1, -128, -256, -1<<31, -1<<63} {
+			for _, v := range []int64{-1, -128, -256, -1 << 31, -1 << 63} {
 				encoded := rsEncodeLong(v)
 				Expect(rsDecodeLong(encoded)).To(Equal(v), "round-trip of %d", v)
 			}
@@ -1417,7 +1417,7 @@ var _ = Describe("rankedSet (skip-list)", func() {
 				rs := newRankedSet(sub, defaultRankedSetConfig)
 				Expect(rs.Init(tx)).To(Succeed())
 
-				values := []int64{-1000, -1, 0, 1, 42, 999, 1<<50}
+				values := []int64{-1000, -1, 0, 1, 42, 999, 1 << 50}
 				for _, v := range values {
 					key := tuple.Tuple{v}.Pack()
 					_, err := rs.Add(tx, key)

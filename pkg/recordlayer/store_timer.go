@@ -40,14 +40,14 @@ var (
 
 	// Index-level count events — matching Java's FDBStoreTimer.Counts for index ops.
 	// Used by InstrumentedBunchedMap (TEXT index) and other index maintainers.
-	CountSaveIndexKey         = Event{"save_index_key", "Save Index Key"}
-	CountSaveIndexKeyBytes    = Event{"save_index_key_bytes", "Save Index Key Bytes"}
-	CountSaveIndexValueBytes  = Event{"save_index_value_bytes", "Save Index Value Bytes"}
-	CountLoadIndexKey         = Event{"load_index_key", "Load Index Key"}
-	CountLoadIndexKeyBytes    = Event{"load_index_key_bytes", "Load Index Key Bytes"}
-	CountLoadIndexValueBytes  = Event{"load_index_value_bytes", "Load Index Value Bytes"}
-	CountDeleteIndexKey       = Event{"delete_index_key", "Delete Index Key"}
-	CountDeleteIndexKeyBytes  = Event{"delete_index_key_bytes", "Delete Index Key Bytes"}
+	CountSaveIndexKey          = Event{"save_index_key", "Save Index Key"}
+	CountSaveIndexKeyBytes     = Event{"save_index_key_bytes", "Save Index Key Bytes"}
+	CountSaveIndexValueBytes   = Event{"save_index_value_bytes", "Save Index Value Bytes"}
+	CountLoadIndexKey          = Event{"load_index_key", "Load Index Key"}
+	CountLoadIndexKeyBytes     = Event{"load_index_key_bytes", "Load Index Key Bytes"}
+	CountLoadIndexValueBytes   = Event{"load_index_value_bytes", "Load Index Value Bytes"}
+	CountDeleteIndexKey        = Event{"delete_index_key", "Delete Index Key"}
+	CountDeleteIndexKeyBytes   = Event{"delete_index_key_bytes", "Delete Index Key Bytes"}
 	CountDeleteIndexValueBytes = Event{"delete_index_value_bytes", "Delete Index Value Bytes"}
 )
 

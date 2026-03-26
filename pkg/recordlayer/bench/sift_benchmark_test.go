@@ -1,4 +1,4 @@
-package recordlayer
+package bench
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
 // TestSIFTBenchmark runs the SIFT-1M benchmark against our HNSW vector index.
@@ -106,8 +107,8 @@ func TestSIFTBenchmark(t *testing.T) {
 	ss := vecBenchSubspace("sift-benchmark")
 
 	// Create store.
-	_, err = vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		_, err := NewStoreBuilder().
+	_, err = vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		_, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		return nil, err
 	})
@@ -128,8 +129,8 @@ func TestSIFTBenchmark(t *testing.T) {
 		if batchEnd > n {
 			batchEnd = n
 		}
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -212,9 +213,9 @@ func TestSIFTBenchmark(t *testing.T) {
 		queryF64 := float32sToFloat64s(queryVecs[qi])
 
 		opStart := time.Now()
-		var results []VectorSearchResult
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		var results []recordlayer.VectorSearchResult
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -334,7 +335,7 @@ func TestSIFTLoaderUnit(t *testing.T) {
 
 	t.Run("recall_calculation", func(t *testing.T) {
 		// Verify recall calculation with known data.
-		results := []VectorSearchResult{
+		results := []recordlayer.VectorSearchResult{
 			{PrimaryKey: tuple.Tuple{int64(0)}},
 			{PrimaryKey: tuple.Tuple{int64(1)}},
 			{PrimaryKey: tuple.Tuple{int64(5)}},
@@ -377,7 +378,7 @@ func resolveSIFTDir() string {
 	//    bzlmod canonicalizes the repo name to "+sift_dataset+sift1m".
 	candidates := []string{
 		"+sift_dataset+sift1m", // bzlmod canonical
-		"sift1m",              // workspace name fallback
+		"sift1m",               // workspace name fallback
 	}
 	for _, envKey := range []string{"RUNFILES_DIR", "TEST_SRCDIR"} {
 		base := os.Getenv(envKey)

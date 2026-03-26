@@ -168,7 +168,7 @@ func (j *JavaInvoker) Close() error {
 
 // Request is the JSON structure sent to Java
 type Request struct {
-	Step   string                 `json:"step"`
+	Step   string         `json:"step"`
 	Params map[string]any `json:"params"`
 }
 

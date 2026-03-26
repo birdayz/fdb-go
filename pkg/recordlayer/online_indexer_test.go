@@ -2281,8 +2281,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:  proto.Bool(true),
+					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
@@ -2330,8 +2330,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:  proto.Bool(true),
+					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
@@ -2389,8 +2389,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:  proto.Bool(true),
+					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
@@ -2440,10 +2440,10 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// Block with expiry 1ms in the past (already expired).
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method:                         gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:                          proto.Bool(true),
-					BlockID:                        proto.String("temp"),
-					BlockExpireEpochMilliSeconds:    proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
+					Method:                       gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:                        proto.Bool(true),
+					BlockID:                      proto.String("temp"),
+					BlockExpireEpochMilliSeconds: proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -2503,10 +2503,10 @@ var _ = Describe("OnlineIndexer", func() {
 
 				// Stamp with block=true but already expired (won't be "blocked").
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method:                         gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:                          proto.Bool(true),
-					BlockID:                        proto.String("old-run"),
-					BlockExpireEpochMilliSeconds:    proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
+					Method:                       gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:                        proto.Bool(true),
+					BlockID:                      proto.String("old-run"),
+					BlockExpireEpochMilliSeconds: proto.Uint64(uint64(time.Now().Add(-1 * time.Second).UnixMilli())),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)
 				Expect(err).NotTo(HaveOccurred())
@@ -2737,8 +2737,8 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				stamp := &gen.IndexBuildIndexingStamp{
-					Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
-					Block:  proto.Bool(true),
+					Method:  gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
+					Block:   proto.Bool(true),
 					BlockID: proto.String("maintenance"),
 				}
 				err = store.SaveIndexingTypeStamp(priceIndex, stamp)

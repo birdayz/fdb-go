@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
-	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
 var _ = Describe("CRUD Conformance", func() {
@@ -34,7 +34,7 @@ var _ = Describe("CRUD Conformance", func() {
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)  // Deletes tenant only
+			_ = env.Cleanup(ctx) // Deletes tenant only
 		}
 	})
 

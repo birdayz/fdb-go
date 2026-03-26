@@ -1050,7 +1050,7 @@ var _ = Describe("BugBounty3Indexer", func() {
 				SetMetaData(mdWithIndex).
 				SetIndex(priceIndex).
 				SetSubspace(ks).
-				SetLimit(2). // small chunks
+				SetLimit(2).                       // small chunks
 				SetTimeLimit(1 * time.Nanosecond). // 1 nanosecond
 				Build()
 			Expect(err).NotTo(HaveOccurred())

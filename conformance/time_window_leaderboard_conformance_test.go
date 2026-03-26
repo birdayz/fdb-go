@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -462,10 +462,10 @@ var _ = Describe("TIME_WINDOW_LEADERBOARD Custom Window Conformance", func() {
 				price int32
 				qty   int32 // this is the timestamp for window matching
 			}{
-				{1, 500, 1500},  // in window [1000, 2000)
-				{2, 100, 500},   // outside window
-				{3, 300, 1200},  // in window [1000, 2000)
-				{4, 200, 2500},  // outside window
+				{1, 500, 1500}, // in window [1000, 2000)
+				{2, 100, 500},  // outside window
+				{3, 300, 1200}, // in window [1000, 2000)
+				{4, 200, 2500}, // outside window
 			}
 			for _, o := range orders {
 				err = store.SaveOrderGo(ctx, &gen.Order{

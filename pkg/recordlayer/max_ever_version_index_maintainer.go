@@ -111,9 +111,9 @@ func (m *maxEverVersionIndexMaintainer) Scan(scanRange TupleRange, continuation 
 
 // versionEntry holds a grouping key and the packed value bytes for a MAX_EVER_VERSION entry.
 type versionEntry struct {
-	groupKey                    tuple.Tuple
-	packedValue                 []byte
-	hasIncompleteVersionstamp   bool
+	groupKey                  tuple.Tuple
+	packedValue               []byte
+	hasIncompleteVersionstamp bool
 }
 
 // evaluateEntries extracts (groupingKey, packed value) pairs from a record.

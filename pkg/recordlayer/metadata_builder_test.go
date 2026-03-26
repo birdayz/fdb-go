@@ -53,8 +53,8 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			_, err := builder.Build()
 			Expect(err).To(HaveOccurred())
 			var mdErr *MetaDataError
-		Expect(errors.As(err, &mdErr)).To(BeTrue())
-		Expect(mdErr.Message).To(ContainSubstring("reuses subspace key"))
+			Expect(errors.As(err, &mdErr)).To(BeTrue())
+			Expect(mdErr.Message).To(ContainSubstring("reuses subspace key"))
 		})
 
 		It("removing non-existent index is a no-op", func() {

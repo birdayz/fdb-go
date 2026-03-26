@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
-	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
@@ -39,7 +39,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Go writes, both scan covering index", func() {
 		It("value portion is wire-compatible between Go and Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i * 100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -82,7 +82,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Java writes, both scan covering index", func() {
 		It("Go reads covering index entries written by Java", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i * 200)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(i).WithPrice(int32(i*200)).WithFlower("Tulip", gen.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -112,7 +112,7 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 	Describe("Cross-language delete removes covering index entry", func() {
 		It("Go deletes Java-written record, both see updated index", func() {
 			for i := int64(1); i <= 3; i++ {
-				order := NewOrder(i).WithPrice(int32(i * 100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(i).WithPrice(int32(i*100)).WithFlower("Rose", gen.Color_RED).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -178,12 +178,12 @@ var _ = Describe("Covering Index (KeyWithValueExpression) Conformance", func() {
 		It("interleaved Go and Java writes produce consistent covering index", func() {
 			// Go writes orders 1,3,5; Java writes orders 2,4
 			for _, id := range []int64{1, 3, 5} {
-				order := NewOrder(id).WithPrice(int32(id * 100)).WithFlower("Rose", gen.Color_RED).Build()
+				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Rose", gen.Color_RED).Build()
 				err := store.SaveOrderGo(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}
 			for _, id := range []int64{2, 4} {
-				order := NewOrder(id).WithPrice(int32(id * 100)).WithFlower("Tulip", gen.Color_BLUE).Build()
+				order := NewOrder(id).WithPrice(int32(id*100)).WithFlower("Tulip", gen.Color_BLUE).Build()
 				err := store.SaveOrderJava(ctx, order)
 				Expect(err).NotTo(HaveOccurred())
 			}

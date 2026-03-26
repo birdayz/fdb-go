@@ -1941,4 +1941,3 @@ var _ = Describe("RANK Record Functions", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
-

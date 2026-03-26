@@ -171,9 +171,9 @@ func TestMetaDataToProtoRoundtrip(t *testing.T) {
 	fd := gen.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("Order").SetPrimaryKey( Concat(Field("order_id"), Field("price")))
-	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
-	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
+	builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("order_id"), Field("price")))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 	builder.SetStoreRecordVersions(true)
 	builder.SetSplitLongRecords(true)
 	builder.SetRecordCountKey(EmptyKey())
@@ -289,9 +289,9 @@ func TestMetaDataToProtoWithFormerIndexes(t *testing.T) {
 	fd := gen.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("Order").SetPrimaryKey( Field("order_id"))
-	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
-	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 	// Add and then remove an index
 	idx := NewIndex("by_price", Field("price"))
@@ -329,9 +329,9 @@ func TestMetaDataToProtoUniversalIndex(t *testing.T) {
 	fd := gen.File_record_layer_demo_proto
 
 	builder := NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("Order").SetPrimaryKey( Field("order_id"))
-	builder.GetRecordType("Customer").SetPrimaryKey( Field("customer_id"))
-	builder.GetRecordType("TypedRecord").SetPrimaryKey( Field("id"))
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
 	idx := NewIndex("global_idx", RecordTypeKey())
 	builder.AddUniversalIndex(idx)

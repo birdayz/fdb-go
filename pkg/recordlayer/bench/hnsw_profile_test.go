@@ -1,4 +1,4 @@
-package recordlayer
+package bench
 
 import (
 	"context"

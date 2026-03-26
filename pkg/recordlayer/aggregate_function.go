@@ -20,10 +20,10 @@ const (
 	FunctionNameMax          = "max"
 
 	// RANK aggregate function names.
-	FunctionNameRankForScore          = "rank_for_score"
-	FunctionNameScoreForRank          = "score_for_rank"
-	FunctionNameScoreForRankElseSkip  = "score_for_rank_else_skip"
-	FunctionNameCountDistinct         = "count_distinct"
+	FunctionNameRankForScore         = "rank_for_score"
+	FunctionNameScoreForRank         = "score_for_rank"
+	FunctionNameScoreForRankElseSkip = "score_for_rank_else_skip"
+	FunctionNameCountDistinct        = "count_distinct"
 
 	// BITMAP_VALUE aggregate function name.
 	FunctionNameBitmapValue = "bitmap_value"
@@ -554,4 +554,3 @@ func splitEqualRangeForRank(scanRange TupleRange, groupPrefixSize int) ([]any, t
 	trailingValues := tuple.Tuple(values[groupPrefixSize:])
 	return groupPrefix, trailingValues, nil
 }
-

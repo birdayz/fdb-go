@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("COUNT Index Conformance", func() {
@@ -280,7 +280,7 @@ var _ = Describe("COUNT Index Conformance", func() {
 // CountIndexEntryResult represents a single COUNT index entry for comparison.
 type CountIndexEntryResult struct {
 	Key   []any // Grouping key (e.g., [price])
-	Count int64         // Count for this grouping key
+	Count int64 // Count for this grouping key
 }
 
 // CountIndexConformanceStore wraps record operations with a COUNT index on

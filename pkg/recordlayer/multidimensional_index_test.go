@@ -532,7 +532,7 @@ var _ = Describe("RTree", func() {
 
 			for _, item := range items {
 				pk := item.KeySuffix[0].(int64)
-				Expect(pk % 2).To(Equal(int64(1)), "only odd PKs should remain, got %d", pk)
+				Expect(pk%2).To(Equal(int64(1)), "only odd PKs should remain, got %d", pk)
 			}
 
 			return nil, nil

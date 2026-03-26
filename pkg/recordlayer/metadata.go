@@ -164,7 +164,7 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 		return b
 	}
 	b.unionDescriptor = unionDesc
-	
+
 	// Auto-discover record types from UnionDescriptor fields
 	unionFields := unionDesc.Fields()
 
@@ -196,7 +196,7 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 			b.recordTypes[recordTypeName] = recordType
 		}
 	}
-	
+
 	return b
 }
 
@@ -812,7 +812,6 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 	rtb.recordType.explicitRecordTypeKey = key
 	return rtb
 }
-
 
 // GetRecordType returns the record type for the given name
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {

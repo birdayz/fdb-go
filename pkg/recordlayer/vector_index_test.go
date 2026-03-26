@@ -1034,11 +1034,11 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 	It("parseHNSWConfig reads hnswUseInlining option", func() {
 		idx := &Index{
-			Name:    "test_vec",
-			Type:    IndexTypeVector,
+			Name: "test_vec",
+			Type: IndexTypeVector,
 			Options: map[string]string{
 				IndexOptionVectorNumDimensions: "128",
-				"hnswUseInlining":             "true",
+				"hnswUseInlining":              "true",
 			},
 		}
 		config := parseHNSWConfig(idx)
@@ -1047,8 +1047,8 @@ var _ = Describe("HNSW Inlining Storage", func() {
 
 		// Without the option, should default to false.
 		idx2 := &Index{
-			Name:    "test_vec2",
-			Type:    IndexTypeVector,
+			Name: "test_vec2",
+			Type: IndexTypeVector,
 			Options: map[string]string{
 				IndexOptionVectorNumDimensions: "128",
 			},
@@ -1173,11 +1173,11 @@ var _ = Describe("HNSW with RaBitQ", func() {
 
 			// Insert 5 points in 4D (well-separated).
 			points := [][]float64{
-				{0.0, 0.0, 0.0, 0.0},     // id=0
-				{1.0, 0.0, 0.0, 0.0},     // id=1
-				{2.0, 0.0, 0.0, 0.0},     // id=2
-				{100.0, 0.0, 0.0, 0.0},   // id=3 (far)
-				{1000.0, 0.0, 0.0, 0.0},  // id=4 (very far)
+				{0.0, 0.0, 0.0, 0.0},    // id=0
+				{1.0, 0.0, 0.0, 0.0},    // id=1
+				{2.0, 0.0, 0.0, 0.0},    // id=2
+				{100.0, 0.0, 0.0, 0.0},  // id=3 (far)
+				{1000.0, 0.0, 0.0, 0.0}, // id=4 (very far)
 			}
 			for i, p := range points {
 				pk := tuple.Tuple{int64(i)}
@@ -1343,7 +1343,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Type: IndexTypeVector,
 			Options: map[string]string{
 				"hnswNumDimensions":   "32",
-				"hnswUseRaBitQ":      "true",
+				"hnswUseRaBitQ":       "true",
 				"hnswRaBitQNumExBits": "6",
 			},
 		}
@@ -1368,7 +1368,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Name: "test_vec",
 			Type: IndexTypeVector,
 			Options: map[string]string{
-				"hnswUseRaBitQ":      "true",
+				"hnswUseRaBitQ":       "true",
 				"hnswRaBitQNumExBits": "99",
 			},
 		}
@@ -2843,7 +2843,7 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 				for _, r := range results {
 					// Each result's PK should start with the group's hundred (e.g., group 1 = 100, 101).
 					pk := r.PrimaryKey[0].(int64)
-					Expect(pk / 100).To(Equal(g), "result PK %d should belong to group %d", pk, g)
+					Expect(pk/100).To(Equal(g), "result PK %d should belong to group %d", pk, g)
 				}
 			}
 
@@ -3265,7 +3265,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &Index{
 			Name: "test_vec_fetch_limits",
 			Options: map[string]string{
-				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "32",
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:         "32",
 				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "15",
 				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "5",
 			},
@@ -3291,9 +3291,9 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &Index{
 			Name: "test_vec_bad_limits",
 			Options: map[string]string{
-				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "0",    // below min (must be > 0)
-				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "21",   // above max (must be <= 20)
-				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "-1",   // negative
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:         "0",  // below min (must be > 0)
+				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "21", // above max (must be <= 20)
+				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "-1", // negative
 			},
 		}
 		config := parseHNSWConfig(idx)
@@ -3318,9 +3318,9 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 		idx := &Index{
 			Name: "test_vec_boundary_limits",
 			Options: map[string]string{
-				IndexOptionHNSWMaxNumConcurrentNodeFetches:          "64",  // max valid
-				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",   // min valid
-				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10",  // max valid
+				IndexOptionHNSWMaxNumConcurrentNodeFetches:         "64", // max valid
+				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",  // min valid
+				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10", // max valid
 			},
 		}
 		config := parseHNSWConfig(idx)

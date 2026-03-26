@@ -20,11 +20,11 @@ func init() {
 			Color: gen.Color_RED.Enum(),
 		},
 	}
-	
+
 	union := &gen.UnionDescriptor{
 		XOrder: order,
 	}
-	
+
 	var err error
 	testUnionData, err = proto.Marshal(union)
 	if err != nil {
@@ -34,18 +34,18 @@ func init() {
 
 func BenchmarkDeserializeRecord_Standard(b *testing.B) {
 	metaData := testMetaData(b)
-	
+
 	store := &FDBRecordStore{
 		metaData: metaData,
 	}
-	
+
 	recordType := metaData.GetRecordType("Order")
-	
+
 	// Warmup - run a few iterations to stabilize performance
 	for i := 0; i < 1000; i++ {
 		_, _ = store.deserializeRecord(testUnionData, recordType)
 	}
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -56,24 +56,23 @@ func BenchmarkDeserializeRecord_Standard(b *testing.B) {
 	}
 }
 
-
 // Test basic deserialization works correctly
 func TestDeserializationWorks(t *testing.T) {
 	// Use proper builder to set up union field descriptors
 	metaData := testMetaData(t)
-	
+
 	store := &FDBRecordStore{
 		metaData: metaData,
 	}
-	
+
 	recordType := metaData.GetRecordType("Order")
-	
+
 	// Deserialize with standard method
 	msg, err := store.deserializeRecord(testUnionData, recordType)
 	if err != nil {
 		t.Fatalf("Deserialization failed: %v", err)
 	}
-	
+
 	// Verify the result
 	order := msg.(*gen.Order)
 	if *order.OrderId != 1001 {

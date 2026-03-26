@@ -336,5 +336,3 @@ type BunchedMapException struct {
 func (e *BunchedMapException) Error() string {
 	return fmt.Sprintf("bunched map error: %s", e.Message)
 }
-
-

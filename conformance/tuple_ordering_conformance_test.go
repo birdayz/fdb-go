@@ -279,13 +279,13 @@ var _ = Describe("Tuple Ordering Conformance", func() {
 				"ab",
 				"z",
 				"hello world",
-				"\x00",      // null byte
-				"\x00\x00",  // two null bytes
-				"\xc3\xbf",  // ÿ (valid UTF-8)
-				"αβγ",       // Greek
-				"日本語",     // CJK
+				"\x00",     // null byte
+				"\x00\x00", // two null bytes
+				"\xc3\xbf", // ÿ (valid UTF-8)
+				"αβγ",      // Greek
+				"日本語",      // CJK
 				"🎉",        // emoji
-				"a\x00b",    // embedded null
+				"a\x00b",   // embedded null
 			}
 			pairs := buildAllPairs(values)
 			verifyOrdering(values, pairs)
@@ -374,14 +374,14 @@ var _ = Describe("Tuple Ordering Conformance", func() {
 			// FDB tuple type codes define the cross-type sort order:
 			// NULL(0x00) < bytes(0x01) < string(0x02) < int(0x14) < float64(0x21) < bool(0x26/0x27) < UUID(0x30) < Versionstamp(0x33)
 			values := []any{
-				nil,                    // NULL
-				[]byte{42},             // BYTES
-				"hello",               // STRING
-				int64(42),              // INT64
-				float64(3.14),          // FLOAT64
-				false,                  // BOOL (false)
-				true,                   // BOOL (true)
-				makeUUID("550e8400-e29b-41d4-a716-446655440000"), // UUID
+				nil,           // NULL
+				[]byte{42},    // BYTES
+				"hello",       // STRING
+				int64(42),     // INT64
+				float64(3.14), // FLOAT64
+				false,         // BOOL (false)
+				true,          // BOOL (true)
+				makeUUID("550e8400-e29b-41d4-a716-446655440000"),            // UUID
 				makeVersionstamp([10]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, 0), // VERSIONSTAMP
 			}
 			pairs := buildAllPairs(values)
@@ -448,8 +448,8 @@ var _ = Describe("Tuple Ordering Conformance", func() {
 			// so all byte values sort before all string values.
 			values := []any{
 				[]byte{},
-				[]byte{0x61},  // 'a'
-				[]byte{0x62},  // 'b'
+				[]byte{0x61}, // 'a'
+				[]byte{0x62}, // 'b'
 				"",
 				"a",
 				"b",

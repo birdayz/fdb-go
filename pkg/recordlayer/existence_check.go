@@ -131,4 +131,3 @@ type RecordTypeChangedError struct {
 func (e *RecordTypeChangedError) Error() string {
 	return e.Message
 }
-

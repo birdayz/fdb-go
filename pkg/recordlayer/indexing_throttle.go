@@ -14,14 +14,14 @@ type indexingThrottle struct {
 	recordsPerSecond int // inter-transaction rate limit (0 = unlimited)
 
 	// Adaptive limit state (matches Java's IndexingThrottle.Booker)
-	recordsLimit                int   // current per-transaction limit
-	lastFailureRecordsScanned  int   // records scanned when last failure occurred
-	consecutiveFailureCount    int   // for oneToNineFactor
-	consecutiveSuccessCount    int   // for optional limit increase (unused by default)
+	recordsLimit              int // current per-transaction limit
+	lastFailureRecordsScanned int // records scanned when last failure occurred
+	consecutiveFailureCount   int // for oneToNineFactor
+	consecutiveSuccessCount   int // for optional limit increase (unused by default)
 
 	// Rate limiter state (matches Java's Booker.waitTimeMilliseconds)
-	forcedDelayTimestamp                time.Time // next allowed transaction start
-	recordsScannedSinceForcedDelay      int       // records since last delay reset
+	forcedDelayTimestamp           time.Time // next allowed transaction start
+	recordsScannedSinceForcedDelay int       // records since last delay reset
 }
 
 // newIndexingThrottle creates a throttle with the given initial parameters.

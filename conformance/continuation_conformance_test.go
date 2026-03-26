@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Continuation Token Conformance", func() {
@@ -71,8 +71,8 @@ var _ = Describe("Continuation Token Conformance", func() {
 	// javaScanResult represents the response from scanOrdersWithContinuation
 	type javaScanResult struct {
 		Orders          []map[string]any `json:"orders"`
-		Continuation    string                   `json:"continuation"` // base64
-		SourceExhausted bool                     `json:"sourceExhausted"`
+		Continuation    string           `json:"continuation"` // base64
+		SourceExhausted bool             `json:"sourceExhausted"`
 	}
 
 	scanWithJava := func(limit int, continuation string) javaScanResult {

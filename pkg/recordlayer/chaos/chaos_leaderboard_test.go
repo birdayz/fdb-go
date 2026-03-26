@@ -698,4 +698,3 @@ func TestLeaderboardAllFaultTypes(t *testing.T) {
 	t.Logf("completed %d ops with seed=%d, %d faults injected",
 		numOps, s.Seed(), len(s.FaultLog()))
 }
-

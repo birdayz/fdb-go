@@ -985,11 +985,11 @@ func TestVarIntEncodingBytes(t *testing.T) {
 		{0, []byte{0x00}},
 		{1, []byte{0x01}},
 		{127, []byte{0x7f}},
-		{128, []byte{0x81, 0x00}},          // 1<<7 = 128
-		{255, []byte{0x81, 0x7f}},          // (1<<7)|0x7f
-		{16383, []byte{0xFF, 0x7F}},        // (0x7f<<7)|0x7f = 16383
-		{16384, []byte{0x81, 0x80, 0x00}},  // 1<<14
-		{600, []byte{0x84, 0x58}},          // from documented example
+		{128, []byte{0x81, 0x00}},         // 1<<7 = 128
+		{255, []byte{0x81, 0x7f}},         // (1<<7)|0x7f
+		{16383, []byte{0xFF, 0x7F}},       // (0x7f<<7)|0x7f = 16383
+		{16384, []byte{0x81, 0x80, 0x00}}, // 1<<14
+		{600, []byte{0x84, 0x58}},         // from documented example
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%d", tc.val), func(t *testing.T) {
@@ -1050,19 +1050,19 @@ type stubTokenizerFactory struct {
 	name string
 }
 
-func (f *stubTokenizerFactory) Name() string               { return f.name }
+func (f *stubTokenizerFactory) Name() string                { return f.name }
 func (f *stubTokenizerFactory) GetTokenizer() TextTokenizer { return &stubTokenizer{name: f.name} }
 
 type stubTokenizer struct {
 	name string
 }
 
-func (t *stubTokenizer) Name() string                                              { return t.name }
-func (t *stubTokenizer) Tokenize(_ string, _ int, _ TokenizerMode) TokenIterator   { return &emptyIter{} }
+func (t *stubTokenizer) Name() string                                                    { return t.name }
+func (t *stubTokenizer) Tokenize(_ string, _ int, _ TokenizerMode) TokenIterator         { return &emptyIter{} }
 func (t *stubTokenizer) TokenizeToMap(_ string, _ int, _ TokenizerMode) map[string][]int { return nil }
-func (t *stubTokenizer) TokenizeToList(_ string, _ int, _ TokenizerMode) []string  { return nil }
-func (t *stubTokenizer) MaxVersion() int                                           { return 0 }
-func (t *stubTokenizer) MinVersion() int                                           { return 0 }
+func (t *stubTokenizer) TokenizeToList(_ string, _ int, _ TokenizerMode) []string        { return nil }
+func (t *stubTokenizer) MaxVersion() int                                                 { return 0 }
+func (t *stubTokenizer) MinVersion() int                                                 { return 0 }
 
 type emptyIter struct{}
 

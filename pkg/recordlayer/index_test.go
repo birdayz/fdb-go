@@ -63,8 +63,8 @@ var _ = Describe("SecondaryIndexes", func() {
 			entryTuple, err := idxSubspace.Unpack(kvs[0].Key)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entryTuple).To(HaveLen(2))
-			Expect(entryTuple[0]).To(Equal(int64(999)))  // price (int32 → int64 for FDB tuple compat)
-			Expect(entryTuple[1]).To(Equal(int64(42)))    // order_id (primary key)
+			Expect(entryTuple[0]).To(Equal(int64(999))) // price (int32 → int64 for FDB tuple compat)
+			Expect(entryTuple[1]).To(Equal(int64(42)))  // order_id (primary key)
 
 			return nil, nil
 		})
@@ -890,7 +890,7 @@ var _ = Describe("KeyWithValueExpression covering indexes", func() {
 
 			_, err = store.SaveRecord(&gen.Order{
 				OrderId: proto.Int64(42), Price: proto.Int32(100),
-				Flower:  &gen.Flower{Type: proto.String("Rose")},
+				Flower: &gen.Flower{Type: proto.String("Rose")},
 			})
 			Expect(err).NotTo(HaveOccurred())
 

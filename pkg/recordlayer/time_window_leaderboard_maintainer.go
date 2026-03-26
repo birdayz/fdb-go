@@ -1010,10 +1010,10 @@ func (m *timeWindowLeaderboardIndexMaintainer) TrimScores(scores []tuple.Tuple, 
 
 // Aggregate function name constants for TIME_WINDOW_LEADERBOARD.
 const (
-	FunctionNameTimeWindowCount              = "time_window_count"
-	FunctionNameScoreForTimeWindowRank       = "score_for_time_window_rank"
+	FunctionNameTimeWindowCount                = "time_window_count"
+	FunctionNameScoreForTimeWindowRank         = "score_for_time_window_rank"
 	FunctionNameScoreForTimeWindowRankElseSkip = "score_for_time_window_rank_else_skip"
-	FunctionNameTimeWindowRankForScore       = "time_window_rank_for_score"
+	FunctionNameTimeWindowRankForScore         = "time_window_rank_for_score"
 )
 
 // CanEvaluateTimeWindowAggregate checks if this maintainer supports a given aggregate function.

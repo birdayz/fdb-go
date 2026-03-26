@@ -151,7 +151,6 @@ go_test(
         "fht_kac_rotator_test.go",
         "field_type_index_test.go",
         "function_key_expression_test.go",
-        "hnsw_profile_test.go",
         "index_bug_verify_test.go",
         "index_maintainer_test.go",
         "index_registration_matrix_test.go",
@@ -204,8 +203,6 @@ go_test(
         "scan_limit_test.go",
         "scan_properties_test.go",
         "scan_test.go",
-        "sift_benchmark_test.go",
-        "sift_loader_test.go",
         "sparse_index_test.go",
         "split_helper_test.go",
         "split_key_expression_test.go",
@@ -230,13 +227,15 @@ go_test(
         "typed_api_test.go",
         "typed_store_conformance_test.go",
         "unique_index_concurrent_test.go",
-        "vector_benchmark_test.go",
         "vector_index_test.go",
         "version_bug_verify_test.go",
         "version_index_test.go",
         "version_range_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(
+        ["testdata/**"],
+        allow_empty = True,
+    ),
     embed = [":recordlayer"],
     deps = [
         "//gen",
@@ -269,51 +268,7 @@ go_test(
     ],
 )
 
-# Vector/HNSW benchmarks — excluded from //... (long-running, needs large dataset).
-# Run benchmarks:
-#   bazelisk test //pkg/recordlayer:vector_benchmark_test --test_arg="-test.bench=." --test_output=streamed
-# Run stress test:
-#   bazelisk test //pkg/recordlayer:vector_benchmark_test --test_arg="-test.run=TestVectorStressManual" --test_output=streamed --test_env=VECTOR_STRESS=1
-go_test(
-    name = "vector_benchmark_test",
-    timeout = "eternal",
-    srcs = ["vector_benchmark_test.go"],
-    embed = [":recordlayer"],
-    tags = ["manual"],
-    deps = [
-        "//gen",
-        "//pkg/testcontainers/foundationdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
-        "@org_golang_google_protobuf//proto",
-    ],
-)
-
-# SIFT-1M benchmark — excluded from //... (manual tag).
-# Bazel auto-downloads 500MB SIFT-1M dataset from INRIA on first build (cached).
+# Vector/SIFT benchmarks moved to pkg/recordlayer/bench/ (separate package).
 # Run:
-#   bazelisk test //pkg/recordlayer:sift_benchmark_test \
-#     --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed \
-#     --test_env=SIFT_BENCH=1
-# Configure via env: SIFT_N, SIFT_K, SIFT_EF, SIFT_BATCH_SIZE, SIFT_NUM_QUERIES
-go_test(
-    name = "sift_benchmark_test",
-    timeout = "eternal",
-    srcs = [
-        "sift_benchmark_test.go",
-        "sift_loader_test.go",
-        "vector_benchmark_test.go",
-    ],
-    data = ["@sift1m//:data"],
-    embed = [":recordlayer"],
-    tags = ["manual"],
-    deps = [
-        "//gen",
-        "//pkg/testcontainers/foundationdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
-        "@org_golang_google_protobuf//proto",
-    ],
-)
+#   bazelisk test //pkg/recordlayer/bench:bench_test --test_arg="-test.bench=." --test_output=streamed
+#   bazelisk test //pkg/recordlayer/bench:bench_test --test_arg="-test.run=TestSIFTBenchmark" --test_output=streamed --test_env=SIFT_BENCH=1

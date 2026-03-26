@@ -23,7 +23,7 @@ type RankQuerier interface {
 //
 // Matches Java's rankIndexMaintainer.
 type rankIndexMaintainer struct {
-	standardIndexMaintainer              // embedded — primary B-tree operations
+	standardIndexMaintainer                   // embedded — primary B-tree operations
 	secondarySubspace       subspace.Subspace // ranked sets per group
 	rankedSetConfig         rankedSetConfig
 }

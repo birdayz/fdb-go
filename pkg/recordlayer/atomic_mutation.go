@@ -82,11 +82,13 @@ func (m *countMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry 
 	return nil
 }
 
-func (m *countMutation) isIdempotent() bool                                     { return false }
-func (m *countMutation) deleteIsNoOp() bool                                     { return false }
-func (m *countMutation) tupleValues() bool                                      { return false }
-func (m *countMutation) aggregateIdentity() tuple.Tuple                         { return tuple.Tuple{int64(0)} }
-func (m *countMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple         { return addAggregate(accum, entry) }
+func (m *countMutation) isIdempotent() bool             { return false }
+func (m *countMutation) deleteIsNoOp() bool             { return false }
+func (m *countMutation) tupleValues() bool              { return false }
+func (m *countMutation) aggregateIdentity() tuple.Tuple { return tuple.Tuple{int64(0)} }
+func (m *countMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple {
+	return addAggregate(accum, entry)
+}
 
 // --- COUNT_NOT_NULL mutation ---
 
@@ -122,11 +124,13 @@ func (m *countNotNullMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key,
 	return nil
 }
 
-func (m *countNotNullMutation) isIdempotent() bool                                     { return false }
-func (m *countNotNullMutation) deleteIsNoOp() bool                                     { return false }
-func (m *countNotNullMutation) tupleValues() bool                                      { return false }
-func (m *countNotNullMutation) aggregateIdentity() tuple.Tuple                         { return tuple.Tuple{int64(0)} }
-func (m *countNotNullMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple         { return addAggregate(accum, entry) }
+func (m *countNotNullMutation) isIdempotent() bool             { return false }
+func (m *countNotNullMutation) deleteIsNoOp() bool             { return false }
+func (m *countNotNullMutation) tupleValues() bool              { return false }
+func (m *countNotNullMutation) aggregateIdentity() tuple.Tuple { return tuple.Tuple{int64(0)} }
+func (m *countNotNullMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple {
+	return addAggregate(accum, entry)
+}
 
 // --- COUNT_UPDATES mutation ---
 
@@ -160,11 +164,13 @@ func (m *countUpdatesMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key,
 	return nil
 }
 
-func (m *countUpdatesMutation) isIdempotent() bool                                     { return false }
-func (m *countUpdatesMutation) deleteIsNoOp() bool                                     { return true }
-func (m *countUpdatesMutation) tupleValues() bool                                      { return false }
-func (m *countUpdatesMutation) aggregateIdentity() tuple.Tuple                         { return tuple.Tuple{int64(0)} }
-func (m *countUpdatesMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple         { return addAggregate(accum, entry) }
+func (m *countUpdatesMutation) isIdempotent() bool             { return false }
+func (m *countUpdatesMutation) deleteIsNoOp() bool             { return true }
+func (m *countUpdatesMutation) tupleValues() bool              { return false }
+func (m *countUpdatesMutation) aggregateIdentity() tuple.Tuple { return tuple.Tuple{int64(0)} }
+func (m *countUpdatesMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple {
+	return addAggregate(accum, entry)
+}
 
 // --- SUM mutation ---
 
@@ -231,11 +237,13 @@ func (m *sumMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry at
 	return nil
 }
 
-func (m *sumMutation) isIdempotent() bool                                     { return false }
-func (m *sumMutation) deleteIsNoOp() bool                                     { return false }
-func (m *sumMutation) tupleValues() bool                                      { return false }
-func (m *sumMutation) aggregateIdentity() tuple.Tuple                         { return tuple.Tuple{int64(0)} }
-func (m *sumMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple         { return addAggregate(accum, entry) }
+func (m *sumMutation) isIdempotent() bool             { return false }
+func (m *sumMutation) deleteIsNoOp() bool             { return false }
+func (m *sumMutation) tupleValues() bool              { return false }
+func (m *sumMutation) aggregateIdentity() tuple.Tuple { return tuple.Tuple{int64(0)} }
+func (m *sumMutation) aggregate(accum, entry tuple.Tuple) tuple.Tuple {
+	return addAggregate(accum, entry)
+}
 
 // --- MIN_EVER_LONG / MAX_EVER_LONG mutation ---
 

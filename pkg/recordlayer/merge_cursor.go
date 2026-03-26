@@ -64,8 +64,8 @@ type unionCursor[T any] struct {
 	reverse          bool
 	started          bool
 	closed           bool
-	stopped          bool                    // set when a child hit an out-of-band limit
-	stopReason       NoNextReason            // reason for stop
+	stopped          bool                     // set when a child hit an out-of-band limit
+	stopReason       NoNextReason             // reason for stop
 	stopContinuation RecordCursorContinuation // continuation at stop point
 }
 

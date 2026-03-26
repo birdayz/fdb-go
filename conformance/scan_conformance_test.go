@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 var _ = Describe("Scan Conformance", func() {
 	var (
-		ctx        context.Context
-		env        *TenantEnvironment
-		java       *JavaInvoker
+		ctx  context.Context
+		env  *TenantEnvironment
+		java *JavaInvoker
 	)
 
 	BeforeEach(func() {
@@ -104,8 +104,8 @@ var _ = Describe("Scan Conformance", func() {
 
 	// scanOrderResult represents a scanned order from Java
 	type scanOrderResult struct {
-		OrderID int64  `json:"orderId"`
-		Price   int32  `json:"price"`
+		OrderID int64 `json:"orderId"`
+		Price   int32 `json:"price"`
 		Flower  *struct {
 			Type  string `json:"type"`
 			Color string `json:"color"`

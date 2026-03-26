@@ -206,19 +206,19 @@ func (e *TimeLimitExceededError) Error() string {
 type OnlineIndexer struct {
 	db               *FDBDatabase
 	metaData         *RecordMetaData
-	targetIndexes    []*Index  // target indexes to build (first = primary for range tracking)
-	sourceIndex      *Index    // non-nil = BY_INDEX strategy (single target only)
+	targetIndexes    []*Index // target indexes to build (first = primary for range tracking)
+	sourceIndex      *Index   // non-nil = BY_INDEX strategy (single target only)
 	subspace         subspace.Subspace
 	limit            int
-	maxRetries       int            // max retries per range on transient failures (0 = no retries)
-	recordsPerSecond int            // inter-transaction rate limit (0 = unlimited, default 10000)
-	timeLimit        time.Duration  // overall build time limit (0 = unlimited)
-	recordTypes      []string        // record types to index (empty = all types; not allowed with multi-target)
-	policy           *IndexingPolicy // stamp conflict resolution policy (nil = default behavior)
+	maxRetries       int               // max retries per range on transient failures (0 = no retries)
+	recordsPerSecond int               // inter-transaction rate limit (0 = unlimited, default 10000)
+	timeLimit        time.Duration     // overall build time limit (0 = unlimited)
+	recordTypes      []string          // record types to index (empty = all types; not allowed with multi-target)
+	policy           *IndexingPolicy   // stamp conflict resolution policy (nil = default behavior)
 	throttle         *indexingThrottle // adaptive throttle (created at Build time)
-	mutual            bool              // true = MUTUAL_BY_RECORDS (concurrent building)
-	mutualBoundaries  [][]byte          // pre-set fragment boundaries (nil = single fragment)
-	leaseLengthMs     int64             // heartbeat lease duration in ms (default 30000)
+	mutual           bool              // true = MUTUAL_BY_RECORDS (concurrent building)
+	mutualBoundaries [][]byte          // pre-set fragment boundaries (nil = single fragment)
+	leaseLengthMs    int64             // heartbeat lease duration in ms (default 30000)
 }
 
 // primaryIndex returns the first target index, which drives range tracking.
@@ -233,7 +233,7 @@ func (oi *OnlineIndexer) isMultiTarget() bool {
 
 // OnlineIndexerBuilder constructs an OnlineIndexer.
 type OnlineIndexerBuilder struct {
-	indexer     OnlineIndexer
+	indexer    OnlineIndexer
 	singleMode bool // true if SetIndex was used (mutually exclusive with AddTargetIndex)
 }
 

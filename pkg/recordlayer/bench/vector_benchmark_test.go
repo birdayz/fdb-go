@@ -1,4 +1,4 @@
-package recordlayer
+package bench
 
 import (
 	"context"
@@ -13,19 +13,22 @@ import (
 	"testing"
 	"time"
 
+	"encoding/binary"
+
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // --- Self-contained FDB init for the standalone manual target ---
 
 var (
-	vectorBenchDB     *FDBDatabase
+	vectorBenchDB     *recordlayer.FDBDatabase
 	vectorBenchDBOnce sync.Once
 )
 
@@ -64,7 +67,7 @@ func ensureVectorBenchDB(tb testing.TB) {
 		if err != nil {
 			tb.Fatalf("failed to open FDB: %v", err)
 		}
-		vectorBenchDB = NewFDBDatabase(dbConn)
+		vectorBenchDB = recordlayer.NewFDBDatabase(dbConn)
 	})
 	if vectorBenchDB == nil {
 		tb.Fatal("vectorBenchDB initialization failed")
@@ -150,18 +153,18 @@ func vecBenchSubspace(name string) subspace.Subspace {
 }
 
 // vecBuildMetaData builds metadata with a VECTOR index on Order.vector_data.
-// Uses KWV(Field("vector_data"), 0) — all vectors in one HNSW graph (no prefix grouping).
-func vecBuildMetaData(dims int, useRaBitQ bool) (*RecordMetaData, *Index) {
-	vecIdx := NewVectorIndex("vec_data",
-		KeyWithValue(Field("vector_data"), 0), dims)
+// Uses KWV(recordlayer.Field("vector_data"), 0) — all vectors in one HNSW graph (no prefix grouping).
+func vecBuildMetaData(dims int, useRaBitQ bool) (*recordlayer.RecordMetaData, *recordlayer.Index) {
+	vecIdx := recordlayer.NewVectorIndex("vec_data",
+		recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), dims)
 	if useRaBitQ {
 		vecIdx.Options["hnswUseRaBitQ"] = "true"
 	}
 
-	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", vecIdx)
 	md, err := builder.Build()
 	if err != nil {
@@ -173,15 +176,15 @@ func vecBuildMetaData(dims int, useRaBitQ bool) (*RecordMetaData, *Index) {
 // vecInsertVectors inserts n vectors into the store in batches to avoid FDB
 // transaction size limits. Returns the vectors that were inserted (indexed by
 // their order_id starting at 0). Sequential inserts within each batch.
-func vecInsertVectors(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss subspace.Subspace, n, dims int, rng *rand.Rand) [][]float64 {
+func vecInsertVectors(tb testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, n, dims int, rng *rand.Rand) [][]float64 {
 	return vecInsertVectorsParallel(tb, db, md, ss, n, dims, 1, rng)
 }
 
 // vecInsertVectorsParallel inserts n vectors with configurable intra-transaction
 // parallelism. When parallelism > 1, each batch fires that many goroutines
-// sharing one FDBRecordStore within a single FDB transaction. The HNSW write
+// sharing one recordlayer.FDBRecordStore within a single FDB transaction. The HNSW write
 // lock serializes graph mutations, but FDB I/O is pipelined across goroutines.
-func vecInsertVectorsParallel(tb testing.TB, db *FDBDatabase, md *RecordMetaData, ss subspace.Subspace, n, dims, parallelism int, rng *rand.Rand) [][]float64 {
+func vecInsertVectorsParallel(tb testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, ss subspace.Subspace, n, dims, parallelism int, rng *rand.Rand) [][]float64 {
 	tb.Helper()
 	ctx := context.Background()
 	vectors := make([][]float64, n)
@@ -198,8 +201,8 @@ func vecInsertVectorsParallel(tb testing.TB, db *FDBDatabase, md *RecordMetaData
 		if batchEnd > n {
 			batchEnd = n
 		}
-		_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).
 				SetMetaDataProvider(md).
 				SetSubspace(ss).
@@ -272,8 +275,8 @@ func BenchmarkVectorInsert(b *testing.B) {
 	rng := rand.New(rand.NewSource(42))
 
 	// Pre-create the store.
-	_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		_, err := NewStoreBuilder().
+	_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		_, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		return nil, err
 	})
@@ -290,8 +293,8 @@ func BenchmarkVectorInsert(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -344,9 +347,9 @@ func BenchmarkVectorSearch(b *testing.B) {
 		for _, id := range expected {
 			expectedSet[id] = true
 		}
-		var results []VectorSearchResult
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		var results []recordlayer.VectorSearchResult
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -375,8 +378,8 @@ func BenchmarkVectorSearch(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -411,8 +414,8 @@ func BenchmarkVectorInsertParallel(b *testing.B) {
 	rng := rand.New(rand.NewSource(42))
 
 	// Pre-create the store.
-	_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		_, err := NewStoreBuilder().
+	_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		_, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 		return nil, err
 	})
@@ -437,8 +440,8 @@ func BenchmarkVectorInsertParallel(b *testing.B) {
 		if batchEnd > b.N {
 			batchEnd = b.N
 		}
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -490,8 +493,8 @@ func BenchmarkVectorDelete(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -547,8 +550,8 @@ func BenchmarkVectorConcurrentSearch(b *testing.B) {
 			for time.Now().Before(deadline) {
 				q := vecRandomVector(localRng, dims)
 				opStart := time.Now()
-				_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-					store, err := NewStoreBuilder().
+				_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 					if err != nil {
 						return nil, err
@@ -652,8 +655,7 @@ func TestVectorStressManual(t *testing.T) {
 	insertRate := float64(size) / insertDuration.Seconds()
 	t.Logf("  Inserted %d vectors in %v (%.1f vec/sec, parallelism=%d)", size, insertDuration, insertRate, parallelism)
 
-
-// Phase 2: Sequential search throughput + recall.
+	// Phase 2: Sequential search throughput + recall.
 	t.Log("Phase 2: Sequential search throughput...")
 	const seqSearchOps = 100
 	queryRng := rand.New(rand.NewSource(99))
@@ -663,9 +665,9 @@ func TestVectorStressManual(t *testing.T) {
 	for i := 0; i < seqSearchOps; i++ {
 		q := vecRandomVector(queryRng, dims)
 		opStart := time.Now()
-		var results []VectorSearchResult
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		var results []recordlayer.VectorSearchResult
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			if err != nil {
 				return nil, fmt.Errorf("open store: %w", err)
@@ -729,8 +731,8 @@ func TestVectorStressManual(t *testing.T) {
 	for i := 0; i < writeCycleOps; i++ {
 		id := baseID + int64(i)
 		vec := vecRandomVector(writeRng, dims)
-		_, err := vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err := vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -746,8 +748,8 @@ func TestVectorStressManual(t *testing.T) {
 			t.Fatalf("write cycle insert %d: %v", i, err)
 		}
 
-		_, err = vectorBenchDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
+		_, err = vectorBenchDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 			if err != nil {
 				return nil, err
@@ -788,9 +790,9 @@ type vecConcurrentResult struct {
 
 func vecRunConcurrentSearch(
 	tb testing.TB,
-	db *FDBDatabase,
-	md *RecordMetaData,
-	vecIdx *Index,
+	db *recordlayer.FDBDatabase,
+	md *recordlayer.RecordMetaData,
+	vecIdx *recordlayer.Index,
 	ss subspace.Subspace,
 	dims, k, efSearch, numReaders int,
 	dur time.Duration,
@@ -815,8 +817,8 @@ func vecRunConcurrentSearch(
 			for time.Now().Before(deadline) {
 				q := vecRandomVector(localRng, dims)
 				opStart := time.Now()
-				_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-					store, err := NewStoreBuilder().
+				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().
 						SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
 					if err != nil {
 						return nil, err
@@ -859,4 +861,30 @@ func vecSumDurations(ds []time.Duration) time.Duration {
 		total += d
 	}
 	return total
+}
+
+// serializeVector converts a float64 vector to the storage format (type ordinal 2 = DOUBLE).
+// Local copy of the unexported recordlayer.serializeVector.
+func serializeVector(vec []float64) []byte {
+	buf := make([]byte, 1+8*len(vec))
+	buf[0] = 2 // DOUBLE type ordinal — Java VectorType.DOUBLE.ordinal() = 2
+	for i, v := range vec {
+		binary.BigEndian.PutUint64(buf[1+i*8:], math.Float64bits(v))
+	}
+	return buf
+}
+
+// euclideanDistance computes squared Euclidean distance between two vectors.
+// Local copy of the unexported recordlayer.euclideanDistance.
+func euclideanDistance(a, b []float64) float64 {
+	sum := 0.0
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		d := a[i] - b[i]
+		sum += d * d
+	}
+	return sum
 }

@@ -16,7 +16,7 @@ const TypeByte byte = 3
 type Metric int
 
 const (
-	MetricEuclidean    Metric = iota
+	MetricEuclidean Metric = iota
 	MetricCosine
 	MetricInnerProduct
 )
@@ -353,8 +353,8 @@ func (q *RaBitQuantizer) encodeInternal(data []float64) *rabitqResult {
 
 	// Clamp to 0 to handle floating-point rounding where Cauchy-Schwarz
 	// ratio is slightly < 1.0, making the expression negative.
-	sqrtArg := ((residualL2Sqr * xuCbNormSqr) /
-		(ipResidualXuCbSafe * ipResidualXuCbSafe) - 1.0) /
+	sqrtArg := ((residualL2Sqr*xuCbNormSqr)/
+		(ipResidualXuCbSafe*ipResidualXuCbSafe) - 1.0) /
 		float64(max(1, dims-1))
 	tmpError := residualL2Norm * eps0 * math.Sqrt(math.Max(0.0, sqrtArg))
 
@@ -442,8 +442,8 @@ type rescaleNode struct {
 type rescaleHeap []rescaleNode
 
 func (h rescaleHeap) Len() int            { return len(h) }
-func (h rescaleHeap) Less(i, j int) bool   { return h[i].t < h[j].t }
-func (h rescaleHeap) Swap(i, j int)        { h[i], h[j] = h[j], h[i] }
+func (h rescaleHeap) Less(i, j int) bool  { return h[i].t < h[j].t }
+func (h rescaleHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *rescaleHeap) Push(x interface{}) { *h = append(*h, x.(rescaleNode)) }
 func (h *rescaleHeap) Pop() interface{} {
 	old := *h

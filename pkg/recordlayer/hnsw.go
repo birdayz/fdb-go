@@ -61,24 +61,24 @@ type VectorQuantizer interface {
 // Matches Java's com.apple.foundationdb.async.hnsw.Config.
 type HNSWConfig struct {
 	NumDimensions         int
-	M                     int              // Connectivity factor (default 16)
-	MMax                  int              // Max connections for non-zero layers (default M)
-	MMax0                 int              // Max connections for layer 0 (default 2*M)
-	EfConstruction        int              // Insertion search factor (default 200)
-	Metric                VectorMetric     // Distance metric
-	ExtendCandidates      bool             // Extend candidate set with 2nd-degree neighbors (default false)
-	KeepPrunedConnections bool             // Retain pruned candidates to fill up to M (default false)
-	EfRepair              int              // Max candidates for delete repair (default 64, 0 = no limit)
-	UseInlining           bool             // Use inlining storage for layers > 0 (default false)
-	Quantizer             VectorQuantizer  // Optional quantizer (nil = raw float64 storage)
+	M                     int             // Connectivity factor (default 16)
+	MMax                  int             // Max connections for non-zero layers (default M)
+	MMax0                 int             // Max connections for layer 0 (default 2*M)
+	EfConstruction        int             // Insertion search factor (default 200)
+	Metric                VectorMetric    // Distance metric
+	ExtendCandidates      bool            // Extend candidate set with 2nd-degree neighbors (default false)
+	KeepPrunedConnections bool            // Retain pruned candidates to fill up to M (default false)
+	EfRepair              int             // Max candidates for delete repair (default 64, 0 = no limit)
+	UseInlining           bool            // Use inlining storage for layers > 0 (default false)
+	Quantizer             VectorQuantizer // Optional quantizer (nil = raw float64 storage)
 
 	// Concurrency limits — Java uses these to limit async pipeline parallelism.
 	// Go's synchronous FDB model doesn't use these for concurrency control, but
 	// we store and round-trip them so Java-written configs are preserved.
 	// Matches Java's Config.maxNumConcurrentNodeFetches etc.
-	MaxNumConcurrentNodeFetches          int // (0, 64], default 16 — node fetch parallelism in Java
-	MaxNumConcurrentNeighborhoodFetches  int // (0, 20], default 10 — neighborhood fetch parallelism in Java
-	MaxNumConcurrentDeleteFromLayer      int // (0, 10], default 2  — layer deletion parallelism in Java
+	MaxNumConcurrentNodeFetches         int // (0, 64], default 16 — node fetch parallelism in Java
+	MaxNumConcurrentNeighborhoodFetches int // (0, 20], default 10 — neighborhood fetch parallelism in Java
+	MaxNumConcurrentDeleteFromLayer     int // (0, 10], default 2  — layer deletion parallelism in Java
 }
 
 // ValidateHNSWConfig validates the HNSW configuration.
@@ -983,9 +983,9 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 	}
 
 	value := tuple.Tuple{
-		int64(0),                  // COMPACT node kind
-		tuple.Tuple{vectorBytes},  // vector bytes wrapped in tuple
-		neighborList,              // neighbor PKs as nested tuples
+		int64(0),                 // COMPACT node kind
+		tuple.Tuple{vectorBytes}, // vector bytes wrapped in tuple
+		neighborList,             // neighbor PKs as nested tuples
 	}
 	tx.Set(fdb.Key(key), value.Pack())
 
@@ -1562,8 +1562,8 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 		neighborPK tuple.Tuple
 		vecBytes   []byte
 	}
-	nodeEdges := make(map[string][]edgeInfo)   // source PK packed bytes → edges
-	nodePKs := make(map[string]tuple.Tuple)     // source PK packed bytes → source PK
+	nodeEdges := make(map[string][]edgeInfo) // source PK packed bytes → edges
+	nodePKs := make(map[string]tuple.Tuple)  // source PK packed bytes → source PK
 
 	iter := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
 	for iter.Advance() {
@@ -1846,7 +1846,7 @@ func topLayer(primaryKey tuple.Tuple, m int) int {
 // splitMixLong applies the SplitMix64 hash function.
 // Matches Java's SplittableRandom.mix64.
 func splitMixLong(x int64) int64 {
-	x += -0x61C8864680B583EB // 0x9e3779b97f4a7c15 as signed int64
+	x += -0x61C8864680B583EB                             // 0x9e3779b97f4a7c15 as signed int64
 	x = (x ^ int64(uint64(x)>>30)) * -0x40A7B892E31B1A47 // 0xbf58476d1ce4e5b9
 	x = (x ^ int64(uint64(x)>>27)) * -0x6B2FB644ECCEEE15 // 0x94d049bb133111eb
 	x = x ^ int64(uint64(x)>>31)
@@ -1880,8 +1880,8 @@ type distItem struct {
 	pkBytes string // cached pk.Pack() to avoid repeated allocation
 }
 
-func (h distHeap) Len() int            { return len(h) }
-func (h distHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
-func (h distHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *distHeap) Push(x any)         { *h = append(*h, x.(distItem)) }
-func (h *distHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+func (h distHeap) Len() int           { return len(h) }
+func (h distHeap) Less(i, j int) bool { return h[i].dist < h[j].dist }
+func (h distHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *distHeap) Push(x any)        { *h = append(*h, x.(distItem)) }
+func (h *distHeap) Pop() any          { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }

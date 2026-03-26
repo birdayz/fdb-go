@@ -450,8 +450,8 @@ type TimeWindowLeaderboardWindowUpdate struct {
 type TimeWindowRebuild int
 
 const (
-	TimeWindowRebuildNever             TimeWindowRebuild = 0
-	TimeWindowRebuildAlways            TimeWindowRebuild = 1
+	TimeWindowRebuildNever                TimeWindowRebuild = 0
+	TimeWindowRebuildAlways               TimeWindowRebuild = 1
 	TimeWindowRebuildIfOverlappingChanged TimeWindowRebuild = 2
 )
 

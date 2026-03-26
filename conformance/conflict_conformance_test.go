@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"sync"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 // TestJavaEquivalent: FDBRecordStore.java:1217-1231 (addRecordReadConflict, addRecordWriteConflict)
@@ -38,7 +38,7 @@ var _ = Describe("Conflict Range Conformance", func() {
 
 	AfterEach(func() {
 		if env != nil {
-			_ = env.Cleanup(ctx)  // Deletes tenant only
+			_ = env.Cleanup(ctx) // Deletes tenant only
 		}
 	})
 

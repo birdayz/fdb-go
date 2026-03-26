@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -20,9 +20,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== COUNT aggregate ==========
 	Describe("COUNT aggregate via COUNT index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -57,9 +57,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== SUM aggregate ==========
 	Describe("SUM aggregate via SUM index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -94,9 +94,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== MIN via VALUE index ==========
 	Describe("MIN aggregate via VALUE index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -131,9 +131,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== MAX via VALUE index ==========
 	Describe("MAX aggregate via VALUE index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -168,9 +168,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== MIN_EVER via MIN_EVER_LONG index ==========
 	Describe("MIN_EVER aggregate via MIN_EVER_LONG index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -205,9 +205,9 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 	// ========== MAX_EVER via MAX_EVER_LONG index ==========
 	Describe("MAX_EVER aggregate via MAX_EVER_LONG index", func() {
 		var (
-			ctx  context.Context
-			env  *TenantEnvironment
-			s    *AggregateConformanceStore
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
 		)
 
 		BeforeEach(func() {
@@ -244,7 +244,7 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 type AggType int
 
 const (
-	AggTypeCount    AggType = iota
+	AggTypeCount AggType = iota
 	AggTypeSum
 	AggTypeMinValue // MIN via VALUE index
 	AggTypeMaxValue // MAX via VALUE index

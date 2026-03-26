@@ -205,7 +205,8 @@ var _ = Describe("IndexState", func() {
 				// Do NOT mark range set complete.
 				_, err = store.MarkIndexReadable("Order$price")
 				Expect(err).To(HaveOccurred())
-				var builtErr *IndexNotBuiltError; Expect(errors.As(err, &builtErr)).To(BeTrue())
+				var builtErr *IndexNotBuiltError
+				Expect(errors.As(err, &builtErr)).To(BeTrue())
 				Expect(store.IsIndexDisabled("Order$price")).To(BeTrue())
 				return nil, nil
 			})
@@ -531,7 +532,8 @@ var _ = Describe("IndexState", func() {
 				// Do NOT mark range set complete.
 				_, err = store.MarkIndexReadableOrUniquePending("Order$price")
 				Expect(err).To(HaveOccurred())
-				var builtErr *IndexNotBuiltError; Expect(errors.As(err, &builtErr)).To(BeTrue())
+				var builtErr *IndexNotBuiltError
+				Expect(errors.As(err, &builtErr)).To(BeTrue())
 				Expect(store.IsIndexDisabled("Order$price")).To(BeTrue())
 				return nil, nil
 			})

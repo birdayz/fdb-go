@@ -642,12 +642,12 @@ func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit 
 // BunchedMapIterator iterates over a single BunchedMap's entries.
 // Matches Java's BunchedMapIterator.
 type BunchedMapIterator struct {
-	serializer    *TextIndexBunchedSerializer
-	subspaceKey   []byte
-	rangeIter     *fdb.RangeIterator
-	reverse       bool
-	limit         int
-	continuation  []byte
+	serializer   *TextIndexBunchedSerializer
+	subspaceKey  []byte
+	rangeIter    *fdb.RangeIterator
+	reverse      bool
+	limit        int
+	continuation []byte
 
 	currentEntries []bunchedEntry
 	entryIndex     int
@@ -682,13 +682,13 @@ func (m *BunchedMap) Scan(tx fdb.ReadTransaction, ss subspace.Subspace, continua
 	}
 
 	it := &BunchedMapIterator{
-		serializer:  m.serializer,
-		subspaceKey: subspaceKey,
-		rangeIter:   rangeResult.Iterator(),
-		reverse:     reverse,
-		limit:       limit,
+		serializer:   m.serializer,
+		subspaceKey:  subspaceKey,
+		rangeIter:    rangeResult.Iterator(),
+		reverse:      reverse,
+		limit:        limit,
 		continuation: continuation,
-		entryIndex:  -1,
+		entryIndex:   -1,
 	}
 	return it
 }
