@@ -75,23 +75,43 @@ func newMutualIndexBuilder(oi *OnlineIndexer) (*mutualIndexBuilder, error) {
 // On single-node FDB clusters (including testcontainers), getBoundaryKeys
 // returns no results, so we degrade to 1 fragment covering the entire range.
 func (m *mutualIndexBuilder) computeFragments() error {
-	// Java uses LocalityUtil.getBoundaryKeys(transaction, begin, end) which is
-	// a non-blocking async API. Go's FDB binding exposes LocalityGetBoundaryKeys
-	// on fdb.Database as a synchronous blocking C FFI call that hangs on
-	// single-node clusters (testcontainers). We use pre-set boundaries from
-	// the builder if provided, otherwise fall back to a single fragment.
-	//
-	// This matches Java's behavior on single-node FDB: when getBoundaryKeys
-	// returns nothing, getPrimaryKeyBoundaries() injects [null, null] and
-	// the entire key space becomes one fragment.
+	// Matches Java's IndexingMutuallyByRecords.getPrimaryKeyBoundaries():
+	// 1. If pre-set boundaries provided, use them
+	// 2. Otherwise auto-detect via LocalityGetBoundaryKeys (FDB shard splits)
+	// 3. On single-node FDB, auto-detection returns empty → 1 fragment
+	// 4. Always inject endpoints to ensure at least 2 boundary points
 
-	// Fragment boundaries are in the RangeSet key space (raw PK bytes),
-	// NOT FDB absolute key space. RangeSet operates in [\x00, \xff).
-	// Matching Java where getPrimaryKeyBoundaries returns Tuple boundaries
-	// and fragmentGet converts null → {0x00}/{0xff}.
-	m.boundaries = make([][]byte, 0, len(m.indexer.mutualBoundaries)+2)
+	var pkBoundaries [][]byte
+	if len(m.indexer.mutualBoundaries) > 0 {
+		pkBoundaries = m.indexer.mutualBoundaries
+	} else {
+		// Auto-detect shard boundaries via FDB locality API.
+		// On single-node FDB this returns empty (no shard splits) → 1 fragment.
+		recordsSub := m.indexer.subspace.Sub(RecordKey)
+		begin, end := recordsSub.FDBRangeKeys()
+		rawKeys, err := m.indexer.db.db.LocalityGetBoundaryKeys(
+			fdb.KeyRange{Begin: begin, End: end}, 0, 0,
+		)
+		if err == nil {
+			// Convert absolute FDB keys to relative PK bytes by stripping
+			// the records subspace prefix and tuple-unpacking.
+			prefix := recordsSub.Bytes()
+			for _, k := range rawKeys {
+				if len(k) > len(prefix) {
+					pkBoundaries = append(pkBoundaries, []byte(k)[len(prefix):])
+				}
+			}
+		}
+		// Error ignored — fall back to single fragment.
+	}
+
+	// Fragment boundaries are in the RangeSet key space (raw PK bytes).
+	// RangeSet operates in [\x00, \xff). Matching Java where
+	// getPrimaryKeyBoundaries returns Tuple boundaries and fragmentGet
+	// converts null → {0x00}/{0xff}.
+	m.boundaries = make([][]byte, 0, len(pkBoundaries)+2)
 	m.boundaries = append(m.boundaries, rangeSetFirstKey) // \x00
-	for _, b := range m.indexer.mutualBoundaries {
+	for _, b := range pkBoundaries {
 		m.boundaries = append(m.boundaries, b)
 	}
 	m.boundaries = append(m.boundaries, rangeSetFinalKey) // \xff
