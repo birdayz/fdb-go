@@ -354,4 +354,74 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("multi-type index PK dedup", func() {
+		// Regression test: Build() previously skipped rt.multiTypeIndexes
+		// when computing primaryKeyComponentPositions. Multi-type index
+		// entries had full redundant PKs instead of trimmed PKs.
+		It("computes primaryKeyComponentPositions for multi-type indexes", func() {
+			// Create a multi-type index on (order_id, price) spanning Order+Customer.
+			// order_id overlaps with Order's PK — should be deduped at position 0.
+			compositeIdx := NewIndex("multi_order_id_price", Concat(Field("order_id"), Field("price")))
+
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, compositeIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify primaryKeyComponentPositions was computed.
+			idx := md.GetIndex("multi_order_id_price")
+			Expect(idx).NotTo(BeNil())
+			Expect(idx.HasPrimaryKeyComponentPositions()).To(BeTrue(),
+				"multi-type index should have primaryKeyComponentPositions computed")
+		})
+
+		It("multi-type index entry has trimmed PK via dedup", func() {
+			ks := specSubspace()
+
+			// Index on (order_id, price) with PK = order_id.
+			// order_id at position 0 in index key matches PK → dedup.
+			// Without the fix: index entry key = [order_id, price, order_id] (redundant)
+			// With the fix:    index entry key = [order_id, price] (trimmed)
+			compositeIdx := NewIndex("multi_oid_price", Concat(Field("order_id"), Field("price")))
+
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, compositeIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(42),
+					Price:   proto.Int32(999),
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				entries, err := AsList(ctx, store.ScanIndex(compositeIdx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(1))
+
+				entry := entries[0]
+				// With PK dedup: key = [42, 999], PK reconstructed to [42]
+				// Without dedup: key = [42, 999, 42], PK = last element = [42]
+				// The entry key length tells us if dedup happened.
+				Expect(entry.Key).To(HaveLen(2),
+					"index entry key should be [order_id, price] (2 elements, PK deduped), got %v", entry.Key)
+				Expect(entry.PrimaryKey()).To(Equal(tuple.Tuple{int64(42)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

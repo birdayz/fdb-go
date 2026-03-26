@@ -763,6 +763,11 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
 			}
 		}
+		for _, idx := range rt.multiTypeIndexes {
+			if idx.primaryKeyComponentPositions == nil {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+			}
+		}
 	}
 	// Universal indexes: use the first record type's primary key (they should all match)
 	for _, idx := range b.universalIndexes {
