@@ -4,7 +4,6 @@ go_test(
     name = "bench_test",
     timeout = "eternal",
     srcs = [
-        "hnsw_profile_test.go",
         "sift_benchmark_test.go",
         "sift_loader_test.go",
         "vector_benchmark_test.go",
