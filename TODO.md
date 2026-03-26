@@ -9,6 +9,13 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ---
 
+## Bugs
+
+- [ ] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Only single-type (`rt.indexes`) and universal indexes are processed. Multi-type index entries contain full redundant PKs instead of trimmed PKs — wrong wire format, Java-incompatible. Fix: add a loop over `rt.multiTypeIndexes` matching the single-type loop at line 761. Found 2026-03-26 via 10-agent audit.
+- [ ] **HIGH** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` continuation loses outer position when stopping mid-inner on the **first** outer value. `priorOuterCont` is nil (not yet set), so serialized continuation has `OuterContinuation: nil`. On resume, `outerFactory(nil)` restarts outer from beginning, causing duplicates. Fix: use `StartContinuation` (or empty bytes) instead of nil for the initial priorOuterCont. Not currently triggered by production code (combinator available but unused by any index/store path). Found 2026-03-26 via 10-agent audit.
+
+---
+
 ## Investigate
 
 - [x] **MEDIUM** — Package structure: investigated in RFC 004 (rejected multi-package split due to irreducible type cycle). Staying flat + nogo layering enforcement. See `rfcs/004-package-structure-investigation.md`.
