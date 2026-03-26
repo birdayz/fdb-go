@@ -603,9 +603,9 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] All target indexes share the same missing-range tracking (first index's RangeSet).
 
 8. **Mutual/concurrent index building** (LOW — multi-process coordination)
-   - [ ] Multiple OnlineIndexer processes build different ranges concurrently.
-   - [ ] Heartbeat tracking at `[9, indexSubspaceKey, 7, uuid]`.
-   - [ ] `requireEmpty=true` prevents double-processing of ranges.
+   - [x] Multiple OnlineIndexer processes build different ranges concurrently — `SetMutualIndexing()` / `SetMutualIndexingBoundaries()`, `MUTUAL_BY_RECORDS` stamp, fragment-based prime-step iteration, two-phase FULL→ANY. 8 tests.
+   - [x] Heartbeat tracking at `[9, indexSubspaceKey, 7, uuid]` — `IndexingHeartbeat` with `IndexBuildHeartbeat` proto, lease-based stale detection, `SynchronizedSessionLockedError`.
+   - [x] `requireEmpty=true` prevents double-processing of ranges (already in RangeSet).
    - [x] **Blocked stamps** — `isTypeStampBlocked()` with permanent and time-expiring blocks via `block`/`blockExpireEpochMilliSeconds`/`blockID` proto fields. `BlockIndex()`/`UnblockIndex()` on OnlineIndexer. `PartlyBuiltError` on blocked stamp. 4 tests.
    - [x] **`areSimilar()` stamp comparison** — `areSimilarStamps()` compares stamps ignoring block fields via `blocklessStampOf()`. Allows resume when only block state differs. 1 test.
    - [x] **`forceStampOverwrite` policy** — `IndexingPolicy.ForceStampOverwrite` forces stamp write on fresh builds, allows overwrite on continued builds when no records scanned. `setIndexingTypeOrThrow()` implements full Java decision tree. 2 tests.
@@ -1537,6 +1537,10 @@ Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Q
 - [x] **No OnlineIndexer/RebuildIndex for VECTOR** — Fixed: RebuildIndex test clears index subspace, rebuilds, verifies all records searchable.
 - [x] **No CI-run medium-scale test (500+ vectors)** — Fixed: 500-vector test with batch insert, geometric nearest-neighbor verification. Runs in CI (~8s).
 - [x] **Chaos tests only use 2D vectors** — Fixed: `TestVectorHighDimRaBitQBasic` (128D, 10 records, full pipeline) + `TestVectorHighDimRaBitQCommitUnknown` (128D, 20 ops, fault injection).
+
+#### Performance: Goroutine-parallel beam search prefetch
+
+- [ ] **HIGH — Parallel candidate prefetch in `searchLayerMulti`** — Current beam search pops one candidate, blocks on `loadNodeLayerDispatch`, processes results, loops. Java pipelines I/O across iterations via `CompletableFuture` chains (`Search.java` `beamSearchLayer()` + `AsyncUtil.whileTrue()`). Go equivalent: pop top N (3-4) candidates from heap, fetch all in parallel goroutines (FDB reads are thread-safe), process results, repeat. Same for `searchLayerGreedy`. Estimated 2-3x search speedup. We already have inlining (neighbor vectors stored in edges) matching Apple's `InliningNode` — the remaining gap is I/O pipelining across beam search iterations, not storage layout.
 
 #### Architectural note: HNSW vs IVF on FDB
 
