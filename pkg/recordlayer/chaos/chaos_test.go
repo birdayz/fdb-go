@@ -924,6 +924,348 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 	}
 }
 
+// --- PERMUTED_MAX index chaos tests ---
+
+// buildPermutedMaxChaosMetadata creates metadata with a PERMUTED_MAX index.
+// Groups by quantity, aggregated value is price. permutedSize=1.
+// Primary entries: [quantity, price, trimmedPK...], Permuted: [price, quantity].
+func buildPermutedMaxChaosMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewPermutedMaxIndex("order_permuted_max",
+		recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("quantity")), 1))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build permuted max metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestPermutedMaxBasicVerify verifies PERMUTED_MAX index with no fault injection.
+func TestPermutedMaxBasicVerify(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(5)})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300), Quantity: proto.Int32(10)})
+	s.Verify()
+}
+
+// TestPermutedMaxCommitUnknownInsert injects commit-unknown on a PERMUTED_MAX insert.
+// PERMUTED_MAX uses removeCommonEntries (idempotent) — retry is safe.
+func TestPermutedMaxCommitUnknownInsert(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.Verify()
+}
+
+// TestPermutedMaxCommitUnknownOverwriteHigher overwrites with a higher price
+// under commit-unknown. The permuted subspace should reflect the new max.
+func TestPermutedMaxCommitUnknownOverwriteHigher(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify() // Permuted should show max quantity=50 for group
+}
+
+// TestPermutedMaxCommitUnknownOverwriteLower overwrites with a lower value.
+// The permuted entry should update to the new (lower) max for that group.
+func TestPermutedMaxCommitUnknownOverwriteLower(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
+	s.Verify()
+
+	// Overwrite pk=1 from qty=50 to qty=10 under commit-unknown.
+	// Max for group price=100 should become 30 (from pk=2).
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.Verify()
+}
+
+// TestPermutedMaxCommitUnknownDelete injects commit-unknown on a delete.
+// After delete, permuted entry should reflect remaining records' max.
+func TestPermutedMaxCommitUnknownDelete(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(30)})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify() // Only pk=2 remains, permuted max for group price=100 = qty 30
+}
+
+// TestPermutedMaxDeleteLastInGroup deletes the last record in a group.
+// The permuted entry for that group should disappear entirely.
+func TestPermutedMaxDeleteLastInGroup(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(30)})
+	s.Verify()
+
+	// Delete the only record in group price=100
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify() // Group price=100 gone from permuted subspace
+
+	// Delete last record in group price=200
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(2)})
+	s.Verify() // All permuted entries gone
+}
+
+// TestPermutedMaxDeleteAllRecords verifies DeleteAllRecords clears permuted entries.
+func TestPermutedMaxDeleteAllRecords(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	for i := int64(1); i <= 10; i++ {
+		s.SaveRecord(&gen.Order{
+			OrderId:  proto.Int64(i),
+			Price:    proto.Int32(int32(i%3) * 100),
+			Quantity: proto.Int32(int32(i * 10)),
+		})
+	}
+	s.Verify()
+
+	s.DeleteAllRecords()
+	s.Verify()
+
+	// Re-add after delete-all.
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
+	s.Verify()
+}
+
+// TestPermutedMaxRandomStress runs 200 random ops with PERMUTED_MAX + FaultsRetryHeavy.
+func TestPermutedMaxRandomStress(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMaxChaosMetadata()
+	s := NewScenario(t, testRealDB, md, WithSeed(50505), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 200
+	const verifyEvery = 20
+	maxPK := int64(30)
+
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(maxPK) + 1
+		if s.Rng.Float64() < 0.7 {
+			s.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(pk),
+				Price:    proto.Int32(s.Rng.Int32N(5) * 100), // small price space → grouping collisions
+				Quantity: proto.Int32(s.Rng.Int32N(500)),
+			})
+		} else {
+			s.DeleteRecord(tuple.Tuple{pk})
+		}
+
+		if (i+1)%verifyEvery == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("PERMUTED_MAX stress: completed %d ops with seed=%d, %d faults injected",
+		numOps, s.Seed(), len(s.FaultLog()))
+}
+
+// --- PERMUTED_MIN index chaos tests ---
+
+// buildPermutedMinChaosMetadata creates metadata with a PERMUTED_MIN index.
+// Groups by quantity, aggregated value is price. permutedSize=1.
+func buildPermutedMinChaosMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewPermutedMinIndex("order_permuted_min",
+		recordlayer.GroupBy(recordlayer.Field("price"), recordlayer.Field("quantity")), 1))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build permuted min metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestPermutedMinBasicVerify verifies PERMUTED_MIN index with no fault injection.
+func TestPermutedMinBasicVerify(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(30)})
+	s.Verify()
+}
+
+// TestPermutedMinCommitUnknownInsert injects commit-unknown on a PERMUTED_MIN insert.
+func TestPermutedMinCommitUnknownInsert(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify()
+}
+
+// TestPermutedMinCommitUnknownOverwriteLower overwrites with a lower value
+// under commit-unknown. The permuted subspace should reflect the new min.
+func TestPermutedMinCommitUnknownOverwriteLower(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(5)})
+	s.Verify() // Permuted should show min quantity=5 for group price=100
+}
+
+// TestPermutedMinCommitUnknownOverwriteHigher overwrites with a higher value.
+// The permuted entry should update to the new (higher) min for that group.
+func TestPermutedMinCommitUnknownOverwriteHigher(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify()
+
+	// Overwrite pk=1 from qty=10 to qty=80 under commit-unknown.
+	// Min for group price=100 should become 50 (from pk=2).
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(80)})
+	s.Verify()
+}
+
+// TestPermutedMinCommitUnknownDelete injects commit-unknown on a delete.
+func TestPermutedMinCommitUnknownDelete(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(50)})
+	s.Verify()
+
+	// Delete record with min — min should shift to pk=2's quantity=50
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify()
+}
+
+// TestPermutedMinDeleteLastInGroup deletes the last record in a group.
+func TestPermutedMinDeleteLastInGroup(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(10)})
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200), Quantity: proto.Int32(50)})
+	s.Verify()
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(1)})
+	s.Verify() // Group price=100 gone from permuted subspace
+
+	s.InjectOnce(FaultCommitUnknown)
+	s.DeleteRecord(tuple.Tuple{int64(2)})
+	s.Verify() // All permuted entries gone
+}
+
+// TestPermutedMinDeleteAllRecords verifies DeleteAllRecords clears permuted entries.
+func TestPermutedMinDeleteAllRecords(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	for i := int64(1); i <= 10; i++ {
+		s.SaveRecord(&gen.Order{
+			OrderId:  proto.Int64(i),
+			Price:    proto.Int32(int32(i%3) * 100),
+			Quantity: proto.Int32(int32(i * 10)),
+		})
+	}
+	s.Verify()
+
+	s.DeleteAllRecords()
+	s.Verify()
+
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
+	s.Verify()
+}
+
+// TestPermutedMinRandomStress runs 200 random ops with PERMUTED_MIN + FaultsRetryHeavy.
+func TestPermutedMinRandomStress(t *testing.T) {
+	t.Parallel()
+	md := buildPermutedMinChaosMetadata()
+	s := NewScenario(t, testRealDB, md, WithSeed(60606), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 200
+	const verifyEvery = 20
+	maxPK := int64(30)
+
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(maxPK) + 1
+		if s.Rng.Float64() < 0.7 {
+			s.SaveRecord(&gen.Order{
+				OrderId:  proto.Int64(pk),
+				Price:    proto.Int32(s.Rng.Int32N(5) * 100),
+				Quantity: proto.Int32(s.Rng.Int32N(500)),
+			})
+		} else {
+			s.DeleteRecord(tuple.Tuple{pk})
+		}
+
+		if (i+1)%verifyEvery == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("PERMUTED_MIN stress: completed %d ops with seed=%d, %d faults injected",
+		numOps, s.Seed(), len(s.FaultLog()))
+}
+
 // TestVectorHighDimRaBitQCommitUnknown validates that HNSW with RaBitQ
 // quantization remains idempotent under commit-unknown fault injection.
 // Uses 2D vectors (Price, Quantity) so the chaos StoreModel verification
