@@ -70,9 +70,30 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			if !coversMatching {
 				continue // Index doesn't cover any types being deleted, skip.
 			}
-			// Type-specific index: clear ALL entries for this index.
-			// All entries belong to the matching type(s).
-			actions = append(actions, indexAction{index: idx, prefix: tuple.Tuple{}})
+
+			if len(indexTypeNames) > 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
+				// Multi-type index without RecordTypeKey prefix: can't scope
+				// the clear to a single type. Matches Java's
+				// canDeleteWhereForIndexOnStoredTypes which throws
+				// "Index X applies to more record types than just Y".
+				return fmt.Errorf("deleteRecordsWhere: index %q applies to more record types than just the target; "+
+					"add RecordTypeKey() prefix to enable scoped delete", idx.Name)
+			}
+
+			if len(indexTypeNames) > 1 {
+				// Multi-type index with RecordTypeKey prefix: scope the clear
+				// to entries for the matching type(s) using the PK prefix.
+				// Matches Java's hasRecordTypePrefix branch in
+				// canDeleteWhereForIndexOnStoredTypes.
+				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData)
+				if !ok {
+					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
+				}
+				actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
+			} else {
+				// Single-type index: clear ALL entries for this index.
+				actions = append(actions, indexAction{index: idx, prefix: tuple.Tuple{}})
+			}
 		} else {
 			// Universal index: the PK prefix must match leading index
 			// expression columns so we can do a range clear.
@@ -169,6 +190,23 @@ func (store *FDBRecordStore) findMatchingRecordTypes(prefix tuple.Tuple) []strin
 		}
 	}
 	return names
+}
+
+// hasRecordTypeKeyPrefix returns true if the expression starts with
+// RecordTypeKeyExpression. Matches Java's Key.Expressions.hasRecordTypePrefix().
+func hasRecordTypeKeyPrefix(expr KeyExpression) bool {
+	switch e := expr.(type) {
+	case *RecordTypeKeyExpression:
+		return true
+	case *CompositeKeyExpression:
+		return len(e.expressions) > 0 && hasRecordTypeKeyPrefix(e.expressions[0])
+	case *GroupingKeyExpression:
+		return hasRecordTypeKeyPrefix(e.wholeKey)
+	case *KeyWithValueExpression:
+		return hasRecordTypeKeyPrefix(e.innerKey)
+	default:
+		return false
+	}
 }
 
 // recordTypesForIndex returns the names of record types that have this

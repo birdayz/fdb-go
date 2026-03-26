@@ -154,6 +154,7 @@ go_test(
         "hnsw_profile_test.go",
         "index_bug_verify_test.go",
         "index_maintainer_test.go",
+        "index_registration_matrix_test.go",
         "index_scan_test.go",
         "index_state_test.go",
         "index_test.go",
