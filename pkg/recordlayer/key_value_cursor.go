@@ -207,6 +207,8 @@ func (c *keyValueCursor) OnNext(ctx context.Context) (RecordCursorResult[*FDBSto
 func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.Key, error) {
 	recordsSubspace := c.recordsSubspace
 
+	prefixLen := c.prefixLength
+
 	for {
 		// Get the next KV pair (from buffer or iterator)
 		kv, ok, err := c.nextKV()
@@ -217,33 +219,32 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			return nil, nil, nil // exhausted
 		}
 
-		keyTuple, err := recordsSubspace.Unpack(kv.Key)
-		if err != nil || len(keyTuple) < 2 {
-			return nil, nil, fmt.Errorf("failed to unpack key: %v (tuple: %v)", err, keyTuple)
+		// Fast path: extract suffix via zero-alloc tuple scan.
+		// Only call full tuple.Unpack for the PK when building the returned record.
+		tupleBytes := kv.Key[prefixLen:]
+		suffix, pkEnd, splitErr := splitKeySuffix(tupleBytes)
+		if splitErr != nil {
+			return nil, nil, fmt.Errorf("failed to parse key suffix: %w", splitErr)
 		}
-
-		suffix, ok := keyTuple[len(keyTuple)-1].(int64)
-		if !ok {
-			return nil, nil, fmt.Errorf("key suffix is not int64: %T", keyTuple[len(keyTuple)-1])
-		}
-		primaryKey := keyTuple[:len(keyTuple)-1]
 
 		switch {
 		case suffix == recordVersionSuffix:
 			// Capture version data for the next record.
-			// In forward scan, version key (suffix -1) appears before record data.
-			// Matches Java's KeyValueUnsplitter which reads version inline.
-			// Track the PK to avoid leaking versions across records on reverse
-			// scan resume (where a stale version key from the continuation
-			// boundary falls within the resumed range).
-			if ver, verErr := unpackVersion(kv.Value); verErr == nil {
-				c.pendingVersion = ver
-				c.pendingVersionPK = primaryKey
+			// Only decode PK when versioning is enabled (we need it for pendingVersionPK).
+			if c.storeRecordVersions {
+				if ver, verErr := unpackVersion(kv.Value); verErr == nil {
+					c.pendingVersion = ver
+					c.pendingVersionPK, _ = tuple.Unpack(tupleBytes[:pkEnd])
+				}
 			}
 			continue
 
 		case suffix == unsplitRecord:
-			// Unsplit record — single KV
+			// Unsplit record — decode PK only now that we need it
+			primaryKey, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+			if pkErr != nil {
+				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
+			}
 			recordType, protoMessage, deserErr := c.store.deserializeAndDiscover(kv.Value)
 			if deserErr != nil {
 				return nil, nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
@@ -277,7 +278,11 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			}, kv.Key, nil
 
 		case suffix >= startSplitRecord:
-			// Split record — collect all chunks for this primary key
+			// Split record — need full PK for chunk collection
+			primaryKey, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+			if pkErr != nil {
+				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
+			}
 			return c.readSplitRecord(recordsSubspace, primaryKey, kv, suffix)
 
 		default:
@@ -322,23 +327,29 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 	if !ok {
 		return nil
 	}
-	keyTuple, err := recordsSubspace.Unpack(kv.Key)
-	if err != nil || len(keyTuple) < 2 {
+	if len(kv.Key) <= c.prefixLength {
 		c.bufferedKV = &kv
 		return nil
 	}
-	suffix, ok := keyTuple[len(keyTuple)-1].(int64)
-	if !ok {
+	tupleBytes := kv.Key[c.prefixLength:]
+	suffix, pkEnd, err := splitKeySuffix(tupleBytes)
+	if err != nil {
 		c.bufferedKV = &kv
 		return nil
 	}
-	kvPK := keyTuple[:len(keyTuple)-1]
-	if suffix == recordVersionSuffix && sameTuple(kvPK, primaryKey) {
-		ver, verErr := unpackVersion(kv.Value)
-		if verErr != nil {
+	if suffix == recordVersionSuffix {
+		kvPK, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+		if pkErr != nil {
+			c.bufferedKV = &kv
 			return nil
 		}
-		return ver
+		if sameTuple(kvPK, primaryKey) {
+			ver, verErr := unpackVersion(kv.Value)
+			if verErr != nil {
+				return nil
+			}
+			return ver
+		}
 	}
 	c.bufferedKV = &kv
 	return nil
