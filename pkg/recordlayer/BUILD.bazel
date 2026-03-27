@@ -235,6 +235,7 @@ go_test(
         "text_index_test.go",
         "text_index_unit_test.go",
         "time_window_leaderboard_test.go",
+        "tuple_fast_test.go",
         "tuple_ordering_test.go",
         "typed_api_test.go",
         "typed_store_conformance_test.go",

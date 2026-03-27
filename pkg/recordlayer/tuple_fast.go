@@ -30,7 +30,7 @@ const (
 	tcDouble         = 0x21
 	tcFalse          = 0x26
 	tcTrue           = 0x27
-	tcUUID           = 0x28
+	tcUUID           = 0x30
 	tcVersionstamp   = 0x33
 	versionstampLen  = 12
 )
@@ -84,10 +84,14 @@ func tupleSkip(b []byte) int {
 		for i < len(b) {
 			if b[i] == 0x00 {
 				if i+1 < len(b) && b[i+1] == 0xff {
-					i += 2
+					i += 2 // escaped null
 					continue
 				}
-				return i + 1
+				return i + 1 // end-of-nested marker
+			}
+			if b[i] == tcNested {
+				i += tupleSkip(b[i:]) // recursively skip inner nested tuple
+				continue
 			}
 			i++
 		}
