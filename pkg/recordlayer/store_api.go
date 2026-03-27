@@ -267,13 +267,8 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, err
 	}
 
-	// Compute what the record would look like.
-	unionRecord, err := store.wrapInUnion(record, recordType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
-	}
-
-	data, err := unionRecord.MarshalVT()
+	// Serialize directly into union wire format (no UnionDescriptor allocation)
+	data, err := serializeUnion(record, recordType)
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}

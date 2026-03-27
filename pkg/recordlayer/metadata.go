@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 )
 
 // RecordMetaData describes the schema for records stored in a record store.
@@ -55,6 +57,10 @@ type RecordMetaData struct {
 	// Nil if the schema has no union (single-type).
 	// Matches Java's RecordMetaData.getUnionDescriptor().
 	unionDescriptor protoreflect.MessageDescriptor
+
+	// fieldNumberToRecordType maps union field numbers to record types for
+	// direct wire format decoding (avoids UnionDescriptor allocation).
+	fieldNumberToRecordType map[protowire.Number]*RecordType
 }
 
 // FormerIndex tracks a deleted index for schema evolution safety.
@@ -86,6 +92,15 @@ type RecordType struct {
 
 	// Union field descriptor for reflection-based access
 	UnionFieldDescriptor protoreflect.FieldDescriptor
+
+	// unionFieldNumber is the proto field number in the UnionDescriptor for this type.
+	// Pre-computed at Build() time for direct wire format encoding/decoding.
+	unionFieldNumber protowire.Number
+
+	// newMessage creates a new empty instance of this record type's proto message.
+	// Pre-computed at Build() time via protoregistry. Returns concrete Go type
+	// (e.g. *gen.Order), not dynamicpb.
+	newMessage func() proto.Message
 
 	// indexes defined for this record type (single-type)
 	indexes []*Index
@@ -779,17 +794,33 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// Pre-compute union field numbers and message factories for direct wire
+	// format encoding/decoding (skips UnionDescriptor allocation entirely).
+	fnToRT := make(map[protowire.Number]*RecordType, len(types))
+	for _, rt := range types {
+		if rt.UnionFieldDescriptor != nil {
+			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
+			msgType, err := protoregistry.GlobalTypes.FindMessageByName(rt.Descriptor.FullName())
+			if err != nil {
+				return nil, fmt.Errorf("record type %s not in proto registry: %w", rt.Name, err)
+			}
+			rt.newMessage = func() proto.Message { return msgType.New().Interface() }
+			fnToRT[rt.unionFieldNumber] = rt
+		}
+	}
+
 	return &RecordMetaData{
-		recordTypes:         types,
-		fileDescriptor:      b.fileDescriptor,
-		version:             b.version,
-		recordCountKey:      b.recordCountKey,
-		storeRecordVersions: b.storeRecordVersions,
-		splitLongRecords:    b.splitLongRecords,
-		indexes:             indexes,
-		universalIndexes:    b.universalIndexes,
-		formerIndexes:       b.formerIndexes,
-		unionDescriptor:     b.unionDescriptor,
+		recordTypes:             types,
+		fileDescriptor:          b.fileDescriptor,
+		version:                 b.version,
+		recordCountKey:          b.recordCountKey,
+		storeRecordVersions:     b.storeRecordVersions,
+		splitLongRecords:        b.splitLongRecords,
+		indexes:                 indexes,
+		universalIndexes:        b.universalIndexes,
+		formerIndexes:           b.formerIndexes,
+		unionDescriptor:         b.unionDescriptor,
+		fieldNumberToRecordType: fnToRT,
 	}, nil
 }
 
