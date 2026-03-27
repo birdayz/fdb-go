@@ -234,14 +234,14 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			if c.storeRecordVersions {
 				if ver, verErr := unpackVersion(kv.Value); verErr == nil {
 					c.pendingVersion = ver
-					c.pendingVersionPK, _ = tuple.Unpack(tupleBytes[:pkEnd])
+					c.pendingVersionPK, _ = fastUnpack(tupleBytes[:pkEnd])
 				}
 			}
 			continue
 
 		case suffix == unsplitRecord:
 			// Unsplit record — decode PK only now that we need it
-			primaryKey, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+			primaryKey, pkErr := fastUnpack(tupleBytes[:pkEnd])
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
@@ -279,7 +279,7 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 
 		case suffix >= startSplitRecord:
 			// Split record — need full PK for chunk collection
-			primaryKey, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+			primaryKey, pkErr := fastUnpack(tupleBytes[:pkEnd])
 			if pkErr != nil {
 				return nil, nil, fmt.Errorf("failed to unpack primary key: %w", pkErr)
 			}
@@ -338,7 +338,7 @@ func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, prima
 		return nil
 	}
 	if suffix == recordVersionSuffix {
-		kvPK, pkErr := tuple.Unpack(tupleBytes[:pkEnd])
+		kvPK, pkErr := fastUnpack(tupleBytes[:pkEnd])
 		if pkErr != nil {
 			c.bufferedKV = &kv
 			return nil
@@ -405,21 +405,24 @@ func (c *keyValueCursor) readSplitRecord(
 			break // Iterator exhausted
 		}
 
-		keyTuple, err := recordsSubspace.Unpack(kv.Key)
-		if err != nil || len(keyTuple) < 2 {
+		if len(kv.Key) <= c.prefixLength {
+			c.bufferedKV = &kv
+			break
+		}
+		chunkTuple := kv.Key[c.prefixLength:]
+		suffix, chunkPKEnd, splitErr := splitKeySuffix(chunkTuple)
+		if splitErr != nil {
 			c.bufferedKV = &kv
 			break
 		}
 
-		suffix, ok := keyTuple[len(keyTuple)-1].(int64)
-		if !ok {
+		// Check if this KV belongs to the same primary key by comparing
+		// the raw PK bytes (avoids full tuple decode for non-matching keys).
+		kvPrimaryKey, pkErr := fastUnpack(chunkTuple[:chunkPKEnd])
+		if pkErr != nil {
 			c.bufferedKV = &kv
 			break
 		}
-
-		kvPrimaryKey := keyTuple[:len(keyTuple)-1]
-
-		// Check if this KV belongs to the same primary key
 		if !sameTuple(primaryKey, kvPrimaryKey) {
 			c.bufferedKV = &kv
 			break
