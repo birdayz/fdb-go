@@ -21,6 +21,7 @@ use_repo(
     "com_github_google_uuid",
     "com_github_onsi_ginkgo_v2",
     "com_github_onsi_gomega",
+    "com_github_planetscale_vtprotobuf",
     "com_github_rivo_uniseg",
     "com_github_testcontainers_testcontainers_go",
     "com_github_testcontainers_testcontainers_go_modules_socat",
@@ -58,9 +59,9 @@ maven.install(
 )
 use_repo(maven, "maven")
 
-
 # SIFT-1M benchmark dataset (industry-standard ANN benchmark, ~160MB compressed).
 # Downloaded on demand via FTP from INRIA TEXMEX. Cached by Bazel repository cache.
 # Only fetched when sift_benchmark_test target is built (manual tag).
 sift_dataset = use_repo_rule("//:sift_repo.bzl", "sift_dataset")
+
 sift_dataset(name = "sift1m")

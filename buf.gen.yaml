@@ -9,3 +9,9 @@ plugins:
     out: gen
     opt:
       - paths=source_relative
+  - local: protoc-gen-go-vtproto
+    out: gen
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size+pool
+      - pool=github.com/birdayz/fdb-record-layer-go/gen.*

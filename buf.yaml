@@ -2,14 +2,14 @@ version: v2
 modules:
   - path: proto/apple
     name: buf.build/birdayz/record-layer-apple
-  - path: conformance/proto
+  - path: conformance
     name: buf.build/birdayz/record-layer-conformance
 lint:
   use:
     - STANDARD
   ignore:
     - proto/apple
-    - conformance/proto
+    - conformance
 breaking:
   use:
     - FILE

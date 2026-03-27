@@ -273,7 +273,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, fmt.Errorf("failed to wrap record in union: %w", err)
 	}
 
-	data, err := proto.Marshal(unionRecord)
+	data, err := unionRecord.MarshalVT()
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}

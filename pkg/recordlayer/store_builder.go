@@ -386,7 +386,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 
 	// Parse the store header
 	storeInfo := &gen.DataStoreInfo{}
-	if err := proto.Unmarshal(firstKV.Value, storeInfo); err != nil {
+	if err := storeInfo.UnmarshalVT(firstKV.Value); err != nil {
 		return false, nil, fmt.Errorf("failed to parse store header: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
 	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()
 
-	headerBytes, err := proto.Marshal(storeInfo)
+	headerBytes, err := storeInfo.MarshalVT()
 	if err != nil {
 		return &RecordSerializationError{Cause: err}
 	}
