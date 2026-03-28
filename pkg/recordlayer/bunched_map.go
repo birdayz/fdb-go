@@ -268,7 +268,10 @@ func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.
 			newKey = kv.Key
 		}
 
-		newValue := m.serializer.SerializeEntries(newEntryList)
+		newValue, err := m.serializer.SerializeEntries(newEntryList)
+		if err != nil {
+			return nil, false, fmt.Errorf("bunched map remove: %w", err)
+		}
 		m.instrumentWrite(newKey, newValue, kv.Value)
 		tx.Set(fdb.Key(newKey), newValue)
 	}
@@ -380,11 +383,15 @@ func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.Transaction, subspaceK
 
 // insertAlone creates a new signpost with a single entry.
 // Matches Java's BunchedMap.insertAlone().
-func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunchedEntry) {
+func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunchedEntry) error {
 	_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
-	valueBytes := m.serializer.SerializeEntries([]bunchedEntry{entry})
+	valueBytes, err := m.serializer.SerializeEntries([]bunchedEntry{entry})
+	if err != nil {
+		return err
+	}
 	m.instrumentWrite(keyBytes, valueBytes, nil)
 	tx.Set(fdb.Key(keyBytes), valueBytes)
+	return nil
 }
 
 // writeEntryListWithoutChecking writes an entry list to FDB with proper conflict ranges
@@ -419,22 +426,35 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceK
 // Matches Java's BunchedMap.writeEntryList().
 func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []byte,
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry,
-	kvAfter *fdb.KeyValue, isFirst, isLast bool) {
+	kvAfter *fdb.KeyValue, isFirst, isLast bool) error {
 
-	serializedBytes := m.serializer.SerializeEntries(entryList)
+	serializedBytes, err := m.serializer.SerializeEntries(entryList)
+	if err != nil {
+		return err
+	}
 
 	if len(serializedBytes) > bunchedMapMaxValueSize {
 		if isFirst || len(entryList) == 1 {
-			m.insertAlone(tx, keyBytes, entryList[0])
+			if err := m.insertAlone(tx, keyBytes, entryList[0]); err != nil {
+				return err
+			}
 		} else if isLast {
-			m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entryList[len(entryList)-1])
+			if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entryList[len(entryList)-1]); err != nil {
+				return err
+			}
 		} else {
 			// Split down the middle.
 			splitPoint := len(entryList) / 2
 			firstEntries := entryList[:splitPoint]
-			firstSerialized := m.serializer.SerializeEntries(firstEntries)
+			firstSerialized, err := m.serializer.SerializeEntries(firstEntries)
+			if err != nil {
+				return err
+			}
 			secondEntries := entryList[splitPoint:]
-			secondSerialized := m.serializer.SerializeEntries(secondEntries)
+			secondSerialized, err := m.serializer.SerializeEntries(secondEntries)
+			if err != nil {
+				return err
+			}
 			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, oldKv, newKey, firstEntries, firstSerialized)
 			secondKey := joinBytes(subspaceKey, m.serializer.SerializeKey(secondEntries[0].Key))
 			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, nil, secondKey, secondEntries, secondSerialized)
@@ -443,7 +463,10 @@ func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []
 		if m.serializer.CanAppend() && isLast && len(entryList) > 1 && oldKv != nil && bytes.Equal(oldKv.Key, newKey) {
 			// APPEND_IF_FITS optimization.
 			m.addEntryListReadConflictRange(tx, subspaceKey, newKey, entryList)
-			appendBytes := m.serializer.SerializeEntry(entryList[len(entryList)-1].Key, entryList[len(entryList)-1].Value)
+			appendBytes, err := m.serializer.SerializeEntry(entryList[len(entryList)-1].Key, entryList[len(entryList)-1].Value)
+			if err != nil {
+				return err
+			}
 			tx.AppendIfFits(fdb.Key(newKey), appendBytes)
 			_ = tx.AddWriteConflictKey(fdb.Key(keyBytes))
 		} else {
@@ -468,6 +491,7 @@ func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []
 			})
 		}
 	}
+	return nil
 }
 
 // insertAfter tries to prepend the entry into kvAfter's bunch, or creates
@@ -477,8 +501,7 @@ func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byt
 	kvAfter *fdb.KeyValue, entry bunchedEntry) error {
 
 	if kvAfter == nil {
-		m.insertAlone(tx, keyBytes, entry)
-		return nil
+		return m.insertAlone(tx, keyBytes, entry)
 	}
 
 	afterKey, err := m.serializer.DeserializeKey(kvAfter.Key, len(subspaceKey), len(kvAfter.Key)-len(subspaceKey))
@@ -491,16 +514,14 @@ func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byt
 	}
 
 	if len(afterEntryList) >= m.bunchSize {
-		m.insertAlone(tx, keyBytes, entry)
-		return nil
+		return m.insertAlone(tx, keyBytes, entry)
 	}
 
 	// Prepend our entry to the next bunch's list.
 	newEntryList := make([]bunchedEntry, 0, len(afterEntryList)+1)
 	newEntryList = append(newEntryList, entry)
 	newEntryList = append(newEntryList, afterEntryList...)
-	m.writeEntryList(tx, subspaceKey, keyBytes, kvAfter, keyBytes, newEntryList, nil, true, false)
-	return nil
+	return m.writeEntryList(tx, subspaceKey, keyBytes, kvAfter, keyBytes, newEntryList, nil, true, false)
 }
 
 // insertEntry handles the core insertion logic after signpost lookup.
@@ -538,8 +559,10 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 			newEntryList := make([]bunchedEntry, len(beforeEntryList))
 			copy(newEntryList, beforeEntryList)
 			newEntryList[insertIndex] = entry
-			m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
-				newEntryList, kvAfter, false, false)
+			if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
+				newEntryList, kvAfter, false, false); err != nil {
+				return nil, false, err
+			}
 		} else {
 			// Value unchanged — just add read conflict key for linearizability.
 			_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
@@ -555,17 +578,23 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 		newEntryList = append(newEntryList, beforeEntryList[insertIndex:]...)
 
 		if len(newEntryList) <= m.bunchSize {
-			m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
-				newEntryList, kvAfter, false, false)
+			if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
+				newEntryList, kvAfter, false, false); err != nil {
+				return nil, false, err
+			}
 		} else {
 			// Split the bunch.
 			splitPoint := len(newEntryList) / 2
-			m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
-				newEntryList[:splitPoint], nil, false, false)
+			if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
+				newEntryList[:splitPoint], nil, false, false); err != nil {
+				return nil, false, err
+			}
 			secondEntries := newEntryList[splitPoint:]
 			secondKey := joinBytes(subspaceKey, m.serializer.SerializeKey(secondEntries[0].Key))
-			m.writeEntryList(tx, subspaceKey, keyBytes, nil, secondKey,
-				secondEntries, kvAfter, false, false)
+			if err := m.writeEntryList(tx, subspaceKey, keyBytes, nil, secondKey,
+				secondEntries, kvAfter, false, false); err != nil {
+				return nil, false, err
+			}
 		}
 		return nil, false, nil
 	}
@@ -576,8 +605,10 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 		newEntryList := make([]bunchedEntry, 0, len(beforeEntryList)+1)
 		newEntryList = append(newEntryList, beforeEntryList...)
 		newEntryList = append(newEntryList, entry)
-		m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
-			newEntryList, kvAfter, false, true)
+		if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
+			newEntryList, kvAfter, false, true); err != nil {
+			return nil, false, err
+		}
 	} else {
 		// Bunch is full — insert into the next bunch.
 		if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry); err != nil {
@@ -668,13 +699,19 @@ func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit 
 		}
 
 		bunch := allEntries[:end]
-		serialized := m.serializer.SerializeEntries(bunch)
+		serialized, err := m.serializer.SerializeEntries(bunch)
+		if err != nil {
+			return nil, fmt.Errorf("bunched map compact: %w", err)
+		}
 
 		// If serialized size exceeds limit, reduce bunch size until it fits.
 		for len(serialized) > bunchedMapMaxValueSize && end > 1 {
 			end--
 			bunch = allEntries[:end]
-			serialized = m.serializer.SerializeEntries(bunch)
+			serialized, err = m.serializer.SerializeEntries(bunch)
+			if err != nil {
+				return nil, fmt.Errorf("bunched map compact: %w", err)
+			}
 		}
 
 		newKey := joinBytes(subspaceKey, m.serializer.SerializeKey(bunch[0].Key))

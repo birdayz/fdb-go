@@ -13,8 +13,8 @@ import (
 // Matches Java's com.apple.foundationdb.map.BunchedSerializer interface.
 type BunchedSerializer[K any, V any] interface {
 	SerializeKey(key K) []byte
-	SerializeEntry(key K, value V) []byte
-	SerializeEntries(entries []BunchedEntry[K, V]) []byte
+	SerializeEntry(key K, value V) ([]byte, error)
+	SerializeEntries(entries []BunchedEntry[K, V]) ([]byte, error)
 	DeserializeKey(data []byte, offset, length int) (K, error)
 	DeserializeEntries(key K, data []byte) ([]BunchedEntry[K, V], error)
 	DeserializeKeys(key K, data []byte) ([]K, error)
@@ -149,11 +149,11 @@ func (s *TextIndexBunchedSerializer) SerializeKey(key tuple.Tuple) []byte {
 // SerializeEntry packs a single key-value pair (for appending to a bunch).
 // Format: varInt(keyLen) + keyBytes + varInt(listSize) + deltaCompressedList
 // Matches Java's TextIndexBunchedSerializer.serializeEntry().
-func (s *TextIndexBunchedSerializer) SerializeEntry(key tuple.Tuple, value []int) []byte {
+func (s *TextIndexBunchedSerializer) SerializeEntry(key tuple.Tuple, value []int) ([]byte, error) {
 	serializedKey := key.Pack()
 	listSize, err := positionListSize(value)
 	if err != nil {
-		panic(fmt.Sprintf("text index serializer: %v", err))
+		return nil, fmt.Errorf("text index serializer: serialize entry: %w", err)
 	}
 
 	totalSize := varIntSize(len(serializedKey)) + len(serializedKey) + varIntSize(listSize) + listSize
@@ -161,15 +161,15 @@ func (s *TextIndexBunchedSerializer) SerializeEntry(key tuple.Tuple, value []int
 	serializeVarInt(buf, len(serializedKey))
 	buf.Write(serializedKey)
 	serializePositionList(buf, value, listSize)
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // SerializeEntries packs an entry list into a single byte array.
 // Format: PREFIX + entries (first entry's key omitted).
 // Matches Java's TextIndexBunchedSerializer.serializeEntries().
-func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tuple.Tuple, []int]) []byte {
+func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tuple.Tuple, []int]) ([]byte, error) {
 	if len(entries) == 0 {
-		panic("text index serializer: cannot serialize empty entry list")
+		return nil, fmt.Errorf("text index serializer: cannot serialize empty entry list")
 	}
 
 	// Calculate total size.
@@ -185,7 +185,7 @@ func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tup
 		}
 		ls, err := positionListSize(entry.Value)
 		if err != nil {
-			panic(fmt.Sprintf("text index serializer: %v", err))
+			return nil, fmt.Errorf("text index serializer: serialize entries: %w", err)
 		}
 		listSizes[i] = ls
 		size += varIntSize(ls) + ls
@@ -201,7 +201,7 @@ func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tup
 		}
 		serializePositionList(buf, entry.Value, listSizes[i])
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // DeserializeKey unpacks a Tuple key from data[offset:offset+length].

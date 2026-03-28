@@ -39,7 +39,10 @@ func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSu
 }
 
 func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
-	tokenizer := getTextTokenizer(index)
+	tokenizer, err := getTextTokenizer(index)
+	if err != nil {
+		return nil, fmt.Errorf("text index %q: %w", index.Name, err)
+	}
 	tokenizerVersion, err := getTextTokenizerVersion(index)
 	if err != nil {
 		return nil, fmt.Errorf("text index %q: %w", index.Name, err)
@@ -69,7 +72,7 @@ func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspa
 }
 
 // getTextTokenizer gets the tokenizer for a TEXT index from the registry.
-func getTextTokenizer(index *Index) TextTokenizer {
+func getTextTokenizer(index *Index) (TextTokenizer, error) {
 	name := index.Options[IndexOptionTextTokenizerName]
 	return GetTextTokenizer(name)
 }

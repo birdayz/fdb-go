@@ -140,7 +140,10 @@ func FuzzDeserializeBunch(f *testing.F) {
 		{{Key: tuple.Tuple{int64(0)}, Value: []int{}}}, // empty position list
 	}
 	for _, entries := range validEntries {
-		data := s.SerializeEntries(entries)
+		data, err := s.SerializeEntries(entries)
+		if err != nil {
+			f.Fatalf("SerializeEntries: %v", err)
+		}
 		f.Add(data, entries[0].Key.Pack())
 	}
 

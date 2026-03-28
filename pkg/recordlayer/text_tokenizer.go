@@ -351,15 +351,10 @@ func (r *TextTokenizerRegistry) Reset() {
 }
 
 // GetTextTokenizer returns the tokenizer with the given name from the global
-// registry. If name is empty, returns the default tokenizer. Panics if the
-// tokenizer is not found (matching Java's MetaDataException throw).
-func GetTextTokenizer(name string) TextTokenizer {
+// registry. If name is empty, returns the default tokenizer.
+func GetTextTokenizer(name string) (TextTokenizer, error) {
 	registry := GlobalTextTokenizerRegistry()
-	t, err := registry.GetTokenizer(name)
-	if err != nil {
-		panic(err)
-	}
-	return t
+	return registry.GetTokenizer(name)
 }
 
 // getTextTokenizerForIndex returns the tokenizer and version for an index,

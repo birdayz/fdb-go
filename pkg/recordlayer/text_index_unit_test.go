@@ -225,7 +225,10 @@ func TestSerializeEntryRoundtrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			data := s.SerializeEntry(tc.key, tc.positions)
+			data, err := s.SerializeEntry(tc.key, tc.positions)
+			if err != nil {
+				t.Fatalf("SerializeEntry: %v", err)
+			}
 			// SerializeEntry format: varInt(keyLen) + keyBytes + positionList
 			// Verify we can parse it back.
 			reader := bytes.NewReader(data)
@@ -273,7 +276,10 @@ func TestSerializeEntriesRoundtrip(t *testing.T) {
 		{Key: tuple.Tuple{int64(2000)}, Value: []int{42}},
 	}
 
-	data := s.SerializeEntries(entries)
+	data, err := s.SerializeEntries(entries)
+	if err != nil {
+		t.Fatalf("SerializeEntries: %v", err)
+	}
 	got, err := s.DeserializeEntries(entries[0].Key, data)
 	if err != nil {
 		t.Fatalf("DeserializeEntries: %v", err)
@@ -306,7 +312,10 @@ func TestSerializeEntriesDocumentedExample(t *testing.T) {
 		{Key: tuple.Tuple{int64(1415)}, Value: []int{0, 600, 605}},
 	}
 
-	data := s.SerializeEntries(entries)
+	data, err := s.SerializeEntries(entries)
+	if err != nil {
+		t.Fatalf("SerializeEntries: %v", err)
+	}
 	want := "200401020203031605870400845805" // without spaces
 	// Parse expected hex to allow flexible comparison.
 	wantBytes, err := hex.DecodeString(want)
@@ -349,7 +358,10 @@ func TestDeserializeKeys(t *testing.T) {
 		{Key: tuple.Tuple{"banana"}, Value: []int{2}},
 		{Key: tuple.Tuple{"cherry"}, Value: []int{7, 12, 18, 25}},
 	}
-	data := s.SerializeEntries(entries)
+	data, err := s.SerializeEntries(entries)
+	if err != nil {
+		t.Fatalf("SerializeEntries: %v", err)
+	}
 	keys, err := s.DeserializeKeys(entries[0].Key, data)
 	if err != nil {
 		t.Fatalf("DeserializeKeys: %v", err)
@@ -383,17 +395,13 @@ func TestCanAppend(t *testing.T) {
 func TestSerializeEntriesEmpty(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on empty entry list")
-		}
-		msg := fmt.Sprintf("%v", r)
-		if !strings.Contains(msg, "empty entry list") {
-			t.Fatalf("unexpected panic message: %v", r)
-		}
-	}()
-	s.SerializeEntries(nil)
+	_, err := s.SerializeEntries(nil)
+	if err == nil {
+		t.Fatal("expected error on empty entry list")
+	}
+	if !strings.Contains(err.Error(), "empty entry list") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +415,10 @@ func TestSerializeEntriesSingle(t *testing.T) {
 	entries := []BunchedEntry[tuple.Tuple, []int]{
 		{Key: tuple.Tuple{"only"}, Value: []int{0, 3, 7}},
 	}
-	data := s.SerializeEntries(entries)
+	data, err := s.SerializeEntries(entries)
+	if err != nil {
+		t.Fatalf("SerializeEntries: %v", err)
+	}
 	got, err := s.DeserializeEntries(entries[0].Key, data)
 	if err != nil {
 		t.Fatalf("DeserializeEntries: %v", err)
@@ -481,32 +492,34 @@ func TestDeserializeBadPrefix(t *testing.T) {
 // Non-monotonic position list in SerializeEntry panics
 // ---------------------------------------------------------------------------
 
-func TestSerializeEntryNonMonotonicPanics(t *testing.T) {
+func TestSerializeEntryNonMonotonicReturnsError(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for non-monotonic positions in SerializeEntry")
-		}
-	}()
-	s.SerializeEntry(tuple.Tuple{"word"}, []int{5, 3})
+	_, err := s.SerializeEntry(tuple.Tuple{"word"}, []int{5, 3})
+	if err == nil {
+		t.Fatal("expected error for non-monotonic positions in SerializeEntry")
+	}
+	if !strings.Contains(err.Error(), "monotonically") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
-// Non-monotonic position list in SerializeEntries panics
+// Non-monotonic position list in SerializeEntries returns error
 // ---------------------------------------------------------------------------
 
-func TestSerializeEntriesNonMonotonicPanics(t *testing.T) {
+func TestSerializeEntriesNonMonotonicReturnsError(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic for non-monotonic positions in SerializeEntries")
-		}
-	}()
-	s.SerializeEntries([]BunchedEntry[tuple.Tuple, []int]{
+	_, err := s.SerializeEntries([]BunchedEntry[tuple.Tuple, []int]{
 		{Key: tuple.Tuple{"a"}, Value: []int{10, 5}},
 	})
+	if err == nil {
+		t.Fatal("expected error for non-monotonic positions in SerializeEntries")
+	}
+	if !strings.Contains(err.Error(), "monotonically") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
 }
 
 // ===========================================================================
@@ -828,7 +841,10 @@ func TestTokenizerQueryMode(t *testing.T) {
 
 func TestGetTextTokenizerDefault(t *testing.T) {
 	t.Parallel()
-	tok := GetTextTokenizer("")
+	tok, err := GetTextTokenizer("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if tok == nil {
 		t.Fatal("expected non-nil tokenizer for empty name")
 	}
@@ -839,7 +855,10 @@ func TestGetTextTokenizerDefault(t *testing.T) {
 
 func TestGetTextTokenizerByName(t *testing.T) {
 	t.Parallel()
-	tok := GetTextTokenizer("default")
+	tok, err := GetTextTokenizer("default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if tok == nil {
 		t.Fatal("expected non-nil tokenizer for 'default'")
 	}
@@ -848,19 +867,15 @@ func TestGetTextTokenizerByName(t *testing.T) {
 	}
 }
 
-func TestGetTextTokenizerUnknownPanics(t *testing.T) {
+func TestGetTextTokenizerUnknownReturnsError(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for unknown tokenizer name")
-		}
-		msg := fmt.Sprintf("%v", r)
-		if !strings.Contains(msg, "unrecognized") {
-			t.Fatalf("unexpected panic message: %v", r)
-		}
-	}()
-	GetTextTokenizer("nonexistent_tokenizer")
+	_, err := GetTextTokenizer("nonexistent_tokenizer")
+	if err == nil {
+		t.Fatal("expected error for unknown tokenizer name")
+	}
+	if !strings.Contains(err.Error(), "unrecognized") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
 }
 
 func TestRegistryRegisterCustom(t *testing.T) {

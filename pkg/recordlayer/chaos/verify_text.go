@@ -42,7 +42,10 @@ func verifyOneTextIndex(
 ) []Violation {
 	var violations []Violation
 
-	tokenizer := recordlayer.GetTextTokenizer("")
+	tokenizer, err := recordlayer.GetTextTokenizer("")
+	if err != nil {
+		return []Violation{{Invariant: fmt.Sprintf("failed to get text tokenizer: %v", err)}}
+	}
 
 	// Build expected set of (token, packedPK) from model records.
 	// Use a map from "token\x00packedPK" → true for set membership.
