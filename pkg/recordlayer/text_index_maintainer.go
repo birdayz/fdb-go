@@ -195,107 +195,81 @@ func (m *textIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 // to avoid redundant BunchedMap operations. Matches Java's StandardIndexMaintainer
 // commonKeys optimization (skipUpdateForUnchangedKeys).
 func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	var oldEntries, newEntries [][]any
-	var err error
-
-	if oldRecord != nil {
-		oldEntries, err = m.index.RootExpression.Evaluate(oldRecord, oldRecord.Record)
-		if err != nil {
-			return err
+	// Evaluate and build indexEntry slices — same as standardIndexMaintainer.evaluateIndex().
+	// Then use the standard removeCommonEntries for correct full-key comparison.
+	// Matches Java: TextIndexMaintainer.update() calls super.update() which uses
+	// StandardIndexMaintainer.commonKeys() on IndexEntry objects (all columns compared).
+	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]indexEntry, [][]any, error) {
+		if record == nil {
+			return nil, nil, nil
 		}
-	}
-	if newRecord != nil {
-		newEntries, err = m.index.RootExpression.Evaluate(newRecord, newRecord.Record)
+		tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
+		entries := make([]indexEntry, len(tuples))
+		for i, values := range tuples {
+			key := make(tuple.Tuple, len(values))
+			for j, v := range values {
+				key[j] = v
+			}
+			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+		}
+		return entries, tuples, nil
 	}
 
-	// Skip unchanged entries when both old and new are present.
-	// For TEXT indexes, two entries with the same text value at the text position
-	// will produce identical token→position mappings, so updating is a no-op.
+	oldIdxEntries, oldRaw, err := evalEntries(oldRecord)
+	if err != nil {
+		return err
+	}
+	newIdxEntries, newRaw, err := evalEntries(newRecord)
+	if err != nil {
+		return err
+	}
+
+	// Use standard removeCommonEntries for correct full-key comparison (all columns).
 	if oldRecord != nil && newRecord != nil {
-		oldEntries, newEntries = removeCommonTextEntries(m.index, oldEntries, newEntries)
+		var rcErr error
+		oldIdxEntries, newIdxEntries, rcErr = removeCommonEntries(m.index, oldIdxEntries, newIdxEntries)
+		if rcErr != nil {
+			return rcErr
+		}
+		// Rebuild raw slices to match filtered indexEntry slices.
+		oldRaw = indexEntriesToRaw(oldIdxEntries)
+		newRaw = indexEntriesToRaw(newIdxEntries)
 	}
 
-	if oldRecord != nil && len(oldEntries) > 0 {
+	if oldRecord != nil && len(oldRaw) > 0 {
 		recordTokenizerVersion, tvErr := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
 		if tvErr != nil {
 			return tvErr
 		}
-		if err := m.updateIndexKeys(oldRecord, true, oldEntries, recordTokenizerVersion); err != nil {
+		if err := m.updateIndexKeys(oldRecord, true, oldRaw, recordTokenizerVersion); err != nil {
 			return err
 		}
 	}
-	if newRecord != nil && len(newEntries) > 0 {
-		if err := m.updateIndexKeys(newRecord, false, newEntries, m.tokenizerVersion); err != nil {
+	if newRecord != nil && len(newRaw) > 0 {
+		if err := m.updateIndexKeys(newRecord, false, newRaw, m.tokenizerVersion); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// removeCommonTextEntries filters out evaluated entries whose text values are identical
-// between old and new. For TEXT indexes, the "text value" at the text field position
-// determines the tokens — if it hasn't changed, no index update is needed.
-func removeCommonTextEntries(idx *Index, old, new [][]any) ([][]any, [][]any) {
-	if len(old) == 0 || len(new) == 0 {
-		return old, new
+// indexEntriesToRaw converts []indexEntry back to [][]any for updateIndexKeys.
+func indexEntriesToRaw(entries []indexEntry) [][]any {
+	if len(entries) == 0 {
+		return nil
 	}
-	textPos := textFieldPosition(idx.RootExpression)
-
-	// Build a set of old entry keys (all fields except the text field value don't matter
-	// for TEXT — what matters is the text at textPos being identical).
-	// For single-entry indexes (most common), this is a simple comparison.
-	if len(old) == 1 && len(new) == 1 {
-		if textPos < len(old[0]) && textPos < len(new[0]) {
-			oldText, _ := old[0][textPos].(string)
-			newText, _ := new[0][textPos].(string)
-			if oldText == newText {
-				return nil, nil
-			}
+	raw := make([][]any, len(entries))
+	for i, e := range entries {
+		vals := make([]any, len(e.key))
+		for j, v := range e.key {
+			vals[j] = v
 		}
-		return old, new
+		raw[i] = vals
 	}
-
-	// For multi-entry cases, do pairwise comparison.
-	type entryKey struct {
-		idx  int
-		text string
-	}
-	oldMap := make(map[string][]int) // text → indices in old
-	for i, e := range old {
-		if textPos < len(e) {
-			if t, ok := e[textPos].(string); ok {
-				oldMap[t] = append(oldMap[t], i)
-			}
-		}
-	}
-
-	var filteredOld, filteredNew [][]any
-	matched := make(map[int]bool) // matched old indices
-
-	for _, e := range new {
-		if textPos < len(e) {
-			if t, ok := e[textPos].(string); ok {
-				if indices, ok := oldMap[t]; ok && len(indices) > 0 {
-					// Mark first matching old entry as consumed.
-					matched[indices[0]] = true
-					oldMap[t] = indices[1:]
-					continue // skip this new entry — same text, no update needed
-				}
-			}
-		}
-		filteredNew = append(filteredNew, e)
-	}
-
-	for i, e := range old {
-		if !matched[i] {
-			filteredOld = append(filteredOld, e)
-		}
-	}
-
-	return filteredOld, filteredNew
+	return raw
 }
 
 // updateIndexKeys tokenizes text and writes/removes BunchedMap entries for each token.

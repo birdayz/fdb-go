@@ -23,6 +23,15 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **CRITICAL** — `record_key_cursor.go:111`: Split record continuation + nil `lastPK` on resume → duplicates. Fixed: initialize `lastPK` from continuation on resume. Regression test added.
 - [x] **MEDIUM** — `index_scan.go:indexCursor.OnNext()`: Missing `ScannedRecordsLimit` check. Fixed: added check matching `keyValueCursor`/`recordKeyCursor` pattern. Regression test added.
 
+### Index maintenance UPDATE audit (2026-03-28)
+
+- [x] **HIGH** — `text_index_maintainer.go:removeCommonTextEntries()`: Only compared text value at `textPos`, ignoring grouping columns. If group changes but text stays the same, tokens remain in old group's subspace (phantom entries) and are never written to new group (missing entries). Fixed: compare ALL columns via tuple packing.
+
+### OnlineIndexer audit (2026-03-28)
+
+- [ ] **LOW** — `index_state.go:clearReadableIndexBuildData()`: Doesn't clear heartbeats after build completes. Java clears both RangeSet and heartbeats. Stale heartbeats from crashed mutual builders accumulate, causing transient blocking on re-builds.
+- [ ] **MEDIUM** — `indexing_mutual.go:301-314`: Shard boundary bytes that aren't valid tuples cause nil rangeStart/rangeEnd → full-keyspace scan. Only affects mutual indexing on multi-node FDB clusters. For non-idempotent indexes, could cause double-counting.
+
 ### SaveRecord behavioral audit (2026-03-28) — Java vs Go comparison
 
 - [ ] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Java's `SplitHelper.writeVersion()` calls `sizeInfo.add(keyBytes, valueBytes)`. Go doesn't include version key in KeyCount/KeySize/ValueSize. ~50-60 bytes difference per versioned record.
