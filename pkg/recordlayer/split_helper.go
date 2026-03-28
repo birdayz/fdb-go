@@ -213,8 +213,12 @@ func loadWithSplit(
 			return nil, fmt.Errorf("split record suffix is not int64: %T", keyTuple[len(keyTuple)-1])
 		}
 
-		// Skip version keys
+		// Version keys are part of the record's storage footprint
 		if suffix == recordVersionSuffix {
+			sizeInfo.KeyCount++
+			sizeInfo.KeySize += len(kv.Key)
+			sizeInfo.ValueSize += len(kv.Value)
+			sizeInfo.VersionedInline = true
 			continue
 		}
 

@@ -520,7 +520,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		if verErr != nil {
 			return nil, fmt.Errorf("failed to create incomplete version: %w", verErr)
 		}
-		if err := store.saveRecordVersion(primaryKey, version); err != nil {
+		if err := store.saveRecordVersion(primaryKey, version, &newsizeInfo); err != nil {
 			return nil, err
 		}
 		savedVersion = version

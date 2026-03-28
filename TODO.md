@@ -30,11 +30,11 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 ### OnlineIndexer audit (2026-03-28)
 
 - [ ] **LOW** — `index_state.go:clearReadableIndexBuildData()`: Doesn't clear heartbeats after build completes. Java clears both RangeSet and heartbeats. Stale heartbeats from crashed mutual builders accumulate, causing transient blocking on re-builds.
-- [ ] **MEDIUM** — `indexing_mutual.go:301-314`: Shard boundary bytes that aren't valid tuples cause nil rangeStart/rangeEnd → full-keyspace scan. Only affects mutual indexing on multi-node FDB clusters. For non-idempotent indexes, could cause double-counting.
+- [x] **MEDIUM** — `indexing_mutual.go:301-314`: Shard boundary bytes that aren't valid tuples cause nil rangeStart/rangeEnd → full-keyspace scan. Fixed: return error instead of silently falling back to nil (matches Java which throws on invalid tuple bytes).
 
 ### SaveRecord behavioral audit (2026-03-28) — Java vs Go comparison
 
-- [ ] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Java's `SplitHelper.writeVersion()` calls `sizeInfo.add(keyBytes, valueBytes)`. Go doesn't include version key in KeyCount/KeySize/ValueSize. ~50-60 bytes difference per versioned record.
+- [x] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Fixed: `saveRecordVersion()` now updates sizeInfo with version key/value bytes (KeyCount, KeySize, ValueSize). Incomplete versions subtract 4-byte offset (not durable). `DryRunSaveRecord` also includes version bytes. `loadWithSplit` tracks version keys in split record scan. Matches Java's `SplitHelper.writeVersion()` sizeInfo pattern.
 - [ ] **LOW** — `store.go`: Double deserialization when `ErrorIfTypeChanged + HasIndexes`. Old record deserialized once for type check, again for index update. Performance only.
 
 ### Hardening audit (2026-03-28) — 4-agent sweep: error swallowing, panics, deserialization, concurrency

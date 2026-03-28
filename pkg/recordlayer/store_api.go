@@ -273,14 +273,30 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		return nil, &RecordSerializationError{Cause: err}
 	}
 
+	keyCount := 1
+	keySize := len(recordsSubspace.Pack(primaryKey))
+	valueSize := len(data)
+	isSplit := splitEnabled && len(data) > splitRecordSize
+
+	// Include version key/value bytes in dry-run metrics.
+	// Matches Java's dryRunWriteVersionSizeInfo().
+	if store.metaData.IsStoreRecordVersions() {
+		versionKey := store.versionKey(primaryKey)
+		keyCount++
+		keySize += len(versionKey)
+		// Value is a tuple-packed Versionstamp: VersionBytes (12) + 1 tuple type byte = 13.
+		// Matches Java's SizeInfo.add(keyBytes, version): VERSION_LENGTH + 1.
+		valueSize += VersionBytes + 1
+	}
+
 	return &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey,
 		Record:     record,
 		RecordType: recordType,
-		KeyCount:   1,
-		KeySize:    len(store.subspace.Sub(RecordKey).Pack(primaryKey)),
-		ValueSize:  len(data),
-		Split:      splitEnabled && len(data) > splitRecordSize,
+		KeyCount:   keyCount,
+		KeySize:    keySize,
+		ValueSize:  valueSize,
+		Split:      isSplit,
 	}, nil
 }
 

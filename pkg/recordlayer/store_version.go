@@ -12,7 +12,9 @@ import (
 // matching Java's SplitHelper.RECORD_VERSION for format version >= 6.
 // The value is a packed Tuple containing a Versionstamp, matching Java's
 // SplitHelper.packVersion(). For incomplete versions, queues a SET_VERSIONSTAMPED_VALUE.
-func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *FDBRecordVersion) error {
+// If si is non-nil, updates it with version key/value byte counts.
+// Matches Java's SplitHelper.writeVersion(context, subspace, key, version, sizeInfo).
+func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *FDBRecordVersion, si *sizeInfo) error {
 	versionKey := store.versionKey(primaryKey)
 
 	if version.IsComplete() {
@@ -23,6 +25,12 @@ func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *
 			return fmt.Errorf("pack version: %w", err)
 		}
 		store.context.Transaction().Set(versionKey, packed)
+		if si != nil {
+			si.VersionedInline = true
+			si.KeyCount++
+			si.KeySize += len(versionKey)
+			si.ValueSize += len(packed)
+		}
 	} else {
 		// Queue SET_VERSIONSTAMPED_VALUE for incomplete versions
 		store.context.AddToLocalVersionCache(versionKey, version.GetLocalVersion())
@@ -31,6 +39,15 @@ func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *
 			return fmt.Errorf("failed to build versionstamped value: %w", err)
 		}
 		store.context.AddVersionMutation(MutationTypeSetVersionstampedValue, versionKey, packed)
+		if si != nil {
+			si.VersionedInline = true
+			si.KeyCount++
+			si.KeySize += len(versionKey)
+			// Subtract 4 bytes for the versionstamp offset appended by
+			// PackWithVersionstamp — it is not made durable.
+			// Matches Java's SplitHelper.writeVersion: sizeInfo.valueSize -= Integer.BYTES
+			si.ValueSize += len(packed) - 4
+		}
 	}
 	return nil
 }
