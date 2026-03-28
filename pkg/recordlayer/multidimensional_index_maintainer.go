@@ -276,10 +276,10 @@ func (m *multidimensionalIndexMaintainer) Scan(
 	if len(continuation) > 0 {
 		var parsed bool
 		var flatMapCont gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &flatMapCont); err == nil && flatMapCont.InnerContinuation != nil {
+		if err := flatMapCont.UnmarshalVT(continuation); err == nil && flatMapCont.InnerContinuation != nil {
 			// Java-compatible FlatMapContinuation wrapper.
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := proto.Unmarshal(flatMapCont.InnerContinuation, &cont); err == nil {
+			if err := cont.UnmarshalVT(flatMapCont.InnerContinuation); err == nil {
 				if cont.LastHilbertValue != nil {
 					lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
 				}
@@ -299,7 +299,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		if !parsed {
 			// Fallback: try raw MultidimensionalIndexScanContinuation (old Go format).
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := proto.Unmarshal(continuation, &cont); err != nil {
+			if err := cont.UnmarshalVT(continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
 				}
@@ -548,7 +548,7 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 		LastHilbertValue: hvBytes,
 		LastKey:          c.lastKey.Pack(),
 	}
-	innerBytes, err := proto.Marshal(inner)
+	innerBytes, err := inner.MarshalVT()
 	if err != nil {
 		return nil
 	}
@@ -560,7 +560,7 @@ func (c *rtreeScanCursor) buildContinuation() []byte {
 	if c.outerContinuation != nil {
 		outer.OuterContinuation = c.outerContinuation
 	}
-	data, err := proto.Marshal(outer)
+	data, err := outer.MarshalVT()
 	if err != nil {
 		return nil
 	}

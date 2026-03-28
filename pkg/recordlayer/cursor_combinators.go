@@ -204,7 +204,7 @@ func ConcatCursors[T any](first, second CursorFactory[T], continuation []byte) R
 
 	if len(continuation) > 0 {
 		var cont gen.ConcatContinuation
-		if err := proto.Unmarshal(continuation, &cont); err == nil {
+		if err := cont.UnmarshalVT(continuation); err == nil {
 			if cont.GetSecond() {
 				c.onSecond = true
 				c.current = second(cont.GetContinuation())
@@ -285,7 +285,7 @@ func (c *concatContinuationWrapper) ToBytes() ([]byte, error) {
 		Second:       proto.Bool(c.onSecond),
 		Continuation: c.inner,
 	}
-	return proto.Marshal(cont)
+	return cont.MarshalVT()
 }
 
 func (c *concatContinuationWrapper) IsEnd() bool {
@@ -417,7 +417,7 @@ func FlatMapPipelinedWithCheck[T, V any](
 
 	if len(continuation) > 0 {
 		var cont gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &cont); err == nil {
+		if err := cont.UnmarshalVT(continuation); err == nil {
 			c.outer = outerFactory(cont.GetOuterContinuation())
 			if cont.InnerContinuation != nil {
 				// Resuming mid-inner — need to advance outer once, then create inner with continuation
@@ -548,7 +548,7 @@ func (c *flatMapCursor[T, V]) wrapOuterStopContinuation(outerCont RecordCursorCo
 	fm := &gen.FlatMapContinuation{
 		OuterContinuation: outerBytes,
 	}
-	data, err := proto.Marshal(fm)
+	data, err := fm.MarshalVT()
 	if err != nil {
 		return nil, fmt.Errorf("flatmap outer stop continuation marshal: %w", err)
 	}
@@ -594,7 +594,7 @@ func (w *flatMapContinuationWrapper[T]) ToBytes() ([]byte, error) {
 		}
 	}
 
-	return proto.Marshal(fm)
+	return fm.MarshalVT()
 }
 
 func (w *flatMapContinuationWrapper[T]) IsEnd() bool {

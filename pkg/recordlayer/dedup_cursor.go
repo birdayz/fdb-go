@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/birdayz/fdb-record-layer-go/gen"
 )
 
@@ -51,7 +49,7 @@ func Dedup[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.DedupContinuation
-		if err := proto.Unmarshal(continuation, &cont); err == nil {
+		if err := cont.UnmarshalVT(continuation); err == nil {
 			c.inner = innerFactory(cont.GetInnerContinuation())
 			if lv := cont.GetLastValue(); len(lv) > 0 && unpack != nil {
 				if val, ok := unpack(lv); ok {
@@ -141,7 +139,7 @@ func (d *dedupContinuationWrapper[T]) ToBytes() ([]byte, error) {
 		InnerContinuation: d.inner,
 		LastValue:         d.lastPack,
 	}
-	return proto.Marshal(cont)
+	return cont.MarshalVT()
 }
 
 func (d *dedupContinuationWrapper[T]) IsEnd() bool {

@@ -236,7 +236,7 @@ func (c *unionCursor[T]) buildContinuation() (RecordCursorContinuation, error) {
 			})
 		}
 	}
-	data, err := proto.Marshal(cont)
+	data, err := cont.MarshalVT()
 	if err != nil {
 		return nil, fmt.Errorf("union continuation marshal: %w", err)
 	}
@@ -454,7 +454,7 @@ func (c *intersectionCursor[T]) buildContinuation() (RecordCursorContinuation, e
 			})
 		}
 	}
-	data, err := proto.Marshal(cont)
+	data, err := cont.MarshalVT()
 	if err != nil {
 		return nil, fmt.Errorf("intersection continuation marshal: %w", err)
 	}

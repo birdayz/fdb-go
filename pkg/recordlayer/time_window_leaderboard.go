@@ -223,7 +223,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 		return nil, nil
 	}
 	pb := &gen.TimeWindowLeaderboardDirectory{}
-	if err := proto.Unmarshal(bytes, pb); err != nil {
+	if err := pb.UnmarshalVT(bytes); err != nil {
 		return nil, fmt.Errorf("loadLeaderboardDirectory: unmarshal: %w", err)
 	}
 	return newLeaderboardDirectoryFromProto(pb)
@@ -231,7 +231,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 
 // saveLeaderboardDirectory saves the directory to FDB.
 func saveLeaderboardDirectory(tx fdb.Transaction, extraSubspace subspace.Subspace, dir *leaderboardDirectory) error {
-	data, err := proto.Marshal(dir.toProto())
+	data, err := dir.toProto().MarshalVT()
 	if err != nil {
 		return fmt.Errorf("saveLeaderboardDirectory: marshal: %w", err)
 	}
@@ -272,7 +272,7 @@ func loadLeaderboardSubDirectory(
 		}
 	} else {
 		pb := &gen.TimeWindowLeaderboardSubDirectory{}
-		if err := proto.Unmarshal(bytes, pb); err != nil {
+		if err := pb.UnmarshalVT(bytes); err != nil {
 			return nil, fmt.Errorf("loadSubDirectory: unmarshal: %w", err)
 		}
 		sub = &leaderboardSubDirectory{
@@ -300,7 +300,7 @@ func saveLeaderboardSubDirectory(
 	pb := &gen.TimeWindowLeaderboardSubDirectory{
 		HighScoreFirst: proto.Bool(sub.HighScoreFirst),
 	}
-	data, err := proto.Marshal(pb)
+	data, err := pb.MarshalVT()
 	if err != nil {
 		return fmt.Errorf("saveSubDirectory: marshal: %w", err)
 	}

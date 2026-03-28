@@ -36,7 +36,7 @@ func unwrapContinuation(rawBytes []byte) []byte {
 		return nil
 	}
 	msg := &gen.KeyValueCursorContinuation{}
-	if err := proto.Unmarshal(rawBytes, msg); err != nil {
+	if err := msg.UnmarshalVT(rawBytes); err != nil {
 		// Parse failed — treat as old-format raw bytes
 		return rawBytes
 	}

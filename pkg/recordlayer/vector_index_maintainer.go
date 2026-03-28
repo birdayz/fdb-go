@@ -571,7 +571,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 	// Java's ListCursor continuation is just the position encoded as bytes.
 	contProto.InnerContinuation = tuple.Tuple{int64(innerPos)}.Pack()
 
-	data, err := proto.Marshal(contProto)
+	data, err := contProto.MarshalVT()
 	if err != nil {
 		return nil
 	}
@@ -583,7 +583,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // If parsing fails, returns nil (caller falls back to fresh search).
 func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, int) {
 	var contProto gen.VectorIndexScanContinuation
-	if err := proto.Unmarshal(data, &contProto); err != nil {
+	if err := contProto.UnmarshalVT(data); err != nil {
 		return nil, 0
 	}
 

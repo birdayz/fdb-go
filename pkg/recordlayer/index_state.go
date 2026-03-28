@@ -7,7 +7,6 @@ import (
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
-	"google.golang.org/protobuf/proto"
 )
 
 // IndexState represents the state of a secondary index.
@@ -377,7 +376,7 @@ func (store *FDBRecordStore) indexBuildTypeSubspace(index *Index) subspace.Subsp
 // SaveIndexingTypeStamp persists the indexing method stamp for an index.
 // Matches Java's FDBRecordStore.saveIndexingTypeStamp().
 func (store *FDBRecordStore) SaveIndexingTypeStamp(index *Index, stamp *gen.IndexBuildIndexingStamp) error {
-	data, err := proto.Marshal(stamp)
+	data, err := stamp.MarshalVT()
 	if err != nil {
 		return fmt.Errorf("marshal indexing type stamp: %w", err)
 	}
@@ -399,7 +398,7 @@ func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuil
 		return nil, nil
 	}
 	stamp := &gen.IndexBuildIndexingStamp{}
-	if err := proto.Unmarshal(data, stamp); err != nil {
+	if err := stamp.UnmarshalVT(data); err != nil {
 		return nil, fmt.Errorf("unmarshal indexing type stamp: %w", err)
 	}
 	return stamp, nil

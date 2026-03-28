@@ -98,7 +98,7 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.Transaction, storeSubspace sub
 
 		// Parse the heartbeat proto.
 		var hb gen.IndexBuildHeartbeat
-		if err := proto.Unmarshal(kv.Value, &hb); err != nil {
+		if err := hb.UnmarshalVT(kv.Value); err != nil {
 			continue // corrupt heartbeat, ignore
 		}
 
@@ -134,7 +134,7 @@ func (h *IndexingHeartbeat) update(tx fdb.Transaction, storeSubspace subspace.Su
 		CreateTimeMilliseconds:    proto.Int64(h.createTimeMs),
 		HeartbeatTimeMilliseconds: proto.Int64(time.Now().UnixMilli()),
 	}
-	data, err := proto.Marshal(hb)
+	data, err := hb.MarshalVT()
 	if err != nil {
 		return // best-effort
 	}
@@ -194,7 +194,7 @@ func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, ind
 			continue
 		}
 		var hb gen.IndexBuildHeartbeat
-		if err := proto.Unmarshal(kv.Value, &hb); err != nil {
+		if err := hb.UnmarshalVT(kv.Value); err != nil {
 			continue
 		}
 		indexerIDs = append(indexerIDs, id)
