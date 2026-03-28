@@ -1621,9 +1621,9 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 ### Phase 3: Chaos test gaps
 
 - [x] **MEDIUM — BITMAP_VALUE chaos tests** — 8 tests: basic save, multiple records, delete, overwrite, commit-unknown insert/delete, random 200 ops no faults, random 200 ops with 5% commit-unknown. Bitmap verification computes expected bits from model records, scans BY_GROUP, bidirectional diff (missing/orphan entries + individual bit mismatches). BIT_OR/BIT_AND confirmed idempotent under faults.
-- [ ] **MEDIUM — TEXT index chaos tests** — BunchedMap token storage under commit-unknown. Verify token→position lists match model.
-- [ ] **MEDIUM — MAX_EVER_VERSION chaos tests** — SET_VERSIONSTAMPED_VALUE under commit-unknown. Verify max version ratchet.
-- [ ] **MEDIUM — OnlineIndexer under faults** — Build indexes while injecting commit-unknown. Verify index completeness and RangeSet consistency.
+- [x] **MEDIUM — TEXT index chaos tests** — 9 tests: basic CRUD, commit-unknown (insert/overwrite/delete), same-name update (removeCommonEntries fast path), different-name update, deleteAll, random 100 ops (5% faults), heavy stress 200 ops (20% faults). `verify_text.go` tokenizes model records, scans BY_TEXT_TOKEN, bidirectional diff on (token, PK) pairs. Wired into main `Verify()` dispatch.
+- [x] **MEDIUM — MAX_EVER_VERSION chaos tests** — 15 tests: ungrouped basic/commit-unknown (insert/overwrite/delete)/deleteAll/random/heavy/all-faults, grouped basic/commit-unknown (insert/overwrite)/deleteAll/random/heavy. Structural verification: entry count, versionstamp presence in values. BYTE_MAX confirmed idempotent under faults. _EVER semantics: entries persist after delete.
+- [x] **MEDIUM — OnlineIndexer under faults** — 5 tests: VALUE index (10%/15%/20% faults, limit=3/5/7), COUNT index (10% faults), all-fault-types (commit-unknown + conflict + tx-too-old). RangeSet's InsertRange(requireEmpty=true) correctly detects already-processed ranges. Verification scans index entries and confirms all records indexed.
 
 ### Phase 4: Additional hardening
 
