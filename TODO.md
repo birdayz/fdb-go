@@ -37,6 +37,12 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Fixed: `saveRecordVersion()` now updates sizeInfo with version key/value bytes (KeyCount, KeySize, ValueSize). Incomplete versions subtract 4-byte offset (not durable). `DryRunSaveRecord` also includes version bytes. `loadWithSplit` tracks version keys in split record scan. Matches Java's `SplitHelper.writeVersion()` sizeInfo pattern.
 - [ ] **LOW** — `store.go`: Double deserialization when `ErrorIfTypeChanged + HasIndexes`. Old record deserialized once for type check, again for index update. Performance only.
 
+### Hardening audit (2026-03-29) — 5-agent sweep: corruption masking, panics, integer overflow
+
+- [x] **MEDIUM** — `text_index_serializer.go:156,172,188`: `SerializeEntry`/`SerializeEntries` panicked on invalid position lists or empty entries. Fixed: `BunchedSerializer` interface changed to return `([]byte, error)`, all `BunchedMap` callers propagate errors.
+- [x] **MEDIUM** — `text_tokenizer.go:360`: `GetTextTokenizer()` panicked on unregistered tokenizer name. Fixed: returns `(TextTokenizer, error)`.
+- [x] **MEDIUM** — Integer overflow in `limit + 1` arithmetic across 8 sites (key_value_cursor, online_indexer ×2, indexing_mutual, text_index_maintainer, count_index/index_scan/bitmap_value cursors). Added `saturatingAdd()` helper clamped to `math.MaxInt`. Also fixed subtraction underflow (returned > limit → negative FDB limit treated as unlimited).
+
 ### Hardening audit (2026-03-28) — 4-agent sweep: error swallowing, panics, deserialization, concurrency
 
 - [x] **CRITICAL** — `hnsw.go`: 6+ sites ignore `decodeStoredVector()` error (lines ~319, 724, 731, 870, 880, 911). Fixed: critical paths return error, loop candidates skip on decode failure.
