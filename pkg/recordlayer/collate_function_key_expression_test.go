@@ -436,13 +436,13 @@ func TestCollateConcurrentStress(t *testing.T) {
 
 	inputs := []string{
 		"hello", "world", "HELLO", "WORLD",
-		"\u00f6", // ö
-		"\u00e9", // é
-		"e\u0301", // decomposed é
+		"\u00f6",      // ö
+		"\u00e9",      // é
+		"e\u0301",     // decomposed é
 		"Stra\u00dfe", // Straße
-		"", // empty
-		"日本語", // Japanese
-		"العربية", // Arabic
+		"",            // empty
+		"日本語",         // Japanese
+		"العربية",     // Arabic
 	}
 	strengths := []int64{0, 1, 2}
 	locales := []string{"", "en_US", "fr_CA", "de_DE", "ja_JP"}

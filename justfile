@@ -31,7 +31,19 @@ tidy:
 
 # Format Go source files
 fmt:
-    gofmt -w $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*')
+    gofmt -w $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*')
+
+# Check Go formatting (fails if any file needs formatting)
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unformatted=$(gofmt -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*'))
+    if [ -n "$unformatted" ]; then
+        echo "Unformatted files:"
+        echo "$unformatted"
+        echo "Run 'just fmt' to fix."
+        exit 1
+    fi
 
 # Run all benchmarks (skips Ginkgo specs, runs only Go benchmarks)
 bench:

@@ -19,20 +19,20 @@ import (
 
 // FDB tuple type codes.
 const (
-	tcNil            = 0x00
-	tcBytes          = 0x01
-	tcString         = 0x02
-	tcNested         = 0x05
-	tcNegIntStart    = 0x0b
-	tcIntZero        = 0x14
-	tcPosIntEnd      = 0x1d
-	tcFloat          = 0x20
-	tcDouble         = 0x21
-	tcFalse          = 0x26
-	tcTrue           = 0x27
-	tcUUID           = 0x30
-	tcVersionstamp   = 0x33
-	versionstampLen  = 12
+	tcNil           = 0x00
+	tcBytes         = 0x01
+	tcString        = 0x02
+	tcNested        = 0x05
+	tcNegIntStart   = 0x0b
+	tcIntZero       = 0x14
+	tcPosIntEnd     = 0x1d
+	tcFloat         = 0x20
+	tcDouble        = 0x21
+	tcFalse         = 0x26
+	tcTrue          = 0x27
+	tcUUID          = 0x30
+	tcVersionstamp  = 0x33
+	versionstampLen = 12
 )
 
 // sizeLimits for negative int encoding.

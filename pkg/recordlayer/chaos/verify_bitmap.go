@@ -36,9 +36,9 @@ func verifyBitmapValueIndexes(ctx context.Context, store *recordlayer.FDBRecordS
 
 // bitmapModelEntry represents the expected state of a single bitmap FDB entry.
 type bitmapModelEntry struct {
-	groupKey   tuple.Tuple      // leading grouping columns
-	alignedPos int64            // aligned position (multiple of entrySize)
-	bits       map[int64]bool   // bit offsets that should be set within this entry
+	groupKey   tuple.Tuple    // leading grouping columns
+	alignedPos int64          // aligned position (multiple of entrySize)
+	bits       map[int64]bool // bit offsets that should be set within this entry
 }
 
 func verifyOneBitmapIndex(
@@ -69,7 +69,7 @@ func verifyOneBitmapIndex(
 		packed string
 	}
 	expectedBits := make(map[string]map[int64]bool) // packed key → bit offsets
-	expectedKeys := make(map[string]tuple.Tuple)     // packed key → full tuple key
+	expectedKeys := make(map[string]tuple.Tuple)    // packed key → full tuple key
 
 	for _, rec := range model.Records {
 		if !model.indexAppliesToType(idx, rec.TypeName) {

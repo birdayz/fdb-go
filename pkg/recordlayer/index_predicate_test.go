@@ -1066,7 +1066,7 @@ func TestComparisonNoTypeErrors(t *testing.T) {
 	t.Parallel()
 	_, err := predicateFromProto(&gen.Predicate{
 		ValuePredicate: &gen.ValuePredicate{
-			Value: []string{"price"},
+			Value:      []string{"price"},
 			Comparison: &gen.Comparison{
 				// neither simple nor null
 			},

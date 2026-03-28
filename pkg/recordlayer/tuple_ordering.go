@@ -129,9 +129,9 @@ func unpackNullsLast(data []byte) (tuple.Tuple, error) {
 // set encodes the padding length.
 //
 // This ensures that when comparing inverted byte sequences lexicographically:
-// - Opposite ordering of original values (due to bit flip)
-// - Shorter strings sort AFTER longer ones with the same prefix (due to 7-bit
-//   packing where terminators with high bit 1 sort after data bytes with high bit 0)
+//   - Opposite ordering of original values (due to bit flip)
+//   - Shorter strings sort AFTER longer ones with the same prefix (due to 7-bit
+//     packing where terminators with high bit 1 sort after data bytes with high bit 0)
 //
 // Matches Java's TupleOrdering.invert() exactly.
 func invertBytes(input []byte) []byte {

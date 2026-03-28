@@ -239,10 +239,10 @@ func TestPackNullsLastNullEncoding(t *testing.T) {
 	// 0xFE should sort after all standard tuple type codes (max standard = 0x33 for versionstamp).
 	// The highest standard FDB tuple type code in the spec is well below 0xFE.
 	standardTypeCodes := []byte{
-		0x00, // null
-		0x01, // byte string
-		0x02, // unicode string
-		0x05, // nested tuple
+		0x00,       // null
+		0x01,       // byte string
+		0x02,       // unicode string
+		0x05,       // nested tuple
 		0x0C, 0x13, // negative ints
 		0x14,       // zero int
 		0x15, 0x1C, // positive ints

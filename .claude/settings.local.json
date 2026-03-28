@@ -66,7 +66,9 @@
       "Bash(timeout 60s go test -v -run TestFoundationDBContainerStartup ./pkg/testcontainers/foundationdb)",
       "Bash(timeout 30s go test -v -run TestFoundationDBContainerStartup ./pkg/testcontainers/foundationdb)",
       "Bash(timeout:*)",
-      "Bash(go fmt:*)"
+      "Bash(go fmt:*)",
+      "Bash(just lint:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }

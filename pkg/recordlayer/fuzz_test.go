@@ -147,7 +147,7 @@ func FuzzDeserializeBunch(f *testing.F) {
 	// Invalid seeds.
 	f.Add([]byte{}, []byte{0x14}) // empty data
 	f.Add([]byte{0xff}, []byte{0x14})
-	f.Add([]byte{0x20}, []byte{0x14})          // prefix only, no entries
+	f.Add([]byte{0x20}, []byte{0x14})             // prefix only, no entries
 	f.Add([]byte{0x20, 0x80, 0x01}, []byte{0x14}) // truncated varint
 
 	f.Fuzz(func(t *testing.T, data []byte, keyBytes []byte) {
@@ -229,10 +229,10 @@ func FuzzUninvertBytes(f *testing.F) {
 
 func FuzzDeserializeVector(f *testing.F) {
 	f.Add([]byte{})
-	f.Add([]byte{0x00})                   // DOUBLE type, no data
-	f.Add([]byte{0x01})                   // SINGLE type, no data
-	f.Add([]byte{0x02})                   // HALF type, no data
-	f.Add([]byte{0x05})                   // unknown type
+	f.Add([]byte{0x00})                                                 // DOUBLE type, no data
+	f.Add([]byte{0x01})                                                 // SINGLE type, no data
+	f.Add([]byte{0x02})                                                 // HALF type, no data
+	f.Add([]byte{0x05})                                                 // unknown type
 	f.Add([]byte{0x00, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}) // 1 double (1.0)
 
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -247,10 +247,10 @@ func FuzzDeserializeVector(f *testing.F) {
 
 func FuzzCompleteVersionFromBytes(f *testing.F) {
 	f.Add([]byte{})
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                         // all zeros
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                                     // all zeros
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff}) // max version
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                             // 11 bytes (too short)
-	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                       // 13 bytes (too long)
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                                        // 11 bytes (too short)
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})                                  // 13 bytes (too long)
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic.
