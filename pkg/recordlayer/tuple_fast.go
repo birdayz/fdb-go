@@ -36,6 +36,8 @@ const (
 )
 
 // sizeLimits for negative int encoding.
+// sizeLimits matches the FDB tuple layer's size limits for negative int encoding.
+// Entry [8] must be -1 (= int64 of uint64(1<<64 - 1)), NOT MaxInt64.
 var sizeLimits = [9]int64{
 	0,
 	(1 << 8) - 1,
@@ -45,7 +47,7 @@ var sizeLimits = [9]int64{
 	(1 << 40) - 1,
 	(1 << 48) - 1,
 	(1 << 56) - 1,
-	(1 << 63) - 1,
+	-1, // int64 overflow of (1<<64)-1, matches FDB's uint64 sizeLimits[8]
 }
 
 var minInt64Big = big.NewInt(math.MinInt64)

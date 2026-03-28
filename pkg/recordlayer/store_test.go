@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -262,6 +263,46 @@ func BenchmarkDeserializeRecord_Standard(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestDeserializeWithUnknownFields is a regression test for the bug where
+// deserializeAndDiscover assumed the first proto field was the record field.
+// If unknown fields precede the record field (forward compat, extensions),
+// the lookup would fail. The fix scans all fields until a known one is found.
+func TestDeserializeWithUnknownFields(t *testing.T) {
+	t.Parallel()
+	metaData := testMetaData(t)
+	store := &FDBRecordStore{metaData: metaData}
+
+	// Build valid union data, then prepend an unknown field.
+	// Unknown field: field number 999, wire type 2 (bytes), value "junk".
+	unknownField := protowire.AppendTag(nil, 999, protowire.BytesType)
+	unknownField = protowire.AppendBytes(unknownField, []byte("junk"))
+	dataWithUnknown := append(unknownField, testUnionData...)
+
+	// deserializeAndDiscover must skip the unknown field and find the Order
+	rt, msg, err := store.deserializeAndDiscover(dataWithUnknown)
+	if err != nil {
+		t.Fatalf("deserializeAndDiscover with unknown field: %v", err)
+	}
+	if rt.Name != "Order" {
+		t.Errorf("expected Order, got %s", rt.Name)
+	}
+	order := msg.(*gen.Order)
+	if order.GetOrderId() != 1001 {
+		t.Errorf("expected OrderId 1001, got %d", order.GetOrderId())
+	}
+
+	// deserializeRecord with known type must also skip unknown fields
+	recordType := metaData.GetRecordType("Order")
+	msg2, err := store.deserializeRecord(dataWithUnknown, recordType)
+	if err != nil {
+		t.Fatalf("deserializeRecord with unknown field: %v", err)
+	}
+	order2 := msg2.(*gen.Order)
+	if order2.GetOrderId() != 1001 {
+		t.Errorf("expected OrderId 1001, got %d", order2.GetOrderId())
 	}
 }
 

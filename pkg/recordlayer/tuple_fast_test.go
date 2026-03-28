@@ -164,6 +164,43 @@ func TestTupleSkipNestedInNested(t *testing.T) {
 	}
 }
 
+// TestFastDecodeInt8ByteNegative is a regression test for the sizeLimits[8] bug.
+// sizeLimits[8] must be -1 (matching FDB's uint64 overflow), not MaxInt64.
+// Without the fix, 8-byte negative integers that go through fastDecodeInt
+// (not fastDecodeBigInt) decode to wrong values.
+func TestFastDecodeInt8ByteNegative(t *testing.T) {
+	t.Parallel()
+	// These values require 8 bytes and go through decodeInt (not decodeBigInt):
+	// type code 0x0c with first data byte having MSB set.
+	values := []int64{
+		-(1 << 56),           // smallest 8-byte negative
+		-(1 << 62),           // large 8-byte negative
+		-(1<<63 - 1),         // MaxInt64 negated = MinInt64 + 1
+		-72057594037927936,   // -(2^56) exact boundary
+		-4611686018427387904, // -(2^62)
+	}
+	for _, v := range values {
+		packed := tuple.Tuple{v}.Pack()
+		got, err := fastUnpack(packed)
+		if err != nil {
+			t.Fatalf("fastUnpack(%d) error: %v", v, err)
+		}
+		want, _ := tuple.Unpack(packed)
+		// Compare actual decoded values, not just re-packed bytes
+		if len(got) != 1 || len(want) != 1 {
+			t.Fatalf("length mismatch for %d: got=%d want=%d", v, len(got), len(want))
+		}
+		gotVal, ok1 := got[0].(int64)
+		wantVal, ok2 := want[0].(int64)
+		if !ok1 || !ok2 {
+			t.Fatalf("type mismatch for %d: got=%T want=%T", v, got[0], want[0])
+		}
+		if gotVal != wantVal {
+			t.Errorf("value mismatch for %d: fastUnpack=%d, tuple.Unpack=%d", v, gotVal, wantVal)
+		}
+	}
+}
+
 // TestFastDecodeIntEdgeCases covers integer edge cases.
 func TestFastDecodeIntEdgeCases(t *testing.T) {
 	t.Parallel()
@@ -173,6 +210,8 @@ func TestFastDecodeIntEdgeCases(t *testing.T) {
 		1 << 24, -(1 << 24),
 		1 << 32, -(1 << 32),
 		1 << 48, -(1 << 48),
+		1 << 56, -(1 << 56),
+		1 << 62, -(1 << 62),
 		math.MaxInt64, math.MinInt64,
 	}
 	for _, v := range values {

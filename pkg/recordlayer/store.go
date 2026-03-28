@@ -1586,27 +1586,45 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 // then unmarshals the inner bytes directly into the concrete message type.
 // Skips allocating/parsing a full UnionDescriptor.
 func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, error) {
-	fieldNum, _, n := protowire.ConsumeTag(data)
-	if n < 0 {
-		return nil, nil, fmt.Errorf("failed to read union tag")
-	}
-	innerBytes, m := protowire.ConsumeBytes(data[n:])
-	if m < 0 {
-		return nil, nil, fmt.Errorf("failed to read union inner bytes")
-	}
-	rt := store.metaData.fieldNumberToRecordType[fieldNum]
-	if rt == nil {
-		return nil, nil, fmt.Errorf("unknown union field number: %d", fieldNum)
-	}
-	msg := rt.newMessage()
-	if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-		if err := vu.UnmarshalVT(innerBytes); err != nil {
+	// Scan fields to find the one matching a known record type.
+	// Skips unknown fields for forward compatibility (e.g. newer proto versions).
+	remaining := data
+	for len(remaining) > 0 {
+		fieldNum, wireType, n := protowire.ConsumeTag(remaining)
+		if n < 0 {
+			return nil, nil, fmt.Errorf("failed to read union tag")
+		}
+		remaining = remaining[n:]
+		if wireType != protowire.BytesType {
+			// Skip non-length-delimited fields
+			skip := protowire.ConsumeFieldValue(fieldNum, wireType, remaining)
+			if skip < 0 {
+				return nil, nil, fmt.Errorf("failed to skip field %d", fieldNum)
+			}
+			remaining = remaining[skip:]
+			continue
+		}
+		innerBytes, m := protowire.ConsumeBytes(remaining)
+		if m < 0 {
+			return nil, nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
+		}
+		rt := store.metaData.fieldNumberToRecordType[fieldNum]
+		if rt == nil {
+			// Unknown field — skip and continue scanning
+			remaining = remaining[m:]
+			continue
+		}
+		msg := rt.newMessage()
+		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
+			if err := vu.UnmarshalVT(innerBytes); err != nil {
+				return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
+			}
+		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
-	} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
+		return rt, msg, nil
 	}
-	return rt, msg, nil
+	return nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
 }
 
 // deserializeRecord unmarshals the inner bytes of a union-wrapped record directly
@@ -1615,21 +1633,36 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
-	_, _, n := protowire.ConsumeTag(data)
-	if n < 0 {
-		return nil, fmt.Errorf("failed to read union tag")
-	}
-	innerBytes, m := protowire.ConsumeBytes(data[n:])
-	if m < 0 {
-		return nil, fmt.Errorf("failed to read union inner bytes")
-	}
-	msg := recordType.newMessage()
-	if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-		if err := vu.UnmarshalVT(innerBytes); err != nil {
+	// Scan fields to find the target record type, skipping unknown fields.
+	remaining := data
+	for len(remaining) > 0 {
+		fieldNum, wireType, n := protowire.ConsumeTag(remaining)
+		if n < 0 {
+			return nil, fmt.Errorf("failed to read union tag")
+		}
+		remaining = remaining[n:]
+		if wireType != protowire.BytesType || fieldNum != recordType.unionFieldNumber {
+			skip := protowire.ConsumeFieldValue(fieldNum, wireType, remaining)
+			if skip < 0 {
+				return nil, fmt.Errorf("failed to skip field %d", fieldNum)
+			}
+			remaining = remaining[skip:]
+			continue
+		}
+		innerBytes, m := protowire.ConsumeBytes(remaining)
+		if m < 0 {
+			return nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
+		}
+		_ = remaining[m:] // consume
+		msg := recordType.newMessage()
+		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
+			if err := vu.UnmarshalVT(innerBytes); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
+			}
+		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
 		}
-	} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
+		return msg, nil
 	}
-	return msg, nil
+	return nil, fmt.Errorf("union descriptor does not contain %s record", recordType.Name)
 }
