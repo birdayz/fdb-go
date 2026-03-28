@@ -168,13 +168,23 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkDeleteRecord` | Delete by primary key |
 | `BenchmarkSaveRecordWithCountAndIndex` | Save with COUNT + VALUE index |
 
-**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer):
-- Save: ~2.19ms/op, 100 allocs
-- Load: ~0.42ms/op, 92 allocs
-- Scan 100: ~0.67ms/op, 2014 allocs
-- Split save 250KB: ~2.54ms/op, 121 allocs
-- Store open: ~0.35ms/op, 69 allocs
-- Save with count+index: ~2.24ms/op, 130 allocs
+**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer, 2026-03-28):
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| SaveRecord | 2,176,230 | 3,136 | 101 |
+| LoadRecord | 410,904 | 2,906 | 91 |
+| ScanRecords (100) | 624,915 | 55,435 | 1,414 |
+| SaveRecordWithIndex | 2,187,184 | 3,920 | 117 |
+| ScanIndex (100) | 576,417 | 47,240 | 1,485 |
+| SaveRecordWithMultipleIndexes | 2,198,939 | 4,916 | 139 |
+| GetRecordCount | 406,424 | 3,149 | 89 |
+| SaveLargeRecord (50KB) | 2,262,228 | 121,511 | 101 |
+| SaveSplitRecord (250KB) | 2,510,222 | 549,871 | 122 |
+| StoreOpen | 339,357 | 2,119 | 69 |
+| StoreOpenCached | 359,933 | 2,215 | 72 |
+| DeleteRecord | 2,159,154 | 2,767 | 90 |
+| SaveRecordWithCountAndIndex | 2,189,853 | 4,939 | 131 |
 
 ### Debugging Bazel cache invalidation
 
