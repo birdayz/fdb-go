@@ -335,7 +335,8 @@ var _ = Describe("Store accessor methods", func() {
 			if err != nil {
 				return nil, err
 			}
-			maintainer := store.GetIndexMaintainer(priceIndex)
+			maintainer, mErr := store.GetIndexMaintainer(priceIndex)
+			Expect(mErr).NotTo(HaveOccurred())
 			Expect(maintainer).NotTo(BeNil())
 			return nil, nil
 		})

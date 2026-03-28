@@ -142,17 +142,25 @@ func MBRToTuple(m MBR) tuple.Tuple {
 }
 
 // MBRFromTuple deserializes an MBR from a flat tuple.
-func MBRFromTuple(t tuple.Tuple, numDimensions int) MBR {
+func MBRFromTuple(t tuple.Tuple, numDimensions int) (MBR, error) {
 	m := MBR{Low: make([]int64, numDimensions), High: make([]int64, numDimensions)}
 	for d := 0; d < numDimensions; d++ {
 		if d < len(t) {
-			m.Low[d], _ = asInt64(t[d])
+			v, ok := asInt64(t[d])
+			if !ok {
+				return MBR{}, fmt.Errorf("MBR low[%d]: cannot convert %T to int64", d, t[d])
+			}
+			m.Low[d] = v
 		}
 		if numDimensions+d < len(t) {
-			m.High[d], _ = asInt64(t[numDimensions+d])
+			v, ok := asInt64(t[numDimensions+d])
+			if !ok {
+				return MBR{}, fmt.Errorf("MBR high[%d]: cannot convert %T to int64", d, t[numDimensions+d])
+			}
+			m.High[d] = v
 		}
 	}
-	return m
+	return m, nil
 }
 
 // ItemSlot is a leaf node slot containing a data item.

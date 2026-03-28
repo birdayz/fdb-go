@@ -316,7 +316,10 @@ func (g *hnswGraph) Insert(tx fdb.Transaction, primaryKey tuple.Tuple, vector []
 			if len(nbNeighbors) > maxConn {
 				// Resolve vector bytes (at inlining layers, own vector is at layer 0).
 				resolvedVec := g.storage.resolveVectorBytes(layer, nb.pk, nbVecBytes)
-				nbVec, _ := g.decodeStoredVector(resolvedVec)
+				nbVec, decErr := g.decodeStoredVector(resolvedVec)
+				if decErr != nil {
+					return fmt.Errorf("hnsw insert: decode neighbor %v vector at layer %d for pruning: %w", nb.pk, layer, decErr)
+				}
 				nbNeighbors, err = g.pruneNeighbors(tx, nbVec, nbNeighbors, maxConn, layer)
 				if err != nil {
 					return err
@@ -721,14 +724,22 @@ func (g *hnswGraph) selectNeighbors(candidates []hnswCandidate, maxConn int) []h
 
 		// Lazily decode vector for heuristic pairwise distance.
 		if candidates[i].vec == nil && candidates[i].vecBytes != nil {
-			candidates[i].vec, _ = g.decodeStoredVector(candidates[i].vecBytes)
+			var decErr error
+			candidates[i].vec, decErr = g.decodeStoredVector(candidates[i].vecBytes)
+			if decErr != nil {
+				continue
+			}
 		}
 
 		// Check if candidate is closer to query than to any already-selected neighbor.
 		shouldSelect := true
 		for j := range result {
 			if result[j].vec == nil && result[j].vecBytes != nil {
-				result[j].vec, _ = g.decodeStoredVector(result[j].vecBytes)
+				var decErr error
+				result[j].vec, decErr = g.decodeStoredVector(result[j].vecBytes)
+				if decErr != nil {
+					continue
+				}
 			}
 			distToSelected := vectorDistance(candidates[i].vec, result[j].vec, g.config.Metric)
 			if distToSelected < candidates[i].dist {
@@ -867,7 +878,10 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 	// Build candidate list with distances.
 	// For inlining layers, own vector is at layer 0.
 	resolvedVec := g.storage.resolveVectorBytes(layer, neighborPK, nbVecBytes)
-	nbVec, _ := g.decodeStoredVector(resolvedVec)
+	nbVec, decErr := g.decodeStoredVector(resolvedVec)
+	if decErr != nil {
+		return fmt.Errorf("hnsw repair: decode neighbor %v vector at layer %d: %w", neighborPK, layer, decErr)
+	}
 
 	// Start with existing (filtered) neighbors (already in cache from batch above).
 	seen := make(map[string]bool)
@@ -877,7 +891,10 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 			continue
 		}
 		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
-		candidateVec, _ := g.decodeStoredVector(resolvedCandidateVec)
+		candidateVec, decErr := g.decodeStoredVector(resolvedCandidateVec)
+		if decErr != nil {
+			continue
+		}
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
 		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
 		seen[string(r.pk.Pack())] = true
@@ -908,7 +925,10 @@ func (g *hnswGraph) repairNeighbor(tx fdb.Transaction, layer int, neighborPK, de
 			continue
 		}
 		resolvedCandidateVec := g.storage.resolveVectorBytes(layer, r.pk, r.vecBytes)
-		candidateVec, _ := g.decodeStoredVector(resolvedCandidateVec)
+		candidateVec, decErr := g.decodeStoredVector(resolvedCandidateVec)
+		if decErr != nil {
+			continue
+		}
 		dist := vectorDistance(nbVec, candidateVec, g.config.Metric)
 		allCandidates = append(allCandidates, hnswCandidate{pk: r.pk, vecBytes: resolvedCandidateVec, vec: candidateVec, dist: dist})
 	}

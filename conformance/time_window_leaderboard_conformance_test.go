@@ -632,7 +632,10 @@ func (s *LeaderboardConformanceStore) SetupWindowsJava(ctx context.Context) erro
 
 // setupWindowsGo creates the all-time leaderboard window via Go's PerformWindowUpdate.
 func (s *LeaderboardConformanceStore) setupWindowsGo(store *recordlayer.FDBRecordStore) error {
-	maintainer := store.GetIndexMaintainer(s.LeaderboardIndex)
+	maintainer, mErr := store.GetIndexMaintainer(s.LeaderboardIndex)
+	if mErr != nil {
+		return mErr
+	}
 	lm, ok := maintainer.(leaderboardWindowUpdater)
 	if !ok {
 		return fmt.Errorf("index maintainer %T does not implement leaderboardWindowUpdater", maintainer)

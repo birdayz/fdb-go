@@ -34,13 +34,16 @@ type textIndexMaintainer struct {
 	bunchedMap                  *BunchedMap
 }
 
-func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) *textIndexMaintainer {
+func newTextIndexMaintainer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext) (*textIndexMaintainer, error) {
 	return newTextIndexMaintainerWithTimer(index, indexSubspace, secSubspace, tx, store, nil)
 }
 
-func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, timer *StoreTimer) *textIndexMaintainer {
+func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.Transaction, store indexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
 	tokenizer := getTextTokenizer(index)
-	tokenizerVersion := getTextTokenizerVersion(index)
+	tokenizerVersion, err := getTextTokenizerVersion(index)
+	if err != nil {
+		return nil, fmt.Errorf("text index %q: %w", index.Name, err)
+	}
 
 	// Matches Java's TextIndexMaintainer.getBunchedMap(context):
 	// if context.getTimer() != null, use InstrumentedBunchedMap.
@@ -62,7 +65,7 @@ func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspa
 		addAggressiveConflictRanges: getTextAggressiveConflictRanges(index),
 		omitPositionLists:           getTextOmitPositions(index),
 		bunchedMap:                  bm,
-	}
+	}, nil
 }
 
 // getTextTokenizer gets the tokenizer for a TEXT index from the registry.
@@ -72,16 +75,16 @@ func getTextTokenizer(index *Index) TextTokenizer {
 }
 
 // getTextTokenizerVersion gets the tokenizer version from index options.
-func getTextTokenizerVersion(index *Index) int {
+func getTextTokenizerVersion(index *Index) (int, error) {
 	versionStr := index.Options[IndexOptionTextTokenizerVersion]
 	if versionStr == "" {
-		return 0 // GLOBAL_MIN_VERSION
+		return 0, nil // GLOBAL_MIN_VERSION
 	}
 	v, err := strconv.Atoi(versionStr)
 	if err != nil {
-		panic(fmt.Sprintf("tokenizer version could not be parsed as int: %q", versionStr))
+		return 0, fmt.Errorf("tokenizer version could not be parsed as int: %q", versionStr)
 	}
-	return v
+	return v, nil
 }
 
 func getTextAggressiveConflictRanges(index *Index) bool {
@@ -110,24 +113,27 @@ func (m *textIndexMaintainer) getRecordTokenizerKey(primaryKey tuple.Tuple) fdb.
 
 // getRecordTokenizerVersion reads the stored tokenizer version for a record.
 // Returns GLOBAL_MIN_VERSION (0) if not stored.
-func (m *textIndexMaintainer) getRecordTokenizerVersion(primaryKey tuple.Tuple) int {
+func (m *textIndexMaintainer) getRecordTokenizerVersion(primaryKey tuple.Tuple) (int, error) {
 	key := m.getRecordTokenizerKey(primaryKey)
-	rawVersion := m.tx.Get(key).MustGet()
+	rawVersion, err := m.tx.Get(key).Get()
+	if err != nil {
+		return 0, fmt.Errorf("get record tokenizer version for pk %v: %w", primaryKey, err)
+	}
 	if rawVersion == nil {
-		return 0 // GLOBAL_MIN_VERSION
+		return 0, nil // GLOBAL_MIN_VERSION
 	}
 	t, err := tuple.Unpack(rawVersion)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	if len(t) == 0 {
-		return 0
+		return 0, nil
 	}
 	v, ok := t[0].(int64)
 	if !ok {
-		return 0
+		return 0, nil
 	}
-	return int(v)
+	return int(v), nil
 }
 
 // writeRecordTokenizerVersion stores the current tokenizer version for a record.
@@ -165,7 +171,10 @@ func (m *textIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 		return nil
 	} else if oldRecord != nil && newRecord != nil {
 		// Update: check if tokenizer version changed.
-		recordTokenizerVersion := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
+		recordTokenizerVersion, err := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
+		if err != nil {
+			return err
+		}
 		if recordTokenizerVersion == m.tokenizerVersion {
 			// Same version: standard update.
 			return m.updateStandard(oldRecord, newRecord)
@@ -210,7 +219,10 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	}
 
 	if oldRecord != nil && len(oldEntries) > 0 {
-		recordTokenizerVersion := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
+		recordTokenizerVersion, tvErr := m.getRecordTokenizerVersion(oldRecord.PrimaryKey)
+		if tvErr != nil {
+			return tvErr
+		}
 		if err := m.updateIndexKeys(oldRecord, true, oldEntries, recordTokenizerVersion); err != nil {
 			return err
 		}
@@ -335,7 +347,10 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	copy(groupedKey, indexEntryKey[textPosition+1:])
 
 	// Tokenize the text.
-	positionMap := m.tokenizer.TokenizeToMap(text, recordTokenizerVersion, TokenizerModeIndex)
+	positionMap, err := m.tokenizer.TokenizeToMap(text, recordTokenizerVersion, TokenizerModeIndex)
+	if err != nil {
+		return fmt.Errorf("text index tokenize: %w", err)
+	}
 	if len(positionMap) == 0 {
 		return nil
 	}

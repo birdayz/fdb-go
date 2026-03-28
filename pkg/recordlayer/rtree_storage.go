@@ -298,7 +298,11 @@ func (s *rtreeStorage) deserializeChildSlots(slotList tuple.Tuple) ([]ChildSlot,
 			slots[i].ChildID = v
 		}
 		if v, ok := slotTuple[5].(tuple.Tuple); ok {
-			slots[i].ChildMBR = MBRFromTuple(v, s.config.NumDimensions)
+			mbr, mbrErr := MBRFromTuple(v, s.config.NumDimensions)
+			if mbrErr != nil {
+				return nil, fmt.Errorf("deserialize child MBR at slot %d: %w", i, mbrErr)
+			}
+			slots[i].ChildMBR = mbr
 		}
 	}
 	return slots, nil

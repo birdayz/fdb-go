@@ -48,7 +48,10 @@ func (store *FDBRecordStore) EvaluateRecordFunction(
 		return nil, err
 	}
 
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return nil, err
+	}
 	return evaluateRecordFunction(fn, maintainer, record, index)
 }
 

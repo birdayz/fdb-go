@@ -683,9 +683,9 @@ func (store *FDBRecordStore) GetMetaData() *RecordMetaData {
 
 // GetIndexMaintainer returns the index maintainer for the given index.
 // Matches Java's FDBRecordStore.getIndexMaintainer().
-func (store *FDBRecordStore) GetIndexMaintainer(index *Index) IndexMaintainer {
+func (store *FDBRecordStore) GetIndexMaintainer(index *Index) (IndexMaintainer, error) {
 	if index == nil {
-		return nil
+		return nil, nil
 	}
 	return store.getIndexMaintainer(index)
 }
@@ -911,7 +911,10 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 // Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
 // updateOneIndex updates a single index. Caller must hold stateMu (read or write).
 func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return err
+	}
 	if store.getIndexStateLocked(index.Name) == IndexStateWriteOnly {
 		return maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
 	}
@@ -951,59 +954,59 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
 // Dispatches to CountIndexMaintainer for COUNT indexes, StandardIndexMaintainer otherwise.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
-func (store *FDBRecordStore) getIndexMaintainer(index *Index) IndexMaintainer {
+func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
 	idxSubspace := store.indexSubspace(index)
 	tx := store.context.Transaction()
 	switch index.Type {
 	case IndexTypeCount:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countMutation{index: index})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countMutation{index: index}), nil
 	case IndexTypeCountNotNull:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countNotNullMutation{index: index})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countNotNullMutation{index: index}), nil
 	case IndexTypeCountUpdates:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countUpdatesMutation{index: index})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &countUpdatesMutation{index: index}), nil
 	case IndexTypeSum:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &sumMutation{index: index})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &sumMutation{index: index}), nil
 	case IndexTypeMaxEverLong:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: true})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: true}), nil
 	case IndexTypeMinEverLong:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: false})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverLongMutation{index: index, isMax: false}), nil
 	case IndexTypeMaxEverTuple:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: true})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: true}), nil
 	case IndexTypeMinEverTuple:
-		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: false})
+		return newAtomicMutationIndexMaintainer(index, idxSubspace, tx, store, &minMaxEverTupleMutation{index: index, isMax: false}), nil
 	case IndexTypeRank:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
+		return newRankIndexMaintainer(index, idxSubspace, secSubspace, tx, store), nil
 	case IndexTypeVersion:
-		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
+		return newVersionIndexMaintainer(index, idxSubspace, tx, store.context, store), nil
 	case IndexTypeMaxEverVersion:
-		return newMaxEverVersionIndexMaintainer(index, idxSubspace, tx, store.context, store)
+		return newMaxEverVersionIndexMaintainer(index, idxSubspace, tx, store.context, store), nil
 	case IndexTypePermutedMin:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, false)
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, false), nil
 	case IndexTypePermutedMax:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true)
+		return newPermutedMinMaxIndexMaintainer(index, idxSubspace, secSubspace, tx, store, true), nil
 	case IndexTypeBitmapValue:
-		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store)
+		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store), nil
 	case IndexTypeText:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer())
 	case IndexTypeTimeWindowLeaderboard:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
+		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store), nil
 	case IndexTypeMultidimensional:
 		numDims := 2 // default; extracted from DimensionsKeyExpression at runtime
 		if d := extractDimensionsExpression(index.RootExpression); d != nil {
 			numDims = d.DimensionsSize
 		}
-		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims)
+		return newMultidimensionalIndexMaintainer(index, idxSubspace, tx, store, numDims), nil
 	case IndexTypeVector:
 		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
 		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
-		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store)
+		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store), nil
 	default:
-		return newStandardIndexMaintainer(index, idxSubspace, tx, store)
+		return newStandardIndexMaintainer(index, idxSubspace, tx, store), nil
 	}
 }
 

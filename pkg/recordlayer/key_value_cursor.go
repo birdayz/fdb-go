@@ -233,8 +233,12 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 			// Only decode PK when versioning is enabled (we need it for pendingVersionPK).
 			if c.storeRecordVersions {
 				if ver, verErr := unpackVersion(kv.Value); verErr == nil {
+					pk, pkErr := fastUnpack(tupleBytes[:pkEnd])
+					if pkErr != nil {
+						return nil, nil, fmt.Errorf("failed to unpack version primary key: %w", pkErr)
+					}
 					c.pendingVersion = ver
-					c.pendingVersionPK, _ = fastUnpack(tupleBytes[:pkEnd])
+					c.pendingVersionPK = pk
 				}
 			}
 			continue
@@ -255,7 +259,10 @@ func (c *keyValueCursor) readNextRecord() (*FDBStoredRecord[proto.Message], fdb.
 				// From pendingVersion (forward scan) or peek ahead (reverse scan)
 				version = c.takePendingVersion(primaryKey)
 				if version == nil {
-					version = c.peekVersionKey(recordsSubspace, primaryKey)
+					version, err = c.peekVersionKey(recordsSubspace, primaryKey)
+					if err != nil {
+						return nil, nil, err
+					}
 				}
 				// Fallback: check local version cache for records saved but not yet
 				// committed in this transaction. The version key is a pending
@@ -322,37 +329,40 @@ func (c *keyValueCursor) takePendingVersion(currentPK tuple.Tuple) *FDBRecordVer
 // same primary key. Used in reverse scans where the version key (suffix -1)
 // appears after the record data. If found, returns the version and consumes the
 // KV. Otherwise, buffers the peeked KV for the next call.
-func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple) *FDBRecordVersion {
-	kv, ok, _ := c.nextKV()
+func (c *keyValueCursor) peekVersionKey(recordsSubspace subspace.Subspace, primaryKey tuple.Tuple) (*FDBRecordVersion, error) {
+	kv, ok, err := c.nextKV()
+	if err != nil {
+		return nil, fmt.Errorf("peek version key: %w", err)
+	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	if len(kv.Key) <= c.prefixLength {
 		c.bufferedKV = &kv
-		return nil
+		return nil, nil
 	}
 	tupleBytes := kv.Key[c.prefixLength:]
 	suffix, pkEnd, err := splitKeySuffix(tupleBytes)
 	if err != nil {
 		c.bufferedKV = &kv
-		return nil
+		return nil, nil
 	}
 	if suffix == recordVersionSuffix {
 		kvPK, pkErr := fastUnpack(tupleBytes[:pkEnd])
 		if pkErr != nil {
 			c.bufferedKV = &kv
-			return nil
+			return nil, nil
 		}
 		if sameTuple(kvPK, primaryKey) {
 			ver, verErr := unpackVersion(kv.Value)
 			if verErr != nil {
-				return nil
+				return nil, nil
 			}
-			return ver
+			return ver, nil
 		}
 	}
 	c.bufferedKV = &kv
-	return nil
+	return nil, nil
 }
 
 // localVersionFallback checks the local version cache for records saved in the

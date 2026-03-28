@@ -256,7 +256,8 @@ var _ = Describe("API Coverage", func() {
 					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 				Expect(err).NotTo(HaveOccurred())
 
-				m := store.GetIndexMaintainer(nil)
+				m, mErr := store.GetIndexMaintainer(nil)
+				Expect(mErr).NotTo(HaveOccurred())
 				Expect(m).To(BeNil())
 				return nil, nil
 			})

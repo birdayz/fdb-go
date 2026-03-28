@@ -275,7 +275,10 @@ func (store *FDBRecordStore) ScanIndex(
 	// TIME_WINDOW_LEADERBOARD indexes should use ScanTimeWindowLeaderboard.
 	// Standard ScanIndex falls back to all-time BY_VALUE which is acceptable.
 	// No rejection here — matches Java's behavior where plain scan() works on all-time.
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
 	cursor := maintainer.Scan(scanRange, continuation, scanProperties)
 	store.context.Timer().RecordSince(EventScanIndex, startTime)
 	return cursor
@@ -297,7 +300,10 @@ func (store *FDBRecordStore) ScanIndexByType(
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
 	switch scanType {
 	case IndexScanByRank:
 		switch rm := maintainer.(type) {
@@ -363,7 +369,10 @@ func (store *FDBRecordStore) ScanTimeWindowLeaderboard(
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
 	lm, ok := maintainer.(*timeWindowLeaderboardIndexMaintainer)
 	if !ok {
 		return &errorCursor[*IndexEntry]{

@@ -772,6 +772,14 @@ type LiteralKeyExpression struct {
 // Supported types: nil, int, int32, int64, float32, float64, bool, string, []byte.
 // Matches Java's Key.Expressions.value(Object).
 func Literal(value any) *LiteralKeyExpression {
+	// Validate type at construction time — unsupported types would silently
+	// produce nil proto fields in ToKeyExpression() and wrong equality results.
+	switch value.(type) {
+	case nil, int, int32, int64, float32, float64, bool, string, []byte:
+		// supported
+	default:
+		panic(fmt.Sprintf("Literal: unsupported value type %T", value))
+	}
 	return &LiteralKeyExpression{value: value}
 }
 

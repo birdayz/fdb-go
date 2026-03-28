@@ -54,7 +54,10 @@ func setupAllTimeWindow(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 		if err != nil {
 			return nil, err
 		}
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			return nil, mErr
+		}
 		lm, ok := maintainer.(leaderboardWindowUpdater)
 		if !ok {
 			t.Fatalf("chaos: index maintainer %T does not implement leaderboardWindowUpdater", maintainer)
@@ -452,7 +455,10 @@ func TestLeaderboardMultipleWindows(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			return nil, mErr
+		}
 		lm := maintainer.(leaderboardWindowUpdater)
 		return nil, lm.PerformWindowUpdate(&recordlayer.TimeWindowLeaderboardWindowUpdate{
 			UpdateTimestamp: 0,
@@ -525,7 +531,10 @@ func TestLeaderboardMultipleWindowsCommitUnknown(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			return nil, mErr
+		}
 		lm := maintainer.(leaderboardWindowUpdater)
 		return nil, lm.PerformWindowUpdate(&recordlayer.TimeWindowLeaderboardWindowUpdate{
 			UpdateTimestamp: 0,
@@ -579,7 +588,10 @@ func TestLeaderboardHighScoreFirst(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			return nil, mErr
+		}
 		lm := maintainer.(leaderboardWindowUpdater)
 		return nil, lm.PerformWindowUpdate(&recordlayer.TimeWindowLeaderboardWindowUpdate{
 			UpdateTimestamp: 0,
@@ -626,7 +638,10 @@ func TestLeaderboardHighScoreFirstStress(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			return nil, mErr
+		}
 		lm := maintainer.(leaderboardWindowUpdater)
 		return nil, lm.PerformWindowUpdate(&recordlayer.TimeWindowLeaderboardWindowUpdate{
 			UpdateTimestamp: 0,

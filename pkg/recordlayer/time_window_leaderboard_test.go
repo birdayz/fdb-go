@@ -33,7 +33,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.PerformWindowUpdate(update, store)).To(Succeed())
 
 			return nil, nil
@@ -445,7 +447,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.PerformWindowUpdate(&TimeWindowLeaderboardWindowUpdate{
 				UpdateTimestamp: 2100,
 				DeleteBefore:    2000,
@@ -709,7 +713,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(entries).To(HaveLen(5))
 
 			// DeleteWhere with nil prefix clears everything
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.DeleteWhere(nil)).To(Succeed())
 
 			entries, err = AsList(ctx, store.ScanTimeWindowLeaderboard(
@@ -766,7 +772,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Directory should have been loaded from FDB.
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			dir, err := maintainer.LoadDirectory()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dir).NotTo(BeNil())
@@ -1245,7 +1253,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			dir, err := maintainer.LoadDirectory()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dir).NotTo(BeNil())
@@ -1679,7 +1689,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.SaveSubDirectory(tuple.Tuple{int64(1)}, true)).To(Succeed())
 
 			return nil, nil
@@ -1692,7 +1704,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			dir, err := maintainer.LoadDirectory()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(dir).NotTo(BeNil())
@@ -1739,7 +1753,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.SaveSubDirectory(tuple.Tuple{int64(1)}, true)).To(Succeed())
 
 			return nil, nil
@@ -1884,7 +1900,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			Expect(maintainer.PerformWindowUpdate(&TimeWindowLeaderboardWindowUpdate{
 				UpdateTimestamp: 600,
 				AllTime:         true,
@@ -2087,7 +2105,9 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.GetIndexMaintainer(idx).(*timeWindowLeaderboardIndexMaintainer)
+			maintainerIface, mErr := store.GetIndexMaintainer(idx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
 			err = maintainer.PerformWindowUpdate(&TimeWindowLeaderboardWindowUpdate{
 				UpdateTimestamp: 600,
 				HighScoreFirst:  true,

@@ -49,7 +49,10 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 	// Step 3: Scan all records and build index entries.
 	scanProps := ForwardScan()
 	cursor := store.ScanRecords(nil, scanProps)
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return fmt.Errorf("rebuild index %q: get maintainer: %w", index.Name, err)
+	}
 
 	for rec, err := range Seq2(cursor, store.context.ctx) {
 		if err != nil {

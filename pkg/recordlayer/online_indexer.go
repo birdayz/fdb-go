@@ -941,7 +941,10 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 				if !oi.shouldIndexRecordForIndex(rec, idx) {
 					continue
 				}
-				maintainer := store.getIndexMaintainer(idx)
+				maintainer, mErr := store.getIndexMaintainer(idx)
+				if mErr != nil {
+					return nil, fmt.Errorf("index %q get maintainer: %w", idx.Name, mErr)
+				}
 				if err := maintainer.Update(nil, rec); err != nil {
 					return nil, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
 				}
@@ -1114,7 +1117,10 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 
 		cursor := store.ScanIndexRecords(oi.sourceIndex.Name, scanRange, nil, scanProps)
 
-		maintainer := store.getIndexMaintainer(oi.primaryIndex())
+		maintainer, mErr := store.getIndexMaintainer(oi.primaryIndex())
+		if mErr != nil {
+			return nil, mErr
+		}
 		var scannedCount int
 		var extraKey tuple.Tuple
 

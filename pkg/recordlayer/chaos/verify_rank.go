@@ -120,7 +120,15 @@ func verifyRankIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, m
 		}
 
 		// --- Part 2: Ranked set consistency ---
-		maintainer := store.GetIndexMaintainer(idx)
+		maintainer, mErr := store.GetIndexMaintainer(idx)
+		if mErr != nil {
+			violations = append(violations, Violation{
+				Invariant: "rank_index_get_maintainer",
+				Expected:  "no error",
+				Actual:    mErr.Error(),
+			})
+			continue
+		}
 		rankMaintainer, ok := maintainer.(recordlayer.RankQuerier)
 		if !ok {
 			violations = append(violations, Violation{

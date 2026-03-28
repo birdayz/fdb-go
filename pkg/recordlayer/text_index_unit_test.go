@@ -516,7 +516,10 @@ func TestSerializeEntriesNonMonotonicPanics(t *testing.T) {
 func TestTokenizerBasicEnglish(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("hello world", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("hello world", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertMapKeys(t, m, "hello", "world")
 	assertPositions(t, m, "hello", []int{0})
 	assertPositions(t, m, "world", []int{1})
@@ -525,7 +528,10 @@ func TestTokenizerBasicEnglish(t *testing.T) {
 func TestTokenizerCaseFolding(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("Hello WORLD", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("Hello WORLD", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertMapKeys(t, m, "hello", "world")
 }
 
@@ -544,7 +550,10 @@ func TestTokenizerDiacriticalRemoval(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
-			list := tok.TokenizeToList(tc.input, 0, TokenizerModeIndex)
+			list, err := tok.TokenizeToList(tc.input, 0, TokenizerModeIndex)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(list) != 1 {
 				t.Fatalf("expected 1 token, got %v", list)
 			}
@@ -559,7 +568,10 @@ func TestTokenizerNFKDNormalization(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
 	// U+FB06 is the "st" ligature.
-	list := tok.TokenizeToList("\uFB06", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("\uFB06", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 token, got %v", list)
 	}
@@ -571,14 +583,20 @@ func TestTokenizerNFKDNormalization(t *testing.T) {
 func TestTokenizerPunctuationFiltering(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("hello, world!", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("hello, world!", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertMapKeys(t, m, "hello", "world")
 }
 
 func TestTokenizerApostropheMidWord(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("don't", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("don't", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 token for \"don't\", got %v", list)
 	}
@@ -590,7 +608,10 @@ func TestTokenizerApostropheMidWord(t *testing.T) {
 func TestTokenizerNumbers(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("abc123", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("abc123", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 token, got %v", list)
 	}
@@ -602,7 +623,10 @@ func TestTokenizerNumbers(t *testing.T) {
 func TestTokenizerEmptyString(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(m) != 0 {
 		t.Fatalf("expected empty map, got %v", m)
 	}
@@ -611,7 +635,10 @@ func TestTokenizerEmptyString(t *testing.T) {
 func TestTokenizerWhitespaceOnly(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("   \t\n  ", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("   \t\n  ", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(m) != 0 {
 		t.Fatalf("expected empty map for whitespace-only input, got %v", m)
 	}
@@ -620,7 +647,10 @@ func TestTokenizerWhitespaceOnly(t *testing.T) {
 func TestTokenizerPositionTracking(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("the cat sat on the mat", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("the cat sat on the mat", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// "the" appears at positions 0 and 4.
 	assertPositions(t, m, "the", []int{0, 4})
 	assertPositions(t, m, "cat", []int{1})
@@ -632,7 +662,10 @@ func TestTokenizerPositionTracking(t *testing.T) {
 func TestTokenizerTokenizeToList(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("the quick brown fox", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("the quick brown fox", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"the", "quick", "brown", "fox"}
 	if !reflect.DeepEqual(list, want) {
 		t.Fatalf("list: got %v, want %v", list, want)
@@ -643,7 +676,10 @@ func TestTokenizerKorean(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
 	// Korean characters are letters; they should produce tokens.
-	list := tok.TokenizeToList("안녕하세요", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("안녕하세요", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) == 0 {
 		t.Fatal("expected at least 1 token for Korean text")
 	}
@@ -654,7 +690,10 @@ func TestTokenizerGermanUmlauts(t *testing.T) {
 	tok := DefaultTextTokenizerInstance()
 	// ü = u + combining diaeresis under NFKD; after stripping marks → "u"
 	// Ä = A + combining diaeresis → "a" after lowercase + strip
-	list := tok.TokenizeToList("über Ärger", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("über Ärger", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 2 {
 		t.Fatalf("expected 2 tokens, got %v", list)
 	}
@@ -672,7 +711,10 @@ func TestTokenizerRussianStressMarks(t *testing.T) {
 	// With UAX #29 word segmentation, combining marks (U+0301) are Extend
 	// characters that don't break words. "прив\u0301ет" is one word.
 	// After NFKD + strip marks: "привет" (matching Java's BreakIterator behavior).
-	list := tok.TokenizeToList("прив\u0301ет", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("прив\u0301ет", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 token, got %v", list)
 	}
@@ -681,7 +723,10 @@ func TestTokenizerRussianStressMarks(t *testing.T) {
 	}
 
 	// Plain Russian without stress marks stays intact.
-	list2 := tok.TokenizeToList("привет мир", 0, TokenizerModeIndex)
+	list2, err := tok.TokenizeToList("привет мир", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list2) != 2 {
 		t.Fatalf("expected 2 tokens, got %v", list2)
 	}
@@ -693,7 +738,10 @@ func TestTokenizerRussianStressMarks(t *testing.T) {
 func TestTokenizerEmojiFiltering(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("hello 🌍 world", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("hello 🌍 world", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	assertMapKeys(t, m, "hello", "world")
 }
 
@@ -703,33 +751,29 @@ func TestTokenizerVersionValidation(t *testing.T) {
 
 	t.Run("version_0_ok", func(t *testing.T) {
 		t.Parallel()
-		// Should not panic.
-		list := tok.TokenizeToList("test", 0, TokenizerModeIndex)
+		list, err := tok.TokenizeToList("test", 0, TokenizerModeIndex)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(list) != 1 || list[0] != "test" {
 			t.Fatalf("unexpected result: %v", list)
 		}
 	})
 
-	t.Run("version_1_panics", func(t *testing.T) {
+	t.Run("version_1_errors", func(t *testing.T) {
 		t.Parallel()
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("expected panic for version 1")
-			}
-		}()
-		tok.Tokenize("test", 1, TokenizerModeIndex)
+		_, err := tok.Tokenize("test", 1, TokenizerModeIndex)
+		if err == nil {
+			t.Fatal("expected error for version 1")
+		}
 	})
 
-	t.Run("negative_version_panics", func(t *testing.T) {
+	t.Run("negative_version_errors", func(t *testing.T) {
 		t.Parallel()
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("expected panic for negative version")
-			}
-		}()
-		tok.Tokenize("test", -1, TokenizerModeIndex)
+		_, err := tok.Tokenize("test", -1, TokenizerModeIndex)
+		if err == nil {
+			t.Fatal("expected error for negative version")
+		}
 	})
 }
 
@@ -740,7 +784,10 @@ func TestTokenizerVersionValidation(t *testing.T) {
 func TestTokenIteratorExhausted(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	iter := tok.Tokenize("one", 0, TokenizerModeIndex)
+	iter, err := tok.Tokenize("one", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Consume the single token.
 	if !iter.HasNext() {
 		t.Fatal("expected a token")
@@ -762,8 +809,14 @@ func TestTokenIteratorExhausted(t *testing.T) {
 func TestTokenizerQueryMode(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	indexResult := tok.TokenizeToList("Hello World", 0, TokenizerModeIndex)
-	queryResult := tok.TokenizeToList("Hello World", 0, TokenizerModeQuery)
+	indexResult, err := tok.TokenizeToList("Hello World", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryResult, err := tok.TokenizeToList("Hello World", 0, TokenizerModeQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(indexResult, queryResult) {
 		t.Fatalf("index vs query mode mismatch: %v vs %v", indexResult, queryResult)
 	}
@@ -921,7 +974,10 @@ func TestValidateTokenizerVersion(t *testing.T) {
 func TestTokenizerMultipleSpaces(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("hello    world", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("hello    world", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"hello", "world"}
 	if !reflect.DeepEqual(list, want) {
 		t.Fatalf("got %v, want %v", list, want)
@@ -931,7 +987,10 @@ func TestTokenizerMultipleSpaces(t *testing.T) {
 func TestTokenizerLeadingTrailingPunctuation(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("...hello...", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("...hello...", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Leading/trailing dots are not flanked by word chars on both sides,
 	// so they're not mid-word. "hello" should be the only token.
 	if len(list) != 1 || list[0] != "hello" {
@@ -942,7 +1001,10 @@ func TestTokenizerLeadingTrailingPunctuation(t *testing.T) {
 func TestTokenizerOnlyPunctuation(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	m := tok.TokenizeToMap("!@#$%^&*()", 0, TokenizerModeIndex)
+	m, err := tok.TokenizeToMap("!@#$%^&*()", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(m) != 0 {
 		t.Fatalf("expected empty map for only-punctuation input, got %v", m)
 	}
@@ -953,7 +1015,10 @@ func TestTokenizerMixedScript(t *testing.T) {
 	tok := DefaultTextTokenizerInstance()
 	// Mixing Latin and CJK — CJK chars are letters, so adjacent Latin+CJK
 	// would be one segment.
-	list := tok.TokenizeToList("hello世界", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("hello世界", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) == 0 {
 		t.Fatal("expected at least 1 token for mixed script")
 	}
@@ -963,7 +1028,10 @@ func TestTokenizerPeriodMidWord(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
 	// "U.S.A" — periods between word chars act as mid-word.
-	list := tok.TokenizeToList("U.S.A", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("U.S.A", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 token for 'U.S.A', got %v", list)
 	}
@@ -975,7 +1043,10 @@ func TestTokenizerPeriodMidWord(t *testing.T) {
 func TestTokenizerSingleChar(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("a", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("a", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 || list[0] != "a" {
 		t.Fatalf("got %v, want [a]", list)
 	}
@@ -984,7 +1055,10 @@ func TestTokenizerSingleChar(t *testing.T) {
 func TestTokenizerSingleDigit(t *testing.T) {
 	t.Parallel()
 	tok := DefaultTextTokenizerInstance()
-	list := tok.TokenizeToList("7", 0, TokenizerModeIndex)
+	list, err := tok.TokenizeToList("7", 0, TokenizerModeIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 || list[0] != "7" {
 		t.Fatalf("got %v, want [7]", list)
 	}
@@ -1075,12 +1149,18 @@ type stubTokenizer struct {
 	name string
 }
 
-func (t *stubTokenizer) Name() string                                                    { return t.name }
-func (t *stubTokenizer) Tokenize(_ string, _ int, _ TokenizerMode) TokenIterator         { return &emptyIter{} }
-func (t *stubTokenizer) TokenizeToMap(_ string, _ int, _ TokenizerMode) map[string][]int { return nil }
-func (t *stubTokenizer) TokenizeToList(_ string, _ int, _ TokenizerMode) []string        { return nil }
-func (t *stubTokenizer) MaxVersion() int                                                 { return 0 }
-func (t *stubTokenizer) MinVersion() int                                                 { return 0 }
+func (t *stubTokenizer) Name() string { return t.name }
+func (t *stubTokenizer) Tokenize(_ string, _ int, _ TokenizerMode) (TokenIterator, error) {
+	return &emptyIter{}, nil
+}
+func (t *stubTokenizer) TokenizeToMap(_ string, _ int, _ TokenizerMode) (map[string][]int, error) {
+	return nil, nil
+}
+func (t *stubTokenizer) TokenizeToList(_ string, _ int, _ TokenizerMode) ([]string, error) {
+	return nil, nil
+}
+func (t *stubTokenizer) MaxVersion() int { return 0 }
+func (t *stubTokenizer) MinVersion() int { return 0 }
 
 type emptyIter struct{}
 

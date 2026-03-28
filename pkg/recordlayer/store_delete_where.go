@@ -150,7 +150,10 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 
 	// Delete index entries via each maintainer.
 	for _, action := range actions {
-		maintainer := store.getIndexMaintainer(action.index)
+		maintainer, mErr := store.getIndexMaintainer(action.index)
+		if mErr != nil {
+			return mErr
+		}
 		if err := maintainer.DeleteWhere(action.prefix); err != nil {
 			return err
 		}

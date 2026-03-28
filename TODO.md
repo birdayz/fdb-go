@@ -17,6 +17,21 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **HIGH** — `store_delete_where.go`: `DeleteRecordsWhere` fully cleared multi-type indexes (destroyed non-target type entries) instead of scoping by PK prefix. Fixed: multi-type with RecordTypeKey prefix → scoped clear, without → error. Found 2026-03-26 by test matrix.
 - [x] **HIGH** — CI red: SIFT/vector benchmark test files extracted to `pkg/recordlayer/bench/` with own BUILD.bazel. gofmt fixed. Commits `d1d632a`, `3914be8`, `23c4ff7`, `4239e55`.
 
+### Hardening audit (2026-03-28) — 4-agent sweep: error swallowing, panics, deserialization, concurrency
+
+- [x] **CRITICAL** — `hnsw.go`: 6+ sites ignore `decodeStoredVector()` error (lines ~319, 724, 731, 870, 880, 911). Fixed: critical paths return error, loop candidates skip on decode failure.
+- [x] **CRITICAL** — `text_index_maintainer.go:115`: `MustGet()` panics on FDB transaction error. Fixed: returns `(int, error)`, callers propagate.
+- [x] **HIGH** — `tuple_ordering.go:tupleElementEndPos()`: Returns positions beyond `len(data)` for fixed-size types. Fixed: bounds checks on all fixed-size types (int, bigint, float32/64, UUID, versionstamp).
+- [x] **HIGH** — `key_value_cursor.go:237`: `fastUnpack` error silently ignored on `pendingVersionPK`. Fixed: propagates error.
+- [x] **HIGH** — `key_value_cursor.go:326`: `nextKV()` error ignored in `peekVersionKey()`. Fixed: returns `(*FDBRecordVersion, error)`, caller propagates.
+- [x] **HIGH** — `rtree_types.go:149,152`: `asInt64()` errors ignored in `MBRFromTuple()`. Fixed: returns `(MBR, error)`, caller propagates.
+- [x] **HIGH** — `text_index_maintainer.go:82`: `getTextTokenizerVersion()` panics on non-integer tokenizer version string. Fixed: returns `(int, error)`.
+- [x] **HIGH** — `text_tokenizer.go:144`: `Tokenize()` panics on invalid tokenizer version. Fixed: `TextTokenizer` interface methods now return errors, all callers updated.
+- [x] **MEDIUM** — `key_expression_proto.go:302` + `key_expression.go:621-622`: `valueToProto()` errors swallowed. Fixed: `Literal()` constructor validates type at build time — unsupported types panic immediately.
+
+- [ ] **MEDIUM** — `ranked_set.go:570`: `rsDecodeLong()` returns 0 for short values instead of erroring. Matches Java behavior but masks corruption.
+- [ ] **MEDIUM** — `count_index_maintainer.go:187`: Count value returns 0 for values shorter than 8 bytes instead of erroring. Same pattern as rsDecodeLong.
+
 ---
 
 ## Investigate

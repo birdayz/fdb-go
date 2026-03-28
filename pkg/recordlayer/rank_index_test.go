@@ -381,7 +381,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(entries[2].Key[0]).To(Equal(int64(300)))
 
 			// Get the rank maintainer to check ranked set
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 
 			// RankForScore: price 100 → rank 0, price 200 → rank 1, price 300 → rank 2
 			rank, err := maintainer.RankForScore(tuple.Tuple{int64(100)}, false)
@@ -412,7 +414,9 @@ var _ = Describe("RankIndex", func() {
 
 			// Now ranks should shift: price 200 → rank 0, price 300 → rank 1
 			// Need fresh maintainer after delete
-			maintainer = store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr = store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer = maintainerIface.(*rankIndexMaintainer)
 
 			rank, err = maintainer.RankForScore(tuple.Tuple{int64(200)}, false)
 			Expect(err).NotTo(HaveOccurred())
@@ -606,7 +610,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify ranks: price 200 → rank 0, price 300 → rank 1
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 
 			rank, err := maintainer.RankForScore(tuple.Tuple{int64(200)}, false)
 			Expect(err).NotTo(HaveOccurred())
@@ -654,7 +660,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Ranked set has 2 unique scores (100 and 200) — !CountDuplicates
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 			rank, err := maintainer.RankForScore(tuple.Tuple{int64(100)}, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank).To(Equal(int64(0)))
@@ -674,7 +682,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(existed).To(BeTrue())
 
 			// Score 100 should still be in ranked set (other record has it)
-			maintainer = store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr = store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer = maintainerIface.(*rankIndexMaintainer)
 			rank, err = maintainer.RankForScore(tuple.Tuple{int64(100)}, true)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rank).NotTo(BeNil())
@@ -685,7 +695,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(existed).To(BeTrue())
 
 			// Now score 100 should be gone from ranked set
-			maintainer = store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr = store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer = maintainerIface.(*rankIndexMaintainer)
 			rank, err = maintainer.RankForScore(tuple.Tuple{int64(100)}, true)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rank).To(BeNil())
@@ -744,7 +756,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(entries[2].Key[0]).To(Equal(int64(300)))
 
 			// Verify ranked set works
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 			rank, err := maintainer.RankForScore(tuple.Tuple{int64(100)}, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank).To(Equal(int64(0)))
@@ -780,7 +794,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(store.RebuildIndex(rankIdx)).To(Succeed())
 
 			// Verify it still works after rebuild
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 			rank, err := maintainer.RankForScore(tuple.Tuple{int64(100)}, false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*rank).To(Equal(int64(0)))
@@ -1052,7 +1068,9 @@ var _ = Describe("RankIndex", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 
 			// In "alice" group: id 10 → rank 0, id 30 → rank 1
 			rank, err := maintainer.RankForScore(tuple.Tuple{"alice", int64(10)}, false)
@@ -1107,7 +1125,9 @@ var _ = Describe("RankIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(existed).To(BeTrue())
 
-			maintainer = store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr = store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer = maintainerIface.(*rankIndexMaintainer)
 
 			// Alice group: id 30 is now rank 0
 			rank, err = maintainer.RankForScore(tuple.Tuple{"alice", int64(30)}, false)
@@ -1148,7 +1168,9 @@ var _ = Describe("RankIndex", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
 			Expect(err).NotTo(HaveOccurred())
 
-			maintainer := store.getIndexMaintainer(rankIdx).(*rankIndexMaintainer)
+			maintainerIface, mErr := store.getIndexMaintainer(rankIdx)
+			Expect(mErr).NotTo(HaveOccurred())
+			maintainer := maintainerIface.(*rankIndexMaintainer)
 
 			// With CountDuplicates, score 100 has count=2 in the ranked set.
 			// Rank of 100 = 0 (first entry)

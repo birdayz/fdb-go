@@ -88,7 +88,10 @@ func (store *FDBRecordStore) EvaluateAggregateFunction(
 		return nil, err
 	}
 
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return nil, err
+	}
 	return evaluateAggregate(ctx, fn, maintainer, scanRange, isolationLevel)
 }
 

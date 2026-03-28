@@ -349,7 +349,10 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 			if !m.indexer.shouldIndexRecordForIndex(rec, idx) {
 				continue
 			}
-			maintainer := store.GetIndexMaintainer(idx)
+			maintainer, mErr := store.GetIndexMaintainer(idx)
+			if mErr != nil {
+				return 0, fmt.Errorf("index %q get maintainer: %w", idx.Name, mErr)
+			}
 			if err := maintainer.Update(nil, rec); err != nil {
 				return 0, fmt.Errorf("index %q update: %w", idx.Name, err)
 			}

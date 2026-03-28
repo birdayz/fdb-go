@@ -771,7 +771,10 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
 		}
 	}
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
 	vm, ok := maintainer.(*vectorIndexMaintainer)
 	if !ok {
 		return &errorCursor[*IndexEntry]{
@@ -806,7 +809,10 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	if !store.IsIndexScannable(index.Name) {
 		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)}
 	}
-	maintainer := store.getIndexMaintainer(index)
+	maintainer, err := store.getIndexMaintainer(index)
+	if err != nil {
+		return nil, err
+	}
 	vm, ok := maintainer.(*vectorIndexMaintainer)
 	if !ok {
 		return nil, fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type)

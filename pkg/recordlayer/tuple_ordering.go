@@ -271,12 +271,20 @@ func tupleElementEndPos(data []byte, pos int) (int, error) {
 	case typeCode >= 0x0C && typeCode <= 0x13:
 		// Negative integers: type code encodes byte length as (0x14 - typeCode)
 		n := int(0x14 - typeCode)
-		return pos + 1 + n, nil
+		end := pos + 1 + n
+		if end > len(data) {
+			return 0, fmt.Errorf("truncated negative int at offset %d: need %d bytes, have %d", pos, 1+n, len(data)-pos)
+		}
+		return end, nil
 
 	case typeCode >= 0x15 && typeCode <= 0x1C:
 		// Positive integers: type code encodes byte length as (typeCode - 0x14)
 		n := int(typeCode - 0x14)
-		return pos + 1 + n, nil
+		end := pos + 1 + n
+		if end > len(data) {
+			return 0, fmt.Errorf("truncated positive int at offset %d: need %d bytes, have %d", pos, 1+n, len(data)-pos)
+		}
+		return end, nil
 
 	case typeCode == 0x0B:
 		// Negative arbitrary precision integer
@@ -284,7 +292,11 @@ func tupleElementEndPos(data []byte, pos int) (int, error) {
 			return 0, fmt.Errorf("truncated negative bigint at offset %d", pos)
 		}
 		n := 255 - int(data[pos+1])
-		return pos + 2 + n, nil
+		end := pos + 2 + n
+		if end > len(data) {
+			return 0, fmt.Errorf("truncated negative bigint at offset %d: need %d bytes, have %d", pos, 2+n, len(data)-pos)
+		}
+		return end, nil
 
 	case typeCode == 0x1D:
 		// Positive arbitrary precision integer
@@ -292,14 +304,24 @@ func tupleElementEndPos(data []byte, pos int) (int, error) {
 			return 0, fmt.Errorf("truncated positive bigint at offset %d", pos)
 		}
 		n := int(data[pos+1])
-		return pos + 2 + n, nil
+		end := pos + 2 + n
+		if end > len(data) {
+			return 0, fmt.Errorf("truncated positive bigint at offset %d: need %d bytes, have %d", pos, 2+n, len(data)-pos)
+		}
+		return end, nil
 
 	case typeCode == 0x20:
 		// Float32: type code + 4 bytes
+		if pos+5 > len(data) {
+			return 0, fmt.Errorf("truncated float32 at offset %d: need 5 bytes, have %d", pos, len(data)-pos)
+		}
 		return pos + 5, nil
 
 	case typeCode == 0x21:
 		// Float64: type code + 8 bytes
+		if pos+9 > len(data) {
+			return 0, fmt.Errorf("truncated float64 at offset %d: need 9 bytes, have %d", pos, len(data)-pos)
+		}
 		return pos + 9, nil
 
 	case typeCode == 0x26:
@@ -312,10 +334,16 @@ func tupleElementEndPos(data []byte, pos int) (int, error) {
 
 	case typeCode == 0x30:
 		// UUID: type code + 16 bytes
+		if pos+17 > len(data) {
+			return 0, fmt.Errorf("truncated UUID at offset %d: need 17 bytes, have %d", pos, len(data)-pos)
+		}
 		return pos + 17, nil
 
 	case typeCode == 0x33:
 		// Versionstamp: type code + 12 bytes
+		if pos+13 > len(data) {
+			return 0, fmt.Errorf("truncated versionstamp at offset %d: need 13 bytes, have %d", pos, len(data)-pos)
+		}
 		return pos + 13, nil
 
 	default:

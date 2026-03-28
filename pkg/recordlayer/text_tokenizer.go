@@ -33,16 +33,19 @@ type TextTokenizer interface {
 	Name() string
 
 	// Tokenize returns an iterator of tokens from the input text.
+	// Returns an error if the version is out of bounds.
 	// Matches Java's tokenize(String, int, TokenizerMode).
-	Tokenize(text string, version int, mode TokenizerMode) TokenIterator
+	Tokenize(text string, version int, mode TokenizerMode) (TokenIterator, error)
 
 	// TokenizeToMap returns a map from token to position list (0-indexed).
+	// Returns an error if the version is out of bounds.
 	// Matches Java's tokenizeToMap(String, int, TokenizerMode).
-	TokenizeToMap(text string, version int, mode TokenizerMode) map[string][]int
+	TokenizeToMap(text string, version int, mode TokenizerMode) (map[string][]int, error)
 
 	// TokenizeToList returns all tokens as a list.
+	// Returns an error if the version is out of bounds.
 	// Matches Java's tokenizeToList(String, int, TokenizerMode).
-	TokenizeToList(text string, version int, mode TokenizerMode) []string
+	TokenizeToList(text string, version int, mode TokenizerMode) ([]string, error)
 
 	// MaxVersion returns the maximum supported tokenizer version.
 	MaxVersion() int
@@ -76,8 +79,11 @@ func ValidateTokenizerVersion(t TextTokenizer, version int) error {
 
 // defaultTokenizeToMap implements the default tokenizeToMap logic matching
 // Java's TextTokenizer.tokenizeToMap() default method.
-func defaultTokenizeToMap(t TextTokenizer, text string, version int, mode TokenizerMode) map[string][]int {
-	iter := t.Tokenize(text, version, mode)
+func defaultTokenizeToMap(t TextTokenizer, text string, version int, mode TokenizerMode) (map[string][]int, error) {
+	iter, err := t.Tokenize(text, version, mode)
+	if err != nil {
+		return nil, err
+	}
 	result := make(map[string][]int)
 	offset := 0
 	for iter.HasNext() {
@@ -87,18 +93,21 @@ func defaultTokenizeToMap(t TextTokenizer, text string, version int, mode Tokeni
 		}
 		offset++
 	}
-	return result
+	return result, nil
 }
 
 // defaultTokenizeToList implements the default tokenizeToList logic matching
 // Java's TextTokenizer.tokenizeToList() default method.
-func defaultTokenizeToList(t TextTokenizer, text string, version int, mode TokenizerMode) []string {
-	iter := t.Tokenize(text, version, mode)
+func defaultTokenizeToList(t TextTokenizer, text string, version int, mode TokenizerMode) ([]string, error) {
+	iter, err := t.Tokenize(text, version, mode)
+	if err != nil {
+		return nil, err
+	}
 	var result []string
 	for iter.HasNext() {
 		result = append(result, iter.Next())
 	}
-	return result
+	return result, nil
 }
 
 // DefaultTextTokenizer is the default tokenizer for full-text indexes.
@@ -133,26 +142,27 @@ func (t *DefaultTextTokenizer) MaxVersion() int {
 }
 
 // Tokenize returns an iterator over tokens from the input text.
+// Returns an error if the version is out of bounds.
 // The tokenization process:
 //  1. Segment text into words using Unicode word boundary rules
 //     (matching Java's BreakIterator.getWordInstance(Locale.ROOT))
 //  2. NFKD normalize each segment
 //  3. Filter segments that don't contain any letter or digit
 //  4. Lowercase and strip combining marks (\p{M})
-func (t *DefaultTextTokenizer) Tokenize(text string, version int, mode TokenizerMode) TokenIterator {
+func (t *DefaultTextTokenizer) Tokenize(text string, version int, mode TokenizerMode) (TokenIterator, error) {
 	if err := ValidateTokenizerVersion(t, version); err != nil {
-		panic(err)
+		return nil, err
 	}
-	return newBreakIteratorWrapper(text)
+	return newBreakIteratorWrapper(text), nil
 }
 
 // TokenizeToMap returns a map from token to list of positions.
-func (t *DefaultTextTokenizer) TokenizeToMap(text string, version int, mode TokenizerMode) map[string][]int {
+func (t *DefaultTextTokenizer) TokenizeToMap(text string, version int, mode TokenizerMode) (map[string][]int, error) {
 	return defaultTokenizeToMap(t, text, version, mode)
 }
 
 // TokenizeToList returns all tokens as a list.
-func (t *DefaultTextTokenizer) TokenizeToList(text string, version int, mode TokenizerMode) []string {
+func (t *DefaultTextTokenizer) TokenizeToList(text string, version int, mode TokenizerMode) ([]string, error) {
 	return defaultTokenizeToList(t, text, version, mode)
 }
 
