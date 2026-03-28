@@ -114,6 +114,33 @@ just clean          # bazel clean
 - Proto codegen stays with `buf generate` — not in Bazel.
 - **IMPORTANT**: Always use `bazelisk` (not `bazel`) when running bazel commands directly. The `just` recipes handle this, but if invoking bazel manually, use `bazelisk`.
 
+### Fuzz testing
+
+`fuzz_test.go` contains 7 Go native fuzz targets covering all hand-rolled binary parsers. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
+
+```sh
+# Run a specific fuzz target for 60 seconds:
+bazelisk run //pkg/recordlayer:recordlayer_test -- \
+  -test.run='^$' \
+  -test.fuzz='^FuzzFastUnpack$' \
+  -test.fuzzcachedir=/tmp/fuzz_cache \
+  -test.fuzztime=60s
+```
+
+**Available fuzz targets:**
+
+| Target | What it fuzzes | Bugs found |
+|---|---|---|
+| `FuzzFastUnpack` | Hand-rolled FDB tuple decoder vs `tuple.Unpack` | 2 panics (truncated bytes/int), upstream `tuple.Unpack` panics |
+| `FuzzFastUnpackRoundtrip` | Pack→unpack roundtrip consistency | Clean |
+| `FuzzDeserializeBunch` | TEXT index custom binary format (varints + tuples) | OOM via crafted varint sizes |
+| `FuzzUnwrapContinuation` | Continuation token parser (proto + raw) | Clean |
+| `FuzzUninvertBytes` | DESC ordering 7-bit encoder roundtrip | Clean |
+| `FuzzDeserializeVector` | HNSW vector binary format | Clean |
+| `FuzzCompleteVersionFromBytes` | 12-byte record version parser | Clean |
+
+**Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
+
 ### Benchmarks
 
 `benchmark_test.go` contains 13 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.

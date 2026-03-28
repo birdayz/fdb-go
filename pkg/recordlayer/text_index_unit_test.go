@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -193,7 +194,10 @@ func TestSerializeKeyRoundtrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			data := s.SerializeKey(tc.key)
-			got := s.DeserializeKey(data, 0, len(data))
+			got, err := s.DeserializeKey(data, 0, len(data))
+			if err != nil {
+				t.Fatalf("DeserializeKey: %v", err)
+			}
 			if !reflect.DeepEqual(got, tc.key) {
 				t.Fatalf("roundtrip: got %v, want %v", got, tc.key)
 			}
@@ -270,7 +274,10 @@ func TestSerializeEntriesRoundtrip(t *testing.T) {
 	}
 
 	data := s.SerializeEntries(entries)
-	got := s.DeserializeEntries(entries[0].Key, data)
+	got, err := s.DeserializeEntries(entries[0].Key, data)
+	if err != nil {
+		t.Fatalf("DeserializeEntries: %v", err)
+	}
 	if len(got) != len(entries) {
 		t.Fatalf("entry count: got %d, want %d", len(got), len(entries))
 	}
@@ -311,7 +318,10 @@ func TestSerializeEntriesDocumentedExample(t *testing.T) {
 	}
 
 	// Also verify roundtrip through deserialization.
-	got := s.DeserializeEntries(entries[0].Key, data)
+	got, err2 := s.DeserializeEntries(entries[0].Key, data)
+	if err2 != nil {
+		t.Fatalf("DeserializeEntries: %v", err2)
+	}
 	if len(got) != 2 {
 		t.Fatalf("entry count: got %d, want 2", len(got))
 	}
@@ -340,7 +350,10 @@ func TestDeserializeKeys(t *testing.T) {
 		{Key: tuple.Tuple{"cherry"}, Value: []int{7, 12, 18, 25}},
 	}
 	data := s.SerializeEntries(entries)
-	keys := s.DeserializeKeys(entries[0].Key, data)
+	keys, err := s.DeserializeKeys(entries[0].Key, data)
+	if err != nil {
+		t.Fatalf("DeserializeKeys: %v", err)
+	}
 	if len(keys) != 3 {
 		t.Fatalf("key count: got %d, want 3", len(keys))
 	}
@@ -395,7 +408,10 @@ func TestSerializeEntriesSingle(t *testing.T) {
 		{Key: tuple.Tuple{"only"}, Value: []int{0, 3, 7}},
 	}
 	data := s.SerializeEntries(entries)
-	got := s.DeserializeEntries(entries[0].Key, data)
+	got, err := s.DeserializeEntries(entries[0].Key, data)
+	if err != nil {
+		t.Fatalf("DeserializeEntries: %v", err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("entry count: got %d, want 1", len(got))
 	}
@@ -429,12 +445,14 @@ func TestDeserializeKeyOutOfBounds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			defer func() {
-				if r := recover(); r == nil {
-					t.Fatal("expected panic for out-of-bounds")
-				}
-			}()
-			s.DeserializeKey(data, tc.offset, tc.length)
+			_, err := s.DeserializeKey(data, tc.offset, tc.length)
+			if err == nil {
+				t.Fatal("expected error for out-of-bounds")
+			}
+			var serErr *BunchedSerializationError
+			if !errors.As(err, &serErr) {
+				t.Fatalf("expected BunchedSerializationError, got %T: %v", err, err)
+			}
 		})
 	}
 }
@@ -446,17 +464,17 @@ func TestDeserializeKeyOutOfBounds(t *testing.T) {
 func TestDeserializeBadPrefix(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on bad prefix")
-		}
-		msg := fmt.Sprintf("%v", r)
-		if !strings.Contains(msg, "incorrect prefix") {
-			t.Fatalf("unexpected panic message: %v", r)
-		}
-	}()
-	s.DeserializeEntries(tuple.Tuple{"x"}, []byte{0xFF, 0x00})
+	_, err := s.DeserializeEntries(tuple.Tuple{"x"}, []byte{0xFF, 0x00})
+	if err == nil {
+		t.Fatal("expected error on bad prefix")
+	}
+	var serErr *BunchedSerializationError
+	if !errors.As(err, &serErr) {
+		t.Fatalf("expected BunchedSerializationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "incorrect prefix") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

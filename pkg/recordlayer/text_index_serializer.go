@@ -15,9 +15,9 @@ type BunchedSerializer[K any, V any] interface {
 	SerializeKey(key K) []byte
 	SerializeEntry(key K, value V) []byte
 	SerializeEntries(entries []BunchedEntry[K, V]) []byte
-	DeserializeKey(data []byte, offset, length int) K
-	DeserializeEntries(key K, data []byte) []BunchedEntry[K, V]
-	DeserializeKeys(key K, data []byte) []K
+	DeserializeKey(data []byte, offset, length int) (K, error)
+	DeserializeEntries(key K, data []byte) ([]BunchedEntry[K, V], error)
+	DeserializeKeys(key K, data []byte) ([]K, error)
 	CanAppend() bool
 }
 
@@ -122,6 +122,9 @@ func deserializePositionList(buf *bytes.Reader) ([]int, error) {
 	if serializedSize == 0 {
 		return []int{}, nil // empty list (non-nil, matching Java's Collections.emptyList())
 	}
+	if serializedSize < 0 || serializedSize > buf.Len() {
+		return nil, fmt.Errorf("position list size %d exceeds remaining data %d", serializedSize, buf.Len())
+	}
 	// serializedSize is an upper bound on the number of entries (exact if all varints are 1 byte).
 	result := make([]int, 0, serializedSize)
 	startPos := buf.Len()
@@ -203,32 +206,41 @@ func (s *TextIndexBunchedSerializer) SerializeEntries(entries []BunchedEntry[tup
 
 // DeserializeKey unpacks a Tuple key from data[offset:offset+length].
 // Matches Java's TextIndexBunchedSerializer.deserializeKey().
-func (s *TextIndexBunchedSerializer) DeserializeKey(data []byte, offset, length int) tuple.Tuple {
+func (s *TextIndexBunchedSerializer) DeserializeKey(data []byte, offset, length int) (tuple.Tuple, error) {
 	if offset < 0 || offset > len(data) || length < 0 || offset+length > len(data) {
-		panic(fmt.Sprintf("text index serializer: offset (%d) or length (%d) out of range (%d)", offset, length, len(data)))
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("offset (%d) or length (%d) out of range (%d)", offset, length, len(data)),
+			Data:    data,
+		}
 	}
-	t, err := tuple.Unpack(data[offset : offset+length])
+	t, err := fastUnpack(data[offset : offset+length])
 	if err != nil {
-		panic(fmt.Sprintf("text index serializer: unable to deserialize key: %v", err))
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("unable to deserialize key: %v", err),
+			Data:    data[offset : offset+length],
+		}
 	}
-	return t
+	return t, nil
 }
 
 // DeserializeEntries deserializes a bunch of entries from data, using key as the first entry's key.
 // Matches Java's TextIndexBunchedSerializer.deserializeEntries().
-func (s *TextIndexBunchedSerializer) DeserializeEntries(key tuple.Tuple, data []byte) []BunchedEntry[tuple.Tuple, []int] {
+func (s *TextIndexBunchedSerializer) DeserializeEntries(key tuple.Tuple, data []byte) ([]BunchedEntry[tuple.Tuple, []int], error) {
 	return s.deserializeBunch(key, data, true)
 }
 
 // DeserializeKeys deserializes only the keys from a bunch (skipping values for efficiency).
 // Matches Java's TextIndexBunchedSerializer.deserializeKeys().
-func (s *TextIndexBunchedSerializer) DeserializeKeys(key tuple.Tuple, data []byte) []tuple.Tuple {
-	entries := s.deserializeBunch(key, data, false)
+func (s *TextIndexBunchedSerializer) DeserializeKeys(key tuple.Tuple, data []byte) ([]tuple.Tuple, error) {
+	entries, err := s.deserializeBunch(key, data, false)
+	if err != nil {
+		return nil, err
+	}
 	keys := make([]tuple.Tuple, len(entries))
 	for i, e := range entries {
 		keys[i] = e.Key
 	}
-	return keys
+	return keys, nil
 }
 
 // CanAppend returns true — this format supports appending entries without re-serialization.
@@ -237,9 +249,12 @@ func (s *TextIndexBunchedSerializer) CanAppend() bool {
 }
 
 // deserializeBunch is the shared implementation for DeserializeEntries and DeserializeKeys.
-func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []byte, deserializeValues bool) []BunchedEntry[tuple.Tuple, []int] {
+func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []byte, deserializeValues bool) ([]BunchedEntry[tuple.Tuple, []int], error) {
 	if !bytes.HasPrefix(data, textIndexBunchedSerializerPrefix) {
-		panic(fmt.Sprintf("text index serializer: data begins with incorrect prefix: %x", data[:min(len(data), 4)]))
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("data begins with incorrect prefix: %x", data[:min(len(data), 4)]),
+			Data:    data,
+		}
 	}
 
 	buf := bytes.NewReader(data[len(textIndexBunchedSerializerPrefix):])
@@ -251,18 +266,33 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 		if !first {
 			tupleSize, err := deserializeVarInt(buf)
 			if err != nil {
-				panic(fmt.Sprintf("text index serializer: reading tuple size: %v", err))
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("reading tuple size: %v", err),
+					Data:    data,
+				}
+			}
+			if tupleSize < 0 || tupleSize > buf.Len() {
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("tuple size %d exceeds remaining data %d", tupleSize, buf.Len()),
+					Data:    data,
+				}
 			}
 			if tupleSize == 0 {
 				entryKey = tuple.Tuple{}
 			} else {
 				keyBytes := make([]byte, tupleSize)
 				if _, err := buf.Read(keyBytes); err != nil {
-					panic(fmt.Sprintf("text index serializer: reading key bytes: %v", err))
+					return nil, &BunchedSerializationError{
+						Message: fmt.Sprintf("reading key bytes: %v", err),
+						Data:    data,
+					}
 				}
-				entryKey, err = tuple.Unpack(keyBytes)
+				entryKey, err = fastUnpack(keyBytes)
 				if err != nil {
-					panic(fmt.Sprintf("text index serializer: unpacking key: %v", err))
+					return nil, &BunchedSerializationError{
+						Message: fmt.Sprintf("unpacking key: %v", err),
+						Data:    data,
+					}
 				}
 			}
 		} else {
@@ -275,24 +305,39 @@ func (s *TextIndexBunchedSerializer) deserializeBunch(key tuple.Tuple, data []by
 			var err error
 			entryValue, err = deserializePositionList(buf)
 			if err != nil {
-				panic(fmt.Sprintf("text index serializer: %v", err))
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("deserializing position list: %v", err),
+					Data:    data,
+				}
 			}
 		} else {
 			// Skip value: read list size, then skip that many bytes.
 			listSize, err := deserializeVarInt(buf)
 			if err != nil {
-				panic(fmt.Sprintf("text index serializer: reading list size for skip: %v", err))
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("reading list size for skip: %v", err),
+					Data:    data,
+				}
+			}
+			if listSize < 0 || listSize > buf.Len() {
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("list size %d exceeds remaining data %d", listSize, buf.Len()),
+					Data:    data,
+				}
 			}
 			skipBytes := make([]byte, listSize)
 			if _, err := buf.Read(skipBytes); err != nil {
-				panic(fmt.Sprintf("text index serializer: skipping value bytes: %v", err))
+				return nil, &BunchedSerializationError{
+					Message: fmt.Sprintf("skipping value bytes: %v", err),
+					Data:    data,
+				}
 			}
 		}
 
 		entries = append(entries, BunchedEntry[tuple.Tuple, []int]{Key: entryKey, Value: entryValue})
 	}
 
-	return entries
+	return entries, nil
 }
 
 // Compile-time check that TextIndexBunchedSerializer implements BunchedSerializer.

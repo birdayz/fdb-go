@@ -41,6 +41,7 @@ func (v Violation) String() string {
 //
 // 10. MULTIDIMENSIONAL index entries (R-tree scan vs model, set-based)
 // 11. VECTOR index entries (HNSW self-search + count + orphan check)
+// 12. BITMAP_VALUE index entries (bitmap bits vs model records)
 func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
 
@@ -149,6 +150,9 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 
 	// 11. VECTOR index verification (HNSW self-search + count)
 	violations = append(violations, verifyVectorIndexes(ctx, store, model)...)
+
+	// 12. BITMAP_VALUE index verification (bitmap bits vs model records)
+	violations = append(violations, verifyBitmapValueIndexes(ctx, store, model)...)
 
 	return violations
 }

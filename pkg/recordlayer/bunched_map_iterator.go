@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -12,8 +13,8 @@ import (
 // Used by BunchedMapMultiIterator to partition scans across multiple BunchedMaps.
 // Matches Java's com.apple.foundationdb.map.SubspaceSplitter.
 type SubspaceSplitter interface {
-	SubspaceOf(keyBytes []byte) subspace.Subspace
-	SubspaceTag(ss subspace.Subspace) tuple.Tuple
+	SubspaceOf(keyBytes []byte) (subspace.Subspace, error)
+	SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error)
 }
 
 // TextSubspaceSplitter splits TEXT index keys by grouping columns.
@@ -35,23 +36,35 @@ func NewTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns in
 
 // SubspaceOf extracts the subspace for a given FDB key by taking the first
 // groupingColumns elements of the unpacked tuple.
-func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) subspace.Subspace {
+func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, error) {
 	t, err := s.indexSubspace.Unpack(fdb.Key(keyBytes))
 	if err != nil {
-		panic("TextSubspaceSplitter: unable to unpack key")
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("TextSubspaceSplitter: unable to unpack key: %v", err),
+			Data:    keyBytes,
+		}
+	}
+	if len(t) < s.groupingColumns {
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("TextSubspaceSplitter: key has %d elements, need at least %d", len(t), s.groupingColumns),
+			Data:    keyBytes,
+		}
 	}
 	prefix := make(tuple.Tuple, s.groupingColumns)
 	copy(prefix, t[:s.groupingColumns])
-	return s.indexSubspace.Sub(tupleToTupleElements(prefix)...)
+	return s.indexSubspace.Sub(tupleToTupleElements(prefix)...), nil
 }
 
 // SubspaceTag returns the grouping key tuple for a subspace.
-func (s *TextSubspaceSplitter) SubspaceTag(ss subspace.Subspace) tuple.Tuple {
+func (s *TextSubspaceSplitter) SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error) {
 	t, err := s.indexSubspace.Unpack(fdb.Key(ss.Bytes()))
 	if err != nil {
-		panic("TextSubspaceSplitter: unable to unpack subspace tag")
+		return nil, &BunchedSerializationError{
+			Message: fmt.Sprintf("TextSubspaceSplitter: unable to unpack subspace tag: %v", err),
+			Data:    ss.Bytes(),
+		}
 	}
-	return t
+	return t, nil
 }
 
 // tupleToTupleElements converts a Tuple to []tuple.TupleElement for subspace.Sub().
@@ -287,7 +300,12 @@ func (it *BunchedMapMultiIterator) advance() {
 		}
 
 		// Determine which sub-subspace this key belongs to.
-		nextSubspace := it.splitter.SubspaceOf(kv.Key)
+		nextSubspace, err := it.splitter.SubspaceOf(kv.Key)
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
 		nextSubspaceKey := nextSubspace.Bytes()
 		nextSubspaceSuffix := make([]byte, len(nextSubspaceKey)-len(it.parentKey))
 		copy(nextSubspaceSuffix, nextSubspaceKey[len(it.parentKey):])
@@ -296,17 +314,38 @@ func (it *BunchedMapMultiIterator) advance() {
 		if !it.continuationSatisfied {
 			if bytes.HasPrefix(it.continuation, nextSubspaceSuffix) {
 				// This is the subspace we need to resume in.
-				continuationKey := it.serializer.DeserializeKey(it.continuation, len(nextSubspaceSuffix), len(it.continuation)-len(nextSubspaceSuffix))
+				continuationKey, err := it.serializer.DeserializeKey(it.continuation, len(nextSubspaceSuffix), len(it.continuation)-len(nextSubspaceSuffix))
+				if err != nil {
+					it.iterErr = err
+					it.done = true
+					return
+				}
 				it.continuationSatisfied = true
 
 				// Deserialize this bunch and find entries after the continuation key.
-				boundaryKey := it.serializer.DeserializeKey(kv.Key, len(nextSubspaceKey), len(kv.Key)-len(nextSubspaceKey))
-				entries := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+				boundaryKey, err := it.serializer.DeserializeKey(kv.Key, len(nextSubspaceKey), len(kv.Key)-len(nextSubspaceKey))
+				if err != nil {
+					it.iterErr = err
+					it.done = true
+					return
+				}
+				entries, err := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+				if err != nil {
+					it.iterErr = err
+					it.done = true
+					return
+				}
 
 				it.currentSubspace = nextSubspace
 				it.currentSubspaceKey = nextSubspaceKey
 				it.currentSubspaceSuffix = nextSubspaceSuffix
-				it.currentSubspaceTag = it.splitter.SubspaceTag(nextSubspace)
+				tag, err := it.splitter.SubspaceTag(nextSubspace)
+				if err != nil {
+					it.iterErr = err
+					it.done = true
+					return
+				}
+				it.currentSubspaceTag = tag
 
 				// Find the first entry strictly past the continuation key.
 				startIdx := -1
@@ -351,8 +390,18 @@ func (it *BunchedMapMultiIterator) advance() {
 		}
 
 		// Deserialize the bunch.
-		boundaryKey := it.serializer.DeserializeKey(kv.Key, len(nextSubspaceKey), len(kv.Key)-len(nextSubspaceKey))
-		entries := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+		boundaryKey, err := it.serializer.DeserializeKey(kv.Key, len(nextSubspaceKey), len(kv.Key)-len(nextSubspaceKey))
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
+		entries, err := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
 		if len(entries) == 0 {
 			continue
 		}
@@ -360,7 +409,13 @@ func (it *BunchedMapMultiIterator) advance() {
 		it.currentSubspace = nextSubspace
 		it.currentSubspaceKey = nextSubspaceKey
 		it.currentSubspaceSuffix = nextSubspaceSuffix
-		it.currentSubspaceTag = it.splitter.SubspaceTag(nextSubspace)
+		tag, err := it.splitter.SubspaceTag(nextSubspace)
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
+		it.currentSubspaceTag = tag
 		it.currentEntries = entries
 
 		startIdx := 0
@@ -396,6 +451,11 @@ func (it *BunchedMapMultiIterator) GetContinuation() []byte {
 // Cancel stops the iterator.
 func (it *BunchedMapMultiIterator) Cancel() {
 	it.done = true
+}
+
+// Err returns the first error encountered during iteration, if any.
+func (it *BunchedMapMultiIterator) Err() error {
+	return it.iterErr
 }
 
 func boolToInt(b bool) int {

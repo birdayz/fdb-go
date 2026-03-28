@@ -52,34 +52,65 @@ var sizeLimits = [9]int64{
 
 var minInt64Big = big.NewInt(math.MinInt64)
 
-// tupleSkip returns the byte size of the first tuple element. No allocation.
+// tupleSkip returns the byte size of the first tuple element, or -1 on truncated input.
 func tupleSkip(b []byte) int {
+	if len(b) == 0 {
+		return -1
+	}
 	switch {
 	case b[0] == tcNil:
 		return 1
 	case b[0] == tcBytes || b[0] == tcString:
-		return 1 + findTerminator(b[1:]) + 1
+		if len(b) < 2 {
+			return -1
+		}
+		idx := findTerminator(b[1:])
+		if idx < 0 {
+			return -1
+		}
+		return 1 + idx + 1
 	case b[0] > tcNegIntStart && b[0] < tcPosIntEnd:
 		n := int(b[0]) - tcIntZero
 		if n < 0 {
 			n = -n
 		}
+		if 1+n > len(b) {
+			return -1
+		}
 		return 1 + n
 	case b[0] == tcNegIntStart || b[0] == tcPosIntEnd:
+		if len(b) < 2 {
+			return -1
+		}
 		length := int(b[1])
 		if b[0] == tcNegIntStart {
 			length ^= 0xff
 		}
+		if 2+length > len(b) {
+			return -1
+		}
 		return 2 + length
 	case b[0] == tcFloat:
+		if len(b) < 5 {
+			return -1
+		}
 		return 5
 	case b[0] == tcDouble:
+		if len(b) < 9 {
+			return -1
+		}
 		return 9
 	case b[0] == tcFalse || b[0] == tcTrue:
 		return 1
 	case b[0] == tcUUID:
+		if len(b) < 17 {
+			return -1
+		}
 		return 17
 	case b[0] == tcVersionstamp:
+		if len(b) < 1+versionstampLen {
+			return -1
+		}
 		return 1 + versionstampLen
 	case b[0] == tcNested:
 		i := 1
@@ -92,21 +123,30 @@ func tupleSkip(b []byte) int {
 				return i + 1 // end-of-nested marker
 			}
 			if b[i] == tcNested {
-				i += tupleSkip(b[i:]) // recursively skip inner nested tuple
+				size := tupleSkip(b[i:])
+				if size < 0 {
+					return -1
+				}
+				i += size
 				continue
 			}
 			i++
 		}
 		return len(b)
 	}
-	return 1
+	return -1 // unknown type code
 }
 
+// findTerminator returns the offset of the unescaped 0x00 terminator in b.
+// Returns -1 if no terminator is found (truncated input).
 func findTerminator(b []byte) int {
 	bp := b
 	var length int
 	for {
 		idx := bytes.IndexByte(bp, 0x00)
+		if idx < 0 {
+			return -1 // no terminator found
+		}
 		length += idx
 		if idx+1 == len(bp) || bp[idx+1] != 0xFF {
 			break
@@ -118,30 +158,36 @@ func findTerminator(b []byte) int {
 }
 
 // fastDecodeInt decodes an FDB-tuple-encoded integer. Zero allocation.
-func fastDecodeInt(b []byte) (any, int) {
+func fastDecodeInt(b []byte) (any, int, error) {
 	if b[0] == tcIntZero {
-		return int64(0), 1
+		return int64(0), 1, nil
 	}
 	n := int(b[0]) - tcIntZero
 	neg := n < 0
 	if neg {
 		n = -n
 	}
+	if 1+n > len(b) {
+		return nil, 0, fmt.Errorf("truncated integer at offset 0 (need %d bytes, have %d)", 1+n, len(b))
+	}
 	var buf [8]byte
 	copy(buf[8-n:], b[1:1+n])
 	ret := int64(binary.BigEndian.Uint64(buf[:]))
 	if neg {
-		return ret - sizeLimits[n], 1 + n
+		return ret - sizeLimits[n], 1 + n, nil
 	}
 	if ret > 0 {
-		return ret, 1 + n
+		return ret, 1 + n, nil
 	}
 	// Positive value that overflows int64 → uint64
-	return uint64(ret), 1 + n
+	return uint64(ret), 1 + n, nil
 }
 
 // fastDecodeBigInt decodes big integers (type codes 0x0b, 0x1d). Allocates big.Int.
-func fastDecodeBigInt(b []byte) (any, int) {
+func fastDecodeBigInt(b []byte) (any, int, error) {
+	if len(b) < 2 {
+		return nil, 0, fmt.Errorf("truncated big integer at offset 0")
+	}
 	val := new(big.Int)
 	offset := 1
 	var length int
@@ -154,6 +200,9 @@ func fastDecodeBigInt(b []byte) (any, int) {
 	} else {
 		length = 8
 	}
+	if offset+length > len(b) {
+		return nil, 0, fmt.Errorf("truncated big integer (need %d bytes, have %d)", offset+length, len(b))
+	}
 	val.SetBytes(b[offset : length+offset])
 	if b[0] < tcIntZero {
 		sub := new(big.Int).Lsh(big.NewInt(1), uint(length)*8)
@@ -161,9 +210,9 @@ func fastDecodeBigInt(b []byte) (any, int) {
 		val.Sub(val, sub)
 	}
 	if val.Cmp(minInt64Big) == 0 {
-		return val.Int64(), length + offset
+		return val.Int64(), length + offset, nil
 	}
-	return val, length + offset
+	return val, length + offset, nil
 }
 
 // fastDecodeFloat decodes a float32. Uses stack array instead of bytes.NewBuffer.
@@ -192,14 +241,23 @@ func adjustFloatBytes(b []byte, encode bool) {
 	}
 }
 
-func fastDecodeBytes(b []byte) ([]byte, int) {
+func fastDecodeBytes(b []byte) ([]byte, int, error) {
+	if len(b) < 2 {
+		return nil, 0, fmt.Errorf("truncated bytes/string at offset 0 (len=%d)", len(b))
+	}
 	idx := findTerminator(b[1:])
-	return bytes.Replace(b[1:idx+1], []byte{0x00, 0xFF}, []byte{0x00}, -1), idx + 2
+	if idx < 0 {
+		return nil, 0, fmt.Errorf("unterminated bytes/string element")
+	}
+	return bytes.Replace(b[1:idx+1], []byte{0x00, 0xFF}, []byte{0x00}, -1), idx + 2, nil
 }
 
-func fastDecodeString(b []byte) (string, int) {
-	bp, idx := fastDecodeBytes(b)
-	return string(bp), idx
+func fastDecodeString(b []byte) (string, int, error) {
+	bp, idx, err := fastDecodeBytes(b)
+	if err != nil {
+		return "", 0, err
+	}
+	return string(bp), idx, nil
 }
 
 func fastDecodeUUID(b []byte) (tuple.UUID, int) {
@@ -241,15 +299,35 @@ func fastDecodeTuple(b []byte, nested bool) (tuple.Tuple, int, error) {
 				return t, i + 1, nil
 			}
 		case b[i] == tcBytes:
-			el, off = fastDecodeBytes(b[i:])
+			var err error
+			el, off, err = fastDecodeBytes(b[i:])
+			if err != nil {
+				return nil, i, err
+			}
 		case b[i] == tcString:
-			el, off = fastDecodeString(b[i:])
+			var err error
+			el, off, err = fastDecodeString(b[i:])
+			if err != nil {
+				return nil, i, err
+			}
 		case tcNegIntStart+1 < b[i] && b[i] < tcPosIntEnd:
-			el, off = fastDecodeInt(b[i:])
-		case tcNegIntStart+1 == b[i] && (b[i+1]&0x80 != 0):
-			el, off = fastDecodeInt(b[i:])
+			var err error
+			el, off, err = fastDecodeInt(b[i:])
+			if err != nil {
+				return nil, i, err
+			}
+		case tcNegIntStart+1 == b[i] && i+1 < len(b) && (b[i+1]&0x80 != 0):
+			var err error
+			el, off, err = fastDecodeInt(b[i:])
+			if err != nil {
+				return nil, i, err
+			}
 		case tcNegIntStart <= b[i] && b[i] <= tcPosIntEnd:
-			el, off = fastDecodeBigInt(b[i:])
+			var err error
+			el, off, err = fastDecodeBigInt(b[i:])
+			if err != nil {
+				return nil, i, err
+			}
 		case b[i] == tcFloat:
 			if i+5 > len(b) {
 				return nil, i, fmt.Errorf("insufficient bytes for float at %d", i)
@@ -307,7 +385,10 @@ func splitKeySuffix(tupleBytes []byte) (suffix int64, pkEnd int, err error) {
 	}
 	tc := tupleBytes[lastStart]
 	if tc == tcIntZero || (tc > tcNegIntStart && tc < tcPosIntEnd) {
-		val, _ := fastDecodeInt(tupleBytes[lastStart:])
+		val, _, decErr := fastDecodeInt(tupleBytes[lastStart:])
+		if decErr != nil {
+			return 0, 0, decErr
+		}
 		switch v := val.(type) {
 		case int64:
 			return v, lastStart, nil

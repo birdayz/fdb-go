@@ -10,6 +10,7 @@ go_library(
         "scenario.go",
         "verify.go",
         "verify_atomic.go",
+        "verify_bitmap.go",
         "verify_minmax.go",
         "verify_multidimensional.go",
         "verify_permuted.go",
@@ -32,6 +33,7 @@ go_library(
 go_test(
     name = "chaos_test",
     srcs = [
+        "chaos_bitmap_test.go",
         "chaos_covering_test.go",
         "chaos_fanout_test.go",
         "chaos_leaderboard_test.go",

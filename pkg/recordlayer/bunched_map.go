@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -129,8 +130,14 @@ func (m *BunchedMap) Get(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tup
 		return nil, false, nil
 	}
 
-	mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
-	entries := m.serializer.DeserializeEntries(mapKey, kv.Value)
+	mapKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map get: deserialize key: %w", err)
+	}
+	entries, err := m.serializer.DeserializeEntries(mapKey, kv.Value)
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map get: deserialize entries: %w", err)
+	}
 	for _, entry := range entries {
 		if tupleEqual(entry.Key, key) {
 			return entry.Value, true, nil
@@ -188,7 +195,10 @@ func (m *BunchedMap) Put(tx fdb.Transaction, ss subspace.Subspace, key tuple.Tup
 	}
 
 	newEntry := bunchedEntry{Key: key, Value: value}
-	oldValue, hadOld := m.insertEntry(tx, subspaceKey, keyBytes, key, value, kvBefore, kvAfter, newEntry)
+	oldValue, hadOld, err := m.insertEntry(tx, subspaceKey, keyBytes, key, value, kvBefore, kvAfter, newEntry)
+	if err != nil {
+		return nil, false, err
+	}
 	return oldValue, hadOld, nil
 }
 
@@ -206,8 +216,14 @@ func (m *BunchedMap) Remove(tx fdb.Transaction, ss subspace.Subspace, key tuple.
 		return nil, false, nil
 	}
 
-	mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
-	entryList := m.serializer.DeserializeEntries(mapKey, kv.Value)
+	mapKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map remove: deserialize key: %w", err)
+	}
+	entryList, err := m.serializer.DeserializeEntries(mapKey, kv.Value)
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map remove: deserialize entries: %w", err)
+	}
 
 	foundIndex := -1
 	for i, entry := range entryList {
@@ -274,14 +290,20 @@ func (m *BunchedMap) VerifyIntegrity(tx fdb.ReadTransaction, ss subspace.Subspac
 
 	var lastKey []byte // packed key for comparison
 	for _, kv := range kvs {
-		boundaryKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+		boundaryKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+		if err != nil {
+			return fmt.Errorf("bunched map verify: deserialize key: %w", err)
+		}
 		boundaryKeyPacked := boundaryKey.Pack()
 		if lastKey != nil && bytes.Compare(boundaryKeyPacked, lastKey) < 0 {
 			return &BunchedMapException{Message: "boundary key out of order"}
 		}
 		lastKey = boundaryKeyPacked
 
-		keys := m.serializer.DeserializeKeys(boundaryKey, kv.Value)
+		keys, err := m.serializer.DeserializeKeys(boundaryKey, kv.Value)
+		if err != nil {
+			return fmt.Errorf("bunched map verify: deserialize keys: %w", err)
+		}
 		for _, k := range keys {
 			kPacked := k.Pack()
 			if bytes.Compare(kPacked, lastKey) < 0 {
@@ -452,19 +474,25 @@ func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []
 // a standalone signpost if kvAfter doesn't exist or is full.
 // Matches Java's BunchedMap.insertAfter().
 func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byte,
-	kvAfter *fdb.KeyValue, entry bunchedEntry) {
+	kvAfter *fdb.KeyValue, entry bunchedEntry) error {
 
 	if kvAfter == nil {
 		m.insertAlone(tx, keyBytes, entry)
-		return
+		return nil
 	}
 
-	afterKey := m.serializer.DeserializeKey(kvAfter.Key, len(subspaceKey), len(kvAfter.Key)-len(subspaceKey))
-	afterEntryList := m.serializer.DeserializeEntries(afterKey, kvAfter.Value)
+	afterKey, err := m.serializer.DeserializeKey(kvAfter.Key, len(subspaceKey), len(kvAfter.Key)-len(subspaceKey))
+	if err != nil {
+		return fmt.Errorf("bunched map insert after: deserialize key: %w", err)
+	}
+	afterEntryList, err := m.serializer.DeserializeEntries(afterKey, kvAfter.Value)
+	if err != nil {
+		return fmt.Errorf("bunched map insert after: deserialize entries: %w", err)
+	}
 
 	if len(afterEntryList) >= m.bunchSize {
 		m.insertAlone(tx, keyBytes, entry)
-		return
+		return nil
 	}
 
 	// Prepend our entry to the next bunch's list.
@@ -472,21 +500,30 @@ func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byt
 	newEntryList = append(newEntryList, entry)
 	newEntryList = append(newEntryList, afterEntryList...)
 	m.writeEntryList(tx, subspaceKey, keyBytes, kvAfter, keyBytes, newEntryList, nil, true, false)
+	return nil
 }
 
 // insertEntry handles the core insertion logic after signpost lookup.
-// Returns (oldValue, true) if the key already existed, (nil, false) if new.
+// Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.insertEntry().
 func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byte,
-	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry) ([]int, bool) {
+	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry) ([]int, bool, error) {
 
 	if kvBefore == nil {
-		m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry)
-		return nil, false
+		if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
 	}
 
-	beforeKey := m.serializer.DeserializeKey(kvBefore.Key, len(subspaceKey), len(kvBefore.Key)-len(subspaceKey))
-	beforeEntryList := m.serializer.DeserializeEntries(beforeKey, kvBefore.Value)
+	beforeKey, err := m.serializer.DeserializeKey(kvBefore.Key, len(subspaceKey), len(kvBefore.Key)-len(subspaceKey))
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map insert: deserialize key: %w", err)
+	}
+	beforeEntryList, err := m.serializer.DeserializeEntries(beforeKey, kvBefore.Value)
+	if err != nil {
+		return nil, false, fmt.Errorf("bunched map insert: deserialize entries: %w", err)
+	}
 
 	// Find insertion point.
 	insertIndex := 0
@@ -507,7 +544,7 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 			// Value unchanged — just add read conflict key for linearizability.
 			_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
 		}
-		return oldEntry.Value, true
+		return oldEntry.Value, true, nil
 	}
 
 	if insertIndex < len(beforeEntryList) {
@@ -530,7 +567,7 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 			m.writeEntryList(tx, subspaceKey, keyBytes, nil, secondKey,
 				secondEntries, kvAfter, false, false)
 		}
-		return nil, false
+		return nil, false, nil
 	}
 
 	// Inserting after all entries in the before bunch.
@@ -543,9 +580,11 @@ func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byt
 			newEntryList, kvAfter, false, true)
 	} else {
 		// Bunch is full — insert into the next bunch.
-		m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry)
+		if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry); err != nil {
+			return nil, false, err
+		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 // ContainsKey checks if a key exists in the map.
@@ -560,8 +599,14 @@ func (m *BunchedMap) ContainsKey(tx fdb.Transaction, ss subspace.Subspace, key t
 		return false, nil
 	}
 
-	mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
-	keys := m.serializer.DeserializeKeys(mapKey, kv.Value)
+	mapKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+	if err != nil {
+		return false, fmt.Errorf("bunched map contains: deserialize key: %w", err)
+	}
+	keys, err := m.serializer.DeserializeKeys(mapKey, kv.Value)
+	if err != nil {
+		return false, fmt.Errorf("bunched map contains: deserialize keys: %w", err)
+	}
 	for _, k := range keys {
 		if tupleEqual(k, key) {
 			return true, nil
@@ -602,8 +647,14 @@ func (m *BunchedMap) Compact(tx fdb.Transaction, ss subspace.Subspace, keyLimit 
 	// Accumulate all entries from the read keys, then rewrite in optimal bunches.
 	var allEntries []bunchedEntry
 	for _, kv := range kvs {
-		mapKey := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
-		entries := m.serializer.DeserializeEntries(mapKey, kv.Value)
+		mapKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+		if err != nil {
+			return nil, fmt.Errorf("bunched map compact: deserialize key: %w", err)
+		}
+		entries, err := m.serializer.DeserializeEntries(mapKey, kv.Value)
+		if err != nil {
+			return nil, fmt.Errorf("bunched map compact: deserialize entries: %w", err)
+		}
 		allEntries = append(allEntries, entries...)
 		// Clear old key.
 		tx.Clear(fdb.Key(kv.Key))
@@ -655,6 +706,7 @@ type BunchedMapIterator struct {
 	returned       int
 	done           bool
 	nextEntry      *bunchedEntry
+	iterErr        error // sticky error from deserialization
 }
 
 // Scan iterates over all entries in a single BunchedMap within the given subspace.
@@ -747,6 +799,7 @@ func (it *BunchedMapIterator) advance() {
 		}
 		kv, err := it.rangeIter.Get()
 		if err != nil {
+			it.iterErr = err
 			it.done = true
 			return
 		}
@@ -755,8 +808,18 @@ func (it *BunchedMapIterator) advance() {
 			return
 		}
 
-		boundaryKey := it.serializer.DeserializeKey(kv.Key, len(it.subspaceKey), len(kv.Key)-len(it.subspaceKey))
-		entries := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+		boundaryKey, err := it.serializer.DeserializeKey(kv.Key, len(it.subspaceKey), len(kv.Key)-len(it.subspaceKey))
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
+		entries, err := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
+		if err != nil {
+			it.iterErr = err
+			it.done = true
+			return
+		}
 		if len(entries) == 0 {
 			continue
 		}
@@ -765,7 +828,12 @@ func (it *BunchedMapIterator) advance() {
 		// Keep checking until we find a bunch with a valid entry past the
 		// continuation point — don't clear the flag until we've found one.
 		if it.continuation != nil {
-			contKey := it.serializer.DeserializeKey(it.continuation, 0, len(it.continuation))
+			contKey, err := it.serializer.DeserializeKey(it.continuation, 0, len(it.continuation))
+			if err != nil {
+				it.iterErr = err
+				it.done = true
+				return
+			}
 			startIdx := -1
 			if it.reverse {
 				for i := len(entries) - 1; i >= 0; i-- {
@@ -816,6 +884,11 @@ func (it *BunchedMapIterator) GetContinuation() []byte {
 		return nil
 	}
 	return it.serializer.SerializeKey(it.lastKey)
+}
+
+// Err returns the first error encountered during iteration, if any.
+func (it *BunchedMapIterator) Err() error {
+	return it.iterErr
 }
 
 // tupleEqual compares two tuples for equality by comparing their packed representations.

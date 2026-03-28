@@ -1558,3 +1558,39 @@ Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Q
 #### Architectural note: HNSW vs IVF on FDB
 
 HNSW is a fundamentally poor fit for networked KV stores due to O(√N) sequential round-trip dependency at layer 0 (data-dependent graph traversal — each hop must wait for previous results). IVF reduces this to O(log N) fixed phases using range reads (FDB's strength). Java also only has HNSW — no IVF. A future `IndexType_VECTOR_IVF` (per RFC 005) would be a Go-only performance feature, not a Java port. See distributed systems analysis in conversation 2026-03-22.
+
+---
+
+## Hardening (2026-03-28)
+
+Systematic hardening of deserialization paths, panic elimination, fuzz testing, and chaos test coverage.
+
+### Phase 1: Panic audit — DONE
+
+- [x] **CRITICAL — `text_index_serializer.go`: all Deserialize methods panicked on malformed input** — `BunchedSerializer` interface changed to return `(T, error)`. All 15 panic sites converted to `BunchedSerializationError` returns. All callers in `bunched_map.go` (30 sites) and `bunched_map_iterator.go` (10 sites) propagate errors. OOM via crafted varint sizes fixed with `buf.Len()` bounds checks. Uses `fastUnpack` instead of `tuple.Unpack` (which itself panics on truncated input — see birdayz/fdb-record-layer-go#2).
+- [x] **CRITICAL — `bunched_map_iterator.go`: `SubspaceOf`/`SubspaceTag` panicked on bad FDB keys** — `SubspaceSplitter` interface changed to return `(T, error)`. `TextSubspaceSplitter` returns `BunchedSerializationError`. Iterator sets `iterErr` + `done` on error. `Err()` method added to both `BunchedMapIterator` and `BunchedMapMultiIterator`.
+- [x] **HIGH — `tuple_fast.go`: `fastUnpack` panicked on truncated input** — `findTerminator` now returns -1 on missing terminator (was returning garbage from `IndexByte(-1)`). `fastDecodeBytes`/`fastDecodeString`/`fastDecodeInt`/`fastDecodeBigInt` all return errors. `tupleSkip` returns -1 on truncated input. Every type code path bounds-checked. Survives 77M+ fuzz executions.
+
+### Phase 2: Fuzz testing — DONE
+
+7 Go native fuzz targets in `fuzz_test.go`. All pass 30-60s continuous fuzzing (30M-77M executions each). Run via `bazel run //pkg/recordlayer:recordlayer_test -- -test.fuzz='^FuzzName$' -test.fuzzcachedir=/tmp/x -test.fuzztime=60s`. Seed corpus runs as regression tests under normal `bazel test`.
+
+- [x] **`FuzzFastUnpack`** — Cross-validates `fastUnpack` against `tuple.Unpack` on arbitrary bytes. Found 2 panics (truncated bytes/string, truncated integer). **Discovered upstream `tuple.Unpack` panics (birdayz/fdb-record-layer-go#2).**
+- [x] **`FuzzFastUnpackRoundtrip`** — Pack valid tuples, unpack with `fastUnpack`, verify roundtrip.
+- [x] **`FuzzDeserializeBunch`** — TEXT index custom binary format. Found OOM via crafted varint sizes → added `buf.Len()` bounds checks.
+- [x] **`FuzzUnwrapContinuation`** — Continuation token parser. Clean.
+- [x] **`FuzzUninvertBytes`** — DESC ordering 7-bit encoder roundtrip. Clean.
+- [x] **`FuzzDeserializeVector`** — HNSW vector binary format. Clean.
+- [x] **`FuzzCompleteVersionFromBytes`** — 12-byte version parser. Clean.
+
+### Phase 3: Chaos test gaps
+
+- [x] **MEDIUM — BITMAP_VALUE chaos tests** — 8 tests: basic save, multiple records, delete, overwrite, commit-unknown insert/delete, random 200 ops no faults, random 200 ops with 5% commit-unknown. Bitmap verification computes expected bits from model records, scans BY_GROUP, bidirectional diff (missing/orphan entries + individual bit mismatches). BIT_OR/BIT_AND confirmed idempotent under faults.
+- [ ] **MEDIUM — TEXT index chaos tests** — BunchedMap token storage under commit-unknown. Verify token→position lists match model.
+- [ ] **MEDIUM — MAX_EVER_VERSION chaos tests** — SET_VERSIONSTAMPED_VALUE under commit-unknown. Verify max version ratchet.
+- [ ] **MEDIUM — OnlineIndexer under faults** — Build indexes while injecting commit-unknown. Verify index completeness and RangeSet consistency.
+
+### Phase 4: Additional hardening
+
+- [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison.
+- [ ] **LOW — Continuation token fuzzing per cursor type** — Malformed/truncated tokens hitting every cursor combinator (Union, Intersection, FlatMap, Dedup, Concat, AutoContinuing).

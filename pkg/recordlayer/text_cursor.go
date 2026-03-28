@@ -92,6 +92,10 @@ func (c *textCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry],
 	}
 
 	if c.closed || !c.underlying.HasNext() {
+		// Check for deserialization or I/O errors from the iterator.
+		if err := c.underlying.Err(); err != nil {
+			return RecordCursorResult[*IndexEntry]{}, err
+		}
 		contBytes := c.underlying.GetContinuation()
 		if contBytes == nil {
 			// Truly exhausted — no more data.
