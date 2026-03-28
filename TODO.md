@@ -17,6 +17,17 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **HIGH** — `store_delete_where.go`: `DeleteRecordsWhere` fully cleared multi-type indexes (destroyed non-target type entries) instead of scoping by PK prefix. Fixed: multi-type with RecordTypeKey prefix → scoped clear, without → error. Found 2026-03-26 by test matrix.
 - [x] **HIGH** — CI red: SIFT/vector benchmark test files extracted to `pkg/recordlayer/bench/` with own BUILD.bazel. gofmt fixed. Commits `d1d632a`, `3914be8`, `23c4ff7`, `4239e55`.
 
+### Cursor/continuation audit (2026-03-28) — correctness sweep
+
+- [x] **CRITICAL** — `record_key_cursor.go:initIterator()`: Reverse scan continuation always adjusts `begin` instead of `end`. Fixed: check `IsReverse()`, adjust `end` for reverse scans. Regression test added.
+- [x] **CRITICAL** — `record_key_cursor.go:111`: Split record continuation + nil `lastPK` on resume → duplicates. Fixed: initialize `lastPK` from continuation on resume. Regression test added.
+- [x] **MEDIUM** — `index_scan.go:indexCursor.OnNext()`: Missing `ScannedRecordsLimit` check. Fixed: added check matching `keyValueCursor`/`recordKeyCursor` pattern. Regression test added.
+
+### SaveRecord behavioral audit (2026-03-28) — Java vs Go comparison
+
+- [ ] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Java's `SplitHelper.writeVersion()` calls `sizeInfo.add(keyBytes, valueBytes)`. Go doesn't include version key in KeyCount/KeySize/ValueSize. ~50-60 bytes difference per versioned record.
+- [ ] **LOW** — `store.go`: Double deserialization when `ErrorIfTypeChanged + HasIndexes`. Old record deserialized once for type check, again for index update. Performance only.
+
 ### Hardening audit (2026-03-28) — 4-agent sweep: error swallowing, panics, deserialization, concurrency
 
 - [x] **CRITICAL** — `hnsw.go`: 6+ sites ignore `decodeStoredVector()` error (lines ~319, 724, 731, 870, 880, 911). Fixed: critical paths return error, loop candidates skip on decode failure.

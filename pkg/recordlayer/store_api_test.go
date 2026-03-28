@@ -1399,6 +1399,97 @@ var _ = Describe("FDBRecordStore API", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+		It("paginated reverse scan returns no duplicates (regression: continuation was adjusting begin instead of end)", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 5; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Paginate reverse with limit=2 and collect all PKs.
+				var allKeys []tuple.Tuple
+				var cont []byte
+				for {
+					scan := ReverseScan()
+					scan.ExecuteProperties.ReturnedRowLimit = 2
+					cursor := store.ScanRecordKeys(cont, scan)
+					keys, nextCont, err := collectPage(ctx, cursor)
+					Expect(err).NotTo(HaveOccurred())
+					allKeys = append(allKeys, keys...)
+					if nextCont == nil {
+						break
+					}
+					cont = nextCont
+				}
+
+				// Must be exactly 5 keys in reverse order, no duplicates.
+				Expect(allKeys).To(HaveLen(5))
+				Expect(allKeys[0]).To(Equal(tuple.Tuple{int64(5)}))
+				Expect(allKeys[1]).To(Equal(tuple.Tuple{int64(4)}))
+				Expect(allKeys[2]).To(Equal(tuple.Tuple{int64(3)}))
+				Expect(allKeys[3]).To(Equal(tuple.Tuple{int64(2)}))
+				Expect(allKeys[4]).To(Equal(tuple.Tuple{int64(1)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("paginated forward scan with split records returns no duplicates (regression: continuation pointed to first chunk, not past all chunks)", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			builder.SetSplitLongRecords(true)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+				Expect(err).NotTo(HaveOccurred())
+				// 250KB record — split into 3 chunks
+				_, err = store.SaveRecord(makeLargeOrder(2, 250_000))
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(300)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Paginate with limit=1 — forces continuation after each PK.
+				var allKeys []tuple.Tuple
+				var cont []byte
+				for {
+					scan := ForwardScan()
+					scan.ExecuteProperties.ReturnedRowLimit = 1
+					cursor := store.ScanRecordKeys(cont, scan)
+					keys, nextCont, err := collectPage(ctx, cursor)
+					Expect(err).NotTo(HaveOccurred())
+					allKeys = append(allKeys, keys...)
+					if nextCont == nil {
+						break
+					}
+					cont = nextCont
+				}
+
+				// Must be exactly 3 keys, no duplicates from split chunks.
+				Expect(allKeys).To(HaveLen(3))
+				Expect(allKeys[0]).To(Equal(tuple.Tuple{int64(1)}))
+				Expect(allKeys[1]).To(Equal(tuple.Tuple{int64(2)}))
+				Expect(allKeys[2]).To(Equal(tuple.Tuple{int64(3)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("ResolveUniquenessViolationByDeletion", func() {
@@ -1771,3 +1862,23 @@ var _ = Describe("FDBRecordStore API", func() {
 		})
 	})
 })
+
+// collectPage drains a tuple cursor, returning all values and the raw
+// continuation bytes (nil if source exhausted).
+func collectPage(ctx context.Context, cursor RecordCursor[tuple.Tuple]) ([]tuple.Tuple, []byte, error) {
+	var result []tuple.Tuple
+	for {
+		r, err := cursor.OnNext(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !r.HasNext() {
+			cont, contErr := r.GetContinuation().ToBytes()
+			if contErr != nil {
+				return nil, nil, contErr
+			}
+			return result, cont, nil
+		}
+		result = append(result, r.GetValue())
+	}
+}

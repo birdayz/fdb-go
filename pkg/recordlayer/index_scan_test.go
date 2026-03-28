@@ -1184,4 +1184,74 @@ var _ = Describe("IndexScanning", func() {
 			}
 		})
 	})
+
+	Describe("indexCursor ScannedRecordsLimit (regression: was missing)", func() {
+		It("stops after scanning the configured number of entries", func() {
+			priceIdx := NewIndex("Order$price_scanl", Field("price"))
+			metaData := buildMetaWithIndex(priceIdx)
+
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				for i := int64(1); i <= 10; i++ {
+					_, saveErr := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 100))})
+					Expect(saveErr).NotTo(HaveOccurred())
+				}
+
+				// Scan index with ScannedRecordsLimit=3
+				scan := ForwardScan()
+				scan.ExecuteProperties.ScannedRecordsLimit = 3
+				cursor := store.ScanIndex(priceIdx, TupleRangeAll, nil, scan)
+
+				var entries []*IndexEntry
+				var lastResult RecordCursorResult[*IndexEntry]
+				for {
+					result, nextErr := cursor.OnNext(ctx)
+					Expect(nextErr).NotTo(HaveOccurred())
+					lastResult = result
+					if !result.HasNext() {
+						break
+					}
+					entries = append(entries, result.GetValue())
+				}
+				Expect(entries).To(HaveLen(3))
+				Expect(lastResult.GetNoNextReason()).To(Equal(ScanLimitReached))
+				Expect(lastResult.HasStoppedBeforeEnd()).To(BeTrue())
+
+				// Resume from continuation — should get next 3.
+				cont, contErr := lastResult.GetContinuation().ToBytes()
+				Expect(contErr).NotTo(HaveOccurred())
+				scan2 := ForwardScan()
+				scan2.ExecuteProperties.ScannedRecordsLimit = 3
+				cursor2 := store.ScanIndex(priceIdx, TupleRangeAll, cont, scan2)
+
+				var entries2 []*IndexEntry
+				for {
+					result, nextErr := cursor2.OnNext(ctx)
+					Expect(nextErr).NotTo(HaveOccurred())
+					if !result.HasNext() {
+						break
+					}
+					entries2 = append(entries2, result.GetValue())
+				}
+				Expect(entries2).To(HaveLen(3))
+
+				// Verify no overlap between first and second batch.
+				firstPKs := make(map[string]bool)
+				for _, e := range entries {
+					firstPKs[string(e.PrimaryKey().Pack())] = true
+				}
+				for _, e := range entries2 {
+					Expect(firstPKs).NotTo(HaveKey(string(e.PrimaryKey().Pack())),
+						"second batch should not contain entries from first batch")
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

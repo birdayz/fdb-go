@@ -137,18 +137,27 @@ func (c *recordKeyCursor) initIterator() error {
 	recordsSubspace := c.store.subspace.Sub(RecordKey)
 	c.prefixLength = len(recordsSubspace.FDBKey())
 
-	var begin, end fdb.Key
+	beginKey, endKey := recordsSubspace.FDBRangeKeys()
+	begin := beginKey.FDBKey()
+	end := endKey.FDBKey()
 
 	if c.continuation != nil {
 		innerCont := unwrapContinuation(c.continuation)
 		fullKey := append(recordsSubspace.FDBKey(), innerCont...)
-		begin = append(fullKey, 0x00)
-	} else {
-		begin = recordsSubspace.FDBKey()
-	}
+		if c.scanProperties.IsReverse() {
+			// Reverse: continuation caps the high end (exclude already-returned keys)
+			end = fullKey
+		} else {
+			// Forward: continuation raises the low end (skip already-returned keys)
+			begin = append(fullKey, 0x00)
+		}
 
-	_, endKey := recordsSubspace.FDBRangeKeys()
-	end = endKey.FDBKey()
+		// Initialize lastPK from continuation for split record dedup.
+		// Continuation is tuple-packed (pk..., suffix) — strip the last element.
+		if contTuple, err := tuple.Unpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
+			c.lastPK = tuple.Tuple(contTuple[:len(contTuple)-1])
+		}
+	}
 
 	rng := fdb.KeyRange{Begin: begin, End: end}
 	options := fdb.RangeOptions{

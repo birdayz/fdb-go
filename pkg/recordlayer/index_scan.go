@@ -460,6 +460,14 @@ func (c *indexCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntry]
 		), nil
 	}
 
+	// Check scanned records limit (free initial pass for first record).
+	if executeProps.ScannedRecordsLimit > 0 && c.recordsRead >= executeProps.ScannedRecordsLimit {
+		return NewResultNoNext[*IndexEntry](
+			ScanLimitReached,
+			c.limitContinuation(),
+		), nil
+	}
+
 	// Check time limit before reading next entry (free initial pass for first record).
 	if executeProps.TimeLimit > 0 && c.recordsRead > 0 && time.Since(c.startTime) >= executeProps.TimeLimit {
 		return NewResultNoNext[*IndexEntry](
