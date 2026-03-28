@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"math"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
@@ -117,11 +116,10 @@ func (c *countKVCursor) initIterator() error {
 
 	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
 		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.returned
-		if limit == math.MaxInt {
-			options.Limit = math.MaxInt
-		} else {
-			options.Limit = limit + 1
+		if limit <= 0 {
+			limit = 1
 		}
+		options.Limit = saturatingAdd(limit, 1)
 	}
 
 	c.iterator = c.tx.GetRange(rng, options).Iterator()

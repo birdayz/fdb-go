@@ -314,7 +314,7 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 	}
 
 	scanProps := ForwardScan()
-	scanProps.ExecuteProperties.ReturnedRowLimit = m.indexer.limit + 1
+	scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(m.indexer.limit, 1)
 	if m.indexer.allTargetIndexesIdempotent() {
 		scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
 	}

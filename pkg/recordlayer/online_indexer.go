@@ -905,7 +905,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		// throughput. Non-idempotent indexes use SERIALIZABLE to prevent double-counting.
 		// Matches Java's IndexingBase.scanPropertiesWithLimits().
 		scanProps := ForwardScan()
-		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit + 1
+		scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(oi.limit, 1)
 		if oi.allTargetIndexesIdempotent() {
 			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
 		}
@@ -1110,7 +1110,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		}
 
 		scanProps := ForwardScan()
-		scanProps.ExecuteProperties.ReturnedRowLimit = oi.limit + 1
+		scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(oi.limit, 1)
 		if oi.allTargetIndexesIdempotent() {
 			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
 		}

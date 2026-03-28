@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"math"
 )
 
 // NoNextReason indicates why a cursor stopped producing records
@@ -336,6 +337,15 @@ func (c *listCursor[T]) OnNext(_ context.Context) (RecordCursorResult[T], error)
 func (c *listCursor[T]) Close() error {
 	c.closed = true
 	return nil
+}
+
+// saturatingAdd returns a + b, clamped to math.MaxInt on overflow.
+// Both a and b must be non-negative.
+func saturatingAdd(a, b int) int {
+	if b > 0 && a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // Note: Most sequence utilities are available in Go 1.23+ standard library:

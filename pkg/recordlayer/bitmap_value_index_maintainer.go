@@ -497,11 +497,10 @@ func (c *bitmapKVCursor) initIterator() error {
 
 	if c.scanProps.ExecuteProperties.ReturnedRowLimit > 0 {
 		limit := c.scanProps.ExecuteProperties.ReturnedRowLimit - c.recordsRead
-		if limit == math.MaxInt {
-			options.Limit = math.MaxInt
-		} else {
-			options.Limit = limit + 1
+		if limit <= 0 {
+			limit = 1
 		}
+		options.Limit = saturatingAdd(limit, 1)
 	}
 
 	var rangeResult fdb.RangeResult

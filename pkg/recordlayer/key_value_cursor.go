@@ -673,17 +673,21 @@ func (c *keyValueCursor) initIterator() error {
 	// Skip is added to the FDB limit so we have enough KVs to skip AND return.
 	if c.scanProperties.ExecuteProperties.ReturnedRowLimit > 0 && !c.store.metaData.IsSplitLongRecords() {
 		skip := c.scanProperties.ExecuteProperties.Skip
-		limit := c.scanProperties.ExecuteProperties.ReturnedRowLimit + skip - c.recordsRead
-		recordLimit := limit + 1
-		if limit == math.MaxInt {
-			recordLimit = math.MaxInt
+		limit := saturatingAdd(c.scanProperties.ExecuteProperties.ReturnedRowLimit, skip) - c.recordsRead
+		if limit <= 0 {
+			limit = 1
 		}
+		recordLimit := saturatingAdd(limit, 1)
 		// When versioning is enabled, each record has 2 KV pairs
 		// (version at suffix -1, data at suffix 0). Double the FDB limit
 		// to account for version KVs.
 		// Matches Java's FDBRecordStore scanRecords which uses 2 * returnedRowLimit.
 		if c.storeRecordVersions {
-			recordLimit *= 2
+			if recordLimit > math.MaxInt/2 {
+				recordLimit = math.MaxInt
+			} else {
+				recordLimit *= 2
+			}
 		}
 		options.Limit = recordLimit
 	}

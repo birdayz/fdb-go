@@ -398,7 +398,7 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 	skip := scanProperties.ExecuteProperties.Skip
 	adjustedLimit := scanProperties.ExecuteProperties.ReturnedRowLimit
 	if skip > 0 && adjustedLimit > 0 {
-		adjustedLimit += skip
+		adjustedLimit = saturatingAdd(adjustedLimit, skip)
 	}
 
 	// Determine the read transaction (snapshot vs serializable).
