@@ -49,8 +49,8 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **HIGH** — `text_tokenizer.go:144`: `Tokenize()` panics on invalid tokenizer version. Fixed: `TextTokenizer` interface methods now return errors, all callers updated.
 - [x] **MEDIUM** — `key_expression_proto.go:302` + `key_expression.go:621-622`: `valueToProto()` errors swallowed. Fixed: `Literal()` constructor validates type at build time — unsupported types panic immediately.
 
-- [ ] **MEDIUM** — `ranked_set.go:570`: `rsDecodeLong()` returns 0 for short values instead of erroring. Matches Java behavior but masks corruption.
-- [ ] **MEDIUM** — `count_index_maintainer.go:187`: Count value returns 0 for values shorter than 8 bytes instead of erroring. Same pattern as rsDecodeLong.
+- [x] **MEDIUM** — `ranked_set.go:570`: `rsDecodeLong()` returned 0 for short values instead of erroring. Fixed: nil → 0 (legitimate missing key), non-nil short → error (data corruption). All 8 callers updated to propagate errors.
+- [x] **MEDIUM** — `count_index_maintainer.go:187`: Count value returned 0 for values shorter than 8 bytes instead of erroring. Fixed: non-empty short values now return error.
 
 ---
 

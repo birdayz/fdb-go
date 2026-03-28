@@ -128,7 +128,9 @@ var _ = Describe("rankedSet (skip-list)", func() {
 					v, err := tx.Get(k).Get()
 					Expect(err).NotTo(HaveOccurred())
 					Expect(v).NotTo(BeNil(), "sentinel missing at level %d", level)
-					Expect(rsDecodeLong(v)).To(Equal(int64(0)), "sentinel count at level %d", level)
+					val, err2 := rsDecodeLong(v)
+					Expect(err2).NotTo(HaveOccurred())
+					Expect(val).To(Equal(int64(0)), "sentinel count at level %d", level)
 				}
 			})
 		})
@@ -1166,30 +1168,43 @@ var _ = Describe("rankedSet (skip-list)", func() {
 		It("round-trips zero", func() {
 			encoded := rsEncodeLong(0)
 			Expect(encoded).To(HaveLen(8))
-			Expect(rsDecodeLong(encoded)).To(Equal(int64(0)))
+			val, err := rsDecodeLong(encoded)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
 		})
 
 		It("round-trips positive values", func() {
 			for _, v := range []int64{1, 127, 128, 255, 256, 65535, 1<<31 - 1, 1<<63 - 1} {
 				encoded := rsEncodeLong(v)
-				Expect(rsDecodeLong(encoded)).To(Equal(v), "round-trip of %d", v)
+				val, err := rsDecodeLong(encoded)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal(v), "round-trip of %d", v)
 			}
 		})
 
 		It("round-trips negative values", func() {
 			for _, v := range []int64{-1, -128, -256, -1 << 31, -1 << 63} {
 				encoded := rsEncodeLong(v)
-				Expect(rsDecodeLong(encoded)).To(Equal(v), "round-trip of %d", v)
+				val, err := rsDecodeLong(encoded)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(Equal(v), "round-trip of %d", v)
 			}
 		})
 
 		It("returns 0 for nil input", func() {
-			Expect(rsDecodeLong(nil)).To(Equal(int64(0)))
+			val, err := rsDecodeLong(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(0)))
 		})
 
-		It("returns 0 for short input", func() {
-			Expect(rsDecodeLong([]byte{1})).To(Equal(int64(0)))
-			Expect(rsDecodeLong([]byte{1, 2, 3, 4, 5, 6, 7})).To(Equal(int64(0)))
+		It("returns error for short non-nil input", func() {
+			_, err := rsDecodeLong([]byte{1})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("corrupted count value"))
+
+			_, err = rsDecodeLong([]byte{1, 2, 3, 4, 5, 6, 7})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("expected 8 bytes, got 7"))
 		})
 
 		It("is little-endian (matches Java encodeLong)", func() {

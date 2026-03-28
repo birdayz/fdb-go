@@ -181,7 +181,10 @@ func (rs *rankedSet) addInsertLevelKey(tx fdb.Transaction, key []byte, level int
 	if err != nil {
 		return err
 	}
-	prevCount := rsDecodeLong(prevCountBytes)
+	prevCount, err := rsDecodeLong(prevCountBytes)
+	if err != nil {
+		return err
+	}
 
 	newPrevCount, err := rs.countRange(tx, level-1, prevKey, key)
 	if err != nil {
@@ -245,7 +248,11 @@ func (rs *rankedSet) Remove(tx fdb.Transaction, key []byte) (bool, error) {
 				var countChange int64 = -1
 				if existing != nil {
 					// Give back this entry's extra count to the predecessor.
-					countChange += rsDecodeLong(existing)
+					existingCount, err := rsDecodeLong(existing)
+					if err != nil {
+						return false, err
+					}
+					countChange += existingCount
 					tx.Clear(k)
 				}
 				tx.Add(fdb.Key(rs.subspace.Pack(tuple.Tuple{int64(level), prevKey})), rsEncodeLong(countChange))
@@ -306,7 +313,10 @@ func (rs *rankedSet) Rank(tx fdb.ReadTransaction, key []byte, nullIfMissing bool
 			if !ok {
 				return nil, fmt.Errorf("ranked set: expected []byte key at level %d, got %T", level, t[0])
 			}
-			lastCount = rsDecodeLong(kv.Value)
+			lastCount, err = rsDecodeLong(kv.Value)
+			if err != nil {
+				return nil, err
+			}
 			rank += lastCount
 		}
 
@@ -364,7 +374,10 @@ func (rs *rankedSet) GetNth(tx fdb.ReadTransaction, rank int64) ([]byte, error) 
 				return key, nil // Found the element.
 			}
 
-			count := rsDecodeLong(kv.Value)
+			count, err := rsDecodeLong(kv.Value)
+			if err != nil {
+				return nil, err
+			}
 			if count > rank {
 				drillDown = true
 				break // Drill down to finer level.
@@ -431,7 +444,11 @@ func (rs *rankedSet) Size(tx fdb.ReadTransaction) (int64, error) {
 
 	var total int64
 	for _, kv := range kvs {
-		total += rsDecodeLong(kv.Value)
+		c, err := rsDecodeLong(kv.Value)
+		if err != nil {
+			return 0, err
+		}
+		total += c
 	}
 	return total, nil
 }
@@ -455,7 +472,10 @@ func (rs *rankedSet) countCheckedKey(tx fdb.ReadTransaction, key []byte) (*int64
 	if v == nil {
 		return nil, nil
 	}
-	count := rsDecodeLong(v)
+	count, err := rsDecodeLong(v)
+	if err != nil {
+		return nil, err
+	}
 	return &count, nil
 }
 
@@ -544,7 +564,11 @@ func (rs *rankedSet) countRange(tx fdb.ReadTransaction, level int, beginKey, end
 
 	var sum int64
 	for _, kv := range kvs {
-		sum += rsDecodeLong(kv.Value)
+		c, err := rsDecodeLong(kv.Value)
+		if err != nil {
+			return 0, err
+		}
+		sum += c
 	}
 	return sum, nil
 }
@@ -564,11 +588,14 @@ func rsEncodeLong(count int64) []byte {
 }
 
 // rsDecodeLong decodes 8-byte little-endian to int64.
-// Returns 0 for nil or short slices (defensive: missing key = zero count).
-// Matches Java's rankedSet.decodeLong().
-func rsDecodeLong(v []byte) int64 {
-	if len(v) < 8 {
-		return 0
+// Returns 0 for nil (missing FDB key = zero count).
+// Returns an error for non-nil values shorter than 8 bytes (data corruption).
+func rsDecodeLong(v []byte) (int64, error) {
+	if v == nil {
+		return 0, nil
 	}
-	return int64(binary.LittleEndian.Uint64(v))
+	if len(v) < 8 {
+		return 0, fmt.Errorf("ranked set: corrupted count value: expected 8 bytes, got %d", len(v))
+	}
+	return int64(binary.LittleEndian.Uint64(v)), nil
 }

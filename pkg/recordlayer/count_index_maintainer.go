@@ -184,7 +184,9 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 	} else {
 		// COUNT/SUM/LONG variants: decode value as little-endian int64
 		count := int64(0)
-		if len(kv.Value) >= 8 {
+		if len(kv.Value) > 0 && len(kv.Value) < 8 {
+			return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index %q: corrupted value: expected 8 bytes, got %d", c.index.Name, len(kv.Value))
+		} else if len(kv.Value) >= 8 {
 			count = int64(binary.LittleEndian.Uint64(kv.Value))
 		}
 		valueTuple = tuple.Tuple{count}
