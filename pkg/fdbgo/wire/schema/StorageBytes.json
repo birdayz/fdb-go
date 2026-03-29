@@ -1,0 +1,52 @@
+{
+  "name": "StorageBytes",
+  "file_identifier": 3928581,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/FDBTypes.h",
+  "vtable": [
+    12,
+    36,
+    4,
+    12,
+    20,
+    28
+  ],
+  "fields": [
+    {
+      "name": "free",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "total",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "used",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "available",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

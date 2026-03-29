@@ -1,0 +1,43 @@
+{
+  "name": "EventLogRequest",
+  "file_identifier": 122319,
+  "fdb_version": "7.3.75",
+  "reply_type": "TraceEventFields",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    10,
+    13,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "getLastError",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "eventName",
+      "cpp_type": "Standalone\u003cStringRef\u003e",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cTraceEventFields\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

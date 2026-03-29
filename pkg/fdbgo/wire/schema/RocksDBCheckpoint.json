@@ -1,0 +1,42 @@
+{
+  "name": "RocksDBCheckpoint",
+  "file_identifier": 13804347,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RocksDBCheckpointUtils.actor.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "checkpointDir",
+      "cpp_type": "std::string",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sstFiles",
+      "cpp_type": "std::vector\u003cstd::string\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "fetchedFiles",
+      "cpp_type": "std::vector\u003cCheckpointFile\u003e",
+      "type": "vector",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

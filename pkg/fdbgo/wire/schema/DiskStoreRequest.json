@@ -1,0 +1,32 @@
+{
+  "name": "DiskStoreRequest",
+  "file_identifier": 1986262,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    8,
+    9,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "includePartialStores",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cStandalone\u003cVectorRef\u003cUID\u003e\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

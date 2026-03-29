@@ -1,0 +1,42 @@
+{
+  "name": "StorageQueuingMetricsReply",
+  "file_identifier": 7633366,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "tag",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "rate",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "fractionalBusyness",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

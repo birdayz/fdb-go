@@ -1,0 +1,22 @@
+{
+  "name": "StatusReply",
+  "file_identifier": 9980504,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/ClusterInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "statusStr",
+      "cpp_type": "std::string",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

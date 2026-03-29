@@ -1,0 +1,43 @@
+{
+  "name": "GetTenantIdRequest",
+  "file_identifier": 11299717,
+  "fdb_version": "7.3.75",
+  "reply_type": "GetTenantIdReply",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    10,
+    20,
+    12,
+    16,
+    4
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGetTenantIdReply\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tenantName",
+      "cpp_type": "TenantName",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "minTenantVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

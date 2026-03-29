@@ -1,0 +1,22 @@
+{
+  "name": "GranuleSnapshot",
+  "file_identifier": 1300395,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/BlobGranuleCommon.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "((VectorRef\u003cKeyValueRef\u003e\u0026",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

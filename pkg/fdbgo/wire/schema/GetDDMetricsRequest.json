@@ -1,0 +1,42 @@
+{
+  "name": "GetDDMetricsRequest",
+  "file_identifier": 14536812,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "keys",
+      "cpp_type": "KeyRange",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "shardLimit",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct GetDDMetricsReply\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

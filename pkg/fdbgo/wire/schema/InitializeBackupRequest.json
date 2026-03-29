@@ -1,0 +1,93 @@
+{
+  "name": "InitializeBackupRequest",
+  "file_identifier": 1245415,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    22,
+    49,
+    28,
+    4,
+    12,
+    32,
+    36,
+    20,
+    48,
+    40,
+    44
+  ],
+  "fields": [
+    {
+      "name": "reqId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recruitedEpoch",
+      "cpp_type": "LogEpoch",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "backupEpoch",
+      "cpp_type": "LogEpoch",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "routerTag",
+      "cpp_type": "Tag",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "totalTags",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "startVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "endVersion",
+      "cpp_type": "Optional\u003cVersion\u003e",
+      "type": "optional",
+      "vtable_slot": 6,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct InitializeBackupReply\u003e",
+      "type": "struct",
+      "vtable_slot": 8,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

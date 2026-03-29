@@ -1,0 +1,22 @@
+{
+  "name": "ProtocolInfoReply",
+  "file_identifier": 7784298,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CoordinationInterface.h",
+  "vtable": [
+    6,
+    12,
+    4
+  ],
+  "fields": [
+    {
+      "name": "version_",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

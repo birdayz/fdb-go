@@ -1,0 +1,32 @@
+{
+  "name": "GranuleStatusStreamRequest",
+  "file_identifier": 2289677,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/BlobWorkerInterface.h",
+  "vtable": [
+    8,
+    16,
+    4,
+    12
+  ],
+  "fields": [
+    {
+      "name": "managerEpoch",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromiseStream\u003cGranuleStatusReply\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

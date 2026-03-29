@@ -1,0 +1,42 @@
+{
+  "name": "TenantMapEntryTxnStateStore",
+  "file_identifier": 11267001,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/Tenant.h",
+  "vtable": [
+    10,
+    20,
+    4,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "tenantLockState",
+      "cpp_type": "TenantAPI::TenantLockState",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tenantName",
+      "cpp_type": "TenantName",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

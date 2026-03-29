@@ -1,0 +1,42 @@
+{
+  "name": "ExpireIdempotencyIdRequest",
+  "file_identifier": 1900933,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    10,
+    17,
+    4,
+    16,
+    12
+  ],
+  "fields": [
+    {
+      "name": "commitVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "batchIndexHighByte",
+      "cpp_type": "uint8_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "tenant",
+      "cpp_type": "TenantInfo",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

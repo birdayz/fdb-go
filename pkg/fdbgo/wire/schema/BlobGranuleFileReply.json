@@ -1,0 +1,32 @@
+{
+  "name": "BlobGranuleFileReply",
+  "file_identifier": 6858612,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/BlobWorkerInterface.h",
+  "vtable": [
+    8,
+    8,
+    4,
+    0
+  ],
+  "fields": [
+    {
+      "name": "chunks",
+      "cpp_type": "VectorRef\u003cBlobGranuleChunkRef\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

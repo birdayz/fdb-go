@@ -1,0 +1,63 @@
+{
+  "name": "ProfilerRequest",
+  "file_identifier": 15437862,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbclient/include/fdbclient/ClientWorkerInterface.h",
+  "vtable": [
+    14,
+    24,
+    4,
+    8,
+    12,
+    16,
+    20
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "type",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "action",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "duration",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "outputFile",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

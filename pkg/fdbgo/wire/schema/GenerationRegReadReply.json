@@ -1,0 +1,43 @@
+{
+  "name": "GenerationRegReadReply",
+  "file_identifier": 12623609,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/CoordinationInterface.h",
+  "vtable": [
+    12,
+    17,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "value",
+      "cpp_type": "Optional\u003cValue\u003e",
+      "type": "optional",
+      "vtable_slot": 0,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "gen",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "rgen",
+      "cpp_type": "UniqueGeneration gen,",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

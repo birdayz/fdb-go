@@ -1,0 +1,42 @@
+{
+  "name": "BlobGranuleCipherKeysCtx",
+  "file_identifier": 1278718,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/BlobGranuleCommon.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "textCipherKey",
+      "cpp_type": "BlobGranuleCipherKey",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "headerCipherKey",
+      "cpp_type": "BlobGranuleCipherKey",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "ivRef",
+      "cpp_type": "StringRef",
+      "type": "bytes",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

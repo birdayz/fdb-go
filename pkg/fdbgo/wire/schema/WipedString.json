@@ -1,0 +1,32 @@
+{
+  "name": "WipedString",
+  "file_identifier": 6228563,
+  "fdb_version": "7.3.75",
+  "source_file": "flow/include/flow/WipedString.h",
+  "vtable": [
+    8,
+    8,
+    4,
+    0
+  ],
+  "fields": [
+    {
+      "name": "ws",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

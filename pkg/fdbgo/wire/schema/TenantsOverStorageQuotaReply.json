@@ -1,0 +1,22 @@
+{
+  "name": "TenantsOverStorageQuotaReply",
+  "file_identifier": 5952266,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/DataDistributorInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "tenants",
+      "cpp_type": "std::unordered_set\u003cint64_t\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "StorageWiggleValue",
+  "file_identifier": 732124,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/FDBTypes.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

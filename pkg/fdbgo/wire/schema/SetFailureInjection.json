@@ -1,0 +1,83 @@
+{
+  "name": "SetFailureInjection",
+  "file_identifier": 15439864,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbclient/include/fdbclient/ClientWorkerInterface.h",
+  "vtable": [
+    18,
+    32,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    28
+  ],
+  "fields": [
+    {
+      "name": "stallInterval",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "stallPeriod",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "throttlePeriod",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "percentBitFlips",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "diskFailure",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "flipBits",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

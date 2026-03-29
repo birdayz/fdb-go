@@ -1,0 +1,22 @@
+{
+  "name": "FlowProcessRegistrationRequest",
+  "file_identifier": 3411838,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbrpc/include/fdbrpc/FlowProcess.actor.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "flowProcessInterface",
+      "cpp_type": "Standalone\u003cStringRef\u003e",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

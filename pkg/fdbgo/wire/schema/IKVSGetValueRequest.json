@@ -1,0 +1,43 @@
+{
+  "name": "IKVSGetValueRequest",
+  "file_identifier": 1029439,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RemoteIKeyValueStore.actor.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    16,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "key",
+      "cpp_type": "KeyRef",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "options",
+      "cpp_type": "Optional\u003cReadOptions\u003e",
+      "type": "optional",
+      "vtable_slot": 1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cOptional\u003cValue\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

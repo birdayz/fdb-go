@@ -1,0 +1,43 @@
+{
+  "name": "ForwardRequest",
+  "file_identifier": 13570359,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbserver/include/fdbserver/CoordinationInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "key",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "conn",
+      "cpp_type": "Value",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

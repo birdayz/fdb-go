@@ -1,0 +1,43 @@
+{
+  "name": "MoveShardRequest",
+  "file_identifier": 2799592,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbclient/include/fdbclient/ClusterInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "shard",
+      "cpp_type": ":",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "addresses",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

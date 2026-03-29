@@ -1,0 +1,22 @@
+{
+  "name": "BlobManagerExclusionSafetyCheckReply",
+  "file_identifier": 8068627,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/BlobManagerInterface.h",
+  "vtable": [
+    6,
+    5,
+    4
+  ],
+  "fields": [
+    {
+      "name": "safe",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    }
+  ]
+}

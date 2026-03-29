@@ -14,8 +14,10 @@ go_library(
 go_test(
     name = "wire_test",
     srcs = [
+        "conformance_test.go",
         "vtable_test.go",
         "writer_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":wire"],
 )

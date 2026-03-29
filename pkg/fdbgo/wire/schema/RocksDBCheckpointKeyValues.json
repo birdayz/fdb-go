@@ -1,0 +1,32 @@
+{
+  "name": "RocksDBCheckpointKeyValues",
+  "file_identifier": 13804349,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RocksDBCheckpointUtils.actor.h",
+  "vtable": [
+    8,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "fetchedFiles",
+      "cpp_type": "std::vector\u003cCheckpointFile\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "ranges",
+      "cpp_type": "std::vector\u003cKeyRange\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

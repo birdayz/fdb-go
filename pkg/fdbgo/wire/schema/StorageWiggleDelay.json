@@ -1,0 +1,22 @@
+{
+  "name": "StorageWiggleDelay",
+  "file_identifier": 102937,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageWiggleMetrics.actor.h",
+  "vtable": [
+    6,
+    12,
+    4
+  ],
+  "fields": [
+    {
+      "name": "delaySeconds",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

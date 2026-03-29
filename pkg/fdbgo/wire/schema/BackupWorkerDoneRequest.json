@@ -1,0 +1,43 @@
+{
+  "name": "BackupWorkerDoneRequest",
+  "file_identifier": 8736351,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    10,
+    20,
+    12,
+    4,
+    16
+  ],
+  "fields": [
+    {
+      "name": "workerUID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "backupEpoch",
+      "cpp_type": "LogEpoch",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "EKPGetBaseCipherKeysRequestInfo",
+  "file_identifier": 2180516,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/EncryptKeyProxyInterface.h",
+  "vtable": [
+    8,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "domainId",
+      "cpp_type": "EncryptCipherDomainId",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "baseCipherId",
+      "cpp_type": "EncryptCipherBaseKeyId",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

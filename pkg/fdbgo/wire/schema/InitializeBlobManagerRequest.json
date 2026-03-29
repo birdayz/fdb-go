@@ -1,0 +1,43 @@
+{
+  "name": "InitializeBlobManagerRequest",
+  "file_identifier": 2567474,
+  "fdb_version": "7.3.75",
+  "reply_type": "BlobManagerInterface",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    10,
+    20,
+    12,
+    4,
+    16
+  ],
+  "fields": [
+    {
+      "name": "reqId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "epoch",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cBlobManagerInterface\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

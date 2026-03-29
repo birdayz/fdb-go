@@ -1,0 +1,82 @@
+{
+  "name": "OpenKVStoreRequest",
+  "file_identifier": 5918682,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RemoteIKeyValueStore.actor.h",
+  "vtable": [
+    18,
+    30,
+    12,
+    16,
+    20,
+    4,
+    28,
+    29,
+    24
+  ],
+  "fields": [
+    {
+      "name": "storeType",
+      "cpp_type": "KeyValueStoreType",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "filename",
+      "cpp_type": "std::string",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "logID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "memoryLimit",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "checkChecksums",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "checkIntegrity",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct IKVSInterface\u003e",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

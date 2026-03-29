@@ -1,0 +1,23 @@
+{
+  "name": "CheckDescriptorMutableRequest",
+  "file_identifier": 214729,
+  "fdb_version": "7.3.75",
+  "reply_type": "CheckDescriptorMutableReply",
+  "source_file": "fdbclient/include/fdbclient/CoordinationInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cCheckDescriptorMutableReply\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

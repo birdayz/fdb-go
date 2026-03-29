@@ -1,0 +1,52 @@
+{
+  "name": "GetKeyReply",
+  "file_identifier": 11226513,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "penalty",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "error",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sel",
+      "cpp_type": "KeySelector",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "cached",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    }
+  ]
+}

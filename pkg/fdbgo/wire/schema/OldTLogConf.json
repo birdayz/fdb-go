@@ -1,0 +1,92 @@
+{
+  "name": "OldTLogConf",
+  "file_identifier": 16233772,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/LogSystemConfig.h",
+  "vtable": [
+    20,
+    44,
+    20,
+    24,
+    28,
+    32,
+    36,
+    40,
+    4,
+    12
+  ],
+  "fields": [
+    {
+      "name": "tLogs",
+      "cpp_type": "std::vector\u003cTLogSet\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "epochBegin",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "epochEnd",
+      "cpp_type": "Version epochBegin,",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "logRouterTags",
+      "cpp_type": "int32_t",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "pseudoLocalities",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "txsTags",
+      "cpp_type": "int32_t",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "epoch",
+      "cpp_type": "LogEpoch",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "recoverAt",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 7,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

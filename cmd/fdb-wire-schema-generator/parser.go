@@ -1,10 +1,10 @@
 // parser.go — Parses FDB C++ headers to extract all protocol message definitions.
 //
 // Finds structs with file_identifier, extracts serializer() argument lists,
-// maps field types to wire sizes/alignments, computes vtables via GenerateVTable.
+// maps field types to wire sizes/alignments, computes vtables.
 //
-// This replaces the C++ stub-based extractor with a fully automated Go parser
-// that reads the FDB source directly. Covers all 322 protocol message types.
+// Outputs one JSON file per message into an output directory.
+// Also outputs test vectors from a C++ binary (if provided via -test-vectors flag).
 
 package main
 
@@ -21,25 +21,21 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-// WireSchema is the top-level output.
-type WireSchema struct {
-	FDBVersion string       `json:"fdb_version"`
-	Messages   []MessageDef `json:"messages"`
-}
-
-// MessageDef describes one protocol message.
+// MessageDef describes one protocol message — written as one JSON file.
 type MessageDef struct {
 	Name           string     `json:"name"`
 	FileIdentifier uint32     `json:"file_identifier"`
+	FDBVersion     string     `json:"fdb_version"`
 	ReplyType      string     `json:"reply_type,omitempty"`
+	SourceFile     string     `json:"source_file"`
 	VTable         []uint16   `json:"vtable"`
 	Fields         []FieldDef `json:"fields"`
-	SourceFile     string     `json:"source_file"`
 }
 
 // FieldDef describes one field in a message's serializer() call.
 type FieldDef struct {
 	Name          string `json:"name"`
+	CppType       string `json:"cpp_type"`
 	Type          string `json:"type"`
 	VTableSlot    int    `json:"vtable_slot"`
 	WireSize      uint32 `json:"wire_size"`
@@ -107,53 +103,30 @@ var knownTypes = map[string]typeInfo{
 func resolveType(cppType string) typeInfo {
 	cppType = strings.TrimSpace(cppType)
 
-	// Strip Standalone<T> wrapper — same serialization as T.
 	if strings.HasPrefix(cppType, "Standalone<") {
 		inner := cppType[len("Standalone<") : len(cppType)-1]
 		return resolveType(inner)
 	}
-
-	// Optional<T> → union_like: 2 vtable slots (uint8_t + uint32_t).
-	// Returns a sentinel — caller handles expansion.
 	if strings.HasPrefix(cppType, "Optional<") {
 		return typeInfo{category: "optional", size: 0, align: 0}
 	}
-
-	// VectorRef<T>, std::vector<T> → vector_like → RelativeOffset.
 	if strings.HasPrefix(cppType, "VectorRef<") ||
 		strings.HasPrefix(cppType, "std::vector<") ||
-		strings.HasPrefix(cppType, "vector<") {
+		strings.HasPrefix(cppType, "vector<") ||
+		strings.HasPrefix(cppType, "std::deque<") {
 		return typeInfo{category: "vector", size: 4, align: 4}
 	}
-
-	// std::deque<T> → vector_like → RelativeOffset.
-	if strings.HasPrefix(cppType, "std::deque<") {
-		return typeInfo{category: "vector", size: 4, align: 4}
-	}
-
-	// std::map, std::unordered_map, TransactionTagMap → vector_like → RelativeOffset.
 	if strings.HasPrefix(cppType, "std::map<") ||
 		strings.HasPrefix(cppType, "std::unordered_map<") ||
 		strings.HasPrefix(cppType, "TransactionTagMap<") ||
 		strings.HasPrefix(cppType, "UIDTransactionTagMap<") ||
-		strings.HasPrefix(cppType, "boost::container::flat_map<") {
+		strings.HasPrefix(cppType, "boost::container::flat_map<") ||
+		strings.HasPrefix(cppType, "std::set<") {
 		return typeInfo{category: "vector", size: 4, align: 4}
 	}
-
-	// std::set → vector_like.
-	if strings.HasPrefix(cppType, "std::set<") {
-		return typeInfo{category: "vector", size: 4, align: 4}
-	}
-
-	// std::pair<A,B> → struct_like, inline.
 	if strings.HasPrefix(cppType, "std::pair<") {
-		// Pairs are struct_like with inline fields. Size depends on contents.
-		// For vtable purposes, this is complex. Treat as struct (RelativeOffset).
 		return typeInfo{category: "struct", size: 4, align: 4}
 	}
-
-	// ReplyPromise<T>, PublicRequestStream<T>, RequestStream<T>,
-	// ReplyPromiseStream<T> → has serialize() → RelativeOffset.
 	if strings.HasPrefix(cppType, "ReplyPromise<") ||
 		strings.HasPrefix(cppType, "PublicRequestStream<") ||
 		strings.HasPrefix(cppType, "RequestStream<") ||
@@ -161,27 +134,21 @@ func resolveType(cppType string) typeInfo {
 		strings.HasPrefix(cppType, "CachedSerialization<") {
 		return typeInfo{category: "struct", size: 4, align: 4}
 	}
-
-	// std::variant<Ts...> → union_like.
 	if strings.HasPrefix(cppType, "std::variant<") {
 		return typeInfo{category: "optional", size: 0, align: 0}
 	}
-
-	// Check known types table.
 	if ti, ok := knownTypes[cppType]; ok {
 		return ti
 	}
-
-	// Default: assume it's a struct with serialize() → expect_serialize_member → RelativeOffset.
 	return typeInfo{category: "struct", size: 4, align: 4}
 }
 
-// parseStruct extracts a protocol message definition from a source file.
+// parsedStruct holds raw extraction from C++ header.
 type parsedStruct struct {
 	name           string
 	fileIdentifier uint32
-	serializerArgs []string // args from serializer(ar, ...)
-	replyType      string   // from ReplyPromise<T> field
+	serializerArgs []string
+	replyType      string
 	sourceFile     string
 	baseClasses    []string
 }
@@ -193,16 +160,14 @@ var (
 	reReplyField = regexp.MustCompile(`ReplyPromise<(\w+)>`)
 )
 
-// parseHeaders scans all .h files under srcDir for protocol message structs.
 func parseHeaders(srcDir string) ([]parsedStruct, error) {
 	var results []parsedStruct
 
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip errors
+			return nil
 		}
 		if info.IsDir() {
-			// Skip non-source directories.
 			base := info.Name()
 			if base == ".git" || base == "build" || base == "contrib" || base == "bindings" ||
 				base == "documentation" || base == "packaging" || base == "tests" ||
@@ -215,10 +180,9 @@ func parseHeaders(srcDir string) ([]parsedStruct, error) {
 		if ext != ".h" && !strings.HasSuffix(path, ".actor.h") {
 			return nil
 		}
-
 		structs, parseErr := parseFile(path, srcDir)
 		if parseErr != nil {
-			return nil // skip unparseable files
+			return nil
 		}
 		results = append(results, structs...)
 		return nil
@@ -227,7 +191,6 @@ func parseHeaders(srcDir string) ([]parsedStruct, error) {
 	return results, err
 }
 
-// parseFile extracts all protocol message structs from a single .h file.
 func parseFile(path, srcDir string) ([]parsedStruct, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -239,16 +202,14 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 
 	var results []parsedStruct
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
 
-	// Find structs with file_identifier.
 	for i := 0; i < len(lines); i++ {
-		// Look for struct/class declaration.
 		m := reStructDecl.FindStringSubmatch(lines[i])
 		if m == nil {
 			continue
@@ -256,7 +217,6 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 		structName := m[1]
 		baseClassStr := strings.TrimSpace(m[2])
 
-		// Scan ahead for file_identifier and serializer within this struct.
 		var fileID uint32
 		var serArgs []string
 		var replyType string
@@ -265,27 +225,19 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 
 		for j := i; j < len(lines); j++ {
 			line := lines[j]
-
-			// Track brace depth.
 			braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
 			if braceDepth <= 0 && j > i {
-				break // end of struct
+				break
 			}
-
-			// file_identifier
 			if fm := reFileID.FindStringSubmatch(line); fm != nil {
 				id, _ := strconv.ParseUint(fm[1], 10, 32)
 				fileID = uint32(id)
 				foundFileID = true
 			}
-
-			// serializer(ar, ...)
 			if sm := reSerializer.FindStringSubmatch(line); sm != nil {
 				args := parseSerializerArgs(sm[1])
 				serArgs = append(serArgs, args...)
 			}
-
-			// ReplyPromise<T> field → extract reply type.
 			if rm := reReplyField.FindStringSubmatch(line); rm != nil {
 				replyType = rm[1]
 			}
@@ -303,7 +255,6 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 					}
 				}
 			}
-
 			results = append(results, parsedStruct{
 				name:           structName,
 				fileIdentifier: fileID,
@@ -318,7 +269,6 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 	return results, nil
 }
 
-// parseSerializerArgs splits "field1, field2, field3" handling nested templates.
 func parseSerializerArgs(argsStr string) []string {
 	var args []string
 	depth := 0
@@ -346,29 +296,25 @@ func parseSerializerArgs(argsStr string) []string {
 	return args
 }
 
-// buildMessageDef builds a MessageDef from a parsedStruct by resolving
-// field types and computing the vtable.
-func buildMessageDef(ps parsedStruct, fieldTypes map[string]string) MessageDef {
+func buildMessageDef(ps parsedStruct, fieldTypes map[string]string, fdbVersion string) MessageDef {
 	md := MessageDef{
 		Name:           ps.name,
 		FileIdentifier: ps.fileIdentifier,
+		FDBVersion:     fdbVersion,
 		ReplyType:      ps.replyType,
 		SourceFile:     ps.sourceFile,
 	}
 
-	// Resolve each serializer arg to a wire type.
 	var sizes, aligns []uint32
 	var fields []FieldDef
 	slot := 0
 
 	for _, arg := range ps.serializerArgs {
-		// Strip "BaseClass::" prefix (e.g. "LoadBalancedReply::penalty").
 		argName := arg
 		if idx := strings.LastIndex(arg, "::"); idx >= 0 {
 			argName = arg[idx+2:]
 		}
 
-		// Look up the type from the field map.
 		cppType := fieldTypes[argName]
 		if cppType == "" {
 			cppType = "unknown"
@@ -377,21 +323,21 @@ func buildMessageDef(ps parsedStruct, fieldTypes map[string]string) MessageDef {
 		ti := resolveType(cppType)
 
 		if ti.category == "optional" {
-			// Optional/variant expands to 2 vtable slots: uint8 + uint32.
 			sizes = append(sizes, 1, 4)
 			aligns = append(aligns, 1, 4)
 			fields = append(fields, FieldDef{
 				Name:       argName,
+				CppType:    cppType,
 				Type:       "optional",
 				VTableSlot: slot,
 			})
 			slot += 2
 		} else if ti.size == 0 && ti.category == "arena" {
-			// Zero-size field, no vtable slot.
 			sizes = append(sizes, 0)
 			aligns = append(aligns, 0)
 			fields = append(fields, FieldDef{
 				Name:       argName,
+				CppType:    cppType,
 				Type:       "arena",
 				VTableSlot: -1,
 			})
@@ -400,6 +346,7 @@ func buildMessageDef(ps parsedStruct, fieldTypes map[string]string) MessageDef {
 			aligns = append(aligns, ti.align)
 			fields = append(fields, FieldDef{
 				Name:          argName,
+				CppType:       cppType,
 				Type:          ti.category,
 				VTableSlot:    slot,
 				WireSize:      ti.size,
@@ -415,8 +362,6 @@ func buildMessageDef(ps parsedStruct, fieldTypes map[string]string) MessageDef {
 	return md
 }
 
-// extractFieldTypes extracts field name → type mappings from the struct body.
-// This is a heuristic parser — handles common patterns.
 func extractFieldTypes(path string) map[string]map[string]string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -449,11 +394,9 @@ func extractFieldTypes(path string) map[string]map[string]string {
 		braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
 
 		if currentStruct != "" && braceDepth > 0 {
-			// Try to extract field declarations.
 			if m := reField.FindStringSubmatch(line); m != nil {
 				fieldType := strings.TrimSpace(m[1])
 				fieldName := m[2]
-				// Skip keywords, methods, etc.
 				if isValidFieldType(fieldType) {
 					result[currentStruct][fieldName] = fieldType
 				}
@@ -469,7 +412,6 @@ func extractFieldTypes(path string) map[string]map[string]string {
 }
 
 func isValidFieldType(t string) bool {
-	// Skip common non-type prefixes.
 	skip := []string{"template", "void", "static", "constexpr", "explicit",
 		"friend", "using", "typedef", "return", "if", "for", "while",
 		"auto", "const", "virtual", "inline"}
@@ -482,11 +424,14 @@ func isValidFieldType(t string) bool {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <fdb-source-dir>\n", os.Args[0])
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: %s <fdb-source-dir> <output-dir>\n", os.Args[0])
 		os.Exit(1)
 	}
 	srcDir := os.Args[1]
+	outDir := os.Args[2]
+
+	const fdbVersion = "7.3.75"
 
 	// Parse all headers.
 	structs, err := parseHeaders(srcDir)
@@ -495,8 +440,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build field type maps for all files that contain protocol messages.
-	fileFieldTypes := make(map[string]map[string]map[string]string) // file → struct → field → type
+	// Build field type maps.
+	fileFieldTypes := make(map[string]map[string]map[string]string)
 	seenFiles := make(map[string]bool)
 	for _, s := range structs {
 		fullPath := filepath.Join(srcDir, s.sourceFile)
@@ -507,23 +452,23 @@ func main() {
 		}
 	}
 
-	// Build message definitions.
-	schema := WireSchema{
-		FDBVersion: "7.3.75",
+	// Create output directory.
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output dir: %v\n", err)
+		os.Exit(1)
 	}
 
+	// Write one JSON file per message.
 	for _, s := range structs {
 		fullPath := filepath.Join(srcDir, s.sourceFile)
 		fieldTypes := make(map[string]string)
 
-		// Merge field types from the struct itself and its base classes.
 		if ft, ok := fileFieldTypes[fullPath]; ok {
 			if m, ok := ft[s.name]; ok {
 				for k, v := range m {
 					fieldTypes[k] = v
 				}
 			}
-			// Also check base classes.
 			for _, base := range s.baseClasses {
 				if m, ok := ft[base]; ok {
 					for k, v := range m {
@@ -533,14 +478,21 @@ func main() {
 			}
 		}
 
-		md := buildMessageDef(s, fieldTypes)
-		schema.Messages = append(schema.Messages, md)
+		md := buildMessageDef(s, fieldTypes, fdbVersion)
+
+		data, err := json.MarshalIndent(md, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error marshaling %s: %v\n", s.name, err)
+			continue
+		}
+		data = append(data, '\n')
+
+		outPath := filepath.Join(outDir, s.name+".json")
+		if err := os.WriteFile(outPath, data, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outPath, err)
+			continue
+		}
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(schema); err != nil {
-		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
-		os.Exit(1)
-	}
+	fmt.Fprintf(os.Stderr, "Wrote %d message schemas to %s\n", len(structs), outDir)
 }

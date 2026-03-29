@@ -1,27 +1,26 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load(":generate.bzl", "generate_wire_data")
 
-# Go-based protocol message parser.
-# Reads FDB C++ headers directly, extracts all structs with file_identifier,
-# parses serializer() argument lists, computes vtables, outputs wire_schema.json.
+# Go parser — reads FDB C++ headers, outputs one schema JSON per message.
 go_binary(
-    name = "fdb-wire-schema-generator",
+    name = "schema-generator",
     embed = [":fdb-wire-schema-generator_lib"],
     visibility = ["//visibility:public"],
 )
 
-genrule(
-    name = "wire_schema",
-    srcs = ["@foundationdb//:all_srcs"],
-    outs = ["wire_schema.json"],
-    cmd = "$(location :fdb-wire-schema-generator) $$(dirname $$(echo $(locations @foundationdb//:all_srcs) | tr ' ' '\\n' | grep -m1 'flow/flat_buffers.cpp'))/.. > $@",
-    tools = [":fdb-wire-schema-generator"],
-    visibility = ["//visibility:public"],
+go_library(
+    name = "fdb-wire-schema-generator_lib",
+    srcs = ["parser.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-wire-schema-generator",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/fdbgo/wire"],
 )
 
-# C++ test vector generator (kept for conformance testing).
+# C++ test vector generator — uses FDB's actual flat_buffers.h templates
+# to produce ground-truth serialized bytes. One JSON per test case.
 cc_binary(
-    name = "gen_test_vectors",
+    name = "testvec-generator",
     srcs = [
         "fdb_stubs.h",
         "flat_buffers_minimal.cpp",
@@ -39,10 +38,13 @@ cc_binary(
     ],
 )
 
-go_library(
-    name = "fdb-wire-schema-generator_lib",
-    srcs = ["parser.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-wire-schema-generator",
-    visibility = ["//visibility:private"],
-    deps = ["//pkg/fdbgo/wire"],
+# Produces two directory outputs:
+#   schema/   — one JSON per FDB protocol message (331 files)
+#   testdata/ — one JSON per conformance test case (12 files)
+generate_wire_data(
+    name = "generate_all",
+    fdb_srcs = "@foundationdb//:all_srcs",
+    schema_generator = ":schema-generator",
+    testvec_generator = ":testvec-generator",
+    visibility = ["//visibility:public"],
 )

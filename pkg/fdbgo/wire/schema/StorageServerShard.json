@@ -1,0 +1,73 @@
+{
+  "name": "StorageServerShard",
+  "file_identifier": 4028358,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerShard.h",
+  "vtable": [
+    18,
+    38,
+    28,
+    4,
+    12,
+    20,
+    36,
+    37,
+    32
+  ],
+  "fields": [
+    {
+      "name": "range",
+      "cpp_type": "KeyRange",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "id",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "desiredId",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "shardState",
+      "cpp_type": "int8_t",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "moveInShardId",
+      "cpp_type": "Optional\u003cUID\u003e",
+      "type": "optional",
+      "vtable_slot": 5,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

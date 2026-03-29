@@ -1,0 +1,62 @@
+{
+  "name": "BlobGranuleSummaryRef",
+  "file_identifier": 9774587,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/BlobGranuleCommon.h",
+  "vtable": [
+    14,
+    40,
+    36,
+    4,
+    12,
+    20,
+    28
+  ],
+  "fields": [
+    {
+      "name": "keyRange",
+      "cpp_type": "KeyRangeRef",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "snapshotVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "snapshotSize",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "deltaVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "deltaSize",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

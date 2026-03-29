@@ -1,0 +1,42 @@
+{
+  "name": "GenerationRegReadRequest",
+  "file_identifier": 8975311,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/CoordinationInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "key",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "gen",
+      "cpp_type": "UniqueGeneration",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct GenerationRegReadReply\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

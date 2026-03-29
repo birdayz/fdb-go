@@ -1,0 +1,105 @@
+{
+  "name": "GetKeyRequest",
+  "file_identifier": 10457870,
+  "fdb_version": "7.3.75",
+  "reply_type": "GetKeyReply",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    26,
+    42,
+    12,
+    4,
+    40,
+    16,
+    20,
+    24,
+    28,
+    41,
+    32,
+    36,
+    0
+  ],
+  "fields": [
+    {
+      "name": "sel",
+      "cpp_type": "KeySelectorRef",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "tags",
+      "cpp_type": "Optional\u003cTagSet\u003e",
+      "type": "optional",
+      "vtable_slot": 2,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGetKeyReply\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "spanContext",
+      "cpp_type": "SpanContext",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tenantInfo",
+      "cpp_type": "TenantInfo",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "options",
+      "cpp_type": "Optional\u003cReadOptions\u003e",
+      "type": "optional",
+      "vtable_slot": 7,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "ssLatestCommitVersions",
+      "cpp_type": "VersionVector",
+      "type": "bytes",
+      "vtable_slot": 9,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

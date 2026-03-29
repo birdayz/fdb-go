@@ -1,0 +1,145 @@
+{
+  "name": "StorageServerInterface",
+  "file_identifier": 15302073,
+  "fdb_version": "7.3.75",
+  "reply_type": "KeyValueStoreType",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    34,
+    55,
+    4,
+    8,
+    12,
+    52,
+    16,
+    53,
+    20,
+    24,
+    28,
+    54,
+    32,
+    36,
+    40,
+    44,
+    48
+  ],
+  "fields": [
+    {
+      "name": "uniqueID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "locality",
+      "cpp_type": "LocalityData",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getValue",
+      "cpp_type": "PublicRequestStream\u003cstruct GetValueRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tssPairID",
+      "cpp_type": "Optional\u003cUID\u003e",
+      "type": "optional",
+      "vtable_slot": 3,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "acceptingRequests",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "uniqueID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "locality",
+      "cpp_type": "LocalityData",
+      "type": "struct",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getValue",
+      "cpp_type": "PublicRequestStream\u003cstruct GetValueRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 8,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tssPairID",
+      "cpp_type": "Optional\u003cUID\u003e",
+      "type": "optional",
+      "vtable_slot": 9,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "uniqueID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 11,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "locality",
+      "cpp_type": "LocalityData",
+      "type": "struct",
+      "vtable_slot": 12,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getValue",
+      "cpp_type": "PublicRequestStream\u003cstruct GetValueRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 13,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "watchValue",
+      "cpp_type": "PublicRequestStream\u003cstruct WatchValueRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 14,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

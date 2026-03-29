@@ -1,0 +1,62 @@
+{
+  "name": "ElectionResultRequest",
+  "file_identifier": 11815465,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/CoordinationInterface.h",
+  "vtable": [
+    14,
+    24,
+    4,
+    8,
+    12,
+    16,
+    20
+  ],
+  "fields": [
+    {
+      "name": "key",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "coordinators",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "knownLeader",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cOptional\u003cLeaderInfo\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "hostnames",
+      "cpp_type": "std::vector\u003cHostname\u003e",
+      "type": "vector",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

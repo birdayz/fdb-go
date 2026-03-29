@@ -1,0 +1,52 @@
+{
+  "name": "FetchCheckpointKeyValuesStreamReply",
+  "file_identifier": 13804353,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    12,
+    16,
+    4,
+    8,
+    12,
+    0
+  ],
+  "fields": [
+    {
+      "name": "acknowledgeToken",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sequence",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "data",
+      "cpp_type": "VectorRef\u003cKeyValueRef\u003e",
+      "type": "vector",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "name": "LoadedPingRequest",
+  "file_identifier": 4590979,
+  "fdb_version": "7.3.75",
+  "reply_type": "LoadedReply",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    16,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "loadReply",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "payload",
+      "cpp_type": "Standalone\u003cStringRef\u003e",
+      "type": "bytes",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cLoadedReply\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

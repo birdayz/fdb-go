@@ -1,0 +1,32 @@
+{
+  "name": "LoadedReply",
+  "file_identifier": 9956350,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    8,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "payload",
+      "cpp_type": "Standalone\u003cStringRef\u003e",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

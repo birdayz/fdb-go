@@ -1,0 +1,22 @@
+{
+  "name": "KmsConnBlobMetadataRep",
+  "file_identifier": 2919714,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/KmsConnectorInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "metadataDetails",
+      "cpp_type": "Standalone\u003cVectorRef\u003cBlobMetadataDetailsRef\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

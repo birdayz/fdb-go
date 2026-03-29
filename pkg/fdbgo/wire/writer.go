@@ -3,6 +3,7 @@ package wire
 import (
 	"encoding/binary"
 	"math"
+	"sort"
 )
 
 // Writer builds FDB-format serialized messages matching the exact byte layout
@@ -190,6 +191,30 @@ func (s *vTableSet) offset(vt VTable) int {
 }
 
 func (s *vTableSet) pack() []byte {
+	// Sort entries by vtable content (descending by packed bytes) for
+	// deterministic output. FDB's C++ uses std::set<const VTable*> which
+	// sorts by pointer value — non-deterministic. We sort by content instead,
+	// descending so that larger vtables (message-specific) come before smaller
+	// ones (FakeRoot [6,8,4]). This matches the typical C++ layout.
+	sort.SliceStable(s.entries, func(i, j int) bool {
+		a, b := s.entries[i].vt, s.entries[j].vt
+		minLen := len(a)
+		if len(b) < minLen {
+			minLen = len(b)
+		}
+		for k := 0; k < minLen; k++ {
+			if a[k] != b[k] {
+				return a[k] > b[k] // descending
+			}
+		}
+		return len(a) > len(b)
+	})
+	// Recompute offsets after sorting.
+	s.total = 0
+	for i := range s.entries {
+		s.entries[i].offset = s.total
+		s.total += len(s.entries[i].vt) * 2
+	}
 	buf := make([]byte, s.total)
 	for _, e := range s.entries {
 		for i, v := range e.vt {

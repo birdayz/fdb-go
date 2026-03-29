@@ -1,0 +1,53 @@
+{
+  "name": "BlobMigratorInterface",
+  "file_identifier": 869199,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbserver/include/fdbserver/BlobMigratorInterface.h",
+  "vtable": [
+    12,
+    20,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "locality",
+      "cpp_type": "LocalityData",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "uniqueID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "haltBlobMigrator",
+      "cpp_type": "RequestStream\u003cstruct HaltBlobMigratorRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "waitFailure",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "name": "RatekeeperInterface",
+  "file_identifier": 5983305,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbserver/include/fdbserver/RatekeeperInterface.h",
+  "vtable": [
+    16,
+    28,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24
+  ],
+  "fields": [
+    {
+      "name": "waitFailure",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getRateInfo",
+      "cpp_type": "RequestStream\u003cstruct GetRateInfoRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "haltRatekeeper",
+      "cpp_type": "RequestStream\u003cstruct HaltRatekeeperRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reportCommitCostEstimation",
+      "cpp_type": "RequestStream\u003cstruct ReportCommitCostEstimationRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "locality",
+      "cpp_type": "struct LocalityData",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "myId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

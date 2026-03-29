@@ -1,0 +1,52 @@
+{
+  "name": "GetDataDistributorMetricsRequest",
+  "file_identifier": 1059267,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/DataDistributorInterface.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "keys",
+      "cpp_type": "KeyRange",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "shardLimit",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct GetDataDistributorMetricsReply\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "midOnly",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    }
+  ]
+}

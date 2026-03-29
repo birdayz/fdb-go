@@ -1,0 +1,22 @@
+{
+  "name": "RestoreControllerInterface",
+  "file_identifier": 11642024,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "*(RestoreRoleInterface*",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "name": "InitializeBlobWorkerRequestOld",
+  "file_identifier": 5838547,
+  "fdb_version": "7.3.75",
+  "reply_type": "InitializeBlobWorkerReply",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    12,
+    20,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "reqId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "interfaceId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "storeType",
+      "cpp_type": "KeyValueStoreType",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cInitializeBlobWorkerReply\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "name": "GetShardStateReply",
+  "file_identifier": 0,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    10,
+    24,
+    4,
+    12,
+    20
+  ],
+  "fields": [
+    {
+      "name": "first",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "second",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "shards",
+      "cpp_type": "std::vector\u003cStorageServerShard\u003e",
+      "type": "vector",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

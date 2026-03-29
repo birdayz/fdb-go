@@ -1,0 +1,63 @@
+{
+  "name": "WorkloadInterface",
+  "file_identifier": 4454551,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbserver/include/fdbserver/TesterInterface.actor.h",
+  "vtable": [
+    14,
+    24,
+    4,
+    8,
+    12,
+    16,
+    20
+  ],
+  "fields": [
+    {
+      "name": "setup",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "start",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "check",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cCheckReply\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "metrics",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cstd::vector\u003cPerfMetric\u003e\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "stop",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

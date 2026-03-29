@@ -1,0 +1,74 @@
+{
+  "name": "TLogPeekRequest",
+  "file_identifier": 11001131,
+  "fdb_version": "7.3.75",
+  "reply_type": "TLogPeekReply",
+  "source_file": "fdbserver/include/fdbserver/TLogInterface.h",
+  "vtable": [
+    18,
+    27,
+    4,
+    12,
+    24,
+    25,
+    26,
+    16,
+    20
+  ],
+  "fields": [
+    {
+      "name": "begin",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "tag",
+      "cpp_type": "Tag",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "returnIfBlocked",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "onlySpilled",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "sequence",
+      "cpp_type": "Optional\u003cstd::pair\u003cUID, int\u003e\u003e",
+      "type": "optional",
+      "vtable_slot": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cTLogPeekReply\u003e",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

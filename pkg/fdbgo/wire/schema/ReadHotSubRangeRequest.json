@@ -1,0 +1,63 @@
+{
+  "name": "ReadHotSubRangeRequest",
+  "file_identifier": 10259266,
+  "fdb_version": "7.3.75",
+  "reply_type": "ReadHotSubRangeReply",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    14,
+    17,
+    4,
+    8,
+    16,
+    12,
+    0
+  ],
+  "fields": [
+    {
+      "name": "keys",
+      "cpp_type": "KeyRangeRef",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cReadHotSubRangeReply\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "type",
+      "cpp_type": "uint8_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "chunkCount",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

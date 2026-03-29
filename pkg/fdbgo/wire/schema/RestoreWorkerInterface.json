@@ -1,0 +1,52 @@
+{
+  "name": "RestoreWorkerInterface",
+  "file_identifier": 15715718,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    12,
+    20,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "interfID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "heartbeat",
+      "cpp_type": "RequestStream\u003cRestoreSimpleRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recruitRole",
+      "cpp_type": "RequestStream\u003cRestoreRecruitRoleRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "terminateWorker",
+      "cpp_type": "RequestStream\u003cRestoreSimpleRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

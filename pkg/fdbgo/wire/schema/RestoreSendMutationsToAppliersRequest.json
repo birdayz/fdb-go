@@ -1,0 +1,53 @@
+{
+  "name": "RestoreSendMutationsToAppliersRequest",
+  "file_identifier": 1718441,
+  "fdb_version": "7.3.75",
+  "reply_type": "RestoreCommonReply",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    8,
+    16,
+    12
+  ],
+  "fields": [
+    {
+      "name": "batchIndex",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "rangeToApplier",
+      "cpp_type": "std::map\u003cKey, UID\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "useRangeFile",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cRestoreCommonReply\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "KmsConnLookupKeyIdsReqInfo",
+  "file_identifier": 3092256,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/KmsConnectorInterface.h",
+  "vtable": [
+    10,
+    13,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "domainId",
+      "cpp_type": "Optional\u003cEncryptCipherDomainId\u003e",
+      "type": "optional",
+      "vtable_slot": 0,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "baseCipherId",
+      "cpp_type": "EncryptCipherBaseKeyId",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

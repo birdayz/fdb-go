@@ -1,0 +1,23 @@
+{
+  "name": "GetHotShardsRequest",
+  "file_identifier": 3828141,
+  "fdb_version": "7.3.75",
+  "reply_type": "GetHotShardsReply",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGetHotShardsReply\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

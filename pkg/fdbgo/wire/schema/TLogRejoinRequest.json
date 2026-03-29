@@ -1,0 +1,33 @@
+{
+  "name": "TLogRejoinRequest",
+  "file_identifier": 15692200,
+  "fdb_version": "7.3.75",
+  "reply_type": "TLogRejoinReply",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    8,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "myInterface",
+      "cpp_type": "TLogInterface",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cTLogRejoinReply\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

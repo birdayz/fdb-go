@@ -1,0 +1,42 @@
+{
+  "name": "NetworkTestStreamingReply",
+  "file_identifier": 3726830,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/NetworkTest.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "acknowledgeToken",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sequence",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "index",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "BlobManagerBlockedRequest",
+  "file_identifier": 1986387,
+  "fdb_version": "7.3.75",
+  "reply_type": "BlobManagerBlockedReply",
+  "source_file": "fdbserver/include/fdbserver/BlobManagerInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cBlobManagerBlockedReply\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

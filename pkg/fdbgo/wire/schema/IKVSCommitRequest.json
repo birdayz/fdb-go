@@ -1,0 +1,33 @@
+{
+  "name": "IKVSCommitRequest",
+  "file_identifier": 2985129,
+  "fdb_version": "7.3.75",
+  "reply_type": "IKVSCommitReply",
+  "source_file": "fdbserver/include/fdbserver/RemoteIKeyValueStore.actor.h",
+  "vtable": [
+    8,
+    9,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "sequential",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cIKVSCommitReply\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

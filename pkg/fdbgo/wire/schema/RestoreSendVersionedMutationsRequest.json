@@ -1,0 +1,73 @@
+{
+  "name": "RestoreSendVersionedMutationsRequest",
+  "file_identifier": 2655701,
+  "fdb_version": "7.3.75",
+  "reply_type": "RestoreCommonReply",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    16,
+    29,
+    12,
+    16,
+    4,
+    28,
+    20,
+    24
+  ],
+  "fields": [
+    {
+      "name": "batchIndex",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "asset",
+      "cpp_type": "RestoreAsset",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "msgIndex",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "isRangeFile",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "versionedMutations",
+      "cpp_type": "VersionedMutationsVec",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cRestoreCommonReply\u003e",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

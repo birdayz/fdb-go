@@ -1,0 +1,42 @@
+{
+  "name": "SimEncryptKeyDetails",
+  "file_identifier": 1227025,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/SimEncryptKmsProxy.actor.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "encryptDomainId",
+      "cpp_type": "EncryptCipherDomainId",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "encryptKeyId",
+      "cpp_type": "EncryptCipherBaseKeyId",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "encryptKey",
+      "cpp_type": "StringRef",
+      "type": "bytes",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

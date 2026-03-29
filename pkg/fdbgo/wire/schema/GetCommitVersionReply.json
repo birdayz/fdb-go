@@ -1,0 +1,62 @@
+{
+  "name": "GetCommitVersionReply",
+  "file_identifier": 3568822,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/MasterInterface.h",
+  "vtable": [
+    14,
+    40,
+    36,
+    4,
+    12,
+    20,
+    28
+  ],
+  "fields": [
+    {
+      "name": "resolverChanges",
+      "cpp_type": "Standalone\u003cVectorRef\u003cResolverMoveRef\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "resolverChangesVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "prevVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "requestNum",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

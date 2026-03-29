@@ -1,0 +1,74 @@
+{
+  "name": "GetRawCommittedVersionReply",
+  "file_identifier": 1314732,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    20,
+    35,
+    32,
+    20,
+    4,
+    33,
+    34,
+    24,
+    12,
+    28
+  ],
+  "fields": [
+    {
+      "name": "debugID",
+      "cpp_type": "Optional\u003cUID\u003e",
+      "type": "optional",
+      "vtable_slot": 0,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "locked",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "metadataVersion",
+      "cpp_type": "Optional\u003cValue\u003e",
+      "type": "optional",
+      "vtable_slot": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "minKnownCommittedVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "ssVersionVectorDelta",
+      "cpp_type": "VersionVector",
+      "type": "bytes",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

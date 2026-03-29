@@ -1,0 +1,44 @@
+{
+  "name": "GetStorageServerRejoinInfoRequest",
+  "file_identifier": 994279,
+  "fdb_version": "7.3.75",
+  "reply_type": "GetStorageServerRejoinInfoReply",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    12,
+    17,
+    4,
+    16,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "dcId",
+      "cpp_type": "Optional\u003cValue\u003e",
+      "type": "optional",
+      "vtable_slot": 1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGetStorageServerRejoinInfoReply\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

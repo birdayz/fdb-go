@@ -1,0 +1,72 @@
+{
+  "name": "Endpoint",
+  "file_identifier": 10618805,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbrpc/include/fdbrpc/FlowTransport.h",
+  "vtable": [
+    16,
+    28,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24
+  ],
+  "fields": [
+    {
+      "name": "addresses",
+      "cpp_type": "NetworkAddressList",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "token",
+      "cpp_type": "Token",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "addresses.address",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "token",
+      "cpp_type": "Token",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "addresses",
+      "cpp_type": "NetworkAddressList",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "token",
+      "cpp_type": "Token",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

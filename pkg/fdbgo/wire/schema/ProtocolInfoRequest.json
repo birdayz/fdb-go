@@ -1,0 +1,23 @@
+{
+  "name": "ProtocolInfoRequest",
+  "file_identifier": 13261233,
+  "fdb_version": "7.3.75",
+  "reply_type": "ProtocolInfoReply",
+  "source_file": "fdbclient/include/fdbclient/CoordinationInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cProtocolInfoReply\u003e",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "GetServerDBInfoRequest",
+  "file_identifier": 9467439,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/ServerDBInfo.actor.h",
+  "vtable": [
+    8,
+    12,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "knownServerInfoID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cstruct ServerDBInfo\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

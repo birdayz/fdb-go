@@ -1,0 +1,33 @@
+{
+  "name": "GlobalConfigRefreshRequest",
+  "file_identifier": 2828131,
+  "fdb_version": "7.3.75",
+  "reply_type": "GlobalConfigRefreshReply",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    8,
+    16,
+    4,
+    12
+  ],
+  "fields": [
+    {
+      "name": "lastKnown",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGlobalConfigRefreshReply\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

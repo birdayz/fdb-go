@@ -1,0 +1,32 @@
+{
+  "name": "GetStorageCheckSumReply",
+  "file_identifier": 3828143,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    8,
+    9,
+    4,
+    8
+  ],
+  "fields": [
+    {
+      "name": "checkSums",
+      "cpp_type": "std::vector\u003cCheckSumMetaData\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "checkSumMethod",
+      "cpp_type": "uint8_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    }
+  ]
+}

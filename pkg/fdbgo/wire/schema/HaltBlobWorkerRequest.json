@@ -1,0 +1,43 @@
+{
+  "name": "HaltBlobWorkerRequest",
+  "file_identifier": 1985879,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbclient/include/fdbclient/BlobWorkerInterface.h",
+  "vtable": [
+    10,
+    20,
+    4,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "managerEpoch",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "requesterID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

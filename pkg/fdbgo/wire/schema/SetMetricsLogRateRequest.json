@@ -1,0 +1,22 @@
+{
+  "name": "SetMetricsLogRateRequest",
+  "file_identifier": 4245995,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "metricsLogsPerSecond",
+      "cpp_type": "uint32_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "RestoreRecruitRoleReply",
+  "file_identifier": 13532876,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    16,
+    22,
+    4,
+    8,
+    20,
+    12,
+    21,
+    16
+  ],
+  "fields": [
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "role",
+      "cpp_type": "RestoreRole",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "loader",
+      "cpp_type": "Optional\u003cRestoreLoaderInterface\u003e",
+      "type": "optional",
+      "vtable_slot": 2,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "applier",
+      "cpp_type": "Optional\u003cRestoreApplierInterface\u003e",
+      "type": "optional",
+      "vtable_slot": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

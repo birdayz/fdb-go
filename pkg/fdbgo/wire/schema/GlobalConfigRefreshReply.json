@@ -1,0 +1,42 @@
+{
+  "name": "GlobalConfigRefreshReply",
+  "file_identifier": 12680327,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    10,
+    16,
+    12,
+    4,
+    0
+  ],
+  "fields": [
+    {
+      "name": "result",
+      "cpp_type": "RangeResultRef",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

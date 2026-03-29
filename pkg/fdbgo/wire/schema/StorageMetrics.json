@@ -1,0 +1,62 @@
+{
+  "name": "StorageMetrics",
+  "file_identifier": 13622226,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    14,
+    36,
+    4,
+    12,
+    28,
+    20,
+    32
+  ],
+  "fields": [
+    {
+      "name": "bytes",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "bytesWrittenPerKSecond",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "iosPerKSecond",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "bytesReadPerKSecond",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "opsReadPerKSecond",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

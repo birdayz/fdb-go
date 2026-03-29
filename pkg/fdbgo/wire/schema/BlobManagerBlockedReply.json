@@ -1,0 +1,22 @@
+{
+  "name": "BlobManagerBlockedReply",
+  "file_identifier": 8078627,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/BlobManagerInterface.h",
+  "vtable": [
+    6,
+    12,
+    4
+  ],
+  "fields": [
+    {
+      "name": "blockedAssignments",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

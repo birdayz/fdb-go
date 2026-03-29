@@ -1,0 +1,92 @@
+{
+  "name": "OpenDatabaseRequest",
+  "file_identifier": 2799502,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/ClusterInterface.h",
+  "vtable": [
+    20,
+    36,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    28,
+    32
+  ],
+  "fields": [
+    {
+      "name": "count",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "samples",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "clientCount",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "issues",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "supportedVersions",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "maxProtocolSupported",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "knownClientInfoID",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "TrackTLogRecoveryReply",
+  "file_identifier": 5736775,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/TLogInterface.h",
+  "vtable": [
+    6,
+    12,
+    4
+  ],
+  "fields": [
+    {
+      "name": "oldestUnrecoveredStartVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

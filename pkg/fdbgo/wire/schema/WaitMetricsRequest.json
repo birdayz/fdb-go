@@ -1,0 +1,83 @@
+{
+  "name": "WaitMetricsRequest",
+  "file_identifier": 1795961,
+  "fdb_version": "7.3.75",
+  "reply_type": "StorageMetrics",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    18,
+    32,
+    12,
+    16,
+    20,
+    24,
+    28,
+    4,
+    0
+  ],
+  "fields": [
+    {
+      "name": "keys",
+      "cpp_type": "KeyRangeRef",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "min",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "max",
+      "cpp_type": "StorageMetrics min,",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cStorageMetrics\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tenantInfo",
+      "cpp_type": "TenantInfo",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "minVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "name": "SplitMetricsRequest",
+  "file_identifier": 10463876,
+  "fdb_version": "7.3.75",
+  "reply_type": "SplitMetricsReply",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    22,
+    30,
+    4,
+    8,
+    12,
+    16,
+    28,
+    20,
+    29,
+    24,
+    0
+  ],
+  "fields": [
+    {
+      "name": "keys",
+      "cpp_type": "KeyRangeRef",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "limits",
+      "cpp_type": "StorageMetrics",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "used",
+      "cpp_type": "StorageMetrics",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "estimated",
+      "cpp_type": "StorageMetrics",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "isLastShard",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cSplitMetricsReply\u003e",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "minSplitBytes",
+      "cpp_type": "Optional\u003cint\u003e",
+      "type": "optional",
+      "vtable_slot": 6,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

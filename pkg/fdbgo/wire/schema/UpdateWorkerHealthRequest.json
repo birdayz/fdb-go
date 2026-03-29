@@ -1,0 +1,52 @@
+{
+  "name": "UpdateWorkerHealthRequest",
+  "file_identifier": 5789927,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    12,
+    20,
+    4,
+    8,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "address",
+      "cpp_type": "NetworkAddress",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "degradedPeers",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "disconnectedPeers",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recoveredPeers",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

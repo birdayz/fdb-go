@@ -1,0 +1,53 @@
+{
+  "name": "InitializeGrvProxyRequest",
+  "file_identifier": 8265613,
+  "fdb_version": "7.3.75",
+  "reply_type": "GrvProxyInterface",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    12,
+    24,
+    12,
+    16,
+    4,
+    20
+  ],
+  "fields": [
+    {
+      "name": "master",
+      "cpp_type": "MasterInterface",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "masterLifetime",
+      "cpp_type": "LifetimeToken",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recoveryCount",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGrvProxyInterface\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

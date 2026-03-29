@@ -1,0 +1,42 @@
+{
+  "name": "GetLeaderRequest",
+  "file_identifier": 214727,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CoordinationInterface.h",
+  "vtable": [
+    10,
+    16,
+    4,
+    8,
+    12
+  ],
+  "fields": [
+    {
+      "name": "key",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "knownLeader",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cOptional\u003cLeaderInfo\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

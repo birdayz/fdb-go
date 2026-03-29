@@ -1,0 +1,52 @@
+{
+  "name": "GetBlobGranuleLocationsReply",
+  "file_identifier": 2923309,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    12,
+    13,
+    4,
+    8,
+    12,
+    0
+  ],
+  "fields": [
+    {
+      "name": "results",
+      "cpp_type": "std::vector\u003cstd::pair\u003cKeyRangeRef, UID\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "bwInterfs",
+      "cpp_type": "std::vector\u003cBlobWorkerInterface\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "more",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

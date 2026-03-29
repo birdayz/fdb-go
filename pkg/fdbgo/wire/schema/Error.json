@@ -1,0 +1,22 @@
+{
+  "name": "Error",
+  "file_identifier": 14065384,
+  "fdb_version": "7.3.75",
+  "source_file": "flow/include/flow/Error.h",
+  "vtable": [
+    6,
+    6,
+    4
+  ],
+  "fields": [
+    {
+      "name": "error_code",
+      "cpp_type": "uint16_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 2,
+      "wire_alignment": 2,
+      "inline": true
+    }
+  ]
+}

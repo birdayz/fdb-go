@@ -53,11 +53,13 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
-# Regenerate FDB wire schema from C++ headers (run when upgrading FDB version)
+# Regenerate FDB wire schema + test vectors (run when upgrading FDB version)
 wire-schema:
-    bazelisk build //cmd/fdb-wire-schema-generator:fdb-wire-schema-generator
-    bazel-bin/cmd/fdb-wire-schema-generator/fdb-wire-schema-generator_/fdb-wire-schema-generator $$(bazelisk info output_base)/external/foundationdb+ > pkg/fdbgo/wire_schema.json
-    @python3 -c "import json; d=json.load(open('pkg/fdbgo/wire_schema.json')); print(f'Updated pkg/fdbgo/wire_schema.json: {len(d[\"messages\"])} messages')"
+    bazelisk build //cmd/fdb-wire-schema-generator:generate_all
+    rm -rf pkg/fdbgo/wire/schema pkg/fdbgo/wire/testdata/Msg*.json
+    cp -r bazel-bin/cmd/fdb-wire-schema-generator/schema pkg/fdbgo/wire/schema
+    cp bazel-bin/cmd/fdb-wire-schema-generator/testdata/*.json pkg/fdbgo/wire/testdata/
+    @echo "Updated: $$(ls pkg/fdbgo/wire/schema/*.json | wc -l) schemas, $$(ls pkg/fdbgo/wire/testdata/Msg*.json | wc -l) test vectors"
 
 # Run tests with coverage
 coverage:

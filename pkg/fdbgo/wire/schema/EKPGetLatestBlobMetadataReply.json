@@ -1,0 +1,22 @@
+{
+  "name": "EKPGetLatestBlobMetadataReply",
+  "file_identifier": 5761581,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/EncryptKeyProxyInterface.h",
+  "vtable": [
+    6,
+    8,
+    4
+  ],
+  "fields": [
+    {
+      "name": "blobMetadataDetails",
+      "cpp_type": "Standalone\u003cVectorRef\u003cBlobMetadataDetailsRef\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

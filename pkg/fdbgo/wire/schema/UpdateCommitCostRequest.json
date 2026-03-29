@@ -1,0 +1,103 @@
+{
+  "name": "UpdateCommitCostRequest",
+  "file_identifier": 4159439,
+  "fdb_version": "7.3.75",
+  "reply_type": "Void",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    22,
+    53,
+    36,
+    4,
+    12,
+    40,
+    44,
+    20,
+    28,
+    52,
+    48
+  ],
+  "fields": [
+    {
+      "name": "ratekeeperID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "postTime",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "elapsed",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "busiestTag",
+      "cpp_type": "TransactionTag",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "opsSum",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "costSum",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "totalWriteCosts",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "reported",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 7,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cVoid\u003e",
+      "type": "struct",
+      "vtable_slot": 8,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

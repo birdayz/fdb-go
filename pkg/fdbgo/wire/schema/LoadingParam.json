@@ -1,0 +1,74 @@
+{
+  "name": "LoadingParam",
+  "file_identifier": 246621,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    20,
+    31,
+    28,
+    12,
+    29,
+    16,
+    30,
+    20,
+    4,
+    24
+  ],
+  "fields": [
+    {
+      "name": "isRangeFile",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "url",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "proxy",
+      "cpp_type": "Optional\u003cstd::string\u003e",
+      "type": "optional",
+      "vtable_slot": 2,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "rangeVersion",
+      "cpp_type": "Optional\u003cVersion\u003e",
+      "type": "optional",
+      "vtable_slot": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "blockSize",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "asset",
+      "cpp_type": "RestoreAsset",
+      "type": "struct",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

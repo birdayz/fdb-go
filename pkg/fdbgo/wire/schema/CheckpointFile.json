@@ -1,0 +1,42 @@
+{
+  "name": "CheckpointFile",
+  "file_identifier": 13804348,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RocksDBCheckpointUtils.actor.h",
+  "vtable": [
+    10,
+    20,
+    12,
+    16,
+    4
+  ],
+  "fields": [
+    {
+      "name": "path",
+      "cpp_type": "std::string",
+      "type": "bytes",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "range",
+      "cpp_type": "KeyRange",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "size",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

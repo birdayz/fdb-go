@@ -1,0 +1,83 @@
+{
+  "name": "InitializeResolverRequest",
+  "file_identifier": 7413317,
+  "fdb_version": "7.3.75",
+  "reply_type": "ResolverInterface",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    18,
+    36,
+    12,
+    4,
+    16,
+    20,
+    24,
+    28,
+    32
+  ],
+  "fields": [
+    {
+      "name": "masterLifetime",
+      "cpp_type": "LifetimeToken",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recoveryCount",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "commitProxyCount",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "resolverCount",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "masterId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cResolverInterface\u003e",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "encryptMode",
+      "cpp_type": "EncryptionAtRestMode",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

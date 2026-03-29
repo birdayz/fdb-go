@@ -1,0 +1,73 @@
+{
+  "name": "TriggerAuditRequest",
+  "file_identifier": 1384445,
+  "fdb_version": "7.3.75",
+  "reply_type": "UID",
+  "source_file": "fdbclient/include/fdbclient/Audit.h",
+  "vtable": [
+    16,
+    22,
+    20,
+    4,
+    8,
+    21,
+    12,
+    16
+  ],
+  "fields": [
+    {
+      "name": "type",
+      "cpp_type": "uint8_t",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "range",
+      "cpp_type": "KeyRange",
+      "type": "bytes",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "id",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "cancel",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cUID\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "engineType",
+      "cpp_type": "KeyValueStoreType",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}
