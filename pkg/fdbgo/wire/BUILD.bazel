@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "wire",
+    srcs = [
+        "reader.go",
+        "vtable.go",
+        "writer.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "wire_test",
+    srcs = [
+        "vtable_test.go",
+        "writer_test.go",
+    ],
+    embed = [":wire"],
+)

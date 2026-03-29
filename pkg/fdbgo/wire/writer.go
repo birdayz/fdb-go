@@ -239,7 +239,6 @@ func (ns *nestedStruct) computeEndOffset(startEndOff int) int {
 
 func (ns *nestedStruct) writeInto(buf []byte, startByteAddr, vtablePos int, vtSet *vTableSet) int {
 	totalSize := len(buf)
-	objSize := int(ns.vt[1])
 
 	objByteAddr := totalSize - ns.endOffset
 	ns.byteAddr = objByteAddr
@@ -248,31 +247,12 @@ func (ns *nestedStruct) writeInto(buf []byte, startByteAddr, vtablePos int, vtSe
 	vtOff := vtablePos + vtSet.offset(ns.vt)
 	binary.LittleEndian.PutUint32(ns.object[0:4], uint32(int32(objByteAddr-vtOff)))
 
-	// Patch ool RelativeOffsets.
-	// ool data is at higher byte addresses than the object.
-	oolByteAddr := objByteAddr + objSize
-	// Account for object alignment padding.
-	bodySize := objSize - 4
-	align := ns.maxAlign
-	if align < 4 {
-		align = 4
-	}
-	paddingAfterObj := rightAlign(bodySize, align) + 4 - objSize
-	if paddingAfterObj < 0 {
-		paddingAfterObj = 0
-	}
-	// Actually the padding is between ool and object in end-offset space.
-	// In byte-address space: object is first, then padding, then ool.
-	oolByteAddr = objByteAddr + objSize + paddingAfterObj
-	// Hmm, this isn't right. Let me compute from end-offsets.
-
-	// endOffset after ool:
+	// Compute ool byte position from end-offsets.
 	oolEndOff := 0
 	if len(ns.outOfLine) > 0 {
 		oolEndOff = rightAlign(len(ns.outOfLine), 4)
 	}
-	// ool byte position: totalSize - oolEndOff
-	oolByteAddr = totalSize - oolEndOff
+	oolByteAddr := totalSize - oolEndOff
 
 	if len(ns.outOfLine) > 0 {
 		copy(buf[oolByteAddr:], ns.outOfLine)

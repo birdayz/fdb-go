@@ -11,7 +11,7 @@
 - [x] **Wire conformance** — 12 C++ conformance tests (byte-identical to `save_members()`): inline scalars, mixed types, strings, bool+double, vector<int32>, empty vector, Optional<int32> present/absent, Optional<string>, vector<string>, nested struct, nested struct with string. 32 tests total.
 - [x] Nested structs with own vtable + ool data
 - [x] Vector of strings (reverse element order matching C++ end-offset allocation)
-- [x] C++ protocol extractor (`cmd/fdb-wire-schema-generator/`) — self-contained Bazel cc_binary with lightweight FDB type stubs. Extracts 30 messages into `wire_schema.json` via `bazelisk build //cmd/fdb-wire-schema-generator:wire_schema` (fully cached). `just wire-schema` copies output to `pkg/fdbgo/wire_schema.json`.
+- [x] Protocol extractor (`cmd/fdb-wire-schema-generator/`) — Go parser that reads FDB C++ headers directly, finds all structs with file_identifier, parses serializer() args, computes vtables. Extracts **331 messages** from FDB 7.3.75 (all protocol types, not just client). FDB source auto-fetched via archive_override. `just wire-schema` regenerates.
 - [ ] Go code generator
 - [ ] Transport layer
 - [ ] Client logic

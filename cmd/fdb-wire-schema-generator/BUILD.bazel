@@ -1,16 +1,37 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
 
-cc_binary(
+# Go-based protocol message parser.
+# Reads FDB C++ headers directly, extracts all structs with file_identifier,
+# parses serializer() argument lists, computes vtables, outputs wire_schema.json.
+go_binary(
     name = "fdb-wire-schema-generator",
+    embed = [":fdb-wire-schema-generator_lib"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "wire_schema",
+    srcs = ["@foundationdb//:all_srcs"],
+    outs = ["wire_schema.json"],
+    cmd = "$(location :fdb-wire-schema-generator) $$(dirname $$(echo $(locations @foundationdb//:all_srcs) | tr ' ' '\\n' | grep -m1 'flow/flat_buffers.cpp'))/.. > $@",
+    tools = [":fdb-wire-schema-generator"],
+    visibility = ["//visibility:public"],
+)
+
+# C++ test vector generator (kept for conformance testing).
+cc_binary(
+    name = "gen_test_vectors",
     srcs = [
-        "main.cpp",
         "fdb_stubs.h",
         "flat_buffers_minimal.cpp",
+        "main.cpp",
     ],
     copts = [
         "-std=c++20",
         "-Wno-deprecated-declarations",
-        "-isystem", "cmd/fdb-wire-schema-generator/stubs",
+        "-isystem",
+        "cmd/fdb-wire-schema-generator/stubs",
     ],
     data = glob(["stubs/**"]),
     deps = [
@@ -18,11 +39,10 @@ cc_binary(
     ],
 )
 
-genrule(
-    name = "wire_schema",
-    srcs = [],
-    outs = ["wire_schema.json"],
-    cmd = "$(location :fdb-wire-schema-generator) > $@",
-    tools = [":fdb-wire-schema-generator"],
-    visibility = ["//visibility:public"],
+go_library(
+    name = "fdb-wire-schema-generator_lib",
+    srcs = ["parser.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-wire-schema-generator",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/fdbgo/wire"],
 )
