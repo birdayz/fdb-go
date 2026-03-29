@@ -424,6 +424,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 	oldRecordExists := oldValue != nil
 
+	// Cache deserialization result from type check so index update can reuse it
+	// (avoids deserializing the same old record twice).
+	var cachedOldRT *RecordType
+	var cachedOldMsg proto.Message
+
 	// Perform existence checks
 	if existenceCheck != RecordExistenceCheckNone {
 		if existenceCheck.ErrorIfExists() && oldRecordExists {
@@ -441,7 +446,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		}
 
 		if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
-			_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
 			if deserErr != nil {
 				// Propagate deserialization error. Java's loadExistingRecord()
 				// deserializes before the type check — if deser fails, error propagates.
@@ -456,6 +461,9 @@ func (store *FDBRecordStore) saveRecordInternal(
 					ExpectedType: recordTypeName,
 				}
 			}
+			// Cache for index update reuse.
+			cachedOldRT = oldRT
+			cachedOldMsg = oldMsg
 		}
 	}
 
@@ -549,9 +557,14 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if store.metaData.HasIndexes() {
 		var oldStoredRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
-			if deserErr != nil {
-				return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+			oldRT, oldMsg := cachedOldRT, cachedOldMsg
+			if oldRT == nil {
+				// Not cached (type check didn't run) — deserialize now.
+				var deserErr error
+				oldRT, oldMsg, deserErr = store.deserializeAndDiscover(oldValue)
+				if deserErr != nil {
+					return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
+				}
 			}
 			oldStoredRecord = &FDBStoredRecord[proto.Message]{
 				PrimaryKey: primaryKey,

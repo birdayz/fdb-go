@@ -35,7 +35,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 ### SaveRecord behavioral audit (2026-03-28) — Java vs Go comparison
 
 - [x] **MEDIUM** — `store.go`: SizeInfo missing version key/value metrics. Fixed: `saveRecordVersion()` now updates sizeInfo with version key/value bytes (KeyCount, KeySize, ValueSize). Incomplete versions subtract 4-byte offset (not durable). `DryRunSaveRecord` also includes version bytes. `loadWithSplit` tracks version keys in split record scan. Matches Java's `SplitHelper.writeVersion()` sizeInfo pattern.
-- [ ] **LOW** — `store.go`: Double deserialization when `ErrorIfTypeChanged + HasIndexes`. Old record deserialized once for type check, again for index update. Performance only.
+- [x] **LOW** — `store.go`: Fixed double deserialization when `ErrorIfTypeChanged + HasIndexes`. Type check now caches deserialized old record (`cachedOldRT`/`cachedOldMsg`) for reuse by index update. Saves one proto unmarshal per update.
 
 ### Hardening audit (2026-03-29) — 5-agent sweep: corruption masking, panics, integer overflow
 
