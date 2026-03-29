@@ -518,10 +518,14 @@ func (store *FDBRecordStore) checkIndexBuilt(index *Index) error {
 	return nil
 }
 
-// clearReadableIndexBuildData clears build tracking data (range set) for an index
-// that has transitioned to READABLE state.
+// clearReadableIndexBuildData clears build tracking data (range set and heartbeats)
+// for an index that has transitioned to READABLE state.
 // Matches Java's FDBRecordStore.clearReadableIndexBuildData().
 func (store *FDBRecordStore) clearReadableIndexBuildData(index *Index) {
 	rangeSet := NewIndexingRangeSet(store.subspace, index)
 	rangeSet.Clear(store.context.Transaction())
+	// Clear all heartbeats — matching Java's IndexingHeartbeat.clearAllHeartbeats().
+	// Without this, stale heartbeats from crashed mutual builders accumulate
+	// and cause transient blocking on re-builds.
+	CleanupAllHeartbeats(store.context.Transaction(), store.subspace, index)
 }

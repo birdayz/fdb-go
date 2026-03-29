@@ -29,7 +29,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ### OnlineIndexer audit (2026-03-28)
 
-- [ ] **LOW** — `index_state.go:clearReadableIndexBuildData()`: Doesn't clear heartbeats after build completes. Java clears both RangeSet and heartbeats. Stale heartbeats from crashed mutual builders accumulate, causing transient blocking on re-builds.
+- [x] **LOW** — `index_state.go:clearReadableIndexBuildData()`: Now clears both RangeSet and heartbeats, matching Java's `clearReadableIndexBuildData()` which calls `IndexingHeartbeat.clearAllHeartbeats()`. Prevents stale heartbeats from crashed mutual builders accumulating.
 - [x] **MEDIUM** — `indexing_mutual.go:301-314`: Shard boundary bytes that aren't valid tuples cause nil rangeStart/rangeEnd → full-keyspace scan. Fixed: return error instead of silently falling back to nil (matches Java which throws on invalid tuple bytes).
 
 ### SaveRecord behavioral audit (2026-03-28) — Java vs Go comparison
