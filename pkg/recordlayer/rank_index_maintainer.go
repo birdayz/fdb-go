@@ -361,6 +361,9 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		}
 	}
 
+	// Prefetch sparse upper skip-list levels for the upcoming GetNth calls.
+	rankedSet.PreloadForLookup(m.tx)
+
 	// Convert low rank to score.
 	var lowScore tuple.Tuple
 	lowRankVal := int64(0)
@@ -446,6 +449,7 @@ func (m *rankIndexMaintainer) RankForScore(groupAndScore tuple.Tuple, nullIfMiss
 	}
 
 	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet.PreloadForLookup(m.tx)
 	return rankedSet.Rank(m.tx, scoreTuple.Pack(), nullIfMissing)
 }
 
@@ -477,6 +481,7 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	}
 
 	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
+	rankedSet.PreloadForLookup(m.tx)
 	scoreBytes, err := rankedSet.GetNth(m.tx, rank)
 	if err != nil {
 		return nil, err

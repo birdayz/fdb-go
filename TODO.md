@@ -704,7 +704,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **RANK deleteWhere** — Fixed: `RankIndexMaintainer.DeleteWhere(prefix)` clears both B-tree (primary) and ranked set (secondary) subspaces. Implemented as part of `DeleteRecordsWhere`. **MEDIUM**.
 
-- [ ] **RANK preloadForLookup** — Java prefetches sparse upper skip-list levels into the RYW cache before `getNth`/`rank` calls, reducing FDB round trips. Go does sequential level-by-level reads. No correctness impact, but significant performance gap for deep ranked sets. **LOW**.
+- [x] **RANK preloadForLookup** — `PreloadForLookup()` on `rankedSet` does a single reverse `GetRange(limit=nLevels)` to warm the RYW cache with sparse upper skip-list levels. Called before `Rank()`/`GetNth()` in `RankIndexMaintainer`, `evaluateRankAggregate`, and `timeWindowLeaderboardMaintainer`. Eliminates serial FDB round trips for cached upper levels. Matches Java's `RankedSet.preloadForLookup()`.
 
 - [x] **RANK OnlineIndexer test coverage** — 4 tests: basic build, chunked build (limit=3), post-build maintenance, duplicate scores. Covers RANK index through OnlineIndexer path. **MEDIUM**.
 

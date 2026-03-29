@@ -477,6 +477,9 @@ func evaluateRankAggregate(
 		}
 	}
 
+	// Prefetch sparse upper skip-list levels for Rank/GetNth calls below.
+	rankedSet.PreloadForLookup(rm.tx)
+
 	switch fn.Name {
 	case FunctionNameCount, FunctionNameCountDistinct:
 		size, err := rankedSet.Size(rm.tx)

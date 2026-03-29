@@ -262,6 +262,20 @@ func (rs *rankedSet) Remove(tx fdb.Transaction, key []byte) (bool, error) {
 	return true, nil
 }
 
+// PreloadForLookup prefetches sparse upper skip-list levels into the RYW cache
+// with a single reverse GetRange. Subsequent Rank()/GetNth() calls that traverse
+// those levels become cache hits, eliminating 1 FDB round trip per cached level.
+// Matches Java's RankedSet.preloadForLookup().
+func (rs *rankedSet) PreloadForLookup(tx fdb.ReadTransaction) {
+	begin, end := rs.subspace.FDBRangeKeys()
+	// Read the last nLevels entries (reverse). These are the sparse upper-level
+	// entries. The result goes into FDB's RYW cache; we discard it here.
+	tx.GetRange(
+		fdb.KeyRange{Begin: begin, End: end},
+		fdb.RangeOptions{Limit: rs.config.NLevels, Reverse: true},
+	).GetSliceWithError() //nolint:errcheck // best-effort cache warming
+}
+
 // Rank returns the 0-indexed rank (position in sorted order) of key.
 // If nullIfMissing is true and key is absent, returns nil.
 // If nullIfMissing is false, returns the rank key would have if inserted.

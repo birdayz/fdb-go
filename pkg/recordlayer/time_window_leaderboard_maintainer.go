@@ -610,6 +610,8 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 		}
 	}
 
+	rankedSet.PreloadForLookup(m.tx)
+
 	lowRankVal := int64(0)
 	if !startFromBeginning {
 		lowRankVal = *lowRank
@@ -935,6 +937,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRankAndEntry(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet.PreloadForLookup(m.tx)
 
 	// Rank lookup uses the negated scoreKey (as stored in the ranked set).
 	scoreBytes := bestScore.scoreKey.Pack()
@@ -1081,6 +1084,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
+	rankedSet.PreloadForLookup(m.tx)
 
 	switch fn.Name {
 	case FunctionNameTimeWindowCount:
