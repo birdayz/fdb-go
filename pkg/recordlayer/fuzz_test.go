@@ -2,12 +2,15 @@ package recordlayer
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math"
 	"math/big"
 	"testing"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -258,6 +261,124 @@ func FuzzCompleteVersionFromBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic.
 		_, _ = CompleteVersionFromBytes(data)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// FuzzConcatContinuation — fuzz the ConcatCursor continuation deserializer.
+// Must never panic. Exercises proto UnmarshalVT + factory fallback logic.
+// ---------------------------------------------------------------------------
+
+func FuzzConcatContinuation(f *testing.F) {
+	// Raw garbage.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff})
+	// Valid proto: second=true, continuation=[]byte{0xAB}.
+	validSecond, _ := (&gen.ConcatContinuation{
+		Second:       proto.Bool(true),
+		Continuation: []byte{0xAB},
+	}).MarshalVT()
+	f.Add(validSecond)
+	// Valid proto: second=false, no continuation.
+	validFirst, _ := (&gen.ConcatContinuation{
+		Second: proto.Bool(false),
+	}).MarshalVT()
+	f.Add(validFirst)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Dummy cursor factories that return exhausted cursors.
+		factory := func(_ []byte) RecordCursor[int] {
+			return FromList[int](nil)
+		}
+		cursor := ConcatCursors[int](factory, factory, data)
+		// Must not panic when calling OnNext with whatever state was set up.
+		result, err := cursor.OnNext(context.Background())
+		_ = result
+		_ = err
+		cursor.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// FuzzFlatMapContinuation — fuzz the FlatMapPipelined continuation deserializer.
+// Must never panic.
+// ---------------------------------------------------------------------------
+
+func FuzzFlatMapContinuation(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff})
+	// Valid proto: outer only.
+	validOuter, _ := (&gen.FlatMapContinuation{
+		OuterContinuation: []byte{0x01},
+	}).MarshalVT()
+	f.Add(validOuter)
+	// Valid proto: outer + inner.
+	validBoth, _ := (&gen.FlatMapContinuation{
+		OuterContinuation: []byte{0x01},
+		InnerContinuation: []byte{0x02},
+		CheckValue:        []byte{0x03},
+	}).MarshalVT()
+	f.Add(validBoth)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		outerFactory := func(_ []byte) RecordCursor[int] {
+			return FromList[int]([]int{1, 2, 3})
+		}
+		innerFactory := func(_ int, _ []byte) RecordCursor[string] {
+			return FromList[string](nil)
+		}
+		cursor := FlatMapPipelinedWithCheck[int, string](
+			outerFactory, innerFactory, nil, data, 1,
+		)
+		// Must not panic.
+		result, err := cursor.OnNext(context.Background())
+		_ = result
+		_ = err
+		cursor.Close()
+	})
+}
+
+// ---------------------------------------------------------------------------
+// FuzzDedupContinuation — fuzz the Dedup cursor continuation deserializer.
+// Must never panic.
+// ---------------------------------------------------------------------------
+
+func FuzzDedupContinuation(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff})
+	// Valid proto: inner continuation only.
+	validInner, _ := (&gen.DedupContinuation{
+		InnerContinuation: []byte{0x01},
+	}).MarshalVT()
+	f.Add(validInner)
+	// Valid proto: inner + lastValue.
+	validBoth, _ := (&gen.DedupContinuation{
+		InnerContinuation: []byte{0x01},
+		LastValue:         []byte{0x02, 0x03},
+	}).MarshalVT()
+	f.Add(validBoth)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		factory := func(_ []byte) RecordCursor[int] {
+			return FromList[int]([]int{1, 1, 2, 2, 3})
+		}
+		equal := func(a, b int) bool { return a == b }
+		pack := func(v int) []byte { return []byte{byte(v)} }
+		unpack := func(b []byte) (int, bool) {
+			if len(b) > 0 {
+				return int(b[0]), true
+			}
+			return 0, false
+		}
+		cursor := Dedup[int](factory, equal, pack, unpack, data)
+		// Must not panic.
+		result, err := cursor.OnNext(context.Background())
+		_ = result
+		_ = err
+		cursor.Close()
 	})
 }
 

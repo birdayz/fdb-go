@@ -138,6 +138,9 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzUninvertBytes` | DESC ordering 7-bit encoder roundtrip | Clean |
 | `FuzzDeserializeVector` | HNSW vector binary format | Clean |
 | `FuzzCompleteVersionFromBytes` | 12-byte record version parser | Clean |
+| `FuzzConcatContinuation` | ConcatCursor proto continuation deserializer | Clean |
+| `FuzzFlatMapContinuation` | FlatMapPipelined proto continuation deserializer | Clean |
+| `FuzzDedupContinuation` | Dedup cursor proto continuation deserializer | Clean |
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 

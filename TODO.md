@@ -1634,4 +1634,4 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 ### Phase 4: Additional hardening
 
 - [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison.
-- [ ] **LOW — Continuation token fuzzing per cursor type** — Malformed/truncated tokens hitting every cursor combinator (Union, Intersection, FlatMap, Dedup, Concat, AutoContinuing).
+- [x] **LOW — Continuation token fuzzing per cursor type** — 3 new fuzz targets: `FuzzConcatContinuation`, `FuzzFlatMapContinuation`, `FuzzDedupContinuation`. Each exercises proto UnmarshalVT + factory fallback with random bytes. 15s continuous fuzzing each (~22M executions) — all clean. Union/Intersection don't have deserialization factories yet; passthrough combinators (Filter, Skip, Limit, Map) have no continuation parsing to fuzz.
