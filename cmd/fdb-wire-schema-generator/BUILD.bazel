@@ -1,0 +1,26 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+
+cc_binary(
+    name = "fdb-wire-schema-generator",
+    srcs = [
+        "main.cpp",
+        "fdb_stubs.h",
+        "flat_buffers_minimal.cpp",
+    ],
+    copts = [
+        "-std=c++20",
+        "-Wno-deprecated-declarations",
+    ],
+    deps = [
+        "@foundationdb//:flow_headers",
+    ],
+)
+
+genrule(
+    name = "wire_schema",
+    srcs = [],
+    outs = ["wire_schema.json"],
+    cmd = "$(location :fdb-wire-schema-generator) > $@",
+    tools = [":fdb-wire-schema-generator"],
+    visibility = ["//visibility:public"],
+)

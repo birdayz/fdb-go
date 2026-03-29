@@ -1,0 +1,378 @@
+{
+"fdb_version": "7.3.x",
+"messages": [
+  {
+    "name": "GetValueRequest",
+    "file_identifier": 8454530,
+    "reply_type": "GetValueReply",
+    "vtable": [22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32],
+    "fields": [
+      {"type": "bytes", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 1, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 2, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 4, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 6, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bytes", "vtable_slot": 8, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "GetValueReply",
+    "file_identifier": 1378929,
+    "vtable": [16, 23, 4, 20, 12, 21, 16, 22],
+    "fields": [
+      {"type": "double", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bool", "vtable_slot": 5, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "GetKeyRequest",
+    "file_identifier": 10457870,
+    "reply_type": "GetKeyReply",
+    "vtable": [22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 1, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 2, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 4, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 6, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bytes", "vtable_slot": 8, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "GetKeyReply",
+    "file_identifier": 11226513,
+    "vtable": [14, 22, 4, 20, 12, 16, 21],
+    "fields": [
+      {"type": "double", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bool", "vtable_slot": 4, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "GetKeyValuesRequest",
+    "file_identifier": 6795746,
+    "reply_type": "GetKeyValuesReply",
+    "vtable": [32, 55, 12, 16, 4, 20, 24, 52, 28, 32, 36, 53, 40, 44, 54, 48],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 2, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "int32", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "int32", "vtable_slot": 4, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "optional", "vtable_slot": 5, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 7, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 8, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 9, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bytes", "vtable_slot": 11, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 12, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "GetKeyValuesReply",
+    "file_identifier": 1783066,
+    "vtable": [18, 31, 4, 28, 20, 24, 12, 29, 30],
+    "fields": [
+      {"type": "double", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "vector", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 4, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "bool", "vtable_slot": 5, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bool", "vtable_slot": 6, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "WatchValueRequest",
+    "file_identifier": 14747733,
+    "reply_type": "WatchValueReply",
+    "vtable": [24, 39, 12, 36, 16, 4, 37, 20, 38, 24, 28, 32],
+    "fields": [
+      {"type": "bytes", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "int64", "vtable_slot": 3, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "optional", "vtable_slot": 4, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 6, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 8, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 9, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "WatchValueReply",
+    "file_identifier": 3,
+    "vtable": [8, 13, 4, 12],
+    "fields": [
+      {"type": "int64", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "bool", "vtable_slot": 1, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "CommitTransactionRequest",
+    "file_identifier": 93948,
+    "reply_type": "CommitID",
+    "vtable": [26, 39, 4, 8, 12, 36, 16, 37, 20, 38, 24, 28, 32],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "uint32", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 5, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 7, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 9, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bytes", "vtable_slot": 10, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "CommitID",
+    "file_identifier": 14254927,
+    "vtable": [16, 24, 4, 20, 22, 12, 23, 16],
+    "fields": [
+      {"type": "int64", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "uint16", "vtable_slot": 1, "wire_size": 2, "wire_alignment": 2, "inline": true},
+      {"type": "optional", "vtable_slot": 2, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 4, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "GetKeyServerLocationsRequest",
+    "file_identifier": 9144680,
+    "reply_type": "GetKeyServerLocationsReply",
+    "vtable": [20, 34, 12, 32, 16, 20, 33, 24, 28, 4],
+    "fields": [
+      {"type": "bytes", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "int32", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "bool", "vtable_slot": 4, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "struct", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 6, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 7, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "GetKeyServerLocationsReply",
+    "file_identifier": 10636023,
+    "vtable": [10, 16, 4, 8, 12],
+    "fields": [
+      {"type": "vector", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "arena", "vtable_slot": -1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "GetReadVersionRequest",
+    "file_identifier": 838566,
+    "reply_type": "GetReadVersionReply",
+    "vtable": [20, 37, 12, 16, 20, 36, 24, 28, 32, 4],
+    "fields": [
+      {"type": "uint32", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "uint32", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "vector", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "struct", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 6, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 7, "wire_size": 8, "wire_alignment": 8, "inline": true}
+    ]
+  },
+  {
+    "name": "GetReadVersionReply",
+    "file_identifier": 15709388,
+    "vtable": [28, 52, 28, 4, 48, 49, 32, 36, 12, 50, 51, 40, 44, 20],
+    "fields": [
+      {"type": "int32", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "int64", "vtable_slot": 1, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "bool", "vtable_slot": 2, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "vector", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 6, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "bool", "vtable_slot": 7, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bool", "vtable_slot": 8, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bytes", "vtable_slot": 9, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 10, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "double", "vtable_slot": 11, "wire_size": 8, "wire_alignment": 8, "inline": true}
+    ]
+  },
+  {
+    "name": "ClientDBInfo",
+    "file_identifier": 5355080,
+    "vtable": [20, 30, 4, 8, 12, 28, 16, 20, 24, 29],
+    "fields": [
+      {"type": "vector", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "vector", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 6, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "enum", "vtable_slot": 7, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "OpenDatabaseCoordRequest",
+    "file_identifier": 214728,
+    "vtable": [22, 37, 4, 8, 12, 16, 20, 24, 28, 32, 36],
+    "fields": [
+      {"type": "vector", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bytes", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bytes", "vtable_slot": 4, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 5, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 6, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 7, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bool", "vtable_slot": 8, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "StorageServerInterface",
+    "file_identifier": 15302073,
+    "vtable": [16, 22, 4, 8, 12, 20, 16, 21],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 3, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bool", "vtable_slot": 5, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "CommitProxyInterface",
+    "file_identifier": 8954922,
+    "vtable": [12, 14, 12, 4, 13, 8],
+    "fields": [
+      {"type": "optional", "vtable_slot": 0, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bool", "vtable_slot": 2, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "struct", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "GrvProxyInterface",
+    "file_identifier": 8743216,
+    "vtable": [12, 14, 12, 4, 13, 8],
+    "fields": [
+      {"type": "optional", "vtable_slot": 0, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bool", "vtable_slot": 2, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "struct", "vtable_slot": 3, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "SpanContext",
+    "file_identifier": 0,
+    "vtable": [10, 17, 12, 4, 16],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "uint64", "vtable_slot": 1, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "enum", "vtable_slot": 2, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "UID",
+    "file_identifier": 15597147,
+    "vtable": [8, 20, 4, 12],
+    "fields": [
+      {"type": "uint64", "vtable_slot": 0, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "uint64", "vtable_slot": 1, "wire_size": 8, "wire_alignment": 8, "inline": true}
+    ]
+  },
+  {
+    "name": "ReadOptions",
+    "file_identifier": 0,
+    "vtable": [18, 17, 12, 13, 14, 4, 15, 8, 16],
+    "fields": [
+      {"type": "enum", "vtable_slot": 0, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bool", "vtable_slot": 1, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "optional", "vtable_slot": 2, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 4, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "bool", "vtable_slot": 6, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "KeySelectorRef",
+    "file_identifier": 0,
+    "vtable": [10, 13, 4, 12, 8],
+    "fields": [
+      {"type": "bytes", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bool", "vtable_slot": 1, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "int32", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": true}
+    ]
+  },
+  {
+    "name": "MutationRef",
+    "file_identifier": 0,
+    "vtable": [10, 13, 12, 4, 8],
+    "fields": [
+      {"type": "uint8", "vtable_slot": 0, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bytes", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bytes", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "CommitTransactionRef",
+    "file_identifier": 0,
+    "vtable": [24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28],
+    "fields": [
+      {"type": "vector", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "vector", "vtable_slot": 2, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "int64", "vtable_slot": 3, "wire_size": 8, "wire_alignment": 8, "inline": true},
+      {"type": "bool", "vtable_slot": 4, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "bool", "vtable_slot": 5, "wire_size": 1, "wire_alignment": 1, "inline": true},
+      {"type": "optional", "vtable_slot": 6, "wire_size": 0, "wire_alignment": 0, "inline": false},
+      {"type": "optional", "vtable_slot": 8, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "ReplyPromise",
+    "file_identifier": 0,
+    "vtable": [6, 8, 4],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "Endpoint",
+    "file_identifier": 0,
+    "vtable": [8, 12, 4, 8],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "struct", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  },
+  {
+    "name": "NetworkAddress",
+    "file_identifier": 0,
+    "vtable": [12, 13, 4, 8, 10, 12],
+    "fields": [
+      {"type": "uint32", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": true},
+      {"type": "uint16", "vtable_slot": 1, "wire_size": 2, "wire_alignment": 2, "inline": true},
+      {"type": "uint16", "vtable_slot": 2, "wire_size": 2, "wire_alignment": 2, "inline": true},
+      {"type": "bool", "vtable_slot": 3, "wire_size": 1, "wire_alignment": 1, "inline": true}
+    ]
+  },
+  {
+    "name": "NetworkAddressList",
+    "file_identifier": 0,
+    "vtable": [10, 13, 4, 12, 8],
+    "fields": [
+      {"type": "struct", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "optional", "vtable_slot": 1, "wire_size": 0, "wire_alignment": 0, "inline": false}
+    ]
+  },
+  {
+    "name": "KeyValueRef",
+    "file_identifier": 0,
+    "vtable": [8, 12, 4, 8],
+    "fields": [
+      {"type": "bytes", "vtable_slot": 0, "wire_size": 4, "wire_alignment": 4, "inline": false},
+      {"type": "bytes", "vtable_slot": 1, "wire_size": 4, "wire_alignment": 4, "inline": false}
+    ]
+  }
+]
+}

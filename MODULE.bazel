@@ -34,14 +34,41 @@ go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.nogo(nogo = "//:nogo")
 
-# C++ (wire format test vector generation)
+# C++ (wire format generation + FDB build)
 bazel_dep(name = "rules_cc", version = "0.1.1")
 
-# FDB C++ source (for wire format test vector generation)
-bazel_dep(name = "foundationdb", version = "0.0.0")
-local_path_override(
+# FDB C++ source — fetched automatically from GitHub, pinned to tag.
+# Bazel downloads, caches, and injects MODULE.bazel + BUILD.bazel via patch_cmds.
+bazel_dep(name = "foundationdb", version = "7.3.75")
+archive_override(
     module_name = "foundationdb",
-    path = "../foundationdb",
+    urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.75.tar.gz"],
+    strip_prefix = "foundationdb-7.3.75",
+    patch_cmds = [
+        """cat > MODULE.bazel <<'MODEOF'
+module(name = "foundationdb", version = "7.3.75")
+bazel_dep(name = "rules_cc", version = "0.1.1")
+MODEOF""",
+        """cat > BUILD.bazel <<'BUILDEOF'
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+package(default_visibility = ["//visibility:public"])
+
+# All source files (for cmake genrule build).
+filegroup(name = "all_srcs", srcs = glob(["**"]))
+
+# Header-only subset (for lightweight test vector generator + stub extractor).
+cc_library(
+    name = "flow_headers",
+    hdrs = glob([
+        "flow/include/flow/flat_buffers.h",
+        "flow/include/flow/FileIdentifier.h",
+        "flow/include/flow/ObjectSerializerTraits.h",
+    ]),
+    includes = ["flow/include"],
+)
+exports_files(["flow/flat_buffers.cpp"])
+BUILDEOF""",
+    ],
 )
 
 # Proto (codegen stays with buf generate)

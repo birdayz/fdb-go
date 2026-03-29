@@ -1,5 +1,7 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 
+# Test vector generator — serializes simple test structs using FDB's actual
+# flat_buffers.h templates. Outputs JSON with hex bytes for Go conformance tests.
 cc_binary(
     name = "gen_vectors",
     srcs = [
@@ -10,16 +12,15 @@ cc_binary(
         "-std=c++20",
         "-Wno-deprecated-declarations",
     ],
-    includes = [],
     deps = [
         "@foundationdb//:flow_headers",
     ],
 )
 
 genrule(
-    name = "test_vectors_json",
+    name = "test_vectors",
     srcs = [],
-    outs = ["test_vectors.json"],
+    outs = ["test_vectors_generated.json"],
     cmd = "$(location :gen_vectors) > $@",
     tools = [":gen_vectors"],
     visibility = ["//pkg/fdbgo/wire:__pkg__"],
