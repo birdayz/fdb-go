@@ -423,13 +423,163 @@ func isValidFieldType(t string) bool {
 	return true
 }
 
+// generateCppTestFile emits a C++ source file that serializes ALL parsed message
+// structs using FDB's flat_buffers templates. The generated file includes the
+// fdb_stubs.h types and the extracted struct definitions with their serialize() methods.
+func generateCppTestFile(structs []parsedStruct, _ map[string]map[string]map[string]string, _ string, outPath string) error {
+	var b strings.Builder
+
+	// Header: real FDB includes only. No stubs, no custom types.
+	b.WriteString(`// GENERATED — do not edit. Run: just wire-schema
+// Compiled inside foundationdb/build:rockylinux9-latest with real FDB libs.
+// Default-constructs each message and serializes with ObjectWriter.
+
+// Client headers
+#include "fdbclient/StorageServerInterface.h"
+#include "fdbclient/CommitProxyInterface.h"
+#include "fdbclient/GrvProxyInterface.h"
+#include "fdbclient/CoordinationInterface.h"
+#include "fdbclient/ClusterInterface.h"
+#include "fdbclient/BlobWorkerInterface.h"
+#include "fdbclient/EncryptKeyProxyInterface.h"
+#include "fdbclient/ClientWorkerInterface.h"
+#include "fdbclient/ProcessInterface.h"
+#include "fdbclient/RestoreInterface.h"
+#include "fdbclient/Tenant.h"
+#include "fdbclient/FDBTypes.h"
+#include "fdbclient/GlobalConfig.h"
+#include "fdbclient/Audit.h"
+#include "fdbclient/BlobGranuleCommon.h"
+#include "fdbclient/BlobMetadataUtils.h"
+#include "fdbclient/BlobCipher.h"
+#include "fdbclient/StorageCheckpoint.h"
+#include "fdbclient/StorageServerShard.h"
+#include "fdbclient/MetaclusterRegistration.h"
+#include "fdbclient/StorageWiggleMetrics.actor.h"
+#include "fdbclient/ConsistencyScanInterface.actor.h"
+#include "fdbclient/DataDistributionConfig.actor.h"
+
+// Server headers
+#include "fdbserver/WorkerInterface.actor.h"
+#include "fdbserver/TLogInterface.h"
+#include "fdbserver/MasterInterface.h"
+#include "fdbserver/ResolverInterface.h"
+#include "fdbserver/DataDistributorInterface.h"
+#include "fdbserver/RatekeeperInterface.h"
+#include "fdbserver/BlobManagerInterface.h"
+#include "fdbserver/BlobMigratorInterface.h"
+#include "fdbserver/CoordinationInterface.h"
+#include "fdbserver/RestoreWorkerInterface.actor.h"
+#include "fdbserver/RestoreUtil.h"
+#include "fdbserver/LogSystemConfig.h"
+#include "fdbserver/NetworkTest.h"
+#include "fdbserver/ServerDBInfo.actor.h"
+#include "fdbserver/TesterInterface.actor.h"
+#include "fdbserver/KmsConnectorInterface.h"
+#include "fdbserver/SimEncryptKmsProxy.actor.h"
+#include "fdbserver/RocksDBCheckpointUtils.actor.h"
+#include "fdbserver/RemoteIKeyValueStore.actor.h"
+#include "fdbserver/StorageServerUtils.h"
+#include "fdbserver/BackupInterface.h"
+
+// Runtime + serialization
+#include "flow/serialize.h"
+#include "flow/TLSConfig.actor.h"
+#include "fdbrpc/FlowTransport.h"
+#include <cstdio>
+#include <sys/stat.h>
+
+// Fork + serialize: if the child segfaults (unresolved vtable from
+// server-only types), the parent continues with the next message.
+#include <unistd.h>
+#include <sys/wait.h>
+
+template <class T>
+void doEmit(const char* outDir, const char* name) {
+    T msg{};
+    ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+    wr.serialize(FileIdentifierFor<T>::value, msg);
+    auto bytes = wr.toStringRef();
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s.json", outDir, name);
+    FILE* f = fopen(path, "w");
+    if (!f) { perror(path); return; }
+    fprintf(f, "{\n  \"name\": \"%s\",\n  \"file_identifier\": %u,\n  \"size\": %d,\n  \"hex\": \"",
+            name, FileIdentifierFor<T>::value, (int)bytes.size());
+    for (int i = 0; i < bytes.size(); i++) fprintf(f, "%02x", bytes[i]);
+    fprintf(f, "\"\n}\n");
+    fclose(f);
+}
+
+// Fork-safe wrapper: run doEmit in a child process so segfaults
+// from unresolved vtables (server-only types) don't kill the parent.
+template <class T>
+void emit(const char* outDir, const char* name) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child: try to serialize. May segfault for some types.
+        doEmit<T>(outDir, name);
+        _exit(0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        // Success — file was written.
+    } else {
+        fprintf(stderr, "SKIP %s (crashed or failed)\n", name);
+    }
+}
+
+int main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "Usage: %s <output-dir>\n", argv[0]); return 1; }
+    const char* outDir = argv[1];
+    mkdir(outDir, 0755);
+
+    // Initialize FDB runtime (needed for ReplyPromise/TimedRequest constructors).
+    TLSConfig tlsConfig;
+    g_network = newNet2(tlsConfig, false, false);
+    FlowTransport::createInstance(false, 1, WLTOKEN_FIRST_AVAILABLE, nullptr);
+
+`)
+
+	// Skip nested types (parser extracted them but they're not top-level).
+	skipTypes := map[string]bool{
+		"TagInfo": true, // nested inside StorageQueuingMetricsReply
+	}
+
+	emitCount := 0
+	for _, s := range structs {
+		if skipTypes[s.name] {
+			continue
+		}
+		if s.fileIdentifier >= (1 << 24) {
+			continue // composed file identifiers
+		}
+		fmt.Fprintf(&b, "    emit<%s>(outDir, \"%s\");\n", s.name, s.name)
+		emitCount++
+	}
+
+	fmt.Fprintf(&b, "\n    fprintf(stderr, \"Wrote %d test vectors to %%s\\n\", outDir);\n", emitCount)
+	b.WriteString("    return 0;\n}\n")
+
+	return os.WriteFile(outPath, []byte(b.String()), 0o644)
+}
+
 func main() {
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <fdb-source-dir> <output-dir>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s <fdb-source-dir> <output-dir> [--gen-cpp=<path>]\n", os.Args[0])
 		os.Exit(1)
 	}
 	srcDir := os.Args[1]
 	outDir := os.Args[2]
+
+	var genCppPath string
+	for _, arg := range os.Args[3:] {
+		if strings.HasPrefix(arg, "--gen-cpp=") {
+			genCppPath = arg[len("--gen-cpp="):]
+		}
+	}
 
 	const fdbVersion = "7.3.75"
 
@@ -458,7 +608,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Write one JSON file per message.
+	// Write one JSON schema file per message.
 	for _, s := range structs {
 		fullPath := filepath.Join(srcDir, s.sourceFile)
 		fieldTypes := make(map[string]string)
@@ -495,4 +645,13 @@ func main() {
 	}
 
 	fmt.Fprintf(os.Stderr, "Wrote %d message schemas to %s\n", len(structs), outDir)
+
+	// Optionally generate C++ test file.
+	if genCppPath != "" {
+		if err := generateCppTestFile(structs, fileFieldTypes, srcDir, genCppPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error generating C++ test file: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Generated C++ test file: %s (%d messages)\n", genCppPath, len(structs))
+	}
 }

@@ -1,8 +1,7 @@
-load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load(":generate.bzl", "generate_wire_data")
+load(":generate.bzl", "generate_wire_schema")
 
-# Go parser — reads FDB C++ headers, outputs one schema JSON per message.
+# Go parser — reads FDB headers, outputs schema/ + generated_messages.cpp.
 go_binary(
     name = "schema-generator",
     embed = [":fdb-wire-schema-generator_lib"],
@@ -17,34 +16,14 @@ go_library(
     deps = ["//pkg/fdbgo/wire"],
 )
 
-# C++ test vector generator — uses FDB's actual flat_buffers.h templates
-# to produce ground-truth serialized bytes. One JSON per test case.
-cc_binary(
-    name = "testvec-generator",
-    srcs = [
-        "fdb_stubs.h",
-        "flat_buffers_minimal.cpp",
-        "main.cpp",
-    ],
-    copts = [
-        "-std=c++20",
-        "-Wno-deprecated-declarations",
-        "-isystem",
-        "cmd/fdb-wire-schema-generator/stubs",
-    ],
-    data = glob(["stubs/**"]),
-    deps = [
-        "@foundationdb//:flow_headers",
-    ],
-)
-
-# Produces two directory outputs:
-#   schema/   — one JSON per FDB protocol message (331 files)
-#   testdata/ — one JSON per conformance test case (12 files)
-generate_wire_data(
-    name = "generate_all",
+# Step 1: Parse FDB headers → schema/*.json + generated_messages.cpp
+generate_wire_schema(
+    name = "gen_schema",
     fdb_srcs = "@foundationdb//:all_srcs",
     schema_generator = ":schema-generator",
-    testvec_generator = ":testvec-generator",
     visibility = ["//visibility:public"],
 )
+
+# Step 2: Test vectors are generated via docker_build.sh (not Bazel).
+# Run: just wire-schema
+# The Docker build uses the real FDB build image + ObjectWriter for ground truth.

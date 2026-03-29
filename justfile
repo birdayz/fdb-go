@@ -53,13 +53,23 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
-# Regenerate FDB wire schema + test vectors (run when upgrading FDB version)
+# Regenerate FDB wire schema (Bazel, sandboxed)
 wire-schema:
-    bazelisk build //cmd/fdb-wire-schema-generator:generate_all
-    rm -rf pkg/fdbgo/wire/schema pkg/fdbgo/wire/testdata/Msg*.json
+    bazelisk build //cmd/fdb-wire-schema-generator:gen_schema
+    rm -rf pkg/fdbgo/wire/schema
     cp -r bazel-bin/cmd/fdb-wire-schema-generator/schema pkg/fdbgo/wire/schema
-    cp bazel-bin/cmd/fdb-wire-schema-generator/testdata/*.json pkg/fdbgo/wire/testdata/
-    @echo "Updated: $$(ls pkg/fdbgo/wire/schema/*.json | wc -l) schemas, $$(ls pkg/fdbgo/wire/testdata/Msg*.json | wc -l) test vectors"
+    @echo "Updated: $$(ls pkg/fdbgo/wire/schema/*.json | wc -l) schemas"
+
+# Regenerate FDB test vectors (Docker, real FDB ObjectWriter)
+wire-testvecs:
+    bazelisk build //cmd/fdb-wire-schema-generator:gen_schema
+    bash cmd/fdb-wire-schema-generator/docker_build.sh \
+        $$(bazelisk info output_base)/external/foundationdb+ \
+        bazel-bin/cmd/fdb-wire-schema-generator/generated_messages.cpp \
+        /tmp/testvecs_docker
+    rm -f pkg/fdbgo/wire/testdata/[A-Z]*.json
+    cp /tmp/testvecs_docker/*.json pkg/fdbgo/wire/testdata/
+    @echo "Updated: $$(ls pkg/fdbgo/wire/testdata/[A-Z]*.json | wc -l) test vectors"
 
 # Run tests with coverage
 coverage:

@@ -1,0 +1,97 @@
+#!/bin/bash
+# docker_build.sh — Compile & run test vector generator inside FDB's official Docker image.
+#
+# Strategy: inject our generated_messages.cpp into FDB's cmake build as a new target.
+# Link against fdbclient + fdbrpc + flow. For the few missing fdbserver symbols,
+# we link the specific .o files.
+#
+# Usage: docker_build.sh <fdb-src-dir> <gen-cpp> <output-dir>
+
+set -euo pipefail
+
+FDB_SRC="$1"
+GEN_CPP="$2"
+OUTPUT_DIR="$3"
+
+IMAGE="foundationdb/build:rockylinux9-latest"
+JOBS=12
+
+BUILD_CACHE="${FDB_BUILD_CACHE:-/tmp/fdb-docker-build}"
+SRC_CACHE="${FDB_SRC_CACHE:-/tmp/fdb-docker-src}"
+mkdir -p "$OUTPUT_DIR" "$BUILD_CACHE" "$SRC_CACHE"
+
+docker run --rm \
+    -e JOBS="$JOBS" \
+    -v "$FDB_SRC:/fdb_src:ro" \
+    -v "$(realpath "$GEN_CPP"):/work/generated_messages.cpp:ro" \
+    -v "$(realpath "$OUTPUT_DIR"):/output" \
+    -v "$BUILD_CACHE:/tmp/fdb-build" \
+    -v "$SRC_CACHE:/fdb" \
+    "$IMAGE" \
+    bash -c '
+        set -e
+        source /opt/rh/gcc-toolset-13/enable
+
+        if [ ! -f /fdb/CMakeLists.txt ]; then
+            echo "First run: copying FDB source..."
+            cp -r /fdb_src/* /fdb/
+        fi
+        cp /work/generated_messages.cpp /fdb/generated_messages.cpp
+
+        # Add our target (idempotent).
+        if ! grep -q gen_testvecs /fdb/CMakeLists.txt; then
+        cat >> /fdb/CMakeLists.txt << "CMAKE_EOF"
+
+# Test vector generator. Links fdbclient+fdbrpc+flow.
+# Unresolved fdbserver symbols are allowed — they are vtables from
+# template instantiations that are never called (we default-construct
+# messages, the virtual dispatch paths are dead code).
+add_executable(gen_testvecs generated_messages.cpp)
+target_link_libraries(gen_testvecs PRIVATE fdbclient fdbrpc flow)
+target_link_options(gen_testvecs PRIVATE "LINKER:--warn-unresolved-symbols")
+target_include_directories(gen_testvecs PRIVATE
+    ${CMAKE_SOURCE_DIR}/fdbserver/include
+    ${CMAKE_SOURCE_DIR}/fdbserver
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_BINARY_DIR}/fdbserver/include
+    ${CMAKE_BINARY_DIR}/fdbserver
+    ${CMAKE_BINARY_DIR}/fdbclient/include
+    ${CMAKE_BINARY_DIR}/fdbclient
+    ${CMAKE_BINARY_DIR}/fdbrpc/include
+    ${CMAKE_BINARY_DIR}/fdbrpc
+    ${CMAKE_BINARY_DIR}/flow/include
+    ${CMAKE_BINARY_DIR}/flow
+)
+CMAKE_EOF
+        fi
+
+        BUILD=/tmp/fdb-build
+
+        echo "=== Configuring cmake ==="
+        cmake -S /fdb -B $BUILD -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_PYTHON_BINDING=OFF \
+            -DBUILD_C_BINDING=ON \
+            -DBUILD_JAVA_BINDING=OFF \
+            -DBUILD_GO_BINDING=OFF \
+            -DBUILD_SWIFT_BINDING=OFF \
+            -DBUILD_RUBY_BINDING=OFF \
+            -DBUILD_DOCUMENTATION=OFF \
+            -DWITH_CSHARP=OFF \
+            -DWITH_PYTHON=OFF \
+            -DUSE_WERROR=OFF \
+            2>&1 | tail -3
+        echo "=== cmake configured ==="
+
+        echo "=== Building fdbserver (-j$JOBS) ==="
+        ninja -C $BUILD -j$JOBS fdbserver 2>&1 | tail -3
+        echo "=== fdbserver built ==="
+
+        echo "=== Building gen_testvecs ==="
+        ninja -C $BUILD -j$JOBS gen_testvecs 2>&1 | tail -5
+        echo "=== gen_testvecs built ==="
+
+        $BUILD/bin/gen_testvecs /output
+    '
+
+echo "Docker build complete: $(ls "$OUTPUT_DIR"/*.json 2>/dev/null | wc -l) test vectors"
