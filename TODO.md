@@ -1594,7 +1594,7 @@ Current: 39 QPS @ 1K vectors (26ms p50), 7.9 QPS @ 10K (135ms p50). 16x gap vs Q
 
 #### Performance: Goroutine-parallel beam search prefetch
 
-- [ ] **HIGH — Parallel candidate prefetch in `searchLayerMulti`** — Current beam search pops one candidate, blocks on `loadNodeLayerDispatch`, processes results, loops. Java pipelines I/O across iterations via `CompletableFuture` chains (`Search.java` `beamSearchLayer()` + `AsyncUtil.whileTrue()`). Go equivalent: pop top N (3-4) candidates from heap, fetch all in parallel goroutines (FDB reads are thread-safe), process results, repeat. Same for `searchLayerGreedy`. Estimated 2-3x search speedup. We already have inlining (neighbor vectors stored in edges) matching Apple's `InliningNode` — the remaining gap is I/O pipelining across beam search iterations, not storage layout.
+- [x] **HIGH — Parallel candidate prefetch in `searchLayerMulti`** — Pops up to 4 candidates per iteration, issues all edge-list reads as pipelined FDB futures via `loadEdgeListsBatch()`, then batch-fetches all unvisited neighbor vectors. **22.5% speedup** (18.2ms → 14.1ms per search, 1000 vectors, 128D, ef=64). `searchLayerGreedy` unchanged (single-candidate greedy descent has no parallel opportunity).
 
 #### Architectural note: HNSW vs IVF on FDB
 

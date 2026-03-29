@@ -608,7 +608,16 @@ type hnswCandidate struct {
 	dist     float64
 }
 
+// hnswPrefetchCandidates is the number of candidates to pop from the heap
+// per iteration and fetch edge lists for in parallel. Reduces serial FDB
+// round-trips from N to N/prefetch. 4 balances I/O pipelining against
+// over-fetching (popping candidates that would have been pruned).
+const hnswPrefetchCandidates = 4
+
 // searchLayerMulti finds the ef nearest neighbors at a given layer.
+// Uses parallel candidate prefetching: pops up to hnswPrefetchCandidates
+// from the heap per iteration, issues all edge-list reads as pipelined FDB
+// futures, then batch-fetches all unvisited neighbor vectors.
 func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, epPK tuple.Tuple, epVecBytes []byte, ef, layer int) ([]hnswCandidate, error) {
 	if epPK == nil {
 		return nil, nil
@@ -629,40 +638,49 @@ func (g *hnswGraph) searchLayerMulti(tx fdb.ReadTransaction, query []float64, ep
 	results := make([]hnswCandidate, 1, ef)
 	results[0] = hnswCandidate{pk: epPK, vecBytes: epVecBytes, dist: epDist}
 
-	// Pre-allocate toFetch to typical neighbor count (M).
-	toFetch := make([]tuple.Tuple, 0, g.config.M)
+	// Pre-allocate buffers reused across iterations.
+	poppedPKs := make([]tuple.Tuple, 0, hnswPrefetchCandidates)
+	toFetch := make([]tuple.Tuple, 0, g.config.M*hnswPrefetchCandidates)
 
 	for candidates.Len() > 0 {
-		closest := heap.Pop(candidates).(distItem)
+		// Pop up to hnswPrefetchCandidates from the heap.
+		poppedPKs = poppedPKs[:0]
+		done := false
+		for candidates.Len() > 0 && len(poppedPKs) < hnswPrefetchCandidates {
+			closest := heap.Pop(candidates).(distItem)
 
-		// Check if we've explored enough.
-		if len(results) >= ef {
-			farthestResult := results[len(results)-1].dist
-			if closest.dist > farthestResult {
+			// Early termination: if closest unprocessed candidate is farther
+			// than our worst result, all remaining candidates are too.
+			if len(results) >= ef && closest.dist > results[len(results)-1].dist {
+				done = true
 				break
 			}
+			poppedPKs = append(poppedPKs, closest.pk)
+		}
+		if done || len(poppedPKs) == 0 {
+			break
 		}
 
-		// Load the node's neighbors at this layer.
-		_, neighbors, err := g.storage.loadNodeLayerDispatch(tx, layer, closest.pk)
-		if err != nil {
-			continue
-		}
+		// Parallel edge-list fetch: issue all FDB reads before resolving any.
+		edgeLists := g.storage.loadEdgeListsBatch(tx, layer, poppedPKs)
 
-		// Collect unvisited neighbors — reuse toFetch slice.
-		// Pack each PK once and reuse the packed bytes for both the visited
-		// set check and the batch result's pkBytes (avoids double Pack()).
+		// Collect ALL unvisited neighbors across all popped candidates.
 		toFetch = toFetch[:0]
-		for _, nbPK := range neighbors {
-			key := string(nbPK.Pack())
-			if visited[key] {
+		for _, el := range edgeLists {
+			if el.err != nil {
 				continue
 			}
-			visited[key] = true
-			toFetch = append(toFetch, nbPK)
+			for _, nbPK := range el.neighbors {
+				key := string(nbPK.Pack())
+				if visited[key] {
+					continue
+				}
+				visited[key] = true
+				toFetch = append(toFetch, nbPK)
+			}
 		}
 
-		// Batch-read all unvisited neighbors at once.
+		// Batch-read all unvisited neighbor vectors at once.
 		// For inlining layers, neighbor vectors are already cached from the range read.
 		batchResults := g.storage.loadNodeLayerBatchDispatch(tx, layer, toFetch)
 		for _, r := range batchResults {
@@ -1152,6 +1170,82 @@ func (s *hnswStorage) loadNodeLayerBatch(tx fdb.ReadTransaction, layer int, pks 
 		}
 		s.cache[p.key] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
 		results[p.idx].vecBytes = vecBytes
+		results[p.idx].neighbors = neighbors
+	}
+
+	return results
+}
+
+// edgeListResult holds the neighbors from an edge-list fetch.
+type edgeListResult struct {
+	neighbors []tuple.Tuple
+	err       error
+}
+
+// loadEdgeListsBatch fetches edge lists for multiple nodes in parallel.
+// For non-inlining layers, issues all FDB Gets as futures before resolving any,
+// reducing serial round-trips from N to 1. For inlining layers (cached from
+// preload), falls back to sequential cache lookups (already fast, no I/O).
+func (s *hnswStorage) loadEdgeListsBatch(tx fdb.ReadTransaction, layer int, pks []tuple.Tuple) []edgeListResult {
+	results := make([]edgeListResult, len(pks))
+
+	if s.isInliningLayer(layer) {
+		// Inlining layers: data cached from preload, no I/O to parallelize.
+		for i, pk := range pks {
+			_, neighbors, err := s.loadNodeLayerInlining(tx, layer, pk)
+			results[i] = edgeListResult{neighbors: neighbors, err: err}
+		}
+		return results
+	}
+
+	// Non-inlining: issue all Gets as futures, then resolve.
+	type pending struct {
+		idx      int
+		cacheKey string
+		future   fdb.FutureByteSlice
+	}
+	var toFetch []pending
+
+	for i, pk := range pks {
+		key := s.dataSubspace.Pack(tuple.Tuple{int64(layer), pk})
+		cacheKey := string(key)
+
+		if cached, ok := s.cache[cacheKey]; ok {
+			hnswStatCacheHit(s.stats)
+			if cached == nil {
+				results[i].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			} else {
+				results[i].neighbors = cached.neighbors
+			}
+			continue
+		}
+
+		// Fire the Get without waiting — FDB pipelines these.
+		toFetch = append(toFetch, pending{idx: i, cacheKey: cacheKey, future: tx.Get(fdb.Key(key))})
+	}
+
+	if len(toFetch) > 0 {
+		hnswStatBatchGet(s.stats)
+	}
+
+	// Resolve all futures.
+	for _, p := range toFetch {
+		data, err := p.future.Get()
+		if err != nil {
+			results[p.idx].err = fmt.Errorf("hnsw: get node layer %d: %w", layer, err)
+			continue
+		}
+		if data == nil {
+			s.cache[p.cacheKey] = nil
+			results[p.idx].err = fmt.Errorf("hnsw: node not found at layer %d", layer)
+			continue
+		}
+		vecBytes, neighbors, parseErr := parseNodeValue(data)
+		if parseErr != nil {
+			results[p.idx].err = parseErr
+			continue
+		}
+		s.cache[p.cacheKey] = &parsedNode{vecBytes: vecBytes, neighbors: neighbors}
 		results[p.idx].neighbors = neighbors
 	}
 
