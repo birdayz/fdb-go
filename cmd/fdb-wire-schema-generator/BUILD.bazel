@@ -10,7 +10,9 @@ cc_binary(
     copts = [
         "-std=c++20",
         "-Wno-deprecated-declarations",
+        "-isystem", "cmd/fdb-wire-schema-generator/stubs",
     ],
+    data = glob(["stubs/**"]),
     deps = [
         "@foundationdb//:flow_headers",
     ],
