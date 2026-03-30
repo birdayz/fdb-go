@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
 func TestCoordinatorBootstrap(t *testing.T) {
-	t.Skip("WIP: request vtable needs inline UIDs (16 bytes), cluster key mismatch causes crash")
+	t.Skip("WIP: request dispatches to coordinator but silently dropped — need tcpdump of C binding traffic for comparison")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -44,16 +45,55 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	}
 	t.Logf("coordinators: %v", cf.Coordinators)
 
-	// Run fdbcli status to ensure the cluster is FULLY operational
-	// (coordinator endpoints registered, database configured).
+	// Configure the cluster.
 	exitCode, _, err := container.Exec(ctx, []string{
 		"fdbcli", "--exec", "configure new single ssd; status",
 	})
 	t.Logf("fdbcli configure+status exit: %d, err: %v", exitCode, err)
-	time.Sleep(2 * time.Second) // give coordinator time to stabilize
+	time.Sleep(2 * time.Second)
+
+	// Read the INTERNAL cluster file from the container.
+	// The coordinator compares req.clusterKey with its own cluster key,
+	// so we must use the INTERNAL address (not the external socat address).
+	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
+	if err != nil {
+		t.Fatalf("read internal cluster file: %v", err)
+	}
+	internalBytes, _ := io.ReadAll(internalReader)
+	internalConnStr := strings.TrimSpace(string(internalBytes))
+	// Docker log multiplexer may prepend 8-byte header; strip non-printable prefix
+	for len(internalConnStr) > 0 && internalConnStr[0] < 0x20 {
+		internalConnStr = internalConnStr[1:]
+	}
+	t.Logf("internal cluster file: %q", internalConnStr)
+
+	// Parse internal cluster file for the cluster key
+	internalCF, err := ParseClusterString(internalConnStr)
+	if err != nil {
+		t.Logf("parse internal cluster string: %v, falling back to external", err)
+		internalCF = cf
+	}
+
+	// The request clusterKey must use the INTERNAL addresses. Store both.
+	// Create a ClusterFile with external addresses for TCP, internal for clusterKey.
+	connectCF := &ClusterFile{
+		Description:  internalCF.Description,
+		ID:           internalCF.ID,
+		Coordinators: cf.Coordinators, // external (socat) for TCP connection
+	}
+	// Store the internal connection string for the request's clusterKey field
+	internalClusterKey := internalCF.Description + ":" + internalCF.ID + "@"
+	for i, a := range internalCF.Coordinators {
+		if i > 0 {
+			internalClusterKey += ","
+		}
+		internalClusterKey += a
+	}
+	t.Logf("internal cluster key: %s", internalClusterKey)
+	connectCF.InternalKey = internalClusterKey
 
 	// Create cluster and connect.
-	cluster := NewClusterFromConfig(cf)
+	cluster := NewClusterFromConfig(connectCF)
 	defer cluster.Close()
 
 	err = cluster.Connect(ctx)

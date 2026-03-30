@@ -20,7 +20,8 @@ import (
 type ClusterFile struct {
 	Description  string
 	ID           string
-	Coordinators []string // "host:port" addresses
+	Coordinators []string // "host:port" addresses for TCP connection
+	InternalKey  string   // optional: full internal cluster key for request clusterKey field
 }
 
 // ParseClusterFile reads and parses an fdb.cluster file.

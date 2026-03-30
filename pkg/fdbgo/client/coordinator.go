@@ -45,31 +45,44 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 // for nested struct fields (knownClientInfoID, reply), but FDB expects proper
 // nested FlatBuffers objects with vtable soffsets.
 func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
-	connStr := cf.Description + ":" + cf.ID + "@"
-	for i, addr := range cf.Coordinators {
-		if i > 0 {
-			connStr += ","
+	// The clusterKey must match the coordinator's internal cluster file.
+	connStr := cf.InternalKey
+	if connStr == "" {
+		connStr = cf.Description + ":" + cf.ID + "@"
+		for i, addr := range cf.Coordinators {
+			if i > 0 {
+				connStr += ","
+			}
+			connStr += addr
 		}
-		connStr += addr
 	}
 
-	// Use schema vtable for now. This produces a request that the server
-	// silently drops (wrong UID field size), but doesn't crash the server.
-	// TODO: Switch to correct vtable {22,61,36,40,44,4,48,52,20,56,60}
-	// once the cluster key matching is fixed.
-	vt := protocol.OpenDatabaseCoordRequest_VTable
+	// REAL vtable from C++ ground truth test vector (OpenDatabaseCoordRequest.json):
+	// {22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
+	// UID (slot 3) is 16 bytes INLINE at offset 4.
+	// ReplyPromise (slot 6) is 4-byte RelativeOffset to nested struct at offset 40.
+	vt := wire.VTable{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
 	fileID := protocol.OpenDatabaseCoordRequest_FileIdentifier
 
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 4, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(vt[4+2]), []byte(connStr))
+	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
+		// slot 3: knownClientInfoID — UID INLINE at offset 4 (16 bytes zeros)
+		obj.WriteUint64(4, 0)
+		obj.WriteUint64(12, 0)
 
-		replyBytes := make([]byte, 16)
-		binary.LittleEndian.PutUint64(replyBytes[0:], replyToken.First)
-		binary.LittleEndian.PutUint64(replyBytes[8:], replyToken.Second)
-		obj.WriteBytes(int(vt[6+2]), replyBytes)
+		// slot 6: reply — ReplyPromise is a NESTED struct (4-byte RelativeOffset)
+		// The nested struct contains the UID (vtable {6, 20, 4}: 16 bytes inline)
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(40, replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
 
-		obj.WriteBool(int(vt[8+2]), true)
+		// slot 4: clusterKey
+		obj.WriteBytes(32, []byte(connStr))
+
+		// slot 8: internal
+		obj.WriteBool(48, true)
 	})
 }
 
