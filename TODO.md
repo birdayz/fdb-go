@@ -1677,7 +1677,7 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 
 - [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75 (e.g., version=1020866).
 - [x] **GetKeyServerLocationsRequest** — Location reply received and parsed. Storage server address extracted (172.21.0.3:PORT). Uses generated vtable + getAdjustedEndpoint(2) for commit proxy token. TenantInfo nested struct with tenantId=-1 at generated slot 7. Reply at generated slot 5.
-- [ ] **GetValueRequest/Reply** — complete the read path: serialize request with reply token → send to storage server → receive → unwrap ErrorOr → deserialize reply → extract value.
+- [ ] **GetValueRequest/Reply** — Request builder wired up with PrepareReply pattern and TenantInfo. Storage server endpoint token extracted from location reply. Server crashes on our request — same vtable/format debugging needed. The generated vtable {24,42,...} may need C++ ground truth validation.
 - [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` (nested `std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>`) to extract key range → server address mappings.
 - [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
