@@ -1635,3 +1635,81 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 
 - [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison.
 - [x] **LOW — Continuation token fuzzing per cursor type** — 3 new fuzz targets: `FuzzConcatContinuation`, `FuzzFlatMapContinuation`, `FuzzDedupContinuation`. Each exercises proto UnmarshalVT + factory fallback with random bytes. 15s continuous fuzzing each (~22M executions) — all clean. Union/Intersection don't have deserialization factories yet; passthrough combinators (Filter, Skip, Limit, Map) have no continuation parsing to fuzz.
+
+---
+
+## Native Go Client (RFC 010)
+
+Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fdb-client.md`.
+
+### Done
+
+- [x] Wire serde runtime (`pkg/fdbgo/wire/`) — VTable generation, FDB FlatBuffers writer/reader. All type categories: inline scalars, bytes, vectors, optionals, nested structs. Reader handles protocol version prefix. 359 tests.
+- [x] Go header parser (`cmd/fdb-wire-schema-generator/`) — parses all FDB C++ headers, extracts 369 protocol messages. Multi-line serializer support. 100% field type resolution (1545/1545).
+- [x] Per-message schema files — 369 JSON files in `pkg/fdbgo/wire/schema/`.
+- [x] Ground-truth test vectors — 322 JSON files in `pkg/fdbgo/wire/testdata/`. Serialized by FDB's real ObjectWriter inside Docker (`foundationdb/build:rockylinux9-latest`). 47 Interface types skipped (RequestStream vtable crash).
+- [x] Go code generator (`cmd/fdb-wire-codegen/`) — reads schema JSON, emits typed Go structs + MarshalFDB/UnmarshalFDB.
+- [x] Protocol package (`pkg/fdbgo/protocol/`) — 17 client message types generated, compiled, ground-truth tested.
+- [x] Transport layer (`pkg/fdbgo/transport/`) — TCP framing with XXH3-64 checksum, ConnectPacket handshake, multiplexed connections with endpoint token routing. 7 tests.
+- [x] Client skeleton (`pkg/fdbgo/client/`) — cluster file parsing, transaction state machine (Set/Clear/Atomic + OnError retry), GRV batcher, locality cache, read/commit path stubs. 12 tests.
+- [x] FDB source auto-fetch — `archive_override` in MODULE.bazel, tag 7.3.75. Zero local setup.
+
+### CRITICAL — Connection bootstrap
+
+- [ ] **OpenDatabaseCoordRequest → ClientDBInfo** — Send to coordinator, receive proxy addresses (GRV proxies, commit proxies). This is the bootstrap step. Without it, we don't know where to send any RPC. Must parse `ClientDBInfo` which contains `GrvProxyInterface[]` and `CommitProxyInterface[]` as nested FDB-serialized structs.
+- [ ] **ErrorOr\<T\> response unwrapping** — every FDB response is wrapped in `ErrorOr<EnsureTable<T>>`. First 4 bytes = error code (0 = success, then T; nonzero = FDB error, no payload). Reader must strip this wrapper.
+- [ ] **ReplyPromise token embedding** — when sending a request, the reply UID token must be serialized INTO the message body's `reply` field (not just the frame header). The server sends the response to this token.
+- [ ] **CachedSerialization\<ClientDBInfo\>** — coordinator response is wrapped in `CachedSerialization` which prepends cached serialized bytes. Need to unwrap.
+- [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
+
+### HIGH — Read path
+
+- [ ] **GetReadVersionRequest/Reply** — wire up GRV batcher to actually send/receive via the transport layer. Needs ErrorOr unwrapping + reply token embedding.
+- [ ] **GetValueRequest/Reply** — complete the read path: serialize request with reply token → send to storage server → receive → unwrap ErrorOr → deserialize reply → extract value.
+- [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` (nested `std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>`) to extract key range → server address mappings.
+- [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
+- [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
+- [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
+
+### HIGH — Write path
+
+- [ ] **CommitTransactionRef serialization** — pack mutations + read/write conflict ranges into nested struct. This is the most complex serialization: `VectorRef<KeyRangeRef>` for conflict ranges, `VectorRef<MutationRef>` for mutations, `Version read_snapshot`.
+- [ ] **CommitTransactionRequest/CommitID** — send to commit proxy, receive committed version or conflict error.
+- [ ] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution.
+- [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops (ADD, BYTE_MAX, SET_VERSIONSTAMPED_KEY, etc.).
+
+### HIGH — Public API
+
+- [ ] **`pkg/fdbgo/fdb/` package** — drop-in replacement for `github.com/apple/foundationdb/bindings/go/src/fdb`. Must match: `Database`, `Transaction`, `Transactor`, `ReadTransactor`, `ReadTransaction`, `FutureByteSlice`, `FutureNil`, `FutureKey`, `FutureInt64`, `Key`, `KeyValue`, `KeySelector`, `KeyRange`, `RangeResult`, `RangeOptions`, `StreamingMode`, `Error`, all 12 atomic ops, `Snapshot`, `Tenant`.
+- [ ] **Subspace/Tuple** — vendor or rewrite from upstream (already pure Go).
+- [ ] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetPrioritySystemImmediate`, `SetCausalReadRisky`, `SetReadYourWritesDisable`, `SetNextWriteNoWriteConflictRange`, etc.
+- [ ] **GetVersionstamp** — return versionstamp promise resolved after commit.
+
+### MEDIUM — Correctness
+
+- [ ] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
+- [ ] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
+- [ ] **commit_unknown_result resolution** — dummy transaction + idempotency ID check.
+- [ ] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510.
+- [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
+
+### MEDIUM — Performance
+
+- [ ] **GRV cache** — cache read version for causal-read-risky transactions.
+- [ ] **Connection pooling** — one persistent connection per peer address (not reconnect per request).
+- [ ] **Pipelined reads** — issue FDB futures for Get/GetRange, batch at commit time.
+
+### Phase 2
+
+- [ ] **Watch API** — `WatchValueRequest` long-poll to storage server.
+- [ ] **Directory layer** — vendor from upstream.
+- [ ] **Version vector support** — causal consistency optimization.
+- [ ] **Tenant API** — `Tenant.CreateTransaction()`, `Tenant.Transact()`.
+- [ ] **TLS support** — `crypto/tls` for TLS connections.
+- [ ] **Tag throttling** — client-side throttle enforcement.
+
+### Phase 3
+
+- [ ] **Multi-version client** — plugin loading for older client versions.
+- [ ] **FDB status JSON parsing** — cluster status monitoring.
+- [ ] **Binding tester** — pass FDB's official binding test suite (47 core + 21 directory ops).
