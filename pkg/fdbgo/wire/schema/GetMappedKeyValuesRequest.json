@@ -26,7 +26,7 @@
   "fields": [
     {
       "name": "begin",
-      "cpp_type": "unknown",
+      "cpp_type": "KeySelectorRef",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,
@@ -35,7 +35,7 @@
     },
     {
       "name": "end",
-      "cpp_type": "KeySelectorRef begin,",
+      "cpp_type": "KeySelectorRef",
       "type": "struct",
       "vtable_slot": 1,
       "wire_size": 4,
@@ -62,21 +62,21 @@
     },
     {
       "name": "limit",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int",
+      "type": "scalar",
       "vtable_slot": 4,
       "wire_size": 4,
       "wire_alignment": 4,
-      "inline": false
+      "inline": true
     },
     {
       "name": "limitBytes",
-      "cpp_type": "int limit,",
-      "type": "struct",
+      "cpp_type": "int",
+      "type": "scalar",
       "vtable_slot": 5,
       "wire_size": 4,
       "wire_alignment": 4,
-      "inline": false
+      "inline": true
     },
     {
       "name": "tags",

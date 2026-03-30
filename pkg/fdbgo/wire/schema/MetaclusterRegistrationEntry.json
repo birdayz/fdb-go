@@ -42,7 +42,7 @@
     },
     {
       "name": "metaclusterId",
-      "cpp_type": "unknown",
+      "cpp_type": "UID",
       "type": "struct",
       "vtable_slot": 3,
       "wire_size": 4,

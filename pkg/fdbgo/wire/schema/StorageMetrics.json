@@ -5,12 +5,12 @@
   "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
   "vtable": [
     14,
-    36,
+    44,
     4,
     12,
-    28,
     20,
-    32
+    28,
+    36
   ],
   "fields": [
     {
@@ -33,12 +33,12 @@
     },
     {
       "name": "iosPerKSecond",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "bytesReadPerKSecond",
@@ -51,12 +51,12 @@
     },
     {
       "name": "opsReadPerKSecond",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 4,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     }
   ]
 }

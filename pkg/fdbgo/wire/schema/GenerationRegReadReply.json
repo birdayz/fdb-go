@@ -23,7 +23,7 @@
     },
     {
       "name": "gen",
-      "cpp_type": "unknown",
+      "cpp_type": "UniqueGeneration",
       "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,
@@ -32,7 +32,7 @@
     },
     {
       "name": "rgen",
-      "cpp_type": "UniqueGeneration gen,",
+      "cpp_type": "UniqueGeneration",
       "type": "struct",
       "vtable_slot": 3,
       "wire_size": 4,

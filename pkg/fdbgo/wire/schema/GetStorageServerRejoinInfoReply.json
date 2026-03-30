@@ -53,8 +53,8 @@
     },
     {
       "name": "history",
-      "cpp_type": "std::vector\u003cstd::pair\u003cVersion, Tag\u003e\u003e",
-      "type": "vector",
+      "cpp_type": "unknown",
+      "type": "struct",
       "vtable_slot": 5,
       "wire_size": 4,
       "wire_alignment": 4,

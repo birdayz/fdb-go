@@ -27,7 +27,7 @@
     },
     {
       "name": "min",
-      "cpp_type": "unknown",
+      "cpp_type": "StorageMetrics",
       "type": "struct",
       "vtable_slot": 1,
       "wire_size": 4,
@@ -36,7 +36,7 @@
     },
     {
       "name": "max",
-      "cpp_type": "StorageMetrics min,",
+      "cpp_type": "StorageMetrics",
       "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,

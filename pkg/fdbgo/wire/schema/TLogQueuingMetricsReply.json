@@ -5,13 +5,13 @@
   "source_file": "fdbserver/include/fdbserver/TLogInterface.h",
   "vtable": [
     16,
-    40,
+    48,
     4,
     12,
+    20,
     28,
-    32,
-    36,
-    20
+    44,
+    36
   ],
   "fields": [
     {
@@ -34,21 +34,21 @@
     },
     {
       "name": "bytesDurable",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "bytesInput",
-      "cpp_type": "int64_t bytesDurable,",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "storageBytes",

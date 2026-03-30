@@ -16,7 +16,7 @@
   "fields": [
     {
       "name": "waitStateStart",
-      "cpp_type": "unknown",
+      "cpp_type": "WaitState",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,
@@ -25,7 +25,7 @@
     },
     {
       "name": "waitStateEnd",
-      "cpp_type": "WaitState waitStateStart,",
+      "cpp_type": "WaitState",
       "type": "struct",
       "vtable_slot": 1,
       "wire_size": 4,
@@ -34,7 +34,7 @@
     },
     {
       "name": "timeStart",
-      "cpp_type": "unknown",
+      "cpp_type": "time_t",
       "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,
@@ -43,7 +43,7 @@
     },
     {
       "name": "timeEnd",
-      "cpp_type": "time_t timeStart,",
+      "cpp_type": "time_t",
       "type": "struct",
       "vtable_slot": 3,
       "wire_size": 4,

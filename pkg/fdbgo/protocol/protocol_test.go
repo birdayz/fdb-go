@@ -29,8 +29,6 @@ func loadVector(t *testing.T, name string) []byte {
 	return raw
 }
 
-// TestUnmarshal_GroundTruth verifies every generated message type can
-// unmarshal its C++ ground-truth test vector.
 func TestUnmarshal_GroundTruth(t *testing.T) {
 	t.Parallel()
 
@@ -73,7 +71,6 @@ func TestUnmarshal_GroundTruth(t *testing.T) {
 	}
 }
 
-// TestRoundTrip verifies Marshal → Unmarshal preserves field values.
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +119,22 @@ func TestRoundTrip(t *testing.T) {
 		}
 		if msg2.TxnBatchId != 42 {
 			t.Errorf("txnBatchId: got %d, want 42", msg2.TxnBatchId)
+		}
+	})
+
+	t.Run("GetValueReply_WithPenalty", func(t *testing.T) {
+		t.Parallel()
+		msg := GetValueReply{Penalty: 1.5, Cached: true}
+		data := msg.MarshalFDB()
+		var msg2 GetValueReply
+		if err := msg2.UnmarshalFDB(data); err != nil {
+			t.Fatalf("UnmarshalFDB: %v", err)
+		}
+		if msg2.Penalty != 1.5 {
+			t.Errorf("penalty: got %f, want 1.5", msg2.Penalty)
+		}
+		if !msg2.Cached {
+			t.Error("cached: got false, want true")
 		}
 	})
 }

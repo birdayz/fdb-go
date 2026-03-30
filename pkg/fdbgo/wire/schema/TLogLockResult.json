@@ -34,8 +34,8 @@
     },
     {
       "name": "unknownCommittedVersionTuples",
-      "cpp_type": "std::deque\u003cstd::tuple\u003cVersion, int\u003e\u003e",
-      "type": "vector",
+      "cpp_type": "unknown",
+      "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,
       "wire_alignment": 4,

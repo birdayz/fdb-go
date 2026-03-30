@@ -4,37 +4,38 @@
   "fdb_version": "7.3.75",
   "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
   "vtable": [
-    12,
-    17,
+    14,
+    22,
     4,
-    8,
+    20,
     12,
-    16
+    16,
+    21
   ],
   "fields": [
     {
       "name": "penalty",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "error",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Optional\u003cError\u003e",
+      "type": "optional",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
       "inline": false
     },
     {
       "name": "sel",
       "cpp_type": "KeySelector",
       "type": "struct",
-      "vtable_slot": 2,
+      "vtable_slot": 3,
       "wire_size": 4,
       "wire_alignment": 4,
       "inline": false
@@ -43,7 +44,7 @@
       "name": "cached",
       "cpp_type": "bool",
       "type": "scalar",
-      "vtable_slot": 3,
+      "vtable_slot": 4,
       "wire_size": 1,
       "wire_alignment": 1,
       "inline": true

@@ -33,7 +33,7 @@
     },
     {
       "name": "knownLeader",
-      "cpp_type": "unknown",
+      "cpp_type": "UID",
       "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,
@@ -42,7 +42,7 @@
     },
     {
       "name": "prevChangeID",
-      "cpp_type": "UID knownLeader,",
+      "cpp_type": "UID",
       "type": "struct",
       "vtable_slot": 3,
       "wire_size": 4,

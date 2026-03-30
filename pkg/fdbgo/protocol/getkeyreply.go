@@ -7,14 +7,14 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const GetKeyReply_FileIdentifier uint32 = 11226513
 
-var GetKeyReply_VTable = wire.VTable{12, 17, 4, 8, 12, 16}
+var GetKeyReply_VTable = wire.VTable{14, 22, 4, 20, 12, 16, 21}
 
 // GetKeyReply — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetKeyReply struct {
-	Penalty []byte // unknown (slot 0)
-	Error   []byte // unknown (slot 1)
-	Sel     []byte // KeySelector (slot 2)
-	Cached  bool   // bool (slot 3)
+	Penalty float64 // double (slot 0)
+	Error   []byte  // Optional<Error> (slot 1)
+	Sel     []byte  // KeySelector (slot 3)
+	Cached  bool    // bool (slot 4)
 }
 
 func (m *GetKeyReply) FileIdentifier() uint32 { return GetKeyReply_FileIdentifier }
@@ -25,26 +25,22 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(0) {
-		m.Penalty = r.ReadBytes(0)
-	}
-	if r.FieldPresent(1) {
-		m.Error = r.ReadBytes(1)
-	}
-	if r.FieldPresent(2) {
-		m.Sel = r.ReadBytes(2)
+		m.Penalty = r.ReadFloat64(0)
 	}
 	if r.FieldPresent(3) {
-		m.Cached = r.ReadBool(3)
+		m.Sel = r.ReadBytes(3)
+	}
+	if r.FieldPresent(4) {
+		m.Cached = r.ReadBool(4)
 	}
 	return nil
 }
 
 func (m *GetKeyReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetKeyReply_FileIdentifier, GetKeyReply_VTable, 4, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(GetKeyReply_VTable[0+2]), m.Penalty)
-		obj.WriteBytes(int(GetKeyReply_VTable[1+2]), m.Error)
-		obj.WriteBytes(int(GetKeyReply_VTable[2+2]), m.Sel)
-		obj.WriteBool(int(GetKeyReply_VTable[3+2]), m.Cached)
+	return w.WriteMessage(GetKeyReply_FileIdentifier, GetKeyReply_VTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteFloat64(int(GetKeyReply_VTable[0+2]), m.Penalty)
+		obj.WriteBytes(int(GetKeyReply_VTable[3+2]), m.Sel)
+		obj.WriteBool(int(GetKeyReply_VTable[4+2]), m.Cached)
 	})
 }

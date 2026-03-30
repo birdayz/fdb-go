@@ -6,57 +6,57 @@
   "source_file": "fdbserver/include/fdbserver/TLogInterface.h",
   "vtable": [
     30,
-    47,
+    67,
     4,
-    8,
     12,
-    16,
     20,
-    24,
-    46,
     28,
     44,
-    32,
+    48,
+    66,
+    52,
+    64,
+    56,
     36,
-    40,
+    60,
     0
   ],
   "fields": [
     {
       "name": "prevVersion",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "version",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "knownCommittedVersion",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "minKnownCommittedVersion",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "messages",
@@ -105,12 +105,12 @@
     },
     {
       "name": "seqPrevVersion",
-      "cpp_type": "Version prevVersion, version, knownCommittedVersion, minKnownCommittedVersion,",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 10,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "tLogLocIds",

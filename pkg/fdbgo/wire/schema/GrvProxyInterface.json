@@ -33,7 +33,7 @@
     },
     {
       "name": "getConsistentReadVersion",
-      "cpp_type": "unknown",
+      "cpp_type": "RequestStream",
       "type": "struct",
       "vtable_slot": 3,
       "wire_size": 4,

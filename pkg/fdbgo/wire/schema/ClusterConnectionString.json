@@ -32,8 +32,8 @@
     },
     {
       "name": "key",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Key",
+      "type": "bytes",
       "vtable_slot": 2,
       "wire_size": 4,
       "wire_alignment": 4,
@@ -41,8 +41,8 @@
     },
     {
       "name": "keyDesc",
-      "cpp_type": "Key key,",
-      "type": "struct",
+      "cpp_type": "Key",
+      "type": "bytes",
       "vtable_slot": 3,
       "wire_size": 4,
       "wire_alignment": 4,

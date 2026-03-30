@@ -14,7 +14,7 @@
   "fields": [
     {
       "name": "results",
-      "cpp_type": "std::vector\u003cstd::pair\u003cKeyRangeRef, UID\u003e\u003e",
+      "cpp_type": "std::vector\u003cstd::pair\u003cKeyRangeRef, std::vector\u003cStorageServerInterface\u003e\u003e\u003e",
       "type": "vector",
       "vtable_slot": 0,
       "wire_size": 4,

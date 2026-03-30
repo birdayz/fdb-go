@@ -13,8 +13,8 @@
   "fields": [
     {
       "name": "encryptKeyIds",
-      "cpp_type": "std::vector\u003cstd::pair\u003cEncryptCipherBaseKeyId, EncryptCipherDomainId\u003e\u003e",
-      "type": "vector",
+      "cpp_type": "unknown",
+      "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,
       "wire_alignment": 4,

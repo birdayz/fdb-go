@@ -74,8 +74,8 @@
     },
     {
       "name": "tpcvMap",
-      "cpp_type": "std::unordered_map\u003cuint16_t, Version\u003e",
-      "type": "vector",
+      "cpp_type": "unknown",
+      "type": "struct",
       "vtable_slot": 7,
       "wire_size": 4,
       "wire_alignment": 4,

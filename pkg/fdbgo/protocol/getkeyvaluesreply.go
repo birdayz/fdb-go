@@ -7,16 +7,16 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const GetKeyValuesReply_FileIdentifier uint32 = 1783066
 
-var GetKeyValuesReply_VTable = wire.VTable{18, 26, 12, 16, 20, 4, 24, 25, 0}
+var GetKeyValuesReply_VTable = wire.VTable{20, 31, 4, 28, 20, 24, 12, 29, 30, 0}
 
 // GetKeyValuesReply — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetKeyValuesReply struct {
-	Penalty []byte // unknown (slot 0)
-	Error   []byte // unknown (slot 1)
-	Data    []byte // VectorRef<KeyValueRef, VecSerStrategy::String> (slot 2)
-	Version int64  // Version (slot 3)
-	More    bool   // bool (slot 4)
-	Cached  bool   // bool (slot 5)
+	Penalty float64 // double (slot 0)
+	Error   []byte  // Optional<Error> (slot 1)
+	Data    []byte  // VectorRef<KeyValueRef> (slot 3)
+	Version int64   // Version (slot 4)
+	More    bool    // bool (slot 5)
+	Cached  bool    // bool (slot 6)
 }
 
 func (m *GetKeyValuesReply) FileIdentifier() uint32 { return GetKeyValuesReply_FileIdentifier }
@@ -27,22 +27,19 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(0) {
-		m.Penalty = r.ReadBytes(0)
-	}
-	if r.FieldPresent(1) {
-		m.Error = r.ReadBytes(1)
-	}
-	if r.FieldPresent(2) {
-		m.Data = r.ReadBytes(2)
+		m.Penalty = r.ReadFloat64(0)
 	}
 	if r.FieldPresent(3) {
-		m.Version = r.ReadInt64(3)
+		m.Data = r.ReadBytes(3)
 	}
 	if r.FieldPresent(4) {
-		m.More = r.ReadBool(4)
+		m.Version = r.ReadInt64(4)
 	}
 	if r.FieldPresent(5) {
-		m.Cached = r.ReadBool(5)
+		m.More = r.ReadBool(5)
+	}
+	if r.FieldPresent(6) {
+		m.Cached = r.ReadBool(6)
 	}
 	return nil
 }
@@ -50,11 +47,10 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 func (m *GetKeyValuesReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(GetKeyValuesReply_FileIdentifier, GetKeyValuesReply_VTable, 8, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(GetKeyValuesReply_VTable[0+2]), m.Penalty)
-		obj.WriteBytes(int(GetKeyValuesReply_VTable[1+2]), m.Error)
-		obj.WriteBytes(int(GetKeyValuesReply_VTable[2+2]), m.Data)
-		obj.WriteInt64(int(GetKeyValuesReply_VTable[3+2]), m.Version)
-		obj.WriteBool(int(GetKeyValuesReply_VTable[4+2]), m.More)
-		obj.WriteBool(int(GetKeyValuesReply_VTable[5+2]), m.Cached)
+		obj.WriteFloat64(int(GetKeyValuesReply_VTable[0+2]), m.Penalty)
+		obj.WriteBytes(int(GetKeyValuesReply_VTable[3+2]), m.Data)
+		obj.WriteInt64(int(GetKeyValuesReply_VTable[4+2]), m.Version)
+		obj.WriteBool(int(GetKeyValuesReply_VTable[5+2]), m.More)
+		obj.WriteBool(int(GetKeyValuesReply_VTable[6+2]), m.Cached)
 	})
 }

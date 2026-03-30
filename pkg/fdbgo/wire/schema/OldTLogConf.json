@@ -5,15 +5,15 @@
   "source_file": "fdbserver/include/fdbserver/LogSystemConfig.h",
   "vtable": [
     20,
-    44,
-    20,
-    24,
-    28,
-    32,
+    52,
     36,
-    40,
     4,
-    12
+    12,
+    40,
+    44,
+    48,
+    20,
+    28
   ],
   "fields": [
     {
@@ -27,21 +27,21 @@
     },
     {
       "name": "epochBegin",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "epochEnd",
-      "cpp_type": "Version epochBegin,",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "logRouterTags",

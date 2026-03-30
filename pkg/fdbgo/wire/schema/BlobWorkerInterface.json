@@ -23,7 +23,7 @@
     },
     {
       "name": "locality",
-      "cpp_type": "struct LocalityData",
+      "cpp_type": "LocalityData",
       "type": "struct",
       "vtable_slot": 1,
       "wire_size": 4,

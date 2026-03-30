@@ -5,29 +5,29 @@
   "source_file": "fdbserver/include/fdbserver/NetworkTest.h",
   "vtable": [
     10,
-    16,
+    24,
     4,
-    8,
-    12
+    12,
+    20
   ],
   "fields": [
     {
       "name": "acknowledgeToken",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "sequence",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "index",

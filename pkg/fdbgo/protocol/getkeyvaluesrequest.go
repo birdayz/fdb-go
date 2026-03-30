@@ -11,11 +11,11 @@ var GetKeyValuesRequest_VTable = wire.VTable{32, 54, 12, 16, 4, 20, 24, 52, 28, 
 
 // GetKeyValuesRequest — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetKeyValuesRequest struct {
-	Begin                  []byte // unknown (slot 0)
-	End                    []byte // KeySelectorRef begin, (slot 1)
+	Begin                  []byte // KeySelectorRef (slot 0)
+	End                    []byte // KeySelectorRef (slot 1)
 	Version                int64  // Version (slot 2)
-	Limit                  []byte // unknown (slot 3)
-	LimitBytes             []byte // int limit, (slot 4)
+	Limit                  int32  // int (slot 3)
+	LimitBytes             int32  // int (slot 4)
 	Tags                   []byte // Optional<TagSet> (slot 5)
 	Reply                  []byte // ReplyPromise<GetKeyValuesReply> (slot 7)
 	SpanContext            []byte // SpanContext (slot 8)
@@ -41,10 +41,10 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 		m.Version = r.ReadInt64(2)
 	}
 	if r.FieldPresent(3) {
-		m.Limit = r.ReadBytes(3)
+		m.Limit = r.ReadInt32(3)
 	}
 	if r.FieldPresent(4) {
-		m.LimitBytes = r.ReadBytes(4)
+		m.LimitBytes = r.ReadInt32(4)
 	}
 	if r.FieldPresent(7) {
 		m.Reply = r.ReadBytes(7)
@@ -67,8 +67,8 @@ func (m *GetKeyValuesRequest) MarshalFDB() []byte {
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[0+2]), m.Begin)
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[1+2]), m.End)
 		obj.WriteInt64(int(GetKeyValuesRequest_VTable[2+2]), m.Version)
-		obj.WriteBytes(int(GetKeyValuesRequest_VTable[3+2]), m.Limit)
-		obj.WriteBytes(int(GetKeyValuesRequest_VTable[4+2]), m.LimitBytes)
+		obj.WriteInt32(int(GetKeyValuesRequest_VTable[3+2]), m.Limit)
+		obj.WriteInt32(int(GetKeyValuesRequest_VTable[4+2]), m.LimitBytes)
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[7+2]), m.Reply)
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[8+2]), m.SpanContext)
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[9+2]), m.TenantInfo)

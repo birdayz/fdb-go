@@ -23,8 +23,8 @@
     },
     {
       "name": "rangeVersions",
-      "cpp_type": "Standalone\u003cVectorRef\u003cstd::pair\u003cKeyRangeRef, Version\u003e\u003e\u003e",
-      "type": "vector",
+      "cpp_type": "unknown",
+      "type": "struct",
       "vtable_slot": 1,
       "wire_size": 4,
       "wire_alignment": 4,

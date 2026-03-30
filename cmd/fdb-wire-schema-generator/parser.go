@@ -339,13 +339,21 @@ func buildMessageDef(ps parsedStruct, fieldTypes map[string]string, fdbVersion s
 
 	for _, arg := range ps.serializerArgs {
 		argName := arg
+		// Strip base class prefix: "LoadBalancedReply::penalty" → "penalty"
 		if idx := strings.LastIndex(arg, "::"); idx >= 0 {
 			argName = arg[idx+2:]
 		}
+		// Strip array subscript: "part[0]" → "part"
+		lookupName := argName
+		if idx := strings.Index(lookupName, "["); idx >= 0 {
+			lookupName = lookupName[:idx]
+		}
 
-		cppType := fieldTypes[argName]
+		cppType := fieldTypes[lookupName]
 		if cppType == "" {
-			cppType = "unknown"
+			// Well-known base class fields that our parser can't resolve
+			// (declared in a different file from the struct).
+			cppType = wellKnownFieldType(lookupName)
 		}
 
 		ti := resolveType(cppType)
@@ -409,7 +417,14 @@ func extractFieldTypes(path string) map[string]map[string]string {
 	var currentStruct string
 	braceDepth := 0
 
-	reField := regexp.MustCompile(`^\s+([\w:<>, ]+?)\s+(\w+)\s*[=;{]`)
+	// Match field declarations, handling:
+	//   Type name;
+	//   Type name = value;
+	//   Type name1, name2;       (multi-field)
+	//   Type name1, name2 = v;
+	//   Type name[N];            (arrays)
+	//   Optional<Type> name;     (templates)
+	reFieldLine := regexp.MustCompile(`^\s+([\w:<>\s]+?)\s+([\w\[\],\s]+)\s*[;={]`)
 
 	for _, line := range lines {
 		if m := reStructDecl.FindStringSubmatch(line); m != nil {
@@ -422,11 +437,47 @@ func extractFieldTypes(path string) map[string]map[string]string {
 		braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
 
 		if currentStruct != "" && braceDepth > 0 {
-			if m := reField.FindStringSubmatch(line); m != nil {
+			// Try to extract field type from the line.
+			line = strings.TrimSpace(line)
+
+			// Skip non-field lines.
+			if line == "" || strings.HasPrefix(line, "//") || strings.HasPrefix(line, "/*") ||
+				strings.HasPrefix(line, "template") || strings.HasPrefix(line, "void ") ||
+				strings.HasPrefix(line, "static ") || strings.HasPrefix(line, "constexpr") ||
+				strings.HasPrefix(line, "explicit") || strings.HasPrefix(line, "friend") ||
+				strings.HasPrefix(line, "using ") || strings.HasPrefix(line, "typedef") ||
+				strings.HasPrefix(line, "return") || strings.HasPrefix(line, "if ") ||
+				strings.HasPrefix(line, "for ") || strings.HasPrefix(line, "while") ||
+				strings.HasPrefix(line, "auto ") || strings.HasPrefix(line, "virtual") ||
+				strings.HasPrefix(line, "inline ") || strings.HasPrefix(line, "#") ||
+				strings.HasPrefix(line, "enum ") || strings.HasPrefix(line, "struct ") ||
+				strings.HasPrefix(line, "class ") {
+				continue
+			}
+
+			if m := reFieldLine.FindStringSubmatch("\t" + line); m != nil {
 				fieldType := strings.TrimSpace(m[1])
-				fieldName := m[2]
-				if isValidFieldType(fieldType) {
-					result[currentStruct][fieldName] = fieldType
+				namesStr := strings.TrimSpace(m[2])
+
+				if !isValidFieldType(fieldType) {
+					continue
+				}
+
+				// Handle comma-separated names: "Type name1, name2, name3"
+				for _, name := range strings.Split(namesStr, ",") {
+					name = strings.TrimSpace(name)
+					// Strip initializer: "name = value"
+					if eqIdx := strings.Index(name, "="); eqIdx >= 0 {
+						name = strings.TrimSpace(name[:eqIdx])
+					}
+					// Strip array subscript: "name[N]" → "name"
+					if brIdx := strings.Index(name, "["); brIdx >= 0 {
+						name = name[:brIdx]
+					}
+					name = strings.TrimSpace(name)
+					if name != "" && isIdentifier(name) {
+						result[currentStruct][name] = fieldType
+					}
 				}
 			}
 		}
@@ -437,6 +488,76 @@ func extractFieldTypes(path string) map[string]map[string]string {
 	}
 
 	return result
+}
+
+// wellKnownFieldType returns the C++ type for fields that appear in base classes
+// declared in separate files. These are the most common cross-file field references.
+func wellKnownFieldType(fieldName string) string {
+	known := map[string]string{
+		// LoadBalancedReply fields
+		"penalty": "double",
+		"error":   "Optional<Error>",
+
+		// BasicLoadBalancedReply fields
+		"processBusyTime": "int",
+
+		// ReplyPromiseStreamReply fields
+		"acknowledgeToken": "uint64_t",
+		"sequence":         "int64_t",
+
+		// LocalityData fields (in Interface types)
+		"locality": "LocalityData",
+
+		// Common fields
+		"uniqueID":  "UID",
+		"processId": "Optional<Key>",
+
+		// StorageServerInterface serialized fields
+		"getValue":          "RequestStream",
+		"tssPairID":         "Optional<UID>",
+		"acceptingRequests": "bool",
+
+		// CommitProxyInterface / GrvProxyInterface
+		"provisional":              "bool",
+		"commit":                   "RequestStream",
+		"getConsistentReadVersion": "RequestStream",
+
+		// Common request fields
+		"arena":       "Arena",
+		"debugID":     "Optional<UID>",
+		"spanContext": "SpanContext",
+		"tenantInfo":  "TenantInfo",
+		"reply":       "ReplyPromise",
+
+		// GetKeyValuesRequest
+		"limit":      "int",
+		"limitBytes": "int",
+
+		// Complex template fields (typed as vector/bytes in Go)
+		"results":           "std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>",
+		"resultsTssMapping": "std::vector<std::pair<UID, StorageServerInterface>>",
+		"resultsTagMapping": "std::vector<std::pair<UID, Tag>>",
+		"data":              "VectorRef<KeyValueRef>",
+	}
+	if t, ok := known[fieldName]; ok {
+		return t
+	}
+	return "unknown"
+}
+
+func isIdentifier(s string) bool {
+	for i, c := range s {
+		if i == 0 {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+		} else {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return len(s) > 0
 }
 
 func isValidFieldType(t string) bool {

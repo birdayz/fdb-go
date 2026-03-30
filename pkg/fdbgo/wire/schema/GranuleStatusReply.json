@@ -5,42 +5,42 @@
   "source_file": "fdbclient/include/fdbclient/BlobWorkerInterface.h",
   "vtable": [
     36,
-    77,
-    52,
-    56,
-    60,
-    72,
-    73,
-    74,
+    85,
     4,
     12,
-    64,
+    68,
+    80,
+    81,
+    82,
     20,
     28,
-    75,
+    72,
     36,
     44,
-    76,
-    68
+    83,
+    52,
+    60,
+    84,
+    76
   ],
   "fields": [
     {
       "name": "acknowledgeToken",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "sequence",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "granuleRange",

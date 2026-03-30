@@ -21,7 +21,7 @@
     },
     {
       "name": "data",
-      "cpp_type": "std::unordered_map\u003cWaitState, std::string\u003e",
+      "cpp_type": "VectorRef\u003cKeyValueRef\u003e",
       "type": "vector",
       "vtable_slot": 1,
       "wire_size": 4,

@@ -5,15 +5,14 @@
   "reply_type": "TLogPeekReply",
   "source_file": "fdbserver/include/fdbserver/TLogInterface.h",
   "vtable": [
-    18,
-    27,
-    4,
-    12,
-    24,
-    25,
-    26,
     16,
-    20
+    30,
+    4,
+    20,
+    28,
+    29,
+    12,
+    24
   ],
   "fields": [
     {
@@ -54,18 +53,18 @@
     },
     {
       "name": "sequence",
-      "cpp_type": "Optional\u003cstd::pair\u003cUID, int\u003e\u003e",
-      "type": "optional",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 4,
-      "wire_size": 0,
-      "wire_alignment": 0,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "reply",
       "cpp_type": "ReplyPromise\u003cTLogPeekReply\u003e",
       "type": "struct",
-      "vtable_slot": 6,
+      "vtable_slot": 5,
       "wire_size": 4,
       "wire_alignment": 4,
       "inline": false

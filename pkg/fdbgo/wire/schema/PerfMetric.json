@@ -14,8 +14,8 @@
   "fields": [
     {
       "name": "m_name",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "std::string",
+      "type": "bytes",
       "vtable_slot": 0,
       "wire_size": 4,
       "wire_alignment": 4,
@@ -23,8 +23,8 @@
     },
     {
       "name": "m_format_code",
-      "cpp_type": "std::string m_name,",
-      "type": "struct",
+      "cpp_type": "std::string",
+      "type": "bytes",
       "vtable_slot": 1,
       "wire_size": 4,
       "wire_alignment": 4,

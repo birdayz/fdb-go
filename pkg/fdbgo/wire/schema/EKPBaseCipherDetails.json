@@ -5,13 +5,13 @@
   "source_file": "fdbclient/include/fdbclient/EncryptKeyProxyInterface.h",
   "vtable": [
     16,
-    40,
+    44,
     4,
     12,
-    28,
-    32,
+    36,
+    40,
     20,
-    36
+    28
   ],
   "fields": [
     {
@@ -61,12 +61,12 @@
     },
     {
       "name": "expireAt",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 5,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     }
   ]
 }

@@ -5,37 +5,37 @@
   "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
   "vtable": [
     18,
-    26,
-    12,
-    16,
-    20,
+    34,
     4,
-    24,
-    25,
+    12,
+    28,
+    20,
+    32,
+    33,
     0
   ],
   "fields": [
     {
       "name": "acknowledgeToken",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "sequence",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "data",
-      "cpp_type": "VectorRef\u003cKeyValueRef, VecSerStrategy::String\u003e",
+      "cpp_type": "VectorRef\u003cKeyValueRef\u003e",
       "type": "vector",
       "vtable_slot": 2,
       "wire_size": 4,

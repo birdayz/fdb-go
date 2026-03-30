@@ -11,7 +11,7 @@ var GetReadVersionReply_VTable = wire.VTable{28, 52, 28, 4, 48, 49, 32, 36, 12, 
 
 // GetReadVersionReply — fdbclient/include/fdbclient/CommitProxyInterface.h
 type GetReadVersionReply struct {
-	ProcessBusyTime           []byte  // unknown (slot 0)
+	ProcessBusyTime           int32   // int (slot 0)
 	Version                   int64   // Version (slot 1)
 	Locked                    bool    // bool (slot 2)
 	MetadataVersion           []byte  // Optional<Value> (slot 3)
@@ -32,7 +32,7 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(0) {
-		m.ProcessBusyTime = r.ReadBytes(0)
+		m.ProcessBusyTime = r.ReadInt32(0)
 	}
 	if r.FieldPresent(1) {
 		m.Version = r.ReadInt64(1)
@@ -67,7 +67,7 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 func (m *GetReadVersionReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(GetReadVersionReply_FileIdentifier, GetReadVersionReply_VTable, 8, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(GetReadVersionReply_VTable[0+2]), m.ProcessBusyTime)
+		obj.WriteInt32(int(GetReadVersionReply_VTable[0+2]), m.ProcessBusyTime)
 		obj.WriteInt64(int(GetReadVersionReply_VTable[1+2]), m.Version)
 		obj.WriteBool(int(GetReadVersionReply_VTable[2+2]), m.Locked)
 		obj.WriteBytes(int(GetReadVersionReply_VTable[5+2]), m.TagThrottleInfo)

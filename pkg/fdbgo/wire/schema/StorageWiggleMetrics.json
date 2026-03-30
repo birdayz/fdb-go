@@ -5,15 +5,15 @@
   "source_file": "fdbclient/include/fdbclient/StorageWiggleMetrics.actor.h",
   "vtable": [
     20,
-    52,
+    60,
     4,
     12,
-    36,
-    40,
     20,
+    52,
     28,
+    36,
     44,
-    48
+    56
   ],
   "fields": [
     {
@@ -36,12 +36,12 @@
     },
     {
       "name": "step_total",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "finished_wiggle",
@@ -72,12 +72,12 @@
     },
     {
       "name": "round_total",
-      "cpp_type": "double step_total,",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 6,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "finished_round",

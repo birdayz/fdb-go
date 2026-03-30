@@ -81,7 +81,7 @@
     },
     {
       "name": "reply",
-      "cpp_type": "unknown",
+      "cpp_type": "ReplyPromise",
       "type": "struct",
       "vtable_slot": 7,
       "wire_size": 4,

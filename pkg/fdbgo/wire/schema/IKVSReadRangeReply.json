@@ -17,7 +17,7 @@
   "fields": [
     {
       "name": "data",
-      "cpp_type": "VectorRef\u003cKeyValueRef, VecSerStrategy::String\u003e",
+      "cpp_type": "VectorRef\u003cKeyValueRef\u003e",
       "type": "vector",
       "vtable_slot": 0,
       "wire_size": 4,
