@@ -119,29 +119,26 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 // slot 5 (Reply) at offset 24: nested ReplyPromise struct
 // slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	vt := wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
+	// Use the generated MarshalFDB with the reply token embedded as a
+	// nested struct. The generated code uses WriteBytes for the reply
+	// which is wrong — we override with WriteStruct.
+	vt := protocol.GetKeyServerLocationsRequest_VTable
 	fileID := protocol.GetKeyServerLocationsRequest_FileIdentifier
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// Serialize order: arena(skip), spanContext, tenant, begin, end(Optional), limit, reverse, reply, minTenantVersion
-		// slot 8: minTenantVersion (int64, -1 = latest) at offset 4
-		obj.WriteInt64(4, -1)
-
-		// slot 2: begin (Key, RelOff) at offset 16
-		obj.WriteBytes(16, key)
-
-		// slot 5: limit (int32) at offset 24
-		obj.WriteInt32(24, 100)
-
-		// slot 7: reply (nested ReplyPromise) at offset 32
+		// slot 0: Begin key
+		obj.WriteBytes(int(vt[0+2]), key)
+		// slot 3: Limit
+		obj.WriteInt32(int(vt[3+2]), 100)
+		// slot 5: Reply (nested ReplyPromise struct)
 		replyVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(32, replyVT, 8, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(int(vt[5+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
-
-		// Other fields left at zero (absent/default)
+		// slot 8: MinTenantVersion
+		obj.WriteInt64(int(vt[8+2]), -1)
 	})
 }
 
