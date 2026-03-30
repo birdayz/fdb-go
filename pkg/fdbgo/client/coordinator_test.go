@@ -255,6 +255,27 @@ func TestCoordinatorBootstrap(t *testing.T) {
 			t.Errorf("Go read-back: expected 'written_by_go', got %q", string(val2))
 		}
 
+		// Test Transact API — the standard way to use FDB.
+		t.Log("Testing Transact API...")
+		_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+			tx.Set([]byte("transact_key"), []byte("transact_value"))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Transact write: %v", err)
+		}
+		result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+			val, err := tx.Get(ctx, []byte("transact_key"))
+			return string(val), err
+		})
+		if err != nil {
+			t.Fatalf("Transact read: %v", err)
+		}
+		if result.(string) != "transact_value" {
+			t.Errorf("Transact: expected 'transact_value', got %q", result)
+		}
+		t.Logf("Transact API: write+read OK, value=%q", result)
+
 		// Test MVCC conflict detection: two transactions reading+writing same key.
 		t.Log("Testing MVCC conflict detection...")
 		tx1 := db.CreateTransaction()
