@@ -137,6 +137,16 @@ func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
+// IsClosed returns true if the connection has been closed.
+func (c *Conn) IsClosed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // PeerProtocolVersion returns the peer's protocol version.
 func (c *Conn) PeerProtocolVersion() uint64 {
 	return c.peerPkt.ProtocolVersion & ^ObjectSerializerFlag

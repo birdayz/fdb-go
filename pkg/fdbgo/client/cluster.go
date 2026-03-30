@@ -191,21 +191,37 @@ func (c *Cluster) Close() error {
 }
 
 func (c *Cluster) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
+	// Map internal Docker addresses to the external coordinator address.
+	// FDB returns internal container IPs in ClientDBInfo, but we may only
+	// be able to reach the server via the external coordinator address
+	// (Docker port mapping). When the port matches, reuse that connection.
+	dialAddr := addr
+	if len(c.clusterFile.Coordinators) > 0 {
+		_, port, _ := net.SplitHostPort(addr)
+		_, coordPort, _ := net.SplitHostPort(c.clusterFile.Coordinators[0])
+		if port == coordPort {
+			dialAddr = c.clusterFile.Coordinators[0]
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if conn, ok := c.connPool[addr]; ok {
-		return conn, nil
+	if conn, ok := c.connPool[dialAddr]; ok {
+		if !conn.IsClosed() {
+			return conn, nil
+		}
+		delete(c.connPool, dialAddr)
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	conn, err := transport.Dial(dialCtx, addr, false)
+	conn, err := transport.Dial(dialCtx, dialAddr, false)
 	if err != nil {
 		return nil, err
 	}
 
-	c.connPool[addr] = conn
+	c.connPool[dialAddr] = conn
 	return conn, nil
 }

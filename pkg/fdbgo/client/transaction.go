@@ -102,6 +102,28 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return tx.getValue(ctx, key)
 }
 
+// GetRange reads a range of keys [begin, end). Returns the key-value pairs,
+// a boolean indicating if more results exist beyond the limit, and any error.
+func (tx *Transaction) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	if tx.state != txStateActive {
+		return nil, false, fmt.Errorf("transaction not active")
+	}
+
+	if !tx.hasReadVersion {
+		rv, err := tx.getReadVersion(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		tx.readVersion = rv
+		tx.hasReadVersion = true
+	}
+
+	// Add read conflict range for [begin, end).
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+
+	return tx.getRange(ctx, begin, end, limit)
+}
+
 // Set writes a key-value pair.
 func (tx *Transaction) Set(key, value []byte) {
 	tx.mutations = append(tx.mutations, Mutation{

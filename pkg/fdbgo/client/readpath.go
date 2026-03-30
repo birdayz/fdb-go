@@ -68,47 +68,180 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 }
 
 // getRange sends a GetKeyValuesRequest for a key range.
-func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, error) {
-	servers, err := tx.db.locationCache.Locate(ctx, begin)
+// Returns the key-value pairs and a boolean indicating whether there are more results.
+func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	for attempts := 0; attempts < 5; attempts++ {
+		servers, err := tx.db.locationCache.Locate(ctx, begin)
+		if err != nil {
+			return nil, false, fmt.Errorf("locate range begin: %w", err)
+		}
+		if len(servers) == 0 {
+			return nil, false, fmt.Errorf("no storage servers for range")
+		}
+
+		// Try each server (simple failover).
+		for _, server := range servers {
+			conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+			if err != nil {
+				continue
+			}
+
+			replyToken, replyCh := conn.PrepareReply()
+			body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
+
+			if err := conn.SendFrame(server.Token, body); err != nil {
+				continue
+			}
+
+			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			select {
+			case resp := <-replyCh:
+				cancel()
+				if resp.Err != nil {
+					continue
+				}
+				return parseGetKeyValuesReply(resp.Body)
+			case <-rctx.Done():
+				cancel()
+				continue
+			}
+		}
+
+		// All servers failed — possibly wrong shard. Invalidate and retry.
+		tx.db.locationCache.Invalidate(begin)
+		time.Sleep(wrongShardRetryDelay)
+	}
+
+	return nil, false, fmt.Errorf("getRange: all attempts failed")
+}
+
+// KeySelectorRef vtable: key(StringRef) at offset 4, offset(int32) at offset 8, orEqual(bool) at offset 12.
+var keySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
+
+// buildGetKeyValuesRequest constructs the request using the wire.Writer.
+// Begin/End are KeySelectorRef nested structs (firstGreaterOrEqual semantics).
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
+	vt := protocol.GetKeyValuesRequest_VTable
+	fileID := protocol.GetKeyValuesRequest_FileIdentifier
+
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
+		// Add nested structs in REVERSE serialization order for correct C++ byte layout.
+
+		// slot 9: TenantInfo (nested struct with tenantId=-1)
+		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		obj.WriteStruct(int(vt[9+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1) // tenantId = -1 (no tenant)
+		})
+
+		// slot 8: SpanContext (nested struct, all zeros = default)
+		spanVT := wire.VTable{10, 29, 4, 20, 28}
+		obj.WriteStruct(int(vt[8+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
+			// Default SpanContext: all zeros
+		})
+
+		// slot 7: Reply (nested ReplyPromise with UID)
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(int(vt[7+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+
+		// slot 1: End KeySelectorRef (firstGreaterOrEqual)
+		obj.WriteStruct(int(vt[1+2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+			inner.WriteBytes(4, end) // key
+			inner.WriteInt32(8, 1)   // offset = 1 (firstGreaterOrEqual)
+			// orEqual at offset 12 defaults to false
+		})
+
+		// slot 0: Begin KeySelectorRef (firstGreaterOrEqual)
+		obj.WriteStruct(int(vt[0+2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+			inner.WriteBytes(4, begin) // key
+			inner.WriteInt32(8, 1)     // offset = 1 (firstGreaterOrEqual)
+			// orEqual at offset 12 defaults to false
+		})
+
+		// slot 2: Version (int64)
+		obj.WriteInt64(int(vt[2+2]), version)
+
+		// slot 3: Limit (int32)
+		obj.WriteInt32(int(vt[3+2]), limit)
+
+		// slot 4: LimitBytes (int32, 0 = unlimited)
+		obj.WriteInt32(int(vt[4+2]), 0)
+	})
+}
+
+// parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
+// Returns (keyValues, more, error).
+func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
+	r, err := wire.NewReader(data)
 	if err != nil {
-		return nil, fmt.Errorf("locate range begin: %w", err)
-	}
-	if len(servers) == 0 {
-		return nil, fmt.Errorf("no storage servers for range")
+		return nil, false, fmt.Errorf("parse GetKeyValues reply: %w", err)
 	}
 
-	server := servers[0]
-	conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
-	if err != nil {
-		return nil, fmt.Errorf("dial storage server: %w", err)
+	// ErrorOr flattened by FakeRoot: <=1 fields = Error, >1 = GetKeyValuesReply.
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			errCode := r.ReadInt32(0)
+			return nil, false, &FDBError{Code: int(errCode), Message: fmt.Sprintf("GetKeyValues error %d", errCode)}
+		}
+		return nil, false, fmt.Errorf("empty GetKeyValues response")
 	}
 
-	req := protocol.GetKeyValuesRequest{
-		Version: tx.readVersion,
-	}
-	// TODO: Set begin/end key selectors, limit, limitBytes.
-	// These are scalar fields typed as []byte due to codegen gap (base class fields).
-	_ = begin
-	_ = end
-	_ = limit
-
-	body := req.MarshalFDB()
-
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	replyBody, err := conn.SendAndWait(rctx, server.Token, body)
-	if err != nil {
-		return nil, fmt.Errorf("getRange RPC: %w", err)
-	}
-
+	// Parse with the generated UnmarshalFDB.
 	var reply protocol.GetKeyValuesReply
-	if err := reply.UnmarshalFDB(replyBody); err != nil {
-		return nil, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
+	if err := reply.UnmarshalFDB(data); err != nil {
+		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
 	}
 
-	// TODO: Parse reply.Data (VectorRef<KeyValueRef>) into KeyValue slice.
-	return nil, nil
+	kvs := parseKeyValueVector(reply.Data)
+	return kvs, reply.More, nil
+}
+
+// parseKeyValueVector parses a VectorRef<KeyValueRef> with VecSerStrategy::String.
+// The data (after ReadBytes follows the RelOff and strips the length prefix) is:
+// [count(4)][elem0][elem1]...
+// Each element: [key_len(4)][key_data][value_len(4)][value_data]
+func parseKeyValueVector(data []byte) []KeyValue {
+	if len(data) < 4 {
+		return nil
+	}
+	count := binary.LittleEndian.Uint32(data[0:4])
+	if count == 0 {
+		return nil
+	}
+	pos := 4
+	result := make([]KeyValue, 0, count)
+	for i := uint32(0); i < count; i++ {
+		if pos+4 > len(data) {
+			break
+		}
+		keyLen := int(binary.LittleEndian.Uint32(data[pos:]))
+		pos += 4
+		if pos+keyLen > len(data) {
+			break
+		}
+		key := make([]byte, keyLen)
+		copy(key, data[pos:pos+keyLen])
+		pos += keyLen
+
+		if pos+4 > len(data) {
+			break
+		}
+		valLen := int(binary.LittleEndian.Uint32(data[pos:]))
+		pos += 4
+		if pos+valLen > len(data) {
+			break
+		}
+		val := make([]byte, valLen)
+		copy(val, data[pos:pos+valLen])
+		pos += valLen
+
+		result = append(result, KeyValue{Key: key, Value: val})
+	}
+	return result
 }
 
 // KeyValue is a key-value pair returned from reads.

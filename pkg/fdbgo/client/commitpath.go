@@ -35,7 +35,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 
 	conn, err := tx.db.cluster.getOrDial(ctx, proxy.Address)
 	if err != nil {
-		return fmt.Errorf("dial commit proxy: %w", err)
+		return fmt.Errorf("dial commit proxy (%s): %w", proxy.Address, err)
 	}
 
 	// Allocate reply token first — embedded in request body.
