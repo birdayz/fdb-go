@@ -14,25 +14,38 @@ import (
 //
 // NewReader navigates both levels and positions the reader at the message object.
 type Reader struct {
-	data   []byte // full buffer
-	object []byte // slice starting at the MESSAGE object (not FakeRoot)
-	vtable []byte // slice starting at the message's vtable
+	data      []byte // full buffer
+	object    []byte // slice starting at the MESSAGE object (not FakeRoot)
+	vtable    []byte // slice starting at the message's vtable
+	headerOff int    // 0 or 8 (protocol version prefix)
 }
 
 // NewReader parses the buffer, navigates through the FakeRoot to the message object.
+// Handles both formats:
+//   - With protocol version prefix: [version(8)][root_offset(4)][file_id(4)][data...]
+//   - Without prefix: [root_offset(4)][file_id(4)][data...]
 func NewReader(data []byte) (*Reader, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("wire: buffer too short (%d bytes, need at least 8)", len(data))
 	}
 
-	// Root footer: [root_offset(4)][file_id(4)]
-	rootOffset := binary.LittleEndian.Uint32(data[0:4])
-	if int(rootOffset)+8 > len(data) {
-		return nil, fmt.Errorf("wire: root_offset %d out of bounds (buffer length %d)", rootOffset, len(data))
+	// Detect protocol version prefix.
+	// FDB protocol versions are uint64 LE with pattern 0x0FDB00B0_xxxxxxxx.
+	// Bytes [0:8] as LE uint64: high byte (data[7]) = 0x0F, data[6] = 0xDB.
+	offset := 0
+	if len(data) >= 16 && data[7] == 0x0F && data[6] == 0xDB {
+		offset = 8
 	}
 
-	// FakeRoot object at data[rootOffset].
-	frObj := data[rootOffset:]
+	// Root footer: [root_offset(4)][file_id(4)]
+	rootOffset := binary.LittleEndian.Uint32(data[offset : offset+4])
+	absRoot := offset + int(rootOffset)
+	if absRoot+8 > len(data) {
+		return nil, fmt.Errorf("wire: root_offset %d out of bounds (buffer length %d, header offset %d)", rootOffset, len(data), offset)
+	}
+
+	// FakeRoot object at data[absRoot].
+	frObj := data[absRoot:]
 	if len(frObj) < 8 {
 		return nil, fmt.Errorf("wire: FakeRoot object too short")
 	}
@@ -40,7 +53,7 @@ func NewReader(data []byte) (*Reader, error) {
 	// FakeRoot field[0] at offset 4: RelativeOffset to the message object.
 	// The FakeRoot vtable is always [6, 8, 4], so field 0 is at object offset 4.
 	msgRelOff := binary.LittleEndian.Uint32(frObj[4:8])
-	msgAbsPos := int(rootOffset) + 4 + int(msgRelOff)
+	msgAbsPos := absRoot + 4 + int(msgRelOff)
 	if msgAbsPos+4 > len(data) {
 		return nil, fmt.Errorf("wire: message object position %d out of bounds", msgAbsPos)
 	}
@@ -54,15 +67,16 @@ func NewReader(data []byte) (*Reader, error) {
 	}
 
 	return &Reader{
-		data:   data,
-		object: msgObj,
-		vtable: data[vtableAbsPos:],
+		data:      data,
+		object:    msgObj,
+		vtable:    data[vtableAbsPos:],
+		headerOff: offset,
 	}, nil
 }
 
 // FileIdentifier reads the file_identifier from the root footer.
 func (r *Reader) FileIdentifier() uint32 {
-	return binary.LittleEndian.Uint32(r.data[4:8])
+	return binary.LittleEndian.Uint32(r.data[r.headerOff+4 : r.headerOff+8])
 }
 
 // VTableLength returns the number of vtable entries (including the 2-entry header).
