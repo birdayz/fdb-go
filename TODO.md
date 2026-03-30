@@ -1675,7 +1675,7 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 
 ### HIGH — Read path
 
-- [ ] **GetReadVersionRequest/Reply** — wire up GRV batcher to actually send/receive via the transport layer. Needs ErrorOr unwrapping + reply token embedding.
+- [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75 (e.g., version=1020866).
 - [ ] **GetValueRequest/Reply** — complete the read path: serialize request with reply token → send to storage server → receive → unwrap ErrorOr → deserialize reply → extract value.
 - [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` (nested `std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>`) to extract key range → server address mappings.
 - [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
