@@ -2,10 +2,13 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // GRVBatcher batches concurrent GetReadVersion requests into a single
@@ -104,26 +107,86 @@ func (b *GRVBatcher) sendGRVRequest() (int64, error) {
 		return 0, err
 	}
 
-	// Build GetReadVersionRequest.
-	req := protocol.GetReadVersionRequest{
-		TransactionCount: 1,
-		Flags:            0, // default priority
-	}
-	body := req.MarshalFDB()
+	// Allocate reply token first — must be embedded in request body.
+	replyToken, replyCh := conn.PrepareReply()
 
-	// Send and wait for reply.
+	// Build GetReadVersionRequest with reply token.
+	body := buildGetReadVersionRequest(replyToken)
+
+	// Send to the GRV proxy's endpoint token.
+	if err := conn.SendFrame(proxy.Token, body); err != nil {
+		return 0, err
+	}
+
+	// Wait for reply.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	replyBody, err := conn.SendAndWait(ctx, proxy.Token, body)
+	select {
+	case resp := <-replyCh:
+		if resp.Err != nil {
+			return 0, resp.Err
+		}
+		return parseGetReadVersionReply(resp.Body)
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+// buildGetReadVersionRequest constructs the request with embedded reply token.
+// Real vtable from C++ test vector: {20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
+// Slot 5 (Reply) at offset 28: nested ReplyPromise struct (UID vtable {6,20,4})
+// Slot 7 (MaxVersion) at offset 4: int64 (-1 = latest)
+func buildGetReadVersionRequest(replyToken transport.UID) []byte {
+	vt := protocol.GetReadVersionRequest_VTable
+	fileID := protocol.GetReadVersionRequest_FileIdentifier
+
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
+		// slot 7: MaxVersion at offset 4 (int64, -1 = latest version)
+		obj.WriteInt64(4, -1)
+
+		// slot 0: TransactionCount at offset 12 (uint32)
+		obj.WriteUint32(12, 1)
+
+		// slot 1: Flags at offset 16 (uint32, 0 = default priority)
+		obj.WriteUint32(16, 0)
+
+		// slot 5: Reply at offset 28 (nested ReplyPromise struct)
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(28, replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+	})
+}
+
+// parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.
+// The response follows the same flattened-FakeRoot ErrorOr pattern as ClientDBInfo.
+func parseGetReadVersionReply(data []byte) (int64, error) {
+	r, err := wire.NewReader(data)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("parse GRV reply: %w", err)
 	}
 
-	// Parse reply.
+	// NewReader navigates through the flattened ErrorOr FakeRoot.
+	// If Error: vtable has 1 field (error_code).
+	// If success: vtable has GetReadVersionReply fields.
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			errCode := r.ReadInt32(0)
+			return 0, fmt.Errorf("FDB GRV error: code %d", errCode)
+		}
+		return 0, fmt.Errorf("empty GRV error response")
+	}
+
+	// GetReadVersionReply has Version at some field.
+	// From the generated struct: Version is int64.
+	// Parse with the generated UnmarshalFDB.
 	var reply protocol.GetReadVersionReply
-	if err := reply.UnmarshalFDB(replyBody); err != nil {
-		return 0, err
+	if err := reply.UnmarshalFDB(data); err != nil {
+		return 0, fmt.Errorf("unmarshal GRV reply: %w", err)
 	}
 
 	return reply.Version, nil

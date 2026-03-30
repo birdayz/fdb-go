@@ -133,6 +133,19 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	if len(dbInfo.CommitProxies) == 0 {
 		t.Error("expected at least 1 commit proxy")
 	}
+
+	// Try GRV — GetReadVersion from the GRV proxy
+	t.Log("Attempting GetReadVersion...")
+	batcher := NewGRVBatcher(cluster)
+	version, err := batcher.GetReadVersion(ctx)
+	if err != nil {
+		t.Logf("GetReadVersion: %v", err)
+	} else {
+		t.Logf("GetReadVersion: version=%d", version)
+		if version <= 0 {
+			t.Errorf("expected positive version, got %d", version)
+		}
+	}
 }
 
 // debugCoordinatorExchange does a raw TCP exchange to see exact bytes.

@@ -1665,9 +1665,12 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 - [x] **Correct vtable** — Real vtable from C++ ground-truth test vector: `{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}`. UID fields are 16 bytes INLINE. ReplyPromise is 4-byte RelativeOffset to nested struct.
 - [x] **clusterKey** — Must be `"description:id"` only (part before `@`), NOT the full connection string.
 
-### CRITICAL — Proxy address extraction
+### DONE — Proxy address extraction
 
-- [ ] **Parse GrvProxyInterface/CommitProxyInterface nested structs** — Currently extracting proxy COUNT correctly (1 GRV, 1 commit) but addresses show `0.0.0.0:0`. Need to generate C++ ground truth for these nested types (like we did for UID and OpenDatabaseCoordRequest) to determine exact vtable layouts and field positions for Endpoint → NetworkAddress → IP + port extraction.
+- [x] **Parse GrvProxyInterface/CommitProxyInterface nested structs** — Full nesting chain decoded from live FDB 7.3.75 response: Proxy[slot3] → Endpoint wrapper → Endpoint inner (UID inline + NetworkAddressList) → NetworkAddress (IP RelOff + port uint16) → IPAddress (RelOff to raw uint32). Correctly extracts `172.21.0.3:PORT` with endpoint tokens.
+
+### CRITICAL — Next: GRV + Read + Commit
+
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
 
 ### HIGH — Read path
