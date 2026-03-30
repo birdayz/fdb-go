@@ -45,20 +45,9 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 // for nested struct fields (knownClientInfoID, reply), but FDB expects proper
 // nested FlatBuffers objects with vtable soffsets.
 func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
-	// The clusterKey must match the coordinator's internal cluster file.
-	connStr := cf.InternalKey
-	// The clusterKey comparison in the coordinator is byte-exact.
-	// If there are any hidden characters (trailing newline, etc.), add them.
-	fmt.Printf("[COORD] using clusterKey: %q len=%d hex=%x\n", connStr, len(connStr), []byte(connStr))
-	if connStr == "" {
-		connStr = cf.Description + ":" + cf.ID + "@"
-		for i, addr := range cf.Coordinators {
-			if i > 0 {
-				connStr += ","
-			}
-			connStr += addr
-		}
-	}
+	// clusterKey is "description:id" (NOT the full connection string with @addresses).
+	// The coordinator's cs.clusterKey() returns just this prefix part.
+	connStr := cf.Description + ":" + cf.ID
 
 	// REAL vtable from C++ ground truth test vector (OpenDatabaseCoordRequest.json):
 	// {22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
