@@ -96,9 +96,10 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 		tx.hasReadVersion = true
 	}
 
-	// TODO: Route to storage server via locality cache.
-	// For now, return not-implemented.
-	return nil, fmt.Errorf("Get not yet implemented: waiting for storage server routing")
+	// Add read conflict range.
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+
+	return tx.getValue(ctx, key)
 }
 
 // Set writes a key-value pair.
@@ -157,9 +158,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return nil
 	}
 
-	// TODO: Send CommitTransactionRequest to commit proxy.
-	// For now, return not-implemented.
-	return fmt.Errorf("Commit not yet implemented: waiting for commit proxy routing")
+	if err := tx.commit(ctx); err != nil {
+		return err
+	}
+	tx.state = txStateCommitted
+	return nil
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
@@ -212,8 +215,7 @@ func (tx *Transaction) SetReadVersion(version int64) {
 }
 
 func (tx *Transaction) getReadVersion(ctx context.Context) (int64, error) {
-	// TODO: Send GetReadVersionRequest to GRV proxy (batched).
-	return 0, fmt.Errorf("getReadVersion not yet implemented")
+	return tx.db.grvBatcher.GetReadVersion(ctx)
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {

@@ -191,7 +191,12 @@ func TestOnError_NonRetryable(t *testing.T) {
 func TestReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 
-	db := &Database{cluster: &Cluster{}}
+	cluster := NewClusterFromConfig(&ClusterFile{Coordinators: []string{"127.0.0.1:4500"}})
+	db := &Database{
+		cluster:       cluster,
+		grvBatcher:    NewGRVBatcher(cluster),
+		locationCache: NewLocationCache(cluster),
+	}
 	tx := db.CreateTransaction()
 
 	// No mutations → read-only → commit succeeds immediately.

@@ -8,7 +8,9 @@ import (
 // Database represents a connection to an FDB cluster.
 // It manages cluster topology and provides transaction creation.
 type Database struct {
-	cluster *Cluster
+	cluster       *Cluster
+	grvBatcher    *GRVBatcher
+	locationCache *LocationCache
 }
 
 // OpenDatabase opens a database connection using a cluster file.
@@ -24,7 +26,11 @@ func OpenDatabase(clusterFilePath string) (*Database, error) {
 		return nil, fmt.Errorf("connect to cluster: %w", err)
 	}
 
-	return &Database{cluster: cluster}, nil
+	return &Database{
+		cluster:       cluster,
+		grvBatcher:    NewGRVBatcher(cluster),
+		locationCache: NewLocationCache(cluster),
+	}, nil
 }
 
 // Transact runs a function in a transaction with automatic retry.
