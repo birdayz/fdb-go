@@ -124,21 +124,24 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// slot 8: MinTenantVersion at offset 4 (int64, -1 = latest)
+		// Serialize order: arena(skip), spanContext, tenant, begin, end(Optional), limit, reverse, reply, minTenantVersion
+		// slot 8: minTenantVersion (int64, -1 = latest) at offset 4
 		obj.WriteInt64(4, -1)
 
-		// slot 0: Begin key at offset 12
-		obj.WriteBytes(12, key)
+		// slot 2: begin (Key, RelOff) at offset 16
+		obj.WriteBytes(16, key)
 
-		// slot 3: Limit at offset 20 (int32)
-		obj.WriteInt32(20, 100)
+		// slot 5: limit (int32) at offset 24
+		obj.WriteInt32(24, 100)
 
-		// slot 5: Reply at offset 24 (nested ReplyPromise)
+		// slot 7: reply (nested ReplyPromise) at offset 32
 		replyVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(24, replyVT, 8, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(32, replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
+
+		// Other fields left at zero (absent/default)
 	})
 }
 
