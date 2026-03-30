@@ -6,10 +6,14 @@ go_library(
         "conn.go",
         "framing.go",
         "handshake.go",
+        "wellknown.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_zeebo_xxh3//:xxh3"],
+    deps = [
+        "//pkg/fdbgo/wire",
+        "@com_github_zeebo_xxh3//:xxh3",
+    ],
 )
 
 go_test(

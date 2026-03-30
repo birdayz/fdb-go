@@ -18,6 +18,7 @@ go_library(
         "getvaluereply.go",
         "getvaluerequest.go",
         "opendatabasecoordrequest.go",
+        "uid.go",
         "watchvaluereply.go",
         "watchvaluerequest.go",
     ],

@@ -133,7 +133,6 @@ func NewClusterFromConfig(cf *ClusterFile) *Cluster {
 // Connect establishes connections to coordinators and fetches
 // initial cluster topology (ClientDBInfo with proxy addresses).
 func (c *Cluster) Connect(ctx context.Context) error {
-	// Try each coordinator until one responds.
 	var lastErr error
 	for _, addr := range c.clusterFile.Coordinators {
 		conn, err := c.getOrDial(ctx, addr)
@@ -141,7 +140,17 @@ func (c *Cluster) Connect(ctx context.Context) error {
 			lastErr = err
 			continue
 		}
-		_ = conn // TODO: send OpenDatabaseCoordRequest, receive ClientDBInfo
+
+		dbInfo, err := c.openDatabaseCoord(ctx, conn, addr)
+		if err != nil {
+			lastErr = fmt.Errorf("coordinator %s: %w", addr, err)
+			continue
+		}
+
+		c.mu.Lock()
+		c.dbInfo = dbInfo
+		c.mu.Unlock()
+
 		return nil
 	}
 	return fmt.Errorf("failed to connect to any coordinator: %w", lastErr)

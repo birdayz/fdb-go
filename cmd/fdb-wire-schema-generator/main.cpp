@@ -184,6 +184,15 @@ int main(int argc, char** argv) {
     emit(outDir, "MsgNested", MsgNested{1000, {42, 99}});
     emit(outDir, "MsgNestedString", MsgNestedString{{200, "hello"}, 7});
 
-    fprintf(stderr, "Wrote 12 test vectors to %s\n", outDir);
+    // ErrorOr<EnsureTable<Void>> with SUCCESS variant (present, not error)
+    // This is the reply format for ReplyPromise<Void> (e.g., PingRequest reply).
+    // Uses the real FDB ErrorOr and EnsureTable from flow/flow.h and flow/flat_buffers.h.
+    {
+        ErrorOr<EnsureTable<Void>> voidReply(EnsureTable<Void>(Void{}));
+        fprintf(stderr, "ErrorOrVoid file_id: %u\n", FileIdentifierFor<ErrorOr<EnsureTable<Void>>>::value);
+        emit(outDir, "ErrorOrVoid", voidReply);
+    }
+
+    fprintf(stderr, "Wrote 13 test vectors to %s\n", outDir);
     return 0;
 }

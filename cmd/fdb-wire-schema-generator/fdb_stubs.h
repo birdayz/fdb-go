@@ -504,7 +504,9 @@ enum class ClusterType : uint8_t { STANDALONE = 0 };
 // ============================================================
 // Additional types referenced by protocol messages
 // ============================================================
-struct Void {};
+struct Void {
+    constexpr static FileIdentifier file_identifier = 2010442;
+};
 template <>
 struct scalar_traits<Void> : std::true_type {
     constexpr static size_t size = 0;
@@ -608,4 +610,67 @@ struct LoadBalancedReply {
 
 struct BasicLoadBalancedReply {
     int processBusyTime = 0;
+};
+
+// ============================================================
+// ErrorOr<T> — union_like_traits (alternatives = [Error, T])
+// Used for all ReplyPromise response wrapping.
+// ============================================================
+template <class T>
+class ErrorOr {
+    bool present_ = false;
+    Error error_;
+    T value_{};
+public:
+    // ComposedIdentifier: file_identifier = (2 << 24) | inner file_id
+    constexpr static FileIdentifier file_identifier = (2 << 24) | FileIdentifierFor<T>::value;
+    ErrorOr() = default;
+    explicit ErrorOr(const T& v) : present_(true), value_(v) {}
+    explicit ErrorOr(const Error& e) : present_(false), error_(e) {}
+    bool present() const { return present_; }
+    const Error& getError() const { return error_; }
+    const T& get() const { return value_; }
+};
+
+template <class T>
+struct union_like_traits<ErrorOr<T>> : std::true_type {
+    using Member = ErrorOr<T>;
+    using alternatives = pack<Error, T>;
+    template <class Context>
+    static uint8_t index(const Member& m, Context&) { return m.present() ? 1 : 0; }
+    template <class Context>
+    static bool empty(const Member& m, Context&) { return false; }
+    template <int i, class Context>
+    static const auto& get(const Member& m, Context&) {
+        if constexpr (i == 0) return m.getError();
+        else return m.get();
+    }
+    template <int i, class Alt, class Context>
+    static void assign(Member& m, const Alt& a, Context&) {
+        if constexpr (i == 0) m = ErrorOr<T>(a);
+        else m = ErrorOr<T>(a);
+    }
+    template <class Context>
+    static void done(Member&, Context&) {}
+};
+
+// ============================================================
+// EnsureTable<T> — wraps T to ensure it gets a FlatBuffers table
+// ============================================================
+template <class T>
+struct EnsureTable {
+    constexpr static FileIdentifier file_identifier = FileIdentifierFor<T>::value;
+    T t{};
+    EnsureTable() = default;
+    explicit EnsureTable(const T& v) : t(v) {}
+    template <class Ar>
+    void serialize(Ar& ar) {
+        if constexpr (is_fb_function<Ar>) {
+            if constexpr (_SizeOf<T>::size > 0) {
+                serializer(ar, t);
+            }
+        } else {
+            serializer(ar, t);
+        }
+    }
 };

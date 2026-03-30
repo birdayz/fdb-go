@@ -272,3 +272,115 @@ func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
 	length := binary.LittleEndian.Uint32(r.object[target:])
 	return string(r.object[target+4 : target+4+int(length)]), true
 }
+
+// --- Nested struct and vector-of-struct readers ---
+//
+// FDB's FlatBuffers uses RelativeOffsets for nested objects:
+//   - Nested struct field: vtable slot → 4-byte RelativeOffset → FlatBuffers object (vtable soffset + fields)
+//   - Vector of structs: vtable slot → RelativeOffset → [count(4)][RelativeOffset(4) × count]
+//     where each element's RelativeOffset points to a FlatBuffers object.
+
+// ReadNestedReader returns a sub-Reader positioned at a nested struct object.
+// The vtable slot must contain a RelativeOffset pointing to the struct.
+func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return nil, fmt.Errorf("wire: nested struct field not present (slot %d)", vtableSlot)
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return nil, fmt.Errorf("wire: nested struct RelativeOffset is 0 (slot %d)", vtableSlot)
+	}
+	targetPos := r.objPos + int(off) + int(relOffset)
+	return r.readerAtObject(targetPos)
+}
+
+// ReadVectorCount returns the number of elements in a vector-of-struct field.
+func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return 0, nil // absent field = empty vector
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return 0, nil
+	}
+	vecStart := r.objPos + int(off) + int(relOffset)
+	if vecStart+4 > len(r.data) {
+		return 0, fmt.Errorf("wire: vector start out of bounds (pos %d, buf %d)", vecStart, len(r.data))
+	}
+	count := binary.LittleEndian.Uint32(r.data[vecStart:])
+	return int(count), nil
+}
+
+// ReadVectorElementReader returns a sub-Reader for the i-th element of a vector-of-struct.
+// Elements are 4-byte RelativeOffsets at vector_start+4+i*4, each pointing to a FlatBuffers object.
+func (r *Reader) ReadVectorElementReader(vtableSlot, index int) (*Reader, error) {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return nil, fmt.Errorf("wire: vector field not present (slot %d)", vtableSlot)
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return nil, fmt.Errorf("wire: vector RelativeOffset is 0 (slot %d)", vtableSlot)
+	}
+	vecStart := r.objPos + int(off) + int(relOffset)
+	if vecStart+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vector start out of bounds")
+	}
+	count := int(binary.LittleEndian.Uint32(r.data[vecStart:]))
+	if index < 0 || index >= count {
+		return nil, fmt.Errorf("wire: vector index %d out of range [0, %d)", index, count)
+	}
+	// Each element is a 4-byte RelativeOffset.
+	elemRelOffPos := vecStart + 4 + index*4
+	if elemRelOffPos+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vector element offset out of bounds")
+	}
+	elemRelOff := binary.LittleEndian.Uint32(r.data[elemRelOffPos:])
+	elemObjPos := elemRelOffPos + int(elemRelOff)
+	return r.readerAtObject(elemObjPos)
+}
+
+// readerAtObject creates a sub-Reader positioned at a FlatBuffers object within the same buffer.
+// Unlike NewReader, this does NOT expect a FakeRoot wrapper or root footer.
+// The object starts with a vtable soffset (int32), followed by fields.
+func (r *Reader) readerAtObject(objPos int) (*Reader, error) {
+	if objPos+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: object position %d out of bounds (buf %d)", objPos, len(r.data))
+	}
+	vtableSoffset := int32(binary.LittleEndian.Uint32(r.data[objPos:]))
+	vtableAbsPos := objPos - int(vtableSoffset)
+	if vtableAbsPos < 0 || vtableAbsPos+4 > len(r.data) {
+		return nil, fmt.Errorf("wire: vtable position %d out of bounds", vtableAbsPos)
+	}
+	return &Reader{
+		data:      r.data,
+		object:    r.data[objPos:],
+		objPos:    objPos,
+		vtable:    r.data[vtableAbsPos:],
+		headerOff: r.headerOff,
+	}, nil
+}
+
+// RawData returns the full underlying buffer. Useful for low-level nested parsing.
+func (r *Reader) RawData() []byte {
+	return r.data
+}
+
+// ObjectPos returns the absolute position of this reader's object in the buffer.
+func (r *Reader) ObjectPos() int {
+	return r.objPos
+}
+
+// FieldOffset returns the byte offset of a field within the object (exported version).
+// Returns 0 if the field is absent.
+func (r *Reader) FieldOffset(vtableSlot int) int {
+	return r.fieldOffset(vtableSlot)
+}
+
+// ObjectBytes returns the slice of the buffer starting at the object position.
+// Fields are at offsets within this slice.
+func (r *Reader) ObjectBytes() []byte {
+	return r.object
+}

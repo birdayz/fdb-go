@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cluster.go",
         "commitpath.go",
+        "coordinator.go",
         "database.go",
         "grv.go",
         "locality.go",
@@ -16,11 +17,21 @@ go_library(
     deps = [
         "//pkg/fdbgo/protocol",
         "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
     ],
 )
 
 go_test(
     name = "client_test",
-    srcs = ["client_test.go"],
+    srcs = [
+        "client_test.go",
+        "coordinator_test.go",
+        "fdb_logs_test.go",
+    ],
     embed = [":client"],
+    deps = [
+        "//pkg/fdbgo/transport",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_zeebo_xxh3//:xxh3",
+    ],
 )

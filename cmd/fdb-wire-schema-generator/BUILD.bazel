@@ -11,6 +11,7 @@ go_binary(
 go_library(
     name = "fdb-wire-schema-generator_lib",
     srcs = [
+        "fdb_stubs.h",
         "parser.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-wire-schema-generator",

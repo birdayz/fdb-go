@@ -24,6 +24,7 @@ docker run --rm \
     -e JOBS="$JOBS" \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$(realpath "$GEN_CPP"):/work/generated_messages.cpp:ro" \
+    -v "$(realpath "$(dirname "$GEN_CPP")/fdb_stubs.h"):/work/fdb_stubs.h:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/fdb-build" \
     -v "$SRC_CACHE:/fdb" \
@@ -37,6 +38,10 @@ docker run --rm \
             cp -r /fdb_src/* /fdb/
         fi
         cp /work/generated_messages.cpp /fdb/generated_messages.cpp
+        # Also copy fdb_stubs.h if mounted
+        if [ -f /work/fdb_stubs.h ]; then
+            cp /work/fdb_stubs.h /fdb/fdb_stubs.h
+        fi
 
         # Add our target (idempotent).
         if ! grep -q gen_testvecs /fdb/CMakeLists.txt; then
