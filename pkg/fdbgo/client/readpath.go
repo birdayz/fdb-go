@@ -39,6 +39,7 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 
 			replyToken, replyCh := conn.PrepareReply()
 			body := buildGetValueRequest(key, tx.readVersion, replyToken, server.Token)
+			// Use the server token directly (getValue = base endpoint, index 0 in batch)
 			if err := conn.SendFrame(server.Token, body); err != nil {
 				continue
 			}
@@ -132,8 +133,13 @@ func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
-		// slot 6 (TenantInfo): vt[8] — nested struct with tenantId=-1
-		tenantVT := wire.VTable{6, 12, 4}
+		// slot 5 (SpanContext): vt[7] — nested struct (3 fields, obj=29)
+		spanVT := wire.VTable{10, 29, 4, 20, 28}
+		obj.WriteStruct(int(vt[5+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
+			// Default: all zeros (traceID=0, spanID=0, flags=0)
+		})
+		// slot 6 (TenantInfo): vt[8] — nested struct (3 fields)
+		tenantVT := wire.VTable{10, 17, 4, 16, 12}
 		obj.WriteStruct(int(vt[6+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1) // INVALID_TENANT
 		})
