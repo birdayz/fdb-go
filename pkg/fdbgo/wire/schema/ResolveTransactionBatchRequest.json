@@ -58,8 +58,8 @@
     },
     {
       "name": "txnStateTransactions",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "VectorRef\u003cStateTransactionRef\u003e",
+      "type": "vector",
       "vtable_slot": 4,
       "wire_size": 4,
       "wire_alignment": 4,

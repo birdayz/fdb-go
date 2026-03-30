@@ -12,7 +12,7 @@
   "fields": [
     {
       "name": "interf",
-      "cpp_type": "unknown",
+      "cpp_type": "BackupInterface",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,

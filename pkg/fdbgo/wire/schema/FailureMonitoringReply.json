@@ -5,11 +5,11 @@
   "source_file": "fdbclient/include/fdbclient/ClusterInterface.h",
   "vtable": [
     16,
-    25,
-    12,
+    33,
+    28,
     4,
-    24,
-    16,
+    32,
+    12,
     20,
     0
   ],
@@ -43,21 +43,21 @@
     },
     {
       "name": "clientRequestIntervalMS",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "considerServerFailedTimeoutMS",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 4,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "arena",

@@ -47,8 +47,8 @@
     },
     {
       "name": "conflictingKeyRangeMap",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "std::map\u003cint, VectorRef\u003cKeyRangeRef\u003e\u003e",
+      "type": "vector",
       "vtable_slot": 4,
       "wire_size": 4,
       "wire_alignment": 4,
@@ -74,8 +74,8 @@
     },
     {
       "name": "tpcvMap",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "std::map\u003cint, VectorRef\u003cint\u003e\u003e",
+      "type": "vector",
       "vtable_slot": 7,
       "wire_size": 4,
       "wire_alignment": 4,

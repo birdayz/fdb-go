@@ -6,51 +6,51 @@
   "source_file": "fdbclient/include/fdbclient/ClientWorkerInterface.h",
   "vtable": [
     18,
-    32,
+    42,
     4,
-    8,
     12,
-    16,
     20,
-    24,
-    28
+    28,
+    36,
+    40,
+    41
   ],
   "fields": [
     {
       "name": "stallInterval",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 0,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "stallPeriod",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "throttlePeriod",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "percentBitFlips",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "reply",
@@ -63,21 +63,21 @@
     },
     {
       "name": "diskFailure",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "bool",
+      "type": "scalar",
       "vtable_slot": 5,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
     },
     {
       "name": "flipBits",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "bool",
+      "type": "scalar",
       "vtable_slot": 6,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
     }
   ]
 }

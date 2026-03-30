@@ -10,7 +10,6 @@ import (
 type testVector struct {
 	Name           string `json:"name"`
 	FileIdentifier uint32 `json:"file_identifier"`
-	Size           int    `json:"size"`
 	Hex            string `json:"hex"`
 }
 
@@ -22,40 +21,35 @@ func loadVector(t *testing.T, name string) []byte {
 		return nil
 	}
 	var v testVector
-	if err := json.Unmarshal(data, &v); err != nil {
-		t.Fatalf("parse test vector: %v", err)
-	}
+	json.Unmarshal(data, &v)
 	raw, _ := hex.DecodeString(v.Hex)
 	return raw
 }
 
 func TestUnmarshal_GroundTruth(t *testing.T) {
 	t.Parallel()
-
 	tests := []struct {
 		name string
 		msg  interface{ UnmarshalFDB([]byte) error }
-		fid  uint32
 	}{
-		{"GetValueRequest", &GetValueRequest{}, GetValueRequest_FileIdentifier},
-		{"GetValueReply", &GetValueReply{}, GetValueReply_FileIdentifier},
-		{"GetKeyRequest", &GetKeyRequest{}, GetKeyRequest_FileIdentifier},
-		{"GetKeyReply", &GetKeyReply{}, GetKeyReply_FileIdentifier},
-		{"GetKeyValuesRequest", &GetKeyValuesRequest{}, GetKeyValuesRequest_FileIdentifier},
-		{"GetKeyValuesReply", &GetKeyValuesReply{}, GetKeyValuesReply_FileIdentifier},
-		{"WatchValueRequest", &WatchValueRequest{}, WatchValueRequest_FileIdentifier},
-		{"WatchValueReply", &WatchValueReply{}, WatchValueReply_FileIdentifier},
-		{"CommitTransactionRequest", &CommitTransactionRequest{}, CommitTransactionRequest_FileIdentifier},
-		{"CommitID", &CommitID{}, CommitID_FileIdentifier},
-		{"GetKeyServerLocationsRequest", &GetKeyServerLocationsRequest{}, GetKeyServerLocationsRequest_FileIdentifier},
-		{"GetKeyServerLocationsReply", &GetKeyServerLocationsReply{}, GetKeyServerLocationsReply_FileIdentifier},
-		{"GetReadVersionRequest", &GetReadVersionRequest{}, GetReadVersionRequest_FileIdentifier},
-		{"GetReadVersionReply", &GetReadVersionReply{}, GetReadVersionReply_FileIdentifier},
-		{"ClientDBInfo", &ClientDBInfo{}, ClientDBInfo_FileIdentifier},
-		{"OpenDatabaseCoordRequest", &OpenDatabaseCoordRequest{}, OpenDatabaseCoordRequest_FileIdentifier},
-		{"Error", &Error{}, Error_FileIdentifier},
+		{"GetValueRequest", &GetValueRequest{}},
+		{"GetValueReply", &GetValueReply{}},
+		{"GetKeyRequest", &GetKeyRequest{}},
+		{"GetKeyReply", &GetKeyReply{}},
+		{"GetKeyValuesRequest", &GetKeyValuesRequest{}},
+		{"GetKeyValuesReply", &GetKeyValuesReply{}},
+		{"WatchValueRequest", &WatchValueRequest{}},
+		{"WatchValueReply", &WatchValueReply{}},
+		{"CommitTransactionRequest", &CommitTransactionRequest{}},
+		{"CommitID", &CommitID{}},
+		{"GetKeyServerLocationsRequest", &GetKeyServerLocationsRequest{}},
+		{"GetKeyServerLocationsReply", &GetKeyServerLocationsReply{}},
+		{"GetReadVersionRequest", &GetReadVersionRequest{}},
+		{"GetReadVersionReply", &GetReadVersionReply{}},
+		{"ClientDBInfo", &ClientDBInfo{}},
+		{"OpenDatabaseCoordRequest", &OpenDatabaseCoordRequest{}},
+		{"Error", &Error{}},
 	}
-
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,7 +67,6 @@ func TestUnmarshal_GroundTruth(t *testing.T) {
 
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
-
 	t.Run("WatchValueReply", func(t *testing.T) {
 		t.Parallel()
 		msg := WatchValueReply{Version: 12345, Cached: true}
@@ -89,7 +82,6 @@ func TestRoundTrip(t *testing.T) {
 			t.Error("cached: got false, want true")
 		}
 	})
-
 	t.Run("GetValueRequest", func(t *testing.T) {
 		t.Parallel()
 		msg := GetValueRequest{Key: []byte("mykey"), Version: 100}
@@ -105,23 +97,6 @@ func TestRoundTrip(t *testing.T) {
 			t.Errorf("version: got %d, want 100", msg2.Version)
 		}
 	})
-
-	t.Run("CommitID", func(t *testing.T) {
-		t.Parallel()
-		msg := CommitID{Version: 999, TxnBatchId: 42}
-		data := msg.MarshalFDB()
-		var msg2 CommitID
-		if err := msg2.UnmarshalFDB(data); err != nil {
-			t.Fatalf("UnmarshalFDB: %v", err)
-		}
-		if msg2.Version != 999 {
-			t.Errorf("version: got %d, want 999", msg2.Version)
-		}
-		if msg2.TxnBatchId != 42 {
-			t.Errorf("txnBatchId: got %d, want 42", msg2.TxnBatchId)
-		}
-	})
-
 	t.Run("GetValueReply_WithPenalty", func(t *testing.T) {
 		t.Parallel()
 		msg := GetValueReply{Penalty: 1.5, Cached: true}

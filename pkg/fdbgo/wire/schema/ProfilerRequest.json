@@ -6,12 +6,12 @@
   "source_file": "fdbclient/include/fdbclient/ClientWorkerInterface.h",
   "vtable": [
     14,
-    24,
-    4,
-    8,
+    28,
     12,
     16,
-    20
+    20,
+    4,
+    24
   ],
   "fields": [
     {
@@ -25,35 +25,35 @@
     },
     {
       "name": "type",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int",
+      "type": "scalar",
       "vtable_slot": 1,
       "wire_size": 4,
       "wire_alignment": 4,
-      "inline": false
+      "inline": true
     },
     {
       "name": "action",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int",
+      "type": "scalar",
       "vtable_slot": 2,
       "wire_size": 4,
       "wire_alignment": 4,
-      "inline": false
+      "inline": true
     },
     {
       "name": "duration",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "outputFile",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "StringRef",
+      "type": "bytes",
       "vtable_slot": 4,
       "wire_size": 4,
       "wire_alignment": 4,

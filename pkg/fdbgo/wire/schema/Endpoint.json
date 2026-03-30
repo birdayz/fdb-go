@@ -34,7 +34,7 @@
     },
     {
       "name": "addresses.address",
-      "cpp_type": "unknown",
+      "cpp_type": "NetworkAddressList",
       "type": "struct",
       "vtable_slot": 2,
       "wire_size": 4,

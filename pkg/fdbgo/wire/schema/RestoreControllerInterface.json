@@ -12,7 +12,7 @@
   "fields": [
     {
       "name": "*(RestoreRoleInterface*)this",
-      "cpp_type": "unknown",
+      "cpp_type": "RestoreRoleInterface",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,

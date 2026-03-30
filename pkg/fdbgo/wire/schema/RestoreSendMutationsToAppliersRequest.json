@@ -24,8 +24,8 @@
     },
     {
       "name": "rangeToApplier",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "std::map\u003cKey, UID\u003e",
+      "type": "vector",
       "vtable_slot": 1,
       "wire_size": 4,
       "wire_alignment": 4,

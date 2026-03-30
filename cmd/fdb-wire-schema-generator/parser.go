@@ -349,7 +349,12 @@ func buildMessageDef(ps parsedStruct, fieldTypes map[string]string, fdbVersion s
 			lookupName = lookupName[:idx]
 		}
 
-		cppType := fieldTypes[lookupName]
+		// Try exact match first (handles cast expressions like "*(Foo*)this"),
+		// then stripped name.
+		cppType := fieldTypes[arg]
+		if cppType == "" {
+			cppType = fieldTypes[lookupName]
+		}
 		if cppType == "" {
 			// Well-known base class fields that our parser can't resolve
 			// (declared in a different file from the struct).
@@ -538,6 +543,105 @@ func wellKnownFieldType(fieldName string) string {
 		"resultsTssMapping": "std::vector<std::pair<UID, StorageServerInterface>>",
 		"resultsTagMapping": "std::vector<std::pair<UID, Tag>>",
 		"data":              "VectorRef<KeyValueRef>",
+
+		// FailureMonitoringReply
+		"clientRequestIntervalMS":       "double",
+		"considerServerFailedTimeoutMS": "double",
+
+		// GetStorageCheckSumRequest
+		"ranges": "VectorRef<KeyRangeRef>",
+
+		// GetStorageMetricsReply / StorageQueuingMetricsReply
+		"bytesInput":         "int64_t",
+		"bytesDurable":       "int64_t",
+		"storageBytes":       "StorageBytes",
+		"durableVersion":     "Version",
+		"cpuUsage":           "double",
+		"diskUsage":          "double",
+		"localRateLimit":     "double",
+		"busiestTags":        "std::vector<TagInfo>",
+		"tag":                "Tag",
+		"rate":               "double",
+		"fractionalBusyness": "double",
+		"localTime":          "double",
+		"instanceID":         "UID",
+
+		// GetStorageServerRejoinInfoReply
+		"history": "std::vector<std::pair<Version, Tag>>",
+
+		// GetStorageWigglerStateReply
+		"remote": "std::vector<std::pair<Key, Value>>",
+
+		// InitializeBackupReply
+		"interf": "BackupInterface",
+
+		// InitializeStorageRequest
+		"tssPairIDAndVersion": "Optional<std::pair<UID, Version>>",
+
+		// OldTLogConf
+		"pseudoLocalities": "std::vector<int8_t>",
+
+		// OpenDatabaseRequest
+		"count":                "int64_t",
+		"samples":              "VectorRef<ClientVersionRef>",
+		"clientCount":          "int64_t",
+		"issues":               "VectorRef<StringRef>",
+		"supportedVersions":    "VectorRef<ClientVersionRef>",
+		"maxProtocolSupported": "ProtocolVersion",
+		"knownClientInfoID":    "UID",
+
+		// ProfilerRequest
+		"type":       "int",
+		"action":     "int",
+		"duration":   "double",
+		"outputFile": "StringRef",
+
+		// ResolveTransactionBatchReply
+		"conflictingKeyRangeMap": "std::map<int, VectorRef<KeyRangeRef>>",
+		"tpcvMap":                "std::map<int, VectorRef<int>>",
+
+		// ResolveTransactionBatchRequest
+		"txnStateTransactions": "VectorRef<StateTransactionRef>",
+
+		// RestoreSendMutationsToAppliersRequest
+		"rangeToApplier": "std::map<Key, UID>",
+
+		// RestoreSysInfo
+		"appliers": "std::vector<RestoreApplierInterface>",
+
+		// RestoreSysInfoRequest
+		"rangeVersions": "VectorRef<std::pair<KeyRangeRef, Version>>",
+
+		// ServerDBInfo
+		"recoveryCount": "int64_t",
+
+		// SetFailureInjection
+		"stallInterval":   "double",
+		"stallPeriod":     "double",
+		"throttlePeriod":  "double",
+		"percentBitFlips": "double",
+		"diskFailure":     "bool",
+		"flipBits":        "bool",
+
+		// SimGetEncryptKeysByKeyIdsRequest
+		"encryptKeyIds": "VectorRef<int64_t>",
+
+		// TLogLockResult
+		"unknownCommittedVersionTuples": "VectorRef<std::pair<Version, int>>",
+
+		// WipedString
+		"ws": "StringRef",
+
+		// Fallback for common field names shadowed by nested struct parsing
+		"version": "Version",
+
+		// Endpoint (nested)
+		"addresses.address": "NetworkAddressList",
+
+		// Cast expressions in serializer args — map to the underlying type
+		"*(RestoreRoleInterface*)this":                "RestoreRoleInterface",
+		"((VectorRef<KeyValueRef>&)*this)":            "VectorRef<KeyValueRef>",
+		"((VectorRef<MutationsAndVersionRef>&)*this)": "VectorRef<MutationsAndVersionRef>",
 	}
 	if t, ok := known[fieldName]; ok {
 		return t

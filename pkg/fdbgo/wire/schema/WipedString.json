@@ -12,8 +12,8 @@
   "fields": [
     {
       "name": "ws",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "StringRef",
+      "type": "bytes",
       "vtable_slot": 0,
       "wire_size": 4,
       "wire_alignment": 4,

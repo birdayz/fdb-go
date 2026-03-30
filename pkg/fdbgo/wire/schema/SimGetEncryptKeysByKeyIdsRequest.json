@@ -13,8 +13,8 @@
   "fields": [
     {
       "name": "encryptKeyIds",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "VectorRef\u003cint64_t\u003e",
+      "type": "vector",
       "vtable_slot": 0,
       "wire_size": 4,
       "wire_alignment": 4,

@@ -5,13 +5,14 @@
   "reply_type": "InitializeStorageReply",
   "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
   "vtable": [
-    20,
-    40,
+    22,
+    41,
     12,
     16,
     20,
     24,
     28,
+    40,
     32,
     4,
     36
@@ -64,18 +65,18 @@
     },
     {
       "name": "tssPairIDAndVersion",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Optional\u003cstd::pair\u003cUID, Version\u003e\u003e",
+      "type": "optional",
       "vtable_slot": 5,
-      "wire_size": 4,
-      "wire_alignment": 4,
+      "wire_size": 0,
+      "wire_alignment": 0,
       "inline": false
     },
     {
       "name": "initialClusterVersion",
       "cpp_type": "Version",
       "type": "scalar",
-      "vtable_slot": 6,
+      "vtable_slot": 7,
       "wire_size": 8,
       "wire_alignment": 8,
       "inline": true
@@ -84,7 +85,7 @@
       "name": "encryptMode",
       "cpp_type": "EncryptionAtRestMode",
       "type": "struct",
-      "vtable_slot": 7,
+      "vtable_slot": 8,
       "wire_size": 4,
       "wire_alignment": 4,
       "inline": false

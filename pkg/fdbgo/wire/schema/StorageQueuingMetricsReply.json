@@ -5,26 +5,26 @@
   "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
   "vtable": [
     32,
-    60,
+    100,
+    84,
     4,
-    8,
     12,
-    16,
     20,
-    24,
+    88,
     28,
-    32,
     36,
-    40,
     44,
-    48,
+    92,
     52,
-    56
+    60,
+    68,
+    76,
+    96
   ],
   "fields": [
     {
       "name": "tag",
-      "cpp_type": "unknown",
+      "cpp_type": "Tag",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,
@@ -33,34 +33,34 @@
     },
     {
       "name": "rate",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 1,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "fractionalBusyness",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 2,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "localTime",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 3,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "instanceID",
-      "cpp_type": "unknown",
+      "cpp_type": "UID",
       "type": "struct",
       "vtable_slot": 4,
       "wire_size": 4,
@@ -69,34 +69,34 @@
     },
     {
       "name": "bytesDurable",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 5,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "bytesInput",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "int64_t",
+      "type": "scalar",
       "vtable_slot": 6,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "version",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 7,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "storageBytes",
-      "cpp_type": "unknown",
+      "cpp_type": "StorageBytes",
       "type": "struct",
       "vtable_slot": 8,
       "wire_size": 4,
@@ -105,44 +105,44 @@
     },
     {
       "name": "durableVersion",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "Version",
+      "type": "scalar",
       "vtable_slot": 9,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "cpuUsage",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 10,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "diskUsage",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 11,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "localRateLimit",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "double",
+      "type": "scalar",
       "vtable_slot": 12,
-      "wire_size": 4,
-      "wire_alignment": 4,
-      "inline": false
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
     },
     {
       "name": "busiestTags",
-      "cpp_type": "unknown",
-      "type": "struct",
+      "cpp_type": "std::vector\u003cTagInfo\u003e",
+      "type": "vector",
       "vtable_slot": 13,
       "wire_size": 4,
       "wire_alignment": 4,
