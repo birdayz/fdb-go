@@ -121,51 +121,32 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 // slot 5 (Reply) at offset 24: nested ReplyPromise struct
 // slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	// Use the real vtable from C++ test vector.
-	// Real vtable: {22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
-	// Serialize order: arena(0), spanContext(0), tenant(1), begin(2),
-	//   end(3=type,4=value), limit(5), reverse(6), reply(7), minTenantVersion(8)
-	//
-	// But the slot-to-field mapping needs matching the C++ serialize order.
-	// slot 0 (offset 12): spanContext (RelOff, leave as 0 = empty)
-	// slot 1 (offset 36): end.type (uint8, 0 = absent)
-	// slot 2 (offset 16): tenant (RelOff, 0 = empty)
-	// slot 3 (offset 20): begin (RelOff to key data)
-	// slot 4 (offset 37): reverse (bool, false)
-	// slot 5 (offset 24): end.value (RelOff, 0 = absent)
-	// slot 6 (offset 28): limit (int32)
-	// slot 7 (offset 32): reply (RelOff to nested ReplyPromise)
-	// slot 8 (offset 4): minTenantVersion (int64)
-	vt := wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
+	vt := protocol.GetKeyServerLocationsRequest_VTable
 	fileID := protocol.GetKeyServerLocationsRequest_FileIdentifier
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// slot 8: minTenantVersion at offset 4 (int64, -2 = latestVersion)
-		obj.WriteInt64(4, -2)
-
-		// begin at offset 20 (slot 3), tenant at offset 16 (slot 2)
-		obj.WriteBytes(20, key)
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
-		obj.WriteStruct(16, tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // tenantId = INVALID_TENANT
-			// token type (uint8 at 16) and value (RelOff at 12) left as 0 (absent)
-		})
-
-		// reply at offset 24
+		// Generated slot mapping:
+		// slot 0 (Begin): vt[2]
+		obj.WriteBytes(int(vt[0+2]), key)
+		// slot 3 (Limit): vt[5]
+		obj.WriteInt32(int(vt[3+2]), 100)
+		// slot 5 (Reply): vt[7] — nested struct
 		replyVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(24, replyVT, 8, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(int(vt[5+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
-
-		// limit at offset 28
-		obj.WriteInt32(28, 100)
+		// slot 7 (Tenant): vt[9] — nested struct with tenantId=-1
+		tenantVT := wire.VTable{6, 12, 4}
+		obj.WriteStruct(int(vt[7+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1)
+		})
+		// slot 8 (MinTenantVersion): vt[10]
+		obj.WriteInt64(int(vt[8+2]), -1)
 	})
 }
 
-// parseGetKeyServerLocationsReply parses the ErrorOr-wrapped response.
-// The response contains a vector of (KeyRange, StorageServerInterface[]) pairs.
 func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
 	r, err := wire.NewReader(data)
 	if err != nil {
