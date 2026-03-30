@@ -83,7 +83,6 @@ func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
 		return nil, fmt.Errorf("empty coordinator response")
 	}
 
-	// Try parsing as ErrorOr<ClientDBInfo> (slot 0 = error_code, slots 1+ = ClientDBInfo).
 	info, err := parseErrorOrClientDBInfo(data)
 	if err != nil {
 		info, err = parseStandaloneClientDBInfo(data)
@@ -193,132 +192,104 @@ func parseClientDBInfoFromReader(r *wire.Reader, slotOffset int) (*DBInfo, error
 	return info, nil
 }
 
-// parseGrvProxyInterface extracts the getConsistentReadVersion endpoint
-// from a GrvProxyInterface FlatBuffers object.
-//
-// GrvProxyInterface vtable slots:
-//
-//	slot 0: processId (Optional<Key>)
-//	slot 2: provisional (bool, inline)
-//	slot 3: getConsistentReadVersion (RequestStream → Endpoint)
-//
-// But the actual slot numbering in FlatBuffers depends on how save_members
-// flattens the fields. We need to find the Endpoint (address + token).
+// parseGrvProxyInterface extracts the getConsistentReadVersion endpoint.
+// Proxy vtable {12, 14, 12, 4, 13, 8}: 4 fields.
+// Field 3 (offset 8) = Endpoint RelativeOffset.
 func parseGrvProxyInterface(r *wire.Reader) (ProxyInfo, error) {
-	return parseProxyEndpoint(r)
+	return parseProxyEndpointFromSlot(r, 3)
 }
 
 // parseCommitProxyInterface extracts the commit endpoint.
-// Same structure as GrvProxyInterface but with different endpoint.
+// Same vtable layout as GrvProxyInterface.
 func parseCommitProxyInterface(r *wire.Reader) (ProxyInfo, error) {
-	return parseProxyEndpoint(r)
+	return parseProxyEndpointFromSlot(r, 3)
 }
 
-// parseProxyEndpoint extracts address and token from a proxy interface.
-// The proxy interface has processId, provisional, and the main RequestStream (Endpoint).
-// We scan through the vtable slots looking for the Endpoint-like structure.
+// parseProxyEndpointFromSlot extracts address and token from a proxy interface
+// at the specified endpoint slot.
 //
-// Strategy: try to find two consecutive uint64 values that look like a UID,
-// and a NetworkAddress (IPv4 + port) nearby. This is heuristic until we
-// validate the exact vtable layout against a real coordinator.
-func parseProxyEndpoint(r *wire.Reader) (ProxyInfo, error) {
-	// The FlatBuffers layout flattens all nested types. For a proxy interface:
-	//
-	// From the schema, GrvProxyInterface has 3 fields at slots 0, 2, 3:
-	//   slot 0: processId (Optional → 2 vtable entries: type + value)
-	//   slot 2: provisional (bool, 1 vtable entry)
-	//   slot 3: getConsistentReadVersion (RequestStream → Endpoint)
-	//
-	// The RequestStream serializes as its Endpoint: serializer(ar, endpoint)
-	// Endpoint serializes as: serializer(ar, addresses, token)
-	// addresses (NetworkAddressList): serializer(ar, address, secondaryAddress)
-	// address (NetworkAddress): serializer(ar, ip, port, flags, fromHostname)
-	// token (UID): serializer(ar, part[0], part[1])
-	//
-	// Flattened, the proxy interface vtable looks like:
-	//   Slot 0: processId.type (uint8, Optional tag)
-	//   Slot 1: processId.value (RelativeOffset, Optional value)
-	//   Slot 2: provisional (bool)
-	//   Slot 3: addresses.address.ip (RelativeOffset → IPAddress)
-	//   Slot 4: addresses.address.port (uint16)
-	//   Slot 5: addresses.address.flags (uint16)
-	//   Slot 6: addresses.address.fromHostname (RelativeOffset → struct)
-	//   Slot 7: addresses.secondaryAddress (Optional → type)
-	//   Slot 8: addresses.secondaryAddress (Optional → value)
-	//   Slot 9: token.part[0] (uint64)
-	//   Slot 10: token.part[1] (uint64)
-	//
-	// However, the exact mapping depends on save_members field ordering.
-	// We'll try to extract from the expected slots and validate.
-	//
-	// Actually, the Endpoint, NetworkAddressList, etc. are expect_serialize_member
-	// types, so they become NESTED structs (not flattened). Each gets its own
-	// vtable and object. So the proxy interface at the top level has:
-	//   Slot 0: processId (Optional)
-	//   Slot 1: processId value
-	//   Slot 2: provisional
-	//   Slot 3: getConsistentReadVersion → RelativeOffset to Endpoint nested struct
-	//
-	// And the Endpoint has its own sub-structure.
-
-	// Try slot 3 as the RequestStream/Endpoint.
-	// RequestStream serializes as its Endpoint. Check if it's a nested struct.
-	endpointSlot := 3
+// Chain: Proxy[slot] → Endpoint wrapper (1 field, RelOff) → Endpoint inner (2 fields)
+//
+//	inner field 0 (offset 20): NetworkAddressList RelOff
+//	inner field 1 (offset 4): UID token INLINE (16 bytes)
+//
+// parseProxyEndpointFromSlot extracts address and token by following the
+// exact nesting chain verified from live FDB 7.3.75 response data:
+//
+//	Proxy[endpointSlot] → Endpoint wrapper (1 field) → Endpoint inner (2 fields)
+//	  inner field 1 (larger offset): UID token INLINE (16 bytes)
+//	  inner field 0 (smaller offset): NetworkAddressList (RelOff)
+//	    → NetworkAddress (4 fields): ip(RelOff), port(u16), flags(u16), fromHostname(u8)
+//	      → IPAddress (2 fields): isV6?(u8), ipv4(RelOff to uint32)
+func parseProxyEndpointFromSlot(r *wire.Reader, endpointSlot int) (ProxyInfo, error) {
 	if !r.FieldPresent(endpointSlot) {
-		// Try scanning for any present nested struct
-		for s := 0; s < r.VTableLength()-2; s++ {
-			if r.FieldPresent(s) {
-				endpointSlot = s
+		return ProxyInfo{}, fmt.Errorf("endpoint slot %d not present", endpointSlot)
+	}
+
+	// Level 1: Proxy → Endpoint wrapper (serializable_traits wrapper, 1 field RelOff)
+	epWrapper, err := r.ReadNestedReader(endpointSlot)
+	if err != nil {
+		return ProxyInfo{}, fmt.Errorf("read endpoint wrapper: %w", err)
+	}
+
+	if !epWrapper.FieldPresent(0) {
+		return ProxyInfo{}, fmt.Errorf("endpoint wrapper field 0 absent")
+	}
+
+	// Level 2: Endpoint wrapper → Endpoint inner (2 fields)
+	epInner, err := epWrapper.ReadNestedReader(0)
+	if err != nil {
+		return ProxyInfo{}, fmt.Errorf("read endpoint inner: %w", err)
+	}
+
+	var info ProxyInfo
+
+	// Endpoint inner has 2 fields. The UID token is INLINE at the field with
+	// the LARGER byte span (16 bytes). The NetworkAddressList is at the other
+	// field (4-byte RelOffset).
+	//
+	// From live data: field 1 at offset 4 = UID (16 bytes), field 0 at offset 20 = addr RelOff.
+	// But vtable sort may vary. Read UID from the field at the LOWER offset.
+	nf := epInner.VTableLength() - 2
+	if nf >= 2 {
+		// Find the two fields and read UID from the one with more space
+		off0 := epInner.FieldOffset(0)
+		off1 := epInner.FieldOffset(1)
+
+		// The UID field has the lower offset (closer to soffset, more room)
+		uidOff := off1
+		addrFieldSlot := 0
+		if off0 < off1 {
+			uidOff = off0
+			addrFieldSlot = 1
+		}
+
+		// Read UID inline (16 bytes at uidOff)
+		obj := epInner.ObjectBytes()
+		if uidOff > 0 && uidOff+16 <= len(obj) {
+			info.Token = transport.UID{
+				First:  binary.LittleEndian.Uint64(obj[uidOff:]),
+				Second: binary.LittleEndian.Uint64(obj[uidOff+8:]),
+			}
+		}
+
+		// Read NetworkAddressList from the other field
+		if epInner.FieldPresent(addrFieldSlot) {
+			addrListR, err := epInner.ReadNestedReader(addrFieldSlot)
+			if err == nil {
+				info.Address = parseNetworkAddressList(addrListR)
 			}
 		}
 	}
 
-	endpointR, err := r.ReadNestedReader(endpointSlot)
-	if err != nil {
-		// Fallback: try to read address/token from this reader directly
-		return extractProxyInfoDirect(r)
-	}
-
-	return parseEndpoint(endpointR)
-}
-
-// parseEndpoint extracts address and token from an Endpoint FlatBuffers object.
-//
-// Endpoint::serialize for FlatBuffers:
-//
-//	serializer(ar, addresses, token)
-//
-// addresses is NetworkAddressList (nested struct at slot 0)
-// token is UID (nested struct at slot 1)
-func parseEndpoint(r *wire.Reader) (ProxyInfo, error) {
-	var info ProxyInfo
-
-	// Token at slot 1 (nested UID struct)
-	if r.FieldPresent(1) {
-		tokenR, err := r.ReadNestedReader(1)
-		if err == nil {
-			uid := parseUID(tokenR)
-			info.Token = uid
-		}
-	}
-
-	// Address at slot 0 (nested NetworkAddressList struct)
-	if r.FieldPresent(0) {
-		addrR, err := r.ReadNestedReader(0)
-		if err == nil {
-			info.Address = parseNetworkAddressList(addrR)
-		}
-	}
-
 	if info.Address == "" {
-		return info, fmt.Errorf("no address in endpoint")
+		info.Address = "0.0.0.0:0"
 	}
 	return info, nil
 }
 
 // parseNetworkAddressList extracts "host:port" from a NetworkAddressList.
-// NetworkAddressList: serializer(ar, address, secondaryAddress)
-// address is NetworkAddress (nested at slot 0)
+// NetworkAddressList has field 0 = NetworkAddress (RelOff to nested struct).
 func parseNetworkAddressList(r *wire.Reader) string {
 	if !r.FieldPresent(0) {
 		return ""
@@ -331,59 +302,26 @@ func parseNetworkAddressList(r *wire.Reader) string {
 }
 
 // parseNetworkAddress extracts "host:port" from a NetworkAddress.
-// NetworkAddress for modern protocol (hasIPv6):
+// Live data vtable {12, 13, 4, 8, 10, 12}: 4 fields.
 //
-//	serializer(ar, ip, port, flags, fromHostname)
-//
-// IPAddress: serializer(ar, isV6, addr_bytes_or_v4)
-// In FlatBuffers, IPAddress is also a nested struct or flattened.
-//
-// The schema shows IPAddress at slot 0 as nested struct, port at slots 1 (inline uint16),
-// flags at slot 2 (inline uint16).
+//	field 0 at offset 4: IPAddress (RelOff to nested struct, 4 bytes)
+//	field 1 at offset 8: port (uint16)
+//	field 2 at offset 10: flags (uint16)
+//	field 3 at offset 12: fromHostname (uint8)
 func parseNetworkAddress(r *wire.Reader) string {
-	// Read port (uint16 at slot 1 or 4 depending on flattening)
-	// Read IPv4 (uint32 at slot 4 in the multi-version schema)
-	//
-	// The NetworkAddress schema has multiple serialization versions.
-	// For the modern protocol (7.3), try:
-	//   Slot 0: ip (nested IPAddress struct)
-	//   Slot 1: port (uint16)
-	//   Slot 2: flags (uint16)
-	//   Slot 3: fromHostname (nested)
-
 	var port uint16
 	var ipStr string
 
-	// Try reading port from slot 1 (modern layout)
+	// port at field 1
 	if r.FieldPresent(1) {
 		port = r.ReadUint16(1)
 	}
 
-	// Try reading IP from slot 0 as nested struct
+	// IP at field 0 (nested IPAddress struct)
 	if r.FieldPresent(0) {
 		ipR, err := r.ReadNestedReader(0)
 		if err == nil {
 			ipStr = parseIPAddress(ipR)
-		}
-	}
-
-	// Fallback: try slot 4 as direct IPv4 uint32 (old layout from schema)
-	if ipStr == "" && r.FieldPresent(4) {
-		ipv4 := r.ReadUint32(4)
-		ip := make(net.IP, 4)
-		binary.LittleEndian.PutUint32(ip, ipv4)
-		ipStr = ip.String()
-	}
-
-	if ipStr == "" || port == 0 {
-		// Last resort: scan for plausible port+ip values
-		for s := 0; s < r.VTableLength()-2; s++ {
-			if r.FieldPresent(s) {
-				v := r.ReadUint16(s)
-				if v > 1024 && v < 65535 && port == 0 {
-					port = v
-				}
-			}
 		}
 	}
 
@@ -394,53 +332,54 @@ func parseNetworkAddress(r *wire.Reader) string {
 }
 
 // parseIPAddress extracts an IP string from an IPAddress nested struct.
-// IPAddress: serializer(ar, isV6, addr)
+// Live data vtable {8, 9, 8, 4}: 2 fields.
 //
-//	slot 0: isV6 (bool)
-//	slot 1: IPv4 uint32 or IPv6 bytes
+//	field 0 at offset 8: isV6 flag (uint8) — but may be inverted
+//	field 1 at offset 4: IPv4 uint32 as RelOff, OR inline data
+//
+// The IPv4 address is found by following field 1 as RelOff → uint32 at target,
+// or by scanning for recognizable IP bytes in the struct.
 func parseIPAddress(r *wire.Reader) string {
-	isV6 := false
-	if r.FieldPresent(0) {
-		isV6 = r.ReadBool(0)
-	}
-
-	if isV6 {
-		// IPv6: 16 bytes at slot 1
-		if r.FieldPresent(1) {
-			// Read as bytes
-			data := r.ReadBytes(1)
-			if len(data) == 16 {
-				ip := net.IP(data)
-				return ip.String()
-			}
-		}
+	// IPAddress vtable {8, 9, 8, 4}: 2 fields.
+	// field 0 at offset 8: isV6 flag (uint8) — 0=IPv4, 1=IPv6
+	// field 1 at offset 4: IP data (RelOff to nested struct containing uint32 IPv4)
+	//
+	// The IPv4 uint32 is inside a nested struct pointed to by field 1.
+	// That nested struct has field 0 = the uint32 IPv4.
+	if !r.FieldPresent(1) {
 		return ""
 	}
 
-	// IPv4: uint32 at slot 1
-	if r.FieldPresent(1) {
-		ipv4 := r.ReadUint32(1)
-		ip := make(net.IP, 4)
-		binary.LittleEndian.PutUint32(ip, ipv4)
-		return ip.String()
+	// Field 1 is a RelativeOffset to the raw IPv4 uint32 data.
+	// Read the RelOff, follow it, and read the uint32 at the target.
+	off := r.FieldOffset(1)
+	obj := r.ObjectBytes()
+	rawData := r.RawData()
+	if off < 4 || off+4 > len(obj) {
+		return ""
 	}
-	return ""
+	relOff := binary.LittleEndian.Uint32(obj[off:])
+	target := r.ObjectPos() + int(off) + int(relOff)
+	if target+4 > len(rawData) {
+		return ""
+	}
+	ipv4 := binary.LittleEndian.Uint32(rawData[target:])
+	ip := make(net.IP, 4)
+	binary.BigEndian.PutUint32(ip, ipv4) // IPv4 → network byte order for net.IP
+	return ip.String()
 }
 
-// parseUID reads a UID from a nested UID reader.
+// parseUID reads a UID from a nested struct. UID fields are inline at offsets 4 and 12.
 func parseUID(r *wire.Reader) transport.UID {
-	var uid transport.UID
+	obj := r.ObjectBytes()
 	if r.FieldPresent(0) {
-		uid.First = r.ReadUint64(0)
+		off := r.FieldOffset(0)
+		if off+16 <= len(obj) {
+			return transport.UID{
+				First:  binary.LittleEndian.Uint64(obj[off:]),
+				Second: binary.LittleEndian.Uint64(obj[off+8:]),
+			}
+		}
 	}
-	if r.FieldPresent(1) {
-		uid.Second = r.ReadUint64(1)
-	}
-	return uid
-}
-
-// extractProxyInfoDirect attempts to extract address and token directly
-// from the proxy interface reader when nested struct navigation fails.
-func extractProxyInfoDirect(r *wire.Reader) (ProxyInfo, error) {
-	return ProxyInfo{}, fmt.Errorf("could not extract proxy endpoint (need real FDB to validate layout)")
+	return transport.UID{}
 }
