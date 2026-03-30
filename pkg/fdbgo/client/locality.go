@@ -88,7 +88,15 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 	replyToken, replyCh := conn.PrepareReply()
 	body := buildGetKeyServerLocationsRequest(key, replyToken)
 
-	if err := conn.SendFrame(proxy.Token, body); err != nil {
+	// The getKeyServerLocations endpoint is at commit.token + 2
+	// (adjacent batch registration: commit=0, getConsistentReadVersion=1,
+	// getKeyServerLocations=2, etc.)
+	locToken := transport.UID{
+		First:  proxy.Token.First,
+		Second: proxy.Token.Second + 2,
+	}
+
+	if err := conn.SendFrame(locToken, body); err != nil {
 		return nil, fmt.Errorf("send GetKeyServerLocations: %w", err)
 	}
 
