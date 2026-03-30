@@ -2,10 +2,13 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 const (
@@ -31,31 +34,27 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		for _, server := range servers {
 			conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
 			if err != nil {
-				continue // try next server
+				continue
 			}
 
-			req := protocol.GetValueRequest{
-				Key:     key,
-				Version: tx.readVersion,
+			replyToken, replyCh := conn.PrepareReply()
+			body := buildGetValueRequest(key, tx.readVersion, replyToken, server.Token)
+			if err := conn.SendFrame(server.Token, body); err != nil {
+				continue
 			}
-			body := req.MarshalFDB()
 
 			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			replyBody, err := conn.SendAndWait(rctx, server.Token, body)
-			cancel()
-
-			if err != nil {
-				continue // try next server
+			select {
+			case resp := <-replyCh:
+				cancel()
+				if resp.Err != nil {
+					continue
+				}
+				return parseGetValueReply(resp.Body)
+			case <-rctx.Done():
+				cancel()
+				continue
 			}
-
-			var reply protocol.GetValueReply
-			if err := reply.UnmarshalFDB(replyBody); err != nil {
-				return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
-			}
-
-			// TODO: Check for error in reply (LoadBalancedReply::error).
-			// For now, return the value.
-			return reply.Value, nil
 		}
 
 		// All servers failed — possibly wrong shard. Invalidate and retry.
@@ -115,3 +114,57 @@ type KeyValue struct {
 	Key   []byte
 	Value []byte
 }
+
+// buildGetValueRequest constructs the request with embedded reply token.
+func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
+	vt := protocol.GetValueRequest_VTable
+	fileID := protocol.GetValueRequest_FileIdentifier
+
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
+		// slot 0 (Key): vt[2]
+		obj.WriteBytes(int(vt[0+2]), key)
+		// slot 1 (Version): vt[3]
+		obj.WriteInt64(int(vt[1+2]), version)
+		// slot 4 (Reply): vt[6] — nested struct
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(int(vt[4+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+		// slot 6 (TenantInfo): vt[8] — nested struct with tenantId=-1
+		tenantVT := wire.VTable{6, 12, 4}
+		obj.WriteStruct(int(vt[6+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1) // INVALID_TENANT
+		})
+	})
+}
+
+// parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
+func parseGetValueReply(data []byte) ([]byte, error) {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse GetValue reply: %w", err)
+	}
+
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			errCode := r.ReadInt32(0)
+			return nil, fmt.Errorf("FDB GetValue error: code %d", errCode)
+		}
+		return nil, fmt.Errorf("empty GetValue response")
+	}
+
+	// GetValueReply has: penalty(float64), error(Optional), value(Optional<Value>), cached(bool)
+	// The value is at some slot. Use the generated UnmarshalFDB to extract.
+	var reply protocol.GetValueReply
+	if err := reply.UnmarshalFDB(data); err != nil {
+		return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
+	}
+
+	return reply.Value, nil
+}
+
+// Ensure imports are used
+var _ = binary.LittleEndian

@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"github.com/zeebo/xxh3"
@@ -147,6 +149,23 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		}
 	}
 
+	// Write a test key via C binding
+	fdb.MustAPIVersion(720)
+	tmpFile, _ := os.CreateTemp("", "fdb-*.cluster")
+	tmpFile.WriteString(connStr)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	cdb, cErr := fdb.OpenDatabase(tmpFile.Name())
+	if cErr != nil {
+		t.Logf("C binding: %v", cErr)
+	} else {
+		_, txErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+			tx.Set(fdb.Key("test_key"), []byte("hello_from_go"))
+			return nil, nil
+		})
+		t.Logf("C binding write: %v", txErr)
+	}
+
 	// Try GRV — GetReadVersion from the GRV proxy
 	t.Log("Attempting GetReadVersion...")
 	batcher := NewGRVBatcher(cluster)
@@ -157,6 +176,30 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		t.Logf("GetReadVersion: version=%d", version)
 		if version <= 0 {
 			t.Errorf("expected positive version, got %d", version)
+		}
+	}
+
+	// Try GetValue — read the key we wrote via C binding
+	if version > 0 && len(dbInfo.GRVProxies) > 0 {
+		t.Log("Attempting GetValue for 'test_key'...")
+		// Create a minimal Database + Transaction for the getValue call
+		db := &Database{
+			cluster:       cluster,
+			grvBatcher:    batcher,
+			locationCache: NewLocationCache(cluster),
+		}
+		tx := db.CreateTransaction()
+		tx.readVersion = version
+		tx.hasReadVersion = true
+
+		val, err := tx.getValue(ctx, []byte("test_key"))
+		if err != nil {
+			t.Logf("GetValue: %v", err)
+		} else {
+			t.Logf("GetValue: key=test_key value=%q", string(val))
+			if string(val) != "hello_from_go" {
+				t.Errorf("expected 'hello_from_go', got %q", string(val))
+			}
 		}
 	}
 }

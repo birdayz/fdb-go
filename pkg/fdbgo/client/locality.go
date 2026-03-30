@@ -195,10 +195,42 @@ func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
 	}
 	addr := fmt.Sprintf("%s:%d", ip, port)
 
-	// Extract storage server token (search for UID near the address)
-	// The UID is 16 bytes inline somewhere near the address data.
-	// For now, use a zero token (we'll need proper parsing for the real token).
-	info := ServerInfo{Address: addr}
+	// Extract storage server getValue endpoint token by finding
+	// Endpoint inner objects (vtable {8, 24, 20, 4} or {8, 24, 4, 20}).
+	var token transport.UID
+	for vtPos := 0; vtPos+8 <= len(data); vtPos += 2 {
+		vts := binary.LittleEndian.Uint16(data[vtPos:])
+		vto := binary.LittleEndian.Uint16(data[vtPos+2:])
+		if vts == 8 && vto == 24 {
+			// Found an Endpoint inner vtable. Find the object pointing to it.
+			off0 := binary.LittleEndian.Uint16(data[vtPos+4:])
+			off1 := binary.LittleEndian.Uint16(data[vtPos+6:])
+			// UID is at the field with the lower offset
+			uidOff := int(off0)
+			if off1 < off0 {
+				uidOff = int(off1)
+			}
+			// Search for objects with soffset pointing to this vtable
+			for objPos := vtPos + 8; objPos+24 <= len(data); objPos += 4 {
+				soff := int32(binary.LittleEndian.Uint32(data[objPos:]))
+				if objPos-int(soff) == vtPos {
+					// Found the object. Read UID at the lower offset.
+					if objPos+uidOff+16 <= len(data) {
+						first := binary.LittleEndian.Uint64(data[objPos+uidOff:])
+						second := binary.LittleEndian.Uint64(data[objPos+uidOff+8:])
+						if first > 0x10000 && (first&1) != 0 { // TOKEN_STREAM_FLAG
+							token = transport.UID{First: first, Second: second}
+						}
+					}
+					break
+				}
+			}
+			if token.First != 0 {
+				break
+			}
+		}
+	}
+	info := ServerInfo{Address: addr, Token: token}
 
 	return []ServerInfo{info}, nil
 }
