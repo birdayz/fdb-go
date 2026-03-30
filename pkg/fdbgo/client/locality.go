@@ -144,39 +144,23 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		// slot 8: minTenantVersion at offset 4 (int64, -2 = latestVersion)
 		obj.WriteInt64(4, -2)
 
-		// slot 3: begin key at offset 20
+		// begin at offset 20 (slot 3), tenant at offset 16 (slot 2)
 		obj.WriteBytes(20, key)
+		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		obj.WriteStruct(16, tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1) // tenantId = INVALID_TENANT
+			// token type (uint8 at 16) and value (RelOff at 12) left as 0 (absent)
+		})
 
-		// slot 5: reply at offset 24 (nested ReplyPromise)
+		// reply at offset 24
 		replyVT := wire.VTable{6, 20, 4}
 		obj.WriteStruct(24, replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
 
-		// slot 6: limit at offset 28
+		// limit at offset 28
 		obj.WriteInt32(28, 100)
-
-		// TenantInfo may be FLATTENED into the parent vtable.
-		// If so, tenantId(-1) needs to be written at the correct inline offset.
-		// The flattened TenantInfo contributes: tenantId(8) + token.type(1) + token.value(4)
-		// If flattened, tenantId is an 8-byte field in the parent's vtable.
-		// Looking at the vtable: slots 0-8 are mapped as follows.
-		// Let me try writing -1 at EVERY 8-byte-aligned position to find where tenantId goes:
-		// Already have minTenantVersion(-2) at offset 4. TenantId might ALSO be 8 bytes.
-		// But there's only ONE 8-byte position in the vtable (offset 4).
-		//
-		// So if TenantInfo is flattened, tenantId would need its OWN 8-byte position.
-		// But the vtable only has one 8-byte position. So either TenantInfo is NOT flattened,
-		// or tenantId shares the 8-byte position with minTenantVersion.
-		//
-		// More likely: TenantInfo IS a nested struct (4-byte RelOff at offset 16).
-		// Write it as a nested struct with a proper inner vtable.
-		// But we don't know the inner vtable. Let me try a simple single-field vtable:
-		tenantVT := wire.VTable{6, 12, 4} // 1 field (tenantId int64) at offset 4
-		obj.WriteStruct(16, tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // INVALID_TENANT
-		})
 	})
 }
 
