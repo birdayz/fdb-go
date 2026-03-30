@@ -1676,7 +1676,7 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 ### HIGH — Read path
 
 - [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75 (e.g., version=1020866).
-- [ ] **GetKeyServerLocationsRequest** — wired up with correct adjacent endpoint token (commit+2) but request silently dropped (vtable format issue, same debugging cycle as coordinator).
+- [ ] **GetKeyServerLocationsRequest** — wired up with correct getAdjustedEndpoint(2) token (first += 2<<32, second += 2). Reply received on correct token. Returns error 2131 (tenant_not_found) — TenantInfo nested struct needs correct vtable to set tenantId=-1 (INVALID_TENANT). Reply slot confirmed at offset 24 (slot 5).
 - [ ] **GetValueRequest/Reply** — complete the read path: serialize request with reply token → send to storage server → receive → unwrap ErrorOr → deserialize reply → extract value.
 - [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` (nested `std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>`) to extract key range → server address mappings.
 - [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
