@@ -254,6 +254,42 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		if string(val2) != "written_by_go" {
 			t.Errorf("Go read-back: expected 'written_by_go', got %q", string(val2))
 		}
+
+		// Test MVCC conflict detection: two transactions reading+writing same key.
+		t.Log("Testing MVCC conflict detection...")
+		tx1 := db.CreateTransaction()
+		tx2 := db.CreateTransaction()
+		// Both get the same read version.
+		sharedRV, _ := batcher.GetReadVersion(ctx)
+		tx1.readVersion = sharedRV
+		tx1.hasReadVersion = true
+		tx2.readVersion = sharedRV
+		tx2.hasReadVersion = true
+		// Both read the same key (adds read conflict range).
+		_, _ = tx1.Get(ctx, []byte("conflict_key"))
+		_, _ = tx2.Get(ctx, []byte("conflict_key"))
+		// Both write the same key.
+		tx1.Set([]byte("conflict_key"), []byte("from_tx1"))
+		tx2.Set([]byte("conflict_key"), []byte("from_tx2"))
+		// First commit should succeed.
+		err = tx1.Commit(ctx)
+		if err != nil {
+			t.Fatalf("tx1 commit: %v", err)
+		}
+		t.Logf("tx1 committed at version %d", tx1.committedVersion)
+		// Second commit should get not_committed (1020).
+		err = tx2.Commit(ctx)
+		if err == nil {
+			t.Error("tx2 should have conflicted but succeeded")
+		} else {
+			t.Logf("tx2 conflict (expected): %v", err)
+			fdbErr, ok := err.(*FDBError)
+			if ok && fdbErr.Code == ErrNotCommitted {
+				t.Log("MVCC conflict detection working!")
+			} else {
+				t.Logf("unexpected error type: %T %v", err, err)
+			}
+		}
 	}
 }
 

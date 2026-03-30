@@ -68,12 +68,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 	vt := protocol.CommitTransactionRequest_VTable
 	fileID := protocol.CommitTransactionRequest_FileIdentifier
 
-	// Pre-serialize mutation vector as proper FlatBuffers nested objects.
-	// Conflict ranges are empty for now — they require the same nested object
-	// format (KeyRangeRef with serialize_member), which we haven't implemented yet.
-	// Without conflict ranges, commits skip MVCC conflict detection.
+	// Pre-serialize vectors as proper FlatBuffers nested objects.
 	mutData := serializeMutationVector(tx.mutations)
-	emptyVec := make([]byte, 4) // [count=0]
+	readCRData := serializeConflictRangeVector(tx.readConflicts)
+	writeCRData := serializeConflictRangeVector(tx.writeConflicts)
 
 	w := wire.NewWriter(nil)
 	// Add nested structs in REVERSE serialization order so the Writer
@@ -102,10 +100,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		obj.WriteStruct(int(vt[0+2]), commitTransactionRefVTable, 8, func(inner *wire.ObjectWriter) {
 			// slot 3: read_snapshot (int64) at offset 4
 			inner.WriteInt64(4, tx.readVersion)
-			// slot 0: read_conflict_ranges at offset 12 (empty — see NOTE above)
-			inner.WriteRawOOL(12, emptyVec)
-			// slot 1: write_conflict_ranges at offset 16 (empty — see NOTE above)
-			inner.WriteRawOOL(16, emptyVec)
+			// slot 0: read_conflict_ranges at offset 12
+			inner.WriteRawOOL(12, readCRData)
+			// slot 1: write_conflict_ranges at offset 16
+			inner.WriteRawOOL(16, writeCRData)
 			// slot 2: mutations at offset 20
 			inner.WriteRawOOL(20, mutData)
 			// Remaining fields (report_conflicting_keys, lock_aware,
@@ -150,6 +148,10 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 // MutationRef vtable: serializer(ar, type, param1, param2)
 // type=uint8 at offset 12, param1=StringRef(RelOff) at offset 4, param2=StringRef(RelOff) at offset 8
 var mutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
+
+// KeyRangeRef vtable: serializer(ar, begin, end)
+// begin=StringRef(RelOff) at offset 4, end=StringRef(RelOff) at offset 8
+var keyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 
 // serializeMutationVector packs mutations as VectorRef<MutationRef>.
 // Each MutationRef is a full FlatBuffers nested object (serialize_member, NOT dynamic_size_traits).
@@ -209,6 +211,55 @@ func buildMutationRefBlob(m Mutation) []byte {
 	// Write OOL
 	copy(buf[p2Start:], param2OOL)
 	copy(buf[p1Start:], param1OOL)
+
+	return buf
+}
+
+// serializeConflictRangeVector packs ranges as VectorRef<KeyRangeRef>.
+// Each KeyRangeRef is a full FlatBuffers nested object (serialize_member).
+func serializeConflictRangeVector(ranges []KeyRange) []byte {
+	blobs := make([][]byte, len(ranges))
+	for i, kr := range ranges {
+		blobs[i] = buildKeyRangeRefBlob(kr)
+	}
+	return packVectorOfObjects(blobs)
+}
+
+// buildKeyRangeRefBlob builds a single KeyRangeRef as a FlatBuffers object blob.
+// Layout: [vtable][padding][soffset+fields][end_ool][begin_ool]
+func buildKeyRangeRefBlob(kr KeyRange) []byte {
+	vt := keyRangeRefVTable
+	vtBytes := 8          // len(vt) * 2
+	objSize := int(vt[1]) // 12
+
+	// OOL: end first (C++ reverse allocation order), then begin
+	endOOL := packStringRef(kr.End)
+	beginOOL := packStringRef(kr.Begin)
+
+	vtPos := 0
+	objPos := (vtBytes + 3) &^ 3 // align to 4
+	objEnd := objPos + objSize
+
+	oolPos := (objEnd + 3) &^ 3
+	endStart := oolPos
+	beginStart := (endStart + len(endOOL) + 3) &^ 3
+	total := (beginStart + len(beginOOL) + 3) &^ 3
+
+	buf := make([]byte, total)
+
+	// Write vtable
+	for j, v := range vt {
+		binary.LittleEndian.PutUint16(buf[vtPos+j*2:], v)
+	}
+
+	// Write object
+	binary.LittleEndian.PutUint32(buf[objPos:], uint32(int32(objPos-vtPos)))     // soffset
+	binary.LittleEndian.PutUint32(buf[objPos+4:], uint32(beginStart-(objPos+4))) // begin RelOff
+	binary.LittleEndian.PutUint32(buf[objPos+8:], uint32(endStart-(objPos+8)))   // end RelOff
+
+	// Write OOL
+	copy(buf[endStart:], endOOL)
+	copy(buf[beginStart:], beginOOL)
 
 	return buf
 }

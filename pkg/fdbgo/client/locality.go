@@ -112,7 +112,10 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 		if resp.Err != nil {
 			return nil, fmt.Errorf("locations response: %w", resp.Err)
 		}
-		return parseGetKeyServerLocationsReply(resp.Body)
+		// Extract IP from proxy address for the reply parser.
+		proxyHost, _, _ := net.SplitHostPort(proxy.Address)
+		proxyIP := net.ParseIP(proxyHost)
+		return parseGetKeyServerLocationsReply(resp.Body, proxyIP)
 	case <-rctx.Done():
 		return nil, fmt.Errorf("locations request timed out: %w", rctx.Err())
 	}
@@ -149,7 +152,7 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 	})
 }
 
-func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
+func parseGetKeyServerLocationsReply(data []byte, knownIP net.IP) ([]ServerInfo, error) {
 	r, err := wire.NewReader(data)
 	if err != nil {
 		return nil, fmt.Errorf("parse locations reply: %w", err)
@@ -173,16 +176,20 @@ func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
 	// TODO: Full result parsing. For now, return the commit proxy as a fallback
 	// server (single-node clusters have all roles on the same address).
 	// The reply has field 0 = Results vector of (KeyRange, StorageServerInterface[]).
-	// Search for the known IP pattern (LE IPv4) in the data to extract the address.
+	// Search for the known proxy IP in the data to extract the storage server address.
 	// This is a hack — proper parsing would navigate the full nesting structure.
-	ipPattern := []byte{0x03, 0x00, 0x15, 0xAC} // 172.21.0.3 in LE — TEMP: Docker-specific
+	// In single-node clusters, all processes share the same IP.
+	ip4 := knownIP.To4()
+	if ip4 == nil {
+		return nil, fmt.Errorf("knownIP is not IPv4: %v", knownIP)
+	}
+	// FDB stores IPv4 in little-endian: [octet0][octet1][octet2][octet3]
+	ipPattern := []byte{ip4[3], ip4[2], ip4[1], ip4[0]}
 	ipIdx := bytes.Index(data, ipPattern)
 	if ipIdx < 0 {
-		// Fallback: search for any plausible port in the data
 		return nil, fmt.Errorf("storage server IP not found in %d-byte reply", len(data))
 	}
 
-	// Extract IP and port from the known layout (port is ~20 bytes before IP)
 	ip := net.IP{data[ipIdx+3], data[ipIdx+2], data[ipIdx+1], data[ipIdx]}
 	var port uint16
 	// Search backward for a port in the 4500-40000 range

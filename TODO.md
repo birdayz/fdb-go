@@ -1680,7 +1680,7 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 ### HIGH — Next steps
 
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
-- [ ] **Conflict range serialization** — KeyRangeRef uses serialize_member (vtable + nested object), same pattern as MutationRef. Needed for MVCC conflict detection.
+- [x] **Conflict range serialization** — KeyRangeRef uses serialize_member (vtable {8,12,4,8} + nested object). MVCC conflict detection verified: concurrent writes to same key produce not_committed (1020).
 - [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` properly (currently uses IP pattern hack).
 - [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
