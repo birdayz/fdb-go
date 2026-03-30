@@ -42,13 +42,19 @@ docker run --rm \
         if ! grep -q gen_testvecs /fdb/CMakeLists.txt; then
         cat >> /fdb/CMakeLists.txt << "CMAKE_EOF"
 
-# Test vector generator. Links fdbclient+fdbrpc+flow.
-# Unresolved fdbserver symbols are allowed — they are vtables from
-# template instantiations that are never called (we default-construct
-# messages, the virtual dispatch paths are dead code).
+# Build fdbserver sources as a static library so we can link against it.
+# (fdbserver is normally an executable, but we need its object files for
+# NetNotifiedQueue vtables used by Interface types.)
+get_target_property(FDBSERVER_SRCS fdbserver SOURCES)
+get_target_property(FDBSERVER_INCS fdbserver INCLUDE_DIRECTORIES)
+add_library(fdbserver_lib STATIC EXCLUDE_FROM_ALL ${FDBSERVER_SRCS})
+target_include_directories(fdbserver_lib PUBLIC ${FDBSERVER_INCS})
+target_link_libraries(fdbserver_lib PUBLIC fdbclient fdbrpc flow)
+set_target_properties(fdbserver_lib PROPERTIES COMPILE_OPTIONS "-w")
+
+# Test vector generator. Links everything — no unresolved symbols.
 add_executable(gen_testvecs generated_messages.cpp)
-target_link_libraries(gen_testvecs PRIVATE fdbclient fdbrpc flow)
-target_link_options(gen_testvecs PRIVATE "LINKER:--warn-unresolved-symbols")
+target_link_libraries(gen_testvecs PRIVATE fdbserver_lib fdbclient fdbrpc flow)
 target_include_directories(gen_testvecs PRIVATE
     ${CMAKE_SOURCE_DIR}/fdbserver/include
     ${CMAKE_SOURCE_DIR}/fdbserver

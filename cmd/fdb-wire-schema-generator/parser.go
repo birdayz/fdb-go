@@ -540,22 +540,51 @@ void doEmit(const char* outDir, const char* name) {
     fclose(f);
 }
 
-// Fork-safe wrapper: run doEmit in a child process so segfaults
-// from unresolved vtables (server-only types) don't kill the parent.
+// Zero-init version: bypasses constructors that crash due to unresolved vtables.
+template <class T>
+void doEmitZero(const char* outDir, const char* name) {
+    alignas(T) char storage[sizeof(T)] = {};
+    T& msg = *reinterpret_cast<T*>(storage);
+    ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+    wr.serialize(FileIdentifierFor<T>::value, msg);
+    auto bytes = wr.toStringRef();
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s.json", outDir, name);
+    FILE* f = fopen(path, "w");
+    if (!f) { perror(path); return; }
+    fprintf(f, "{\n  \"name\": \"%s\",\n  \"file_identifier\": %u,\n  \"size\": %d,\n  \"hex\": \"",
+            name, FileIdentifierFor<T>::value, (int)bytes.size());
+    for (int i = 0; i < bytes.size(); i++) fprintf(f, "%02x", bytes[i]);
+    fprintf(f, "\"\n}\n");
+    fclose(f);
+}
+
+// Fork-safe wrapper: try default construct first, fall back to zero-init.
 template <class T>
 void emit(const char* outDir, const char* name) {
     pid_t pid = fork();
     if (pid == 0) {
-        // Child: try to serialize. May segfault for some types.
         doEmit<T>(outDir, name);
         _exit(0);
     }
     int status = 0;
     waitpid(pid, &status, 0);
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        // Success — file was written.
+        return; // default construction worked
+    }
+    // Default construction crashed (Interface types with NetNotifiedQueue vtables).
+    // Retry with zero-init — bypasses constructors, serialization only reads data fields.
+    pid = fork();
+    if (pid == 0) {
+        doEmitZero<T>(outDir, name);
+        _exit(0);
+    }
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        fprintf(stderr, "ZERO-INIT %s\n", name);
     } else {
-        fprintf(stderr, "SKIP %s (crashed or failed)\n", name);
+        fprintf(stderr, "SKIP %s (both methods failed)\n", name);
     }
 }
 
