@@ -47,6 +47,9 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
 	// The clusterKey must match the coordinator's internal cluster file.
 	connStr := cf.InternalKey
+	// The clusterKey comparison in the coordinator is byte-exact.
+	// If there are any hidden characters (trailing newline, etc.), add them.
+	fmt.Printf("[COORD] using clusterKey: %q len=%d hex=%x\n", connStr, len(connStr), []byte(connStr))
 	if connStr == "" {
 		connStr = cf.Description + ":" + cf.ID + "@"
 		for i, addr := range cf.Coordinators {
@@ -78,8 +81,11 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 			inner.WriteUint64(12, replyToken.Second)
 		})
 
-		// slot 4: clusterKey
+		// slot 4: clusterKey — use empty to skip the key check
+		// The coordinator will compare with its own key and accept if empty.
+		// If not, it sends wrong_cluster_key error which we handle.
 		obj.WriteBytes(32, []byte(connStr))
+		// TODO: if still getting wrong_cluster_key, try empty: obj.WriteBytes(32, []byte{})
 
 		// slot 8: internal
 		obj.WriteBool(48, true)
@@ -92,9 +98,10 @@ func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
 	}
 
 	// Try parsing as ErrorOr<ClientDBInfo> (slot 0 = error_code, slots 1+ = ClientDBInfo).
+	fmt.Printf("[PARSE] response (%d bytes): %x\n", len(data), data)
 	info, err := parseErrorOrClientDBInfo(data)
 	if err != nil {
-		// Fall back to parsing as standalone ClientDBInfo.
+		fmt.Printf("[PARSE] ErrorOr parse failed: %v, trying standalone\n", err)
 		info, err = parseStandaloneClientDBInfo(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse coordinator response: %w (raw %d bytes)", err, len(data))
@@ -112,22 +119,32 @@ func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
 //	slot 3: id (UID)
 //	... (remaining ClientDBInfo fields)
 func parseErrorOrClientDBInfo(data []byte) (*DBInfo, error) {
+	// The response is ErrorOr<EnsureTable<ClientDBInfo>> with flattened FakeRoot.
+	// The FakeRoot uses the ErrorOr union vtable: field0(type)@8, field1(value)@4.
+	// NewReader navigates FakeRoot field0 (at hardcoded offset 4) which follows the
+	// VALUE RelativeOffset, landing directly on the inner struct (Error or ClientDBInfo).
+	//
+	// To distinguish Error from ClientDBInfo, check the vtable field count:
+	// - Error has 1 field (error_code int32)
+	// - ClientDBInfo has 10+ fields
 	r, err := wire.NewReader(data)
 	if err != nil {
 		return nil, fmt.Errorf("NewReader: %w", err)
 	}
 
-	// Slot 0: error_code (uint16). 0xFFFF (invalid_error_code) = success.
-	if !r.FieldPresent(0) {
-		return nil, fmt.Errorf("error_code field not present")
-	}
-	errorCode := r.ReadUint16(0)
-	if errorCode != 0xFFFF {
-		return nil, fmt.Errorf("FDB error from coordinator: code %d", errorCode)
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		// This is the Error struct (1 field = error_code)
+		if r.FieldPresent(0) {
+			errCode := r.ReadInt32(0)
+			return nil, fmt.Errorf("FDB coordinator error: code %d", errCode)
+		}
+		return nil, fmt.Errorf("FDB coordinator error (empty Error struct)")
 	}
 
-	// Parse ClientDBInfo fields at shifted slots (slot+1 from standalone).
-	return parseClientDBInfoFromReader(r, 1)
+	// This is the ClientDBInfo struct (10+ fields).
+	// Parse directly — no additional slot offset needed.
+	return parseClientDBInfoFromReader(r, 0)
 }
 
 // parseStandaloneClientDBInfo parses a plain ClientDBInfo (no ErrorOr wrapper).

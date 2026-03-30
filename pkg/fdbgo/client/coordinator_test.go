@@ -18,7 +18,7 @@ import (
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
 func TestCoordinatorBootstrap(t *testing.T) {
-	t.Skip("WIP: coordinator responds! Response parsing needs fixing (ErrorOr/CachedSerialization unwrapping)")
+	t.Skip("WIP: coordinator responds with wrong_cluster_key (1216) — cluster key comparison byte mismatch")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -60,12 +60,15 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		t.Fatalf("read internal cluster file: %v", err)
 	}
 	internalBytes, _ := io.ReadAll(internalReader)
-	internalConnStr := strings.TrimSpace(string(internalBytes))
-	// Docker log multiplexer may prepend 8-byte header; strip non-printable prefix
-	for len(internalConnStr) > 0 && internalConnStr[0] < 0x20 {
-		internalConnStr = internalConnStr[1:]
+	internalStr := string(internalBytes)
+	// Docker multiplexer prepends 8-byte binary header per chunk.
+	// Find the actual cluster string by looking for the known pattern.
+	idx := strings.Index(internalStr, cf.Description)
+	if idx >= 0 {
+		internalStr = internalStr[idx:]
 	}
-	t.Logf("internal cluster file: %q", internalConnStr)
+	internalConnStr := strings.TrimSpace(internalStr)
+	t.Logf("internal cluster file: %q (raw len=%d)", internalConnStr, len(internalBytes))
 
 	// Parse internal cluster file for the cluster key
 	internalCF, err := ParseClusterString(internalConnStr)
