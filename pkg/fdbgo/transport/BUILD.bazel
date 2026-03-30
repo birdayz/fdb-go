@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "transport",
+    srcs = [
+        "conn.go",
+        "framing.go",
+        "handshake.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_zeebo_xxh3//:xxh3"],
+)
+
+go_test(
+    name = "transport_test",
+    srcs = ["transport_test.go"],
+    embed = [":transport"],
+)

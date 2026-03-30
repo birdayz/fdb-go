@@ -28,6 +28,8 @@ use_repo(
     "org_golang_google_protobuf",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "com_github_zeebo_xxh3",
+    "com_github_klauspost_cpuid_v2",
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
