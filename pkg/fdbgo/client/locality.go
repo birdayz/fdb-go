@@ -157,12 +157,25 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		// slot 6: limit at offset 28
 		obj.WriteInt32(28, 100)
 
-		// slot 2: tenant at offset 16 (TenantInfo nested struct)
-		// TenantInfo: tenantId(int64=-1) + token(Optional absent) + arena(0)
-		// vtable {10, 17, 4, 16, 12}: tenantId@4, token.type@16, token.value@12
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		// TenantInfo may be FLATTENED into the parent vtable.
+		// If so, tenantId(-1) needs to be written at the correct inline offset.
+		// The flattened TenantInfo contributes: tenantId(8) + token.type(1) + token.value(4)
+		// If flattened, tenantId is an 8-byte field in the parent's vtable.
+		// Looking at the vtable: slots 0-8 are mapped as follows.
+		// Let me try writing -1 at EVERY 8-byte-aligned position to find where tenantId goes:
+		// Already have minTenantVersion(-2) at offset 4. TenantId might ALSO be 8 bytes.
+		// But there's only ONE 8-byte position in the vtable (offset 4).
+		//
+		// So if TenantInfo is flattened, tenantId would need its OWN 8-byte position.
+		// But the vtable only has one 8-byte position. So either TenantInfo is NOT flattened,
+		// or tenantId shares the 8-byte position with minTenantVersion.
+		//
+		// More likely: TenantInfo IS a nested struct (4-byte RelOff at offset 16).
+		// Write it as a nested struct with a proper inner vtable.
+		// But we don't know the inner vtable. Let me try a simple single-field vtable:
+		tenantVT := wire.VTable{6, 12, 4} // 1 field (tenantId int64) at offset 4
 		obj.WriteStruct(16, tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // tenantId = INVALID_TENANT
+			inner.WriteInt64(4, -1) // INVALID_TENANT
 		})
 	})
 }
