@@ -1669,26 +1669,24 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 
 - [x] **Parse GrvProxyInterface/CommitProxyInterface nested structs** — Full nesting chain decoded from live FDB 7.3.75 response: Proxy[slot3] → Endpoint wrapper → Endpoint inner (UID inline + NetworkAddressList) → NetworkAddress (IP RelOff + port uint16) → IPAddress (RelOff to raw uint32). Correctly extracts `172.21.0.3:PORT` with endpoint tokens.
 
-### CRITICAL — Next: GRV + Read + Commit
+### DONE — GRV + Read + Write (e2e verified)
+
+- [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75.
+- [x] **GetKeyServerLocationsRequest** — Location reply received and parsed. Storage server address + endpoint token extracted. Uses generated vtable + getAdjustedEndpoint(2).
+- [x] **GetValueRequest/Reply** — Uses C++ ground-truth template bytes (240 bytes), patches version/key/reply token. Reads back values written by C binding.
+- [x] **CommitTransactionRequest/CommitID** — Full commit pipeline: Writer-built request with CommitTransactionRef nested struct (mutations as proper FlatBuffers nested objects + empty conflict ranges). ErrorOr\<CommitID\> response parsed. Go writes verified readable by C binding AND Go client.
+- [x] **MutationRef FlatBuffers nested objects** — Each mutation is a full FlatBuffers object (vtable + soffset + StringRef RelOffs for key/value). Discovered: FDB does NOT use dynamic_size_traits for MutationRef/KeyRangeRef (only serialize_member). Our fdb_stubs.h was wrong.
+
+### HIGH — Next steps
 
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
-
-### HIGH — Read path
-
-- [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75 (e.g., version=1020866).
-- [x] **GetKeyServerLocationsRequest** — Location reply received and parsed. Storage server address extracted (172.21.0.3:PORT). Uses generated vtable + getAdjustedEndpoint(2) for commit proxy token. TenantInfo nested struct with tenantId=-1 at generated slot 7. Reply at generated slot 5.
-- [ ] **GetValueRequest/Reply** — Request builder wired up with PrepareReply pattern and TenantInfo. Storage server endpoint token extracted from location reply. Server crashes on our request — same vtable/format debugging needed. The generated vtable {24,42,...} may need C++ ground truth validation.
-- [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` (nested `std::vector<std::pair<KeyRangeRef, std::vector<StorageServerInterface>>>`) to extract key range → server address mappings.
+- [ ] **Conflict range serialization** — KeyRangeRef uses serialize_member (vtable + nested object), same pattern as MutationRef. Needed for MVCC conflict detection.
+- [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` properly (currently uses IP pattern hack).
 - [ ] **GetKeyValuesRequest/Reply (range reads)** — needs KeySelectorRef serialization (key + orEqual + offset), result parsing (VectorRef\<KeyValueRef\>).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
 - [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
-
-### HIGH — Write path
-
-- [ ] **CommitTransactionRef serialization** — pack mutations + read/write conflict ranges into nested struct. This is the most complex serialization: `VectorRef<KeyRangeRef>` for conflict ranges, `VectorRef<MutationRef>` for mutations, `Version read_snapshot`.
-- [ ] **CommitTransactionRequest/CommitID** — send to commit proxy, receive committed version or conflict error.
 - [ ] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution.
-- [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops (ADD, BYTE_MAX, SET_VERSIONSTAMPED_KEY, etc.).
+- [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops.
 
 ### HIGH — Public API
 

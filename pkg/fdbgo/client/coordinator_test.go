@@ -202,6 +202,59 @@ func TestCoordinatorBootstrap(t *testing.T) {
 			}
 		}
 	}
+
+	// Test WRITE path: Go client writes, C binding reads back.
+	if len(dbInfo.CommitProxies) > 0 && cErr == nil {
+		t.Log("Attempting Go client write...")
+		db := &Database{
+			cluster:       cluster,
+			grvBatcher:    batcher,
+			locationCache: NewLocationCache(cluster),
+		}
+
+		// Write via Go client.
+		writeTx := db.CreateTransaction()
+		rv, err := batcher.GetReadVersion(ctx)
+		if err != nil {
+			t.Fatalf("GRV for write: %v", err)
+		}
+		writeTx.readVersion = rv
+		writeTx.hasReadVersion = true
+		writeTx.Set([]byte("go_native_key"), []byte("written_by_go"))
+		err = writeTx.Commit(ctx)
+		if err != nil {
+			t.Fatalf("Go client commit: %v", err)
+		}
+		committedVer, _ := writeTx.GetCommittedVersion()
+		t.Logf("Go client committed at version %d", committedVer)
+
+		// Read back via C binding.
+		cVal, readErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+			return tx.Get(fdb.Key("go_native_key")).Get()
+		})
+		if readErr != nil {
+			t.Fatalf("C binding read: %v", readErr)
+		}
+		got := string(cVal.([]byte))
+		t.Logf("C binding read: go_native_key=%q", got)
+		if got != "written_by_go" {
+			t.Errorf("expected 'written_by_go', got %q", got)
+		}
+
+		// Also verify via Go client read.
+		readTx := db.CreateTransaction()
+		rv2, _ := batcher.GetReadVersion(ctx)
+		readTx.readVersion = rv2
+		readTx.hasReadVersion = true
+		val2, err := readTx.getValue(ctx, []byte("go_native_key"))
+		if err != nil {
+			t.Fatalf("Go read-back: %v", err)
+		}
+		t.Logf("Go read-back: go_native_key=%q", string(val2))
+		if string(val2) != "written_by_go" {
+			t.Errorf("Go read-back: expected 'written_by_go', got %q", string(val2))
+		}
+	}
 }
 
 // debugCoordinatorExchange does a raw TCP exchange to see exact bytes.

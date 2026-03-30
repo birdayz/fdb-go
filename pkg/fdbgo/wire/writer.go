@@ -235,6 +235,7 @@ type nestedStruct struct {
 	parentOffset int              // offset within PARENT object's RelativeOffset slot
 	byteAddr     int              // filled during writeInto — absolute byte position
 	endOffset    int              // end-offset after computeEndOffset
+	oolEndOff    int              // end-offset at end of OOL region (for writeInto)
 }
 
 func (ns *nestedStruct) collectVTables(s *vTableSet) {
@@ -248,6 +249,7 @@ func (ns *nestedStruct) computeEndOffset(startEndOff int) int {
 	if len(ns.outOfLine) > 0 {
 		endOff = rightAlign(endOff+len(ns.outOfLine), 4)
 	}
+	ns.oolEndOff = endOff // save for writeInto — OOL occupies [startEndOff, oolEndOff)
 
 	// The nested object itself.
 	objSize := int(ns.vt[1])
@@ -272,12 +274,8 @@ func (ns *nestedStruct) writeInto(buf []byte, startByteAddr, vtablePos int, vtSe
 	vtOff := vtablePos + vtSet.offset(ns.vt)
 	binary.LittleEndian.PutUint32(ns.object[0:4], uint32(int32(objByteAddr-vtOff)))
 
-	// Compute ool byte position from end-offsets.
-	oolEndOff := 0
-	if len(ns.outOfLine) > 0 {
-		oolEndOff = rightAlign(len(ns.outOfLine), 4)
-	}
-	oolByteAddr := totalSize - oolEndOff
+	// OOL byte position computed from saved oolEndOff (set during computeEndOffset).
+	oolByteAddr := totalSize - ns.oolEndOff
 
 	if len(ns.outOfLine) > 0 {
 		copy(buf[oolByteAddr:], ns.outOfLine)
@@ -359,6 +357,17 @@ func (o *ObjectWriter) WriteBytes(vtableOffset int, data []byte) {
 
 func (o *ObjectWriter) WriteString(vtableOffset int, s string) {
 	o.WriteBytes(vtableOffset, []byte(s))
+}
+
+// WriteRawOOL writes raw out-of-line data without a length prefix.
+// Use this for VectorRef data that already includes the element count header.
+func (o *ObjectWriter) WriteRawOOL(vtableOffset int, data []byte) {
+	oolStart := len(o.outOfLine)
+	o.outOfLine = append(o.outOfLine, data...)
+	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
+		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+	}
+	o.patches = append(o.patches, relOffsetPatch{vtableOffset, oolStart})
 }
 
 func (o *ObjectWriter) WriteVectorInt32(vtableOffset int, values []int32) {

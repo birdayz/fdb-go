@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -116,34 +117,50 @@ type KeyValue struct {
 	Value []byte
 }
 
-// buildGetValueRequest constructs the request with embedded reply token.
-func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	vt := protocol.GetValueRequest_VTable
-	fileID := protocol.GetValueRequest_FileIdentifier
+// C++ ground truth template for GetValueRequest (240 bytes, without version prefix).
+var getValueRequestTemplate, _ = hex.DecodeString("5400000082018100000012001400040010001100080012000c0013000a001d00040014001c0018002a000c00040028001000140018001c002900200024000a001100040010000c000600140004000600080004000600000004000000360000000564417c9a7f00008400000000000000640000004000000024000000000000000800000000000000100000000000000000000000ffffffffffffffff5e000000ffffffffffffffff00000000000000000000000098000000000000000000000000000000000000000000000000000000000000008c0000004a4a5ff66661c8f603000000e42aabcf0000000000000000")
 
-	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// slot 0 (Key): vt[2]
-		obj.WriteBytes(int(vt[0+2]), key)
-		// slot 1 (Version): vt[3]
-		obj.WriteInt64(int(vt[1+2]), version)
-		// slot 4 (Reply): vt[6] — nested struct
-		replyVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(int(vt[4+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-		// slot 5 (SpanContext): vt[7] — nested struct (3 fields, obj=29)
-		spanVT := wire.VTable{10, 29, 4, 20, 28}
-		obj.WriteStruct(int(vt[5+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
-			// Default: all zeros (traceID=0, spanID=0, flags=0)
-		})
-		// slot 6 (TenantInfo): vt[8] — nested struct (3 fields)
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
-		obj.WriteStruct(int(vt[6+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // INVALID_TENANT
-		})
-	})
+// buildGetValueRequest patches the C++ ground truth template with our values.
+func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
+	// Start with a copy of the template
+	buf := make([]byte, len(getValueRequestTemplate))
+	copy(buf, getValueRequestTemplate)
+
+	// Navigate to message object
+	root := binary.LittleEndian.Uint32(buf[0:4])
+	fr_f0 := root + 4
+	msg := int(fr_f0) + int(binary.LittleEndian.Uint32(buf[fr_f0:]))
+
+	// Patch Version at msg+4 (slot 1)
+	binary.LittleEndian.PutUint64(buf[msg+4:], uint64(version))
+
+	// Patch Reply token: find the Reply nested struct and update the UID.
+	// Reply at msg+20 (slot 4). Follow RelOff to nested struct.
+	replyRelOff := binary.LittleEndian.Uint32(buf[msg+20:])
+	replyTarget := int(msg+20) + int(replyRelOff)
+	// In the nested struct, UID is at offset 4 (vtable {6,20,4})
+	binary.LittleEndian.PutUint64(buf[replyTarget+4:], replyToken.First)
+	binary.LittleEndian.PutUint64(buf[replyTarget+12:], replyToken.Second)
+
+	// Append key data at the end (the template has empty key)
+	// The key RelOff at msg+12 currently points to the end of the template
+	// where there's a [length=0] entry. We need to replace it with our key.
+	keyOOL := make([]byte, 4+len(key))
+	binary.LittleEndian.PutUint32(keyOOL, uint32(len(key)))
+	copy(keyOOL[4:], key)
+	if pad := (4 - len(keyOOL)%4) % 4; pad > 0 {
+		keyOOL = append(keyOOL, make([]byte, pad)...)
+	}
+
+	// The template's key RelOff points to the default empty key.
+	// Find where the empty key [length=0] is and replace it.
+	// For now, just append new key data and update the RelOff.
+	keyOOLStart := len(buf)
+	buf = append(buf, keyOOL...)
+	// Update key RelOff at msg+12
+	binary.LittleEndian.PutUint32(buf[msg+12:], uint32(keyOOLStart-(msg+12)))
+
+	return buf
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
@@ -162,14 +179,33 @@ func parseGetValueReply(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("empty GetValue response")
 	}
 
-	// GetValueReply has: penalty(float64), error(Optional), value(Optional<Value>), cached(bool)
-	// The value is at some slot. Use the generated UnmarshalFDB to extract.
-	var reply protocol.GetValueReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
+	// The inner struct is GetValueReply. The Reader is positioned at it.
+	// GetValueReply fields: penalty(float64), error(Optional), value(Optional<Value>), cached(bool)
+	// The value is an Optional<Value>. In FlatBuffers, Optional has type tag + value.
+	// Value is at some slot — search for it.
+	//
+	// Actually, let's try parsing with the generated UnmarshalFDB first.
+	// It calls NewReader which navigates FakeRoot → message. But our data
+	// already went through FakeRoot navigation. So UnmarshalFDB would navigate
+	// AGAIN through a "second level" FakeRoot which doesn't exist.
+	//
+	// Instead, use the Reader we already have.
+	// GetValueReply::serialize: serializer(ar, penalty, error, value, cached)
+	// slot 0: penalty (float64)
+	// slot 1: error (Optional<Error> type tag)
+	// slot 2: error value (RelOff)
+	// slot 3: value (Optional<Value> type tag)
+	// slot 4: value value (RelOff)
+	// slot 5: cached (bool)
+	//
+	// Read value from slot 4 (the value's data RelOff).
+	if r.FieldPresent(3) && r.ReadUint8(3) > 0 {
+		// Optional<Value> is present. Read the value data.
+		valData := r.ReadBytes(4)
+		return valData, nil
 	}
-
-	return reply.Value, nil
+	// Value not present (key not found)
+	return nil, nil
 }
 
 // Ensure imports are used
