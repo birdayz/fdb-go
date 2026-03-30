@@ -16,8 +16,8 @@ import (
 
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
-func TestCoordinatorBootstrap_WIP(t *testing.T) {
-	t.Skip("WIP: PING ErrorOr<EnsureTable<Void>> reply format not yet correct")
+func TestCoordinatorBootstrap(t *testing.T) {
+	t.Skip("WIP: coordinator response dispatch — PING reply works, request format needs debugging")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

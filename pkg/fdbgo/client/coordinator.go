@@ -21,6 +21,9 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 	// Build the request with the reply token embedded.
 	body := buildOpenDatabaseCoordRequest(c.clusterFile, replyToken)
 
+	fmt.Printf("[COORD] reply token: %016x:%016x\n", replyToken.First, replyToken.Second)
+	fmt.Printf("[COORD] request body (%d bytes): %x\n", len(body), body)
+
 	// Send to the coordinator's well-known openDatabase endpoint.
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {
@@ -88,14 +91,16 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 		obj.WriteBytes(int(vt[4+2]), []byte(connStr))
 
 		// slot 5: coordinators — empty vector (coordinator knows its own topology)
-		// slot 6: reply — ReplyPromise uses save/load (not serialize), so in
-		// FlatBuffers it's stored as an opaque blob via BinaryWriter. The
-		// BinaryWriter for ReplyPromise writes just the endpoint UID token
-		// (part[0] + part[1], 16 bytes LE).
-		replyBytes := make([]byte, 16)
-		binary.LittleEndian.PutUint64(replyBytes[0:], replyToken.First)
-		binary.LittleEndian.PutUint64(replyBytes[8:], replyToken.Second)
-		obj.WriteBytes(int(vt[6+2]), replyBytes)
+		// slot 6: reply — ReplyPromise in FlatBuffers is a nested struct containing
+		// the reply UID token. The nested struct has vtable {6, 20, 4}: 1 field
+		// (the UID blob) at offset 4, object_size=20 (soffset + 16 bytes UID).
+		// Verified by analyzing the PingRequest body from real FDB 7.3.75.
+		replyNestedVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(int(vt[6+2]), replyNestedVT, 8, func(inner *wire.ObjectWriter) {
+			// The UID is written inline at offset 4 (16 bytes: part[0] + part[1])
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
 
 		// slot 7: hostnames — empty (skip)
 		// slot 8: internal — true
