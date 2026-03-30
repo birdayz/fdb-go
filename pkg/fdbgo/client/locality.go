@@ -3,11 +3,13 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 // LocationCache maps key ranges to storage server addresses.
@@ -75,37 +77,87 @@ func (lc *LocationCache) Invalidate(key []byte) {
 func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo, error) {
 	proxy, err := lc.cluster.GetCommitProxy()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get commit proxy: %w", err)
 	}
 
 	conn, err := lc.cluster.getOrDial(ctx, proxy.Address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dial commit proxy: %w", err)
 	}
 
-	req := protocol.GetKeyServerLocationsRequest{
-		Begin:   key,
-		Limit:   100,
-		Reverse: false,
+	replyToken, replyCh := conn.PrepareReply()
+	body := buildGetKeyServerLocationsRequest(key, replyToken)
+
+	if err := conn.SendFrame(proxy.Token, body); err != nil {
+		return nil, fmt.Errorf("send GetKeyServerLocations: %w", err)
 	}
-	body := req.MarshalFDB()
 
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	replyBody, err := conn.SendAndWait(rctx, proxy.Token, body)
+	select {
+	case resp := <-replyCh:
+		if resp.Err != nil {
+			return nil, fmt.Errorf("locations response: %w", resp.Err)
+		}
+		return parseGetKeyServerLocationsReply(resp.Body)
+	case <-rctx.Done():
+		return nil, fmt.Errorf("locations request timed out: %w", rctx.Err())
+	}
+}
+
+// buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
+// Real vtable from test vector: {22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
+// slot 5 (Reply) at offset 24: nested ReplyPromise struct
+// slot 8 (MinTenantVersion) at offset 4: int64
+func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
+	vt := wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
+	fileID := protocol.GetKeyServerLocationsRequest_FileIdentifier
+
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
+		// slot 8: MinTenantVersion at offset 4 (int64, -1 = latest)
+		obj.WriteInt64(4, -1)
+
+		// slot 0: Begin key at offset 12
+		obj.WriteBytes(12, key)
+
+		// slot 3: Limit at offset 20 (int32)
+		obj.WriteInt32(20, 100)
+
+		// slot 5: Reply at offset 24 (nested ReplyPromise)
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(24, replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+	})
+}
+
+// parseGetKeyServerLocationsReply parses the ErrorOr-wrapped response.
+// The response contains a vector of (KeyRange, StorageServerInterface[]) pairs.
+func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
+	r, err := wire.NewReader(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse locations reply: %w", err)
 	}
 
-	var reply protocol.GetKeyServerLocationsReply
-	if err := reply.UnmarshalFDB(replyBody); err != nil {
-		return nil, err
+	// Check for ErrorOr error
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			errCode := r.ReadInt32(0)
+			return nil, fmt.Errorf("FDB locations error: code %d", errCode)
+		}
+		return nil, fmt.Errorf("empty locations response")
 	}
 
-	// TODO: Parse reply.Results to extract key ranges → server mappings.
-	// For now, the reply contains raw bytes (nested structs).
-	// Full parsing requires StorageServerInterface deserialization.
+	// The reply has field 0 = results (vector of nested structs).
+	// Each result contains a KeyRangeRef and a vector of StorageServerInterface.
+	// For now, just extract the FIRST storage server's address.
+	// Full parsing would extract all ranges and servers.
 
-	return nil, nil
+	// TODO: Full result parsing. For now, return the commit proxy as a fallback
+	// server (single-node clusters have all roles on the same address).
+	return nil, fmt.Errorf("location reply parsing not yet implemented (got %d fields in %d bytes)", nfields, len(data))
 }

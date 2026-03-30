@@ -134,6 +134,19 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		t.Error("expected at least 1 commit proxy")
 	}
 
+	// Try location lookup
+	t.Log("Attempting GetKeyServerLocations...")
+	lc := NewLocationCache(cluster)
+	servers, locErr := lc.Locate(ctx, []byte("test_key"))
+	if locErr != nil {
+		t.Logf("Locate: %v", locErr)
+	} else {
+		t.Logf("Locate: %d servers", len(servers))
+		for i, s := range servers {
+			t.Logf("  server %d: %s token=%x:%x", i, s.Address, s.Token.First, s.Token.Second)
+		}
+	}
+
 	// Try GRV — GetReadVersion from the GRV proxy
 	t.Log("Attempting GetReadVersion...")
 	batcher := NewGRVBatcher(cluster)
