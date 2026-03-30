@@ -164,10 +164,6 @@ func (c *Conn) readLoop() {
 			return
 		}
 
-		if pingDebugLog {
-			fmt.Printf("[READLOOP] frame: token=%016x:%016x body=%d bytes\n", token.First, token.Second, len(body))
-		}
-
 		// Handle PING requests from the server.
 		if token == pingToken {
 			c.handlePing(body)
@@ -203,62 +199,30 @@ func (c *Conn) handlePing(body []byte) {
 	c.mu.Unlock()
 }
 
-// pingDebugLog is set to true to enable PING debug logging via println.
-// TODO: remove after debugging is complete.
-var pingDebugLog = true
-
 // extractPingReplyToken extracts the reply UID from a PingRequest FlatBuffers body.
 func extractPingReplyToken(body []byte) (UID, bool) {
 	if len(body) < 40 {
-		if pingDebugLog {
-			fmt.Printf("[PING] body too short: %d bytes\n", len(body))
-		}
 		return UID{}, false
 	}
 
 	r, err := wire.NewReader(body)
 	if err != nil {
-		if pingDebugLog {
-			fmt.Printf("[PING] NewReader error: %v\n", err)
-		}
 		return UID{}, false
-	}
-
-	if pingDebugLog {
-		fmt.Printf("[PING] body hex (%d bytes): %x\n", len(body), body)
-		fmt.Printf("[PING] file_id: %d, vtable_len: %d\n", r.FileIdentifier(), r.VTableLength())
-		for i := 0; i < r.VTableLength()-2; i++ {
-			fmt.Printf("[PING]   slot %d: present=%v offset=%d\n", i, r.FieldPresent(i), r.FieldOffset(i))
-		}
 	}
 
 	// PingRequest has 1 field: reply (ReplyPromise).
 	// ReplyPromise uses save/load → serialized as opaque blob via WriteBytes.
 	// The blob contains the UID token (16 bytes: part[0] + part[1]).
 	if !r.FieldPresent(0) {
-		if pingDebugLog {
-			fmt.Printf("[PING] field 0 not present\n")
-		}
 		return UID{}, false
 	}
 
 	// Try reading as bytes (length-prefixed blob).
 	replyBytes := r.ReadBytes(0)
-	if pingDebugLog {
-		if replyBytes != nil {
-			fmt.Printf("[PING] ReadBytes(0): %d bytes: %x\n", len(replyBytes), replyBytes)
-		} else {
-			fmt.Printf("[PING] ReadBytes(0): nil\n")
-		}
-	}
-
 	if replyBytes != nil && len(replyBytes) >= 16 {
 		uid := UID{
 			First:  binary.LittleEndian.Uint64(replyBytes[0:8]),
 			Second: binary.LittleEndian.Uint64(replyBytes[8:16]),
-		}
-		if pingDebugLog {
-			fmt.Printf("[PING] extracted token: %016x:%016x\n", uid.First, uid.Second)
 		}
 		return uid, true
 	}
@@ -266,17 +230,7 @@ func extractPingReplyToken(body []byte) (UID, bool) {
 	// Try reading as nested struct.
 	nestedR, err := r.ReadNestedReader(0)
 	if err != nil {
-		if pingDebugLog {
-			fmt.Printf("[PING] ReadNestedReader(0) error: %v\n", err)
-		}
 		return UID{}, false
-	}
-
-	if pingDebugLog {
-		fmt.Printf("[PING] nested vtable_len: %d\n", nestedR.VTableLength())
-		for i := 0; i < nestedR.VTableLength()-2; i++ {
-			fmt.Printf("[PING]   nested slot %d: present=%v offset=%d\n", i, nestedR.FieldPresent(i), nestedR.FieldOffset(i))
-		}
 	}
 
 	// Read UID inline at the nested struct's field 0.
@@ -286,17 +240,11 @@ func extractPingReplyToken(body []byte) (UID, bool) {
 	off := nestedR.FieldOffset(0)
 	obj := nestedR.ObjectBytes()
 	if off+16 > len(obj) {
-		if pingDebugLog {
-			fmt.Printf("[PING] nested object too short: off=%d, len=%d\n", off, len(obj))
-		}
 		return UID{}, false
 	}
 	uid := UID{
 		First:  binary.LittleEndian.Uint64(obj[off:]),
 		Second: binary.LittleEndian.Uint64(obj[off+8:]),
-	}
-	if pingDebugLog {
-		fmt.Printf("[PING] extracted token (nested): %016x:%016x\n", uid.First, uid.Second)
 	}
 	return uid, true
 }

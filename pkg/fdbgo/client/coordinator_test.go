@@ -18,7 +18,6 @@ import (
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
 func TestCoordinatorBootstrap(t *testing.T) {
-	t.Skip("passes but proxy address parsing not yet complete — addresses show 0.0.0.0:0")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -18,9 +18,6 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 	replyToken, replyCh := conn.PrepareReply()
 	body := buildOpenDatabaseCoordRequest(c.clusterFile, replyToken)
 
-	fmt.Printf("[COORD] reply token: %016x:%016x\n", replyToken.First, replyToken.Second)
-	fmt.Printf("[COORD] request body (%d bytes)\n", len(body))
-
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
@@ -87,10 +84,8 @@ func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
 	}
 
 	// Try parsing as ErrorOr<ClientDBInfo> (slot 0 = error_code, slots 1+ = ClientDBInfo).
-	fmt.Printf("[PARSE] response (%d bytes): %x\n", len(data), data)
 	info, err := parseErrorOrClientDBInfo(data)
 	if err != nil {
-		fmt.Printf("[PARSE] ErrorOr parse failed: %v, trying standalone\n", err)
 		info, err = parseStandaloneClientDBInfo(data)
 		if err != nil {
 			return nil, fmt.Errorf("parse coordinator response: %w (raw %d bytes)", err, len(data))
