@@ -16,6 +16,7 @@ import (
 type Reader struct {
 	data      []byte // full buffer
 	object    []byte // slice starting at the MESSAGE object (not FakeRoot)
+	objPos    int    // absolute position of object in data
 	vtable    []byte // slice starting at the message's vtable
 	headerOff int    // 0 or 8 (protocol version prefix)
 }
@@ -69,6 +70,7 @@ func NewReader(data []byte) (*Reader, error) {
 	return &Reader{
 		data:      data,
 		object:    msgObj,
+		objPos:    msgAbsPos,
 		vtable:    data[vtableAbsPos:],
 		headerOff: offset,
 	}, nil
@@ -182,13 +184,17 @@ func (r *Reader) ReadBytes(vtableSlot int) []byte {
 	if relOffset == 0 {
 		return nil
 	}
-	// Target = &object[off] + relOffset, in terms of the object slice.
-	target := int(off) + int(relOffset)
-	// Read length.
-	length := binary.LittleEndian.Uint32(r.object[target:])
-	// Read data.
+	// RelativeOffset resolves against the full buffer: target = objPos + off + relOffset.
+	target := r.objPos + int(off) + int(relOffset)
+	if target+4 > len(r.data) {
+		return nil
+	}
+	length := binary.LittleEndian.Uint32(r.data[target:])
 	dataStart := target + 4
-	return r.object[dataStart : dataStart+int(length)]
+	if dataStart+int(length) > len(r.data) {
+		return nil
+	}
+	return r.data[dataStart : dataStart+int(length)]
 }
 
 // ReadString reads a length-prefixed string from out-of-line data.
