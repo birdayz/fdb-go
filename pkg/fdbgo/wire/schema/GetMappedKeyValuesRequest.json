@@ -1,0 +1,145 @@
+{
+  "name": "GetMappedKeyValuesRequest",
+  "file_identifier": 6795747,
+  "fdb_version": "7.3.75",
+  "reply_type": "GetMappedKeyValuesReply",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    34,
+    58,
+    12,
+    16,
+    20,
+    4,
+    24,
+    28,
+    56,
+    32,
+    36,
+    40,
+    44,
+    57,
+    48,
+    52,
+    0
+  ],
+  "fields": [
+    {
+      "name": "begin",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "end",
+      "cpp_type": "KeySelectorRef begin,",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "mapper",
+      "cpp_type": "KeyRef",
+      "type": "bytes",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "limit",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "limitBytes",
+      "cpp_type": "int limit,",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tags",
+      "cpp_type": "Optional\u003cTagSet\u003e",
+      "type": "optional",
+      "vtable_slot": 6,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cGetMappedKeyValuesReply\u003e",
+      "type": "struct",
+      "vtable_slot": 8,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "spanContext",
+      "cpp_type": "SpanContext",
+      "type": "struct",
+      "vtable_slot": 9,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tenantInfo",
+      "cpp_type": "TenantInfo",
+      "type": "struct",
+      "vtable_slot": 10,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "options",
+      "cpp_type": "Optional\u003cReadOptions\u003e",
+      "type": "optional",
+      "vtable_slot": 11,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "ssLatestCommitVersions",
+      "cpp_type": "VersionVector",
+      "type": "bytes",
+      "vtable_slot": 13,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

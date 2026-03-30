@@ -155,7 +155,7 @@ type parsedStruct struct {
 
 var (
 	reFileID     = regexp.MustCompile(`constexpr\s+static\s+FileIdentifier\s+file_identifier\s*=\s*(\d+)`)
-	reSerializer = regexp.MustCompile(`serializer\s*\(\s*ar\s*,\s*(.+?)\s*\)`)
+	reSerializer = regexp.MustCompile(`serializer\s*\(\s*ar\s*,\s*(.+)\s*\)\s*;`)
 	reStructDecl = regexp.MustCompile(`(?:struct|class)\s+(\w+)\s*(?::(?:\s*public)?\s*(.+?))?\s*\{`)
 	reReplyField = regexp.MustCompile(`ReplyPromise<(\w+)>`)
 )
@@ -223,6 +223,8 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 		braceDepth := 0
 		foundFileID := false
 
+		var serializerAccum string // accumulates multi-line serializer() calls
+
 		for j := i; j < len(lines); j++ {
 			line := lines[j]
 			braceDepth += strings.Count(line, "{") - strings.Count(line, "}")
@@ -234,10 +236,36 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 				fileID = uint32(id)
 				foundFileID = true
 			}
-			if sm := reSerializer.FindStringSubmatch(line); sm != nil {
-				args := parseSerializerArgs(sm[1])
-				serArgs = append(serArgs, args...)
+
+			// Handle multi-line serializer() calls.
+			// Start accumulating when we see "serializer(" and stop at matching ")".
+			if serializerAccum == "" {
+				if idx := strings.Index(line, "serializer("); idx >= 0 {
+					serializerAccum = line[idx:]
+				}
+			} else {
+				serializerAccum += " " + strings.TrimSpace(line)
 			}
+			if serializerAccum != "" {
+				// Check if we have balanced parentheses.
+				depth := 0
+				for _, ch := range serializerAccum {
+					if ch == '(' {
+						depth++
+					} else if ch == ')' {
+						depth--
+					}
+				}
+				if depth <= 0 {
+					// Complete serializer call — extract args.
+					if sm := reSerializer.FindStringSubmatch(serializerAccum); sm != nil {
+						args := parseSerializerArgs(sm[1])
+						serArgs = append(serArgs, args...)
+					}
+					serializerAccum = ""
+				}
+			}
+
 			if rm := reReplyField.FindStringSubmatch(line); rm != nil {
 				replyType = rm[1]
 			}

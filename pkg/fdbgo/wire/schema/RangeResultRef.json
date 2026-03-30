@@ -4,19 +4,60 @@
   "fdb_version": "7.3.75",
   "source_file": "fdbclient/include/fdbclient/FDBTypes.h",
   "vtable": [
-    6,
+    16,
+    16,
+    4,
+    12,
+    13,
     8,
-    4
+    14,
+    15
   ],
   "fields": [
     {
-      "name": "((VectorRef\u003cKeyValueRef\u003e\u0026",
+      "name": "((VectorRef\u003cKeyValueRef\u003e\u0026)*this)",
       "cpp_type": "unknown",
       "type": "struct",
       "vtable_slot": 0,
       "wire_size": 4,
       "wire_alignment": 4,
       "inline": false
+    },
+    {
+      "name": "more",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "readThrough",
+      "cpp_type": "Optional\u003cKeyRef\u003e",
+      "type": "optional",
+      "vtable_slot": 2,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "readToBegin",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "readThroughEnd",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
     }
   ]
 }

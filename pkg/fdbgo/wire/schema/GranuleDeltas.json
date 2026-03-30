@@ -10,7 +10,7 @@
   ],
   "fields": [
     {
-      "name": "((VectorRef\u003cMutationsAndVersionRef\u003e\u0026",
+      "name": "((VectorRef\u003cMutationsAndVersionRef\u003e\u0026)*this)",
       "cpp_type": "unknown",
       "type": "struct",
       "vtable_slot": 0,

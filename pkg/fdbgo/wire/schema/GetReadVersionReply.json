@@ -1,0 +1,123 @@
+{
+  "name": "GetReadVersionReply",
+  "file_identifier": 15709388,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CommitProxyInterface.h",
+  "vtable": [
+    28,
+    52,
+    28,
+    4,
+    48,
+    49,
+    32,
+    36,
+    12,
+    50,
+    51,
+    40,
+    44,
+    20
+  ],
+  "fields": [
+    {
+      "name": "processBusyTime",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "version",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "locked",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "metadataVersion",
+      "cpp_type": "Optional\u003cValue\u003e",
+      "type": "optional",
+      "vtable_slot": 3,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    },
+    {
+      "name": "tagThrottleInfo",
+      "cpp_type": "TransactionTagMap\u003cClientTagThrottleLimits\u003e",
+      "type": "vector",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "midShardSize",
+      "cpp_type": "int64_t",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "rkDefaultThrottled",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 7,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "rkBatchThrottled",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 8,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "ssVersionVectorDelta",
+      "cpp_type": "VersionVector",
+      "type": "bytes",
+      "vtable_slot": 9,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "proxyId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 10,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "proxyTagThrottledDuration",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 11,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "name": "ChangeFeedStreamReply",
+  "file_identifier": 1783066,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
+  "vtable": [
+    18,
+    33,
+    20,
+    24,
+    28,
+    32,
+    4,
+    12,
+    0
+  ],
+  "fields": [
+    {
+      "name": "acknowledgeToken",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sequence",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "mutations",
+      "cpp_type": "VectorRef\u003cMutationsAndVersionRef\u003e",
+      "type": "vector",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "atLatestVersion",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "minStreamVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "popVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

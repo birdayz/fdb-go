@@ -1,0 +1,92 @@
+{
+  "name": "RestoreApplierInterface",
+  "file_identifier": 3921400,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbserver/include/fdbserver/RestoreWorkerInterface.actor.h",
+  "vtable": [
+    20,
+    36,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    28,
+    32
+  ],
+  "fields": [
+    {
+      "name": "*(RestoreRoleInterface*)this",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "heartbeat",
+      "cpp_type": "RequestStream\u003cRestoreSimpleRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "sendMutationVector",
+      "cpp_type": "RequestStream\u003cRestoreSendVersionedMutationsRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "applyToDB",
+      "cpp_type": "RequestStream\u003cRestoreVersionBatchRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "initVersionBatch",
+      "cpp_type": "RequestStream\u003cRestoreVersionBatchRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "collectRestoreRoleInterfaces",
+      "cpp_type": "RequestStream\u003cRestoreSimpleRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "finishRestore",
+      "cpp_type": "RequestStream\u003cRestoreFinishRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "updateRate",
+      "cpp_type": "RequestStream\u003cRestoreUpdateRateRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

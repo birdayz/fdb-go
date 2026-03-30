@@ -1,0 +1,93 @@
+{
+  "name": "InitializeCommitProxyRequest",
+  "file_identifier": 10344153,
+  "fdb_version": "7.3.75",
+  "reply_type": "CommitProxyInterface",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    20,
+    39,
+    20,
+    24,
+    4,
+    12,
+    38,
+    28,
+    32,
+    36
+  ],
+  "fields": [
+    {
+      "name": "master",
+      "cpp_type": "MasterInterface",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "masterLifetime",
+      "cpp_type": "LifetimeToken",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "recoveryCount",
+      "cpp_type": "uint64_t",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "recoveryTransactionVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "firstProxy",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cCommitProxyInterface\u003e",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "encryptMode",
+      "cpp_type": "EncryptionAtRestMode",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "commitProxyIndex",
+      "cpp_type": "uint16_t",
+      "type": "scalar",
+      "vtable_slot": 7,
+      "wire_size": 2,
+      "wire_alignment": 2,
+      "inline": true
+    }
+  ]
+}

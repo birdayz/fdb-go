@@ -1,0 +1,93 @@
+{
+  "name": "InitializeStorageRequest",
+  "file_identifier": 16665642,
+  "fdb_version": "7.3.75",
+  "reply_type": "InitializeStorageReply",
+  "source_file": "fdbserver/include/fdbserver/WorkerInterface.actor.h",
+  "vtable": [
+    20,
+    40,
+    12,
+    16,
+    20,
+    24,
+    28,
+    32,
+    4,
+    36
+  ],
+  "fields": [
+    {
+      "name": "seedTag",
+      "cpp_type": "Tag",
+      "type": "struct",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reqId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "interfaceId",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "storeType",
+      "cpp_type": "KeyValueStoreType",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cInitializeStorageReply\u003e",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "tssPairIDAndVersion",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "initialClusterVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 6,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "encryptMode",
+      "cpp_type": "EncryptionAtRestMode",
+      "type": "struct",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    }
+  ]
+}

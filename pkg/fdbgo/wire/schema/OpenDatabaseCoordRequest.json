@@ -1,0 +1,102 @@
+{
+  "name": "OpenDatabaseCoordRequest",
+  "file_identifier": 214728,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/CoordinationInterface.h",
+  "vtable": [
+    22,
+    37,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    28,
+    32,
+    36
+  ],
+  "fields": [
+    {
+      "name": "issues",
+      "cpp_type": "Standalone\u003cVectorRef\u003cStringRef\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "supportedVersions",
+      "cpp_type": "Standalone\u003cVectorRef\u003cClientVersionRef\u003e\u003e",
+      "type": "vector",
+      "vtable_slot": 1,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "traceLogGroup",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "knownClientInfoID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "clusterKey",
+      "cpp_type": "Key",
+      "type": "bytes",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "coordinators",
+      "cpp_type": "std::vector\u003cNetworkAddress\u003e",
+      "type": "vector",
+      "vtable_slot": 5,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "reply",
+      "cpp_type": "ReplyPromise\u003cCachedSerialization\u003cstruct ClientDBInfo\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "hostnames",
+      "cpp_type": "std::vector\u003cHostname\u003e",
+      "type": "vector",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "internal",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 8,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    }
+  ]
+}

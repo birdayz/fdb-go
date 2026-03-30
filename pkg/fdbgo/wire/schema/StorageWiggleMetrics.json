@@ -1,0 +1,92 @@
+{
+  "name": "StorageWiggleMetrics",
+  "file_identifier": 4728961,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/StorageWiggleMetrics.actor.h",
+  "vtable": [
+    20,
+    52,
+    4,
+    12,
+    36,
+    40,
+    20,
+    28,
+    44,
+    48
+  ],
+  "fields": [
+    {
+      "name": "last_wiggle_start",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 0,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "last_wiggle_finish",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "step_total",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 2,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "finished_wiggle",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    },
+    {
+      "name": "last_round_start",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 4,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "last_round_finish",
+      "cpp_type": "double",
+      "type": "scalar",
+      "vtable_slot": 5,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "round_total",
+      "cpp_type": "double step_total,",
+      "type": "struct",
+      "vtable_slot": 6,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "finished_round",
+      "cpp_type": "int",
+      "type": "scalar",
+      "vtable_slot": 7,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": true
+    }
+  ]
+}

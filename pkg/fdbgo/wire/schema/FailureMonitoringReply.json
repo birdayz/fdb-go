@@ -1,0 +1,72 @@
+{
+  "name": "FailureMonitoringReply",
+  "file_identifier": 6820325,
+  "fdb_version": "7.3.75",
+  "source_file": "fdbclient/include/fdbclient/ClusterInterface.h",
+  "vtable": [
+    16,
+    25,
+    12,
+    4,
+    24,
+    16,
+    20,
+    0
+  ],
+  "fields": [
+    {
+      "name": "changes",
+      "cpp_type": "VectorRef\u003cSystemFailureStatus\u003e",
+      "type": "vector",
+      "vtable_slot": 0,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "failureInformationVersion",
+      "cpp_type": "Version",
+      "type": "scalar",
+      "vtable_slot": 1,
+      "wire_size": 8,
+      "wire_alignment": 8,
+      "inline": true
+    },
+    {
+      "name": "allOthersFailed",
+      "cpp_type": "bool",
+      "type": "scalar",
+      "vtable_slot": 2,
+      "wire_size": 1,
+      "wire_alignment": 1,
+      "inline": true
+    },
+    {
+      "name": "clientRequestIntervalMS",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 3,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "considerServerFailedTimeoutMS",
+      "cpp_type": "unknown",
+      "type": "struct",
+      "vtable_slot": 4,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "arena",
+      "cpp_type": "Arena",
+      "type": "arena",
+      "vtable_slot": -1,
+      "wire_size": 0,
+      "wire_alignment": 0,
+      "inline": false
+    }
+  ]
+}

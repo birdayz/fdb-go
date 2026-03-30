@@ -5,23 +5,35 @@
   "reply_type": "KeyValueStoreType",
   "source_file": "fdbclient/include/fdbclient/StorageServerInterface.h",
   "vtable": [
-    34,
-    55,
+    58,
+    103,
     4,
     8,
     12,
-    52,
+    100,
     16,
-    53,
+    101,
     20,
     24,
     28,
-    54,
+    102,
     32,
     36,
     40,
     44,
-    48
+    48,
+    52,
+    56,
+    60,
+    64,
+    68,
+    72,
+    76,
+    80,
+    84,
+    88,
+    92,
+    96
   ],
   "fields": [
     {
@@ -133,10 +145,118 @@
       "inline": false
     },
     {
+      "name": "uniqueID",
+      "cpp_type": "UID",
+      "type": "struct",
+      "vtable_slot": 14,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "locality",
+      "cpp_type": "LocalityData",
+      "type": "struct",
+      "vtable_slot": 15,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getValue",
+      "cpp_type": "PublicRequestStream\u003cstruct GetValueRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 16,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getKey",
+      "cpp_type": "PublicRequestStream\u003cstruct GetKeyRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 17,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getKeyValues",
+      "cpp_type": "PublicRequestStream\u003cstruct GetKeyValuesRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 18,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getShardState",
+      "cpp_type": "RequestStream\u003cstruct GetShardStateRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 19,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "waitMetrics",
+      "cpp_type": "PublicRequestStream\u003cstruct WaitMetricsRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 20,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "splitMetrics",
+      "cpp_type": "RequestStream\u003cstruct SplitMetricsRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 21,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getStorageMetrics",
+      "cpp_type": "RequestStream\u003cstruct GetStorageMetricsRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 22,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "waitFailure",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cVoid\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 23,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getQueuingMetrics",
+      "cpp_type": "RequestStream\u003cstruct StorageQueuingMetricsRequest\u003e",
+      "type": "struct",
+      "vtable_slot": 24,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
+      "name": "getKeyValueStoreType",
+      "cpp_type": "RequestStream\u003cReplyPromise\u003cKeyValueStoreType\u003e\u003e",
+      "type": "struct",
+      "vtable_slot": 25,
+      "wire_size": 4,
+      "wire_alignment": 4,
+      "inline": false
+    },
+    {
       "name": "watchValue",
       "cpp_type": "PublicRequestStream\u003cstruct WatchValueRequest\u003e",
       "type": "struct",
-      "vtable_slot": 14,
+      "vtable_slot": 26,
       "wire_size": 4,
       "wire_alignment": 4,
       "inline": false
