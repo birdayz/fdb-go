@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -21,6 +23,10 @@ type Conn struct {
 	pending sync.Map       // UID → chan Response
 	peerPkt *ConnectPacket // peer's connect packet
 	done    chan struct{}
+
+	// Debug tracing (set before first use).
+	debugFrames bool
+	debugWriter io.Writer
 }
 
 // Response is a received message from the peer.
@@ -65,6 +71,12 @@ func Dial(ctx context.Context, addr string, tls bool) (*Conn, error) {
 
 	c.peerPkt = peerPkt
 
+	// Enable debug tracing via environment variable.
+	if os.Getenv("FDB_DEBUG_FRAMES") != "" {
+		c.debugFrames = true
+		c.debugWriter = os.Stderr
+	}
+
 	// Start read loop.
 	go c.readLoop()
 
@@ -106,6 +118,10 @@ func (c *Conn) PrepareReply() (UID, <-chan Response) {
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.debugFrames {
+		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
+			destToken.First, destToken.Second, len(body))
+	}
 	return WriteFrame(c.conn, destToken, body, c.tls)
 }
 
@@ -137,6 +153,12 @@ func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
+// SetDebug enables frame-level debug tracing to stderr.
+func (c *Conn) SetDebug(enabled bool) {
+	c.debugFrames = enabled
+	c.debugWriter = os.Stderr
+}
+
 // IsClosed returns true if the connection has been closed.
 func (c *Conn) IsClosed() bool {
 	select {
@@ -161,6 +183,9 @@ func (c *Conn) readLoop() {
 	for {
 		token, body, err := ReadFrame(c.conn, c.tls)
 		if err != nil {
+			if c.debugFrames {
+				fmt.Fprintf(c.debugWriter, "[recv] ERROR: %v\n", err)
+			}
 			// Deliver error to all pending requests.
 			c.pending.Range(func(key, value any) bool {
 				ch := value.(chan Response)
@@ -172,6 +197,12 @@ func (c *Conn) readLoop() {
 				return true
 			})
 			return
+		}
+
+		if c.debugFrames {
+			_, isPending := c.pending.Load(token)
+			fmt.Fprintf(c.debugWriter, "[recv] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n",
+				token.First, token.Second, len(body), token == pingToken, isPending)
 		}
 
 		// Handle PING requests from the server.

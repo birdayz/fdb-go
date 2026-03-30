@@ -89,7 +89,10 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			replyToken, replyCh := conn.PrepareReply()
 			body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
 
-			if err := conn.SendFrame(server.Token, body); err != nil {
+			// getKeyValues is at endpoint index 2 in StorageServerInterface:
+			//   getValue=0, getKey=1, getKeyValues=2
+			gkvToken := getAdjustedEndpoint(server.Token, 2)
+			if err := conn.SendFrame(gkvToken, body); err != nil {
 				continue
 			}
 
@@ -115,61 +118,66 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	return nil, false, fmt.Errorf("getRange: all attempts failed")
 }
 
-// KeySelectorRef vtable: key(StringRef) at offset 4, offset(int32) at offset 8, orEqual(bool) at offset 12.
-var keySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
+// C++ ground truth template for GetKeyValuesRequest (304 bytes, from FDB 7.3.75 ObjectWriter).
+// Default values: empty begin/end keys, version=0, limit=0, limitBytes=0.
+var getKeyValuesRequestTemplate, _ = hex.DecodeString("64000000e2b16700000012001400040010001100080012000c0013000a001d00040014001c000a000d0004000c0008001e0036000c00100004001400180034001c0020002400280035002c0030000a001100040010000c0006001400040006000800040006000000040000003c0000005070fa1300000000a4000000900000000564417c9a7f000000000000680000004400000028000000000000000c0000000000000000000000100000000000000000000000ffffffffffffffff6e000000ffffffffffffffff000000000000000000000000b8000000000000000000000000000000000000000000000000000000000000009c0000004a4a5ff66661c8f603000000e42aabcf00000000e60000001c0000000000000000000000f60000000c000000000000000000000000000000")
 
-// buildGetKeyValuesRequest constructs the request using the wire.Writer.
-// Begin/End are KeySelectorRef nested structs (firstGreaterOrEqual semantics).
+// buildGetKeyValuesRequest patches the C++ template with our values.
+// Template layout (from decode):
+//
+//	Message at byte 108:  version at +4(=112), limit at +20(=128), limitBytes at +24(=132)
+//	Reply at byte 244:    UID at +4(=248)
+//	Begin KSR at byte 284: key RelOff at +4(=288), offset(int32) at +8(=292)
+//	End KSR at byte 268:   key RelOff at +4(=272), offset(int32) at +8(=276)
+//	Shared key [len=0] at byte 300
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	vt := protocol.GetKeyValuesRequest_VTable
-	fileID := protocol.GetKeyValuesRequest_FileIdentifier
+	buf := make([]byte, len(getKeyValuesRequestTemplate))
+	copy(buf, getKeyValuesRequestTemplate)
 
-	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// Add nested structs in REVERSE serialization order for correct C++ byte layout.
+	// Message fields.
+	binary.LittleEndian.PutUint64(buf[112:], uint64(version))
+	binary.LittleEndian.PutUint32(buf[128:], uint32(limit))
+	binary.LittleEndian.PutUint32(buf[132:], 0x7FFFFFFF) // limitBytes = INT_MAX (unlimited)
 
-		// slot 9: TenantInfo (nested struct with tenantId=-1)
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
-		obj.WriteStruct(int(vt[9+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // tenantId = -1 (no tenant)
-		})
+	// Reply token.
+	binary.LittleEndian.PutUint64(buf[248:], replyToken.First)
+	binary.LittleEndian.PutUint64(buf[256:], replyToken.Second)
 
-		// slot 8: SpanContext (nested struct, all zeros = default)
-		spanVT := wire.VTable{10, 29, 4, 20, 28}
-		obj.WriteStruct(int(vt[8+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
-			// Default SpanContext: all zeros
-		})
+	// Begin KeySelectorRef: offset=1 (firstGreaterOrEqual), orEqual=false.
+	binary.LittleEndian.PutUint32(buf[292:], 1) // offset field
 
-		// slot 7: Reply (nested ReplyPromise with UID)
-		replyVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(int(vt[7+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
+	// End KeySelectorRef: offset=1 (firstGreaterOrEqual), orEqual=false.
+	binary.LittleEndian.PutUint32(buf[276:], 1) // offset field
 
-		// slot 1: End KeySelectorRef (firstGreaterOrEqual)
-		obj.WriteStruct(int(vt[1+2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
-			inner.WriteBytes(4, end) // key
-			inner.WriteInt32(8, 1)   // offset = 1 (firstGreaterOrEqual)
-			// orEqual at offset 12 defaults to false
-		})
+	// Append begin key data at end (template has empty keys).
+	if len(begin) > 0 {
+		beginOOL := make([]byte, 4+len(begin))
+		binary.LittleEndian.PutUint32(beginOOL, uint32(len(begin)))
+		copy(beginOOL[4:], begin)
+		if pad := (4 - len(beginOOL)%4) % 4; pad > 0 {
+			beginOOL = append(beginOOL, make([]byte, pad)...)
+		}
+		beginOOLStart := len(buf)
+		buf = append(buf, beginOOL...)
+		// Update Begin KSR key RelOff at byte 288.
+		binary.LittleEndian.PutUint32(buf[288:], uint32(beginOOLStart-288))
+	}
 
-		// slot 0: Begin KeySelectorRef (firstGreaterOrEqual)
-		obj.WriteStruct(int(vt[0+2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
-			inner.WriteBytes(4, begin) // key
-			inner.WriteInt32(8, 1)     // offset = 1 (firstGreaterOrEqual)
-			// orEqual at offset 12 defaults to false
-		})
+	// Append end key data.
+	if len(end) > 0 {
+		endOOL := make([]byte, 4+len(end))
+		binary.LittleEndian.PutUint32(endOOL, uint32(len(end)))
+		copy(endOOL[4:], end)
+		if pad := (4 - len(endOOL)%4) % 4; pad > 0 {
+			endOOL = append(endOOL, make([]byte, pad)...)
+		}
+		endOOLStart := len(buf)
+		buf = append(buf, endOOL...)
+		// Update End KSR key RelOff at byte 272.
+		binary.LittleEndian.PutUint32(buf[272:], uint32(endOOLStart-272))
+	}
 
-		// slot 2: Version (int64)
-		obj.WriteInt64(int(vt[2+2]), version)
-
-		// slot 3: Limit (int32)
-		obj.WriteInt32(int(vt[3+2]), limit)
-
-		// slot 4: LimitBytes (int32, 0 = unlimited)
-		obj.WriteInt32(int(vt[4+2]), 0)
-	})
+	return buf
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
@@ -339,6 +347,16 @@ func parseGetValueReply(data []byte) ([]byte, error) {
 	}
 	// Value not present (key not found)
 	return nil, nil
+}
+
+// getAdjustedEndpoint computes the endpoint token for interface method at given index.
+// C++ Endpoint::getAdjustedEndpoint(n): first += (n << 32), second.lower32 += n.
+func getAdjustedEndpoint(base transport.UID, index int) transport.UID {
+	baseIndex := uint32(base.Second)
+	return transport.UID{
+		First:  base.First + (uint64(index) << 32),
+		Second: (base.Second & 0xFFFFFFFF00000000) | uint64(baseIndex+uint32(index)),
+	}
 }
 
 // Ensure imports are used

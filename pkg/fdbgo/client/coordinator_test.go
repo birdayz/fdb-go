@@ -315,11 +315,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 }
 
 // TestGetRange tests the range read path with a dedicated container.
-// TODO: Connection dies after ~5 frames on fresh connections. Need to investigate
-// why FDB closes the connection after initial requests. The GetKeyValues code
-// is correct — this is a connection lifetime issue.
 func TestGetRange(t *testing.T) {
-	t.Skip("Connection lifetime issue — server closes connection after initial requests")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -369,14 +365,19 @@ func TestGetRange(t *testing.T) {
 	}
 	connectCF.InternalKey = internalClusterKey
 
-	t.Logf("connectCF: desc=%q id=%q coords=%v internalKey=%q", connectCF.Description, connectCF.ID, connectCF.Coordinators, connectCF.InternalKey)
-
 	cluster := NewClusterFromConfig(connectCF)
 	defer cluster.Close()
 
 	if err := cluster.Connect(ctx); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+
+	// Enable debug tracing on ALL connections.
+	cluster.mu.RLock()
+	for _, conn := range cluster.connPool {
+		conn.SetDebug(true)
+	}
+	cluster.mu.RUnlock()
 	t.Logf("Connected! GRV proxies=%d commit proxies=%d", len(cluster.dbInfo.GRVProxies), len(cluster.dbInfo.CommitProxies))
 	if len(cluster.dbInfo.GRVProxies) > 0 {
 		t.Logf("GRV proxy: %s", cluster.dbInfo.GRVProxies[0].Address)
@@ -391,21 +392,29 @@ func TestGetRange(t *testing.T) {
 		locationCache: NewLocationCache(cluster),
 	}
 
-	// Warm up location cache (must happen before GRV — same order as TestCoordinatorBootstrap).
-	servers, err := db.locationCache.Locate(ctx, []byte("test"))
-	if err != nil {
-		t.Logf("initial Locate: %v", err)
-	} else {
-		t.Logf("initial Locate: %d servers", len(servers))
+	// Write keys via C binding (avoids Go commit server crashes for now).
+	fdb.MustAPIVersion(720)
+	tmpFile, _ := os.CreateTemp("", "fdb-*.cluster")
+	tmpFile.WriteString(connStr)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	cdb, cErr := fdb.OpenDatabase(tmpFile.Name())
+	if cErr != nil {
+		t.Fatalf("C binding open: %v", cErr)
 	}
-
-	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	_, err = cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		tx.Set(fdb.Key("range_a"), []byte("value_a"))
+		tx.Set(fdb.Key("range_b"), []byte("value_b"))
+		tx.Set(fdb.Key("range_c"), []byte("value_c"))
+		return nil, nil
+	})
 	if err != nil {
-		t.Fatalf("initial GRV: %v", err)
+		t.Fatalf("C binding write: %v", err)
 	}
-	t.Logf("initial GRV: version=%d", rv)
+	t.Log("wrote 3 keys via C binding")
+	time.Sleep(1 * time.Second) // ensure version advances past the commit
 
-	// Range read.
+	// Range read via Go client.
 	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
 		kvs, more, err := tx.GetRange(ctx, []byte("range_"), []byte("range_~"), 100)
 		return []interface{}{kvs, more}, err
