@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "protocol",
+    srcs = [
+        "commitid.go",
+        "error.go",
+        "getvaluereply.go",
+        "getvaluerequest.go",
+        "watchvaluereply.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/fdbgo/wire"],
+)
+
+go_test(
+    name = "protocol_test",
+    srcs = ["protocol_test.go"],
+    embed = [":protocol"],
+)
