@@ -17,7 +17,7 @@ import (
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
 func TestCoordinatorBootstrap(t *testing.T) {
-	t.Skip("WIP: coordinator response dispatch — PING reply works, request format needs debugging")
+	t.Skip("WIP: request vtable needs inline UIDs (16 bytes), cluster key mismatch causes crash")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

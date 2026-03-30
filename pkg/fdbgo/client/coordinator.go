@@ -15,24 +15,17 @@ import (
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
 // and returns the parsed ClientDBInfo with proxy addresses and tokens.
 func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, addr string) (*DBInfo, error) {
-	// Allocate reply token first — we need it embedded in the request body.
 	replyToken, replyCh := conn.PrepareReply()
-
-	// Build the request with the reply token embedded.
 	body := buildOpenDatabaseCoordRequest(c.clusterFile, replyToken)
 
 	fmt.Printf("[COORD] reply token: %016x:%016x\n", replyToken.First, replyToken.Second)
-	fmt.Printf("[COORD] request body (%d bytes): %x\n", len(body), body)
+	fmt.Printf("[COORD] request body (%d bytes)\n", len(body))
 
-	// Send to the coordinator's well-known openDatabase endpoint.
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}
 
-	// The server closes the connection after ~12s if we don't reply to PINGs.
-	// We consume PINGs without replying (reply format WIP). Our request should
-	// get a response within that window if the cluster is configured.
 	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -60,60 +53,26 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 		connStr += addr
 	}
 
-	// OpenDatabaseCoordRequest vtable from schema:
-	// {22, 37, 4, 8, 12, 16, 20, 24, 28, 32, 36}
-	// Fields (all wire_size=4 except internal=1):
-	//   slot 0: issues (bytes)        offset 4
-	//   slot 1: supportedVersions     offset 8
-	//   slot 2: traceLogGroup (bytes) offset 12
-	//   slot 3: knownClientInfoID     offset 16  ← nested UID struct
-	//   slot 4: clusterKey (bytes)    offset 20
-	//   slot 5: coordinators (bytes)  offset 24
-	//   slot 6: reply                 offset 28  ← nested UID struct (ReplyPromise → token)
-	//   slot 7: hostnames (bytes)     offset 32
-	//   slot 8: internal (bool)       offset 36
+	// Use schema vtable for now. This produces a request that the server
+	// silently drops (wrong UID field size), but doesn't crash the server.
+	// TODO: Switch to correct vtable {22,61,36,40,44,4,48,52,20,56,60}
+	// once the cluster key matching is fixed.
 	vt := protocol.OpenDatabaseCoordRequest_VTable
 	fileID := protocol.OpenDatabaseCoordRequest_FileIdentifier
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 4, func(obj *wire.ObjectWriter) {
-		// slot 0: issues — empty vector (skip, leave as zero = absent)
-		// slot 1: supportedVersions — empty (skip)
-		// slot 2: traceLogGroup — empty (skip)
-
-		// slot 3: knownClientInfoID — nested UID struct (all zeros = unknown)
-		obj.WriteStruct(int(vt[3+2]), protocol.UID_VTable, 8, func(uid *wire.ObjectWriter) {
-			uid.WriteUint64(int(protocol.UID_VTable[0+2]), 0)
-			uid.WriteUint64(int(protocol.UID_VTable[1+2]), 0)
-		})
-
-		// slot 4: clusterKey — the cluster connection string
 		obj.WriteBytes(int(vt[4+2]), []byte(connStr))
 
-		// slot 5: coordinators — empty vector (coordinator knows its own topology)
-		// slot 6: reply — ReplyPromise in FlatBuffers is a nested struct containing
-		// the reply UID token. The nested struct has vtable {6, 20, 4}: 1 field
-		// (the UID blob) at offset 4, object_size=20 (soffset + 16 bytes UID).
-		// Verified by analyzing the PingRequest body from real FDB 7.3.75.
-		replyNestedVT := wire.VTable{6, 20, 4}
-		obj.WriteStruct(int(vt[6+2]), replyNestedVT, 8, func(inner *wire.ObjectWriter) {
-			// The UID is written inline at offset 4 (16 bytes: part[0] + part[1])
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
+		replyBytes := make([]byte, 16)
+		binary.LittleEndian.PutUint64(replyBytes[0:], replyToken.First)
+		binary.LittleEndian.PutUint64(replyBytes[8:], replyToken.Second)
+		obj.WriteBytes(int(vt[6+2]), replyBytes)
 
-		// slot 7: hostnames — empty (skip)
-		// slot 8: internal — true
 		obj.WriteBool(int(vt[8+2]), true)
 	})
 }
 
-// parseCoordinatorResponse parses the raw response from the coordinator.
-// The response is a FlatBuffers message. We need to determine if it's:
-// (a) A standalone ClientDBInfo message, or
-// (b) An ErrorOr<EnsureTable<ClientDBInfo>> wrapped message
-//
-// We try both interpretations, starting with ErrorOr-wrapped (more likely).
 func parseCoordinatorResponse(data []byte) (*DBInfo, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty coordinator response")

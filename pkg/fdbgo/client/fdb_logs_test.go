@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -15,8 +17,7 @@ import (
 // TestFDBServerLogs starts an FDB testcontainer, reads its logs, sends a raw
 // OpenDatabaseCoordRequest frame to well-known token 4, then reads logs again
 // to see if the server emits anything in response to our connection attempt.
-func TestFDBServerLogs_WIP(t *testing.T) {
-	t.Skip("WIP: debugging coordinator bootstrap")
+func TestFDBServerLogs(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -61,12 +62,30 @@ func TestFDBServerLogs_WIP(t *testing.T) {
 		t.Fatal("no coordinators in cluster file")
 	}
 
-	// Configure the database so the coordinator has ClientDBInfo available.
+	// Configure the database and verify with C binding.
 	exitCode, _, err := container.Exec(ctx, []string{
 		"fdbcli", "--exec", "configure new single ssd",
 	})
 	t.Logf("fdbcli configure exit: %d err: %v", exitCode, err)
-	time.Sleep(3 * time.Second)
+
+	// Use the C binding to verify coordinator works through socat proxy.
+	fdb.MustAPIVersion(720)
+	tmpFile, _ := os.CreateTemp("", "fdb-cluster-*.cluster")
+	tmpFile.WriteString(connStr)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	cdb, cErr := fdb.OpenDatabase(tmpFile.Name())
+	if cErr != nil {
+		t.Logf("C binding OpenDatabase: %v", cErr)
+	} else {
+		_, txErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+			tx.Set(fdb.Key("_go_test"), []byte("ping"))
+			return nil, nil
+		})
+		t.Logf("C binding transact: %v", txErr)
+	}
+
+	time.Sleep(2 * time.Second)
 
 	addr := cf.Coordinators[0]
 	t.Logf("dialing coordinator at %s", addr)

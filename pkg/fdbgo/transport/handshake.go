@@ -108,7 +108,7 @@ func WriteConnectPacket(w io.Writer, localAddr net.Addr, connectionID uint64) er
 	if tcpAddr, ok := localAddr.(*net.TCPAddr); ok {
 		pkt.CanonicalRemotePort = uint16(tcpAddr.Port)
 		if ip4 := tcpAddr.IP.To4(); ip4 != nil {
-			pkt.CanonicalRemoteIP4 = binary.LittleEndian.Uint32(ip4)
+			pkt.CanonicalRemoteIP4 = binary.BigEndian.Uint32(ip4)
 		} else if ip6 := tcpAddr.IP.To16(); ip6 != nil {
 			pkt.Flags = FlagIPv6
 			copy(pkt.CanonicalRemoteIP6[:], ip6)
