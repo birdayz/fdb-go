@@ -1654,12 +1654,20 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 - [x] Client skeleton (`pkg/fdbgo/client/`) — cluster file parsing, transaction state machine (Set/Clear/Atomic + OnError retry), GRV batcher, locality cache, read/commit path stubs. 12 tests.
 - [x] FDB source auto-fetch — `archive_override` in MODULE.bazel, tag 7.3.75. Zero local setup.
 
-### CRITICAL — Connection bootstrap
+### DONE — Connection bootstrap
 
-- [ ] **OpenDatabaseCoordRequest → ClientDBInfo** — Send to coordinator, receive proxy addresses (GRV proxies, commit proxies). This is the bootstrap step. Without it, we don't know where to send any RPC. Must parse `ClientDBInfo` which contains `GrvProxyInterface[]` and `CommitProxyInterface[]` as nested FDB-serialized structs.
-- [ ] **ErrorOr\<T\> response unwrapping** — every FDB response is wrapped in `ErrorOr<EnsureTable<T>>`. First 4 bytes = error code (0 = success, then T; nonzero = FDB error, no payload). Reader must strip this wrapper.
-- [ ] **ReplyPromise token embedding** — when sending a request, the reply UID token must be serialized INTO the message body's `reply` field (not just the frame header). The server sends the response to this token.
-- [ ] **CachedSerialization\<ClientDBInfo\>** — coordinator response is wrapped in `CachedSerialization` which prepends cached serialized bytes. Need to unwrap.
+- [x] **OpenDatabaseCoordRequest → ClientDBInfo** — Coordinator bootstrap fully working. Sends to well-known token UID(-1, 4), receives ClientDBInfo with GRV/commit proxy count. Verified against real FDB 7.3.75 testcontainer through socat proxy.
+- [x] **PING keepalive** — Server sends PingRequest on WLTOKEN_PING_PACKET immediately after handshake. Client replies with C++ ground-truth `ErrorOr<EnsureTable<Void>>` bytes (FakeRoot flattens union types). CONNECTION_MONITOR_TIMEOUT=2s.
+- [x] **ErrorOr\<T\> response unwrapping** — ErrorOr is a FlatBuffers union (`union_like_traits`): type byte (1-indexed: 0=NONE, 1=Error, 2=T) + value RelativeOffset. FakeRoot flattens union into root object. Detect Error vs ClientDBInfo by vtable field count.
+- [x] **ReplyPromise token embedding** — Reply field is a nested struct (vtable {6,20,4}) containing the UID inline at offset 4. Uses `serializable_traits<ReplyPromise>` path.
+- [x] **CachedSerialization\<ClientDBInfo\>** — Response uses `serialize_raw` path. The cached bytes ARE the `ErrorOr<EnsureTable<ClientDBInfo>>` blob. No additional unwrapping needed.
+- [x] **ConnectPacket IP fix** — IPv4 uses BigEndian (network byte order), not LittleEndian.
+- [x] **Correct vtable** — Real vtable from C++ ground-truth test vector: `{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}`. UID fields are 16 bytes INLINE. ReplyPromise is 4-byte RelativeOffset to nested struct.
+- [x] **clusterKey** — Must be `"description:id"` only (part before `@`), NOT the full connection string.
+
+### CRITICAL — Proxy address extraction
+
+- [ ] **Parse GrvProxyInterface/CommitProxyInterface nested structs** — Currently extracting proxy COUNT correctly (1 GRV, 1 commit) but addresses show `0.0.0.0:0`. Need to generate C++ ground truth for these nested types (like we did for UID and OpenDatabaseCoordRequest) to determine exact vtable layouts and field positions for Endpoint → NetworkAddress → IP + port extraction.
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
 
 ### HIGH — Read path
