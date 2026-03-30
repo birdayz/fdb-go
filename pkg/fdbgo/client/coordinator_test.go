@@ -18,7 +18,7 @@ import (
 // TestCoordinatorBootstrap connects to a real FDB testcontainer,
 // sends OpenDatabaseCoordRequest, and validates the response.
 func TestCoordinatorBootstrap(t *testing.T) {
-	t.Skip("WIP: request dispatches to coordinator but silently dropped — need tcpdump of C binding traffic for comparison")
+	t.Skip("WIP: coordinator responds! Response parsing needs fixing (ErrorOr/CachedSerialization unwrapping)")
 	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

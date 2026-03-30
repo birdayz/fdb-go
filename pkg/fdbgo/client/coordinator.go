@@ -26,7 +26,7 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	select {
