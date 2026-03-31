@@ -156,48 +156,79 @@ func TestTransactionReset(t *testing.T) {
 	}
 }
 
-func TestOnError_Retryable(t *testing.T) {
+func TestOnError_AllRetryableCodes(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
-	tx.Set([]byte("key"), []byte("val"))
-
-	// wire.FDBError with a retryable code. Wrap it like real code does.
-	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
-	result := tx.OnError(err)
-
-	if result != nil {
-		t.Errorf("expected nil (retryable), got: %v", result)
+	retryable := []struct {
+		name string
+		code int
+	}{
+		{"not_committed", 1020},
+		{"commit_unknown_result", 1021},
+		{"transaction_too_old", 1007},
+		{"future_version", 1009},
+		{"process_behind", 1037},
+		{"database_locked", 1039},
+		{"proxy_memory_limit_exceeded", 1042},
+		{"batch_transaction_throttled", 1051},
+		{"tag_throttled", 1213},
 	}
-	if tx.retryCount != 1 {
-		t.Errorf("retryCount: got %d, want 1", tx.retryCount)
-	}
-	if len(tx.mutations) != 0 {
-		t.Errorf("mutations not cleared after retry: %d", len(tx.mutations))
+	for _, tc := range retryable {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{state: txStateActive}
+			tx.Set([]byte("key"), []byte("val"))
+
+			// Wrap like real code does: fmt.Errorf("context: %w", fdbErr)
+			err := fmt.Errorf("commit: %w", &wire.FDBError{Code: tc.code})
+			result := tx.OnError(err)
+			if result != nil {
+				t.Errorf("code %d should be retryable, got: %v", tc.code, result)
+			}
+			if tx.retryCount != 1 {
+				t.Errorf("retryCount: got %d, want 1", tx.retryCount)
+			}
+			if len(tx.mutations) != 0 {
+				t.Errorf("mutations not cleared: %d", len(tx.mutations))
+			}
+		})
 	}
 }
 
 func TestOnError_NonRetryable(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	t.Run("non_retryable_fdb_error", func(t *testing.T) {
+		t.Parallel()
+		tx := &Transaction{state: txStateActive}
+		err := fmt.Errorf("something: %w", &wire.FDBError{Code: 9999})
+		if tx.OnError(err) == nil {
+			t.Error("expected non-retryable")
+		}
+		if tx.state != txStateErrored {
+			t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
+		}
+	})
 
-	// Non-retryable FDB error.
-	err := fmt.Errorf("something: %w", &wire.FDBError{Code: 9999})
-	result := tx.OnError(err)
-	if result == nil {
-		t.Error("expected non-nil (non-retryable FDB error)")
-	}
-	if tx.state != txStateErrored {
-		t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
-	}
+	t.Run("non_fdb_error", func(t *testing.T) {
+		t.Parallel()
+		tx := &Transaction{state: txStateActive}
+		if tx.OnError(fmt.Errorf("network timeout")) == nil {
+			t.Error("non-FDB error should be non-retryable")
+		}
+	})
 
-	// Non-FDB error (no wire.FDBError in chain) is also non-retryable.
-	tx2 := &Transaction{state: txStateActive}
-	result2 := tx2.OnError(fmt.Errorf("network timeout"))
-	if result2 == nil {
-		t.Error("expected non-nil (non-FDB error)")
-	}
+	t.Run("wrong_shard_server", func(t *testing.T) {
+		t.Parallel()
+		// 1062 is handled at the read path level, NOT by Transact.
+		// OnError should treat it as non-retryable.
+		tx := &Transaction{state: txStateActive}
+		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1062})
+		if tx.OnError(err) == nil {
+			t.Error("wrong_shard_server should not be retryable at Transact level")
+		}
+	})
 }
 
 func TestReadOnlyCommit(t *testing.T) {
