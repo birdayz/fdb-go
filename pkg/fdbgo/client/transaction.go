@@ -18,6 +18,23 @@ const (
 	ErrWrongShardServer    = 1062
 )
 
+// Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
+const (
+	NoTenantID           int64 = -1
+	UnlimitedBytes       int32 = 0x7FFFFFFF
+	DefaultRPCTimeout          = 5 * time.Second
+	MaxWrongShardRetries       = 5
+)
+
+// Endpoint indices from C++ interface definitions.
+// StorageServerInterface: getValue=0, getKey=1, getKeyValues=2, ...
+// CommitProxyInterface: commit=0, ..., getKeyServerLocations=2, ...
+const (
+	EndpointGetValue              = 0 // StorageServerInterface::getValue
+	EndpointGetKeyValues          = 2 // StorageServerInterface::getKeyValues
+	EndpointGetKeyServerLocations = 2 // CommitProxyInterface::getKeyServerLocations
+)
+
 type txState int
 
 const (

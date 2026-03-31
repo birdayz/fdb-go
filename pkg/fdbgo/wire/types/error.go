@@ -14,7 +14,8 @@ type Error struct {
 func (m *Error) TypeVTable() wire.VTable { return ErrorVTable }
 
 func (m *Error) MarshalInto(obj *wire.ObjectWriter) {
-	obj.WriteInt32(4, m.Code) // slot 0: error_code at offset 4
+	vt := ErrorVTable
+	obj.WriteInt32(int(vt[2]), m.Code)
 }
 
 func (m *Error) UnmarshalFrom(r *wire.Reader) error {

@@ -73,7 +73,7 @@ func parseErrorOrClientDBInfo(data []byte) (*DBInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("coordinator: %w", err)
 	}
-	return parseClientDBInfoFromReader(r, 0)
+	return parseClientDBInfoFromReader(r)
 }
 
 // parseStandaloneClientDBInfo parses a plain ClientDBInfo (no ErrorOr wrapper).
@@ -82,16 +82,15 @@ func parseStandaloneClientDBInfo(data []byte) (*DBInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("NewReader: %w", err)
 	}
-	return parseClientDBInfoFromReader(r, 0)
+	return parseClientDBInfoFromReader(r)
 }
 
 // parseClientDBInfoFromReader extracts proxy info from a ClientDBInfo.
-// slotOffset is 0 for standalone or 1 for ErrorOr-wrapped.
-func parseClientDBInfoFromReader(r *wire.Reader, slotOffset int) (*DBInfo, error) {
+func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 	info := &DBInfo{}
 
 	// grvProxies: vector of GrvProxyInterface
-	grvSlot := slotOffset + 0
+	grvSlot := 0
 	grvCount, err := r.ReadVectorCount(grvSlot)
 	if err != nil {
 		return nil, fmt.Errorf("read grvProxies count: %w", err)
@@ -109,7 +108,7 @@ func parseClientDBInfoFromReader(r *wire.Reader, slotOffset int) (*DBInfo, error
 	}
 
 	// commitProxies: vector of CommitProxyInterface
-	commitSlot := slotOffset + 1
+	commitSlot := 1
 	commitCount, err := r.ReadVectorCount(commitSlot)
 	if err != nil {
 		return nil, fmt.Errorf("read commitProxies count: %w", err)
@@ -127,7 +126,7 @@ func parseClientDBInfoFromReader(r *wire.Reader, slotOffset int) (*DBInfo, error
 	}
 
 	// id: UID at slot slotOffset+2
-	idSlot := slotOffset + 2
+	idSlot := 2
 	if r.FieldPresent(idSlot) {
 		idR, err := r.ReadNestedReader(idSlot)
 		if err == nil {

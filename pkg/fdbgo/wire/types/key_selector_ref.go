@@ -27,9 +27,10 @@ func FirstGreaterThan(k []byte) KeySelectorRef {
 func (m *KeySelectorRef) TypeVTable() wire.VTable { return KeySelectorRefVTable }
 
 func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
-	obj.WriteBytes(4, m.Key)     // slot 0: key at offset 4
-	obj.WriteInt32(8, m.Offset)  // slot 2: offset at offset 8
-	obj.WriteBool(12, m.OrEqual) // slot 1: orEqual at offset 12
+	vt := KeySelectorRefVTable
+	obj.WriteBytes(int(vt[2]), m.Key)
+	obj.WriteInt32(int(vt[4]), m.Offset)
+	obj.WriteBool(int(vt[3]), m.OrEqual)
 }
 
 func (m *KeySelectorRef) UnmarshalFrom(r *wire.Reader) error {

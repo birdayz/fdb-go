@@ -21,11 +21,10 @@ type ReadOptions struct {
 func (m *ReadOptions) TypeVTable() wire.VTable { return ReadOptionsVTable }
 
 func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
-	obj.WriteInt32(4, m.Type)        // slot 0: type at offset 4
-	obj.WriteBool(16, m.CacheResult) // slot 1: cacheResult at offset 16
-	// slot 2: debugID — absent (Optional type byte = 0 at offset 17)
-	// slot 3: consistencyCheckStartVersion — absent (type byte = 0 at offset 18)
-	obj.WriteBool(19, m.LockAware) // slot 4: lockAware at offset 19
+	vt := ReadOptionsVTable
+	obj.WriteInt32(int(vt[2]), m.Type)
+	obj.WriteBool(int(vt[3]), m.CacheResult)
+	obj.WriteBool(int(vt[8]), m.LockAware)
 }
 
 func (m *ReadOptions) UnmarshalFrom(r *wire.Reader) error {

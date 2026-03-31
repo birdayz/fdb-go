@@ -19,7 +19,7 @@ const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_
 // Other FDB errors (transaction_too_old, etc.) are returned to the caller
 // for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
-	for attempts := 0; attempts < 5; attempts++ {
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		servers, err := tx.db.locationCache.Locate(ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
@@ -55,7 +55,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 		select {
 		case resp := <-replyCh:
 			cancel()
@@ -73,7 +73,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 // getRange sends a GetKeyValuesRequest for a key range.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
-	for attempts := 0; attempts < 5; attempts++ {
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		servers, err := tx.db.locationCache.Locate(ctx, begin)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range begin: %w", err)
@@ -104,11 +104,11 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		}
 		replyToken, replyCh := conn.PrepareReply()
 		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
-		gkvToken := getAdjustedEndpoint(server.Token, 2) // getKeyValues = endpoint index 2
+		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 		select {
 		case resp := <-replyCh:
 			cancel()
@@ -140,7 +140,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, rep
 		EndOrEqual:   true,
 		Version:      version,
 		Limit:        limit,
-		LimitBytes:   0x7FFFFFFF,
+		LimitBytes:   UnlimitedBytes,
 		ReplyFirst:   replyToken.First,
 		ReplySecond:  replyToken.Second,
 		TenantId:     -1,
@@ -179,7 +179,7 @@ func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _
 		Version:     version,
 		ReplyFirst:  replyToken.First,
 		ReplySecond: replyToken.Second,
-		TenantId:    -1,
+		TenantId:    NoTenantID,
 	}
 	return req.MarshalFDB()
 }

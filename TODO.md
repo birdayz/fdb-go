@@ -1756,17 +1756,39 @@ Leaves first, then compound types:
 - [x] Encapsulate parseKeyValueVector in wire/types/
 - [x] Build voidReply through wire.Writer (WriteRootObject)
 
-### CRITICAL — Port request types to wire/types/ (eliminate hardcoded offsets)
+### DONE — Port request types to wire/types/
 
-Client code hand-builds requests with raw ObjectWriter calls and hardcoded byte offsets (`inner.WriteUint64(4, ...)`, `obj.WriteBytes(32, ...)`). If FDB changes ANY struct layout, these break silently. Each request type needs a Go struct in `wire/types/` with `MarshalFDB()` that derives ALL offsets from vtable constants. Client code just fills fields and calls `MarshalFDB()`.
+- [x] All 6 request types ported to typed structs with MarshalFDB()
+- [x] Shared helpers: WriteReplyPromise, WriteTenantInfo, writeKeySelectorRef
+- [x] Zero ObjectWriter calls in client code
 
-- [ ] **GetReadVersionRequest** — grv.go:140-162. 100% hardcoded offsets. Fields: transactionCount, flags, maxVersion, replyToken.
-- [ ] **GetValueRequest** — readpath.go:195-212. Has a partial wire/types file but client doesn't use it. Fields: key, version, replyToken, tenantId, ssLatestVersions.
-- [ ] **GetKeyValuesRequest** — readpath.go:99-161. Fields: begin, end, version, limit, limitBytes, replyToken, tenantId, ssLatestVersions.
-- [ ] **CommitTransactionRequest** — commitpath.go:55-107. Fields: transaction (CommitTransactionRef), replyToken, flags, tenantId, spanContext, idempotencyId. Includes nested CommitTransactionRef with mutation/range vectors.
-- [ ] **GetKeyServerLocationsRequest** — locality.go:128-153. Fields: begin, limit, replyToken, tenantId, minTenantVersion.
-- [ ] **OpenDatabaseCoordRequest** — coordinator.go:44-79. Fields: knownClientInfoID, clusterKey, replyToken, internal.
-- [ ] **Shared helpers** — ReplyPromise, TenantInfo, SpanContext write patterns extracted into reusable MarshalInto methods on their types.
+### HIGH — Audit findings: remaining hardcoded offsets and missing schema constants
+
+**Hardcoded byte offsets in wire/types/ MarshalInto (should use `int(vt[N])`):**
+- [ ] `error.go` — `WriteInt32(4, ...)` → `int(ErrorVTable[2])`
+- [ ] `key_selector_ref.go` — 3 hardcoded offsets (4, 8, 12)
+- [ ] `read_options.go` — 3 hardcoded offsets (4, 16, 19)
+- [ ] `mutation_ref.go` — 3 hardcoded offsets (12, 4, 8)
+- [ ] `key_range_ref.go` — 2 hardcoded offsets (4, 8)
+
+**Missing vtable constants for response type parsing (hardcoded slot numbers):**
+- [ ] `coordinator.go` — ClientDBInfo slots 0,1,2 for grvProxies/commitProxies/id
+- [ ] `coordinator.go` — proxy endpoint slot `3` hardcoded for both GrvProxy/CommitProxy
+- [ ] `network_types.go` — IPAddress, NetworkAddress, Endpoint use hardcoded slots
+- [ ] `network_types.go` — ReadEndpoint uses heuristic (byte offset comparison) not schema
+- [ ] `network_types.go` — IPv6 completely ignored (silent wrong address)
+
+**Hardcoded endpoint indices (StorageServerInterface/CommitProxyInterface method positions):**
+- [ ] `readpath.go` — `getAdjustedEndpoint(token, 2)` for getKeyValues
+- [ ] `locality.go` — inline getAdjustedEndpoint with magic `2` for getKeyServerLocations
+- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply
+
+**Magic numbers → named constants:**
+- [ ] `-1` for no-tenant (6+ occurrences) → `const NoTenantID int64 = -1`
+- [ ] `5*time.Second` timeout (5 occurrences) → package-level constant
+- [ ] `0x7FFFFFFF` limitBytes → `const UnlimitedBytes`
+- [ ] `5` retry limit → named constant
+- [ ] `coordinator.go` — dead `slotOffset` parameter, misleading comment
 
 ### HIGH — Remaining client features
 

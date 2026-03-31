@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -34,7 +33,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 		return fmt.Errorf("send commit: %w", err)
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
 	select {
@@ -73,7 +72,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		tx.readVersion,
 		mutData, readCRData, writeCRData,
 		replyToken.First, replyToken.Second,
-		-1, // tenantId
+		NoTenantID,
 	)
 }
 

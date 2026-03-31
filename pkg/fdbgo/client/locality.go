@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -88,21 +87,13 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 	replyToken, replyCh := conn.PrepareReply()
 	body := buildGetKeyServerLocationsRequest(key, replyToken)
 
-	// getKeyServerLocations is at getAdjustedEndpoint(2) from commit:
-	//   first = commit.first + (2 << 32)
-	//   second = (commit.second & 0xffffffff00000000) | (commit_index + 2)
-	// where commit_index = commit.second & 0xffffffff
-	commitIndex := uint32(proxy.Token.Second)
-	locToken := transport.UID{
-		First:  proxy.Token.First + (2 << 32),
-		Second: (proxy.Token.Second & 0xFFFFFFFF00000000) | uint64(commitIndex+2),
-	}
+	locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 	if err := conn.SendFrame(locToken, body); err != nil {
 		return nil, fmt.Errorf("send GetKeyServerLocations: %w", err)
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
 	select {
@@ -126,8 +117,8 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		Limit:            100,
 		ReplyFirst:       replyToken.First,
 		ReplySecond:      replyToken.Second,
-		TenantId:         -1,
-		MinTenantVersion: -1,
+		TenantId:         NoTenantID,
+		MinTenantVersion: NoTenantID,
 	}
 	return req.MarshalFDB()
 }
