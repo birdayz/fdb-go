@@ -36,9 +36,24 @@ type Response struct {
 
 // Dial connects to an FDB process, exchanges ConnectPackets, and starts
 // the read loop for response multiplexing.
+// DialFunc is the signature for custom dialers. Same as net.Dialer.DialContext.
+// Default is net.Dialer{}.DialContext. Override for testing (fault injection,
+// custom Docker networking, traffic shaping).
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// Dial connects to an FDB server using the default net.Dialer.
 func Dial(ctx context.Context, addr string, tls bool) (*Conn, error) {
-	var d net.Dialer
-	netConn, err := d.DialContext(ctx, "tcp", addr)
+	return DialWith(ctx, addr, tls, nil)
+}
+
+// DialWith connects to an FDB server using a custom dialer.
+// If dialFn is nil, uses the default net.Dialer.
+func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Conn, error) {
+	if dialFn == nil {
+		var d net.Dialer
+		dialFn = d.DialContext
+	}
+	netConn, err := dialFn(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}

@@ -86,6 +86,7 @@ func ParseClusterString(s string) (*ClusterFile, error) {
 // topology changes (proxy addresses).
 type Cluster struct {
 	clusterFile *ClusterFile
+	dialFn      transport.DialFunc // custom dialer, nil = default
 
 	mu       sync.RWMutex
 	dbInfo   *DBInfo // latest ClientDBInfo from coordinators
@@ -128,6 +129,12 @@ func NewClusterFromConfig(cf *ClusterFile) *Cluster {
 		ctx:         ctx,
 		cancel:      cancel,
 	}
+}
+
+// SetDialFunc sets a custom dialer for all new connections.
+// Must be called before Connect. Same pattern as http.Transport.DialContext.
+func (c *Cluster) SetDialFunc(fn transport.DialFunc) {
+	c.dialFn = fn
 }
 
 // Connect establishes connections to coordinators and fetches
@@ -218,7 +225,7 @@ func (c *Cluster) getOrDial(ctx context.Context, addr string) (*transport.Conn, 
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
-	conn, err := transport.Dial(dialCtx, addr, false)
+	conn, err := transport.DialWith(dialCtx, addr, false, c.dialFn)
 	if err != nil {
 		// Fallback: if the internal address failed (e.g., Docker networking),
 		// try the coordinator address with the same port.
@@ -226,7 +233,7 @@ func (c *Cluster) getOrDial(ctx context.Context, addr string) (*transport.Conn, 
 			_, coordPort, _ := net.SplitHostPort(c.clusterFile.Coordinators[0])
 			if targetPort == coordPort {
 				coordAddr := c.clusterFile.Coordinators[0]
-				conn, err = transport.Dial(dialCtx, coordAddr, false)
+				conn, err = transport.DialWith(dialCtx, coordAddr, false, c.dialFn)
 				if err == nil {
 					c.connPool[addr] = conn
 					return conn, nil

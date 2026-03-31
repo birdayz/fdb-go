@@ -1825,7 +1825,7 @@ Leaves first, then compound types:
 - [x] **Storage server routing** — LocationCache.refresh() parses GetKeyServerLocationsReply properly through wire.Reader (replaced IP pattern hack).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
 - [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
-- [ ] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution.
+- [x] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution. OnError(1021) copies write conflicts into read conflicts before reset.
 - [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops.
 
 ### HIGH — Public API
@@ -1841,7 +1841,18 @@ Leaves first, then compound types:
 - [ ] **Multi-shard GetRange integration test** — needs multi-node testcontainer support (single-node = single shard, can't verify cross-shard continuation). Track in testcontainers pkg.
 - [x] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
 - [x] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
-- [ ] **commit_unknown_result resolution** — dummy transaction + idempotency ID check.
+- [x] **commit_unknown_result resolution** — self-conflicting via OnError(1021). Unit tested.
+- [ ] **commit_unknown_result integration test** — needs fault injection (see below).
+
+### HIGH — Custom dialer + fault injection
+
+Support `DialFunc func(ctx context.Context, addr string) (net.Conn, error)` on Cluster config, same pattern as `http.Transport.DialContext`. Default = `net.Dialer.DialContext`. Tests override to inject a `faultConn` wrapper around the real `net.Conn`.
+
+This enables:
+- **commit_unknown_result integration test**: `faultConn.Read` drops the commit reply → client sees EOF → triggers 1021 → self-conflicting retry → verify no double-apply
+- **Timeout simulation**: delay reads to trigger context deadlines
+- **Connection kill**: simulate network partition mid-transaction
+- **Custom Docker networking**: proxy through socat, tcpdump, traffic shaping
 - [ ] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510.
 - [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
 
