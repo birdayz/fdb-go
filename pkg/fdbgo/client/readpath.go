@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -71,8 +72,56 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	return nil, fmt.Errorf("all servers unreachable")
 }
 
-// getRange sends a GetKeyValuesRequest for a key range.
+// getRange reads a key range, automatically continuing across shard boundaries.
+// Each shard is queried independently; results are concatenated until limit is
+// reached or no more data exists.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	var allKVs []KeyValue
+	remaining := limit
+	curBegin := begin
+
+	for remaining > 0 {
+		kvs, more, err := tx.getRangeOneShard(ctx, curBegin, end, remaining)
+		if err != nil {
+			return nil, false, err
+		}
+
+		allKVs = append(allKVs, kvs...)
+		remaining -= len(kvs)
+
+		if remaining <= 0 {
+			// Hit our limit. There may be more data.
+			return allKVs, more || len(kvs) > 0, nil
+		}
+
+		if len(kvs) == 0 {
+			// Shard returned nothing for this range — done.
+			return allKVs, false, nil
+		}
+
+		if !more {
+			// Shard exhausted for this range. Continue from next key
+			// on the next shard (if the range extends past this shard).
+			lastKey := kvs[len(kvs)-1].Key
+			curBegin = append(lastKey, 0) // next key after lastKey
+			if bytes.Compare(curBegin, end) >= 0 {
+				// Past the end of our range — done.
+				return allKVs, false, nil
+			}
+			continue // query next shard
+		}
+
+		// more=true but we haven't hit limit: server had more data but
+		// we need to continue. Advance past last key.
+		lastKey := kvs[len(kvs)-1].Key
+		curBegin = append(lastKey, 0)
+	}
+
+	return allKVs, remaining <= 0, nil
+}
+
+// getRangeOneShard queries a single shard with wrong_shard_server retry.
+func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		servers, err := tx.db.locationCache.Locate(ctx, begin)
 		if err != nil {
@@ -93,7 +142,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 		}
 		return nil, false, err
 	}
-	return nil, false, fmt.Errorf("getRange: wrong_shard_server after 5 attempts")
+	return nil, false, fmt.Errorf("getRange: wrong_shard_server after %d attempts", MaxWrongShardRetries)
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, servers []ServerInfo) ([]KeyValue, bool, error) {

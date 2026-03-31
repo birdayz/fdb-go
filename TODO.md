@@ -1808,6 +1808,8 @@ Leaves first, then compound types:
 
 ### MEDIUM — Correctness
 
+- [x] **Multi-shard GetRange** — `getRange` now loops across shard boundaries, advancing `begin` past last returned key and re-locating for the next shard. Single-shard continuation tested via `TestGetRangeWithLimit`.
+- [ ] **Multi-shard GetRange integration test** — needs multi-node testcontainer support (single-node = single shard, can't verify cross-shard continuation). Track in testcontainers pkg.
 - [ ] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
 - [ ] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
 - [ ] **commit_unknown_result resolution** — dummy transaction + idempotency ID check.
