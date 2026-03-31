@@ -35,6 +35,16 @@ func NewWriter(buf []byte) *Writer {
 //   - maxFieldAlign: max alignment of any field in the message
 //   - writeFields: callback that populates the ObjectWriter
 func (w *Writer) WriteMessage(fileID uint32, msgVTable VTable, maxFieldAlign int, writeFields func(obj *ObjectWriter)) []byte {
+	return w.WriteMessageWithVTables(fileID, msgVTable, maxFieldAlign, nil, writeFields)
+}
+
+// WriteMessageWithVTables is like WriteMessage but includes additional vtables
+// in the vtable set. FDB's C++ get_vtableset includes vtables for ALL types
+// transitively reachable from the message type, even inside absent Optional
+// fields. Our Writer only discovers vtables for explicitly written nested
+// structs. Pass extraVTables to include vtables for types that aren't written
+// but must be present in the vtable set.
+func (w *Writer) WriteMessageWithVTables(fileID uint32, msgVTable VTable, maxFieldAlign int, extraVTables []VTable, writeFields func(obj *ObjectWriter)) []byte {
 	if maxFieldAlign < 4 {
 		maxFieldAlign = 4
 	}
@@ -47,12 +57,15 @@ func (w *Writer) WriteMessage(fileID uint32, msgVTable VTable, maxFieldAlign int
 	}
 	writeFields(obj)
 
-	// Collect all unique vtables: FakeRoot, message, and any nested structs.
+	// Collect all unique vtables: FakeRoot, message, nested structs, and extras.
 	vtableSet := newVTableSet()
 	vtableSet.add(fakeRootVTable)
 	vtableSet.add(msgVTable)
 	for _, ns := range obj.nestedStructs {
 		ns.collectVTables(vtableSet)
+	}
+	for _, vt := range extraVTables {
+		vtableSet.add(vt)
 	}
 	vtableBytes := vtableSet.pack()
 	vtableSize := len(vtableBytes)
