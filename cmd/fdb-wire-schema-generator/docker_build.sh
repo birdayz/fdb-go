@@ -25,6 +25,7 @@ docker run --rm \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$(realpath "$GEN_CPP"):/work/generated_messages.cpp:ro" \
     -v "$(realpath "$(dirname "$GEN_CPP")/fdb_stubs.h"):/work/fdb_stubs.h:ro" \
+    -v "$(realpath "$(dirname "$GEN_CPP")/schema_extractor.h"):/work/schema_extractor.h:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/fdb-build" \
     -v "$SRC_CACHE:/fdb" \
@@ -38,6 +39,7 @@ docker run --rm \
             cp -r /fdb_src/* /fdb/
         fi
         cp /work/generated_messages.cpp /fdb/generated_messages.cpp
+        cp /work/schema_extractor.h /fdb/schema_extractor.h
         # Also copy fdb_stubs.h if mounted
         if [ -f /work/fdb_stubs.h ]; then
             cp /work/fdb_stubs.h /fdb/fdb_stubs.h
@@ -61,6 +63,7 @@ set_target_properties(fdbserver_lib PROPERTIES COMPILE_OPTIONS "-w")
 add_executable(gen_testvecs generated_messages.cpp)
 target_link_libraries(gen_testvecs PRIVATE fdbserver_lib fdbclient fdbrpc flow)
 target_include_directories(gen_testvecs PRIVATE
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/fdbserver/include
     ${CMAKE_SOURCE_DIR}/fdbserver
     ${CMAKE_BINARY_DIR}

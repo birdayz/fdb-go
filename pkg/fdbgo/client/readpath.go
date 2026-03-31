@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -118,66 +117,39 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	return nil, false, fmt.Errorf("getRange: all attempts failed")
 }
 
-// C++ ground truth template for GetKeyValuesRequest (304 bytes, from FDB 7.3.75 ObjectWriter).
-// Default values: empty begin/end keys, version=0, limit=0, limitBytes=0.
-var getKeyValuesRequestTemplate, _ = hex.DecodeString("64000000e2b16700000012001400040010001100080012000c0013000a001d00040014001c000a000d0004000c0008001e0036000c00100004001400180034001c0020002400280035002c0030000a001100040010000c0006001400040006000800040006000000040000003c0000005070fa1300000000a4000000900000000564417c9a7f000000000000680000004400000028000000000000000c0000000000000000000000100000000000000000000000ffffffffffffffff6e000000ffffffffffffffff000000000000000000000000b8000000000000000000000000000000000000000000000000000000000000009c0000004a4a5ff66661c8f603000000e42aabcf00000000e60000001c0000000000000000000000f60000000c000000000000000000000000000000")
+// KeySelectorRef vtable: key(StringRef)@4, offset(int32)@8, orEqual(bool)@12.
+var keySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
 
-// buildGetKeyValuesRequest patches the C++ template with our values.
-// Template layout (from decode):
-//
-//	Message at byte 108:  version at +4(=112), limit at +20(=128), limitBytes at +24(=132)
-//	Reply at byte 244:    UID at +4(=248)
-//	Begin KSR at byte 284: key RelOff at +4(=288), offset(int32) at +8(=292)
-//	End KSR at byte 268:   key RelOff at +4(=272), offset(int32) at +8(=276)
-//	Shared key [len=0] at byte 300
+// buildGetKeyValuesRequest uses WriteMessageWithVTables with the generated closure.
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	buf := make([]byte, len(getKeyValuesRequestTemplate))
-	copy(buf, getKeyValuesRequestTemplate)
-
-	// Message fields.
-	binary.LittleEndian.PutUint64(buf[112:], uint64(version))
-	binary.LittleEndian.PutUint32(buf[128:], uint32(limit))
-	binary.LittleEndian.PutUint32(buf[132:], 0x7FFFFFFF) // limitBytes = INT_MAX (unlimited)
-
-	// Reply token.
-	binary.LittleEndian.PutUint64(buf[248:], replyToken.First)
-	binary.LittleEndian.PutUint64(buf[256:], replyToken.Second)
-
-	// Begin KeySelectorRef: offset=1 (firstGreaterOrEqual), orEqual=false.
-	binary.LittleEndian.PutUint32(buf[292:], 1) // offset field
-
-	// End KeySelectorRef: offset=1 (firstGreaterOrEqual), orEqual=false.
-	binary.LittleEndian.PutUint32(buf[276:], 1) // offset field
-
-	// Append begin key data at end (template has empty keys).
-	if len(begin) > 0 {
-		beginOOL := make([]byte, 4+len(begin))
-		binary.LittleEndian.PutUint32(beginOOL, uint32(len(begin)))
-		copy(beginOOL[4:], begin)
-		if pad := (4 - len(beginOOL)%4) % 4; pad > 0 {
-			beginOOL = append(beginOOL, make([]byte, pad)...)
-		}
-		beginOOLStart := len(buf)
-		buf = append(buf, beginOOL...)
-		// Update Begin KSR key RelOff at byte 288.
-		binary.LittleEndian.PutUint32(buf[288:], uint32(beginOOLStart-288))
-	}
-
-	// Append end key data.
-	if len(end) > 0 {
-		endOOL := make([]byte, 4+len(end))
-		binary.LittleEndian.PutUint32(endOOL, uint32(len(end)))
-		copy(endOOL[4:], end)
-		if pad := (4 - len(endOOL)%4) % 4; pad > 0 {
-			endOOL = append(endOOL, make([]byte, pad)...)
-		}
-		endOOLStart := len(buf)
-		buf = append(buf, endOOL...)
-		// Update End KSR key RelOff at byte 272.
-		binary.LittleEndian.PutUint32(buf[272:], uint32(endOOLStart-272))
-	}
-
-	return buf
+	vt := protocol.GetKeyValuesRequest_VTable
+	fileID := protocol.GetKeyValuesRequest_FileIdentifier
+	w := wire.NewWriter(nil)
+	return w.WriteMessageWithVTables(fileID, vt, 8, protocol.GetKeyValuesRequest_VTableClosure, func(obj *wire.ObjectWriter) {
+		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		obj.WriteStruct(int(vt[11]), tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1)
+		})
+		spanVT := wire.VTable{10, 29, 4, 20, 28}
+		obj.WriteStruct(int(vt[10]), spanVT, 8, func(inner *wire.ObjectWriter) {})
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(int(vt[9]), replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+		obj.WriteStruct(int(vt[3]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+			inner.WriteBytes(4, end)
+			inner.WriteInt32(8, 1) // firstGreaterOrEqual
+		})
+		obj.WriteStruct(int(vt[2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+			inner.WriteBytes(4, begin)
+			inner.WriteInt32(8, 1) // firstGreaterOrEqual
+		})
+		obj.WriteInt64(int(vt[4]), version)
+		obj.WriteInt32(int(vt[5]), limit)
+		obj.WriteInt32(int(vt[6]), 0x7FFFFFFF)          // limitBytes
+		obj.WriteBytes(int(vt[14]), emptyVersionVector) // ssLatestCommitVersions (16 bytes)
+	})
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
@@ -258,50 +230,31 @@ type KeyValue struct {
 	Value []byte
 }
 
-// C++ ground truth template for GetValueRequest (240 bytes, without version prefix).
-var getValueRequestTemplate, _ = hex.DecodeString("5400000082018100000012001400040010001100080012000c0013000a001d00040014001c0018002a000c00040028001000140018001c002900200024000a001100040010000c000600140004000600080004000600000004000000360000000564417c9a7f00008400000000000000640000004000000024000000000000000800000000000000100000000000000000000000ffffffffffffffff5e000000ffffffffffffffff00000000000000000000000098000000000000000000000000000000000000000000000000000000000000008c0000004a4a5ff66661c8f603000000e42aabcf0000000000000000")
+// emptyVersionVector is the serialized form of an empty VersionVector.
+// sizeof(size_t) + sizeof(Version) = 16 bytes (utlCount=0, maxVersion=invalidVersion).
+var emptyVersionVector = make([]byte, 16)
 
-// buildGetValueRequest patches the C++ ground truth template with our values.
+// buildGetValueRequest uses WriteMessageWithVTables with the generated vtable closure.
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	// Start with a copy of the template
-	buf := make([]byte, len(getValueRequestTemplate))
-	copy(buf, getValueRequestTemplate)
-
-	// Navigate to message object
-	root := binary.LittleEndian.Uint32(buf[0:4])
-	fr_f0 := root + 4
-	msg := int(fr_f0) + int(binary.LittleEndian.Uint32(buf[fr_f0:]))
-
-	// Patch Version at msg+4 (slot 1)
-	binary.LittleEndian.PutUint64(buf[msg+4:], uint64(version))
-
-	// Patch Reply token: find the Reply nested struct and update the UID.
-	// Reply at msg+20 (slot 4). Follow RelOff to nested struct.
-	replyRelOff := binary.LittleEndian.Uint32(buf[msg+20:])
-	replyTarget := int(msg+20) + int(replyRelOff)
-	// In the nested struct, UID is at offset 4 (vtable {6,20,4})
-	binary.LittleEndian.PutUint64(buf[replyTarget+4:], replyToken.First)
-	binary.LittleEndian.PutUint64(buf[replyTarget+12:], replyToken.Second)
-
-	// Append key data at the end (the template has empty key)
-	// The key RelOff at msg+12 currently points to the end of the template
-	// where there's a [length=0] entry. We need to replace it with our key.
-	keyOOL := make([]byte, 4+len(key))
-	binary.LittleEndian.PutUint32(keyOOL, uint32(len(key)))
-	copy(keyOOL[4:], key)
-	if pad := (4 - len(keyOOL)%4) % 4; pad > 0 {
-		keyOOL = append(keyOOL, make([]byte, pad)...)
-	}
-
-	// The template's key RelOff points to the default empty key.
-	// Find where the empty key [length=0] is and replace it.
-	// For now, just append new key data and update the RelOff.
-	keyOOLStart := len(buf)
-	buf = append(buf, keyOOL...)
-	// Update key RelOff at msg+12
-	binary.LittleEndian.PutUint32(buf[msg+12:], uint32(keyOOLStart-(msg+12)))
-
-	return buf
+	vt := protocol.GetValueRequest_VTable
+	fileID := protocol.GetValueRequest_FileIdentifier
+	w := wire.NewWriter(nil)
+	return w.WriteMessageWithVTables(fileID, vt, 8, protocol.GetValueRequest_VTableClosure, func(obj *wire.ObjectWriter) {
+		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		obj.WriteStruct(int(vt[8]), tenantVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteInt64(4, -1)
+		})
+		spanVT := wire.VTable{10, 29, 4, 20, 28}
+		obj.WriteStruct(int(vt[7]), spanVT, 8, func(inner *wire.ObjectWriter) {})
+		replyVT := wire.VTable{6, 20, 4}
+		obj.WriteStruct(int(vt[6]), replyVT, 8, func(inner *wire.ObjectWriter) {
+			inner.WriteUint64(4, replyToken.First)
+			inner.WriteUint64(12, replyToken.Second)
+		})
+		obj.WriteInt64(int(vt[3]), version)
+		obj.WriteBytes(int(vt[2]), key)
+		obj.WriteBytes(int(vt[11]), emptyVersionVector) // 16 bytes, not nil
+	})
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.

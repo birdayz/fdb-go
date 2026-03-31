@@ -43,6 +43,20 @@ type FieldDef struct {
 	Inline        bool   `json:"inline"`
 }
 
+// TypeDef describes a resolved type in the registry — any C++ type with serialize().
+type TypeDef struct {
+	Name       string     `json:"name"`
+	Trait      string     `json:"trait"` // "serialize_member", "dynamic_size", "scalar", "vector_like", "union_like"
+	SourceFile string     `json:"source_file"`
+	VTable     []uint16   `json:"vtable,omitempty"`
+	Fields     []FieldDef `json:"fields,omitempty"`
+}
+
+// TypeRegistry is the complete set of all types found across FDB headers.
+type TypeRegistry struct {
+	Types []TypeDef `json:"types"`
+}
+
 // typeInfo describes the wire characteristics of a C++ type.
 type typeInfo struct {
 	category string // "scalar", "bytes", "vector", "optional", "struct", "arena"
@@ -71,10 +85,14 @@ var knownTypes = map[string]typeInfo{
 	"Sequence":        {category: "scalar", size: 8, align: 8},
 	"DBRecoveryCount": {category: "scalar", size: 8, align: 8},
 
+	// Custom scalar_traits — inlined in parent objects (NOT RelOff).
+	"UID":             {category: "scalar", size: 16, align: 8}, // two uint64
+	"ProtocolVersion": {category: "scalar", size: 8, align: 8},  // uint64
+
 	// Enums (default to their common underlying types)
 	"TransactionPriority": {category: "scalar", size: 1, align: 1},
 	"ClusterType":         {category: "scalar", size: 1, align: 1},
-	"ReadType":            {category: "scalar", size: 1, align: 1},
+	"ReadType":            {category: "scalar", size: 4, align: 4}, // plain enum = int
 	"TraceFlags":          {category: "scalar", size: 1, align: 1},
 	"TaskPriority":        {category: "scalar", size: 8, align: 8},
 
@@ -221,7 +239,6 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 		var serArgs []string
 		var replyType string
 		braceDepth := 0
-		foundFileID := false
 
 		var serializerAccum string // accumulates multi-line serializer() calls
 
@@ -234,7 +251,6 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 			if fm := reFileID.FindStringSubmatch(line); fm != nil {
 				id, _ := strconv.ParseUint(fm[1], 10, 32)
 				fileID = uint32(id)
-				foundFileID = true
 			}
 
 			// Handle multi-line serializer() calls.
@@ -258,9 +274,12 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 				}
 				if depth <= 0 {
 					// Complete serializer call — extract args.
+					// REPLACE (not append) to get the last branch of conditional serializers.
+					// Types like MutationRef have if/else branches; the else branch
+					// (serializer(ar, type, param1, param2)) is the canonical form.
 					if sm := reSerializer.FindStringSubmatch(serializerAccum); sm != nil {
 						args := parseSerializerArgs(sm[1])
-						serArgs = append(serArgs, args...)
+						serArgs = args // replace, not append
 					}
 					serializerAccum = ""
 				}
@@ -271,7 +290,7 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 			}
 		}
 
-		if foundFileID && len(serArgs) > 0 {
+		if len(serArgs) > 0 {
 			var bases []string
 			if baseClassStr != "" {
 				for _, b := range strings.Split(baseClassStr, ",") {
@@ -285,7 +304,7 @@ func parseFile(path, srcDir string) ([]parsedStruct, error) {
 			}
 			results = append(results, parsedStruct{
 				name:           structName,
-				fileIdentifier: fileID,
+				fileIdentifier: fileID, // 0 for nested types without file_identifier
 				serializerArgs: serArgs,
 				replyType:      replyType,
 				sourceFile:     relPath,
@@ -531,8 +550,8 @@ func wellKnownFieldType(fieldName string) string {
 		"arena":       "Arena",
 		"debugID":     "Optional<UID>",
 		"spanContext": "SpanContext",
-		"tenantInfo":  "TenantInfo",
-		"reply":       "ReplyPromise",
+		// tenantInfo: NOT in FDB 7.3.75. Removed — was creating phantom fields.
+		"reply": "ReplyPromise",
 
 		// GetKeyValuesRequest
 		"limit":      "int",
@@ -737,6 +756,9 @@ func generateCppTestFile(structs []parsedStruct, _ map[string]map[string]map[str
 
 // Runtime + serialization
 #include "flow/serialize.h"
+
+// Schema extraction (our custom header, copied alongside generated_messages.cpp)
+#include "schema_extractor.h"
 #include "flow/TLSConfig.actor.h"
 #include "fdbrpc/FlowTransport.h"
 #include <cstdio>
@@ -913,13 +935,16 @@ int main(int argc, char** argv) {
 
 `)
 
-	// Skip nested types (parser extracted them but they're not top-level).
+	// Only emit test vectors for messages with file_identifier (top-level protocol messages).
 	skipTypes := map[string]bool{
 		"TagInfo": true, // nested inside StorageQueuingMetricsReply
 	}
 
 	emitCount := 0
 	for _, s := range structs {
+		if s.fileIdentifier == 0 {
+			continue // nested type, no file_identifier
+		}
 		if skipTypes[s.name] {
 			continue
 		}
@@ -927,6 +952,7 @@ int main(int argc, char** argv) {
 			continue // composed file identifiers
 		}
 		fmt.Fprintf(&b, "    emit<%s>(outDir, \"%s\");\n", s.name, s.name)
+		fmt.Fprintf(&b, "    schema::emitSchema<%s>(outDir, \"%s\");\n", s.name, s.name)
 		emitCount++
 	}
 
@@ -960,15 +986,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build field type maps.
-	fileFieldTypes := make(map[string]map[string]map[string]string)
+	// Build GLOBAL field type map across ALL headers.
+	// extractFieldTypes returns map[structName][fieldName] = cppType for one file.
+	// We merge all files into one global map so cross-file references resolve.
+	globalFieldTypes := make(map[string]map[string]string) // structName → fieldName → cppType
 	seenFiles := make(map[string]bool)
 	for _, s := range structs {
 		fullPath := filepath.Join(srcDir, s.sourceFile)
 		if !seenFiles[fullPath] {
 			seenFiles[fullPath] = true
 			ft := extractFieldTypes(fullPath)
-			fileFieldTypes[fullPath] = ft
+			for structName, fields := range ft {
+				if globalFieldTypes[structName] == nil {
+					globalFieldTypes[structName] = make(map[string]string)
+				}
+				for fieldName, cppType := range fields {
+					globalFieldTypes[structName][fieldName] = cppType
+				}
+			}
 		}
 	}
 
@@ -978,47 +1013,84 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Write one JSON schema file per message.
-	for _, s := range structs {
-		fullPath := filepath.Join(srcDir, s.sourceFile)
-		fieldTypes := make(map[string]string)
+	// Build MessageDef for every struct (messages + nested types).
+	var registry TypeRegistry
+	messageCount := 0
 
-		if ft, ok := fileFieldTypes[fullPath]; ok {
-			if m, ok := ft[s.name]; ok {
+	for _, s := range structs {
+		// Merge field types from the struct itself + all base classes.
+		fieldTypes := make(map[string]string)
+		if m, ok := globalFieldTypes[s.name]; ok {
+			for k, v := range m {
+				fieldTypes[k] = v
+			}
+		}
+		for _, base := range s.baseClasses {
+			if m, ok := globalFieldTypes[base]; ok {
 				for k, v := range m {
 					fieldTypes[k] = v
-				}
-			}
-			for _, base := range s.baseClasses {
-				if m, ok := ft[base]; ok {
-					for k, v := range m {
-						fieldTypes[k] = v
-					}
 				}
 			}
 		}
 
 		md := buildMessageDef(s, fieldTypes, fdbVersion)
 
-		data, err := json.MarshalIndent(md, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error marshaling %s: %v\n", s.name, err)
-			continue
+		// Classify the trait based on knownTypes or default to serialize_member.
+		trait := "serialize_member"
+		if ti, ok := knownTypes[s.name]; ok {
+			switch ti.category {
+			case "bytes":
+				trait = "dynamic_size"
+			case "scalar":
+				trait = "scalar"
+			}
 		}
-		data = append(data, '\n')
 
-		outPath := filepath.Join(outDir, s.name+".json")
-		if err := os.WriteFile(outPath, data, 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outPath, err)
-			continue
+		// Add to type registry (ALL types).
+		registry.Types = append(registry.Types, TypeDef{
+			Name:       s.name,
+			Trait:      trait,
+			SourceFile: s.sourceFile,
+			VTable:     md.VTable,
+			Fields:     md.Fields,
+		})
+
+		// Write individual JSON only for messages with file_identifier.
+		if s.fileIdentifier > 0 {
+			data, err := json.MarshalIndent(md, "", "  ")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error marshaling %s: %v\n", s.name, err)
+				continue
+			}
+			data = append(data, '\n')
+
+			outPath := filepath.Join(outDir, s.name+".json")
+			if err := os.WriteFile(outPath, data, 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outPath, err)
+				continue
+			}
+			messageCount++
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Wrote %d message schemas to %s\n", len(structs), outDir)
+	// Write the type registry.
+	regData, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error marshaling type registry: %v\n", err)
+		os.Exit(1)
+	}
+	regData = append(regData, '\n')
+	regPath := filepath.Join(outDir, "types.json")
+	if err := os.WriteFile(regPath, regData, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing type registry: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Wrote %d message schemas + %d types to %s\n", messageCount, len(registry.Types), outDir)
 
 	// Optionally generate C++ test file.
 	if genCppPath != "" {
-		if err := generateCppTestFile(structs, fileFieldTypes, srcDir, genCppPath); err != nil {
+		if err := generateCppTestFile(structs, nil, srcDir, genCppPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Error generating C++ test file: %v\n", err)
 			os.Exit(1)
 		}
