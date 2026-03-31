@@ -26,6 +26,7 @@ go_test(
     srcs = [
         "client_test.go",
         "coordinator_test.go",
+        "correctness_test.go",
         "fdb_logs_test.go",
         "lint_test.go",
         "setget_test.go",
