@@ -460,27 +460,165 @@ func TestExplicitConflictRanges(t *testing.T) {
 
 func TestCancel(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
 
-	tx := &Transaction{state: txStateActive}
-	tx.Set([]byte("key"), []byte("val"))
+	// Write a key so there's something to read.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("cancel_key"), []byte("exists"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Create a real transaction, do a successful read, then cancel.
+	tx := db.CreateTransaction()
+	val, err := tx.Get(ctx, []byte("cancel_key"))
+	if err != nil {
+		t.Fatalf("Get before Cancel: %v", err)
+	}
+	if string(val) != "exists" {
+		t.Fatalf("Get before Cancel: got %q, want %q", val, "exists")
+	}
 
 	tx.Cancel()
 
-	// Get should fail.
-	_, err := tx.Get(context.Background(), []byte("key"))
+	// Get after Cancel should fail.
+	_, err = tx.Get(ctx, []byte("cancel_key"))
 	if err == nil {
 		t.Error("Get after Cancel should fail")
 	}
 
-	// Commit should fail.
-	err = tx.Commit(context.Background())
+	// Commit after Cancel should fail.
+	tx.Set([]byte("cancel_key"), []byte("modified"))
+	err = tx.Commit(ctx)
 	if err == nil {
 		t.Error("Commit after Cancel should fail")
 	}
 
-	// Set should still work (buffered locally, no state check).
-	// But the transaction is useless — Commit will fail.
-	tx.Set([]byte("key2"), []byte("val2"))
+	// Verify the key was NOT modified (cancel prevented commit).
+	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.Get(ctx, []byte("cancel_key"))
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if string(result.([]byte)) != "exists" {
+		t.Fatalf("key should be unchanged after cancelled tx, got %q", result)
+	}
+}
+
+func TestReadOnlyCommitIntegration(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Transact with only reads, no writes — commit should be a no-op.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		// Read a non-existent key. No mutations.
+		_, err := tx.Get(ctx, []byte("readonly_nonexistent"))
+		return nil, err
+	})
+	if err != nil {
+		t.Fatalf("read-only Transact should succeed: %v", err)
+	}
+
+	// Seed a key, then read it in a read-only transaction.
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("readonly_key"), []byte("val"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.Get(ctx, []byte("readonly_key"))
+	})
+	if err != nil {
+		t.Fatalf("read-only Get: %v", err)
+	}
+	if string(result.([]byte)) != "val" {
+		t.Fatalf("got %q, want %q", result, "val")
+	}
+}
+
+func TestAddReadConflictRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("rcr_a"), []byte("1"))
+		tx.Set([]byte("rcr_b"), []byte("2"))
+		tx.Set([]byte("rcr_c"), []byte("3"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// tx1: add read conflict range [rcr_a, rcr_d) — covers a, b, c.
+	tx1 := db.CreateTransaction()
+	rv, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx1.SetReadVersion(rv)
+	tx1.AddReadConflictRange([]byte("rcr_a"), []byte("rcr_d"))
+	tx1.Set([]byte("rcr_unrelated"), []byte("x"))
+
+	// tx2: write rcr_b (inside the conflict range).
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("rcr_b"), []byte("modified"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tx2: %v", err)
+	}
+
+	// tx1 should conflict.
+	err = tx1.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx1 should conflict — rcr_b was written inside its read conflict range")
+	}
+	t.Logf("tx1 conflict (expected): %v", err)
+}
+
+func TestAddWriteConflictRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// tx1 reads a key in the range [wcr_a, wcr_d).
+	tx1 := db.CreateTransaction()
+	rv, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx1.SetReadVersion(rv)
+	_, _ = tx1.Get(ctx, []byte("wcr_b")) // adds read conflict for wcr_b
+	tx1.Set([]byte("wcr_b"), []byte("from_tx1"))
+
+	// tx2 adds a write conflict range covering [wcr_a, wcr_d).
+	tx2 := db.CreateTransaction()
+	tx2.SetReadVersion(rv)
+	tx2.AddWriteConflictRange([]byte("wcr_a"), []byte("wcr_d"))
+	tx2.Set([]byte("wcr_other"), []byte("x")) // need a mutation to commit
+	err := tx2.Commit(ctx)
+	if err != nil {
+		t.Fatalf("tx2 should succeed: %v", err)
+	}
+
+	// tx1 should conflict — tx2's write conflict range overlaps tx1's read conflict.
+	err = tx1.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx1 should conflict — tx2's write conflict range overlaps tx1's read")
+	}
+	t.Logf("tx1 conflict (expected): %v", err)
 }
 
 func TestEmptyRange(t *testing.T) {
