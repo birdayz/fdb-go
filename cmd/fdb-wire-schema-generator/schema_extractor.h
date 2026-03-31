@@ -1,33 +1,34 @@
-// schema_extractor.h — C++ template machinery to extract wire format metadata
-// from FDB types at compile/link time. Uses the REAL FDB flat_buffers.h
-// type system — no stubs, no guessing.
+// schema_extractor.h — Single C++ binary schema extraction from real FDB types.
 //
-// For each type T with serialize(), extracts:
-//   - VTable (from get_vtable<Fields...>())
-//   - Per-field: trait classification, fb_size, fb_align, use_indirection
-//   - VTable closure (from get_vtableset_impl)
+// Extracts vtable, per-field trait/size/align from C++ type system.
+// Field names come from name_capture.cpp (separate compilation unit
+// that redefines serializer to stringify __VA_ARGS__).
 //
-// Field NAMES are not available from C++ (they're source-code identifiers).
-// Those come from the Go parser which extracts serializer() argument names.
+// Include this AFTER all FDB headers (it uses the real flat_buffers.h).
 
 #pragma once
 #include "flow/flat_buffers.h"
+#include "name_capture.h"
 #include <cstdio>
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <unistd.h>
+#include <sys/wait.h>
+
+// Defined in name_capture.cpp.
+void captureAllNames();
 
 namespace schema {
 
-// FieldInfo holds extracted metadata for one serialized field.
 struct FieldInfo {
-    const char* trait;  // "scalar", "dynamic_size", "vector_like", "union_like", "serialize_member"
-    uint32_t size;      // fb_size<T> in bytes
-    uint32_t align;     // fb_align<T>
-    bool uses_indirection; // use_indirection<T> — false = inlined, true = RelativeOffset
+    std::string name;
+    std::string trait;
+    uint32_t size;
+    uint32_t align;
+    bool indirection;
 };
 
-// Classify a single type's trait.
 template <class T>
 const char* classifyTrait() {
     if constexpr (detail::is_scalar<T>) return "scalar";
@@ -38,20 +39,8 @@ const char* classifyTrait() {
     else return "serialize_member";
 }
 
-// Extract FieldInfo for one type.
-template <class T>
-FieldInfo extractField() {
-    return FieldInfo{
-        classifyTrait<T>(),
-        (uint32_t)detail::fb_size<T>,
-        (uint32_t)detail::fb_align<T>,
-        detail::use_indirection<T>,
-    };
-}
-
-// SchemaVisitor — called by serializer() to collect field metadata.
-// Usage: T msg{}; msg.serialize(visitor); → visitor.fields has all field info.
-struct SchemaVisitor {
+// TypeVisitor — fb_visitor that collects vtable + field metadata.
+struct TypeVisitor {
     static constexpr bool isDeserializing = false;
     static constexpr bool isSerializing = false;
     static constexpr bool is_fb_visitor = true;
@@ -59,97 +48,73 @@ struct SchemaVisitor {
     std::vector<FieldInfo> fields;
     std::vector<uint16_t> vtable;
 
-    SchemaVisitor& context() { return *this; }
+    TypeVisitor& context() { return *this; }
     ProtocolVersion protocolVersion() const { return currentProtocolVersion(); }
 
     template <class... Members>
-    void operator()(const Members&... members) {
-        // Extract vtable.
-        const auto* vt = detail::get_vtable<Members...>();
+    void operator()(Members&... members) {
+        const auto* vt = detail::get_vtable<std::decay_t<Members>...>();
         vtable.assign(vt->begin(), vt->end());
+        (pushField<std::decay_t<Members>>(), ...);
+    }
 
-        // Extract per-field info.
-        (fields.push_back(extractField<Members>()), ...);
+private:
+    template <class T>
+    void pushField() {
+        fields.push_back(FieldInfo{
+            "",
+            classifyTrait<T>(),
+            (uint32_t)detail::fb_size<T>,
+            (uint32_t)detail::fb_align<T>,
+            detail::use_indirection<T>,
+        });
     }
 };
 
-// Write field info as JSON.
-inline void writeFieldsJSON(FILE* f, const std::vector<FieldInfo>& fields) {
-    fprintf(f, "  \"field_traits\": [\n");
+inline void writeJSON(FILE* f, const char* name, uint32_t fileId,
+                      const std::vector<uint16_t>& vt,
+                      const std::vector<FieldInfo>& fields) {
+    fprintf(f, "{\n  \"name\": \"%s\",\n  \"file_identifier\": %u,\n  \"vtable\": [", name, fileId);
+    for (size_t i = 0; i < vt.size(); i++) {
+        if (i) fprintf(f, ", ");
+        fprintf(f, "%u", vt[i]);
+    }
+    fprintf(f, "],\n  \"fields\": [\n");
     for (size_t i = 0; i < fields.size(); i++) {
         auto& fi = fields[i];
-        fprintf(f, "    {\"trait\": \"%s\", \"size\": %u, \"align\": %u, \"indirection\": %s}",
-                fi.trait, fi.size, fi.align, fi.uses_indirection ? "true" : "false");
+        fprintf(f, "    {\"name\": \"%s\", \"trait\": \"%s\", \"size\": %u, \"align\": %u, \"indirection\": %s}",
+                fi.name.c_str(), fi.trait.c_str(), fi.size, fi.align,
+                fi.indirection ? "true" : "false");
         if (i + 1 < fields.size()) fprintf(f, ",");
         fprintf(f, "\n");
     }
-    fprintf(f, "  ]");
+    fprintf(f, "  ]\n}\n");
 }
 
-// Write vtable as JSON.
-inline void writeVTableJSON(FILE* f, const std::vector<uint16_t>& vt) {
-    fprintf(f, "  \"vtable\": [");
-    for (size_t i = 0; i < vt.size(); i++) {
-        if (i > 0) fprintf(f, ", ");
-        fprintf(f, "%u", vt[i]);
-    }
-    fprintf(f, "]");
-}
-
-// Extract and write schema for one message type.
 template <class T>
-bool extractSchema(const char* outDir, const char* name) {
-    T msg{};
-    SchemaVisitor visitor;
-
-    if constexpr (detail::serializable_traits<T>::value) {
-        detail::serializable_traits<T>::serialize(visitor, msg);
-    } else {
-        msg.serialize(visitor);
-    }
-
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/%s.schema.json", outDir, name);
-    FILE* f = fopen(path, "w");
-    if (!f) return false;
-
-    fprintf(f, "{\n");
-    fprintf(f, "  \"name\": \"%s\",\n", name);
-    fprintf(f, "  \"file_identifier\": %u,\n", FileIdentifierFor<T>::value);
-    writeVTableJSON(f, visitor.vtable);
-    fprintf(f, ",\n");
-    writeFieldsJSON(f, visitor.fields);
-    fprintf(f, "\n}\n");
-    fclose(f);
-    return true;
-}
-
-// Fork-safe wrapper — handles types whose constructors crash.
-template <class T>
-void emitSchema(const char* outDir, const char* name) {
+void emitSchema(const char* outDir, const char* typeName) {
     pid_t pid = fork();
     if (pid == 0) {
-        if (extractSchema<T>(outDir, name)) _exit(0);
-        // Zero-init fallback.
-        alignas(T) char storage[sizeof(T)] = {};
-        T& msg = *reinterpret_cast<T*>(storage);
-        SchemaVisitor visitor;
+        // Phase 1: extract types.
+        TypeVisitor visitor;
+        T msg{};
         if constexpr (detail::serializable_traits<T>::value) {
             detail::serializable_traits<T>::serialize(visitor, msg);
         } else {
             msg.serialize(visitor);
         }
+
+        // Phase 2: merge names from the registry.
+        auto names = name_capture::getNamesFor(typeName);
+        for (size_t i = 0; i < visitor.fields.size(); i++) {
+            visitor.fields[i].name = (i < names.size()) ? names[i] : "field_" + std::to_string(i);
+        }
+
         char path[4096];
-        snprintf(path, sizeof(path), "%s/%s.schema.json", outDir, name);
+        snprintf(path, sizeof(path), "%s/%s.schema.json", outDir, typeName);
         FILE* f = fopen(path, "w");
         if (f) {
-            fprintf(f, "{\n");
-            fprintf(f, "  \"name\": \"%s\",\n", name);
-            fprintf(f, "  \"file_identifier\": %u,\n", FileIdentifierFor<T>::value);
-            writeVTableJSON(f, visitor.vtable);
-            fprintf(f, ",\n");
-            writeFieldsJSON(f, visitor.fields);
-            fprintf(f, "\n}\n");
+            writeJSON(f, typeName, FileIdentifierFor<T>::value, visitor.vtable, visitor.fields);
             fclose(f);
         }
         _exit(0);

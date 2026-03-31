@@ -26,6 +26,8 @@ docker run --rm \
     -v "$(realpath "$GEN_CPP"):/work/generated_messages.cpp:ro" \
     -v "$(realpath "$(dirname "$GEN_CPP")/fdb_stubs.h"):/work/fdb_stubs.h:ro" \
     -v "$(realpath "$(dirname "$0")/schema_extractor.h"):/work/schema_extractor.h:ro" \
+    -v "$(realpath "$(dirname "$0")/name_capture.h"):/work/name_capture.h:ro" \
+    -v "$(realpath "$(dirname "$0")/name_capture.cpp"):/work/name_capture.cpp:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/fdb-build" \
     -v "$SRC_CACHE:/fdb" \
@@ -40,6 +42,8 @@ docker run --rm \
         fi
         cp /work/generated_messages.cpp /fdb/generated_messages.cpp
         cp -f /work/schema_extractor.h /fdb/schema_extractor.h
+        cp -f /work/name_capture.h /fdb/name_capture.h
+        cp -f /work/name_capture.cpp /fdb/name_capture.cpp
         # Also copy fdb_stubs.h if mounted
         if [ -f /work/fdb_stubs.h ]; then
             cp /work/fdb_stubs.h /fdb/fdb_stubs.h
@@ -59,8 +63,10 @@ target_include_directories(fdbserver_lib PUBLIC ${FDBSERVER_INCS})
 target_link_libraries(fdbserver_lib PUBLIC fdbclient fdbrpc flow)
 set_target_properties(fdbserver_lib PROPERTIES COMPILE_OPTIONS "-w")
 
-# Test vector generator. Links everything — no unresolved symbols.
-add_executable(gen_testvecs generated_messages.cpp)
+# Test vector + schema generator. Two compilation units:
+# - generated_messages.cpp: normal FDB includes, test vectors + schema types
+# - name_capture.cpp: redefined serializer, captures field names as strings
+add_executable(gen_testvecs generated_messages.cpp name_capture.cpp)
 target_link_libraries(gen_testvecs PRIVATE fdbserver_lib fdbclient fdbrpc flow)
 target_include_directories(gen_testvecs PRIVATE
     ${CMAKE_SOURCE_DIR}
