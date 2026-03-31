@@ -13,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="foundationdb/build:rockylinux9-latest"
 JOBS=12
 
-BUILD_CACHE="${FDB_BUILD_CACHE:-/tmp/fdb-schema-build}"
-SRC_CACHE="${FDB_SRC_CACHE:-/tmp/fdb-schema-src}"
+BUILD_CACHE="${FDB_BUILD_CACHE:-/tmp/fdb-docker-build}"
+SRC_CACHE="${FDB_SRC_CACHE:-/tmp/fdb-docker-src}"
 mkdir -p "$OUTPUT_DIR" "$BUILD_CACHE" "$SRC_CACHE"
 
 docker run --rm \
@@ -39,33 +39,18 @@ docker run --rm \
         cp /work/main.cpp /fdb/schema_extract_main.cpp
         cp /work/name_capture.cpp /fdb/schema_extract_names.cpp
 
-        # Patch: disable binding tester (references python_binding which doesnt exist).
+        # Patches: disable binding tester + fix any missing includes.
         sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
+        # Suppress errors in fdbserver_lib (we only need it for linking, not correctness).
+        sed -i "s/COMPILE_OPTIONS \"-w\"/COMPILE_OPTIONS \"-w;-Wno-error\"/" /fdb/CMakeLists.txt 2>/dev/null || true
 
-        # Add our cmake target (idempotent).
-        if ! grep -q schema_extract /fdb/CMakeLists.txt; then
-            cat >> /fdb/CMakeLists.txt << "CMAKE_EOF"
-
-# Schema extractor — separate from gen_testvecs.
-# Two compilation units: main.cpp (normal FDB) + name_capture.cpp (redefined serializer).
-get_target_property(FDBSERVER_SRCS fdbserver SOURCES)
-get_target_property(FDBSERVER_INCS fdbserver INCLUDE_DIRECTORIES)
-if(NOT TARGET fdbserver_lib)
-  add_library(fdbserver_lib STATIC EXCLUDE_FROM_ALL ${FDBSERVER_SRCS})
-  target_include_directories(fdbserver_lib PUBLIC ${FDBSERVER_INCS})
-  target_link_libraries(fdbserver_lib PUBLIC fdbclient fdbrpc flow)
-  set_target_properties(fdbserver_lib PROPERTIES COMPILE_OPTIONS "-w")
-endif()
-
+        # Write a standalone cmake fragment (idempotent — always overwrite).
+        cat > /fdb/schema_extract.cmake << "CMAKE_EOF"
 add_executable(schema_extract schema_extract_main.cpp schema_extract_names.cpp)
-target_link_libraries(schema_extract PRIVATE fdbserver_lib fdbclient fdbrpc flow)
+target_link_libraries(schema_extract PRIVATE fdbclient fdbrpc flow)
 target_include_directories(schema_extract PRIVATE
     ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/fdbserver/include
-    ${CMAKE_SOURCE_DIR}/fdbserver
     ${CMAKE_BINARY_DIR}
-    ${CMAKE_BINARY_DIR}/fdbserver/include
-    ${CMAKE_BINARY_DIR}/fdbserver
     ${CMAKE_BINARY_DIR}/fdbclient/include
     ${CMAKE_BINARY_DIR}/fdbclient
     ${CMAKE_BINARY_DIR}/fdbrpc/include
@@ -74,6 +59,9 @@ target_include_directories(schema_extract PRIVATE
     ${CMAKE_BINARY_DIR}/flow
 )
 CMAKE_EOF
+        # Include it from main CMakeLists.txt (idempotent).
+        if ! grep -q schema_extract.cmake /fdb/CMakeLists.txt; then
+            echo "include(schema_extract.cmake)" >> /fdb/CMakeLists.txt
         fi
 
         BUILD=/tmp/build
@@ -95,12 +83,12 @@ CMAKE_EOF
             2>&1 | tail -20
         echo "=== cmake configured ==="
 
-        echo "=== Building fdbserver (-j$JOBS) ==="
-        ninja -C $BUILD -j$JOBS fdbserver 2>&1 | tail -3
-        echo "=== fdbserver built ==="
+        echo "=== Building fdbclient (-j$JOBS) ==="
+        ninja -C $BUILD -j$JOBS fdb_c 2>&1 | tail -3
+        echo "=== fdbclient built ==="
 
         echo "=== Building schema_extract ==="
-        ninja -C $BUILD -j$JOBS schema_extract 2>&1 | tail -5
+        ninja -C $BUILD -j$JOBS schema_extract 2>&1 | tail -30
         echo "=== schema_extract built ==="
 
         echo "=== Running schema_extract ==="

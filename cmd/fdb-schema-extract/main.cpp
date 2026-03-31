@@ -47,6 +47,16 @@ extern void captureAllNames();
 // Schema extraction — uses real FDB flat_buffers type system
 // ============================================================
 
+// Check for file_identifier via the constexpr static member directly.
+template <class T>
+constexpr uint32_t getFileId() {
+    if constexpr (requires { T::file_identifier; }) {
+        return T::file_identifier;
+    } else {
+        return 0;
+    }
+}
+
 struct FieldInfo {
     std::string name;
     const char* trait;
@@ -194,16 +204,19 @@ void emitSchema(const char* outDir, const char* typeName) {
             visitor.fields[i].name = (i < names.size()) ? names[i] : "field_" + std::to_string(i);
 
         // Vtable closure from serialized bytes.
-        ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
-        wr.serialize(FileIdentifierFor<T>::value, msg);
-        auto bytes = wr.toStringRef();
-        auto closure = extractVTableClosure(bytes.begin(), bytes.size());
+        std::vector<std::vector<uint16_t>> closure;
+        if constexpr (requires { T::file_identifier; }) {
+            ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+            wr.serialize(T::file_identifier, msg);
+            auto bytes = wr.toStringRef();
+            closure = extractVTableClosure(bytes.begin(), bytes.size());
+        }
 
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s.json", outDir, typeName);
         FILE* f = fopen(path, "w");
         if (f) {
-            writeJSON(f, typeName, FileIdentifierFor<T>::value, visitor.vtable, visitor.fields, closure);
+            writeJSON(f, typeName, getFileId<T>(), visitor.vtable, visitor.fields, closure);
             fclose(f);
             fprintf(stderr, "OK %s\n", typeName);
         }
@@ -261,8 +274,7 @@ int main(int argc, char** argv) {
     emitSchema<CommitTransactionRef>(outDir, "CommitTransactionRef");
     emitSchema<ReadOptions>(outDir, "ReadOptions");
     emitSchema<Error>(outDir, "Error");
-    emitSchema<Tag>(outDir, "Tag");
-    emitSchema<UID>(outDir, "UID");
+    // UID: scalar_traits, size=16. Tag: struct_like_traits. Both inlined, no serialize().
 
     fprintf(stderr, "Done.\n");
     return 0;

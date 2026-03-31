@@ -1,82 +1,158 @@
-// name_capture.cpp — Captures serializer field names via preprocessor stringification.
+// name_capture.cpp — Extracts serializer field names from FDB source text.
 //
-// SEPARATE compilation unit. Redefines `serializer` BEFORE including FDB headers.
-// This breaks normal serialization but captures field names as strings.
+// Since we can't redefine `serializer` without breaking templates,
+// we extract field names by reading the source files at runtime and
+// finding serializer(ar, field1, field2, ...) calls via string matching.
+// This is the same approach as the Go parser but in C++.
 //
-// The redefined serializer(ar, field1, field2, ...) expands to:
-//   ar.capture("field1, field2, ...")
-// where the preprocessor stringifies __VA_ARGS__.
+// The C++ compiler handles all TYPE information (vtables, sizes, traits).
+// This file handles only NAME extraction — pure string processing.
 
 #include <string>
 #include <map>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <filesystem>
+#include <regex>
+#include <cstdio>
 
-// Global name registry.
 static std::map<std::string, std::string> g_names;
 std::map<std::string, std::string>& nameRegistry() { return g_names; }
 
-// Lightweight archive that just captures the stringified field names.
-struct NameArchive {
-    std::string names;
-    void capture(const char* s) { names = s; }
+// Find "serializer(ar, field1, field2, ...)" in a struct's serialize() method.
+// Returns the comma-separated field list (without "ar").
+static std::string extractSerializerArgs(const std::string& content, const std::string& structName) {
+    // Find "struct <name> " or "struct <name>:" (declaration, not forward ref).
+    size_t pos = std::string::npos;
+    for (auto prefix : {"struct ", "class "}) {
+        std::string pat = std::string(prefix) + structName;
+        size_t p = 0;
+        while ((p = content.find(pat, p)) != std::string::npos) {
+            // Check that the next char after the name is space, colon, or brace.
+            size_t afterName = p + pat.size();
+            if (afterName < content.size()) {
+                char c = content[afterName];
+                if (c == ' ' || c == ':' || c == '{' || c == '\n' || c == '\r') {
+                    pos = p;
+                    break;
+                }
+            }
+            p += pat.size();
+        }
+        if (pos != std::string::npos) break;
+    }
+    if (pos == std::string::npos) return "";
 
-    // Stubs required by some serialize() conditional branches.
-    static constexpr bool isDeserializing = false;
-    static constexpr bool isSerializing = false;
-    struct FakeProtocolVersion {
-        bool hasMutationChecksum() const { return false; }
-        bool hasAccumulativeChecksumIndex() const { return false; }
-    };
-    FakeProtocolVersion protocolVersion() const { return {}; }
-};
+    // Find the last "serializer(ar," within this struct (handles conditional branches).
+    // Scan forward from the struct declaration, tracking brace depth.
+    int braceDepth = 0;
+    bool foundBrace = false;
+    std::string lastArgs;
 
-// Override serializer BEFORE including FDB headers.
-// The original is a template function in flow/serialize.h and
-// ObjectSerializerTraits.h. Our macro intercepts at the preprocessor level.
-#define serializer(ar, ...) (ar).capture(#__VA_ARGS__)
+    for (size_t i = pos; i < content.size(); i++) {
+        if (content[i] == '{') { braceDepth++; foundBrace = true; }
+        if (content[i] == '}') { braceDepth--; if (foundBrace && braceDepth <= 0) break; }
 
-// Include FDB headers — serialize() methods now capture names instead of serializing.
-#include "fdbclient/StorageServerInterface.h"
-#include "fdbclient/CommitProxyInterface.h"
-#include "fdbclient/GrvProxyInterface.h"
-#include "fdbclient/CoordinationInterface.h"
-#include "fdbclient/FDBTypes.h"
+        // Look for "serializer(ar," or "serializer( ar,"
+        if (content.substr(i, 11) == "serializer(" || content.substr(i, 12) == "serializer (") {
+            // Find the opening paren.
+            auto paren = content.find('(', i);
+            if (paren == std::string::npos) continue;
 
-#undef serializer
+            // Find matching closing paren.
+            int depth = 1;
+            size_t end = paren + 1;
+            for (; end < content.size() && depth > 0; end++) {
+                if (content[end] == '(') depth++;
+                if (content[end] == ')') depth--;
+            }
+            if (depth != 0) continue;
 
-// Capture names for one type.
-#define CAPTURE(Type) do { \
-    NameArchive ar; \
-    Type msg{}; \
-    msg.serialize(ar); \
-    g_names[#Type] = ar.names; \
-} while(0)
+            // Extract args between parens.
+            std::string inner = content.substr(paren + 1, end - paren - 2);
+
+            // Strip "ar," prefix — first arg is always the archive.
+            auto comma = inner.find(',');
+            if (comma != std::string::npos) {
+                lastArgs = inner.substr(comma + 1);
+            }
+        }
+    }
+
+    // Clean up: remove newlines, collapse whitespace.
+    for (auto& c : lastArgs) { if (c == '\n' || c == '\r' || c == '\t') c = ' '; }
+    // Collapse multiple spaces.
+    std::string clean;
+    bool lastSpace = false;
+    for (char c : lastArgs) {
+        if (c == ' ') { if (!lastSpace) clean += c; lastSpace = true; }
+        else { clean += c; lastSpace = false; }
+    }
+    return clean;
+}
 
 void captureAllNames() {
-    // Client messages.
-    CAPTURE(GetValueRequest);
-    CAPTURE(GetValueReply);
-    CAPTURE(GetKeyValuesRequest);
-    CAPTURE(GetKeyValuesReply);
-    CAPTURE(GetKeyRequest);
-    CAPTURE(GetKeyReply);
-    CAPTURE(GetReadVersionRequest);
-    CAPTURE(GetReadVersionReply);
-    CAPTURE(GetKeyServerLocationsRequest);
-    CAPTURE(GetKeyServerLocationsReply);
-    CAPTURE(CommitTransactionRequest);
-    CAPTURE(CommitID);
+    // Read the FDB source files that contain our types.
+    // These paths are relative to the FDB source root (/fdb/ in Docker).
+    struct { const char* file; std::vector<std::string> types; } sources[] = {
+        {"fdbclient/include/fdbclient/StorageServerInterface.h",
+         {"GetValueRequest", "GetValueReply", "GetKeyValuesRequest", "GetKeyValuesReply",
+          "GetKeyRequest", "GetKeyReply", "StorageServerInterface"}},
+        {"fdbclient/include/fdbclient/CommitProxyInterface.h",
+         {"GetReadVersionRequest", "GetReadVersionReply",
+          "GetKeyServerLocationsRequest", "GetKeyServerLocationsReply",
+          "CommitTransactionRequest", "CommitID", "CommitTransactionRef"}},
+        {"fdbclient/include/fdbclient/CoordinationInterface.h",
+         {"OpenDatabaseCoordRequest"}},
+        {"fdbclient/include/fdbclient/FDBTypes.h",
+         {"KeySelectorRef", "KeyRangeRef", "ReadOptions", "MutationRef"}},
+        {"fdbclient/include/fdbclient/Tracing.h",
+         {"SpanContext"}},
+        {"flow/include/flow/error_definitions.h",
+         {}},  // Error is simple enough
+    };
 
-    // Coordinator.
-    CAPTURE(OpenDatabaseCoordRequest);
+    // Also check GrvProxyInterface
+    struct { const char* file; std::vector<std::string> types; } grv[] = {
+        {"fdbclient/include/fdbclient/GrvProxyInterface.h",
+         {"GetReadVersionRequest", "GetReadVersionReply"}},
+    };
 
-    // Nested types.
-    CAPTURE(SpanContext);
-    CAPTURE(KeySelectorRef);
-    CAPTURE(MutationRef);
-    CAPTURE(KeyRangeRef);
-    CAPTURE(CommitTransactionRef);
-    CAPTURE(ReadOptions);
-    CAPTURE(Error);
-    CAPTURE(Tag);
-    // UID uses serialize_unversioned, not serialize — skip name capture.
+    // Read and parse.
+    for (auto& src : sources) {
+        std::string path = std::string("/fdb/") + src.file;
+        std::ifstream f(path);
+        if (!f.is_open()) {
+            fprintf(stderr, "name_capture: cannot open %s\n", path.c_str());
+            continue;
+        }
+        std::string content((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+        for (auto& typeName : src.types) {
+            auto args = extractSerializerArgs(content, typeName);
+            if (!args.empty()) {
+                g_names[typeName] = args;
+            }
+        }
+    }
+    for (auto& src : grv) {
+        std::string path = std::string("/fdb/") + src.file;
+        std::ifstream f(path);
+        if (!f.is_open()) continue;
+        std::string content((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+        for (auto& typeName : src.types) {
+            if (g_names.find(typeName) == g_names.end()) {
+                auto args = extractSerializerArgs(content, typeName);
+                if (!args.empty()) g_names[typeName] = args;
+            }
+        }
+    }
+
+    // Error has a trivial serialize.
+    g_names["Error"] = "error_code";
+
+    fprintf(stderr, "name_capture: captured %zu type names\n", g_names.size());
 }
