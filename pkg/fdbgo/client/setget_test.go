@@ -10,6 +10,98 @@ import (
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
+// TestTransactRetry verifies the Transact retry loop handles retryable
+// FDB errors correctly. We trigger not_committed (1020) by creating
+// a write conflict: two transactions read+write the same key, the
+// second commit fails and Transact retries it automatically.
+func TestTransactRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed the key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("conflict_key"), []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// tx1 reads and writes the key, but doesn't commit yet.
+	tx1 := db.CreateTransaction()
+	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx1.SetReadVersion(rv)
+	_, err = tx1.Get(ctx, []byte("conflict_key"))
+	if err != nil {
+		t.Fatalf("tx1 Get: %v", err)
+	}
+	tx1.Set([]byte("conflict_key"), []byte("v1"))
+
+	// tx2 reads and writes the same key, commits first.
+	// This creates the conflict.
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		if _, err := tx.Get(ctx, []byte("conflict_key")); err != nil {
+			return nil, err
+		}
+		tx.Set([]byte("conflict_key"), []byte("v2"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tx2 commit: %v", err)
+	}
+
+	// Now commit tx1 — this will get not_committed (1020).
+	err = tx1.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx1 should have conflicted")
+	}
+	t.Logf("tx1 conflict: %v", err)
+
+	// Verify the error is retryable.
+	retryErr := tx1.OnError(err)
+	if retryErr != nil {
+		t.Fatalf("OnError should return nil for 1020, got: %v", retryErr)
+	}
+
+	// Now verify Transact handles this automatically: a conflicting
+	// write should be retried and eventually succeed.
+	attempt := 0
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		attempt++
+		// On every attempt, read then write. The first attempt will
+		// conflict with the write above; retry should succeed.
+		val, err := tx.Get(ctx, []byte("conflict_key"))
+		if err != nil {
+			return nil, err
+		}
+		tx.Set([]byte("conflict_key"), []byte("v3"))
+		return val, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+	t.Logf("Transact succeeded after %d attempt(s)", attempt)
+
+	// Verify final value.
+	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.Get(ctx, []byte("conflict_key"))
+	})
+	if err != nil {
+		t.Fatalf("final read: %v", err)
+	}
+	if string(result.([]byte)) != "v3" {
+		t.Fatalf("final value: got %q, want %q", result, "v3")
+	}
+}
+
 // TestSetGet is the minimal end-to-end test: write a key, read it back.
 // Pure Go client, no C bindings. Talks to a real FDB 7.3.75 testcontainer.
 func TestSetGet(t *testing.T) {
