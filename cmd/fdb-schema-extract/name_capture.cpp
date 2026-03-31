@@ -103,21 +103,20 @@ void captureAllNames() {
         {"fdbclient/include/fdbclient/CommitProxyInterface.h",
          {"GetReadVersionRequest", "GetReadVersionReply",
           "GetKeyServerLocationsRequest", "GetKeyServerLocationsReply",
-          "CommitTransactionRequest", "CommitID", "CommitTransactionRef"}},
+          "CommitTransactionRequest", "CommitID", "CommitTransactionRef",
+          "CommitProxyInterface", "ClientDBInfo"}},
         {"fdbclient/include/fdbclient/CoordinationInterface.h",
          {"OpenDatabaseCoordRequest"}},
         {"fdbclient/include/fdbclient/FDBTypes.h",
          {"KeySelectorRef", "KeyRangeRef", "ReadOptions", "MutationRef"}},
         {"fdbclient/include/fdbclient/Tracing.h",
          {"SpanContext"}},
-        {"flow/include/flow/error_definitions.h",
-         {}},  // Error is simple enough
-    };
-
-    // Also check GrvProxyInterface
-    struct { const char* file; std::vector<std::string> types; } grv[] = {
         {"fdbclient/include/fdbclient/GrvProxyInterface.h",
-         {"GetReadVersionRequest", "GetReadVersionReply"}},
+         {"GrvProxyInterface", "GetReadVersionRequest", "GetReadVersionReply"}},
+        {"fdbrpc/include/fdbrpc/TenantInfo.h",
+         {"TenantInfo"}},
+        {"flow/include/flow/NetworkAddress.h",
+         {"NetworkAddress", "IPAddress"}},
     };
 
     // Read and parse.
@@ -137,20 +136,6 @@ void captureAllNames() {
             }
         }
     }
-    for (auto& src : grv) {
-        std::string path = std::string("/fdb/") + src.file;
-        std::ifstream f(path);
-        if (!f.is_open()) continue;
-        std::string content((std::istreambuf_iterator<char>(f)),
-                            std::istreambuf_iterator<char>());
-        for (auto& typeName : src.types) {
-            if (g_names.find(typeName) == g_names.end()) {
-                auto args = extractSerializerArgs(content, typeName);
-                if (!args.empty()) g_names[typeName] = args;
-            }
-        }
-    }
-
     // Error has a trivial serialize.
     g_names["Error"] = "error_code";
 

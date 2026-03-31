@@ -12,6 +12,7 @@
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/GlobalConfig.h"
 #include "fdbrpc/FlowTransport.h"
+#include "fdbrpc/TenantInfo.h"
 #include "flow/serialize.h"
 #include "flow/TLSConfig.actor.h"
 
@@ -192,12 +193,64 @@ struct GoEmitter {
 
     void emitFieldComment(const char* name, const std::vector<FieldInfo>& fields) {
         fprintf(f, "// %s fields:\n", name);
+        int readerSlot = 0;
         for (size_t i = 0; i < fields.size(); i++) {
             auto& fi = fields[i];
-            fprintf(f, "//   slot %zu: %s — %s, size=%u, align=%u%s\n",
-                    i, fi.name.c_str(), fi.trait, fi.size, fi.align,
+            fprintf(f, "//   slot %d: %s — %s, size=%u, align=%u%s\n",
+                    readerSlot, fi.name.c_str(), fi.trait, fi.size, fi.align,
                     fi.indirection ? ", indirection" : "");
+            readerSlot += (strcmp(fi.trait, "union_like") == 0) ? 2 : 1;
         }
+    }
+
+    // Sanitize a C++ field name into a valid Go identifier.
+    // "LoadBalancedReply::penalty" → "Penalty"
+    // "const_cast<KeyRef&>(begin)" → "Begin"
+    // "m_Flags" → "MFlags"
+    static std::string sanitizeGoName(const std::string& name) {
+        std::string s = name;
+        // Strip const_cast<...>() wrapper.
+        auto ccPos = s.find("const_cast");
+        if (ccPos != std::string::npos) {
+            auto paren = s.find('(', ccPos);
+            auto endParen = s.rfind(')');
+            if (paren != std::string::npos && endParen != std::string::npos)
+                s = s.substr(paren + 1, endParen - paren - 1);
+        }
+        // Take only the part after last "::".
+        auto colonPos = s.rfind("::");
+        if (colonPos != std::string::npos) s = s.substr(colonPos + 2);
+        // Strip leading underscores / m_ prefix.
+        if (s.size() > 2 && s[0] == 'm' && s[1] == '_') s = s.substr(2);
+        // Remove any non-alphanumeric chars.
+        std::string clean;
+        for (char c : s) { if (isalnum(c) || c == '_') clean += c; }
+        // Capitalize first letter.
+        if (!clean.empty()) clean[0] = toupper(clean[0]);
+        return clean;
+    }
+
+    // Emit Go constants mapping field names to Reader slot indices.
+    // Only emitted when we have real field names (not "field_N" placeholders).
+    void emitSlotConstants(const char* typeName, const std::vector<FieldInfo>& fields) {
+        // Check if we have any real names.
+        bool hasRealNames = false;
+        for (auto& fi : fields) {
+            if (fi.name.substr(0, 6) != "field_") { hasRealNames = true; break; }
+        }
+        if (!hasRealNames) return;
+
+        fprintf(f, "const (\n");
+        int readerSlot = 0;
+        for (size_t i = 0; i < fields.size(); i++) {
+            auto& fi = fields[i];
+            if (fi.name.substr(0, 6) != "field_") {
+                std::string goName = sanitizeGoName(fi.name);
+                fprintf(f, "\t%sSlot%s = %d\n", typeName, goName.c_str(), readerSlot);
+            }
+            readerSlot += (strcmp(fi.trait, "union_like") == 0) ? 2 : 1;
+        }
+        fprintf(f, ")\n");
     }
 
     void separator() { fprintf(f, "\n"); }
@@ -205,7 +258,9 @@ struct GoEmitter {
 
 // Extract metadata for one type and write to the Go emitter.
 // Runs in a forked child (crash-safe).
-template <class T>
+// Set SkipObjectWriter=true for Interface types where default-constructed
+// RequestStream fields crash ObjectWriter.
+template <class T, bool SkipObjectWriter = false>
 void extractType(GoEmitter& out, const char* name) {
     // Extract in a child process to survive constructor crashes.
     int pipefd[2];
@@ -231,7 +286,7 @@ void extractType(GoEmitter& out, const char* name) {
         // Closure + authoritative root vtable from ObjectWriter.
         std::vector<std::vector<uint16_t>> closure;
         std::vector<uint16_t> rootVTable;
-        if constexpr (requires { T::file_identifier; }) {
+        if constexpr (!SkipObjectWriter && requires { T::file_identifier; }) {
             ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
             wr.serialize(T::file_identifier, msg);
             auto bytes = wr.toStringRef();
@@ -247,6 +302,7 @@ void extractType(GoEmitter& out, const char* name) {
         FILE* pf = fdopen(pipefd[1], "w");
         GoEmitter e{pf};
         e.emitFieldComment(name, visitor.fields);
+        e.emitSlotConstants(name, visitor.fields);
         e.emitVTable(name, emitVT);
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
@@ -304,7 +360,7 @@ int main(int argc, char** argv) {
     extractType<CommitID>(out, "CommitID");
     extractType<OpenDatabaseCoordRequest>(out, "OpenDatabaseCoordRequest");
 
-    // --- Nested types ---
+    // --- Nested types (used in request serialization) ---
     extractType<SpanContext>(out, "SpanContext");
     extractType<KeySelectorRef>(out, "KeySelectorRef");
     extractType<MutationRef>(out, "MutationRef");
@@ -312,6 +368,18 @@ int main(int argc, char** argv) {
     extractType<CommitTransactionRef>(out, "CommitTransactionRef");
     extractType<ReadOptions>(out, "ReadOptions");
     extractType<Error>(out, "Error");
+
+    // --- Response/nested types (used in reply parsing) ---
+    extractType<ClientDBInfo>(out, "ClientDBInfo");
+    extractType<GrvProxyInterface, true>(out, "GrvProxyInterface");
+    extractType<CommitProxyInterface, true>(out, "CommitProxyInterface");
+    extractType<StorageServerInterface, true>(out, "StorageServerInterface");
+    extractType<NetworkAddress>(out, "NetworkAddress");
+    extractType<IPAddress>(out, "IPAddress");
+
+    extractType<TenantInfo>(out, "TenantInfo");
+    // ReplyPromise<T> is a template — vtable is same for all T (just a UID).
+    extractType<ReplyPromise<GetValueReply>>(out, "ReplyPromise");
 
     fclose(f);
     fprintf(stderr, "Done.\n");

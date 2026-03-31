@@ -89,8 +89,7 @@ func parseStandaloneClientDBInfo(data []byte) (*DBInfo, error) {
 func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 	info := &DBInfo{}
 
-	// grvProxies: vector of GrvProxyInterface
-	grvSlot := 0
+	grvSlot := types.ClientDBInfoSlotGrvProxies
 	grvCount, err := r.ReadVectorCount(grvSlot)
 	if err != nil {
 		return nil, fmt.Errorf("read grvProxies count: %w", err)
@@ -100,15 +99,14 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read grvProxy[%d]: %w", i, err)
 		}
-		proxy, err := parseProxyInterface(elemR)
+		proxy, err := parseGrvProxyInterface(elemR)
 		if err != nil {
 			return nil, fmt.Errorf("parse grvProxy[%d]: %w", i, err)
 		}
 		info.GRVProxies = append(info.GRVProxies, proxy)
 	}
 
-	// commitProxies: vector of CommitProxyInterface
-	commitSlot := 1
+	commitSlot := types.ClientDBInfoSlotCommitProxies
 	commitCount, err := r.ReadVectorCount(commitSlot)
 	if err != nil {
 		return nil, fmt.Errorf("read commitProxies count: %w", err)
@@ -118,15 +116,14 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read commitProxy[%d]: %w", i, err)
 		}
-		proxy, err := parseProxyInterface(elemR)
+		proxy, err := parseCommitProxyInterface(elemR)
 		if err != nil {
 			return nil, fmt.Errorf("parse commitProxy[%d]: %w", i, err)
 		}
 		info.CommitProxies = append(info.CommitProxies, proxy)
 	}
 
-	// id: UID at slot slotOffset+2
-	idSlot := 2
+	idSlot := types.ClientDBInfoSlotId
 	if r.FieldPresent(idSlot) {
 		idR, err := r.ReadNestedReader(idSlot)
 		if err == nil {
@@ -137,9 +134,16 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 	return info, nil
 }
 
-// parseProxyInterface extracts the endpoint from a proxy interface at slot 3.
-func parseProxyInterface(r *wire.Reader) (ProxyInfo, error) {
-	ep, err := types.ReadEndpointFromSlot(r, 3)
+func parseGrvProxyInterface(r *wire.Reader) (ProxyInfo, error) {
+	return parseEndpointAsProxy(r, types.GrvProxyInterfaceSlotGetConsistentReadVersion)
+}
+
+func parseCommitProxyInterface(r *wire.Reader) (ProxyInfo, error) {
+	return parseEndpointAsProxy(r, types.CommitProxyInterfaceSlotCommit)
+}
+
+func parseEndpointAsProxy(r *wire.Reader, slot int) (ProxyInfo, error) {
+	ep, err := types.ReadEndpointFromSlot(r, slot)
 	if err != nil {
 		return ProxyInfo{}, err
 	}

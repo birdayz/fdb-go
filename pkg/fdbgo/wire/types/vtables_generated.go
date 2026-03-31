@@ -9,11 +9,22 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 //	slot 0: key — serialize_member, size=4, align=4, indirection
 //	slot 1: version — scalar, size=8, align=8
 //	slot 2: tags — union_like, size=4, align=4, indirection
-//	slot 3: reply — serialize_member, size=4, align=4, indirection
-//	slot 4: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 5: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 6: options — union_like, size=4, align=4, indirection
-//	slot 7: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+//	slot 4: reply — serialize_member, size=4, align=4, indirection
+//	slot 5: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 6: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 7: options — union_like, size=4, align=4, indirection
+//	slot 9: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+const (
+	GetValueRequestSlotKey                    = 0
+	GetValueRequestSlotVersion                = 1
+	GetValueRequestSlotTags                   = 2
+	GetValueRequestSlotReply                  = 4
+	GetValueRequestSlotSpanContext            = 5
+	GetValueRequestSlotTenantInfo             = 6
+	GetValueRequestSlotOptions                = 7
+	GetValueRequestSlotSsLatestCommitVersions = 9
+)
+
 var GetValueRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
 
 const GetValueRequestFileID uint32 = 8454530
@@ -31,8 +42,15 @@ var GetValueRequestVTableClosure = []wire.VTable{
 //
 //	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
 //	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 2: value — union_like, size=4, align=4, indirection
-//	slot 3: cached — scalar, size=1, align=1
+//	slot 3: value — union_like, size=4, align=4, indirection
+//	slot 5: cached — scalar, size=1, align=1
+const (
+	GetValueReplySlotPenalty = 0
+	GetValueReplySlotError   = 1
+	GetValueReplySlotValue   = 3
+	GetValueReplySlotCached  = 5
+)
+
 var GetValueReplyVTable = wire.VTable{16, 23, 4, 20, 12, 21, 16, 22}
 
 const GetValueReplyFileID uint32 = 1378929
@@ -51,12 +69,27 @@ var GetValueReplyVTableClosure = []wire.VTable{
 //	slot 3: limit — scalar, size=4, align=4
 //	slot 4: limitBytes — scalar, size=4, align=4
 //	slot 5: tags — union_like, size=4, align=4, indirection
-//	slot 6: reply — serialize_member, size=4, align=4, indirection
-//	slot 7: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 8: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 9: options — union_like, size=4, align=4, indirection
-//	slot 10: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
-//	slot 11: arena — scalar, size=0, align=1
+//	slot 7: reply — serialize_member, size=4, align=4, indirection
+//	slot 8: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 9: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 10: options — union_like, size=4, align=4, indirection
+//	slot 12: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+//	slot 13: arena — scalar, size=0, align=1
+const (
+	GetKeyValuesRequestSlotBegin                  = 0
+	GetKeyValuesRequestSlotEnd                    = 1
+	GetKeyValuesRequestSlotVersion                = 2
+	GetKeyValuesRequestSlotLimit                  = 3
+	GetKeyValuesRequestSlotLimitBytes             = 4
+	GetKeyValuesRequestSlotTags                   = 5
+	GetKeyValuesRequestSlotReply                  = 7
+	GetKeyValuesRequestSlotSpanContext            = 8
+	GetKeyValuesRequestSlotTenantInfo             = 9
+	GetKeyValuesRequestSlotOptions                = 10
+	GetKeyValuesRequestSlotSsLatestCommitVersions = 12
+	GetKeyValuesRequestSlotArena                  = 13
+)
+
 var GetKeyValuesRequestVTable = wire.VTable{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48}
 
 const GetKeyValuesRequestFileID uint32 = 6795746
@@ -75,11 +108,21 @@ var GetKeyValuesRequestVTableClosure = []wire.VTable{
 //
 //	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
 //	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 2: data — dynamic_size, size=4, align=4, indirection
-//	slot 3: version — scalar, size=8, align=8
-//	slot 4: more — scalar, size=1, align=1
-//	slot 5: cached — scalar, size=1, align=1
-//	slot 6: arena — scalar, size=0, align=1
+//	slot 3: data — dynamic_size, size=4, align=4, indirection
+//	slot 4: version — scalar, size=8, align=8
+//	slot 5: more — scalar, size=1, align=1
+//	slot 6: cached — scalar, size=1, align=1
+//	slot 7: arena — scalar, size=0, align=1
+const (
+	GetKeyValuesReplySlotPenalty = 0
+	GetKeyValuesReplySlotError   = 1
+	GetKeyValuesReplySlotData    = 3
+	GetKeyValuesReplySlotVersion = 4
+	GetKeyValuesReplySlotMore    = 5
+	GetKeyValuesReplySlotCached  = 6
+	GetKeyValuesReplySlotArena   = 7
+)
+
 var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
 
 const GetKeyValuesReplyFileID uint32 = 1783066
@@ -95,12 +138,24 @@ var GetKeyValuesReplyVTableClosure = []wire.VTable{
 //	slot 0: sel — serialize_member, size=4, align=4, indirection
 //	slot 1: version — scalar, size=8, align=8
 //	slot 2: tags — union_like, size=4, align=4, indirection
-//	slot 3: reply — serialize_member, size=4, align=4, indirection
-//	slot 4: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 5: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 6: options — union_like, size=4, align=4, indirection
-//	slot 7: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
-//	slot 8: arena — scalar, size=0, align=1
+//	slot 4: reply — serialize_member, size=4, align=4, indirection
+//	slot 5: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 6: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 7: options — union_like, size=4, align=4, indirection
+//	slot 9: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+//	slot 10: arena — scalar, size=0, align=1
+const (
+	GetKeyRequestSlotSel                    = 0
+	GetKeyRequestSlotVersion                = 1
+	GetKeyRequestSlotTags                   = 2
+	GetKeyRequestSlotReply                  = 4
+	GetKeyRequestSlotSpanContext            = 5
+	GetKeyRequestSlotTenantInfo             = 6
+	GetKeyRequestSlotOptions                = 7
+	GetKeyRequestSlotSsLatestCommitVersions = 9
+	GetKeyRequestSlotArena                  = 10
+)
+
 var GetKeyRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
 
 const GetKeyRequestFileID uint32 = 10457870
@@ -119,8 +174,15 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 //
 //	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
 //	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 2: sel — serialize_member, size=4, align=4, indirection
-//	slot 3: cached — scalar, size=1, align=1
+//	slot 3: sel — serialize_member, size=4, align=4, indirection
+//	slot 4: cached — scalar, size=1, align=1
+const (
+	GetKeyReplySlotPenalty = 0
+	GetKeyReplySlotError   = 1
+	GetKeyReplySlotSel     = 3
+	GetKeyReplySlotCached  = 4
+)
+
 var GetKeyReplyVTable = wire.VTable{14, 22, 4, 20, 12, 16, 21}
 
 const GetKeyReplyFileID uint32 = 11226513
@@ -138,9 +200,19 @@ var GetKeyReplyVTableClosure = []wire.VTable{
 //	slot 1: flags — scalar, size=4, align=4
 //	slot 2: tags — vector_like, size=4, align=4, indirection
 //	slot 3: debugID — union_like, size=4, align=4, indirection
-//	slot 4: reply — serialize_member, size=4, align=4, indirection
-//	slot 5: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 6: maxVersion — scalar, size=8, align=8
+//	slot 5: reply — serialize_member, size=4, align=4, indirection
+//	slot 6: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 7: maxVersion — scalar, size=8, align=8
+const (
+	GetReadVersionRequestSlotTransactionCount = 0
+	GetReadVersionRequestSlotFlags            = 1
+	GetReadVersionRequestSlotTags             = 2
+	GetReadVersionRequestSlotDebugID          = 3
+	GetReadVersionRequestSlotReply            = 5
+	GetReadVersionRequestSlotSpanContext      = 6
+	GetReadVersionRequestSlotMaxVersion       = 7
+)
+
 var GetReadVersionRequestVTable = wire.VTable{20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
 
 const GetReadVersionRequestFileID uint32 = 838566
@@ -159,13 +231,27 @@ var GetReadVersionRequestVTableClosure = []wire.VTable{
 //	slot 1: version — scalar, size=8, align=8
 //	slot 2: locked — scalar, size=1, align=1
 //	slot 3: metadataVersion — union_like, size=4, align=4, indirection
-//	slot 4: tagThrottleInfo — vector_like, size=4, align=4, indirection
-//	slot 5: midShardSize — scalar, size=8, align=8
-//	slot 6: rkDefaultThrottled — scalar, size=1, align=1
-//	slot 7: rkBatchThrottled — scalar, size=1, align=1
-//	slot 8: ssVersionVectorDelta — dynamic_size, size=4, align=4, indirection
-//	slot 9: proxyId — scalar, size=16, align=8
-//	slot 10: proxyTagThrottledDuration — scalar, size=8, align=8
+//	slot 5: tagThrottleInfo — vector_like, size=4, align=4, indirection
+//	slot 6: midShardSize — scalar, size=8, align=8
+//	slot 7: rkDefaultThrottled — scalar, size=1, align=1
+//	slot 8: rkBatchThrottled — scalar, size=1, align=1
+//	slot 9: ssVersionVectorDelta — dynamic_size, size=4, align=4, indirection
+//	slot 10: proxyId — scalar, size=16, align=8
+//	slot 11: proxyTagThrottledDuration — scalar, size=8, align=8
+const (
+	GetReadVersionReplySlotProcessBusyTime           = 0
+	GetReadVersionReplySlotVersion                   = 1
+	GetReadVersionReplySlotLocked                    = 2
+	GetReadVersionReplySlotMetadataVersion           = 3
+	GetReadVersionReplySlotTagThrottleInfo           = 5
+	GetReadVersionReplySlotMidShardSize              = 6
+	GetReadVersionReplySlotRkDefaultThrottled        = 7
+	GetReadVersionReplySlotRkBatchThrottled          = 8
+	GetReadVersionReplySlotSsVersionVectorDelta      = 9
+	GetReadVersionReplySlotProxyId                   = 10
+	GetReadVersionReplySlotProxyTagThrottledDuration = 11
+)
+
 var GetReadVersionReplyVTable = wire.VTable{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36}
 
 const GetReadVersionReplyFileID uint32 = 15709388
@@ -181,13 +267,25 @@ var GetReadVersionReplyVTableClosure = []wire.VTable{
 //
 //	slot 0: begin — dynamic_size, size=4, align=4, indirection
 //	slot 1: end — union_like, size=4, align=4, indirection
-//	slot 2: limit — scalar, size=4, align=4
-//	slot 3: reverse — scalar, size=1, align=1
-//	slot 4: reply — serialize_member, size=4, align=4, indirection
-//	slot 5: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 6: tenant — serialize_member, size=4, align=4, indirection
-//	slot 7: minTenantVersion — scalar, size=8, align=8
-//	slot 8: arena — scalar, size=0, align=1
+//	slot 3: limit — scalar, size=4, align=4
+//	slot 4: reverse — scalar, size=1, align=1
+//	slot 5: reply — serialize_member, size=4, align=4, indirection
+//	slot 6: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 7: tenant — serialize_member, size=4, align=4, indirection
+//	slot 8: minTenantVersion — scalar, size=8, align=8
+//	slot 9: arena — scalar, size=0, align=1
+const (
+	GetKeyServerLocationsRequestSlotBegin            = 0
+	GetKeyServerLocationsRequestSlotEnd              = 1
+	GetKeyServerLocationsRequestSlotLimit            = 3
+	GetKeyServerLocationsRequestSlotReverse          = 4
+	GetKeyServerLocationsRequestSlotReply            = 5
+	GetKeyServerLocationsRequestSlotSpanContext      = 6
+	GetKeyServerLocationsRequestSlotTenant           = 7
+	GetKeyServerLocationsRequestSlotMinTenantVersion = 8
+	GetKeyServerLocationsRequestSlotArena            = 9
+)
+
 var GetKeyServerLocationsRequestVTable = wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
 
 const GetKeyServerLocationsRequestFileID uint32 = 9144680
@@ -206,18 +304,25 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 //	slot 1: resultsTssMapping — vector_like, size=4, align=4, indirection
 //	slot 2: resultsTagMapping — vector_like, size=4, align=4, indirection
 //	slot 3: arena — scalar, size=0, align=1
+const (
+	GetKeyServerLocationsReplySlotResults           = 0
+	GetKeyServerLocationsReplySlotResultsTssMapping = 1
+	GetKeyServerLocationsReplySlotResultsTagMapping = 2
+	GetKeyServerLocationsReplySlotArena             = 3
+)
+
 var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
 
 const GetKeyServerLocationsReplyFileID uint32 = 10636023
 
 var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 	{8, 24, 20, 4},
+	{8, 24, 4, 20},
+	{8, 24, 4, 20},
 	{8, 9, 8, 4},
-	{16, 34, 4, 20, 24, 32, 28, 33},
 	{12, 13, 4, 8, 10, 12},
-	{8, 24, 4, 20},
-	{8, 24, 4, 20},
 	{6, 8, 4},
+	{16, 34, 4, 20, 24, 32, 28, 33},
 	{8, 12, 4, 8},
 	{10, 13, 4, 12, 8},
 	{10, 16, 4, 8, 12},
@@ -229,19 +334,32 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 //	slot 1: reply — serialize_member, size=4, align=4, indirection
 //	slot 2: flags — scalar, size=4, align=4
 //	slot 3: debugID — union_like, size=4, align=4, indirection
-//	slot 4: commitCostEstimation — union_like, size=4, align=4, indirection
-//	slot 5: tagSet — union_like, size=4, align=4, indirection
-//	slot 6: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 7: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 8: idempotencyId — dynamic_size, size=4, align=4, indirection
-//	slot 9: arena — scalar, size=0, align=1
+//	slot 5: commitCostEstimation — union_like, size=4, align=4, indirection
+//	slot 7: tagSet — union_like, size=4, align=4, indirection
+//	slot 9: spanContext — serialize_member, size=4, align=4, indirection
+//	slot 10: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 11: idempotencyId — dynamic_size, size=4, align=4, indirection
+//	slot 12: arena — scalar, size=0, align=1
+const (
+	CommitTransactionRequestSlotTransaction          = 0
+	CommitTransactionRequestSlotReply                = 1
+	CommitTransactionRequestSlotFlags                = 2
+	CommitTransactionRequestSlotDebugID              = 3
+	CommitTransactionRequestSlotCommitCostEstimation = 5
+	CommitTransactionRequestSlotTagSet               = 7
+	CommitTransactionRequestSlotSpanContext          = 9
+	CommitTransactionRequestSlotTenantInfo           = 10
+	CommitTransactionRequestSlotIdempotencyId        = 11
+	CommitTransactionRequestSlotArena                = 12
+)
+
 var CommitTransactionRequestVTable = wire.VTable{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36}
 
 const CommitTransactionRequestFileID uint32 = 93948
 
 var CommitTransactionRequestVTableClosure = []wire.VTable{
-	{8, 16, 12, 4},
 	{12, 24, 12, 4, 16, 20},
+	{8, 16, 12, 4},
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
 	{6, 8, 4},
@@ -257,7 +375,14 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 //	slot 0: version — scalar, size=8, align=8
 //	slot 1: txnBatchId — scalar, size=2, align=2
 //	slot 2: metadataVersion — union_like, size=4, align=4, indirection
-//	slot 3: conflictingKRIndices — union_like, size=4, align=4, indirection
+//	slot 4: conflictingKRIndices — union_like, size=4, align=4, indirection
+const (
+	CommitIDSlotVersion              = 0
+	CommitIDSlotTxnBatchId           = 1
+	CommitIDSlotMetadataVersion      = 2
+	CommitIDSlotConflictingKRIndices = 4
+)
+
 var CommitIDVTable = wire.VTable{16, 24, 4, 20, 22, 12, 23, 16}
 
 const CommitIDFileID uint32 = 14254927
@@ -278,15 +403,27 @@ var CommitIDVTableClosure = []wire.VTable{
 //	slot 6: reply — serialize_member, size=4, align=4, indirection
 //	slot 7: hostnames — vector_like, size=4, align=4, indirection
 //	slot 8: internal — scalar, size=1, align=1
+const (
+	OpenDatabaseCoordRequestSlotIssues            = 0
+	OpenDatabaseCoordRequestSlotSupportedVersions = 1
+	OpenDatabaseCoordRequestSlotTraceLogGroup     = 2
+	OpenDatabaseCoordRequestSlotKnownClientInfoID = 3
+	OpenDatabaseCoordRequestSlotClusterKey        = 4
+	OpenDatabaseCoordRequestSlotCoordinators      = 5
+	OpenDatabaseCoordRequestSlotReply             = 6
+	OpenDatabaseCoordRequestSlotHostnames         = 7
+	OpenDatabaseCoordRequestSlotInternal          = 8
+)
+
 var OpenDatabaseCoordRequestVTable = wire.VTable{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
 
 const OpenDatabaseCoordRequestFileID uint32 = 214728
 
 var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
-	{8, 9, 8, 4},
 	{10, 13, 4, 8, 12},
-	{12, 13, 4, 8, 10, 12},
 	{6, 20, 4},
+	{8, 9, 8, 4},
+	{12, 13, 4, 8, 10, 12},
 	{6, 8, 4},
 	{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48},
 	{10, 16, 4, 8, 12},
@@ -297,6 +434,12 @@ var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
 //	slot 0: traceID — scalar, size=16, align=8
 //	slot 1: spanID — scalar, size=8, align=8
 //	slot 2: m_Flags — scalar, size=1, align=1
+const (
+	SpanContextSlotTraceID = 0
+	SpanContextSlotSpanID  = 1
+	SpanContextSlotFlags   = 2
+)
+
 var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
 
 // KeySelectorRef fields:
@@ -304,6 +447,12 @@ var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
 //	slot 0: key — dynamic_size, size=4, align=4, indirection
 //	slot 1: orEqual — scalar, size=1, align=1
 //	slot 2: offset — scalar, size=4, align=4
+const (
+	KeySelectorRefSlotKey     = 0
+	KeySelectorRefSlotOrEqual = 1
+	KeySelectorRefSlotOffset  = 2
+)
+
 var KeySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
 
 // MutationRef fields:
@@ -317,6 +466,11 @@ var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
 //
 //	slot 0: const_cast<KeyRef&>(begin) — dynamic_size, size=4, align=4, indirection
 //	slot 1: const_cast<KeyRef&>(end) — dynamic_size, size=4, align=4, indirection
+const (
+	KeyRangeRefSlotBegin = 0
+	KeyRangeRefSlotEnd   = 1
+)
+
 var KeyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 
 // CommitTransactionRef fields:
@@ -328,7 +482,7 @@ var KeyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 //	slot 4: field_4 — scalar, size=1, align=1
 //	slot 5: field_5 — scalar, size=1, align=1
 //	slot 6: field_6 — union_like, size=4, align=4, indirection
-//	slot 7: field_7 — union_like, size=4, align=4, indirection
+//	slot 8: field_7 — union_like, size=4, align=4, indirection
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
 
 // ReadOptions fields:
@@ -336,13 +490,25 @@ var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 
 //	slot 0: type — scalar, size=4, align=4
 //	slot 1: cacheResult — scalar, size=1, align=1
 //	slot 2: debugID — union_like, size=4, align=4, indirection
-//	slot 3: consistencyCheckStartVersion — union_like, size=4, align=4, indirection
-//	slot 4: lockAware — scalar, size=1, align=1
+//	slot 4: consistencyCheckStartVersion — union_like, size=4, align=4, indirection
+//	slot 6: lockAware — scalar, size=1, align=1
+const (
+	ReadOptionsSlotType                         = 0
+	ReadOptionsSlotCacheResult                  = 1
+	ReadOptionsSlotDebugID                      = 2
+	ReadOptionsSlotConsistencyCheckStartVersion = 4
+	ReadOptionsSlotLockAware                    = 6
+)
+
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
 
 // Error fields:
 //
 //	slot 0: error_code — scalar, size=2, align=2
+const (
+	ErrorSlotError_code = 0
+)
+
 var ErrorVTable = wire.VTable{6, 6, 4}
 
 const ErrorFileID uint32 = 14065384
@@ -352,10 +518,133 @@ var ErrorVTableClosure = []wire.VTable{
 	{6, 6, 4},
 }
 
-// TenantInfo — fdbclient/TenantInfo.h
-// Fields: tenantId (int64 at offset 4), tenantName (bytes at offset 16), tenantGroup (bytes at offset 12)
+// ClientDBInfo fields:
+//
+//	slot 0: grvProxies — vector_like, size=4, align=4, indirection
+//	slot 1: commitProxies — vector_like, size=4, align=4, indirection
+//	slot 2: id — scalar, size=16, align=8
+//	slot 3: forward — union_like, size=4, align=4, indirection
+//	slot 5: history — vector_like, size=4, align=4, indirection
+//	slot 6: tenantMode — serialize_member, size=4, align=4, indirection
+//	slot 7: encryptKeyProxy — union_like, size=4, align=4, indirection
+//	slot 9: clusterId — scalar, size=16, align=8
+//	slot 10: clusterType — scalar, size=4, align=4
+//	slot 11: metaclusterName — union_like, size=4, align=4, indirection
+const (
+	ClientDBInfoSlotGrvProxies      = 0
+	ClientDBInfoSlotCommitProxies   = 1
+	ClientDBInfoSlotId              = 2
+	ClientDBInfoSlotForward         = 3
+	ClientDBInfoSlotHistory         = 5
+	ClientDBInfoSlotTenantMode      = 6
+	ClientDBInfoSlotEncryptKeyProxy = 7
+	ClientDBInfoSlotClusterId       = 9
+	ClientDBInfoSlotClusterType     = 10
+	ClientDBInfoSlotMetaclusterName = 11
+)
+
+var ClientDBInfoVTable = wire.VTable{30, 71, 36, 40, 4, 68, 44, 48, 52, 69, 56, 20, 60, 70, 64}
+
+const ClientDBInfoFileID uint32 = 5355080
+
+var ClientDBInfoVTableClosure = []wire.VTable{
+	{8, 24, 20, 4},
+	{10, 28, 20, 4, 24},
+	{8, 16, 12, 4},
+	{8, 9, 8, 4},
+	{12, 13, 4, 8, 10, 12},
+	{6, 8, 4},
+	{12, 14, 12, 4, 13, 8},
+	{30, 71, 36, 40, 4, 68, 44, 48, 52, 69, 56, 20, 60, 70, 64},
+	{10, 13, 12, 4, 8},
+	{10, 13, 4, 12, 8},
+}
+
+// GrvProxyInterface fields:
+//
+//	slot 0: processId — union_like, size=4, align=4, indirection
+//	slot 2: provisional — scalar, size=1, align=1
+//	slot 3: getConsistentReadVersion — serialize_member, size=4, align=4, indirection
+const (
+	GrvProxyInterfaceSlotProcessId                = 0
+	GrvProxyInterfaceSlotProvisional              = 2
+	GrvProxyInterfaceSlotGetConsistentReadVersion = 3
+)
+
+var GrvProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
+
+const GrvProxyInterfaceFileID uint32 = 8743216
+
+// CommitProxyInterface fields:
+//
+//	slot 0: processId — union_like, size=4, align=4, indirection
+//	slot 2: provisional — scalar, size=1, align=1
+//	slot 3: commit — serialize_member, size=4, align=4, indirection
+const (
+	CommitProxyInterfaceSlotProcessId   = 0
+	CommitProxyInterfaceSlotProvisional = 2
+	CommitProxyInterfaceSlotCommit      = 3
+)
+
+var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
+
+const CommitProxyInterfaceFileID uint32 = 8954922
+
+// StorageServerInterface fields:
+//
+//	slot 0: watchValue — scalar, size=16, align=8
+//	slot 1: field_1 — serialize_member, size=4, align=4, indirection
+//	slot 2: field_2 — serialize_member, size=4, align=4, indirection
+//	slot 3: field_3 — union_like, size=4, align=4, indirection
+//	slot 5: field_4 — scalar, size=1, align=1
+const (
+	StorageServerInterfaceSlotWatchValue = 0
+)
+
+var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
+
+const StorageServerInterfaceFileID uint32 = 15302073
+
+// NetworkAddress fields:
+//
+//	slot 0: fromHostname — serialize_member, size=4, align=4, indirection
+//	slot 1: field_1 — scalar, size=2, align=2
+//	slot 2: field_2 — scalar, size=2, align=2
+//	slot 3: field_3 — scalar, size=1, align=1
+const (
+	NetworkAddressSlotFromHostname = 0
+)
+
+var NetworkAddressVTable = wire.VTable{12, 13, 4, 8, 10, 12}
+
+const NetworkAddressFileID uint32 = 14155727
+
+var NetworkAddressVTableClosure = []wire.VTable{
+	{8, 9, 8, 4},
+	{12, 13, 4, 8, 10, 12},
+	{6, 8, 4},
+}
+
+// IPAddress fields:
+//
+//	slot 0: field_0 — union_like, size=4, align=4, indirection
+var IPAddressVTable = wire.VTable{8, 9, 8, 4}
+
+// TenantInfo fields:
+//
+//	slot 0: field_0 — scalar, size=8, align=8
+//	slot 1: field_1 — union_like, size=4, align=4, indirection
+//	slot 3: field_2 — scalar, size=0, align=1
 var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
 
-// ReplyPromise — fdbrpc/ReplyPromise.h
-// Fields: token (UID, 16 bytes inline at offset 4)
+// ReplyPromise fields:
+//
+//	slot 0: field_0 — scalar, size=16, align=8
 var ReplyPromiseVTable = wire.VTable{6, 20, 4}
+
+const ReplyPromiseFileID uint32 = 18156145
+
+var ReplyPromiseVTableClosure = []wire.VTable{
+	{6, 20, 4},
+	{6, 8, 4},
+}
