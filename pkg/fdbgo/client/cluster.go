@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
@@ -201,7 +200,22 @@ func (c *Cluster) getOrDial(ctx context.Context, addr string) (*transport.Conn, 
 		delete(c.connPool, addr)
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// Check if we have an existing connection to the same port via a different
+	// address (e.g., proxy at 172.x.x.x:PORT when we connected via localhost:PORT).
+	// In single-node clusters, all FDB processes share one address, so we can
+	// reuse the coordinator connection for proxy/storage requests.
+	_, targetPort, _ := net.SplitHostPort(addr)
+	for existingAddr, conn := range c.connPool {
+		if !conn.IsClosed() {
+			_, existingPort, _ := net.SplitHostPort(existingAddr)
+			if existingPort == targetPort {
+				c.connPool[addr] = conn // cache under new key too
+				return conn, nil
+			}
+		}
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
 	conn, err := transport.Dial(dialCtx, addr, false)
@@ -209,9 +223,8 @@ func (c *Cluster) getOrDial(ctx context.Context, addr string) (*transport.Conn, 
 		// Fallback: if the internal address failed (e.g., Docker networking),
 		// try the coordinator address with the same port.
 		if len(c.clusterFile.Coordinators) > 0 {
-			_, port, _ := net.SplitHostPort(addr)
 			_, coordPort, _ := net.SplitHostPort(c.clusterFile.Coordinators[0])
-			if port == coordPort {
+			if targetPort == coordPort {
 				coordAddr := c.clusterFile.Coordinators[0]
 				conn, err = transport.Dial(dialCtx, coordAddr, false)
 				if err == nil {
