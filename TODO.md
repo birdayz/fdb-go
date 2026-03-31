@@ -1678,39 +1678,64 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 - [x] **CommitTransactionRequest/CommitID** — Mutations as proper FlatBuffers nested objects. MVCC conflict detection verified (not_committed 1020).
 - [x] **Vtable closure infrastructure** — C++ extractor (`emitVTables`), 322 closure files, codegen emits `_VTableClosure` constants, Writer `WriteMessageWithVTables` preserves C++ vtable ordering.
 
-### CRITICAL — Schema-driven codegen (prime directive)
+### CRITICAL — v4 approach: C++ source is the spec, Go ports it mechanically
 
-FDB's "FlatBuffers" is NOT a generic IDL — it's a C++ template metaprogramming system where the wire format is derived from C++ struct definitions and trait specializations. Every type is ultimately composed of **C primitives** (`uint8_t`, `int64_t`, `bool`, `double`) combined through a small set of composition rules:
+FDB's wire format is defined by C++ struct `serialize()` methods and the `flat_buffers.h` type trait system. It is NOT an IDL — it's C++ code. Our approach mirrors this directly.
 
-- **`scalar_traits`**: Fixed-size inline (bool=1, int32=4, int64=8, double=8, enums=varies)
-- **`dynamic_size_traits`**: Variable-size out-of-line with `[size(4)][data]` (StringRef, VersionVector, TagSet). Each has a **computable empty serialization size** derived from its internal structure.
-- **`serialize_member`** (structs with `serialize()`): Nested FlatBuffers objects with vtable + soffset + fields. Fields follow the same composition rules recursively.
-- **`vector_like_traits`**: `[count(4)][RelOff per element]` where each element is serialized per its trait.
-- **`union_like_traits`** (Optional): 2 vtable slots (type byte + value RelOff).
+#### Architecture
 
-The codegen must understand this type system completely. **Zero hand-rolled message builders.** Every message should be buildable from the generated `MarshalFDB()` or from `WriteStruct` calls that the codegen emits.
+Two layers:
 
-#### Current gaps (all stem from incomplete type knowledge):
+- **`pkg/fdbgo/wire/`** — Framework. Knows how FDB FlatBuffers primitives are serialized: scalars inline (LE), StringRef as `[len(4)][data]` via RelOff, nested structs via vtable+soffset, Optionals as 2 vtable slots, VectorRef as `[count][RelOffs]`. ObjectWriter, Reader, VTable computation. Written by hand, stable.
 
-1. **Parser only extracts top-level messages** (structs with `file_identifier`). Nested types like SpanContext, TenantInfo, KeySelectorRef, ReplyPromise have `serialize()` methods but no `file_identifier` — they're invisible to the parser. **Fix:** Parse ALL structs with `serialize()` into a type registry. The registry maps C++ type name → vtable + fields.
+- **`pkg/fdbgo/wire/types/`** — One Go file per C++ type that has `serialize()`. Mechanical port of C++ → Go. Each file implements `wire.FDBSerializable` interface: `MarshalInto(*ObjectWriter)`, `UnmarshalFrom(*Reader)`, `TypeVTable()`. References the `wire` package for all byte-level operations.
 
-2. **`"struct"` fields treated as opaque `[]byte`**. The generated `MarshalFDB` uses `WriteBytes` for SpanContext, TenantInfo, ReplyPromise. But these need `WriteStruct` with proper vtable + field writes. **Fix:** Codegen emits `WriteStruct` for `serialize_member` types, recursively generating field writes from the type registry.
+#### What is static (constants from C++)
 
-3. **`dynamic_size_traits` types have non-trivial empty serializations.** VersionVector empty = `sizeof(size_t) + sizeof(Version)` = 16 bytes. TagSet might have similar. The codegen treats them as `WriteBytes(nil)` which produces `[len=0]` — wrong. **Fix:** For each `dynamic_size_traits` type, the schema must record the **empty serialization size** (computed from the type's `getEncodedSize()` logic or extracted from C++ test vectors as the default blob size).
+VTables are 100% deterministic — computed by the C++ compiler from field types/sizes/alignments. We extract them ONCE using the C++ schema extractor (`cmd/fdb-schema-extract/`), which compiles against real FDB headers and dumps vtables + vtable closures + field traits. These become Go constants.
 
-4. **Vtable closure needs C++ type graph traversal.** Currently extracted from test vectors. **Fix:** Once the parser has the full type registry, compute the closure by following all reachable types from each message (including Optional inner types, VectorRef element types, struct field types).
+Per type:
+- VTable: `var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}`
+- VTable closure (for top-level messages): all transitively reachable vtables
+- Per-field: trait (scalar/dynamic_size/serialize_member/union_like), size, alignment, indirection
 
-5. **No distinction between `serialize_member` and `dynamic_size_traits` in schema JSON.** Both are `"type": "struct"` or `"type": "bytes"`. But they serialize completely differently (nested object with vtable vs length-prefixed blob). **Fix:** Schema JSON should record the exact C++ trait: `"trait": "serialize_member"` vs `"trait": "dynamic_size_traits"` vs `"trait": "scalar"`.
+See `docs/wire-format-static-vs-logic.md` for the full static-vs-logic split.
 
-#### Implementation plan:
+#### What is logic (Go code ported from C++)
 
-**Phase 1: Full type registry** — Modify `parser.go` to parse ALL C++ structs with `serialize()` methods (not just those with `file_identifier`). Build a map: `typeName → {vtable, fields[], trait}`. Resolve nested type references. Output as a `types.json` alongside per-message schemas.
+Each type's `serialize()` method. Most types have a straight `serializer(ar, field1, field2, ...)` — purely mechanical, no branches. A few types (MutationRef, KeyRangeRef) have data-dependent conditional branches that must be ported as Go logic.
 
-**Phase 2: Schema enrichment** — For each message field of type "struct", include `nested_type_ref` pointing to the type registry entry. For "bytes" fields with `dynamic_size_traits`, include `empty_size` (from type analysis or C++ extraction).
+#### How types get implemented
 
-**Phase 3: Codegen upgrade** — Generate `WriteStruct` for `serialize_member` fields (recursive). Generate proper empty blobs for `dynamic_size_traits` fields. Compute vtable closure from the type registry (no more test vector extraction). Generated `MarshalFDB()` should produce byte-identical output to C++ ObjectWriter.
+**AI-driven via `/port-fdb-type` skill** (`.claude/skills/port-fdb-type.md`):
+1. Read the C++ struct definition + `serialize()` method
+2. Read the vtable from the C++ extractor output
+3. Write a Go file in `pkg/fdbgo/wire/types/` implementing `FDBSerializable`
+4. Header comment links back to C++ source file + line number
+5. Verify against C++ test vector if available
 
-**Phase 4: Delete hand-rolled builders** — Replace all hand-rolled `buildXxxRequest` functions in `client/` with calls to generated code. Zero C++ template hacks. Zero hardcoded byte offsets.
+Each Go file is a direct, traceable port. The C++ source is the spec. No JSON intermediary for the logic — just C++ in, Go out.
+
+**Primitives** (no file needed):
+- `int64`, `uint64`, `int32`, `uint32`, `uint8`, `bool`, `float64` — Go builtins
+- `UID` — `scalar_traits`, 16 bytes inline. Already `transport.UID{First, Second uint64}`
+- `Tag` — `struct_like_traits`, inlined. Define inline where used
+- `StringRef` / `Key` / `Value` — `[]byte`
+- `Arena` — skip (zero-size)
+
+#### Dependency order
+
+Leaves first, then compound types:
+1. `Error`, `SpanContext`, `KeySelectorRef`, `ReadOptions` (no nested serialize_member fields)
+2. `MutationRef`, `KeyRangeRef` (have branches but no nested types)
+3. `CommitTransactionRef` (contains VectorRef<MutationRef>, VectorRef<KeyRangeRef>)
+4. Request/reply types: `GetValueRequest`, `GetKeyValuesRequest`, `CommitTransactionRequest`, etc.
+
+#### Tools
+
+- **C++ schema extractor** (`cmd/fdb-schema-extract/`): pure C++ binary, compiles against real FDB. Extracts vtables, closures, field traits. Run via Docker. Output: per-type constants.
+- **`/port-fdb-type` skill**: AI reads C++ source → writes Go file. Mechanical port.
+- **`wire.FDBSerializable` interface**: `MarshalInto`, `UnmarshalFrom`, `TypeVTable`. All types implement it uniformly.
 
 ### HIGH — Remaining client features
 
