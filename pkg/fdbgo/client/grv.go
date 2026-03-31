@@ -153,7 +153,7 @@ func buildGetReadVersionRequest(replyToken transport.UID) []byte {
 		obj.WriteUint32(16, 0)
 
 		// slot 5: Reply at offset 28 (nested ReplyPromise struct)
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(28, replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)

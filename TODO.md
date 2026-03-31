@@ -1649,7 +1649,7 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 - [x] Per-message schema files — 369 JSON files in `pkg/fdbgo/wire/schema/`.
 - [x] Ground-truth test vectors — 322 JSON files in `pkg/fdbgo/wire/testdata/`. Serialized by FDB's real ObjectWriter inside Docker (`foundationdb/build:rockylinux9-latest`). 47 Interface types skipped (RequestStream vtable crash).
 - [x] Go code generator (`cmd/fdb-wire-codegen/`) — reads schema JSON, emits typed Go structs + MarshalFDB/UnmarshalFDB.
-- [x] Protocol package (`pkg/fdbgo/protocol/`) — 17 client message types generated, compiled, ground-truth tested.
+- [x] ~~Protocol package~~ deleted — replaced by `wire/types/` with C++ extractor-generated vtables + typed structs. Single source of truth.
 - [x] Transport layer (`pkg/fdbgo/transport/`) — TCP framing with XXH3-64 checksum, ConnectPacket handshake, multiplexed connections with endpoint token routing. 7 tests.
 - [x] Client skeleton (`pkg/fdbgo/client/`) — cluster file parsing, transaction state machine (Set/Clear/Atomic + OnError retry), GRV batcher, locality cache, read/commit path stubs. 12 tests.
 - [x] FDB source auto-fetch — `archive_override` in MODULE.bazel, tag 7.3.75. Zero local setup.
@@ -1749,10 +1749,17 @@ Leaves first, then compound types:
 - **`/port-fdb-type` skill**: AI reads C++ source → writes Go file. Mechanical port.
 - **`wire.FDBSerializable` interface**: `MarshalInto`, `UnmarshalFrom`, `TypeVTable`. All types implement it uniformly.
 
+### Cleanup — inline vtable literals and remaining hacks
+
+- [ ] **Replace inline vtable literals with types.* constants** — 11 occurrences across 5 client files: `wire.VTable{10, 17, 4, 16, 12}` → `types.TenantInfoVTable`, `wire.VTable{6, 20, 4}` → `types.ReplyPromiseVTable`, `wire.VTable{10, 29, 4, 20, 28}` → `types.SpanContextVTable`, `wire.VTable{22, 49, ...}` in coordinator.go → `types.OpenDatabaseCoordRequestVTable`.
+- [ ] **Fix wrong TenantInfo vtable in locality.go:141** — uses `{6, 12, 4}` (1 field) instead of correct `{10, 17, 4, 16, 12}` (3 fields). Works by accident.
+- [ ] **Encapsulate parseKeyValueVector in wire/types/** — readpath.go:174-209 hand-walks VecSerStrategy::String format (`binary.LittleEndian.Uint32` loop). This is wire format parsing, not client logic. Move to `wire/types/key_value_vector.go`.
+- [ ] **Build voidReply through wire.Writer** — transport/conn.go:308 uses hex-encoded ground-truth bytes. Should construct `ErrorOr<EnsureTable<Void>>` dynamically through the Writer.
+
 ### HIGH — Remaining client features
 
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
-- [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` properly (currently uses IP pattern hack).
+- [x] **Storage server routing** — LocationCache.refresh() parses GetKeyServerLocationsReply properly through wire.Reader (replaced IP pattern hack).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
 - [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
 - [ ] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution.

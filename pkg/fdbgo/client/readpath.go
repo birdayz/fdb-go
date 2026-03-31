@@ -123,12 +123,12 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, rep
 	fileID := types.GetKeyValuesRequestFileID
 	w := wire.NewWriter(nil)
 	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetKeyValuesRequestVTableClosure, func(obj *wire.ObjectWriter) {
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		tenantVT := types.TenantInfoVTable
 		obj.WriteStruct(int(vt[11]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1)
 		})
 		obj.WriteStruct(int(vt[10]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(int(vt[9]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
@@ -223,12 +223,12 @@ func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _
 	fileID := types.GetValueRequestFileID
 	w := wire.NewWriter(nil)
 	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetValueRequestVTableClosure, func(obj *wire.ObjectWriter) {
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		tenantVT := types.TenantInfoVTable
 		obj.WriteStruct(int(vt[8]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1)
 		})
 		obj.WriteStruct(int(vt[7]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(int(vt[6]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)

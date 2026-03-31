@@ -132,13 +132,13 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		// slot 3 (Limit): vt[5]
 		obj.WriteInt32(int(vt[3+2]), 100)
 		// slot 5 (Reply): vt[7] — nested struct
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(int(vt[5+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
 		// slot 7 (Tenant): vt[9] — nested struct with tenantId=-1
-		tenantVT := wire.VTable{6, 12, 4} // 1 field: tenantId@4 (works for GetKeyServerLocations)
+		tenantVT := types.TenantInfoVTable
 		obj.WriteStruct(int(vt[7+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1)
 		})

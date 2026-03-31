@@ -44,11 +44,7 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 	// The coordinator's cs.clusterKey() returns just this prefix part.
 	connStr := cf.Description + ":" + cf.ID
 
-	// REAL vtable from C++ ground truth test vector (OpenDatabaseCoordRequest.json):
-	// {22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
-	// UID (slot 3) is 16 bytes INLINE at offset 4.
-	// ReplyPromise (slot 6) is 4-byte RelativeOffset to nested struct at offset 40.
-	vt := wire.VTable{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
+	vt := types.OpenDatabaseCoordRequestVTable
 	fileID := types.OpenDatabaseCoordRequestFileID
 
 	w := wire.NewWriter(nil)
@@ -59,7 +55,7 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 
 		// slot 6: reply — ReplyPromise is a NESTED struct (4-byte RelativeOffset)
 		// The nested struct contains the UID (vtable {6, 20, 4}: 16 bytes inline)
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(40, replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)

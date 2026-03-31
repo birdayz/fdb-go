@@ -79,19 +79,19 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 	// produces byte layout matching C++ (last added = highest byte addr).
 	return w.WriteMessage(fileID, vt, 4, func(obj *wire.ObjectWriter) {
 		// slot 10: TenantInfo (nested struct with tenantId=-1)
-		tenantVT := wire.VTable{10, 17, 4, 16, 12}
+		tenantVT := types.TenantInfoVTable
 		obj.WriteStruct(int(vt[10+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1) // tenantId = -1 (no tenant)
 		})
 
 		// slot 9: SpanContext (nested struct, all zeros = default)
-		spanVT := wire.VTable{10, 29, 4, 20, 28}
+		spanVT := types.SpanContextVTable
 		obj.WriteStruct(int(vt[9+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
 			// Default SpanContext: all zeros
 		})
 
 		// slot 1: Reply (nested ReplyPromise with UID)
-		replyVT := wire.VTable{6, 20, 4}
+		replyVT := types.ReplyPromiseVTable
 		obj.WriteStruct(int(vt[1+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
