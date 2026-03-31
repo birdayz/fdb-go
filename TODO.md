@@ -1671,17 +1671,50 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 
 ### DONE — GRV + Read + Write (e2e verified)
 
-- [x] **GetReadVersionRequest/Reply** — GRV batcher wired up with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75.
-- [x] **GetKeyServerLocationsRequest** — Location reply received and parsed. Storage server address + endpoint token extracted. Uses generated vtable + getAdjustedEndpoint(2).
-- [x] **GetValueRequest/Reply** — Uses C++ ground-truth template bytes (240 bytes), patches version/key/reply token. Reads back values written by C binding.
-- [x] **CommitTransactionRequest/CommitID** — Full commit pipeline: Writer-built request with CommitTransactionRef nested struct (mutations as proper FlatBuffers nested objects + empty conflict ranges). ErrorOr\<CommitID\> response parsed. Go writes verified readable by C binding AND Go client.
-- [x] **MutationRef FlatBuffers nested objects** — Each mutation is a full FlatBuffers object (vtable + soffset + StringRef RelOffs for key/value). Discovered: FDB does NOT use dynamic_size_traits for MutationRef/KeyRangeRef (only serialize_member). Our fdb_stubs.h was wrong.
+- [x] **GetReadVersionRequest/Reply** — GRV batcher with PrepareReply + nested ReplyPromise. Returns real version from FDB 7.3.75.
+- [x] **GetKeyServerLocationsRequest** — Storage server address + endpoint token extracted. getAdjustedEndpoint(2).
+- [x] **GetValueRequest/Reply** — Reads back values written by C binding.
+- [x] **GetKeyValuesRequest/Reply (range reads)** — getAdjustedEndpoint(2), VecSerStrategy::String parsing. limitBytes=INT_MAX.
+- [x] **CommitTransactionRequest/CommitID** — Mutations as proper FlatBuffers nested objects. MVCC conflict detection verified (not_committed 1020).
+- [x] **Vtable closure infrastructure** — C++ extractor (`emitVTables`), 322 closure files, codegen emits `_VTableClosure` constants, Writer `WriteMessageWithVTables` preserves C++ vtable ordering.
 
-### HIGH — Next steps
+### CRITICAL — Schema-driven codegen (prime directive)
+
+FDB's "FlatBuffers" is NOT a generic IDL — it's a C++ template metaprogramming system where the wire format is derived from C++ struct definitions and trait specializations. Every type is ultimately composed of **C primitives** (`uint8_t`, `int64_t`, `bool`, `double`) combined through a small set of composition rules:
+
+- **`scalar_traits`**: Fixed-size inline (bool=1, int32=4, int64=8, double=8, enums=varies)
+- **`dynamic_size_traits`**: Variable-size out-of-line with `[size(4)][data]` (StringRef, VersionVector, TagSet). Each has a **computable empty serialization size** derived from its internal structure.
+- **`serialize_member`** (structs with `serialize()`): Nested FlatBuffers objects with vtable + soffset + fields. Fields follow the same composition rules recursively.
+- **`vector_like_traits`**: `[count(4)][RelOff per element]` where each element is serialized per its trait.
+- **`union_like_traits`** (Optional): 2 vtable slots (type byte + value RelOff).
+
+The codegen must understand this type system completely. **Zero hand-rolled message builders.** Every message should be buildable from the generated `MarshalFDB()` or from `WriteStruct` calls that the codegen emits.
+
+#### Current gaps (all stem from incomplete type knowledge):
+
+1. **Parser only extracts top-level messages** (structs with `file_identifier`). Nested types like SpanContext, TenantInfo, KeySelectorRef, ReplyPromise have `serialize()` methods but no `file_identifier` — they're invisible to the parser. **Fix:** Parse ALL structs with `serialize()` into a type registry. The registry maps C++ type name → vtable + fields.
+
+2. **`"struct"` fields treated as opaque `[]byte`**. The generated `MarshalFDB` uses `WriteBytes` for SpanContext, TenantInfo, ReplyPromise. But these need `WriteStruct` with proper vtable + field writes. **Fix:** Codegen emits `WriteStruct` for `serialize_member` types, recursively generating field writes from the type registry.
+
+3. **`dynamic_size_traits` types have non-trivial empty serializations.** VersionVector empty = `sizeof(size_t) + sizeof(Version)` = 16 bytes. TagSet might have similar. The codegen treats them as `WriteBytes(nil)` which produces `[len=0]` — wrong. **Fix:** For each `dynamic_size_traits` type, the schema must record the **empty serialization size** (computed from the type's `getEncodedSize()` logic or extracted from C++ test vectors as the default blob size).
+
+4. **Vtable closure needs C++ type graph traversal.** Currently extracted from test vectors. **Fix:** Once the parser has the full type registry, compute the closure by following all reachable types from each message (including Optional inner types, VectorRef element types, struct field types).
+
+5. **No distinction between `serialize_member` and `dynamic_size_traits` in schema JSON.** Both are `"type": "struct"` or `"type": "bytes"`. But they serialize completely differently (nested object with vtable vs length-prefixed blob). **Fix:** Schema JSON should record the exact C++ trait: `"trait": "serialize_member"` vs `"trait": "dynamic_size_traits"` vs `"trait": "scalar"`.
+
+#### Implementation plan:
+
+**Phase 1: Full type registry** — Modify `parser.go` to parse ALL C++ structs with `serialize()` methods (not just those with `file_identifier`). Build a map: `typeName → {vtable, fields[], trait}`. Resolve nested type references. Output as a `types.json` alongside per-message schemas.
+
+**Phase 2: Schema enrichment** — For each message field of type "struct", include `nested_type_ref` pointing to the type registry entry. For "bytes" fields with `dynamic_size_traits`, include `empty_size` (from type analysis or C++ extraction).
+
+**Phase 3: Codegen upgrade** — Generate `WriteStruct` for `serialize_member` fields (recursive). Generate proper empty blobs for `dynamic_size_traits` fields. Compute vtable closure from the type registry (no more test vector extraction). Generated `MarshalFDB()` should produce byte-identical output to C++ ObjectWriter.
+
+**Phase 4: Delete hand-rolled builders** — Replace all hand-rolled `buildXxxRequest` functions in `client/` with calls to generated code. Zero C++ template hacks. Zero hardcoded byte offsets.
+
+### HIGH — Remaining client features
 
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
-- [x] **Conflict range serialization** — KeyRangeRef uses serialize_member (vtable {8,12,4,8}). MVCC conflict detection verified.
-- [x] **GetKeyValuesRequest/Reply (range reads)** — C++ template, getAdjustedEndpoint(2), VecSerStrategy::String parsing. limitBytes=INT_MAX.
 - [ ] **Storage server routing** — LocationCache.refresh() must parse `GetKeyServerLocationsReply.results` properly (currently uses IP pattern hack).
 - [ ] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff.
 - [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
