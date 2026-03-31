@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,15 +11,13 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-const (
-	// ErrWrongShardServer is returned when the storage server no longer owns the key.
-	ErrWrongShardServer = 1062
-	// wrongShardRetryDelay matches CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY.
-	wrongShardRetryDelay = 10 * time.Millisecond
-)
+const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
 
 // getValue sends a GetValueRequest to the appropriate storage server.
-// Handles wrong_shard_server by invalidating the locality cache and retrying.
+// Returns the value (nil if key not found), or an error.
+// wrong_shard_server is retried locally with cache invalidation.
+// Other FDB errors (transaction_too_old, etc.) are returned to the caller
+// for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
 	for attempts := 0; attempts < 5; attempts++ {
 		servers, err := tx.db.locationCache.Locate(ctx, key)
@@ -29,44 +28,50 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		// Try each server (simple failover, no load balancing yet).
-		for _, server := range servers {
-			conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
-			if err != nil {
-				continue
-			}
-
-			replyToken, replyCh := conn.PrepareReply()
-			body := buildGetValueRequest(key, tx.readVersion, replyToken, server.Token)
-			// Use the server token directly (getValue = base endpoint, index 0 in batch)
-			if err := conn.SendFrame(server.Token, body); err != nil {
-				continue
-			}
-
-			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			select {
-			case resp := <-replyCh:
-				cancel()
-				if resp.Err != nil {
-					continue
-				}
-				return parseGetValueReply(resp.Body)
-			case <-rctx.Done():
-				cancel()
-				continue
-			}
+		val, err := tx.sendGetValue(ctx, key, servers)
+		if err == nil {
+			return val, nil
 		}
-
-		// All servers failed — possibly wrong shard. Invalidate and retry.
-		tx.db.locationCache.Invalidate(key)
-		time.Sleep(wrongShardRetryDelay)
+		// wrong_shard_server → invalidate cache, retry.
+		if isWrongShardServer(err) {
+			tx.db.locationCache.Invalidate(key)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		// Other FDB error → bubble up for Transact retry.
+		return nil, err
 	}
+	return nil, fmt.Errorf("getValue: wrong_shard_server after 5 attempts")
+}
 
-	return nil, fmt.Errorf("getValue: all attempts failed for key")
+func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
+	for _, server := range servers {
+		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		if err != nil {
+			continue
+		}
+		replyToken, replyCh := conn.PrepareReply()
+		body := buildGetValueRequest(key, tx.readVersion, replyToken, server.Token)
+		if err := conn.SendFrame(server.Token, body); err != nil {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				continue
+			}
+			return parseGetValueReply(resp.Body)
+		case <-rctx.Done():
+			cancel()
+			continue
+		}
+	}
+	return nil, fmt.Errorf("all servers unreachable")
 }
 
 // getRange sends a GetKeyValuesRequest for a key range.
-// Returns the key-value pairs and a boolean indicating whether there are more results.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	for attempts := 0; attempts < 5; attempts++ {
 		servers, err := tx.db.locationCache.Locate(ctx, begin)
@@ -77,43 +82,52 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			return nil, false, fmt.Errorf("no storage servers for range")
 		}
 
-		// Try each server (simple failover).
-		for _, server := range servers {
-			conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
-			if err != nil {
-				continue
-			}
-
-			replyToken, replyCh := conn.PrepareReply()
-			body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
-
-			// getKeyValues is at endpoint index 2 in StorageServerInterface:
-			//   getValue=0, getKey=1, getKeyValues=2
-			gkvToken := getAdjustedEndpoint(server.Token, 2)
-			if err := conn.SendFrame(gkvToken, body); err != nil {
-				continue
-			}
-
-			rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			select {
-			case resp := <-replyCh:
-				cancel()
-				if resp.Err != nil {
-					continue
-				}
-				return parseGetKeyValuesReply(resp.Body)
-			case <-rctx.Done():
-				cancel()
-				continue
-			}
+		kvs, more, err := tx.sendGetRange(ctx, begin, end, limit, servers)
+		if err == nil {
+			return kvs, more, nil
 		}
-
-		// All servers failed — possibly wrong shard. Invalidate and retry.
-		tx.db.locationCache.Invalidate(begin)
-		time.Sleep(wrongShardRetryDelay)
+		if isWrongShardServer(err) {
+			tx.db.locationCache.Invalidate(begin)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		return nil, false, err
 	}
+	return nil, false, fmt.Errorf("getRange: wrong_shard_server after 5 attempts")
+}
 
-	return nil, false, fmt.Errorf("getRange: all attempts failed")
+func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, servers []ServerInfo) ([]KeyValue, bool, error) {
+	for _, server := range servers {
+		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		if err != nil {
+			continue
+		}
+		replyToken, replyCh := conn.PrepareReply()
+		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
+		gkvToken := getAdjustedEndpoint(server.Token, 2) // getKeyValues = endpoint index 2
+		if err := conn.SendFrame(gkvToken, body); err != nil {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				continue
+			}
+			return parseGetKeyValuesReply(resp.Body)
+		case <-rctx.Done():
+			cancel()
+			continue
+		}
+	}
+	return nil, false, fmt.Errorf("all servers unreachable")
+}
+
+// isWrongShardServer returns true if the error is FDB error 1062.
+func isWrongShardServer(err error) bool {
+	var fdbErr *wire.FDBError
+	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer
 }
 
 // buildGetKeyValuesRequest uses WriteMessageWithVTables with the generated closure.

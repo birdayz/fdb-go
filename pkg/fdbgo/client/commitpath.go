@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -122,10 +121,6 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 // parseCommitReply parses an ErrorOr<CommitID> response.
 func (tx *Transaction) parseCommitReply(data []byte) error {
 	if _, err := wire.ReadErrorOr(data); err != nil {
-		var we *wire.FDBWireError
-		if errors.As(err, &we) {
-			return &FDBError{Code: we.Code, Message: fmt.Sprintf("commit error %d", we.Code)}
-		}
 		return fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	"github.com/zeebo/xxh3"
 )
@@ -304,8 +306,8 @@ func TestCoordinatorBootstrap(t *testing.T) {
 			t.Error("tx2 should have conflicted but succeeded")
 		} else {
 			t.Logf("tx2 conflict (expected): %v", err)
-			fdbErr, ok := err.(*FDBError)
-			if ok && fdbErr.Code == ErrNotCommitted {
+			var fdbErr *wire.FDBError
+			if errors.As(err, &fdbErr) && fdbErr.Code == ErrNotCommitted {
 				t.Log("MVCC conflict detection working!")
 			} else {
 				t.Logf("unexpected error type: %T %v", err, err)

@@ -363,18 +363,37 @@ func (r *Reader) readerAtObject(objPos int) (*Reader, error) {
 	}, nil
 }
 
-// FDBWireError is returned by ReadErrorOr when the response contains an FDB error.
-type FDBWireError struct {
+// FDBError is returned when an FDB ErrorOr response contains an error code.
+// This is the canonical FDB error type — use errors.As() to extract it from
+// wrapped errors. Equivalent to Java's FDBException.
+type FDBError struct {
 	Code int
 }
 
-func (e *FDBWireError) Error() string {
+func (e *FDBError) Error() string {
 	return fmt.Sprintf("fdb error %d", e.Code)
+}
+
+// Retryable returns true if this error code is retryable per FDB's error model.
+func (e *FDBError) Retryable() bool {
+	switch e.Code {
+	case 1020, // not_committed
+		1021, // commit_unknown_result
+		1007, // transaction_too_old
+		1009, // future_version
+		1037, // process_behind
+		1039, // database_locked
+		1042, // proxy_memory_limit_exceeded
+		1051, // batch_transaction_throttled
+		1213: // tag_throttled
+		return true
+	}
+	return false
 }
 
 // ReadErrorOr unwraps an ErrorOr<T> response. FDB's ErrorOr uses FakeRoot
 // flattening: the inner struct is either Error (1 field: error_code) or T (N fields).
-// Returns the Reader positioned at the success value T, or an *FDBWireError if
+// Returns the Reader positioned at the success value T, or an *FDBError if
 // the response contains an error code.
 func ReadErrorOr(data []byte) (*Reader, error) {
 	r, err := NewReader(data)
@@ -385,7 +404,7 @@ func ReadErrorOr(data []byte) (*Reader, error) {
 	if nfields <= 1 {
 		if r.FieldPresent(0) {
 			code := r.ReadInt32(0)
-			return nil, &FDBWireError{Code: int(code)}
+			return nil, &FDBError{Code: int(code)}
 		}
 		return nil, fmt.Errorf("empty ErrorOr response")
 	}

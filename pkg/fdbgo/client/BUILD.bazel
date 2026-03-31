@@ -34,6 +34,7 @@ go_test(
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
         "//pkg/testcontainers/foundationdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_zeebo_xxh3//:xxh3",

@@ -2,22 +2,20 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-// FDB error codes for retry logic.
+// FDB error codes.
 const (
-	ErrNotCommitted              = 1020
-	ErrCommitUnknownResult       = 1021
-	ErrTransactionTooOld         = 1007
-	ErrFutureVersion             = 1009
-	ErrDatabaseLocked            = 1039
-	ErrProxyMemoryLimitExceeded  = 1042
-	ErrBatchTransactionThrottled = 1051
-	ErrTagThrottled              = 1213
-	ErrProcessBehind             = 1037
+	ErrNotCommitted        = 1020
+	ErrCommitUnknownResult = 1021
+	ErrTransactionTooOld   = 1007
+	ErrWrongShardServer    = 1062
 )
 
 type txState int
@@ -198,36 +196,23 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable.
 func (tx *Transaction) OnError(err error) error {
-	code := extractErrorCode(err)
-
-	switch code {
-	case ErrNotCommitted,
-		ErrCommitUnknownResult,
-		ErrDatabaseLocked,
-		ErrProxyMemoryLimitExceeded,
-		ErrBatchTransactionThrottled,
-		ErrTagThrottled,
-		ErrProcessBehind:
-		// Retryable with exponential backoff.
-		tx.retryCount++
-		tx.backoff = tx.nextBackoff()
-		time.Sleep(tx.backoff)
-		tx.reset()
-		return nil
-
-	case ErrTransactionTooOld, ErrFutureVersion:
-		// Retryable with shorter delay.
-		tx.retryCount++
-		tx.backoff = 10 * time.Millisecond
-		time.Sleep(tx.backoff)
-		tx.reset()
-		return nil
-
-	default:
-		// Non-retryable.
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		// Not an FDB error — non-retryable.
 		tx.state = txStateErrored
 		return err
 	}
+
+	if !fdbErr.Retryable() {
+		tx.state = txStateErrored
+		return err
+	}
+
+	tx.retryCount++
+	tx.backoff = tx.nextBackoff()
+	time.Sleep(tx.backoff)
+	tx.reset()
+	return nil
 }
 
 // SetReadVersion sets the read version manually.
@@ -265,21 +250,4 @@ func (tx *Transaction) nextBackoff() time.Duration {
 	// Add jitter: multiply by random [0.0, 1.0).
 	jitter := time.Duration(float64(base) * rand.Float64())
 	return jitter
-}
-
-// FDBError represents an FDB error with a code.
-type FDBError struct {
-	Code    int
-	Message string
-}
-
-func (e *FDBError) Error() string {
-	return fmt.Sprintf("fdb error %d: %s", e.Code, e.Message)
-}
-
-func extractErrorCode(err error) int {
-	if fdbErr, ok := err.(*FDBError); ok {
-		return fdbErr.Code
-	}
-	return -1
 }

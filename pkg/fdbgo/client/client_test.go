@@ -2,9 +2,12 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 func TestParseClusterString(t *testing.T) {
@@ -159,7 +162,8 @@ func TestOnError_Retryable(t *testing.T) {
 	tx := &Transaction{state: txStateActive}
 	tx.Set([]byte("key"), []byte("val"))
 
-	err := &FDBError{Code: ErrNotCommitted, Message: "conflict"}
+	// wire.FDBError with a retryable code. Wrap it like real code does.
+	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
 	result := tx.OnError(err)
 
 	if result != nil {
@@ -177,14 +181,22 @@ func TestOnError_NonRetryable(t *testing.T) {
 	t.Parallel()
 
 	tx := &Transaction{state: txStateActive}
-	err := &FDBError{Code: 9999, Message: "unknown"}
-	result := tx.OnError(err)
 
+	// Non-retryable FDB error.
+	err := fmt.Errorf("something: %w", &wire.FDBError{Code: 9999})
+	result := tx.OnError(err)
 	if result == nil {
-		t.Error("expected non-nil (non-retryable)")
+		t.Error("expected non-nil (non-retryable FDB error)")
 	}
 	if tx.state != txStateErrored {
 		t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
+	}
+
+	// Non-FDB error (no wire.FDBError in chain) is also non-retryable.
+	tx2 := &Transaction{state: txStateActive}
+	result2 := tx2.OnError(fmt.Errorf("network timeout"))
+	if result2 == nil {
+		t.Error("expected non-nil (non-FDB error)")
 	}
 }
 
