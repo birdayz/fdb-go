@@ -25,7 +25,7 @@ docker run --rm \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$(realpath "$GEN_CPP"):/work/generated_messages.cpp:ro" \
     -v "$(realpath "$(dirname "$GEN_CPP")/fdb_stubs.h"):/work/fdb_stubs.h:ro" \
-    -v "$(realpath "$(dirname "$GEN_CPP")/schema_extractor.h"):/work/schema_extractor.h:ro" \
+    -v "$(realpath "$(dirname "$0")/schema_extractor.h"):/work/schema_extractor.h:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/fdb-build" \
     -v "$SRC_CACHE:/fdb" \
@@ -39,7 +39,7 @@ docker run --rm \
             cp -r /fdb_src/* /fdb/
         fi
         cp /work/generated_messages.cpp /fdb/generated_messages.cpp
-        cp /work/schema_extractor.h /fdb/schema_extractor.h
+        cp -f /work/schema_extractor.h /fdb/schema_extractor.h
         # Also copy fdb_stubs.h if mounted
         if [ -f /work/fdb_stubs.h ]; then
             cp /work/fdb_stubs.h /fdb/fdb_stubs.h
