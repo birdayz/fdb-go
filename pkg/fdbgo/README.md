@@ -152,6 +152,66 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
 
 55 tests total across 4 packages. Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required).
 
+## Fault injection
+
+The client supports a custom `DialFunc` for testing failure scenarios against real FDB. Same pattern as `http.Transport.DialContext` — no mocks, no artificial interfaces.
+
+```go
+// faultConn wraps net.Conn to inject failures at the TCP level.
+type faultConn struct {
+    net.Conn
+    killReads atomic.Bool
+}
+
+func (f *faultConn) Read(b []byte) (int, error) {
+    if f.killReads.Load() {
+        return 0, io.EOF  // simulate network failure
+    }
+    return f.Conn.Read(b)
+}
+
+// Inject the custom dialer before connecting.
+cluster := client.NewClusterFromConfig(cf)
+cluster.SetDialFunc(func(ctx context.Context, network, addr string) (net.Conn, error) {
+    conn, err := net.DialTimeout(network, addr, 5*time.Second)
+    if err != nil {
+        return nil, err
+    }
+    fc := &faultConn{Conn: conn}
+    // Store fc somewhere so the test can arm/disarm it later
+    return fc, nil
+})
+cluster.Connect(ctx)
+
+// Later, arm the fault:
+fc.killReads.Store(true)   // next Read → EOF → connection dies
+// ... commit happens, server processes it, but reply is lost ...
+
+// Disarm and reconnect:
+fc.killReads.Store(false)
+```
+
+### What you can test
+
+| Scenario | How |
+|---|---|
+| `commit_unknown_result` (1021) | Kill reads after commit frame sent — server commits but client sees EOF |
+| Network partition | Kill reads indefinitely — all RPCs timeout |
+| Slow network | Add `time.Sleep` in Read — triggers context deadline |
+| Connection reset | Return `net.ErrClosed` from Read/Write |
+
+### How self-conflicting works (commit_unknown_result)
+
+When `OnError` receives error 1021, the transaction MAY have committed on the server. To prevent double-apply on retry:
+
+1. `OnError(1021)` copies all write conflict ranges into the read conflict set
+2. Transaction is reset, `Transact()` retries the user function
+3. On the retry's commit, the commit proxy checks: "did any read conflict ranges change since read version?"
+4. Since the ORIGINAL commit wrote to those ranges, the check fails → `not_committed` (1020)
+5. The retry does NOT apply mutations — no double-apply
+
+This matches C++ `NativeAPI::makeSelfConflicting()`. Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
+
 ## Adding a new request/response type
 
 1. Add the C++ type to `cmd/fdb-schema-extract/main.cpp` (include header, add `extractType<T>()` call)
