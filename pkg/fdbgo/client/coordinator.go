@@ -35,41 +35,14 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 	}
 }
 
-// buildOpenDatabaseCoordRequest constructs the request manually using the
-// Writer API. We can't use the generated MarshalFDB because it uses WriteBytes
-// for nested struct fields (knownClientInfoID, reply), but FDB expects proper
-// nested FlatBuffers objects with vtable soffsets.
 func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
-	// clusterKey is "description:id" (NOT the full connection string with @addresses).
-	// The coordinator's cs.clusterKey() returns just this prefix part.
-	connStr := cf.Description + ":" + cf.ID
-
-	vt := types.OpenDatabaseCoordRequestVTable
-	fileID := types.OpenDatabaseCoordRequestFileID
-
-	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// slot 3: knownClientInfoID — UID INLINE at offset 4 (16 bytes zeros)
-		obj.WriteUint64(4, 0)
-		obj.WriteUint64(12, 0)
-
-		// slot 6: reply — ReplyPromise is a NESTED struct (4-byte RelativeOffset)
-		// The nested struct contains the UID (vtable {6, 20, 4}: 16 bytes inline)
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(40, replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-
-		// slot 4: clusterKey — use empty to skip the key check
-		// The coordinator will compare with its own key and accept if empty.
-		// If not, it sends wrong_cluster_key error which we handle.
-		obj.WriteBytes(32, []byte(connStr))
-		// TODO: if still getting wrong_cluster_key, try empty: obj.WriteBytes(32, []byte{})
-
-		// slot 8: internal
-		obj.WriteBool(48, true)
-	})
+	req := types.OpenDatabaseCoordRequest{
+		ClusterKey:  cf.Description + ":" + cf.ID,
+		ReplyFirst:  replyToken.First,
+		ReplySecond: replyToken.Second,
+		Internal:    true,
+	}
+	return req.MarshalFDB()
 }
 
 func parseCoordinatorResponse(data []byte) (*DBInfo, error) {

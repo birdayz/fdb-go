@@ -121,30 +121,15 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 // slot 5 (Reply) at offset 24: nested ReplyPromise struct
 // slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	vt := types.GetKeyServerLocationsRequestVTable
-	fileID := types.GetKeyServerLocationsRequestFileID
-
-	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// Generated slot mapping:
-		// slot 0 (Begin): vt[2]
-		obj.WriteBytes(int(vt[0+2]), key)
-		// slot 3 (Limit): vt[5]
-		obj.WriteInt32(int(vt[3+2]), 100)
-		// slot 5 (Reply): vt[7] — nested struct
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(int(vt[5+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-		// slot 7 (Tenant): vt[9] — nested struct with tenantId=-1
-		tenantVT := types.TenantInfoVTable
-		obj.WriteStruct(int(vt[7+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1)
-		})
-		// slot 8 (MinTenantVersion): vt[10]
-		obj.WriteInt64(int(vt[8+2]), -1)
-	})
+	req := types.GetKeyServerLocationsRequest{
+		Begin:            key,
+		Limit:            100,
+		ReplyFirst:       replyToken.First,
+		ReplySecond:      replyToken.Second,
+		TenantId:         -1,
+		MinTenantVersion: -1,
+	}
+	return req.MarshalFDB()
 }
 
 func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {

@@ -1749,12 +1749,24 @@ Leaves first, then compound types:
 - **`/port-fdb-type` skill**: AI reads C++ source → writes Go file. Mechanical port.
 - **`wire.FDBSerializable` interface**: `MarshalInto`, `UnmarshalFrom`, `TypeVTable`. All types implement it uniformly.
 
-### Cleanup — inline vtable literals and remaining hacks
+### Cleanup — done
 
-- [ ] **Replace inline vtable literals with types.* constants** — 11 occurrences across 5 client files: `wire.VTable{10, 17, 4, 16, 12}` → `types.TenantInfoVTable`, `wire.VTable{6, 20, 4}` → `types.ReplyPromiseVTable`, `wire.VTable{10, 29, 4, 20, 28}` → `types.SpanContextVTable`, `wire.VTable{22, 49, ...}` in coordinator.go → `types.OpenDatabaseCoordRequestVTable`.
-- [ ] **Fix wrong TenantInfo vtable in locality.go:141** — uses `{6, 12, 4}` (1 field) instead of correct `{10, 17, 4, 16, 12}` (3 fields). Works by accident.
-- [ ] **Encapsulate parseKeyValueVector in wire/types/** — readpath.go:174-209 hand-walks VecSerStrategy::String format (`binary.LittleEndian.Uint32` loop). This is wire format parsing, not client logic. Move to `wire/types/key_value_vector.go`.
-- [ ] **Build voidReply through wire.Writer** — transport/conn.go:308 uses hex-encoded ground-truth bytes. Should construct `ErrorOr<EnsureTable<Void>>` dynamically through the Writer.
+- [x] Replace inline vtable literals with types.* constants
+- [x] Fix wrong TenantInfo vtable in locality.go
+- [x] Encapsulate parseKeyValueVector in wire/types/
+- [x] Build voidReply through wire.Writer (WriteRootObject)
+
+### CRITICAL — Port request types to wire/types/ (eliminate hardcoded offsets)
+
+Client code hand-builds requests with raw ObjectWriter calls and hardcoded byte offsets (`inner.WriteUint64(4, ...)`, `obj.WriteBytes(32, ...)`). If FDB changes ANY struct layout, these break silently. Each request type needs a Go struct in `wire/types/` with `MarshalFDB()` that derives ALL offsets from vtable constants. Client code just fills fields and calls `MarshalFDB()`.
+
+- [ ] **GetReadVersionRequest** — grv.go:140-162. 100% hardcoded offsets. Fields: transactionCount, flags, maxVersion, replyToken.
+- [ ] **GetValueRequest** — readpath.go:195-212. Has a partial wire/types file but client doesn't use it. Fields: key, version, replyToken, tenantId, ssLatestVersions.
+- [ ] **GetKeyValuesRequest** — readpath.go:99-161. Fields: begin, end, version, limit, limitBytes, replyToken, tenantId, ssLatestVersions.
+- [ ] **CommitTransactionRequest** — commitpath.go:55-107. Fields: transaction (CommitTransactionRef), replyToken, flags, tenantId, spanContext, idempotencyId. Includes nested CommitTransactionRef with mutation/range vectors.
+- [ ] **GetKeyServerLocationsRequest** — locality.go:128-153. Fields: begin, limit, replyToken, tenantId, minTenantVersion.
+- [ ] **OpenDatabaseCoordRequest** — coordinator.go:44-79. Fields: knownClientInfoID, clusterKey, replyToken, internal.
+- [ ] **Shared helpers** — ReplyPromise, TenantInfo, SpanContext write patterns extracted into reusable MarshalInto methods on their types.
 
 ### HIGH — Remaining client features
 

@@ -51,10 +51,6 @@ func (tx *Transaction) commit(ctx context.Context) error {
 // buildCommitTransactionRequest constructs the full request with embedded
 // CommitTransactionRef (mutations + conflict ranges), ReplyPromise, and TenantInfo.
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
-	vt := types.CommitTransactionRequestVTable
-	fileID := types.CommitTransactionRequestFileID
-
-	// Serialize vectors through wire/types.
 	mutBlobs := make([][]byte, len(tx.mutations))
 	for i, m := range tx.mutations {
 		mutBlobs[i] = types.MarshalMutationRef(uint8(m.Type), m.Key, m.Value)
@@ -73,49 +69,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 	}
 	writeCRData := wire.PackVectorOfStructBlobs(writeCRBlobs)
 
-	w := wire.NewWriter(nil)
-	// Add nested structs in REVERSE serialization order so the Writer
-	// produces byte layout matching C++ (last added = highest byte addr).
-	return w.WriteMessage(fileID, vt, 4, func(obj *wire.ObjectWriter) {
-		// slot 10: TenantInfo (nested struct with tenantId=-1)
-		tenantVT := types.TenantInfoVTable
-		obj.WriteStruct(int(vt[10+2]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1) // tenantId = -1 (no tenant)
-		})
-
-		// slot 9: SpanContext (nested struct, all zeros = default)
-		spanVT := types.SpanContextVTable
-		obj.WriteStruct(int(vt[9+2]), spanVT, 8, func(inner *wire.ObjectWriter) {
-			// Default SpanContext: all zeros
-		})
-
-		// slot 1: Reply (nested ReplyPromise with UID)
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(int(vt[1+2]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-
-		// slot 0: Transaction (nested CommitTransactionRef)
-		obj.WriteStruct(int(vt[0+2]), types.CommitTransactionRefVTable, 8, func(inner *wire.ObjectWriter) {
-			// slot 3: read_snapshot (int64) at offset 4
-			inner.WriteInt64(4, tx.readVersion)
-			// slot 0: read_conflict_ranges at offset 12
-			inner.WriteRawOOL(12, readCRData)
-			// slot 1: write_conflict_ranges at offset 16
-			inner.WriteRawOOL(16, writeCRData)
-			// slot 2: mutations at offset 20
-			inner.WriteRawOOL(20, mutData)
-			// Remaining fields (report_conflicting_keys, lock_aware,
-			// spanContext, tenantIds) left at zero defaults.
-		})
-
-		// slot 2: Flags (uint32) — 0
-		obj.WriteUint32(int(vt[2+2]), 0)
-
-		// slot 11: IdempotencyId (empty bytes)
-		obj.WriteBytes(int(vt[11+2]), nil)
-	})
+	return types.MarshalCommitTransactionRequest(
+		tx.readVersion,
+		mutData, readCRData, writeCRData,
+		replyToken.First, replyToken.Second,
+		-1, // tenantId
+	)
 }
 
 // parseCommitReply parses an ErrorOr<CommitID> response.

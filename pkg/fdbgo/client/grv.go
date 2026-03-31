@@ -133,32 +133,14 @@ func (b *GRVBatcher) sendGRVRequest() (int64, error) {
 	}
 }
 
-// buildGetReadVersionRequest constructs the request with embedded reply token.
-// Real vtable from C++ test vector: {20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
-// Slot 5 (Reply) at offset 28: nested ReplyPromise struct (UID vtable {6,20,4})
-// Slot 7 (MaxVersion) at offset 4: int64 (-1 = latest)
 func buildGetReadVersionRequest(replyToken transport.UID) []byte {
-	vt := types.GetReadVersionRequestVTable
-	fileID := types.GetReadVersionRequestFileID
-
-	w := wire.NewWriter(nil)
-	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
-		// slot 7: MaxVersion at offset 4 (int64, -1 = latest version)
-		obj.WriteInt64(4, -1)
-
-		// slot 0: TransactionCount at offset 12 (uint32)
-		obj.WriteUint32(12, 1)
-
-		// slot 1: Flags at offset 16 (uint32, 0 = default priority)
-		obj.WriteUint32(16, 0)
-
-		// slot 5: Reply at offset 28 (nested ReplyPromise struct)
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(28, replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-	})
+	req := types.GetReadVersionRequest{
+		TransactionCount: 1,
+		MaxVersion:       -1,
+		ReplyFirst:       replyToken.First,
+		ReplySecond:      replyToken.Second,
+	}
+	return req.MarshalFDB()
 }
 
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.

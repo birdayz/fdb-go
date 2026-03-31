@@ -1,19 +1,15 @@
 package types
 
-// SpanContext — fdbclient/include/fdbclient/Tracing.h:46
-// C++ serialize: serializer(ar, traceID, spanID, m_Flags)
-//   slot 0: traceID — UID (scalar_traits, 16 bytes inline at offset 4)
-//   slot 1: spanID  — uint64_t (8 bytes at offset 20)
-//   slot 2: m_Flags — TraceFlags/uint8_t (1 byte at offset 28)
+import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-import (
-	"encoding/binary"
-
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
-)
-
+// SpanContext — flow/Tracing.h
+// serialize: serializer(ar, traceID, spanID, m_Flags)
+//
+//	slot 0: traceID (UID, 16 bytes inline)
+//	slot 1: spanID (uint64)
+//	slot 2: m_Flags (uint8)
 type SpanContext struct {
-	TraceID [16]byte // UID — 16 bytes inline
+	TraceID [16]byte
 	SpanID  uint64
 	Flags   uint8
 }
@@ -21,9 +17,10 @@ type SpanContext struct {
 func (m *SpanContext) TypeVTable() wire.VTable { return SpanContextVTable }
 
 func (m *SpanContext) MarshalInto(obj *wire.ObjectWriter) {
-	obj.WriteUID(4, m.TraceID)    // slot 0: traceID at offset 4
-	obj.WriteUint64(20, m.SpanID) // slot 1: spanID at offset 20
-	obj.WriteUint8(28, m.Flags)   // slot 2: m_Flags at offset 28
+	vt := SpanContextVTable
+	obj.WriteUID(int(vt[2]), m.TraceID)
+	obj.WriteUint64(int(vt[3]), m.SpanID)
+	obj.WriteUint8(int(vt[4]), m.Flags)
 }
 
 func (m *SpanContext) UnmarshalFrom(r *wire.Reader) error {
@@ -38,6 +35,3 @@ func (m *SpanContext) UnmarshalFrom(r *wire.Reader) error {
 	}
 	return nil
 }
-
-// Ensure binary import is used (for future use in complex types).
-var _ = binary.LittleEndian

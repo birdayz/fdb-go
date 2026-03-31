@@ -130,35 +130,22 @@ func isWrongShardServer(err error) bool {
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrWrongShardServer
 }
 
-// buildGetKeyValuesRequest uses WriteMessageWithVTables with the generated closure.
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	vt := types.GetKeyValuesRequestVTable
-	fileID := types.GetKeyValuesRequestFileID
-	w := wire.NewWriter(nil)
-	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetKeyValuesRequestVTableClosure, func(obj *wire.ObjectWriter) {
-		tenantVT := types.TenantInfoVTable
-		obj.WriteStruct(int(vt[11]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1)
-		})
-		obj.WriteStruct(int(vt[10]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(int(vt[9]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-		obj.WriteStruct(int(vt[3]), types.KeySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
-			inner.WriteBytes(4, end)
-			inner.WriteInt32(8, 1) // firstGreaterOrEqual
-		})
-		obj.WriteStruct(int(vt[2]), types.KeySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
-			inner.WriteBytes(4, begin)
-			inner.WriteInt32(8, 1) // firstGreaterOrEqual
-		})
-		obj.WriteInt64(int(vt[4]), version)
-		obj.WriteInt32(int(vt[5]), limit)
-		obj.WriteInt32(int(vt[6]), 0x7FFFFFFF)          // limitBytes
-		obj.WriteBytes(int(vt[14]), emptyVersionVector) // ssLatestCommitVersions (16 bytes)
-	})
+	req := types.GetKeyValuesRequest{
+		BeginKey:     begin,
+		BeginOffset:  1,    // firstGreaterOrEqual
+		BeginOrEqual: true, // orEqual=true for firstGreaterOrEqual
+		EndKey:       end,
+		EndOffset:    1,
+		EndOrEqual:   true,
+		Version:      version,
+		Limit:        limit,
+		LimitBytes:   0x7FFFFFFF,
+		ReplyFirst:   replyToken.First,
+		ReplySecond:  replyToken.Second,
+		TenantId:     -1,
+	}
+	return req.MarshalFDB()
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
@@ -186,30 +173,15 @@ type KeyValue struct {
 	Value []byte
 }
 
-// emptyVersionVector is the serialized form of an empty VersionVector.
-// sizeof(size_t) + sizeof(Version) = 16 bytes (utlCount=0, maxVersion=invalidVersion).
-var emptyVersionVector = make([]byte, 16)
-
-// buildGetValueRequest uses WriteMessageWithVTables with the generated vtable closure.
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	vt := types.GetValueRequestVTable
-	fileID := types.GetValueRequestFileID
-	w := wire.NewWriter(nil)
-	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetValueRequestVTableClosure, func(obj *wire.ObjectWriter) {
-		tenantVT := types.TenantInfoVTable
-		obj.WriteStruct(int(vt[8]), tenantVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteInt64(4, -1)
-		})
-		obj.WriteStruct(int(vt[7]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-		replyVT := types.ReplyPromiseVTable
-		obj.WriteStruct(int(vt[6]), replyVT, 8, func(inner *wire.ObjectWriter) {
-			inner.WriteUint64(4, replyToken.First)
-			inner.WriteUint64(12, replyToken.Second)
-		})
-		obj.WriteInt64(int(vt[3]), version)
-		obj.WriteBytes(int(vt[2]), key)
-		obj.WriteBytes(int(vt[11]), emptyVersionVector) // 16 bytes, not nil
-	})
+	req := types.GetValueRequest{
+		Key:         key,
+		Version:     version,
+		ReplyFirst:  replyToken.First,
+		ReplySecond: replyToken.Second,
+		TenantId:    -1,
+	}
+	return req.MarshalFDB()
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
