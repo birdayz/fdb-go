@@ -1839,11 +1839,21 @@ Leaves first, then compound types:
 
 - [x] **Multi-shard GetRange** — `getRange` now loops across shard boundaries, advancing `begin` past last returned key and re-locating for the next shard. Single-shard continuation tested via `TestGetRangeWithLimit`.
 - [ ] **Multi-shard GetRange integration test** — needs multi-node testcontainer support (single-node = single shard, can't verify cross-shard continuation). Track in testcontainers pkg.
-- [ ] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
-- [ ] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
+- [x] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
+- [x] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
 - [ ] **commit_unknown_result resolution** — dummy transaction + idempotency ID check.
 - [ ] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510.
 - [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
+
+### HIGH — Integration test coverage
+
+Every client feature must be tested against a real FDB testcontainer (not mocks, not unit tests). Current unit-only tests that need integration equivalents:
+
+- [ ] **Cancel** — Cancel a transaction mid-flight, verify subsequent ops fail against real DB
+- [ ] **OnError retry codes** — currently unit-only with constructed errors. Add integration test that triggers real 1020 via Transact auto-retry (partially covered by TestTransactRetry)
+- [ ] **ReadOnlyCommit** — verify read-only transaction commit is a no-op against real DB
+- [ ] **AddReadConflictRange** — range version (not just key) against real DB
+- [ ] **AddWriteConflictRange** — range version against real DB
 
 ### MEDIUM — Performance
 
