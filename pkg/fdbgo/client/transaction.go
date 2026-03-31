@@ -285,6 +285,28 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
 }
 
+// AddReadConflictRange adds an explicit read conflict range [begin, end).
+// If any key in this range is modified by another transaction between
+// this transaction's read version and commit, the commit will fail.
+func (tx *Transaction) AddReadConflictRange(begin, end []byte) {
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+}
+
+// AddReadConflictKey adds a read conflict on a single key.
+func (tx *Transaction) AddReadConflictKey(key []byte) {
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+}
+
+// AddWriteConflictRange adds an explicit write conflict range [begin, end).
+func (tx *Transaction) AddWriteConflictRange(begin, end []byte) {
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+}
+
+// AddWriteConflictKey adds a write conflict on a single key.
+func (tx *Transaction) AddWriteConflictKey(key []byte) {
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: key, End: append(key, 0)})
+}
+
 func (tx *Transaction) reset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false

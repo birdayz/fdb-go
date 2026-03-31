@@ -392,6 +392,72 @@ func TestSnapshotRead(t *testing.T) {
 	t.Logf("tx3 conflict (expected): %v", err)
 }
 
+func TestExplicitConflictRanges(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("ecr_key"), []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// AddReadConflictKey: tx1 adds explicit read conflict (no actual read),
+	// tx2 writes the same key. tx1 should conflict on commit.
+	tx1 := db.CreateTransaction()
+	rv, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx1.SetReadVersion(rv)
+	tx1.AddReadConflictKey([]byte("ecr_key"))
+	tx1.Set([]byte("ecr_other"), []byte("unrelated"))
+
+	// tx2 writes the conflicting key.
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("ecr_key"), []byte("v1"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tx2: %v", err)
+	}
+
+	err = tx1.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx1 should conflict due to AddReadConflictKey")
+	}
+	t.Logf("tx1 conflict (expected): %v", err)
+
+	// AddWriteConflictKey: tx3 adds explicit write conflict on a key
+	// that tx4 also writes. tx4 reads it first, so tx4 should conflict.
+	tx3 := db.CreateTransaction()
+	rv3, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx3.SetReadVersion(rv3)
+
+	tx4 := db.CreateTransaction()
+	tx4.SetReadVersion(rv3)
+	_, _ = tx4.Get(ctx, []byte("ecr_wc")) // adds read conflict
+	tx4.Set([]byte("ecr_wc"), []byte("from_tx4"))
+
+	// tx3 only has a write conflict (no mutation on ecr_wc, but conflict range covers it).
+	tx3.AddWriteConflictKey([]byte("ecr_wc"))
+	tx3.Set([]byte("ecr_dummy"), []byte("x")) // need a mutation to commit
+	err = tx3.Commit(ctx)
+	if err != nil {
+		t.Fatalf("tx3 should succeed: %v", err)
+	}
+
+	// tx4 should now conflict — tx3's write conflict overlaps tx4's read conflict.
+	err = tx4.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx4 should conflict due to tx3's AddWriteConflictKey")
+	}
+	t.Logf("tx4 conflict (expected): %v", err)
+}
+
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
