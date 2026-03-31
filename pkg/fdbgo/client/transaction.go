@@ -264,7 +264,6 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 func (tx *Transaction) OnError(err error) error {
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
-		// Not an FDB error — non-retryable.
 		tx.state = txStateErrored
 		return err
 	}
@@ -274,10 +273,25 @@ func (tx *Transaction) OnError(err error) error {
 		return err
 	}
 
+	// For commit_unknown_result: the transaction MAY have committed on the
+	// server. To prevent double-apply on retry, copy the write conflict ranges
+	// into a "self-conflict" set. On retry, these become read conflicts — if
+	// the original did commit, the retry will conflict with its own writes.
+	// This matches C++ NativeAPI's makeSelfConflicting().
+	var selfConflicts []KeyRange
+	if fdbErr.Code == ErrCommitUnknownResult {
+		selfConflicts = make([]KeyRange, len(tx.writeConflicts))
+		copy(selfConflicts, tx.writeConflicts)
+	}
+
 	tx.retryCount++
 	tx.backoff = tx.nextBackoff()
 	time.Sleep(tx.backoff)
 	tx.reset()
+
+	// Inject self-conflicts after reset so the retry carries them.
+	tx.readConflicts = append(tx.readConflicts, selfConflicts...)
+
 	return nil
 }
 

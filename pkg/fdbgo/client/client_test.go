@@ -231,6 +231,61 @@ func TestOnError_NonRetryable(t *testing.T) {
 	})
 }
 
+func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.Set([]byte("key_a"), []byte("val"))
+	tx.Set([]byte("key_b"), []byte("val"))
+	tx.ClearRange([]byte("range_begin"), []byte("range_end"))
+
+	// Capture write conflicts before OnError resets them.
+	originalWriteConflicts := make([]KeyRange, len(tx.writeConflicts))
+	copy(originalWriteConflicts, tx.writeConflicts)
+	if len(originalWriteConflicts) != 3 {
+		t.Fatalf("expected 3 write conflicts, got %d", len(originalWriteConflicts))
+	}
+
+	// Simulate commit_unknown_result.
+	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrCommitUnknownResult})
+	result := tx.OnError(err)
+	if result != nil {
+		t.Fatalf("1021 should be retryable, got: %v", result)
+	}
+
+	// After reset, mutations and write conflicts should be cleared.
+	if len(tx.mutations) != 0 {
+		t.Errorf("mutations should be cleared, got %d", len(tx.mutations))
+	}
+	if len(tx.writeConflicts) != 0 {
+		t.Errorf("writeConflicts should be cleared, got %d", len(tx.writeConflicts))
+	}
+
+	// But readConflicts should contain the ORIGINAL write conflicts
+	// (self-conflicting for double-apply protection).
+	if len(tx.readConflicts) != len(originalWriteConflicts) {
+		t.Fatalf("readConflicts: got %d, want %d (self-conflicts from writes)",
+			len(tx.readConflicts), len(originalWriteConflicts))
+	}
+	for i, rc := range tx.readConflicts {
+		if string(rc.Begin) != string(originalWriteConflicts[i].Begin) ||
+			string(rc.End) != string(originalWriteConflicts[i].End) {
+			t.Errorf("readConflict[%d]: got [%q,%q), want [%q,%q)",
+				i, rc.Begin, rc.End,
+				originalWriteConflicts[i].Begin, originalWriteConflicts[i].End)
+		}
+	}
+
+	// Verify that a normal retryable error (1020) does NOT inject self-conflicts.
+	tx2 := &Transaction{state: txStateActive}
+	tx2.Set([]byte("key"), []byte("val"))
+	err2 := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
+	tx2.OnError(err2)
+	if len(tx2.readConflicts) != 0 {
+		t.Errorf("1020 should NOT inject self-conflicts, got %d readConflicts", len(tx2.readConflicts))
+	}
+}
+
 func TestReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 
