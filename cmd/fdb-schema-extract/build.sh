@@ -39,6 +39,9 @@ docker run --rm \
         cp /work/main.cpp /fdb/schema_extract_main.cpp
         cp /work/name_capture.cpp /fdb/schema_extract_names.cpp
 
+        # Patch: disable binding tester (references python_binding which doesnt exist).
+        sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
+
         # Add our cmake target (idempotent).
         if ! grep -q schema_extract /fdb/CMakeLists.txt; then
             cat >> /fdb/CMakeLists.txt << "CMAKE_EOF"
@@ -88,7 +91,8 @@ CMAKE_EOF
             -DWITH_CSHARP=OFF \
             -DWITH_PYTHON=OFF \
             -DUSE_WERROR=OFF \
-            2>&1 | tail -3
+            -DBUILD_TESTING=OFF \
+            2>&1 | tail -20
         echo "=== cmake configured ==="
 
         echo "=== Building fdbserver (-j$JOBS) ==="
