@@ -2,7 +2,14 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "types",
-    srcs = ["vtables_generated.go"],
+    srcs = [
+        "error.go",
+        "get_value_request.go",
+        "key_selector_ref.go",
+        "read_options.go",
+        "span_context.go",
+        "vtables_generated.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/wire"],
