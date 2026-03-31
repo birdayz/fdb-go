@@ -645,6 +645,93 @@ func vtablesMatch(a, b VTable) bool {
 	return true
 }
 
+// MarshalStructBlob produces a standalone FlatBuffers object blob suitable for
+// embedding in a VectorRef<serialize_member>. Layout:
+//
+//	[vtable bytes][padding to 4][soffset(4) + field data][OOL data]
+//
+// The soffset at the start of the object points back to the vtable.
+// OOL RelativeOffsets are patched to point forward into the OOL region.
+func MarshalStructBlob(vt VTable, fn func(*ObjectWriter)) []byte {
+	objSize := int(vt[1])
+	obj := &ObjectWriter{
+		object: make([]byte, objSize),
+	}
+	fn(obj)
+
+	vtBytes := len(vt) * 2
+	vtPos := 0
+	objPos := (vtBytes + 3) &^ 3 // align to 4
+	objEnd := objPos + objSize
+
+	// OOL data goes after object (forward from object)
+	oolPos := (objEnd + 3) &^ 3
+	oolSize := len(obj.outOfLine)
+	total := oolPos + oolSize
+	total = (total + 3) &^ 3
+
+	buf := make([]byte, total)
+
+	// Write vtable
+	for i, v := range vt {
+		binary.LittleEndian.PutUint16(buf[vtPos+i*2:], v)
+	}
+
+	// Write soffset (distance from object to vtable)
+	binary.LittleEndian.PutUint32(buf[objPos:], uint32(int32(objPos-vtPos)))
+
+	// Write fields (skip soffset at [0:4])
+	copy(buf[objPos+4:], obj.object[4:])
+
+	// Write OOL and patch RelativeOffsets
+	if oolSize > 0 {
+		copy(buf[oolPos:], obj.outOfLine)
+		for _, p := range obj.patches {
+			fieldAddr := objPos + p.objectOffset
+			targetAddr := oolPos + p.oolOffset
+			binary.LittleEndian.PutUint32(buf[fieldAddr:], uint32(targetAddr-fieldAddr))
+		}
+	}
+
+	return buf
+}
+
+// PackVectorOfStructBlobs packs pre-marshaled struct blobs into VectorRef<serialize_member> format:
+//
+//	[count(4)][RelOff_0(4)]...[RelOff_N-1(4)][blob_0][blob_1]...
+//
+// Each RelOff points from its own position to the blob's object (after the vtable).
+func PackVectorOfStructBlobs(blobs [][]byte) []byte {
+	n := len(blobs)
+	headerSize := 4 + n*4
+
+	pos := headerSize
+	positions := make([]int, n)
+	for i, blob := range blobs {
+		pos = (pos + 3) &^ 3
+		positions[i] = pos
+		pos += len(blob)
+	}
+	total := (pos + 3) &^ 3
+
+	buf := make([]byte, total)
+	binary.LittleEndian.PutUint32(buf, uint32(n))
+
+	for i, blob := range blobs {
+		copy(buf[positions[i]:], blob)
+
+		// RelOff points to the blob's object (after vtable + padding).
+		vtSize := int(binary.LittleEndian.Uint16(blob[0:]))
+		objPosInBlob := (vtSize + 3) &^ 3
+
+		relOffPos := 4 + i*4
+		targetInBuf := positions[i] + objPosInBlob
+		binary.LittleEndian.PutUint32(buf[relOffPos:], uint32(targetInBuf-relOffPos))
+	}
+
+	return buf
+}
+
 func packVTable(vt VTable) []byte {
 	buf := make([]byte, len(vt)*2)
 	for i, v := range vt {
