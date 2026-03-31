@@ -747,71 +747,82 @@ func generateCppTestFile(structs []parsedStruct, _ map[string]map[string]map[str
 #include <unistd.h>
 #include <sys/wait.h>
 
-// Minimal context for get_vtableset_impl — only needs the visitor flags.
-struct VTableContext {
-    static constexpr bool isDeserializing = false;
-    static constexpr bool isSerializing = false;
-    static constexpr bool is_fb_visitor = true;
-    VTableContext& context() { return *this; }
-    // Required by some trait paths but never called during vtable collection.
-    ProtocolVersion protocolVersion() const { return currentProtocolVersion(); }
-};
+// Extract vtable closure from a serialized test vector.
+// The vtables are in the region between the footer (byte 8) and the FakeRoot.
+// This is the same data that get_vtableset_impl produces — the ObjectWriter
+// packs them into exactly this layout.
+void extractVTablesFromTestVector(const char* outDir, const char* name, const uint8_t* data, int size) {
+    if (size < 16) return;
 
-// Emit the vtable closure for a message type.
-// Uses get_vtableset_impl which traverses ALL reachable types recursively —
-// the same function the server uses during deserialization.
-template <class T>
-void writeVTableJSON(const char* outDir, const char* name, const T& msg) {
-    auto root = detail::fake_root(const_cast<T&>(msg));
-    VTableContext ctx;
-    auto vtableset = detail::get_vtableset_impl(root, ctx);
+    // Skip protocol version prefix if present.
+    int off = 0;
+    if (size >= 16 && data[7] == 0x0F && data[6] == 0xDB) {
+        off = 8;
+    }
+    if (off + 8 > size) return;
+
+    uint32_t rootOff;
+    memcpy(&rootOff, data + off, 4);
+    int vtableEnd = off + (int)rootOff;  // FakeRoot position = end of vtable region
+    int pos = off + 8;  // Skip footer (root_offset + file_id)
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s.vtables.json", outDir, name);
     FILE* f = fopen(path, "w");
-    if (!f) { perror(path); return; }
+    if (!f) return;
 
-    // Parse the packed_tables: sequential vtables, each starting with vt_size(uint16).
     fprintf(f, "{\n  \"name\": \"%s\",\n  \"vtables\": [\n", name);
-    size_t pos = 0;
     bool first = true;
-    while (pos < vtableset.packed_tables.size()) {
-        uint16_t vt_size;
-        memcpy(&vt_size, &vtableset.packed_tables[pos], 2);
-        if (vt_size < 4 || vt_size > 128 || pos + vt_size > vtableset.packed_tables.size()) break;
+    while (pos < vtableEnd && pos + 2 <= size) {
+        uint16_t vtSize;
+        memcpy(&vtSize, data + pos, 2);
+        if (vtSize == 0) { pos += 2; continue; }  // padding
+        if (vtSize < 6 || vtSize > 64 || vtSize % 2 != 0 || pos + vtSize > size) break;
+        // Sanity: obj_size (entry 1) should be reasonable
+        uint16_t objSize;
+        memcpy(&objSize, data + pos + 2, 2);
+        if (objSize < 4 || objSize > 128) { pos += 2; continue; }
+
         if (!first) fprintf(f, ",\n");
         first = false;
         fprintf(f, "    [");
-        for (size_t i = 0; i < vt_size / 2; i++) {
+        for (int i = 0; i < vtSize / 2; i++) {
             if (i > 0) fprintf(f, ", ");
             uint16_t val;
-            memcpy(&val, &vtableset.packed_tables[pos + i * 2], 2);
+            memcpy(&val, data + pos + i * 2, 2);
             fprintf(f, "%u", val);
         }
         fprintf(f, "]");
-        pos += vt_size;
+        pos += vtSize;
     }
     fprintf(f, "\n  ]\n}\n");
     fclose(f);
 }
 
+// Emit vtable closure by serializing the message (to get the test vector)
+// then extracting vtables from the serialized bytes.
 template <class T>
 void emitVTables(const char* outDir, const char* name) {
     pid_t pid = fork();
     if (pid == 0) {
         T msg{};
-        writeVTableJSON(outDir, name, msg);
+        ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+        wr.serialize(FileIdentifierFor<T>::value, msg);
+        auto bytes = wr.toStringRef();
+        extractVTablesFromTestVector(outDir, name, bytes.begin(), bytes.size());
         _exit(0);
     }
     int status = 0;
     waitpid(pid, &status, 0);
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        // Zero-init fallback.
         pid = fork();
         if (pid == 0) {
             alignas(T) char storage[sizeof(T)] = {};
             T& msg = *reinterpret_cast<T*>(storage);
-            writeVTableJSON(outDir, name, msg);
+            ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+            wr.serialize(FileIdentifierFor<T>::value, msg);
+            auto bytes = wr.toStringRef();
+            extractVTablesFromTestVector(outDir, name, bytes.begin(), bytes.size());
             _exit(0);
         }
         waitpid(pid, &status, 0);
@@ -834,6 +845,9 @@ void doEmit(const char* outDir, const char* name) {
     for (int i = 0; i < bytes.size(); i++) fprintf(f, "%02x", bytes[i]);
     fprintf(f, "\"\n}\n");
     fclose(f);
+
+    // Also extract vtable closure from the same serialized bytes.
+    extractVTablesFromTestVector(outDir, name, bytes.begin(), bytes.size());
 }
 
 // Zero-init version: bypasses constructors that crash due to unresolved vtables.
@@ -854,6 +868,9 @@ void doEmitZero(const char* outDir, const char* name) {
     for (int i = 0; i < bytes.size(); i++) fprintf(f, "%02x", bytes[i]);
     fprintf(f, "\"\n}\n");
     fclose(f);
+
+    // Also extract vtable closure from the same serialized bytes.
+    extractVTablesFromTestVector(outDir, name, bytes.begin(), bytes.size());
 }
 
 // Fork-safe wrapper: try default construct first, fall back to zero-init.
@@ -910,7 +927,6 @@ int main(int argc, char** argv) {
 			continue // composed file identifiers
 		}
 		fmt.Fprintf(&b, "    emit<%s>(outDir, \"%s\");\n", s.name, s.name)
-		fmt.Fprintf(&b, "    emitVTables<%s>(outDir, \"%s\");\n", s.name, s.name)
 		emitCount++
 	}
 
