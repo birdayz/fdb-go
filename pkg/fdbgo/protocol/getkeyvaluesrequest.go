@@ -9,6 +9,19 @@ const GetKeyValuesRequest_FileIdentifier uint32 = 6795746
 
 var GetKeyValuesRequest_VTable = wire.VTable{32, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48, 0}
 
+// GetKeyValuesRequest_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetKeyValuesRequest_VTableClosure = []wire.VTable{
+	{18, 20, 4, 16, 17, 8, 18, 12, 19},
+	{10, 29, 4, 20, 28},
+	{10, 13, 4, 12, 8},
+	{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48},
+	{10, 17, 4, 16, 12},
+	{6, 20, 4},
+	{6, 8, 4},
+}
+
 // GetKeyValuesRequest — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetKeyValuesRequest struct {
 	Begin                  []byte // KeySelectorRef (slot 0)
@@ -63,7 +76,7 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetKeyValuesRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetKeyValuesRequest_FileIdentifier, GetKeyValuesRequest_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetKeyValuesRequest_FileIdentifier, GetKeyValuesRequest_VTable, 8, GetKeyValuesRequest_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[0+2]), m.Begin)
 		obj.WriteBytes(int(GetKeyValuesRequest_VTable[1+2]), m.End)
 		obj.WriteInt64(int(GetKeyValuesRequest_VTable[2+2]), m.Version)

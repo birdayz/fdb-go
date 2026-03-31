@@ -9,6 +9,14 @@ const CommitID_FileIdentifier uint32 = 14254927
 
 var CommitID_VTable = wire.VTable{16, 24, 4, 20, 22, 12, 23, 16}
 
+// CommitID_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var CommitID_VTableClosure = []wire.VTable{
+	{16, 24, 4, 20, 22, 12, 23, 16},
+	{6, 8, 4},
+}
+
 // CommitID — fdbclient/include/fdbclient/CommitProxyInterface.h
 type CommitID struct {
 	Version              int64  // Version (slot 0)
@@ -35,7 +43,7 @@ func (m *CommitID) UnmarshalFDB(data []byte) error {
 
 func (m *CommitID) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(CommitID_FileIdentifier, CommitID_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(CommitID_FileIdentifier, CommitID_VTable, 8, CommitID_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteInt64(int(CommitID_VTable[0+2]), m.Version)
 		obj.WriteUint16(int(CommitID_VTable[1+2]), m.TxnBatchId)
 	})

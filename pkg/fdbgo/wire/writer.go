@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"sort"
 )
@@ -57,15 +58,28 @@ func (w *Writer) WriteMessageWithVTables(fileID uint32, msgVTable VTable, maxFie
 	}
 	writeFields(obj)
 
-	// Collect all unique vtables: FakeRoot, message, nested structs, and extras.
+	// Collect all unique vtables. If extraVTables is a complete closure (from C++
+	// get_vtableset_impl), use it directly to preserve C++ vtable ordering.
+	// The C++ vtable order is determined by std::set<const VTable*> (pointer order),
+	// which we can't reproduce. The closure from the test vector captures the
+	// exact order the server expects.
 	vtableSet := newVTableSet()
-	vtableSet.add(fakeRootVTable)
-	vtableSet.add(msgVTable)
-	for _, ns := range obj.nestedStructs {
-		ns.collectVTables(vtableSet)
-	}
-	for _, vt := range extraVTables {
-		vtableSet.add(vt)
+	if len(extraVTables) > 0 {
+		// Use the closure order — it already contains ALL vtables.
+		vtableSet.ordered = true
+		for _, vt := range extraVTables {
+			vtableSet.addOrdered(vt)
+		}
+		// Also add any nested struct vtables not in the closure.
+		for _, ns := range obj.nestedStructs {
+			ns.collectVTables(vtableSet)
+		}
+	} else {
+		vtableSet.add(fakeRootVTable)
+		vtableSet.add(msgVTable)
+		for _, ns := range obj.nestedStructs {
+			ns.collectVTables(vtableSet)
+		}
 	}
 	vtableBytes := vtableSet.pack()
 	vtableSize := len(vtableBytes)
@@ -178,6 +192,7 @@ type vtableSetEntry struct {
 type vTableSet struct {
 	entries []vtableSetEntry
 	total   int
+	ordered bool // true when entries are in C++ closure order (don't re-sort)
 }
 
 func newVTableSet() *vTableSet {
@@ -194,16 +209,90 @@ func (s *vTableSet) add(vt VTable) {
 	s.total += len(vt) * 2
 }
 
+// addOrdered adds a vtable preserving insertion order, using tolerant
+// matching for dedup (handles trailing-zero differences between our vtables
+// and C++ closure vtables).
+func (s *vTableSet) addOrdered(vt VTable) {
+	for _, e := range s.entries {
+		if vtablesEqual(e.vt, vt) {
+			return
+		}
+		// Tolerant match: same obj_size + same field offsets.
+		if len(e.vt) >= 2 && len(vt) >= 2 && e.vt[1] == vt[1] {
+			match := true
+			maxLen := len(e.vt)
+			if len(vt) > maxLen {
+				maxLen = len(vt)
+			}
+			for i := 2; i < maxLen; i++ {
+				va, vb := uint16(0), uint16(0)
+				if i < len(e.vt) {
+					va = e.vt[i]
+				}
+				if i < len(vt) {
+					vb = vt[i]
+				}
+				if va != vb {
+					match = false
+					break
+				}
+			}
+			if match {
+				return
+			}
+		}
+	}
+	s.entries = append(s.entries, vtableSetEntry{vt: vt, offset: s.total})
+	s.total += len(vt) * 2
+}
+
 func (s *vTableSet) offset(vt VTable) int {
 	for _, e := range s.entries {
 		if vtablesEqual(e.vt, vt) {
 			return e.offset
 		}
 	}
-	panic("vtable not found in set")
+	// Tolerant match: C++ vtables may trim trailing zeros, changing vt_size.
+	// Two vtables match if they have the same obj_size and field offsets.
+	for _, e := range s.entries {
+		if len(e.vt) >= 2 && len(vt) >= 2 && e.vt[1] == vt[1] {
+			match := true
+			maxLen := len(e.vt)
+			if len(vt) > maxLen {
+				maxLen = len(vt)
+			}
+			for i := 2; i < maxLen; i++ {
+				va, vb := uint16(0), uint16(0)
+				if i < len(e.vt) {
+					va = e.vt[i]
+				}
+				if i < len(vt) {
+					vb = vt[i]
+				}
+				if va != vb {
+					match = false
+					break
+				}
+			}
+			if match {
+				return e.offset
+			}
+		}
+	}
+	panic(fmt.Sprintf("vtable not found in set: %v (set has %d entries)", vt, len(s.entries)))
 }
 
 func (s *vTableSet) pack() []byte {
+	if s.ordered {
+		// Closure order from C++ test vector — don't re-sort.
+		buf := make([]byte, s.total)
+		for _, e := range s.entries {
+			for i, v := range e.vt {
+				binary.LittleEndian.PutUint16(buf[e.offset+i*2:], v)
+			}
+		}
+		return buf
+	}
 	// Sort entries by vtable content (descending by packed bytes) for
 	// deterministic output. FDB's C++ uses std::set<const VTable*> which
 	// sorts by pointer value — non-deterministic. We sort by content instead,
@@ -522,6 +611,34 @@ func vtablesEqual(a, b VTable) bool {
 	}
 	for i := range a {
 		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// vtablesMatch checks if two vtables represent the same type, tolerating
+// C++'s trailing-zero trimming (vt_size differs but field offsets match).
+func vtablesMatch(a, b VTable) bool {
+	if len(a) < 2 || len(b) < 2 {
+		return vtablesEqual(a, b)
+	}
+	if a[1] != b[1] { // obj_size must match
+		return false
+	}
+	maxLen := len(a)
+	if len(b) > maxLen {
+		maxLen = len(b)
+	}
+	for i := 2; i < maxLen; i++ {
+		va, vb := uint16(0), uint16(0)
+		if i < len(a) {
+			va = a[i]
+		}
+		if i < len(b) {
+			vb = b[i]
+		}
+		if va != vb {
 			return false
 		}
 	}

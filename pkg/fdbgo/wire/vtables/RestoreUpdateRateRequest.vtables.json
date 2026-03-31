@@ -1,0 +1,22 @@
+{
+  "name": "RestoreUpdateRateRequest",
+  "vtables": [
+    [
+      10,
+      20,
+      12,
+      4,
+      16
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "ChangeCoordinatorsRequest",
+  "vtables": [
+    [
+      10,
+      28,
+      20,
+      24,
+      4
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

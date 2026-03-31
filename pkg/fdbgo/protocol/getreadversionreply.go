@@ -9,6 +9,16 @@ const GetReadVersionReply_FileIdentifier uint32 = 15709388
 
 var GetReadVersionReply_VTable = wire.VTable{28, 52, 28, 4, 48, 49, 32, 36, 12, 50, 51, 40, 44, 20}
 
+// GetReadVersionReply_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetReadVersionReply_VTableClosure = []wire.VTable{
+	{8, 20, 4, 12},
+	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
+	{8, 12, 4, 8},
+	{6, 8, 4},
+}
+
 // GetReadVersionReply — fdbclient/include/fdbclient/CommitProxyInterface.h
 type GetReadVersionReply struct {
 	ProcessBusyTime           int32   // int (slot 0)
@@ -66,7 +76,7 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 
 func (m *GetReadVersionReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetReadVersionReply_FileIdentifier, GetReadVersionReply_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetReadVersionReply_FileIdentifier, GetReadVersionReply_VTable, 8, GetReadVersionReply_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteInt32(int(GetReadVersionReply_VTable[0+2]), m.ProcessBusyTime)
 		obj.WriteInt64(int(GetReadVersionReply_VTable[1+2]), m.Version)
 		obj.WriteBool(int(GetReadVersionReply_VTable[2+2]), m.Locked)

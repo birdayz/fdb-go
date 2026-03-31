@@ -1,0 +1,17 @@
+{
+  "name": "BlobGranuleHistoryValue",
+  "vtables": [
+    [
+      10,
+      28,
+      4,
+      20,
+      24
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

@@ -9,6 +9,15 @@ const GetValueReply_FileIdentifier uint32 = 1378929
 
 var GetValueReply_VTable = wire.VTable{16, 23, 4, 20, 12, 21, 16, 22}
 
+// GetValueReply_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetValueReply_VTableClosure = []wire.VTable{
+	{6, 6, 4},
+	{16, 23, 4, 20, 12, 21, 16, 22},
+	{6, 8, 4},
+}
+
 // GetValueReply — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetValueReply struct {
 	Penalty float64 // double (slot 0)
@@ -35,7 +44,7 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 
 func (m *GetValueReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetValueReply_FileIdentifier, GetValueReply_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetValueReply_FileIdentifier, GetValueReply_VTable, 8, GetValueReply_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteFloat64(int(GetValueReply_VTable[0+2]), m.Penalty)
 		obj.WriteBool(int(GetValueReply_VTable[5+2]), m.Cached)
 	})

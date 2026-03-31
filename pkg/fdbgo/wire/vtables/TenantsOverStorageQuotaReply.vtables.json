@@ -1,0 +1,10 @@
+{
+  "name": "TenantsOverStorageQuotaReply",
+  "vtables": [
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

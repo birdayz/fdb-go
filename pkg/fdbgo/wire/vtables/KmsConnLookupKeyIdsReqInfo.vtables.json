@@ -1,0 +1,17 @@
+{
+  "name": "KmsConnLookupKeyIdsReqInfo",
+  "vtables": [
+    [
+      10,
+      17,
+      16,
+      12,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "GetTenantIdReply",
+  "vtables": [
+    [
+      6,
+      12,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

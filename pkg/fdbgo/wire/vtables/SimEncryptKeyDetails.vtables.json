@@ -1,0 +1,17 @@
+{
+  "name": "SimEncryptKeyDetails",
+  "vtables": [
+    [
+      10,
+      24,
+      4,
+      12,
+      20
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

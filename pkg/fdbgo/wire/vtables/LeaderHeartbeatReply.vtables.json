@@ -1,0 +1,15 @@
+{
+  "name": "LeaderHeartbeatReply",
+  "vtables": [
+    [
+      6,
+      5,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

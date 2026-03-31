@@ -9,6 +9,17 @@ const GetReadVersionRequest_FileIdentifier uint32 = 838566
 
 var GetReadVersionRequest_VTable = wire.VTable{20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
 
+// GetReadVersionRequest_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetReadVersionRequest_VTableClosure = []wire.VTable{
+	{10, 29, 4, 20, 28},
+	{20, 37, 12, 16, 20, 36, 24, 28, 32, 4},
+	{8, 12, 4, 8},
+	{6, 20, 4},
+	{6, 8, 4},
+}
+
 // GetReadVersionRequest — fdbclient/include/fdbclient/CommitProxyInterface.h
 type GetReadVersionRequest struct {
 	TransactionCount uint32 // uint32_t (slot 0)
@@ -50,7 +61,7 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetReadVersionRequest_FileIdentifier, GetReadVersionRequest_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetReadVersionRequest_FileIdentifier, GetReadVersionRequest_VTable, 8, GetReadVersionRequest_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteUint32(int(GetReadVersionRequest_VTable[0+2]), m.TransactionCount)
 		obj.WriteUint32(int(GetReadVersionRequest_VTable[1+2]), m.Flags)
 		obj.WriteBytes(int(GetReadVersionRequest_VTable[2+2]), m.Tags)

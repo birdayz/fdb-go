@@ -1,0 +1,21 @@
+{
+  "name": "GetServerDBInfoRequest",
+  "vtables": [
+    [
+      8,
+      24,
+      4,
+      20
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

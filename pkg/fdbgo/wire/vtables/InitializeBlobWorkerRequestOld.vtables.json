@@ -1,0 +1,23 @@
+{
+  "name": "InitializeBlobWorkerRequestOld",
+  "vtables": [
+    [
+      12,
+      44,
+      4,
+      20,
+      36,
+      40
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

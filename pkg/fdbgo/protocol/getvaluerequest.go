@@ -9,6 +9,18 @@ const GetValueRequest_FileIdentifier uint32 = 8454530
 
 var GetValueRequest_VTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
 
+// GetValueRequest_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetValueRequest_VTableClosure = []wire.VTable{
+	{18, 20, 4, 16, 17, 8, 18, 12, 19},
+	{10, 29, 4, 20, 28},
+	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
+	{10, 17, 4, 16, 12},
+	{6, 20, 4},
+	{6, 8, 4},
+}
+
 // GetValueRequest — fdbclient/include/fdbclient/StorageServerInterface.h
 type GetValueRequest struct {
 	Key                    []byte // Key (slot 0)
@@ -51,7 +63,7 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetValueRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetValueRequest_FileIdentifier, GetValueRequest_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetValueRequest_FileIdentifier, GetValueRequest_VTable, 8, GetValueRequest_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteBytes(int(GetValueRequest_VTable[0+2]), m.Key)
 		obj.WriteInt64(int(GetValueRequest_VTable[1+2]), m.Version)
 		obj.WriteBytes(int(GetValueRequest_VTable[4+2]), m.Reply)

@@ -1,0 +1,16 @@
+{
+  "name": "RocksDBColumnFamilyCheckpoint",
+  "vtables": [
+    [
+      8,
+      12,
+      4,
+      8
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "KmsConnLookupEKsByKeyIdsRep",
+  "vtables": [
+    [
+      20,
+      38,
+      4,
+      12,
+      20,
+      24,
+      36,
+      28,
+      37,
+      32
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

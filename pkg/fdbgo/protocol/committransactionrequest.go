@@ -9,6 +9,22 @@ const CommitTransactionRequest_FileIdentifier uint32 = 93948
 
 var CommitTransactionRequest_VTable = wire.VTable{30, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36, 0}
 
+// CommitTransactionRequest_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var CommitTransactionRequest_VTableClosure = []wire.VTable{
+	{10, 29, 4, 20, 28},
+	{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28},
+	{10, 13, 12, 4, 8},
+	{12, 24, 12, 4, 16, 20},
+	{8, 16, 12, 4},
+	{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36},
+	{10, 17, 4, 16, 12},
+	{8, 12, 4, 8},
+	{6, 20, 4},
+	{6, 8, 4},
+}
+
 // CommitTransactionRequest — fdbclient/include/fdbclient/CommitProxyInterface.h
 type CommitTransactionRequest struct {
 	Transaction          []byte // CommitTransactionRef (slot 0)
@@ -54,7 +70,7 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 
 func (m *CommitTransactionRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(CommitTransactionRequest_FileIdentifier, CommitTransactionRequest_VTable, 4, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(CommitTransactionRequest_FileIdentifier, CommitTransactionRequest_VTable, 4, CommitTransactionRequest_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteBytes(int(CommitTransactionRequest_VTable[0+2]), m.Transaction)
 		obj.WriteBytes(int(CommitTransactionRequest_VTable[1+2]), m.Reply)
 		obj.WriteUint32(int(CommitTransactionRequest_VTable[2+2]), m.Flags)

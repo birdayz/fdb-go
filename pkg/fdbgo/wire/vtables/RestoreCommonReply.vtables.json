@@ -1,0 +1,16 @@
+{
+  "name": "RestoreCommonReply",
+  "vtables": [
+    [
+      8,
+      21,
+      4,
+      20
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

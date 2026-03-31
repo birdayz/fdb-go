@@ -1,0 +1,19 @@
+{
+  "name": "MetaclusterRegistrationEntry",
+  "vtables": [
+    [
+      14,
+      48,
+      36,
+      40,
+      44,
+      4,
+      20
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

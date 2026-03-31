@@ -1,0 +1,22 @@
+{
+  "name": "TLogConfirmRunningRequest",
+  "vtables": [
+    [
+      10,
+      13,
+      12,
+      4,
+      8
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

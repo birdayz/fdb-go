@@ -1,0 +1,23 @@
+{
+  "name": "GetGranuleAssignmentsReply",
+  "vtables": [
+    [
+      10,
+      24,
+      20,
+      4,
+      12
+    ],
+    [
+      8,
+      12,
+      4,
+      8
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

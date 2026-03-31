@@ -1,0 +1,24 @@
+{
+  "name": "GetDataDistributorMetricsReply",
+  "vtables": [
+    [
+      10,
+      24,
+      4,
+      20,
+      12
+    ],
+    [
+      10,
+      13,
+      4,
+      12,
+      8
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

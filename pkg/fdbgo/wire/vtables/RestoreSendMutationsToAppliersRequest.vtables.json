@@ -1,0 +1,29 @@
+{
+  "name": "RestoreSendMutationsToAppliersRequest",
+  "vtables": [
+    [
+      8,
+      24,
+      20,
+      4
+    ],
+    [
+      12,
+      17,
+      4,
+      8,
+      16,
+      12
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

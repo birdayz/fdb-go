@@ -1,0 +1,21 @@
+{
+  "name": "GetHealthMetricsRequest",
+  "vtables": [
+    [
+      8,
+      9,
+      4,
+      8
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

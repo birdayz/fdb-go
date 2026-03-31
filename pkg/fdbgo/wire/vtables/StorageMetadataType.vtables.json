@@ -1,0 +1,16 @@
+{
+  "name": "StorageMetadataType",
+  "vtables": [
+    [
+      8,
+      16,
+      4,
+      12
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

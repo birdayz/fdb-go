@@ -1,0 +1,21 @@
+{
+  "name": "setClusterRecoveryVersionRequest",
+  "vtables": [
+    [
+      8,
+      16,
+      4,
+      12
+    ],
+    [
+      6,
+      20,
+      4
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}

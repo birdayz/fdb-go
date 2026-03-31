@@ -9,6 +9,17 @@ const GetKeyServerLocationsRequest_FileIdentifier uint32 = 9144680
 
 var GetKeyServerLocationsRequest_VTable = wire.VTable{24, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4, 0}
 
+// GetKeyServerLocationsRequest_VTableClosure is the complete set of vtables for this message,
+// extracted from C++ get_vtableset_impl. Includes vtables for ALL types
+// transitively reachable from the message type graph.
+var GetKeyServerLocationsRequest_VTableClosure = []wire.VTable{
+	{10, 29, 4, 20, 28},
+	{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4},
+	{10, 17, 4, 16, 12},
+	{6, 20, 4},
+	{6, 8, 4},
+}
+
 // GetKeyServerLocationsRequest — fdbclient/include/fdbclient/CommitProxyInterface.h
 type GetKeyServerLocationsRequest struct {
 	Begin            []byte // KeyRef (slot 0)
@@ -56,7 +67,7 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
-	return w.WriteMessage(GetKeyServerLocationsRequest_FileIdentifier, GetKeyServerLocationsRequest_VTable, 8, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(GetKeyServerLocationsRequest_FileIdentifier, GetKeyServerLocationsRequest_VTable, 8, GetKeyServerLocationsRequest_VTableClosure, func(obj *wire.ObjectWriter) {
 		obj.WriteBytes(int(GetKeyServerLocationsRequest_VTable[0+2]), m.Begin)
 		obj.WriteInt32(int(GetKeyServerLocationsRequest_VTable[3+2]), m.Limit)
 		obj.WriteBool(int(GetKeyServerLocationsRequest_VTable[4+2]), m.Reverse)

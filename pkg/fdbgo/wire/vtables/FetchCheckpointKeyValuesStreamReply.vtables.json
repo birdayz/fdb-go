@@ -1,0 +1,24 @@
+{
+  "name": "FetchCheckpointKeyValuesStreamReply",
+  "vtables": [
+    [
+      12,
+      15,
+      14,
+      4,
+      12,
+      8
+    ],
+    [
+      8,
+      12,
+      4,
+      8
+    ],
+    [
+      6,
+      8,
+      4
+    ]
+  ]
+}
