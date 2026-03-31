@@ -68,6 +68,23 @@ func (db *Database) CreateTransaction() *Transaction {
 	}
 }
 
+// ReadTransact runs a read-only function in a transaction with automatic retry.
+// The transaction is never committed — only reads are performed.
+func (db *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (interface{}, error)) (interface{}, error) {
+	for {
+		tx := db.CreateTransaction()
+		result, err := fn(tx)
+		if err != nil {
+			retryable := tx.OnError(err)
+			if retryable != nil {
+				return nil, retryable
+			}
+			continue
+		}
+		return result, nil
+	}
+}
+
 // Close closes the database connection.
 func (db *Database) Close() error {
 	return db.cluster.Close()

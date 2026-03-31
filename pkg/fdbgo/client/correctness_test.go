@@ -621,6 +621,65 @@ func TestAddWriteConflictRange(t *testing.T) {
 	t.Logf("tx1 conflict (expected): %v", err)
 }
 
+func TestReadTransact(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("rt_a"), []byte("1"))
+		tx.Set([]byte("rt_b"), []byte("2"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// ReadTransact: read two keys, return their values.
+	result, err := db.ReadTransact(ctx, func(tx *Transaction) (interface{}, error) {
+		a, err := tx.Get(ctx, []byte("rt_a"))
+		if err != nil {
+			return nil, err
+		}
+		b, err := tx.Get(ctx, []byte("rt_b"))
+		if err != nil {
+			return nil, err
+		}
+		return []string{string(a), string(b)}, nil
+	})
+	if err != nil {
+		t.Fatalf("ReadTransact: %v", err)
+	}
+	vals := result.([]string)
+	if vals[0] != "1" || vals[1] != "2" {
+		t.Fatalf("got %v, want [1 2]", vals)
+	}
+
+	// ReadTransact does NOT commit — verify by writing inside it
+	// and checking the write didn't persist.
+	_, err = db.ReadTransact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("rt_phantom"), []byte("should_not_persist"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("ReadTransact with write: %v", err)
+	}
+
+	// Verify the write didn't persist.
+	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.Get(ctx, []byte("rt_phantom"))
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Fatalf("rt_phantom should not exist, got %q", result)
+	}
+}
+
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
