@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"net"
 	"testing"
 )
@@ -166,6 +167,25 @@ func TestConnectPacketCompatibility(t *testing.T) {
 	// Different major → incompatible.
 	if pkt.IsCompatible(0x0FDB00B080000000) {
 		t.Error("should NOT be compatible with 8.0")
+	}
+}
+
+// TestBuildVoidReply verifies our dynamic construction matches the C++ ground truth.
+func TestBuildVoidReply(t *testing.T) {
+	t.Parallel()
+
+	// C++ ObjectWriter ground truth for ErrorOr<EnsureTable<Void>> (FDB 7.3.75).
+	expected, _ := hex.DecodeString(
+		"200000004aad1e02" +
+			"0000000000000400" +
+			"0400060006000400" +
+			"0800090008000400" +
+			"0800000008000000" +
+			"020000001e000000")
+
+	got := buildVoidReply()
+	if !bytes.Equal(got, expected) {
+		t.Errorf("buildVoidReply mismatch:\n  got: %x\n  want: %x", got, expected)
 	}
 }
 

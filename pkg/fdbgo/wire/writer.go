@@ -182,6 +182,110 @@ func (w *Writer) WriteMessageWithVTables(fileID uint32, msgVTable VTable, maxFie
 	return w.buf
 }
 
+// WriteRootObject writes a message where the root object IS the top-level object
+// (no FakeRoot wrapper). Used for union_like_traits types like ErrorOr where
+// FakeRoot flattens the union into the root.
+func (w *Writer) WriteRootObject(fileID uint32, rootVTable VTable, maxFieldAlign int, extraVTables []VTable, writeFields func(obj *ObjectWriter)) []byte {
+	if maxFieldAlign < 4 {
+		maxFieldAlign = 4
+	}
+
+	objSize := int(rootVTable[1])
+	obj := &ObjectWriter{
+		object: make([]byte, objSize),
+	}
+	writeFields(obj)
+
+	vtableSet := newVTableSet()
+	if len(extraVTables) > 0 {
+		vtableSet.ordered = true
+		for _, vt := range extraVTables {
+			vtableSet.addOrdered(vt)
+		}
+		for _, ns := range obj.nestedStructs {
+			ns.collectVTables(vtableSet)
+		}
+	} else {
+		vtableSet.add(rootVTable)
+		for _, ns := range obj.nestedStructs {
+			ns.collectVTables(vtableSet)
+		}
+	}
+	vtableBytes := vtableSet.pack()
+	vtableSize := len(vtableBytes)
+
+	// OOL data
+	oolSize := len(obj.outOfLine)
+	endOff := 0
+	if oolSize > 0 {
+		endOff = rightAlign(oolSize, 4)
+	}
+
+	// Nested structs
+	nestedEndOff := endOff
+	for i := len(obj.nestedStructs) - 1; i >= 0; i-- {
+		nestedEndOff = obj.nestedStructs[i].computeEndOffset(nestedEndOff)
+	}
+
+	// Root object (no FakeRoot — this IS the root)
+	bodySize := objSize - 4
+	rootObjEnd := rightAlign(nestedEndOff+bodySize, maxFieldAlign) + 4
+
+	// VTable region
+	vtableEnd := rootObjEnd + vtableSize
+
+	// Root footer (8 bytes, aligned to 8)
+	footerTotal := rightAlign(vtableEnd+8, 8)
+	totalSize := footerTotal
+
+	// Byte positions
+	oolPos := totalSize - endOff
+	rootObjPos := totalSize - rootObjEnd
+	vtablePos := totalSize - vtableEnd
+
+	// Build buffer
+	if cap(w.buf) >= totalSize {
+		w.buf = w.buf[:totalSize]
+		clear(w.buf)
+	} else {
+		w.buf = make([]byte, totalSize)
+	}
+
+	// OOL data
+	if oolSize > 0 {
+		copy(w.buf[oolPos:], obj.outOfLine)
+	}
+
+	// Nested structs
+	nestedPos := oolPos
+	for i := len(obj.nestedStructs) - 1; i >= 0; i-- {
+		nestedPos = obj.nestedStructs[i].writeInto(w.buf, nestedPos, vtablePos, vtableSet)
+	}
+
+	// Root object
+	rootVTableAddr := vtablePos + vtableSet.offset(rootVTable)
+	binary.LittleEndian.PutUint32(obj.object[0:4], uint32(int32(rootObjPos-rootVTableAddr)))
+	for _, p := range obj.patches {
+		fieldAddr := rootObjPos + p.objectOffset
+		targetAddr := oolPos + p.oolOffset
+		binary.LittleEndian.PutUint32(obj.object[p.objectOffset:], uint32(targetAddr-fieldAddr))
+	}
+	for _, ns := range obj.nestedStructs {
+		fieldAddr := rootObjPos + ns.parentOffset
+		binary.LittleEndian.PutUint32(obj.object[ns.parentOffset:], uint32(ns.byteAddr-fieldAddr))
+	}
+	copy(w.buf[rootObjPos:], obj.object)
+
+	// VTables
+	copy(w.buf[vtablePos:], vtableBytes)
+
+	// Root footer
+	binary.LittleEndian.PutUint32(w.buf[0:], uint32(rootObjPos))
+	binary.LittleEndian.PutUint32(w.buf[4:], fileID)
+
+	return w.buf
+}
+
 // --- VTable set (deduplication) ---
 
 type vtableSetEntry struct {
