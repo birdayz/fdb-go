@@ -351,3 +351,11 @@ var ErrorVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
 }
+
+// TenantInfo — fdbclient/TenantInfo.h
+// Fields: tenantId (int64 at offset 4), tenantName (bytes at offset 16), tenantGroup (bytes at offset 12)
+var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
+
+// ReplyPromise — fdbrpc/ReplyPromise.h
+// Fields: token (UID, 16 bytes inline at offset 4)
+var ReplyPromiseVTable = wire.VTable{6, 20, 4}

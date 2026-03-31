@@ -151,22 +151,9 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, rep
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
 // Returns (keyValues, more, error).
 func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return nil, false, fmt.Errorf("parse GetKeyValues reply: %w", err)
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		return nil, false, fmt.Errorf("GetKeyValues: %w", err)
 	}
-
-	// ErrorOr flattened by FakeRoot: <=1 fields = Error, >1 = GetKeyValuesReply.
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			errCode := r.ReadInt32(0)
-			return nil, false, &FDBError{Code: int(errCode), Message: fmt.Sprintf("GetKeyValues error %d", errCode)}
-		}
-		return nil, false, fmt.Errorf("empty GetKeyValues response")
-	}
-
-	// Parse with the generated UnmarshalFDB.
 	var reply types.GetKeyValuesReply
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
@@ -254,47 +241,16 @@ func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
 func parseGetValueReply(data []byte) ([]byte, error) {
-	r, err := wire.NewReader(data)
+	r, err := wire.ReadErrorOr(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse GetValue reply: %w", err)
+		return nil, fmt.Errorf("GetValue: %w", err)
 	}
-
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			errCode := r.ReadInt32(0)
-			return nil, fmt.Errorf("FDB GetValue error: code %d", errCode)
-		}
-		return nil, fmt.Errorf("empty GetValue response")
+	var reply types.GetValueReply
+	reply.UnmarshalFrom(r)
+	if !reply.HasValue {
+		return nil, nil // key not found
 	}
-
-	// The inner struct is GetValueReply. The Reader is positioned at it.
-	// GetValueReply fields: penalty(float64), error(Optional), value(Optional<Value>), cached(bool)
-	// The value is an Optional<Value>. In FlatBuffers, Optional has type tag + value.
-	// Value is at some slot — search for it.
-	//
-	// Actually, let's try parsing with the generated UnmarshalFDB first.
-	// It calls NewReader which navigates FakeRoot → message. But our data
-	// already went through FakeRoot navigation. So UnmarshalFDB would navigate
-	// AGAIN through a "second level" FakeRoot which doesn't exist.
-	//
-	// Instead, use the Reader we already have.
-	// GetValueReply::serialize: serializer(ar, penalty, error, value, cached)
-	// slot 0: penalty (float64)
-	// slot 1: error (Optional<Error> type tag)
-	// slot 2: error value (RelOff)
-	// slot 3: value (Optional<Value> type tag)
-	// slot 4: value value (RelOff)
-	// slot 5: cached (bool)
-	//
-	// Read value from slot 4 (the value's data RelOff).
-	if r.FieldPresent(3) && r.ReadUint8(3) > 0 {
-		// Optional<Value> is present. Read the value data.
-		valData := r.ReadBytes(4)
-		return valData, nil
-	}
-	// Value not present (key not found)
-	return nil, nil
+	return reply.Value, nil
 }
 
 // getAdjustedEndpoint computes the endpoint token for interface method at given index.

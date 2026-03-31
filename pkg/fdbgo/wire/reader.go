@@ -363,6 +363,65 @@ func (r *Reader) readerAtObject(objPos int) (*Reader, error) {
 	}, nil
 }
 
+// FDBWireError is returned by ReadErrorOr when the response contains an FDB error.
+type FDBWireError struct {
+	Code int
+}
+
+func (e *FDBWireError) Error() string {
+	return fmt.Sprintf("fdb error %d", e.Code)
+}
+
+// ReadErrorOr unwraps an ErrorOr<T> response. FDB's ErrorOr uses FakeRoot
+// flattening: the inner struct is either Error (1 field: error_code) or T (N fields).
+// Returns the Reader positioned at the success value T, or an *FDBWireError if
+// the response contains an error code.
+func ReadErrorOr(data []byte) (*Reader, error) {
+	r, err := NewReader(data)
+	if err != nil {
+		return nil, err
+	}
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			code := r.ReadInt32(0)
+			return nil, &FDBWireError{Code: int(code)}
+		}
+		return nil, fmt.Errorf("empty ErrorOr response")
+	}
+	return r, nil
+}
+
+// ReadUIDPair reads a 16-byte UID as two uint64 values (first, second).
+func (r *Reader) ReadUIDPair(vtableSlot int) (uint64, uint64) {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+16 > len(r.object) {
+		return 0, 0
+	}
+	first := binary.LittleEndian.Uint64(r.object[off:])
+	second := binary.LittleEndian.Uint64(r.object[off+8:])
+	return first, second
+}
+
+// ReadIPv4 reads a uint32 IPv4 address from a RelativeOffset field and returns it
+// as a "host:0" string. The uint32 is stored little-endian on wire but represents
+// a network-byte-order IPv4 address.
+func (r *Reader) ReadIPv4(vtableSlot int) uint32 {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return 0
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return 0
+	}
+	target := r.objPos + int(off) + int(relOffset)
+	if target+4 > len(r.data) {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(r.data[target:])
+}
+
 // RawData returns the full underlying buffer. Useful for low-level nested parsing.
 func (r *Reader) RawData() []byte {
 	return r.data

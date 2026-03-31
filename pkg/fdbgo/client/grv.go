@@ -164,30 +164,12 @@ func buildGetReadVersionRequest(replyToken transport.UID) []byte {
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.
 // The response follows the same flattened-FakeRoot ErrorOr pattern as ClientDBInfo.
 func parseGetReadVersionReply(data []byte) (int64, error) {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return 0, fmt.Errorf("parse GRV reply: %w", err)
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		return 0, fmt.Errorf("GRV: %w", err)
 	}
-
-	// NewReader navigates through the flattened ErrorOr FakeRoot.
-	// If Error: vtable has 1 field (error_code).
-	// If success: vtable has GetReadVersionReply fields.
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			errCode := r.ReadInt32(0)
-			return 0, fmt.Errorf("FDB GRV error: code %d", errCode)
-		}
-		return 0, fmt.Errorf("empty GRV error response")
-	}
-
-	// GetReadVersionReply has Version at some field.
-	// From the generated struct: Version is int64.
-	// Parse with the generated UnmarshalFDB.
 	var reply types.GetReadVersionReply
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return 0, fmt.Errorf("unmarshal GRV reply: %w", err)
 	}
-
 	return reply.Version, nil
 }

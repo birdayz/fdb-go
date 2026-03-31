@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,27 +108,17 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 
 // parseCommitReply parses an ErrorOr<CommitID> response.
 func (tx *Transaction) parseCommitReply(data []byte) error {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return fmt.Errorf("parse commit reply: %w", err)
-	}
-
-	// ErrorOr flattened by FakeRoot: ≤1 fields = Error, >1 = CommitID.
-	nfields := r.VTableLength() - 2
-	if nfields <= 1 {
-		if r.FieldPresent(0) {
-			errCode := r.ReadInt32(0)
-			return &FDBError{Code: int(errCode), Message: fmt.Sprintf("commit error %d", errCode)}
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		var we *wire.FDBWireError
+		if errors.As(err, &we) {
+			return &FDBError{Code: we.Code, Message: fmt.Sprintf("commit error %d", we.Code)}
 		}
-		return fmt.Errorf("empty commit response")
+		return fmt.Errorf("commit: %w", err)
 	}
-
-	// Parse CommitID from the inner object.
 	var reply types.CommitID
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return fmt.Errorf("unmarshal CommitID: %w", err)
 	}
-
 	tx.committedVersion = reply.Version
 	return nil
 }
