@@ -86,5 +86,6 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 		return fmt.Errorf("unmarshal CommitID: %w", err)
 	}
 	tx.committedVersion = reply.Version
+	tx.txnBatchId = reply.TxnBatchId
 	return nil
 }

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -89,6 +90,7 @@ type Transaction struct {
 	readVersion      int64
 	hasReadVersion   bool
 	committedVersion int64
+	txnBatchId       uint16
 
 	mutations      []Mutation
 	readConflicts  []KeyRange
@@ -259,6 +261,19 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 	return tx.committedVersion, nil
 }
 
+// GetVersionstamp returns the 10-byte versionstamp from the committed transaction.
+// Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
+// Must be called after a successful Commit.
+func (tx *Transaction) GetVersionstamp() ([]byte, error) {
+	if tx.state != txStateCommitted {
+		return nil, fmt.Errorf("transaction not committed")
+	}
+	vs := make([]byte, 10)
+	binary.BigEndian.PutUint64(vs[0:8], uint64(tx.committedVersion))
+	binary.BigEndian.PutUint16(vs[8:10], tx.txnBatchId)
+	return vs, nil
+}
+
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable.
 func (tx *Transaction) OnError(err error) error {
@@ -336,6 +351,7 @@ func (tx *Transaction) reset() {
 	tx.hasReadVersion = false
 	tx.readVersion = 0
 	tx.committedVersion = 0
+	tx.txnBatchId = 0
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]

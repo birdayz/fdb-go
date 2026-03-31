@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"testing"
@@ -677,6 +678,66 @@ func TestReadTransact(t *testing.T) {
 	}
 	if result.([]byte) != nil {
 		t.Fatalf("rt_phantom should not exist, got %q", result)
+	}
+}
+
+func TestGetVersionstamp(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Commit a transaction and get the versionstamp.
+	tx1 := db.CreateTransaction()
+	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx1.SetReadVersion(rv)
+	tx1.Set([]byte("vs_key1"), []byte("val1"))
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit: %v", err)
+	}
+
+	vs1, err := tx1.GetVersionstamp()
+	if err != nil {
+		t.Fatalf("GetVersionstamp: %v", err)
+	}
+	if len(vs1) != 10 {
+		t.Fatalf("versionstamp length: got %d, want 10", len(vs1))
+	}
+
+	// The version component (first 8 bytes BE) should match GetCommittedVersion.
+	cv1, _ := tx1.GetCommittedVersion()
+	vsVersion := int64(binary.BigEndian.Uint64(vs1[0:8]))
+	if vsVersion != cv1 {
+		t.Errorf("version mismatch: versionstamp=%d, committedVersion=%d", vsVersion, cv1)
+	}
+	t.Logf("tx1: version=%d, txnBatchId=%d, versionstamp=%x", cv1, binary.BigEndian.Uint16(vs1[8:10]), vs1)
+
+	// Commit a second transaction — its versionstamp should be greater.
+	tx2 := db.CreateTransaction()
+	rv2, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx2.SetReadVersion(rv2)
+	tx2.Set([]byte("vs_key2"), []byte("val2"))
+	if err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("tx2 commit: %v", err)
+	}
+
+	vs2, _ := tx2.GetVersionstamp()
+	t.Logf("tx2: versionstamp=%x", vs2)
+
+	// vs2 should be strictly greater than vs1 (byte comparison, big-endian = ordered).
+	if bytes.Compare(vs2, vs1) <= 0 {
+		t.Errorf("versionstamp should be strictly increasing: vs1=%x vs2=%x", vs1, vs2)
+	}
+
+	// GetVersionstamp before commit should fail.
+	tx3 := db.CreateTransaction()
+	_, err = tx3.GetVersionstamp()
+	if err == nil {
+		t.Error("GetVersionstamp before commit should fail")
 	}
 }
 
