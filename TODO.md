@@ -1642,34 +1642,33 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 
 Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fdb-client.md`.
 
-### API coverage assessment (2026-03-31)
+### API coverage assessment (updated 2026-04-01)
 
 C binding Transaction has 47 methods, Database has 11. Coverage by category:
 
 | Category | Have | Total | % | Notes |
 |---|---|---|---|---|
 | Core CRUD | 11 | 11 | **100%** | Get, GetRange (multi-shard), Set, Clear, ClearRange, Commit, GetCommittedVersion, SetReadVersion, GetReadVersion, OnError, Reset |
-| Atomic ops | 14 | 14 | **100%** | All 14 mutation types (Set, ClearRange, Add, And, Or, Xor, AppendIfFits, Max, Min, SetVersionstampedKey/Value, ByteMin, ByteMax, CompareAndClear). ADD tested e2e. |
-| Database | 3 | 3 | **100%** | Transact (with retry), CreateTransaction, Close |
-| Key selectors | 0 | 1 | 0% | GetKey — needed for proper iteration |
-| Snapshot | 0 | 1 | 0% | tx.Snapshot().Get() — skip read conflict ranges |
-| Explicit conflict ranges | 0 | 4 | 0% | AddRead/WriteConflictKey/Range (implicit via Get/Set, no explicit API) |
-| Tx lifecycle | 0 | 2 | 0% | Cancel, ReadTransact |
-| Watch/Versionstamp | 0 | 2 | 0% | Watch, GetVersionstamp |
+| Atomic ops | 14 | 14 | **100%** | All 14 mutation types. ADD tested e2e. |
+| Database | 4 | 4 | **100%** | Transact, ReadTransact, CreateTransaction, Close |
+| Key selectors | 1 | 1 | **100%** | GetKey (all 4 selector types tested) |
+| Snapshot | 1 | 1 | **100%** | tx.Snapshot().Get/GetKey/GetRange |
+| Explicit conflict ranges | 4 | 4 | **100%** | AddRead/WriteConflictKey/Range |
+| Tx lifecycle | 2 | 2 | **100%** | Cancel, GetVersionstamp |
+| Watch | 0 | 1 | 0% | WatchValueRequest — needs new wire type |
 | Range introspection | 0 | 2 | 0% | GetApproximateSize, GetEstimatedRangeSizeBytes |
-| Transaction options | 0 | 1 | 0% | Options() — timeout, retry limit, priority, etc. |
+| Transaction options | 0 | 1 | 0% | SetTimeout, SetRetryLimit, priority |
 | Tenant API | 0 | 4 | 0% | Create/Delete/Open/List tenants |
 | Async (Futures) | 0 | ~10 | 0% | FutureByteSlice, FutureNil, FutureKey, etc. |
 | Misc | 0 | 3 | 0% | LocalityGetAddressesForKey, RebootWorker, GetClientStatus |
 
-**Overall: ~28/47 Transaction methods = ~60% API surface.**
-**By usage weight: ~95%+ of real application needs covered** (CRUD + atomics + Transact + conflict detection).
+**Overall: ~37/47 Transaction methods = ~79% API surface.**
+**By usage weight: ~98%+ of real application needs covered.**
 
-**Priority for remaining coverage:**
-1. GetKey (key selectors) — needed for cursor iteration
-2. Snapshot reads — needed for read-heavy workloads
-3. Explicit conflict ranges — needed for some access patterns
-4. Cancel — needed for proper timeout handling
+**Next priorities:**
+1. Transaction options (SetRetryLimit, SetTimeout) — safety for production use
+2. Watch — needed for reactive patterns
+3. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
 
 ### Done
 
