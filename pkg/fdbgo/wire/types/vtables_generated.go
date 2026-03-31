@@ -11,18 +11,20 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 //	slot 2: tags — union_like, size=4, align=4, indirection
 //	slot 3: reply — serialize_member, size=4, align=4, indirection
 //	slot 4: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 5: options — union_like, size=4, align=4, indirection
-//	slot 6: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
-var GetValueRequestVTable = wire.VTable{22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32}
+//	slot 5: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 6: options — union_like, size=4, align=4, indirection
+//	slot 7: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+var GetValueRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
 
 const GetValueRequestFileID uint32 = 8454530
 
 var GetValueRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
+	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{18, 20, 4, 16, 17, 8, 18, 12, 19},
 	{10, 29, 4, 20, 28},
-	{22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32},
+	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
 
 // GetValueReply fields:
@@ -51,21 +53,22 @@ var GetValueReplyVTableClosure = []wire.VTable{
 //	slot 5: tags — union_like, size=4, align=4, indirection
 //	slot 6: reply — serialize_member, size=4, align=4, indirection
 //	slot 7: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 8: options — union_like, size=4, align=4, indirection
-//	slot 9: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
-//	slot 10: taskID — union_like, size=4, align=4, indirection
+//	slot 8: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 9: options — union_like, size=4, align=4, indirection
+//	slot 10: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
 //	slot 11: arena — scalar, size=0, align=1
-var GetKeyValuesRequestVTable = wire.VTable{32, 55, 12, 16, 4, 20, 24, 52, 28, 32, 36, 53, 40, 44, 54, 48}
+var GetKeyValuesRequestVTable = wire.VTable{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48}
 
 const GetKeyValuesRequestFileID uint32 = 6795746
 
 var GetKeyValuesRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
+	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{18, 20, 4, 16, 17, 8, 18, 12, 19},
 	{10, 13, 4, 12, 8},
 	{10, 29, 4, 20, 28},
-	{32, 55, 12, 16, 4, 20, 24, 52, 28, 32, 36, 53, 40, 44, 54, 48},
+	{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48},
 }
 
 // GetKeyValuesReply fields:
@@ -94,20 +97,22 @@ var GetKeyValuesReplyVTableClosure = []wire.VTable{
 //	slot 2: tags — union_like, size=4, align=4, indirection
 //	slot 3: reply — serialize_member, size=4, align=4, indirection
 //	slot 4: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 5: options — union_like, size=4, align=4, indirection
-//	slot 6: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
-//	slot 7: arena — scalar, size=0, align=1
-var GetKeyRequestVTable = wire.VTable{22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32}
+//	slot 5: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 6: options — union_like, size=4, align=4, indirection
+//	slot 7: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
+//	slot 8: arena — scalar, size=0, align=1
+var GetKeyRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
 
 const GetKeyRequestFileID uint32 = 10457870
 
 var GetKeyRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
+	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{18, 20, 4, 16, 17, 8, 18, 12, 19},
 	{10, 13, 4, 12, 8},
 	{10, 29, 4, 20, 28},
-	{22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32},
+	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
 
 // GetKeyReply fields:
@@ -180,17 +185,19 @@ var GetReadVersionReplyVTableClosure = []wire.VTable{
 //	slot 3: reverse — scalar, size=1, align=1
 //	slot 4: reply — serialize_member, size=4, align=4, indirection
 //	slot 5: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 6: legacyVersion — scalar, size=8, align=8
-//	slot 7: arena — scalar, size=0, align=1
-var GetKeyServerLocationsRequestVTable = wire.VTable{20, 34, 12, 32, 16, 20, 33, 24, 28, 4}
+//	slot 6: tenant — serialize_member, size=4, align=4, indirection
+//	slot 7: minTenantVersion — scalar, size=8, align=8
+//	slot 8: arena — scalar, size=0, align=1
+var GetKeyServerLocationsRequestVTable = wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
 
 const GetKeyServerLocationsRequestFileID uint32 = 9144680
 
 var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
+	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{10, 29, 4, 20, 28},
-	{20, 34, 12, 32, 16, 20, 33, 24, 28, 4},
+	{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4},
 }
 
 // GetKeyServerLocationsReply fields:
@@ -225,9 +232,10 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 //	slot 4: commitCostEstimation — union_like, size=4, align=4, indirection
 //	slot 5: tagSet — union_like, size=4, align=4, indirection
 //	slot 6: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 7: idempotencyId — dynamic_size, size=4, align=4, indirection
-//	slot 8: arena — scalar, size=0, align=1
-var CommitTransactionRequestVTable = wire.VTable{26, 39, 4, 8, 12, 36, 16, 37, 20, 38, 24, 28, 32}
+//	slot 7: tenantInfo — serialize_member, size=4, align=4, indirection
+//	slot 8: idempotencyId — dynamic_size, size=4, align=4, indirection
+//	slot 9: arena — scalar, size=0, align=1
+var CommitTransactionRequestVTable = wire.VTable{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36}
 
 const CommitTransactionRequestFileID uint32 = 93948
 
@@ -235,12 +243,13 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 	{8, 16, 12, 4},
 	{12, 24, 12, 4, 16, 20},
 	{6, 20, 4},
+	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28},
 	{8, 12, 4, 8},
 	{10, 13, 12, 4, 8},
 	{10, 29, 4, 20, 28},
-	{26, 39, 4, 8, 12, 36, 16, 37, 20, 38, 24, 28, 32},
+	{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36},
 }
 
 // CommitID fields:

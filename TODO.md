@@ -1678,18 +1678,13 @@ Pure Go FDB client eliminating cgo/libfdb_c dependency. See `rfcs/010-pure-go-fd
 - [x] **CommitTransactionRequest/CommitID** — Mutations as proper FlatBuffers nested objects. MVCC conflict detection verified (not_committed 1020).
 - [x] **Vtable closure infrastructure** — C++ extractor (`emitVTables`), 322 closure files, codegen emits `_VTableClosure` constants, Writer `WriteMessageWithVTables` preserves C++ vtable ordering.
 
-### NEXT — VTable extraction: C++ → Go constants
+### DONE — VTable extraction: 100% golden match
 
-**Deliverable:** `cmd/fdb-schema-extract/` emits a single Go file `pkg/fdbgo/wire/types/vtables_generated.go` containing, for every FDB type we use:
-- `var {TypeName}VTable = wire.VTable{...}` — from `get_vtable<Fields...>()`
-- `var {TypeName}FileID uint32 = ...` — for message types with `file_identifier`
-- `var {TypeName}VTableClosure = []wire.VTable{...}` — from serialized test vector vtable region
-
-The C++ extractor already computes all of this (`cmd/fdb-schema-extract/main.cpp`). Change: emit Go source instead of JSON. One `fprintf` format change. Run via Docker, output goes directly into the repo.
-
-**Depends on:** working Docker build of `cmd/fdb-schema-extract/` (done — 20 schemas produced).
-
-**Blocked by:** nothing.
+- [x] `vtables_generated.go` — 13 message types + 7 nested types, all matching golden test vectors byte-for-byte
+- [x] `protocol/` vtables — all 13 message types updated to match golden (removed trailing zeros, fixed field offsets for GetReadVersionReply, GetKeyServerLocationsReply, OpenDatabaseCoordRequest)
+- [x] C++ extractor fix — `extractRootVTable()` reads root vtable from ObjectWriter bytes (authoritative) instead of TypeVisitor (which misses conditionally-serialized fields like tenantInfo)
+- [x] Regression test — `TestVTableConformance` in protocol_test.go verifies all 13 types against vtable JSON files
+- [x] Root cause: TypeVisitor had `isSerializing=false`, missing fields gated by `Ar::isSerializing` in FDB's serialize() methods
 
 **After this:** `/port-fdb-type` skill uses these constants to write `MarshalInto` / `UnmarshalFrom` implementations in `pkg/fdbgo/wire/types/`.
 

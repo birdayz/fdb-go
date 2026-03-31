@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // GRVBatcher batches concurrent GetReadVersion requests into a single
@@ -138,8 +138,8 @@ func (b *GRVBatcher) sendGRVRequest() (int64, error) {
 // Slot 5 (Reply) at offset 28: nested ReplyPromise struct (UID vtable {6,20,4})
 // Slot 7 (MaxVersion) at offset 4: int64 (-1 = latest)
 func buildGetReadVersionRequest(replyToken transport.UID) []byte {
-	vt := protocol.GetReadVersionRequest_VTable
-	fileID := protocol.GetReadVersionRequest_FileIdentifier
+	vt := types.GetReadVersionRequestVTable
+	fileID := types.GetReadVersionRequestFileID
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {
@@ -184,7 +184,7 @@ func parseGetReadVersionReply(data []byte) (int64, error) {
 	// GetReadVersionReply has Version at some field.
 	// From the generated struct: Version is int64.
 	// Parse with the generated UnmarshalFDB.
-	var reply protocol.GetReadVersionReply
+	var reply types.GetReadVersionReply
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return 0, fmt.Errorf("unmarshal GRV reply: %w", err)
 	}

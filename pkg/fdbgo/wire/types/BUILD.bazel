@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "types",
     srcs = [
+        "commit_id.go",
         "error.go",
+        "get_key_values_reply.go",
+        "get_read_version_reply.go",
         "get_value_request.go",
         "key_selector_ref.go",
         "read_options.go",

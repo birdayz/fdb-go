@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 const (
@@ -117,31 +117,27 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	return nil, false, fmt.Errorf("getRange: all attempts failed")
 }
 
-// KeySelectorRef vtable: key(StringRef)@4, offset(int32)@8, orEqual(bool)@12.
-var keySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
-
 // buildGetKeyValuesRequest uses WriteMessageWithVTables with the generated closure.
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	vt := protocol.GetKeyValuesRequest_VTable
-	fileID := protocol.GetKeyValuesRequest_FileIdentifier
+	vt := types.GetKeyValuesRequestVTable
+	fileID := types.GetKeyValuesRequestFileID
 	w := wire.NewWriter(nil)
-	return w.WriteMessageWithVTables(fileID, vt, 8, protocol.GetKeyValuesRequest_VTableClosure, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetKeyValuesRequestVTableClosure, func(obj *wire.ObjectWriter) {
 		tenantVT := wire.VTable{10, 17, 4, 16, 12}
 		obj.WriteStruct(int(vt[11]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1)
 		})
-		spanVT := wire.VTable{10, 29, 4, 20, 28}
-		obj.WriteStruct(int(vt[10]), spanVT, 8, func(inner *wire.ObjectWriter) {})
+		obj.WriteStruct(int(vt[10]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
 		replyVT := wire.VTable{6, 20, 4}
 		obj.WriteStruct(int(vt[9]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)
 			inner.WriteUint64(12, replyToken.Second)
 		})
-		obj.WriteStruct(int(vt[3]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(int(vt[3]), types.KeySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
 			inner.WriteBytes(4, end)
 			inner.WriteInt32(8, 1) // firstGreaterOrEqual
 		})
-		obj.WriteStruct(int(vt[2]), keySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(int(vt[2]), types.KeySelectorRefVTable, 4, func(inner *wire.ObjectWriter) {
 			inner.WriteBytes(4, begin)
 			inner.WriteInt32(8, 1) // firstGreaterOrEqual
 		})
@@ -171,7 +167,7 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
 	}
 
 	// Parse with the generated UnmarshalFDB.
-	var reply protocol.GetKeyValuesReply
+	var reply types.GetKeyValuesReply
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
 	}
@@ -236,16 +232,15 @@ var emptyVersionVector = make([]byte, 16)
 
 // buildGetValueRequest uses WriteMessageWithVTables with the generated vtable closure.
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	vt := protocol.GetValueRequest_VTable
-	fileID := protocol.GetValueRequest_FileIdentifier
+	vt := types.GetValueRequestVTable
+	fileID := types.GetValueRequestFileID
 	w := wire.NewWriter(nil)
-	return w.WriteMessageWithVTables(fileID, vt, 8, protocol.GetValueRequest_VTableClosure, func(obj *wire.ObjectWriter) {
+	return w.WriteMessageWithVTables(fileID, vt, 8, types.GetValueRequestVTableClosure, func(obj *wire.ObjectWriter) {
 		tenantVT := wire.VTable{10, 17, 4, 16, 12}
 		obj.WriteStruct(int(vt[8]), tenantVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteInt64(4, -1)
 		})
-		spanVT := wire.VTable{10, 29, 4, 20, 28}
-		obj.WriteStruct(int(vt[7]), spanVT, 8, func(inner *wire.ObjectWriter) {})
+		obj.WriteStruct(int(vt[7]), types.SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
 		replyVT := wire.VTable{6, 20, 4}
 		obj.WriteStruct(int(vt[6]), replyVT, 8, func(inner *wire.ObjectWriter) {
 			inner.WriteUint64(4, replyToken.First)

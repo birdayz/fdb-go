@@ -6,25 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-// CommitTransactionRef vtable extracted from C++ test vector.
-// Fields (serialize order):
-//
-//	slot 0: read_conflict_ranges (VectorRef<KeyRangeRef>) at offset 12
-//	slot 1: write_conflict_ranges (VectorRef<KeyRangeRef>) at offset 16
-//	slot 2: mutations (VectorRef<MutationRef>) at offset 20
-//	slot 3: read_snapshot (Version = int64) at offset 4
-//	slot 4: report_conflicting_keys (bool) at offset 32
-//	slot 5: lock_aware (bool) at offset 33
-//	slot 6: spanContext type (uint8) at offset 34 (Optional)
-//	slot 7: spanContext value (RelOff) at offset 24 (Optional)
-//	slot 8: tenantIds type (uint8) at offset 35 (Optional)
-//	slot 9: tenantIds value (RelOff) at offset 28 (Optional)
-var commitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
+// CommitTransactionRef, MutationRef, KeyRangeRef vtables from types.vtables_generated.go
 
 // commit sends a CommitTransactionRequest to a commit proxy.
 func (tx *Transaction) commit(ctx context.Context) error {
@@ -65,8 +52,8 @@ func (tx *Transaction) commit(ctx context.Context) error {
 // buildCommitTransactionRequest constructs the full request with embedded
 // CommitTransactionRef (mutations + conflict ranges), ReplyPromise, and TenantInfo.
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
-	vt := protocol.CommitTransactionRequest_VTable
-	fileID := protocol.CommitTransactionRequest_FileIdentifier
+	vt := types.CommitTransactionRequestVTable
+	fileID := types.CommitTransactionRequestFileID
 
 	// Pre-serialize vectors as proper FlatBuffers nested objects.
 	mutData := serializeMutationVector(tx.mutations)
@@ -97,7 +84,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		})
 
 		// slot 0: Transaction (nested CommitTransactionRef)
-		obj.WriteStruct(int(vt[0+2]), commitTransactionRefVTable, 8, func(inner *wire.ObjectWriter) {
+		obj.WriteStruct(int(vt[0+2]), types.CommitTransactionRefVTable, 8, func(inner *wire.ObjectWriter) {
 			// slot 3: read_snapshot (int64) at offset 4
 			inner.WriteInt64(4, tx.readVersion)
 			// slot 0: read_conflict_ranges at offset 12
@@ -136,7 +123,7 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 	}
 
 	// Parse CommitID from the inner object.
-	var reply protocol.CommitID
+	var reply types.CommitID
 	if err := reply.UnmarshalFDB(data); err != nil {
 		return fmt.Errorf("unmarshal CommitID: %w", err)
 	}
@@ -144,14 +131,6 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 	tx.committedVersion = reply.Version
 	return nil
 }
-
-// MutationRef vtable: serializer(ar, type, param1, param2)
-// type=uint8 at offset 12, param1=StringRef(RelOff) at offset 4, param2=StringRef(RelOff) at offset 8
-var mutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
-
-// KeyRangeRef vtable: serializer(ar, begin, end)
-// begin=StringRef(RelOff) at offset 4, end=StringRef(RelOff) at offset 8
-var keyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 
 // serializeMutationVector packs mutations as VectorRef<MutationRef>.
 // Each MutationRef is a full FlatBuffers nested object (serialize_member, NOT dynamic_size_traits).
@@ -168,7 +147,7 @@ func serializeMutationVector(muts []Mutation) []byte {
 // Layout: [vtable][padding][soffset+fields][param2_ool][param1_ool]
 // C++ allocates OOL in reverse field order (param2 first, then param1).
 func buildMutationRefBlob(m Mutation) []byte {
-	vt := mutationRefVTable
+	vt := types.MutationRefVTable
 	vtBytes := 10         // len(vt) * 2
 	objSize := int(vt[1]) // 13
 
@@ -228,7 +207,7 @@ func serializeConflictRangeVector(ranges []KeyRange) []byte {
 // buildKeyRangeRefBlob builds a single KeyRangeRef as a FlatBuffers object blob.
 // Layout: [vtable][padding][soffset+fields][end_ool][begin_ool]
 func buildKeyRangeRefBlob(kr KeyRange) []byte {
-	vt := keyRangeRefVTable
+	vt := types.KeyRangeRefVTable
 	vtBytes := 8          // len(vt) * 2
 	objSize := int(vt[1]) // 12
 

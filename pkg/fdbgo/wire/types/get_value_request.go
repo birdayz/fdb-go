@@ -1,15 +1,19 @@
 package types
 
-// GetValueRequest — fdbclient/include/fdbclient/StorageServerInterface.h:215
-// C++ serialize: serializer(ar, key, version, tags, reply, spanContext, options, ssLatestCommitVersions)
-//   slot 0: key                      — Key/StringRef (dynamic_size, RelOff at offset 12)
-//   slot 1: version                  — Version/int64 (scalar, 8 bytes at offset 4)
-//   slot 2: tags                     — Optional<TagSet> (union_like: type@36, value@16)
-//   slot 3: reply                    — ReplyPromise<GetValueReply> (serialize_member, RelOff at offset 20)
-//   slot 4: spanContext              — SpanContext (serialize_member, RelOff at offset 24)
-//   slot 5: options                  — Optional<ReadOptions> (union_like: type@37, value@28)
-//   slot 6: ssLatestCommitVersions   — VersionVector (dynamic_size, RelOff at offset 32)
-// VTable: {22, 38, 12, 4, 36, 16, 20, 24, 37, 28, 32}
+// GetValueRequest — fdbclient/StorageServerInterface.h
+// C++ serialize: serializer(ar, key, version, tags, reply, spanContext, options, ssLatestCommitVersions, tenantInfo)
+//
+// VTable field mapping (12 entries):
+//   vt[2]=12:  key (dynamic_size, RelOff)
+//   vt[3]=4:   version (scalar int64)
+//   vt[4]=40:  tags.type (union_like)
+//   vt[5]=16:  tags.value
+//   vt[6]=20:  reply (serialize_member, RelOff)
+//   vt[7]=24:  spanContext (serialize_member, RelOff)
+//   vt[8]=28:  tenantInfo (serialize_member, RelOff) — absent for client requests
+//   vt[9]=41:  options.type (union_like)
+//   vt[10]=32: options.value
+//   vt[11]=36: ssLatestCommitVersions (dynamic_size, RelOff)
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
@@ -39,23 +43,19 @@ func (m *GetValueRequest) MarshalFDB() []byte {
 		GetValueRequestFileID, vt, 8, GetValueRequestVTableClosure,
 		func(obj *wire.ObjectWriter) {
 			// Nested structs in REVERSE serialization order (matches C++ end-offset allocation).
-			// slot 4: spanContext at offset 24
-			obj.WriteStruct(int(vt[6]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {
+			obj.WriteStruct(int(vt[7]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {
 				m.SpanCtx.MarshalInto(inner)
 			})
-			// slot 3: reply at offset 20
-			obj.WriteStruct(int(vt[5]), replyPromiseVTable, 8, func(inner *wire.ObjectWriter) {
+			obj.WriteStruct(int(vt[6]), replyPromiseVTable, 8, func(inner *wire.ObjectWriter) {
 				inner.WriteUID(4, m.ReplyToken)
 			})
-			// slot 1: version at offset 4
 			obj.WriteInt64(int(vt[3]), m.Version)
-			// slot 0: key at offset 12
 			obj.WriteBytes(int(vt[2]), m.Key)
-			// slot 6: ssLatestCommitVersions at offset 32
+			// tenantInfo at vt[8] — absent (zero RelOff = null pointer)
 			data := m.SSLatestVersions
 			if len(data) == 0 {
 				data = emptyVersionVector
 			}
-			obj.WriteBytes(int(vt[10]), data)
+			obj.WriteBytes(int(vt[11]), data)
 		})
 }

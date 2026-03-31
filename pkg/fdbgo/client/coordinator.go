@@ -7,9 +7,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
@@ -51,7 +51,7 @@ func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []
 	// UID (slot 3) is 16 bytes INLINE at offset 4.
 	// ReplyPromise (slot 6) is 4-byte RelativeOffset to nested struct at offset 40.
 	vt := wire.VTable{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
-	fileID := protocol.OpenDatabaseCoordRequest_FileIdentifier
+	fileID := types.OpenDatabaseCoordRequestFileID
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {

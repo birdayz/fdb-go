@@ -106,6 +106,39 @@ std::vector<std::vector<uint16_t>> extractVTableClosure(const uint8_t* data, int
     return result;
 }
 
+// Read the vtable at a given object position.
+std::vector<uint16_t> readVTableAt(const uint8_t* data, int size, int objPos) {
+    if (objPos + 4 > size) return {};
+    int32_t vtOff; memcpy(&vtOff, data + objPos, 4);
+    int vtPos = objPos - vtOff;
+    if (vtPos < 0 || vtPos + 2 > size) return {};
+    uint16_t vtSize; memcpy(&vtSize, data + vtPos, 2);
+    if (vtSize < 6 || vtSize > 128 || vtSize % 2 != 0 || vtPos + vtSize > size) return {};
+    std::vector<uint16_t> vt(vtSize / 2);
+    for (int i = 0; i < vtSize / 2; i++) memcpy(&vt[i], data + vtPos + i * 2, 2);
+    return vt;
+}
+
+// Extract the MESSAGE type's vtable from serialized bytes.
+// Wire layout: [rootOff][protocolVersion][vtables...][FakeRoot][Message][nested...]
+// FakeRoot has vtable {6,8,4} with one RelOff field at offset 4 pointing to Message.
+// We follow: root -> FakeRoot -> Message -> Message's vtable.
+std::vector<uint16_t> extractMessageVTable(const uint8_t* data, int size) {
+    if (size < 16) return {};
+    int off = 0;
+    if (size >= 16 && data[7] == 0x0F && data[6] == 0xDB) off = 8;
+    if (off + 8 > size) return {};
+    // Follow root offset to FakeRoot object.
+    uint32_t rootOff; memcpy(&rootOff, data + off, 4);
+    int fakeRootPos = off + (int)rootOff;
+    if (fakeRootPos + 8 > size) return {};
+    // FakeRoot field at offset 4: RelOff pointing to the actual message object.
+    uint32_t msgRelOff; memcpy(&msgRelOff, data + fakeRootPos + 4, 4);
+    int msgPos = fakeRootPos + 4 + (int)msgRelOff;
+    // Read vtable from the message object.
+    return readVTableAt(data, size, msgPos);
+}
+
 std::vector<std::string> splitNames(const std::string& csv) {
     std::vector<std::string> result;
     std::istringstream ss(csv);
@@ -195,20 +228,26 @@ void extractType(GoEmitter& out, const char* name) {
         for (size_t i = 0; i < visitor.fields.size(); i++)
             visitor.fields[i].name = (i < names.size()) ? names[i] : "field_" + std::to_string(i);
 
-        // Closure.
+        // Closure + authoritative root vtable from ObjectWriter.
         std::vector<std::vector<uint16_t>> closure;
+        std::vector<uint16_t> rootVTable;
         if constexpr (requires { T::file_identifier; }) {
             ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
             wr.serialize(T::file_identifier, msg);
             auto bytes = wr.toStringRef();
             closure = extractVTableClosure(bytes.begin(), bytes.size());
+            rootVTable = extractMessageVTable(bytes.begin(), bytes.size());
         }
+        // For types with file_identifier, prefer ObjectWriter's root vtable
+        // (it includes conditionally-serialized fields like tenantInfo).
+        // Fall back to TypeVisitor vtable for nested types without file_identifier.
+        auto& emitVT = rootVTable.empty() ? visitor.vtable : rootVTable;
 
         // Write Go to pipe.
         FILE* pf = fdopen(pipefd[1], "w");
         GoEmitter e{pf};
         e.emitFieldComment(name, visitor.fields);
-        e.emitVTable(name, visitor.vtable);
+        e.emitVTable(name, emitVT);
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
         e.separator();

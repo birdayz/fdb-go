@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/protocol"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // LocationCache maps key ranges to storage server addresses.
@@ -126,8 +126,8 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 // slot 5 (Reply) at offset 24: nested ReplyPromise struct
 // slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	vt := protocol.GetKeyServerLocationsRequest_VTable
-	fileID := protocol.GetKeyServerLocationsRequest_FileIdentifier
+	vt := types.GetKeyServerLocationsRequestVTable
+	fileID := types.GetKeyServerLocationsRequestFileID
 
 	w := wire.NewWriter(nil)
 	return w.WriteMessage(fileID, vt, 8, func(obj *wire.ObjectWriter) {

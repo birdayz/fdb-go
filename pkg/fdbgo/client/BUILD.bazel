@@ -15,9 +15,9 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/fdbgo/protocol",
         "//pkg/fdbgo/transport",
         "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
     ],
 )
 
