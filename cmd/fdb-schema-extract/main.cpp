@@ -1,21 +1,8 @@
-// fdb-schema-extract — Pure C++ tool that extracts wire format schemas from FDB types.
+// fdb-schema-extract — Extracts vtables, closures, and field traits from real FDB types.
+// Outputs a single Go source file with constants for all types.
 //
-// Compiles against real FDB headers. No stubs. No Go. No regex parsing.
-// The C++ compiler resolves all types, traits, vtables, and sizes.
-//
-// Output: one JSON file per type with:
-//   - name, file_identifier
-//   - vtable (from get_vtable<Fields...>())
-//   - per-field: name, trait, size, alignment, indirection
-//   - vtable_closure (all vtables reachable from the type graph)
-//
-// Field names are captured by redefining `serializer` in a separate TU
-// (name_capture.cpp) which stringifies __VA_ARGS__ at the preprocessor level.
-//
-// Build: compiled inside FDB's Docker build environment, linked against
-// fdbclient + fdbrpc + flow + fdbserver_lib.
-
-// --- Normal FDB includes (real types, real traits) ---
+// Build: compiled inside FDB's Docker environment against fdbclient + fdbrpc + flow.
+// Output: vtables_generated.go
 
 #include "fdbclient/StorageServerInterface.h"
 #include "fdbclient/CommitProxyInterface.h"
@@ -39,23 +26,13 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-// Defined in name_capture.cpp (separate TU with redefined serializer).
+// Defined in name_capture.cpp.
 extern std::map<std::string, std::string>& nameRegistry();
 extern void captureAllNames();
 
 // ============================================================
-// Schema extraction — uses real FDB flat_buffers type system
+// Type metadata extraction
 // ============================================================
-
-// Check for file_identifier via the constexpr static member directly.
-template <class T>
-constexpr uint32_t getFileId() {
-    if constexpr (requires { T::file_identifier; }) {
-        return T::file_identifier;
-    } else {
-        return 0;
-    }
-}
 
 struct FieldInfo {
     std::string name;
@@ -76,7 +53,6 @@ const char* classifyTrait() {
     else return "serialize_member";
 }
 
-// fb_visitor that collects vtable + per-field type metadata.
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
     static constexpr bool isSerializing = false;
@@ -94,116 +70,132 @@ struct TypeVisitor {
         vtable.assign(vt->begin(), vt->end());
         (pushField<std::decay_t<Members>>(), ...);
     }
-
 private:
-    template <class T>
-    void pushField() {
+    template <class T> void pushField() {
         using namespace detail;
         fields.push_back(FieldInfo{"", classifyTrait<T>(),
-                                   (uint32_t)fb_size<T>, (uint32_t)fb_align<T>,
-                                   use_indirection<T>});
+            (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>});
     }
 };
 
-// Extract vtable closure from serialized bytes (same as C++ ObjectWriter produces).
+template <class T>
+constexpr uint32_t getFileId() {
+    if constexpr (requires { T::file_identifier; }) return T::file_identifier;
+    else return 0;
+}
+
 std::vector<std::vector<uint16_t>> extractVTableClosure(const uint8_t* data, int size) {
     std::vector<std::vector<uint16_t>> result;
     if (size < 16) return result;
     int off = 0;
     if (size >= 16 && data[7] == 0x0F && data[6] == 0xDB) off = 8;
     if (off + 8 > size) return result;
-
-    uint32_t rootOff;
-    memcpy(&rootOff, data + off, 4);
-    int vtEnd = off + (int)rootOff;
-    int pos = off + 8;
-
+    uint32_t rootOff; memcpy(&rootOff, data + off, 4);
+    int vtEnd = off + (int)rootOff, pos = off + 8;
     while (pos < vtEnd && pos + 2 <= size) {
-        uint16_t vtSize;
-        memcpy(&vtSize, data + pos, 2);
+        uint16_t vtSize; memcpy(&vtSize, data + pos, 2);
         if (vtSize == 0) { pos += 2; continue; }
         if (vtSize < 6 || vtSize > 64 || vtSize % 2 != 0 || pos + vtSize > size) break;
-        uint16_t objSize;
-        memcpy(&objSize, data + pos + 2, 2);
+        uint16_t objSize; memcpy(&objSize, data + pos + 2, 2);
         if (objSize < 4 || objSize > 128) { pos += 2; continue; }
-
         std::vector<uint16_t> vt(vtSize / 2);
-        for (int i = 0; i < vtSize / 2; i++)
-            memcpy(&vt[i], data + pos + i * 2, 2);
+        for (int i = 0; i < vtSize / 2; i++) memcpy(&vt[i], data + pos + i * 2, 2);
         result.push_back(vt);
         pos += vtSize;
     }
     return result;
 }
 
-// Split comma-separated names.
 std::vector<std::string> splitNames(const std::string& csv) {
     std::vector<std::string> result;
     std::istringstream ss(csv);
     std::string token;
     while (std::getline(ss, token, ',')) {
-        auto start = token.find_first_not_of(" \t");
-        auto end = token.find_last_not_of(" \t");
-        if (start != std::string::npos)
-            result.push_back(token.substr(start, end - start + 1));
+        auto s = token.find_first_not_of(" \t"), e = token.find_last_not_of(" \t");
+        if (s != std::string::npos) result.push_back(token.substr(s, e - s + 1));
     }
     return result;
 }
 
-// Write one schema JSON file.
-void writeJSON(FILE* f, const char* name, uint32_t fileId,
-               const std::vector<uint16_t>& vt,
-               const std::vector<FieldInfo>& fields,
-               const std::vector<std::vector<uint16_t>>& closure) {
-    fprintf(f, "{\n  \"name\": \"%s\",\n  \"file_identifier\": %u,\n", name, fileId);
+// ============================================================
+// Go code generation — accumulates into a single file
+// ============================================================
 
-    fprintf(f, "  \"vtable\": [");
-    for (size_t i = 0; i < vt.size(); i++) { if (i) fprintf(f, ", "); fprintf(f, "%u", vt[i]); }
-    fprintf(f, "],\n");
+struct GoEmitter {
+    FILE* f;
 
-    fprintf(f, "  \"vtable_closure\": [\n");
-    for (size_t i = 0; i < closure.size(); i++) {
-        fprintf(f, "    [");
-        for (size_t j = 0; j < closure[i].size(); j++) {
-            if (j) fprintf(f, ", ");
-            fprintf(f, "%u", closure[i][j]);
+    void header() {
+        fprintf(f, "// Code generated by fdb-schema-extract from FDB 7.3.75. DO NOT EDIT.\n\n");
+        fprintf(f, "package types\n\n");
+        fprintf(f, "import \"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire\"\n\n");
+    }
+
+    void emitVTable(const char* name, const std::vector<uint16_t>& vt) {
+        fprintf(f, "var %sVTable = wire.VTable{", name);
+        for (size_t i = 0; i < vt.size(); i++) {
+            if (i) fprintf(f, ", ");
+            fprintf(f, "%u", vt[i]);
         }
-        fprintf(f, "]%s\n", i + 1 < closure.size() ? "," : "");
+        fprintf(f, "}\n");
     }
-    fprintf(f, "  ],\n");
 
-    fprintf(f, "  \"fields\": [\n");
-    for (size_t i = 0; i < fields.size(); i++) {
-        auto& fi = fields[i];
-        fprintf(f, "    {\"name\": \"%s\", \"trait\": \"%s\", \"size\": %u, \"align\": %u, \"indirection\": %s}%s\n",
-                fi.name.c_str(), fi.trait, fi.size, fi.align,
-                fi.indirection ? "true" : "false",
-                i + 1 < fields.size() ? "," : "");
+    void emitFileID(const char* name, uint32_t id) {
+        if (id > 0) fprintf(f, "const %sFileID uint32 = %u\n", name, id);
     }
-    fprintf(f, "  ]\n}\n");
-}
 
-// Extract and write schema for one type. Fork-safe.
+    void emitClosure(const char* name, const std::vector<std::vector<uint16_t>>& closure) {
+        if (closure.empty()) return;
+        fprintf(f, "var %sVTableClosure = []wire.VTable{\n", name);
+        for (auto& vt : closure) {
+            fprintf(f, "\t{");
+            for (size_t i = 0; i < vt.size(); i++) {
+                if (i) fprintf(f, ", ");
+                fprintf(f, "%u", vt[i]);
+            }
+            fprintf(f, "},\n");
+        }
+        fprintf(f, "}\n");
+    }
+
+    void emitFieldComment(const char* name, const std::vector<FieldInfo>& fields) {
+        fprintf(f, "// %s fields:\n", name);
+        for (size_t i = 0; i < fields.size(); i++) {
+            auto& fi = fields[i];
+            fprintf(f, "//   slot %zu: %s — %s, size=%u, align=%u%s\n",
+                    i, fi.name.c_str(), fi.trait, fi.size, fi.align,
+                    fi.indirection ? ", indirection" : "");
+        }
+    }
+
+    void separator() { fprintf(f, "\n"); }
+};
+
+// Extract metadata for one type and write to the Go emitter.
+// Runs in a forked child (crash-safe).
 template <class T>
-void emitSchema(const char* outDir, const char* typeName) {
+void extractType(GoEmitter& out, const char* name) {
+    // Extract in a child process to survive constructor crashes.
+    int pipefd[2];
+    pipe(pipefd);
+
     pid_t pid = fork();
     if (pid == 0) {
-        // Type metadata.
+        close(pipefd[0]);
+
         TypeVisitor visitor;
         T msg{};
-        if constexpr (serializable_traits<T>::value) {
+        if constexpr (serializable_traits<T>::value)
             serializable_traits<T>::serialize(visitor, msg);
-        } else {
+        else
             msg.serialize(visitor);
-        }
 
-        // Field names from name_capture.cpp.
-        auto it = nameRegistry().find(typeName);
+        // Names.
+        auto it = nameRegistry().find(name);
         auto names = (it != nameRegistry().end()) ? splitNames(it->second) : std::vector<std::string>{};
         for (size_t i = 0; i < visitor.fields.size(); i++)
             visitor.fields[i].name = (i < names.size()) ? names[i] : "field_" + std::to_string(i);
 
-        // Vtable closure from serialized bytes.
+        // Closure.
         std::vector<std::vector<uint16_t>> closure;
         if constexpr (requires { T::file_identifier; }) {
             ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
@@ -212,70 +204,77 @@ void emitSchema(const char* outDir, const char* typeName) {
             closure = extractVTableClosure(bytes.begin(), bytes.size());
         }
 
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s.json", outDir, typeName);
-        FILE* f = fopen(path, "w");
-        if (f) {
-            writeJSON(f, typeName, getFileId<T>(), visitor.vtable, visitor.fields, closure);
-            fclose(f);
-            fprintf(stderr, "OK %s\n", typeName);
-        }
+        // Write Go to pipe.
+        FILE* pf = fdopen(pipefd[1], "w");
+        GoEmitter e{pf};
+        e.emitFieldComment(name, visitor.fields);
+        e.emitVTable(name, visitor.vtable);
+        e.emitFileID(name, getFileId<T>());
+        e.emitClosure(name, closure);
+        e.separator();
+        fclose(pf);
         _exit(0);
     }
-    int status = 0;
+
+    close(pipefd[1]);
+    // Read child output and append to main file.
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+        fwrite(buf, 1, n, out.f);
+    close(pipefd[0]);
+
+    int status;
     waitpid(pid, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        fprintf(stderr, "SKIP %s\n", typeName);
-    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        fprintf(stderr, "OK %s\n", name);
+    else
+        fprintf(stderr, "SKIP %s\n", name);
 }
 
 // ============================================================
-// Main — list every type we need. Add a line, get a schema.
+// Main
 // ============================================================
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <output-dir>\n", argv[0]);
-        return 1;
-    }
-    const char* outDir = argv[1];
-    mkdir(outDir, 0755);
+    if (argc < 2) { fprintf(stderr, "Usage: %s <output-file>\n", argv[0]); return 1; }
 
-    // Initialize FDB runtime.
     TLSConfig tlsConfig;
     g_network = newNet2(tlsConfig, false, false);
     FlowTransport::createInstance(false, 1, WLTOKEN_FIRST_AVAILABLE, nullptr);
 
-    // Capture field names (from name_capture.cpp).
     captureAllNames();
 
+    FILE* f = fopen(argv[1], "w");
+    if (!f) { perror(argv[1]); return 1; }
+    GoEmitter out{f};
+    out.header();
+
     // --- Client request/reply messages ---
-    emitSchema<GetValueRequest>(outDir, "GetValueRequest");
-    emitSchema<GetValueReply>(outDir, "GetValueReply");
-    emitSchema<GetKeyValuesRequest>(outDir, "GetKeyValuesRequest");
-    emitSchema<GetKeyValuesReply>(outDir, "GetKeyValuesReply");
-    emitSchema<GetKeyRequest>(outDir, "GetKeyRequest");
-    emitSchema<GetKeyReply>(outDir, "GetKeyReply");
-    emitSchema<GetReadVersionRequest>(outDir, "GetReadVersionRequest");
-    emitSchema<GetReadVersionReply>(outDir, "GetReadVersionReply");
-    emitSchema<GetKeyServerLocationsRequest>(outDir, "GetKeyServerLocationsRequest");
-    emitSchema<GetKeyServerLocationsReply>(outDir, "GetKeyServerLocationsReply");
-    emitSchema<CommitTransactionRequest>(outDir, "CommitTransactionRequest");
-    emitSchema<CommitID>(outDir, "CommitID");
+    extractType<GetValueRequest>(out, "GetValueRequest");
+    extractType<GetValueReply>(out, "GetValueReply");
+    extractType<GetKeyValuesRequest>(out, "GetKeyValuesRequest");
+    extractType<GetKeyValuesReply>(out, "GetKeyValuesReply");
+    extractType<GetKeyRequest>(out, "GetKeyRequest");
+    extractType<GetKeyReply>(out, "GetKeyReply");
+    extractType<GetReadVersionRequest>(out, "GetReadVersionRequest");
+    extractType<GetReadVersionReply>(out, "GetReadVersionReply");
+    extractType<GetKeyServerLocationsRequest>(out, "GetKeyServerLocationsRequest");
+    extractType<GetKeyServerLocationsReply>(out, "GetKeyServerLocationsReply");
+    extractType<CommitTransactionRequest>(out, "CommitTransactionRequest");
+    extractType<CommitID>(out, "CommitID");
+    extractType<OpenDatabaseCoordRequest>(out, "OpenDatabaseCoordRequest");
 
-    // --- Coordinator messages ---
-    emitSchema<OpenDatabaseCoordRequest>(outDir, "OpenDatabaseCoordRequest");
+    // --- Nested types ---
+    extractType<SpanContext>(out, "SpanContext");
+    extractType<KeySelectorRef>(out, "KeySelectorRef");
+    extractType<MutationRef>(out, "MutationRef");
+    extractType<KeyRangeRef>(out, "KeyRangeRef");
+    extractType<CommitTransactionRef>(out, "CommitTransactionRef");
+    extractType<ReadOptions>(out, "ReadOptions");
+    extractType<Error>(out, "Error");
 
-    // --- Nested types (serialize_member, used inside messages) ---
-    emitSchema<SpanContext>(outDir, "SpanContext");
-    emitSchema<KeySelectorRef>(outDir, "KeySelectorRef");
-    emitSchema<MutationRef>(outDir, "MutationRef");
-    emitSchema<KeyRangeRef>(outDir, "KeyRangeRef");
-    emitSchema<CommitTransactionRef>(outDir, "CommitTransactionRef");
-    emitSchema<ReadOptions>(outDir, "ReadOptions");
-    emitSchema<Error>(outDir, "Error");
-    // UID: scalar_traits, size=16. Tag: struct_like_traits. Both inlined, no serialize().
-
+    fclose(f);
     fprintf(stderr, "Done.\n");
     return 0;
 }
