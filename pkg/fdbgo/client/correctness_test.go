@@ -254,6 +254,69 @@ func TestGetNonExistentKey(t *testing.T) {
 	}
 }
 
+func TestGetKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Write keys: gk_a, gk_b, gk_c, gk_d, gk_e
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		for _, s := range []string{"a", "b", "c", "d", "e"} {
+			tx.Set([]byte("gk_"+s), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// firstGreaterOrEqual("gk_c") → should return "gk_c" (exact match)
+	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.GetKey(ctx, []byte("gk_c"), false, 1) // orEqual=false, offset=1 = firstGreaterOrEqual
+	})
+	if err != nil {
+		t.Fatalf("firstGreaterOrEqual: %v", err)
+	}
+	if string(result.([]byte)) != "gk_c" {
+		t.Errorf("firstGreaterOrEqual(gk_c): got %q, want %q", result, "gk_c")
+	}
+
+	// firstGreaterThan("gk_c") → should return "gk_d"
+	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.GetKey(ctx, []byte("gk_c"), true, 1) // orEqual=true, offset=1 = firstGreaterThan
+	})
+	if err != nil {
+		t.Fatalf("firstGreaterThan: %v", err)
+	}
+	if string(result.([]byte)) != "gk_d" {
+		t.Errorf("firstGreaterThan(gk_c): got %q, want %q", result, "gk_d")
+	}
+
+	// lastLessOrEqual("gk_c") → should return "gk_c"
+	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.GetKey(ctx, []byte("gk_c"), true, 0) // orEqual=true, offset=0 = lastLessOrEqual
+	})
+	if err != nil {
+		t.Fatalf("lastLessOrEqual: %v", err)
+	}
+	if string(result.([]byte)) != "gk_c" {
+		t.Errorf("lastLessOrEqual(gk_c): got %q, want %q", result, "gk_c")
+	}
+
+	// lastLessThan("gk_c") → should return "gk_b"
+	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		return tx.GetKey(ctx, []byte("gk_c"), false, 0) // orEqual=false, offset=0 = lastLessThan
+	})
+	if err != nil {
+		t.Fatalf("lastLessThan: %v", err)
+	}
+	if string(result.([]byte)) != "gk_b" {
+		t.Errorf("lastLessThan(gk_c): got %q, want %q", result, "gk_b")
+	}
+}
+
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

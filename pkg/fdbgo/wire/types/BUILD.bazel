@@ -6,6 +6,8 @@ go_library(
         "commit_id.go",
         "commit_transaction_request.go",
         "error.go",
+        "get_key_reply.go",
+        "get_key_request.go",
         "get_key_server_locations_request.go",
         "get_key_values_reply.go",
         "get_key_values_request.go",

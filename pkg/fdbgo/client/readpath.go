@@ -14,6 +14,79 @@ import (
 
 const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
 
+// getKey resolves a key selector via the storage server.
+func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+		servers, err := tx.db.locationCache.Locate(ctx, selectorKey)
+		if err != nil {
+			return nil, fmt.Errorf("locate key: %w", err)
+		}
+		if len(servers) == 0 {
+			return nil, fmt.Errorf("no storage servers for key")
+		}
+
+		key, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, servers)
+		if err == nil {
+			return key, nil
+		}
+		if isWrongShardServer(err) {
+			tx.db.locationCache.Invalidate(selectorKey)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("getKey: wrong_shard_server after %d attempts", MaxWrongShardRetries)
+}
+
+func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
+	for _, server := range servers {
+		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		if err != nil {
+			continue
+		}
+		replyToken, replyCh := conn.PrepareReply()
+		req := types.GetKeyRequest{
+			SelectorKey:     selectorKey,
+			SelectorOrEqual: orEqual,
+			SelectorOffset:  offset,
+			Version:         tx.readVersion,
+			ReplyFirst:      replyToken.First,
+			ReplySecond:     replyToken.Second,
+			TenantId:        NoTenantID,
+		}
+		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+		if err := conn.SendFrame(gkToken, req.MarshalFDB()); err != nil {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				continue
+			}
+			return parseGetKeyReply(resp.Body)
+		case <-rctx.Done():
+			cancel()
+			continue
+		}
+	}
+	return nil, fmt.Errorf("all servers unreachable")
+}
+
+func parseGetKeyReply(data []byte) ([]byte, error) {
+	r, err := wire.ReadErrorOr(data)
+	if err != nil {
+		return nil, fmt.Errorf("GetKey: %w", err)
+	}
+	var reply types.GetKeyReply
+	if err := reply.UnmarshalFrom(r); err != nil {
+		return nil, fmt.Errorf("unmarshal GetKeyReply: %w", err)
+	}
+	return reply.Key, nil
+}
+
 // getValue sends a GetValueRequest to the appropriate storage server.
 // Returns the value (nil if key not found), or an error.
 // wrong_shard_server is retried locally with cache invalidation.

@@ -31,6 +31,7 @@ const (
 // CommitProxyInterface: commit=0, ..., getKeyServerLocations=2, ...
 const (
 	EndpointGetValue              = 0 // StorageServerInterface::getValue
+	EndpointGetKey                = 1 // StorageServerInterface::getKey
 	EndpointGetKeyValues          = 2 // StorageServerInterface::getKeyValues
 	EndpointGetKeyServerLocations = 2 // CommitProxyInterface::getKeyServerLocations
 )
@@ -115,6 +116,30 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
 
 	return tx.getValue(ctx, key)
+}
+
+// GetKey resolves a key selector to the actual key in the database.
+// Key selectors are the fundamental building block for range operations.
+// Use types.FirstGreaterOrEqual(key), types.FirstGreaterThan(key), etc.
+func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	if tx.state != txStateActive {
+		return nil, fmt.Errorf("transaction not active")
+	}
+
+	if !tx.hasReadVersion {
+		rv, err := tx.getReadVersion(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tx.readVersion = rv
+		tx.hasReadVersion = true
+	}
+
+	// Add read conflict range (the resolved key, once known, is in the conflict set).
+	// We add a point range for the selector key; the actual resolved key may differ.
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+
+	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
 
 // GetRange reads a range of keys [begin, end). Returns the key-value pairs,
