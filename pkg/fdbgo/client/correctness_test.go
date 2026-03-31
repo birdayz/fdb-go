@@ -458,6 +458,31 @@ func TestExplicitConflictRanges(t *testing.T) {
 	t.Logf("tx4 conflict (expected): %v", err)
 }
 
+func TestCancel(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.Set([]byte("key"), []byte("val"))
+
+	tx.Cancel()
+
+	// Get should fail.
+	_, err := tx.Get(context.Background(), []byte("key"))
+	if err == nil {
+		t.Error("Get after Cancel should fail")
+	}
+
+	// Commit should fail.
+	err = tx.Commit(context.Background())
+	if err == nil {
+		t.Error("Commit after Cancel should fail")
+	}
+
+	// Set should still work (buffered locally, no state check).
+	// But the transaction is useless — Commit will fail.
+	tx.Set([]byte("key2"), []byte("val2"))
+}
+
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

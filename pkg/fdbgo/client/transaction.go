@@ -42,6 +42,7 @@ const (
 	txStateActive txState = iota
 	txStateCommitted
 	txStateErrored
+	txStateCancelled
 )
 
 // Mutation represents a key-value mutation in a transaction.
@@ -136,6 +137,9 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+	if tx.state == txStateCancelled {
+		return fmt.Errorf("transaction cancelled")
+	}
 	if tx.state != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
@@ -239,6 +243,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	tx.state = txStateCommitted
 	return nil
+}
+
+// Cancel cancels the transaction. All subsequent operations will return an error.
+// This is irreversible — a cancelled transaction cannot be reused.
+func (tx *Transaction) Cancel() {
+	tx.state = txStateCancelled
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
