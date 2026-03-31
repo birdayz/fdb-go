@@ -317,6 +317,81 @@ func TestGetKey(t *testing.T) {
 	}
 }
 
+func TestSnapshotRead(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("snap_key"), []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// tx1: snapshot read + write (should NOT conflict)
+	// tx2: regular write to same key, committed between tx1's read and commit
+	//
+	// With regular read: tx1 would conflict (read conflict range includes snap_key).
+	// With snapshot read: tx1 should succeed (no read conflict range).
+
+	tx1 := db.CreateTransaction()
+	rv, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx1.SetReadVersion(rv)
+
+	// Snapshot read — no conflict range added.
+	val, err := tx1.Snapshot().Get(ctx, []byte("snap_key"))
+	if err != nil {
+		t.Fatalf("snapshot Get: %v", err)
+	}
+	if string(val) != "v0" {
+		t.Fatalf("snapshot Get: got %q, want %q", val, "v0")
+	}
+
+	// tx2 writes the same key and commits.
+	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("snap_key"), []byte("v1"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tx2 commit: %v", err)
+	}
+
+	// tx1 writes and commits — should succeed because snapshot read
+	// didn't add a read conflict range.
+	tx1.Set([]byte("snap_key"), []byte("v_from_tx1"))
+	err = tx1.Commit(ctx)
+	if err != nil {
+		t.Fatalf("tx1 should NOT conflict after snapshot read, got: %v", err)
+	}
+
+	// Verify: now do a regular read that WOULD conflict.
+	tx3 := db.CreateTransaction()
+	rv3, _ := db.grvBatcher.GetReadVersion(ctx)
+	tx3.SetReadVersion(rv3)
+
+	// Regular read — adds conflict range.
+	_, _ = tx3.Get(ctx, []byte("snap_key"))
+
+	// Another transaction writes the same key.
+	_, _ = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		tx.Set([]byte("snap_key"), []byte("v2"))
+		return nil, nil
+	})
+
+	// tx3 should conflict.
+	tx3.Set([]byte("snap_key"), []byte("v_from_tx3"))
+	err = tx3.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx3 SHOULD conflict after regular read")
+	}
+	t.Logf("tx3 conflict (expected): %v", err)
+}
+
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

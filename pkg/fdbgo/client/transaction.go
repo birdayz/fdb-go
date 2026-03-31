@@ -97,68 +97,82 @@ type Transaction struct {
 	backoff    time.Duration
 }
 
-// Get reads a single key. Returns nil if the key doesn't exist.
-func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
-	if tx.state != txStateActive {
-		return nil, fmt.Errorf("transaction not active")
-	}
+// Snapshot returns a snapshot view of this transaction.
+// Snapshot reads do not add read conflict ranges, so they don't cause
+// conflicts with concurrent writers. Same read version, same connection.
+func (tx *Transaction) Snapshot() *Snapshot {
+	return &Snapshot{tx: tx}
+}
 
+// Snapshot wraps a Transaction for conflict-free reads.
+// All reads go through the same transaction (same read version, same
+// connection pool) but do not add read conflict ranges.
+type Snapshot struct {
+	tx *Transaction
+}
+
+// Get reads a key without adding a read conflict range.
+func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if err := s.tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
+	}
+	return s.tx.getValue(ctx, key)
+}
+
+// GetKey resolves a key selector without adding a read conflict range.
+func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	if err := s.tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
+	}
+	return s.tx.getKey(ctx, selectorKey, orEqual, offset)
+}
+
+// GetRange reads a range without adding a read conflict range.
+func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	if err := s.tx.ensureReadVersion(ctx); err != nil {
+		return nil, false, err
+	}
+	return s.tx.getRange(ctx, begin, end, limit)
+}
+
+func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+	if tx.state != txStateActive {
+		return fmt.Errorf("transaction not active")
+	}
 	if !tx.hasReadVersion {
 		rv, err := tx.getReadVersion(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	return nil
+}
 
-	// Add read conflict range.
+// Get reads a single key. Returns nil if the key doesn't exist.
+func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
+	}
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
-
 	return tx.getValue(ctx, key)
 }
 
 // GetKey resolves a key selector to the actual key in the database.
-// Key selectors are the fundamental building block for range operations.
-// Use types.FirstGreaterOrEqual(key), types.FirstGreaterThan(key), etc.
 func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
-	if tx.state != txStateActive {
-		return nil, fmt.Errorf("transaction not active")
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, err
 	}
-
-	if !tx.hasReadVersion {
-		rv, err := tx.getReadVersion(ctx)
-		if err != nil {
-			return nil, err
-		}
-		tx.readVersion = rv
-		tx.hasReadVersion = true
-	}
-
-	// Add read conflict range (the resolved key, once known, is in the conflict set).
-	// We add a point range for the selector key; the actual resolved key may differ.
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
-
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
 
-// GetRange reads a range of keys [begin, end). Returns the key-value pairs,
-// a boolean indicating if more results exist beyond the limit, and any error.
+// GetRange reads a range of keys [begin, end).
 func (tx *Transaction) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
-	if tx.state != txStateActive {
-		return nil, false, fmt.Errorf("transaction not active")
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, false, err
 	}
-
-	if !tx.hasReadVersion {
-		rv, err := tx.getReadVersion(ctx)
-		if err != nil {
-			return nil, false, err
-		}
-		tx.readVersion = rv
-		tx.hasReadVersion = true
-	}
-
-	// Add read conflict range for [begin, end).
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
 
 	return tx.getRange(ctx, begin, end, limit)
