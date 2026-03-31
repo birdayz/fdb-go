@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "types",
@@ -11,6 +11,7 @@ go_library(
         "get_value_request.go",
         "key_range_ref.go",
         "key_selector_ref.go",
+        "key_value_vector.go",
         "mutation_ref.go",
         "network_types.go",
         "read_options.go",
@@ -20,4 +21,10 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types",
     visibility = ["//visibility:public"],
     deps = ["//pkg/fdbgo/wire"],
+)
+
+go_test(
+    name = "types_test",
+    srcs = ["key_value_vector_test.go"],
+    embed = [":types"],
 )

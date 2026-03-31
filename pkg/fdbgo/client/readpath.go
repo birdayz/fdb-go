@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -159,52 +158,12 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
 		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
 	}
 
-	kvs := parseKeyValueVector(reply.Data)
+	tkvs := types.ParseKeyValueVector(reply.Data)
+	kvs := make([]KeyValue, len(tkvs))
+	for i, kv := range tkvs {
+		kvs[i] = KeyValue{Key: kv.Key, Value: kv.Value}
+	}
 	return kvs, reply.More, nil
-}
-
-// parseKeyValueVector parses a VectorRef<KeyValueRef> with VecSerStrategy::String.
-// The data (after ReadBytes follows the RelOff and strips the length prefix) is:
-// [count(4)][elem0][elem1]...
-// Each element: [key_len(4)][key_data][value_len(4)][value_data]
-func parseKeyValueVector(data []byte) []KeyValue {
-	if len(data) < 4 {
-		return nil
-	}
-	count := binary.LittleEndian.Uint32(data[0:4])
-	if count == 0 {
-		return nil
-	}
-	pos := 4
-	result := make([]KeyValue, 0, count)
-	for i := uint32(0); i < count; i++ {
-		if pos+4 > len(data) {
-			break
-		}
-		keyLen := int(binary.LittleEndian.Uint32(data[pos:]))
-		pos += 4
-		if pos+keyLen > len(data) {
-			break
-		}
-		key := make([]byte, keyLen)
-		copy(key, data[pos:pos+keyLen])
-		pos += keyLen
-
-		if pos+4 > len(data) {
-			break
-		}
-		valLen := int(binary.LittleEndian.Uint32(data[pos:]))
-		pos += 4
-		if pos+valLen > len(data) {
-			break
-		}
-		val := make([]byte, valLen)
-		copy(val, data[pos:pos+valLen])
-		pos += valLen
-
-		result = append(result, KeyValue{Key: key, Value: val})
-	}
-	return result
 }
 
 // KeyValue is a key-value pair returned from reads.
@@ -262,6 +221,3 @@ func getAdjustedEndpoint(base transport.UID, index int) transport.UID {
 		Second: (base.Second & 0xFFFFFFFF00000000) | uint64(baseIndex+uint32(index)),
 	}
 }
-
-// Ensure imports are used
-var _ = binary.LittleEndian
