@@ -281,19 +281,12 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
 		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
 	}
 
-	tkvs := types.ParseKeyValueVector(reply.Data)
-	kvs := make([]KeyValue, len(tkvs))
-	for i, kv := range tkvs {
-		kvs[i] = KeyValue{Key: kv.Key, Value: kv.Value}
-	}
+	kvs := types.ParseKeyValueRefVector(reply.Data)
 	return kvs, reply.More, nil
 }
 
 // KeyValue is a key-value pair returned from reads.
-type KeyValue struct {
-	Key   []byte
-	Value []byte
-}
+type KeyValue = types.KeyValueRef
 
 // emptyVersionVector is the serialized form of an empty VersionVector.
 // C++ VersionVector::getEncodedSize() = sizeof(size_t) + sizeof(Version) = 16.

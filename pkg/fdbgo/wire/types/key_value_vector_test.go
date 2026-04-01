@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-func TestParseKeyValueVector(t *testing.T) {
+func TestParseKeyValueRefVector(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil", func(t *testing.T) {
 		t.Parallel()
-		if got := ParseKeyValueVector(nil); got != nil {
+		if got := ParseKeyValueRefVector(nil); got != nil {
 			t.Errorf("expected nil, got %v", got)
 		}
 	})
@@ -18,15 +18,15 @@ func TestParseKeyValueVector(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
 		data := make([]byte, 4) // count=0
-		if got := ParseKeyValueVector(data); got != nil {
+		if got := ParseKeyValueRefVector(data); got != nil {
 			t.Errorf("expected nil, got %v", got)
 		}
 	})
 
 	t.Run("single", func(t *testing.T) {
 		t.Parallel()
-		data := packKVVector([]KeyValue{{Key: []byte("k"), Value: []byte("v")}})
-		got := ParseKeyValueVector(data)
+		data := packKVVector([]KeyValueRef{{Key: []byte("k"), Value: []byte("v")}})
+		got := ParseKeyValueRefVector(data)
 		if len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}
@@ -37,13 +37,13 @@ func TestParseKeyValueVector(t *testing.T) {
 
 	t.Run("multiple", func(t *testing.T) {
 		t.Parallel()
-		input := []KeyValue{
+		input := []KeyValueRef{
 			{Key: []byte("alpha"), Value: []byte("1")},
 			{Key: []byte("beta"), Value: []byte("22")},
 			{Key: []byte("gamma"), Value: []byte("333")},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueVector(data)
+		got := ParseKeyValueRefVector(data)
 		if len(got) != 3 {
 			t.Fatalf("expected 3, got %d", len(got))
 		}
@@ -57,9 +57,9 @@ func TestParseKeyValueVector(t *testing.T) {
 
 	t.Run("truncated_key", func(t *testing.T) {
 		t.Parallel()
-		data := packKVVector([]KeyValue{{Key: []byte("hello"), Value: []byte("world")}})
+		data := packKVVector([]KeyValueRef{{Key: []byte("hello"), Value: []byte("world")}})
 		// Truncate inside the key data
-		got := ParseKeyValueVector(data[:8])
+		got := ParseKeyValueRefVector(data[:8])
 		if len(got) != 0 {
 			t.Errorf("expected 0 on truncated data, got %d", len(got))
 		}
@@ -67,11 +67,11 @@ func TestParseKeyValueVector(t *testing.T) {
 
 	t.Run("empty_values", func(t *testing.T) {
 		t.Parallel()
-		input := []KeyValue{
+		input := []KeyValueRef{
 			{Key: []byte("k"), Value: []byte{}},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueVector(data)
+		got := ParseKeyValueRefVector(data)
 		if len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}
@@ -82,7 +82,7 @@ func TestParseKeyValueVector(t *testing.T) {
 }
 
 // packKVVector builds VecSerStrategy::String wire format from KeyValue pairs.
-func packKVVector(kvs []KeyValue) []byte {
+func packKVVector(kvs []KeyValueRef) []byte {
 	size := 4 // count
 	for _, kv := range kvs {
 		size += 4 + len(kv.Key) + 4 + len(kv.Value)

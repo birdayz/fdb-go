@@ -30,8 +30,8 @@ const GetReadVersionRequestFileID uint32 = 838566
 var GetReadVersionRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
-	{8, 12, 4, 8},
 	{10, 29, 4, 20, 28},
+	{8, 12, 4, 8},
 	{20, 37, 12, 16, 20, 36, 24, 28, 32, 4},
 }
 

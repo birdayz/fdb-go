@@ -108,7 +108,7 @@ void captureAllNames() {
         {"fdbclient/include/fdbclient/CoordinationInterface.h",
          {"OpenDatabaseCoordRequest"}},
         {"fdbclient/include/fdbclient/FDBTypes.h",
-         {"KeySelectorRef", "KeyRangeRef", "ReadOptions", "MutationRef"}},
+         {"KeySelectorRef", "KeyRangeRef", "ReadOptions", "MutationRef", "KeyValueRef"}},
         {"fdbclient/include/fdbclient/Tracing.h",
          {"SpanContext"}},
         {"fdbclient/include/fdbclient/GrvProxyInterface.h",
