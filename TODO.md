@@ -1894,11 +1894,53 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 - [ ] **AddReadConflictRange** — range version (not just key) against real DB
 - [ ] **AddWriteConflictRange** — range version against real DB
 
-### MEDIUM — Performance
+### CRITICAL — Performance: close the 6.4x gap with CGo client
 
-- [ ] **GRV cache** — cache read version for causal-read-risky transactions.
-- [ ] **Connection pooling** — one persistent connection per peer address (not reconnect per request).
-- [ ] **Pipelined reads** — issue FDB futures for Get/GetRange, batch at commit time.
+**Baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
+- Pure Go GetValue: **1,350,000 ns/op**, 5,490 B/op, 78 allocs/op
+- CGo (libfdb_c) GetValue: **210,000 ns/op**, 383 B/op, 13 allocs/op
+- Wire unmarshal alone: 58 ns/op (0.004% of total — NOT the bottleneck)
+
+**CPU profile**: 36% syscalls (TCP read/write), 32% goroutine scheduling (park/unpark/findRunnable). 92% of wall time is WAITING, not computing.
+
+**Allocation profile** (78 allocs per Get, top offenders):
+
+| Source | allocs | Fix |
+|---|---|---|
+| `WriteMessageWithVTables` | 271k | Pre-pack vtable closure at init |
+| `ObjectWriter.WriteStruct` | 286k | Pool ObjectWriter buffers |
+| `ObjectWriter.WriteBytes` | 221k | Pool OOL buffers |
+| `context.WithDeadline` | 211k | Reuse context or pass parent directly |
+| `GRVBatcher.GetReadVersion` | 192k | Pool batch channels/timers |
+| `vTableSet.add/addOrdered/pack` | 301k | Pre-pack vtable closure at init (STATIC per type) |
+| `Conn.PrepareReply` | 119k | Pool reply channels |
+| `ReadFrame` | 112k | Pool frame buffers |
+| `wire.NewReader` | 142k | Pool or stack-allocate Reader |
+| `time.newTimer` | 80k | Timer pool |
+
+#### Tier 1: Zero-alloc vtable packing (CRITICAL, ~15% of allocs)
+
+- [ ] **Pre-pack vtable closures at init** — `vTableSet` is rebuilt from scratch for every `WriteMessage` call: `newVTableSet()` → `addOrdered()` N times → `pack()`. The vtable closure is STATIC per message type (compile-time constant from C++ extractor). Pre-compute packed bytes + offset lookup table once at init via `PackedVTableClosure`. Add `WriteMessagePacked(*PackedVTableClosure)` fast path. Eliminates ~600k allocs/s.
+
+#### Tier 2: Buffer pooling (HIGH, ~30% of allocs)
+
+- [ ] **Pool `ObjectWriter` buffers** — `WriteMessage` allocates `make([]byte, msgObjSize)` per call. Pool via `sync.Pool` keyed by size.
+- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`.
+- [ ] **Pool frame write buffers** — `WriteFrame` allocates `make([]byte, headerSize+payloadLen)` per request. Pool via `sync.Pool`.
+- [ ] **Pool reply channels** — `PrepareReply` allocates `make(chan Response, 1)` per RPC. Pool via `sync.Pool`.
+- [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`.
+
+#### Tier 3: Reduce syscalls and scheduling (HIGH, main latency source)
+
+- [ ] **Batch TCP writes** — each RPC does a separate `net.Conn.Write` syscall. Buffer multiple frames and flush once (like `bufio.Writer` but frame-aware).
+- [ ] **Avoid `context.WithDeadline` per RPC** — creates a timer + goroutine per call. Use a shared deadline from the parent transaction context, or check `time.Now()` manually.
+- [ ] **Avoid `time.NewTimer` per RPC timeout** — pool timers via `sync.Pool` with `timer.Reset()`.
+
+#### Tier 4: Reduce round trips (CRITICAL, main latency source)
+
+- [ ] **GRV caching** — cache read version across sequential transactions within a time window. Each Transact currently does GRV + GetValue = 2 round trips. Caching GRV would cut to 1 round trip, potentially halving latency.
+- [ ] **Pipelined GRV + read** — send GRV request, don't wait for response; send GetValue with deferred read version. Resolve when both complete. Requires architectural change to Transaction.
+- [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
 
 ### Phase 2
 

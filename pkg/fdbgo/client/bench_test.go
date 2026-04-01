@@ -25,11 +25,6 @@ import (
 //	  -test.benchtime=10s \
 //	  -test.benchmem \
 //	  -test.count=3
-//
-// Baseline (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-01):
-//
-//	BenchmarkGetValue_PureGo  1,350,000 ns/op   5,490 B/op   78 allocs/op
-//	BenchmarkGetValue_CGo       210,000 ns/op     383 B/op   13 allocs/op
 
 func BenchmarkGetValue_PureGo(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -38,7 +33,6 @@ func BenchmarkGetValue_PureGo(b *testing.B) {
 	db := openBenchDB(b, ctx)
 	defer db.Close()
 
-	// Seed.
 	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
 		tx.Set([]byte("bench_key"), make([]byte, 100))
 		return nil, nil
@@ -47,7 +41,6 @@ func BenchmarkGetValue_PureGo(b *testing.B) {
 		b.Fatalf("seed: %v", err)
 	}
 
-	// Warm caches (GRV, location).
 	db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
 		return tx.Get(ctx, []byte("bench_key"))
 	})
@@ -93,7 +86,6 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 	fdb.MustAPIVersion(730)
 	cgoDB := fdb.MustOpenDatabase(clusterFile)
 
-	// Seed.
 	_, err = cgoDB.Transact(func(tx fdb.Transaction) (interface{}, error) {
 		tx.Set(fdb.Key("bench_key"), make([]byte, 100))
 		return nil, nil
@@ -102,7 +94,6 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 		b.Fatalf("seed: %v", err)
 	}
 
-	// Warm.
 	cgoDB.Transact(func(tx fdb.Transaction) (interface{}, error) {
 		return tx.Get(fdb.Key("bench_key")).Get()
 	})

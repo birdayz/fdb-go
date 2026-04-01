@@ -5,7 +5,102 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 )
+
+// MessageTemplate pre-computes everything that is static per message type.
+// Created once at init time from a VTableClosure. Eliminates all per-message
+// vtable allocation, dedup, sorting, packing, and offset lookup.
+//
+// Use with Writer.WriteMessagePacked for zero-vtable-alloc serialization.
+type MessageTemplate struct {
+	fileID        uint32
+	msgVTable     VTable
+	maxFieldAlign int
+	msgObjSize    int
+
+	// Pre-packed vtable bytes — copied directly into the output buffer.
+	packedVTables []byte
+
+	// Pre-computed vtable byte offsets. Key = (vt[0] << 16 | vt[1]).
+	// O(1) lookup instead of linear scan.
+	vtOffsets map[uint32]int
+
+	// objectPool recycles ObjectWriter backing storage.
+	objectPool sync.Pool
+}
+
+// NewMessageTemplate pre-computes a MessageTemplate from a vtable closure.
+// The closure must include ALL vtables transitively reachable from the message
+// (from C++ get_vtableset). Call once at package init.
+func NewMessageTemplate(fileID uint32, msgVTable VTable, maxFieldAlign int, closure []VTable) *MessageTemplate {
+	if maxFieldAlign < 4 {
+		maxFieldAlign = 4
+	}
+
+	// Pack vtables exactly once.
+	set := newVTableSet()
+	set.ordered = true
+	for _, vt := range closure {
+		set.addOrdered(vt)
+	}
+	packed := set.pack()
+
+	// Build O(1) offset lookup.
+	offsets := make(map[uint32]int, len(set.entries))
+	for _, e := range set.entries {
+		key := uint32(e.vt[0])<<16 | uint32(e.vt[1])
+		offsets[key] = e.offset
+	}
+
+	return &MessageTemplate{
+		fileID:        fileID,
+		msgVTable:     msgVTable,
+		maxFieldAlign: maxFieldAlign,
+		msgObjSize:    int(msgVTable[1]),
+		packedVTables: packed,
+		vtOffsets:     offsets,
+	}
+}
+
+type pooledWriter struct {
+	obj   ObjectWriter
+	arena writerArena
+}
+
+func (t *MessageTemplate) getPooledWriter() *pooledWriter {
+	if v := t.objectPool.Get(); v != nil {
+		pw := v.(*pooledWriter)
+		pw.arena.reset()
+		pw.obj = ObjectWriter{
+			object:        pw.obj.object[:t.msgObjSize],
+			outOfLine:     pw.obj.outOfLine[:0],
+			patches:       pw.obj.patches[:0],
+			nestedStructs: pw.obj.nestedStructs[:0],
+			arena:         &pw.arena,
+		}
+		clear(pw.obj.object)
+		return pw
+	}
+	pw := &pooledWriter{}
+	pw.obj = ObjectWriter{
+		object:        make([]byte, t.msgObjSize),
+		outOfLine:     make([]byte, 0, 256),
+		patches:       make([]relOffsetPatch, 0, 8),
+		nestedStructs: make([]*nestedStruct, 0, 4),
+		arena:         &pw.arena,
+	}
+	return pw
+}
+
+// vtableOffset returns the byte offset of vt within the pre-packed vtable data.
+func (t *MessageTemplate) vtableOffset(vt VTable) int {
+	key := uint32(vt[0])<<16 | uint32(vt[1])
+	if off, ok := t.vtOffsets[key]; ok {
+		return off
+	}
+	panic(fmt.Sprintf("vtable %v not in template closure", vt))
+}
 
 // Writer builds FDB-format serialized messages matching the exact byte layout
 // produced by C++ save_members() in flow/flat_buffers.h.
@@ -37,6 +132,99 @@ func NewWriter(buf []byte) *Writer {
 //   - writeFields: callback that populates the ObjectWriter
 func (w *Writer) WriteMessage(fileID uint32, msgVTable VTable, maxFieldAlign int, writeFields func(obj *ObjectWriter)) []byte {
 	return w.WriteMessageWithVTables(fileID, msgVTable, maxFieldAlign, nil, writeFields)
+}
+
+// WriteMessagePacked is the fast path using a pre-computed MessageTemplate.
+// Zero vtable allocations — uses pre-packed bytes and O(1) offset lookup.
+func (w *Writer) WriteMessagePacked(t *MessageTemplate, writeFields func(obj *ObjectWriter)) []byte {
+	fakeRootVTable := VTable{6, 8, 4}
+
+	pw := t.getPooledWriter()
+	obj := &pw.obj
+	writeFields(obj)
+
+	vtableBytes := t.packedVTables
+	vtableSize := len(vtableBytes)
+
+	// OOL data.
+	oolSize := len(obj.outOfLine)
+	endOff := 0
+	if oolSize > 0 {
+		endOff = rightAlign(oolSize, 4)
+	}
+
+	// Nested structs.
+	nestedEndOff := endOff
+	for i := len(obj.nestedStructs) - 1; i >= 0; i-- {
+		nestedEndOff = obj.nestedStructs[i].computeEndOffset(nestedEndOff)
+	}
+
+	// Message object.
+	bodySize := t.msgObjSize - 4
+	msgObjEnd := rightAlign(nestedEndOff+bodySize, t.maxFieldAlign) + 4
+
+	// FakeRoot: vtable {6,8,4}, body = 4 bytes.
+	fakeRootEnd := rightAlign(msgObjEnd+4, 4) + 4
+
+	// VTable region.
+	vtableEnd := fakeRootEnd + vtableSize
+
+	// Footer (8 bytes, aligned to 8).
+	totalSize := rightAlign(vtableEnd+8, 8)
+
+	// Byte positions.
+	oolPos := totalSize - endOff
+	msgObjPos := totalSize - msgObjEnd
+	fakeRootPos := totalSize - fakeRootEnd
+	vtablePos := totalSize - vtableEnd
+
+	// Build buffer.
+	if cap(w.buf) >= totalSize {
+		w.buf = w.buf[:totalSize]
+		clear(w.buf)
+	} else {
+		w.buf = make([]byte, totalSize)
+	}
+
+	// OOL data.
+	if oolSize > 0 {
+		copy(w.buf[oolPos:], obj.outOfLine)
+	}
+
+	// Nested structs — use template's O(1) offset lookup.
+	nestedPos := oolPos
+	for i := len(obj.nestedStructs) - 1; i >= 0; i-- {
+		nestedPos = obj.nestedStructs[i].writeIntoPacked(w.buf, nestedPos, vtablePos, t)
+	}
+
+	// Message object.
+	msgVTAddr := vtablePos + t.vtableOffset(t.msgVTable)
+	binary.LittleEndian.PutUint32(obj.object[0:4], uint32(int32(msgObjPos-msgVTAddr)))
+	for _, p := range obj.patches {
+		fieldAddr := msgObjPos + p.objectOffset
+		targetAddr := oolPos + p.oolOffset
+		binary.LittleEndian.PutUint32(obj.object[p.objectOffset:], uint32(targetAddr-fieldAddr))
+	}
+	for _, ns := range obj.nestedStructs {
+		fieldAddr := msgObjPos + ns.parentOffset
+		binary.LittleEndian.PutUint32(obj.object[ns.parentOffset:], uint32(ns.byteAddr-fieldAddr))
+	}
+	copy(w.buf[msgObjPos:], obj.object)
+
+	// FakeRoot.
+	fakeRootVTAddr := vtablePos + t.vtableOffset(fakeRootVTable)
+	binary.LittleEndian.PutUint32(w.buf[fakeRootPos:], uint32(int32(fakeRootPos-fakeRootVTAddr)))
+	binary.LittleEndian.PutUint32(w.buf[fakeRootPos+4:], uint32(msgObjPos-(fakeRootPos+4)))
+
+	// VTables.
+	copy(w.buf[vtablePos:], vtableBytes)
+
+	// Footer.
+	binary.LittleEndian.PutUint32(w.buf[0:], uint32(fakeRootPos))
+	binary.LittleEndian.PutUint32(w.buf[4:], t.fileID)
+
+	t.objectPool.Put(pw)
+	return w.buf
 }
 
 // WriteMessageWithVTables is like WriteMessage but includes additional vtables
@@ -498,6 +686,33 @@ func (ns *nestedStruct) writeInto(buf []byte, startByteAddr, vtablePos int, vtSe
 	return objByteAddr
 }
 
+// writeIntoPacked is the fast path using MessageTemplate's O(1) vtable lookup.
+func (ns *nestedStruct) writeIntoPacked(buf []byte, startByteAddr, vtablePos int, t *MessageTemplate) int {
+	totalSize := len(buf)
+
+	objByteAddr := totalSize - ns.endOffset
+	ns.byteAddr = objByteAddr
+
+	vtOff := vtablePos + t.vtableOffset(ns.vt)
+	binary.LittleEndian.PutUint32(ns.object[0:4], uint32(int32(objByteAddr-vtOff)))
+
+	oolByteAddr := totalSize - ns.oolEndOff
+
+	if len(ns.outOfLine) > 0 {
+		copy(buf[oolByteAddr:], ns.outOfLine)
+	}
+
+	for _, p := range ns.patches {
+		fieldAddr := objByteAddr + p.objectOffset
+		targetAddr := oolByteAddr + p.oolOffset
+		binary.LittleEndian.PutUint32(ns.object[p.objectOffset:], uint32(targetAddr-fieldAddr))
+	}
+
+	copy(buf[objByteAddr:], ns.object)
+
+	return objByteAddr
+}
+
 // --- ObjectWriter ---
 
 // ObjectWriter provides methods for writing fields into an FDB message object.
@@ -506,6 +721,51 @@ type ObjectWriter struct {
 	outOfLine     []byte
 	patches       []relOffsetPatch
 	nestedStructs []*nestedStruct
+	arena         *writerArena // shared arena for nested allocations (nil = use make)
+}
+
+// writerArena is a bump allocator for nested ObjectWriter and nestedStruct allocations.
+// Pre-allocated once per pool entry, eliminates per-WriteStruct heap allocations.
+type writerArena struct {
+	objWriters    [8]ObjectWriter // inline storage for nested ObjectWriters
+	nestedStructs [8]nestedStruct // inline storage for nestedStruct values
+	objBuf        [512]byte       // inline storage for nested object bytes
+	objWriterN    int
+	nestedStructN int
+	objBufPos     int
+}
+
+func (a *writerArena) reset() {
+	a.objWriterN = 0
+	a.nestedStructN = 0
+	a.objBufPos = 0
+}
+
+func (a *writerArena) allocObjectWriter(objSize int) *ObjectWriter {
+	if a.objWriterN < len(a.objWriters) && a.objBufPos+objSize <= len(a.objBuf) {
+		ow := &a.objWriters[a.objWriterN]
+		a.objWriterN++
+		*ow = ObjectWriter{
+			object: a.objBuf[a.objBufPos : a.objBufPos+objSize : a.objBufPos+objSize],
+			arena:  a,
+		}
+		// Zero the object bytes.
+		clear(ow.object)
+		a.objBufPos += objSize
+		return ow
+	}
+	// Fallback: heap allocate.
+	return &ObjectWriter{object: make([]byte, objSize), arena: a}
+}
+
+func (a *writerArena) allocNestedStruct() *nestedStruct {
+	if a.nestedStructN < len(a.nestedStructs) {
+		ns := &a.nestedStructs[a.nestedStructN]
+		a.nestedStructN++
+		*ns = nestedStruct{}
+		return ns
+	}
+	return &nestedStruct{}
 }
 
 type relOffsetPatch struct {
@@ -684,12 +944,22 @@ func (o *ObjectWriter) WriteStruct(parentVtableOffset int, vt VTable, maxAlign i
 		maxAlign = 4
 	}
 	objSize := int(vt[1])
-	inner := &ObjectWriter{
-		object: make([]byte, objSize),
+
+	var inner *ObjectWriter
+	if o.arena != nil {
+		inner = o.arena.allocObjectWriter(objSize)
+	} else {
+		inner = &ObjectWriter{object: make([]byte, objSize)}
 	}
 	writeFields(inner)
 
-	ns := &nestedStruct{
+	var ns *nestedStruct
+	if o.arena != nil {
+		ns = o.arena.allocNestedStruct()
+	} else {
+		ns = &nestedStruct{}
+	}
+	*ns = nestedStruct{
 		vt:           vt,
 		maxAlign:     maxAlign,
 		object:       inner.object,

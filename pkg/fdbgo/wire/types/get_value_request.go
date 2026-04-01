@@ -33,10 +33,15 @@ type GetValueRequest struct {
 	TenantId    int64 // -1 = no tenant
 }
 
+// getValueRequestTemplate is pre-computed at init — zero vtable allocs at runtime.
+var getValueRequestTemplate = wire.NewMessageTemplate(
+	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
+)
+
 func (m *GetValueRequest) MarshalFDB() []byte {
 	vt := GetValueRequestVTable
 	w := wire.NewWriter(nil)
-	return w.WriteMessageWithVTables(GetValueRequestFileID, vt, 8, GetValueRequestVTableClosure,
+	return w.WriteMessagePacked(getValueRequestTemplate,
 		func(obj *wire.ObjectWriter) {
 			WriteTenantInfo(obj, int(vt[8]), m.TenantId)
 			obj.WriteStruct(int(vt[7]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
