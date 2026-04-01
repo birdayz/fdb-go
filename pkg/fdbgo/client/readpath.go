@@ -281,7 +281,7 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
 		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
 	}
 
-	kvs := types.ParseKeyValueRefVector(reply.Data)
+	kvs := types.ParseKeyValueRefStringVector(reply.Data)
 	return kvs, reply.More, nil
 }
 

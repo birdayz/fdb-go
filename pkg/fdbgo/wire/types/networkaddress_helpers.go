@@ -41,7 +41,7 @@ func ReadEndpointFromSlot(r *wire.Reader, slot int) (EndpointInfo, error) {
 	var ep Endpoint
 	ep.UnmarshalFromReader(inner)
 
-	// Extract address string from the nested NetworkAddressList → NetworkAddress → IPAddress chain.
+	// Extract address string from the nested chain.
 	addr := formatNetworkAddress(&ep.Addresses.Address)
 	first := binary.LittleEndian.Uint64(ep.Token[:8])
 	second := binary.LittleEndian.Uint64(ep.Token[8:])
@@ -62,18 +62,22 @@ func formatNetworkAddress(na *NetworkAddress) string {
 }
 
 // formatIPAddress extracts an IP string from a generated IPAddress.
+// Uses the variant tag to dispatch IPv4 (uint32) vs IPv6 (raw bytes).
 func formatIPAddress(ip *IPAddress) string {
-	switch ip.Field_0Tag {
-	case 1: // IPv4: uint32
-		if ip.Field_0Alt0 == 0 {
+	switch ip.AddrTag {
+	case 1: // IPv4: uint32 via ReadRelOffUint32
+		if ip.AddrAlt0 == 0 {
 			return "0.0.0.0"
 		}
 		b := make(net.IP, 4)
-		binary.BigEndian.PutUint32(b, ip.Field_0Alt0)
+		binary.BigEndian.PutUint32(b, ip.AddrAlt0)
 		return b.String()
-	case 2: // IPv6: array<uint8_t, 16> (vector_like, raw bytes at RelOff)
-		// TODO: read 16 bytes from vector_like format [count=16][16 bytes]
-		return "::1" // placeholder
+	case 2: // IPv6: raw bytes via ReadRelOffRaw
+		if len(ip.AddrAlt1) >= 4 {
+			// TODO: parse as proper IPv6 when vector_like alt support is complete
+			return "::1"
+		}
+		return "::0"
 	default:
 		return "0.0.0.0"
 	}

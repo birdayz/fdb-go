@@ -4,17 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetKeyServerLocationsRequest fields:
-//
-//	slot 0: begin — dynamic_size, size=4, align=4, indirection
-//	slot 1: end — union_like, size=4, align=4, indirection
-//	slot 3: limit — scalar, size=4, align=4
-//	slot 4: reverse — scalar, size=1, align=1
-//	slot 5: reply — serialize_member, size=4, align=4, indirection
-//	slot 6: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 7: tenant — serialize_member, size=4, align=4, indirection
-//	slot 8: minTenantVersion — scalar, size=8, align=8
-//	slot 9: arena — scalar, size=0, align=1
 const (
 	GetKeyServerLocationsRequestSlotBegin            = 0
 	GetKeyServerLocationsRequestSlotEnd              = 1
@@ -38,18 +27,52 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4},
 }
+var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(
+	GetKeyServerLocationsRequestFileID, GetKeyServerLocationsRequestVTable, 8, GetKeyServerLocationsRequestVTableClosure,
+)
 
 type GetKeyServerLocationsRequest struct {
-	Begin            []byte       // slot 0, ReadBytes
-	HasEnd           bool         // slot 1, Optional, presence flag
-	End              []byte       // slot 2, Optional, ReadBytes
-	Limit            int32        // slot 3, ReadInt32
-	Reverse          bool         // slot 4, ReadBool
+	Begin            []byte       // slot 0
+	HasEnd           bool         // slot 1, optional tag
+	End              []byte       // slot 2, optional value
+	Limit            int32        // slot 3
+	Reverse          bool         // slot 4
 	Reply            ReplyPromise // slot 5, nested
 	SpanContext      SpanContext  // slot 6, nested
 	Tenant           TenantInfo   // slot 7, nested
-	MinTenantVersion int64        // slot 8, ReadInt64
-	Arena            []byte       // slot 9, ReadBytes
+	MinTenantVersion int64        // slot 8
+	Arena            []byte       // slot 9
+}
+
+func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
+		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) > 0 {
+		m.End = r.ReadBytes(GetKeyServerLocationsRequestSlotEnd + 1)
+		m.HasEnd = true
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotLimit) {
+		m.Limit = r.ReadInt32(GetKeyServerLocationsRequestSlotLimit)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
+		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
+	}
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
+		m.Tenant.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
+		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotArena) {
+		m.Arena = r.ReadBytes(GetKeyServerLocationsRequestSlotArena)
+	}
 }
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
@@ -70,14 +93,14 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
 		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
 	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
-		m.Tenant.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
+		m.Tenant.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
 		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
@@ -88,45 +111,22 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
-		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) > 0 {
-		m.End = r.ReadBytes(GetKeyServerLocationsRequestSlotEnd + 1)
-		m.HasEnd = true
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotLimit) {
-		m.Limit = r.ReadInt32(GetKeyServerLocationsRequestSlotLimit)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
-		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
-	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant); err == nil {
-		m.Tenant.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
-		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
-	}
-	if r.FieldPresent(GetKeyServerLocationsRequestSlotArena) {
-		m.Arena = r.ReadBytes(GetKeyServerLocationsRequestSlotArena)
-	}
-}
-
 func (m *GetKeyServerLocationsRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyServerLocationsRequestVTable
-	if len(m.Begin) > 0 {
+	if m.Begin != nil {
 		obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
 	}
 	obj.WriteInt32(int(vt[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
 	obj.WriteBool(int(vt[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
+	obj.WriteStruct(int(vt[GetKeyServerLocationsRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+	obj.WriteStruct(int(vt[GetKeyServerLocationsRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+	obj.WriteStruct(int(vt[GetKeyServerLocationsRequestSlotTenant+2]), TenantInfoVTable, 8, m.Tenant.MarshalInto)
 	obj.WriteInt64(int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
+}
+
+func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyServerLocationsRequestTemplate, m.MarshalInto)
 }
 
 func WriteGetKeyServerLocationsRequest(obj *wire.ObjectWriter, parentOffset int, begin []byte, limit int32, reverse bool, minTenantVersion int64) {
@@ -139,21 +139,21 @@ func MarshalGetKeyServerLocationsRequest(begin []byte, limit int32, reverse bool
 	return wire.MarshalStructBlob(GetKeyServerLocationsRequestVTable, m.MarshalInto)
 }
 
-func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetKeyServerLocationsRequestTemplate, func(obj *wire.ObjectWriter) {
-		if len(m.Begin) > 0 {
-			obj.WriteBytes(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
+// ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest.
+func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyServerLocationsRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		obj.WriteInt32(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
-		obj.WriteBool(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
-		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
-		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
-		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotTenant+2]), TenantInfoVTable, 8, m.Tenant.MarshalInto)
-		obj.WriteInt64(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
-	})
+		var elem GetKeyServerLocationsRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(
-	GetKeyServerLocationsRequestFileID, GetKeyServerLocationsRequestVTable, 8, GetKeyServerLocationsRequestVTableClosure,
-)

@@ -4,18 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// ClientDBInfo fields:
-//
-//	slot 0: grvProxies — vector_like, size=4, align=4, indirection
-//	slot 1: commitProxies — vector_like, size=4, align=4, indirection
-//	slot 2: id — scalar, size=16, align=8
-//	slot 3: forward — union_like, size=4, align=4, indirection
-//	slot 5: history — vector_like, size=4, align=4, indirection
-//	slot 6: tenantMode — serialize_member, size=4, align=4, indirection
-//	slot 7: encryptKeyProxy — union_like, size=4, align=4, indirection
-//	slot 9: clusterId — scalar, size=16, align=8
-//	slot 10: clusterType — scalar, size=4, align=4
-//	slot 11: metaclusterName — union_like, size=4, align=4, indirection
 const (
 	ClientDBInfoSlotGrvProxies      = 0
 	ClientDBInfoSlotCommitProxies   = 1
@@ -45,21 +33,57 @@ var ClientDBInfoVTableClosure = []wire.VTable{
 	{10, 13, 12, 4, 8},
 	{10, 13, 4, 12, 8},
 }
+var ClientDBInfoTemplate = wire.NewMessageTemplate(
+	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
+)
 
 type ClientDBInfo struct {
-	GrvProxies    []byte   // slot 0, ReadBytes
-	CommitProxies []byte   // slot 1, ReadBytes
-	Id            [16]byte // slot 2, ReadUID
-	HasForward    bool     // slot 3, Optional, presence flag
-	Forward       []byte   // slot 4, Optional, ReadBytes
-	History       []byte   // slot 5, ReadBytes
-	// TenantMode: nested struct at slot 6 — use ReadNestedReader(ClientDBInfoSlotTenantMode)
-	HasEncryptKeyProxy bool     // slot 7, Optional, presence flag
-	EncryptKeyProxy    []byte   // slot 8, Optional, ReadBytes
-	ClusterId          [16]byte // slot 9, ReadUID
-	ClusterType        uint32   // slot 10, ReadUint32
-	HasMetaclusterName bool     // slot 11, Optional, presence flag
-	MetaclusterName    []byte   // slot 12, Optional, ReadBytes
+	GrvProxies    []byte   // slot 0
+	CommitProxies []byte   // slot 1
+	Id            [16]byte // slot 2
+	HasForward    bool     // slot 3, optional tag
+	Forward       []byte   // slot 4, optional value
+	History       []byte   // slot 5
+	// TenantMode: unregistered nested struct at slot 6
+	HasEncryptKeyProxy bool     // slot 7, optional tag
+	EncryptKeyProxy    []byte   // slot 8, optional value
+	ClusterId          [16]byte // slot 9
+	ClusterType        int32    // slot 10
+	HasMetaclusterName bool     // slot 11, optional tag
+	MetaclusterName    []byte   // slot 12, optional value
+}
+
+func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
+		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotCommitProxies) {
+		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotId) {
+		m.Id = r.ReadUID(ClientDBInfoSlotId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
+		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
+		m.HasForward = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotHistory) {
+		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
+	}
+	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
+		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
+		m.HasEncryptKeyProxy = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterId) {
+		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterType) {
+		m.ClusterType = r.ReadInt32(ClientDBInfoSlotClusterType)
+	}
+	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
+		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
+		m.HasMetaclusterName = true
+	}
 }
 
 func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
@@ -83,7 +107,6 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(ClientDBInfoSlotHistory) {
 		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
 	}
-	// TenantMode (slot 6): unknown nested struct
 	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
 		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
 		m.HasEncryptKeyProxy = true
@@ -92,7 +115,7 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterType) {
-		m.ClusterType = r.ReadUint32(ClientDBInfoSlotClusterType)
+		m.ClusterType = r.ReadInt32(ClientDBInfoSlotClusterType)
 	}
 	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
 		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
@@ -101,61 +124,52 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
-		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
-	}
-	if r.FieldPresent(ClientDBInfoSlotCommitProxies) {
-		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
-	}
-	if r.FieldPresent(ClientDBInfoSlotId) {
-		m.Id = r.ReadUID(ClientDBInfoSlotId)
-	}
-	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
-		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
-		m.HasForward = true
-	}
-	if r.FieldPresent(ClientDBInfoSlotHistory) {
-		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
-	}
-	// TenantMode (slot 6): unknown nested struct
-	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
-		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
-		m.HasEncryptKeyProxy = true
-	}
-	if r.FieldPresent(ClientDBInfoSlotClusterId) {
-		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
-	}
-	if r.FieldPresent(ClientDBInfoSlotClusterType) {
-		m.ClusterType = r.ReadUint32(ClientDBInfoSlotClusterType)
-	}
-	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
-		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
-		m.HasMetaclusterName = true
-	}
-}
-
 func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ClientDBInfoVTable
-	if len(m.GrvProxies) > 0 {
+	if m.GrvProxies != nil {
 		obj.WriteRawOOL(int(vt[ClientDBInfoSlotGrvProxies+2]), m.GrvProxies)
 	}
-	if len(m.CommitProxies) > 0 {
+	if m.CommitProxies != nil {
 		obj.WriteRawOOL(int(vt[ClientDBInfoSlotCommitProxies+2]), m.CommitProxies)
 	}
 	obj.WriteUID(int(vt[ClientDBInfoSlotId+2]), m.Id)
-	if len(m.History) > 0 {
+	if m.History != nil {
 		obj.WriteRawOOL(int(vt[ClientDBInfoSlotHistory+2]), m.History)
 	}
 	obj.WriteUID(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
-	obj.WriteUint32(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
+	obj.WriteInt32(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
 }
 
-func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType uint32) {
+func (m *ClientDBInfo) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(ClientDBInfoTemplate, m.MarshalInto)
+}
+
+func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType int32) {
 	m := ClientDBInfo{GrvProxies: grvProxies, CommitProxies: commitProxies, Id: id, History: history, ClusterId: clusterId, ClusterType: clusterType}
 	obj.WriteStruct(parentOffset, ClientDBInfoVTable, 8, m.MarshalInto)
 }
 
-var ClientDBInfoTemplate = wire.NewMessageTemplate(
-	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
-)
+func MarshalClientDBInfo(grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType int32) []byte {
+	m := ClientDBInfo{GrvProxies: grvProxies, CommitProxies: commitProxies, Id: id, History: history, ClusterId: clusterId, ClusterType: clusterType}
+	return wire.MarshalStructBlob(ClientDBInfoVTable, m.MarshalInto)
+}
+
+// ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo.
+func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) []ClientDBInfo {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ClientDBInfo, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ClientDBInfo
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -4,10 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// Endpoint fields:
-//
-//	slot 0: addresses — serialize_member, size=4, align=4, indirection
-//	slot 1: token — scalar, size=16, align=8
 const (
 	EndpointSlotAddresses = 0
 	EndpointSlotToken     = 1
@@ -24,10 +20,22 @@ var EndpointVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{10, 13, 4, 12, 8},
 }
+var EndpointTemplate = wire.NewMessageTemplate(
+	EndpointFileID, EndpointVTable, 8, EndpointVTableClosure,
+)
 
 type Endpoint struct {
 	Addresses NetworkAddressList // slot 0, nested
-	Token     [16]byte           // slot 1, ReadUID
+	Token     [16]byte           // slot 1
+}
+
+func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
+	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
+		m.Addresses.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(EndpointSlotToken) {
+		m.Token = r.ReadUID(EndpointSlotToken)
+	}
 }
 
 func (m *Endpoint) UnmarshalFDB(data []byte) error {
@@ -35,8 +43,8 @@ func (m *Endpoint) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nestedR, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
-		m.Addresses.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
+		m.Addresses.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(EndpointSlotToken) {
 		m.Token = r.ReadUID(EndpointSlotToken)
@@ -44,18 +52,15 @@ func (m *Endpoint) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
-	if nestedR, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
-		m.Addresses.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(EndpointSlotToken) {
-		m.Token = r.ReadUID(EndpointSlotToken)
-	}
-}
-
 func (m *Endpoint) MarshalInto(obj *wire.ObjectWriter) {
 	vt := EndpointVTable
+	obj.WriteStruct(int(vt[EndpointSlotAddresses+2]), NetworkAddressListVTable, 8, m.Addresses.MarshalInto)
 	obj.WriteUID(int(vt[EndpointSlotToken+2]), m.Token)
+}
+
+func (m *Endpoint) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(EndpointTemplate, m.MarshalInto)
 }
 
 func WriteEndpoint(obj *wire.ObjectWriter, parentOffset int, token [16]byte) {
@@ -68,14 +73,21 @@ func MarshalEndpoint(token [16]byte) []byte {
 	return wire.MarshalStructBlob(EndpointVTable, m.MarshalInto)
 }
 
-func (m *Endpoint) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(EndpointTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteStruct(int(EndpointVTable[EndpointSlotAddresses+2]), NetworkAddressListVTable, 8, m.Addresses.MarshalInto)
-		obj.WriteUID(int(EndpointVTable[EndpointSlotToken+2]), m.Token)
-	})
+// ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint.
+func ParseEndpointVectorFromReader(r *wire.Reader, slot int) []Endpoint {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]Endpoint, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem Endpoint
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var EndpointTemplate = wire.NewMessageTemplate(
-	EndpointFileID, EndpointVTable, 8, EndpointVTableClosure,
-)

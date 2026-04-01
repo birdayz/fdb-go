@@ -4,12 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetKeyServerLocationsReply fields:
-//
-//	slot 0: results — vector_like, size=4, align=4, indirection
-//	slot 1: resultsTssMapping — vector_like, size=4, align=4, indirection
-//	slot 2: resultsTagMapping — vector_like, size=4, align=4, indirection
-//	slot 3: arena — scalar, size=0, align=1
 const (
 	GetKeyServerLocationsReplySlotResults           = 0
 	GetKeyServerLocationsReplySlotResultsTssMapping = 1
@@ -29,16 +23,34 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 	{12, 13, 4, 8, 10, 12},
 	{6, 8, 4},
 	{16, 34, 4, 20, 24, 32, 28, 33},
-	{10, 13, 4, 12, 8},
 	{8, 12, 4, 8},
+	{10, 13, 4, 12, 8},
 	{10, 16, 4, 8, 12},
 }
+var GetKeyServerLocationsReplyTemplate = wire.NewMessageTemplate(
+	GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, GetKeyServerLocationsReplyVTableClosure,
+)
 
 type GetKeyServerLocationsReply struct {
-	Results           []byte // slot 0, ReadBytes
-	ResultsTssMapping []byte // slot 1, ReadBytes
-	ResultsTagMapping []byte // slot 2, ReadBytes
-	Arena             []byte // slot 3, ReadBytes
+	Results           []byte // slot 0
+	ResultsTssMapping []byte // slot 1
+	ResultsTagMapping []byte // slot 2
+	Arena             []byte // slot 3
+}
+
+func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
+		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTssMapping) {
+		m.ResultsTssMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTssMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTagMapping) {
+		m.ResultsTagMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTagMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotArena) {
+		m.Arena = r.ReadBytes(GetKeyServerLocationsReplySlotArena)
+	}
 }
 
 func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
@@ -61,32 +73,22 @@ func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
-		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
+func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyServerLocationsReplyVTable
+	if m.Results != nil {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
 	}
-	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTssMapping) {
-		m.ResultsTssMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTssMapping)
+	if m.ResultsTssMapping != nil {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
 	}
-	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTagMapping) {
-		m.ResultsTagMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTagMapping)
-	}
-	if r.FieldPresent(GetKeyServerLocationsReplySlotArena) {
-		m.Arena = r.ReadBytes(GetKeyServerLocationsReplySlotArena)
+	if m.ResultsTagMapping != nil {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
 	}
 }
 
-func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
-	vt := GetKeyServerLocationsReplyVTable
-	if len(m.Results) > 0 {
-		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
-	}
-	if len(m.ResultsTssMapping) > 0 {
-		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
-	}
-	if len(m.ResultsTagMapping) > 0 {
-		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
-	}
+func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyServerLocationsReplyTemplate, m.MarshalInto)
 }
 
 func WriteGetKeyServerLocationsReply(obj *wire.ObjectWriter, parentOffset int, results []byte, resultsTssMapping []byte, resultsTagMapping []byte) {
@@ -99,21 +101,21 @@ func MarshalGetKeyServerLocationsReply(results []byte, resultsTssMapping []byte,
 	return wire.MarshalStructBlob(GetKeyServerLocationsReplyVTable, m.MarshalInto)
 }
 
-func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetKeyServerLocationsReplyTemplate, func(obj *wire.ObjectWriter) {
-		if len(m.Results) > 0 {
-			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]), m.Results)
+// ParseGetKeyServerLocationsReplyVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsReply.
+func ParseGetKeyServerLocationsReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyServerLocationsReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		if len(m.ResultsTssMapping) > 0 {
-			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
-		}
-		if len(m.ResultsTagMapping) > 0 {
-			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
-		}
-	})
+		var elem GetKeyServerLocationsReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetKeyServerLocationsReplyTemplate = wire.NewMessageTemplate(
-	GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, GetKeyServerLocationsReplyVTableClosure,
-)

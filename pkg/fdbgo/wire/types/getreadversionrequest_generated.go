@@ -4,15 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetReadVersionRequest fields:
-//
-//	slot 0: transactionCount — scalar, size=4, align=4
-//	slot 1: flags — scalar, size=4, align=4
-//	slot 2: tags — vector_like, size=4, align=4, indirection
-//	slot 3: debugID — union_like, size=4, align=4, indirection
-//	slot 5: reply — serialize_member, size=4, align=4, indirection
-//	slot 6: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 7: maxVersion — scalar, size=8, align=8
 const (
 	GetReadVersionRequestSlotTransactionCount = 0
 	GetReadVersionRequestSlotFlags            = 1
@@ -30,20 +21,48 @@ const GetReadVersionRequestFileID uint32 = 838566
 var GetReadVersionRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
-	{10, 29, 4, 20, 28},
 	{8, 12, 4, 8},
+	{10, 29, 4, 20, 28},
 	{20, 37, 12, 16, 20, 36, 24, 28, 32, 4},
 }
+var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
+	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
+)
 
 type GetReadVersionRequest struct {
-	TransactionCount uint32       // slot 0, ReadUint32
-	Flags            uint32       // slot 1, ReadUint32
-	Tags             []byte       // slot 2, ReadBytes
-	HasDebugID       bool         // slot 3, Optional, presence flag
-	DebugID          []byte       // slot 4, Optional, ReadBytes
+	TransactionCount uint32       // slot 0
+	Flags            uint32       // slot 1
+	Tags             []byte       // slot 2
+	HasDebugID       bool         // slot 3, optional tag
+	DebugID          []byte       // slot 4, optional value
 	Reply            ReplyPromise // slot 5, nested
 	SpanContext      SpanContext  // slot 6, nested
-	MaxVersion       int64        // slot 7, ReadInt64
+	MaxVersion       int64        // slot 7
+}
+
+func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
+		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotTags) {
+		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
+		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
+	}
 }
 
 func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
@@ -64,11 +83,11 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
 		m.HasDebugID = true
 	}
-	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
 		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
@@ -76,39 +95,21 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
-		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
-		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotTags) {
-		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
-		m.HasDebugID = true
-	}
-	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
-		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
-	}
-}
-
 func (m *GetReadVersionRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetReadVersionRequestVTable
 	obj.WriteUint32(int(vt[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
 	obj.WriteUint32(int(vt[GetReadVersionRequestSlotFlags+2]), m.Flags)
-	if len(m.Tags) > 0 {
+	if m.Tags != nil {
 		obj.WriteRawOOL(int(vt[GetReadVersionRequestSlotTags+2]), m.Tags)
 	}
+	obj.WriteStruct(int(vt[GetReadVersionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+	obj.WriteStruct(int(vt[GetReadVersionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
 	obj.WriteInt64(int(vt[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
+}
+
+func (m *GetReadVersionRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetReadVersionRequestTemplate, m.MarshalInto)
 }
 
 func WriteGetReadVersionRequest(obj *wire.ObjectWriter, parentOffset int, transactionCount uint32, flags uint32, tags []byte, maxVersion int64) {
@@ -121,20 +122,21 @@ func MarshalGetReadVersionRequest(transactionCount uint32, flags uint32, tags []
 	return wire.MarshalStructBlob(GetReadVersionRequestVTable, m.MarshalInto)
 }
 
-func (m *GetReadVersionRequest) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetReadVersionRequestTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
-		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotFlags+2]), m.Flags)
-		if len(m.Tags) > 0 {
-			obj.WriteRawOOL(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTags+2]), m.Tags)
+// ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest.
+func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) []GetReadVersionRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetReadVersionRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
-		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
-		obj.WriteInt64(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
-	})
+		var elem GetReadVersionRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
-	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
-)

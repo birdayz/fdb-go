@@ -4,18 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// CommitTransactionRequest fields:
-//
-//	slot 0: transaction — serialize_member, size=4, align=4, indirection
-//	slot 1: reply — serialize_member, size=4, align=4, indirection
-//	slot 2: flags — scalar, size=4, align=4
-//	slot 3: debugID — union_like, size=4, align=4, indirection
-//	slot 5: commitCostEstimation — union_like, size=4, align=4, indirection
-//	slot 7: tagSet — union_like, size=4, align=4, indirection
-//	slot 9: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 10: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 11: idempotencyId — dynamic_size, size=4, align=4, indirection
-//	slot 12: arena — scalar, size=0, align=1
 const (
 	CommitTransactionRequestSlotTransaction          = 0
 	CommitTransactionRequestSlotReply                = 1
@@ -40,38 +28,37 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 	{10, 17, 4, 16, 12},
 	{6, 8, 4},
 	{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28},
+	{8, 12, 4, 8},
 	{10, 13, 12, 4, 8},
 	{10, 29, 4, 20, 28},
-	{8, 12, 4, 8},
 	{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36},
 }
+var CommitTransactionRequestTemplate = wire.NewMessageTemplate(
+	CommitTransactionRequestFileID, CommitTransactionRequestVTable, 4, CommitTransactionRequestVTableClosure,
+)
 
 type CommitTransactionRequest struct {
 	Transaction             CommitTransactionRef // slot 0, nested
 	Reply                   ReplyPromise         // slot 1, nested
-	Flags                   uint32               // slot 2, ReadUint32
-	HasDebugID              bool                 // slot 3, Optional, presence flag
-	DebugID                 []byte               // slot 4, Optional, ReadBytes
-	HasCommitCostEstimation bool                 // slot 5, Optional, presence flag
-	CommitCostEstimation    []byte               // slot 6, Optional, ReadBytes
-	HasTagSet               bool                 // slot 7, Optional, presence flag
-	TagSet                  []byte               // slot 8, Optional, ReadBytes
+	Flags                   uint32               // slot 2
+	HasDebugID              bool                 // slot 3, optional tag
+	DebugID                 []byte               // slot 4, optional value
+	HasCommitCostEstimation bool                 // slot 5, optional tag
+	CommitCostEstimation    []byte               // slot 6, optional value
+	HasTagSet               bool                 // slot 7, optional tag
+	TagSet                  []byte               // slot 8, optional value
 	SpanContext             SpanContext          // slot 9, nested
 	TenantInfo              TenantInfo           // slot 10, nested
-	IdempotencyId           []byte               // slot 11, ReadBytes
-	Arena                   []byte               // slot 12, ReadBytes
+	IdempotencyId           []byte               // slot 11
+	Arena                   []byte               // slot 12
 }
 
-func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
-	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
+func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
+		m.Transaction.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
-		m.Transaction.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
@@ -88,11 +75,51 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
 		m.HasTagSet = true
 	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
+		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotArena) {
+		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
+	}
+}
+
+func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
+		m.Transaction.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
+		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
+		m.HasCommitCostEstimation = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
+		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
+		m.HasTagSet = true
+	}
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
 		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
@@ -103,48 +130,21 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
-		m.Transaction.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
-		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
-		m.HasDebugID = true
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
-		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
-		m.HasCommitCostEstimation = true
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
-		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
-		m.HasTagSet = true
-	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
-		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotArena) {
-		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
+func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := CommitTransactionRequestVTable
+	obj.WriteStruct(int(vt[CommitTransactionRequestSlotTransaction+2]), CommitTransactionRefVTable, 8, m.Transaction.MarshalInto)
+	obj.WriteStruct(int(vt[CommitTransactionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+	obj.WriteUint32(int(vt[CommitTransactionRequestSlotFlags+2]), m.Flags)
+	obj.WriteStruct(int(vt[CommitTransactionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+	obj.WriteStruct(int(vt[CommitTransactionRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+	if m.IdempotencyId != nil {
+		obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
 	}
 }
 
-func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {
-	vt := CommitTransactionRequestVTable
-	obj.WriteUint32(int(vt[CommitTransactionRequestSlotFlags+2]), m.Flags)
-	if len(m.IdempotencyId) > 0 {
-		obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
-	}
+func (m *CommitTransactionRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(CommitTransactionRequestTemplate, m.MarshalInto)
 }
 
 func WriteCommitTransactionRequest(obj *wire.ObjectWriter, parentOffset int, flags uint32, idempotencyId []byte) {
@@ -157,20 +157,21 @@ func MarshalCommitTransactionRequest(flags uint32, idempotencyId []byte) []byte 
 	return wire.MarshalStructBlob(CommitTransactionRequestVTable, m.MarshalInto)
 }
 
-func (m *CommitTransactionRequest) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(CommitTransactionRequestTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTransaction+2]), CommitTransactionRefVTable, 8, m.Transaction.MarshalInto)
-		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
-		obj.WriteUint32(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotFlags+2]), m.Flags)
-		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
-		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
-		if len(m.IdempotencyId) > 0 {
-			obj.WriteBytes(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
+// ParseCommitTransactionRequestVectorFromReader reads a FlatBuffers vector of CommitTransactionRequest.
+func ParseCommitTransactionRequestVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitTransactionRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-	})
+		var elem CommitTransactionRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var CommitTransactionRequestTemplate = wire.NewMessageTemplate(
-	CommitTransactionRequestFileID, CommitTransactionRequestVTable, 4, CommitTransactionRequestVTableClosure,
-)

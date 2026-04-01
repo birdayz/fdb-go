@@ -4,40 +4,59 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// CommitTransactionRef fields:
-//
-//	slot 0: field_0 — vector_like, size=4, align=4, indirection
-//	slot 1: field_1 — vector_like, size=4, align=4, indirection
-//	slot 2: field_2 — vector_like, size=4, align=4, indirection
-//	slot 3: field_3 — scalar, size=8, align=8
-//	slot 4: field_4 — scalar, size=1, align=1
-//	slot 5: field_5 — scalar, size=1, align=1
-//	slot 6: field_6 — union_like, size=4, align=4, indirection
-//	slot 8: field_7 — union_like, size=4, align=4, indirection
 const (
-	CommitTransactionRefSlotField_0 = 0
-	CommitTransactionRefSlotField_1 = 1
-	CommitTransactionRefSlotField_2 = 2
-	CommitTransactionRefSlotField_3 = 3
-	CommitTransactionRefSlotField_4 = 4
-	CommitTransactionRefSlotField_5 = 5
-	CommitTransactionRefSlotField_6 = 6
-	CommitTransactionRefSlotField_7 = 8
+	CommitTransactionRefSlotReadConflictRanges             = 0
+	CommitTransactionRefSlotWriteConflictRanges            = 1
+	CommitTransactionRefSlotMutations                      = 2
+	CommitTransactionRefSlotReadSnapshot                   = 3
+	CommitTransactionRefSlotReport_conflicting_keys        = 4
+	CommitTransactionRefSlotLock_aware                     = 5
+	CommitTransactionRefSlotRead_conflict_ranges_disabled  = 6
+	CommitTransactionRefSlotWrite_conflict_ranges_disabled = 8
 )
 
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
 
 type CommitTransactionRef struct {
-	Field_0    []byte // slot 0, ReadBytes
-	Field_1    []byte // slot 1, ReadBytes
-	Field_2    []byte // slot 2, ReadBytes
-	Field_3    int64  // slot 3, ReadInt64
-	Field_4    bool   // slot 4, ReadBool
-	Field_5    bool   // slot 5, ReadBool
-	HasField_6 bool   // slot 6, Optional, presence flag
-	Field_6    []byte // slot 7, Optional, ReadBytes
-	HasField_7 bool   // slot 8, Optional, presence flag
-	Field_7    []byte // slot 9, Optional, ReadBytes
+	ReadConflictRanges                []byte // slot 0
+	WriteConflictRanges               []byte // slot 1
+	Mutations                         []byte // slot 2
+	ReadSnapshot                      int64  // slot 3
+	Report_conflicting_keys           bool   // slot 4
+	Lock_aware                        bool   // slot 5
+	HasRead_conflict_ranges_disabled  bool   // slot 6, optional tag
+	Read_conflict_ranges_disabled     []byte // slot 7, optional value
+	HasWrite_conflict_ranges_disabled bool   // slot 8, optional tag
+	Write_conflict_ranges_disabled    []byte // slot 9, optional value
+}
+
+func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(CommitTransactionRefSlotReadConflictRanges) {
+		m.ReadConflictRanges = r.ReadBytes(CommitTransactionRefSlotReadConflictRanges)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotWriteConflictRanges) {
+		m.WriteConflictRanges = r.ReadBytes(CommitTransactionRefSlotWriteConflictRanges)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotMutations) {
+		m.Mutations = r.ReadBytes(CommitTransactionRefSlotMutations)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotReadSnapshot) {
+		m.ReadSnapshot = r.ReadInt64(CommitTransactionRefSlotReadSnapshot)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotReport_conflicting_keys) {
+		m.Report_conflicting_keys = r.ReadBool(CommitTransactionRefSlotReport_conflicting_keys)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotLock_aware) {
+		m.Lock_aware = r.ReadBool(CommitTransactionRefSlotLock_aware)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) > 0 {
+		m.Read_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+		m.HasRead_conflict_ranges_disabled = true
+	}
+	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) > 0 {
+		m.Write_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotWrite_conflict_ranges_disabled + 1)
+		m.HasWrite_conflict_ranges_disabled = true
+	}
 }
 
 func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
@@ -45,86 +64,76 @@ func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_0) {
-		m.Field_0 = r.ReadBytes(CommitTransactionRefSlotField_0)
+	if r.FieldPresent(CommitTransactionRefSlotReadConflictRanges) {
+		m.ReadConflictRanges = r.ReadBytes(CommitTransactionRefSlotReadConflictRanges)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_1) {
-		m.Field_1 = r.ReadBytes(CommitTransactionRefSlotField_1)
+	if r.FieldPresent(CommitTransactionRefSlotWriteConflictRanges) {
+		m.WriteConflictRanges = r.ReadBytes(CommitTransactionRefSlotWriteConflictRanges)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_2) {
-		m.Field_2 = r.ReadBytes(CommitTransactionRefSlotField_2)
+	if r.FieldPresent(CommitTransactionRefSlotMutations) {
+		m.Mutations = r.ReadBytes(CommitTransactionRefSlotMutations)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_3) {
-		m.Field_3 = r.ReadInt64(CommitTransactionRefSlotField_3)
+	if r.FieldPresent(CommitTransactionRefSlotReadSnapshot) {
+		m.ReadSnapshot = r.ReadInt64(CommitTransactionRefSlotReadSnapshot)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_4) {
-		m.Field_4 = r.ReadBool(CommitTransactionRefSlotField_4)
+	if r.FieldPresent(CommitTransactionRefSlotReport_conflicting_keys) {
+		m.Report_conflicting_keys = r.ReadBool(CommitTransactionRefSlotReport_conflicting_keys)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_5) {
-		m.Field_5 = r.ReadBool(CommitTransactionRefSlotField_5)
+	if r.FieldPresent(CommitTransactionRefSlotLock_aware) {
+		m.Lock_aware = r.ReadBool(CommitTransactionRefSlotLock_aware)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_6) && r.ReadUint8(CommitTransactionRefSlotField_6) > 0 {
-		m.Field_6 = r.ReadBytes(CommitTransactionRefSlotField_6 + 1)
-		m.HasField_6 = true
+	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) > 0 {
+		m.Read_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+		m.HasRead_conflict_ranges_disabled = true
 	}
-	if r.FieldPresent(CommitTransactionRefSlotField_7) && r.ReadUint8(CommitTransactionRefSlotField_7) > 0 {
-		m.Field_7 = r.ReadBytes(CommitTransactionRefSlotField_7 + 1)
-		m.HasField_7 = true
+	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) > 0 {
+		m.Write_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotWrite_conflict_ranges_disabled + 1)
+		m.HasWrite_conflict_ranges_disabled = true
 	}
 	return nil
 }
 
-func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(CommitTransactionRefSlotField_0) {
-		m.Field_0 = r.ReadBytes(CommitTransactionRefSlotField_0)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_1) {
-		m.Field_1 = r.ReadBytes(CommitTransactionRefSlotField_1)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_2) {
-		m.Field_2 = r.ReadBytes(CommitTransactionRefSlotField_2)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_3) {
-		m.Field_3 = r.ReadInt64(CommitTransactionRefSlotField_3)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_4) {
-		m.Field_4 = r.ReadBool(CommitTransactionRefSlotField_4)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_5) {
-		m.Field_5 = r.ReadBool(CommitTransactionRefSlotField_5)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_6) && r.ReadUint8(CommitTransactionRefSlotField_6) > 0 {
-		m.Field_6 = r.ReadBytes(CommitTransactionRefSlotField_6 + 1)
-		m.HasField_6 = true
-	}
-	if r.FieldPresent(CommitTransactionRefSlotField_7) && r.ReadUint8(CommitTransactionRefSlotField_7) > 0 {
-		m.Field_7 = r.ReadBytes(CommitTransactionRefSlotField_7 + 1)
-		m.HasField_7 = true
-	}
-}
-
 func (m *CommitTransactionRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitTransactionRefVTable
-	if len(m.Field_0) > 0 {
-		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_0+2]), m.Field_0)
+	if m.ReadConflictRanges != nil {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotReadConflictRanges+2]), m.ReadConflictRanges)
 	}
-	if len(m.Field_1) > 0 {
-		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_1+2]), m.Field_1)
+	if m.WriteConflictRanges != nil {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotWriteConflictRanges+2]), m.WriteConflictRanges)
 	}
-	if len(m.Field_2) > 0 {
-		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_2+2]), m.Field_2)
+	if m.Mutations != nil {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotMutations+2]), m.Mutations)
 	}
-	obj.WriteInt64(int(vt[CommitTransactionRefSlotField_3+2]), m.Field_3)
-	obj.WriteBool(int(vt[CommitTransactionRefSlotField_4+2]), m.Field_4)
-	obj.WriteBool(int(vt[CommitTransactionRefSlotField_5+2]), m.Field_5)
+	obj.WriteInt64(int(vt[CommitTransactionRefSlotReadSnapshot+2]), m.ReadSnapshot)
+	obj.WriteBool(int(vt[CommitTransactionRefSlotReport_conflicting_keys+2]), m.Report_conflicting_keys)
+	obj.WriteBool(int(vt[CommitTransactionRefSlotLock_aware+2]), m.Lock_aware)
 }
 
-func WriteCommitTransactionRef(obj *wire.ObjectWriter, parentOffset int, field_0 []byte, field_1 []byte, field_2 []byte, field_3 int64, field_4 bool, field_5 bool) {
-	m := CommitTransactionRef{Field_0: field_0, Field_1: field_1, Field_2: field_2, Field_3: field_3, Field_4: field_4, Field_5: field_5}
+func WriteCommitTransactionRef(obj *wire.ObjectWriter, parentOffset int, readConflictRanges []byte, writeConflictRanges []byte, mutations []byte, readSnapshot int64, report_conflicting_keys bool, lock_aware bool) {
+	m := CommitTransactionRef{ReadConflictRanges: readConflictRanges, WriteConflictRanges: writeConflictRanges, Mutations: mutations, ReadSnapshot: readSnapshot, Report_conflicting_keys: report_conflicting_keys, Lock_aware: lock_aware}
 	obj.WriteStruct(parentOffset, CommitTransactionRefVTable, 8, m.MarshalInto)
 }
 
-func MarshalCommitTransactionRef(field_0 []byte, field_1 []byte, field_2 []byte, field_3 int64, field_4 bool, field_5 bool) []byte {
-	m := CommitTransactionRef{Field_0: field_0, Field_1: field_1, Field_2: field_2, Field_3: field_3, Field_4: field_4, Field_5: field_5}
+func MarshalCommitTransactionRef(readConflictRanges []byte, writeConflictRanges []byte, mutations []byte, readSnapshot int64, report_conflicting_keys bool, lock_aware bool) []byte {
+	m := CommitTransactionRef{ReadConflictRanges: readConflictRanges, WriteConflictRanges: writeConflictRanges, Mutations: mutations, ReadSnapshot: readSnapshot, Report_conflicting_keys: report_conflicting_keys, Lock_aware: lock_aware}
 	return wire.MarshalStructBlob(CommitTransactionRefVTable, m.MarshalInto)
+}
+
+// ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
+func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitTransactionRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitTransactionRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

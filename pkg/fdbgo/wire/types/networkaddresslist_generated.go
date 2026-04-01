@@ -4,10 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// NetworkAddressList fields:
-//
-//	slot 0: address — serialize_member, size=4, align=4, indirection
-//	slot 1: secondaryAddress — union_like, size=4, align=4, indirection
 const (
 	NetworkAddressListSlotAddress          = 0
 	NetworkAddressListSlotSecondaryAddress = 1
@@ -17,8 +13,18 @@ var NetworkAddressListVTable = wire.VTable{10, 13, 4, 12, 8}
 
 type NetworkAddressList struct {
 	Address             NetworkAddress // slot 0, nested
-	HasSecondaryAddress bool           // slot 1, Optional, presence flag
-	SecondaryAddress    []byte         // slot 2, Optional, ReadBytes
+	HasSecondaryAddress bool           // slot 1, optional tag
+	SecondaryAddress    []byte         // slot 2, optional value
+}
+
+func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
+	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
+		m.Address.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) > 0 {
+		m.SecondaryAddress = r.ReadBytes(NetworkAddressListSlotSecondaryAddress + 1)
+		m.HasSecondaryAddress = true
+	}
 }
 
 func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
@@ -26,8 +32,8 @@ func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nestedR, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
-		m.Address.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
+		m.Address.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) > 0 {
 		m.SecondaryAddress = r.ReadBytes(NetworkAddressListSlotSecondaryAddress + 1)
@@ -36,17 +42,9 @@ func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
-	if nestedR, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
-		m.Address.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) > 0 {
-		m.SecondaryAddress = r.ReadBytes(NetworkAddressListSlotSecondaryAddress + 1)
-		m.HasSecondaryAddress = true
-	}
-}
-
 func (m *NetworkAddressList) MarshalInto(obj *wire.ObjectWriter) {
+	vt := NetworkAddressListVTable
+	obj.WriteStruct(int(vt[NetworkAddressListSlotAddress+2]), NetworkAddressVTable, 8, m.Address.MarshalInto)
 }
 
 func WriteNetworkAddressList(obj *wire.ObjectWriter, parentOffset int) {
@@ -57,4 +55,23 @@ func WriteNetworkAddressList(obj *wire.ObjectWriter, parentOffset int) {
 func MarshalNetworkAddressList() []byte {
 	m := NetworkAddressList{}
 	return wire.MarshalStructBlob(NetworkAddressListVTable, m.MarshalInto)
+}
+
+// ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.
+func ParseNetworkAddressListVectorFromReader(r *wire.Reader, slot int) []NetworkAddressList {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]NetworkAddressList, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem NetworkAddressList
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

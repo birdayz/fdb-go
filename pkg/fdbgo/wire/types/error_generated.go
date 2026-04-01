@@ -4,11 +4,8 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// Error fields:
-//
-//	slot 0: error_code — scalar, size=2, align=2
 const (
-	ErrorSlotError_code = 0
+	ErrorSlotErrorCode = 0
 )
 
 var ErrorVTable = wire.VTable{6, 6, 4}
@@ -19,9 +16,18 @@ var ErrorVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
 }
+var ErrorTemplate = wire.NewMessageTemplate(
+	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
+)
 
 type Error struct {
-	Error_code uint16 // slot 0, ReadUint16
+	ErrorCode uint16 // slot 0
+}
+
+func (m *Error) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ErrorSlotErrorCode) {
+		m.ErrorCode = r.ReadUint16(ErrorSlotErrorCode)
+	}
 }
 
 func (m *Error) UnmarshalFDB(data []byte) error {
@@ -29,28 +35,47 @@ func (m *Error) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(ErrorSlotError_code) {
-		m.Error_code = r.ReadUint16(ErrorSlotError_code)
+	if r.FieldPresent(ErrorSlotErrorCode) {
+		m.ErrorCode = r.ReadUint16(ErrorSlotErrorCode)
 	}
 	return nil
 }
 
-func (m *Error) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ErrorSlotError_code) {
-		m.Error_code = r.ReadUint16(ErrorSlotError_code)
-	}
-}
-
 func (m *Error) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ErrorVTable
-	obj.WriteUint16(int(vt[ErrorSlotError_code+2]), m.Error_code)
+	obj.WriteUint16(int(vt[ErrorSlotErrorCode+2]), m.ErrorCode)
 }
 
-func WriteError(obj *wire.ObjectWriter, parentOffset int, error_code uint16) {
-	m := Error{Error_code: error_code}
+func (m *Error) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(ErrorTemplate, m.MarshalInto)
+}
+
+func WriteError(obj *wire.ObjectWriter, parentOffset int, errorCode uint16) {
+	m := Error{ErrorCode: errorCode}
 	obj.WriteStruct(parentOffset, ErrorVTable, 4, m.MarshalInto)
 }
 
-var ErrorTemplate = wire.NewMessageTemplate(
-	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
-)
+func MarshalError(errorCode uint16) []byte {
+	m := Error{ErrorCode: errorCode}
+	return wire.MarshalStructBlob(ErrorVTable, m.MarshalInto)
+}
+
+// ParseErrorVectorFromReader reads a FlatBuffers vector of Error.
+func ParseErrorVectorFromReader(r *wire.Reader, slot int) []Error {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]Error, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem Error
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

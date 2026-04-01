@@ -4,19 +4,12 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// StorageServerInterface fields:
-//
-//	slot 0: watchValue — scalar, size=16, align=8
-//	slot 1: field_1 — serialize_member, size=4, align=4, indirection
-//	slot 2: field_2 — serialize_member, size=4, align=4, indirection
-//	slot 3: field_3 — union_like, size=4, align=4, indirection
-//	slot 5: field_4 — scalar, size=1, align=1
 const (
 	StorageServerInterfaceSlotWatchValue = 0
 	StorageServerInterfaceSlotField_1    = 1
 	StorageServerInterfaceSlotField_2    = 2
 	StorageServerInterfaceSlotField_3    = 3
-	StorageServerInterfaceSlotField_4    = 5
+	StorageServerInterfaceSlotField_5    = 5
 )
 
 var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
@@ -24,12 +17,25 @@ var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
 const StorageServerInterfaceFileID uint32 = 15302073
 
 type StorageServerInterface struct {
-	WatchValue [16]byte // slot 0, ReadUID
-	// Field_1: nested struct at slot 1 — use ReadNestedReader(StorageServerInterfaceSlotField_1)
-	// Field_2: nested struct at slot 2 — use ReadNestedReader(StorageServerInterfaceSlotField_2)
-	HasField_3 bool   // slot 3, Optional, presence flag
-	Field_3    []byte // slot 4, Optional, ReadBytes
-	Field_4    bool   // slot 5, ReadBool
+	WatchValue [16]byte // slot 0
+	// Field_1: unregistered nested struct at slot 1
+	// Field_2: unregistered nested struct at slot 2
+	HasField_3 bool   // slot 3, optional tag
+	Field_3    []byte // slot 4, optional value
+	Field_5    bool   // slot 5
+}
+
+func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
+		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
+	}
+	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
+		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
+		m.HasField_3 = true
+	}
+	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
+		m.Field_5 = r.ReadBool(StorageServerInterfaceSlotField_5)
+	}
 }
 
 func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
@@ -40,40 +46,47 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
-	// Field_1 (slot 1): unknown nested struct
-	// Field_2 (slot 2): unknown nested struct
 	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
 		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
 		m.HasField_3 = true
 	}
-	if r.FieldPresent(StorageServerInterfaceSlotField_4) {
-		m.Field_4 = r.ReadBool(StorageServerInterfaceSlotField_4)
+	if r.FieldPresent(StorageServerInterfaceSlotField_5) {
+		m.Field_5 = r.ReadBool(StorageServerInterfaceSlotField_5)
 	}
 	return nil
-}
-
-func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
-		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
-	}
-	// Field_1 (slot 1): unknown nested struct
-	// Field_2 (slot 2): unknown nested struct
-	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
-		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
-		m.HasField_3 = true
-	}
-	if r.FieldPresent(StorageServerInterfaceSlotField_4) {
-		m.Field_4 = r.ReadBool(StorageServerInterfaceSlotField_4)
-	}
 }
 
 func (m *StorageServerInterface) MarshalInto(obj *wire.ObjectWriter) {
 	vt := StorageServerInterfaceVTable
 	obj.WriteUID(int(vt[StorageServerInterfaceSlotWatchValue+2]), m.WatchValue)
-	obj.WriteBool(int(vt[StorageServerInterfaceSlotField_4+2]), m.Field_4)
+	obj.WriteBool(int(vt[StorageServerInterfaceSlotField_5+2]), m.Field_5)
 }
 
-func WriteStorageServerInterface(obj *wire.ObjectWriter, parentOffset int, watchValue [16]byte, field_4 bool) {
-	m := StorageServerInterface{WatchValue: watchValue, Field_4: field_4}
+func WriteStorageServerInterface(obj *wire.ObjectWriter, parentOffset int, watchValue [16]byte, field_5 bool) {
+	m := StorageServerInterface{WatchValue: watchValue, Field_5: field_5}
 	obj.WriteStruct(parentOffset, StorageServerInterfaceVTable, 8, m.MarshalInto)
+}
+
+func MarshalStorageServerInterface(watchValue [16]byte, field_5 bool) []byte {
+	m := StorageServerInterface{WatchValue: watchValue, Field_5: field_5}
+	return wire.MarshalStructBlob(StorageServerInterfaceVTable, m.MarshalInto)
+}
+
+// ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface.
+func ParseStorageServerInterfaceVectorFromReader(r *wire.Reader, slot int) []StorageServerInterface {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]StorageServerInterface, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem StorageServerInterface
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

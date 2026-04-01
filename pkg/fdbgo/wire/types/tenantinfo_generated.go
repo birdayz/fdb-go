@@ -4,11 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// TenantInfo fields:
-//
-//	slot 0: tenantId — scalar, size=8, align=8
-//	slot 1: token — union_like, size=4, align=4, indirection
-//	slot 3: arena — scalar, size=0, align=1
 const (
 	TenantInfoSlotTenantId = 0
 	TenantInfoSlotToken    = 1
@@ -18,10 +13,23 @@ const (
 var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
 
 type TenantInfo struct {
-	TenantId int64  // slot 0, ReadInt64
-	HasToken bool   // slot 1, Optional, presence flag
-	Token    []byte // slot 2, Optional, ReadBytes
-	Arena    []byte // slot 3, ReadBytes
+	TenantId int64  // slot 0
+	HasToken bool   // slot 1, optional tag
+	Token    []byte // slot 2, optional value
+	Arena    []byte // slot 3
+}
+
+func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(TenantInfoSlotTenantId) {
+		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
+	}
+	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
+		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
+		m.HasToken = true
+	}
+	if r.FieldPresent(TenantInfoSlotArena) {
+		m.Arena = r.ReadBytes(TenantInfoSlotArena)
+	}
 }
 
 func (m *TenantInfo) UnmarshalFDB(data []byte) error {
@@ -42,19 +50,6 @@ func (m *TenantInfo) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(TenantInfoSlotTenantId) {
-		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
-	}
-	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
-		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
-		m.HasToken = true
-	}
-	if r.FieldPresent(TenantInfoSlotArena) {
-		m.Arena = r.ReadBytes(TenantInfoSlotArena)
-	}
-}
-
 func (m *TenantInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := TenantInfoVTable
 	obj.WriteInt64(int(vt[TenantInfoSlotTenantId+2]), m.TenantId)
@@ -68,4 +63,23 @@ func WriteTenantInfo(obj *wire.ObjectWriter, parentOffset int, tenantId int64) {
 func MarshalTenantInfo(tenantId int64) []byte {
 	m := TenantInfo{TenantId: tenantId}
 	return wire.MarshalStructBlob(TenantInfoVTable, m.MarshalInto)
+}
+
+// ParseTenantInfoVectorFromReader reads a FlatBuffers vector of TenantInfo.
+func ParseTenantInfoVectorFromReader(r *wire.Reader, slot int) []TenantInfo {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]TenantInfo, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem TenantInfo
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

@@ -4,19 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetReadVersionReply fields:
-//
-//	slot 0: BasicLoadBalancedReply::processBusyTime — scalar, size=4, align=4
-//	slot 1: version — scalar, size=8, align=8
-//	slot 2: locked — scalar, size=1, align=1
-//	slot 3: metadataVersion — union_like, size=4, align=4, indirection
-//	slot 5: tagThrottleInfo — vector_like, size=4, align=4, indirection
-//	slot 6: midShardSize — scalar, size=8, align=8
-//	slot 7: rkDefaultThrottled — scalar, size=1, align=1
-//	slot 8: rkBatchThrottled — scalar, size=1, align=1
-//	slot 9: ssVersionVectorDelta — dynamic_size, size=4, align=4, indirection
-//	slot 10: proxyId — scalar, size=16, align=8
-//	slot 11: proxyTagThrottledDuration — scalar, size=8, align=8
 const (
 	GetReadVersionReplySlotProcessBusyTime           = 0
 	GetReadVersionReplySlotVersion                   = 1
@@ -41,20 +28,60 @@ var GetReadVersionReplyVTableClosure = []wire.VTable{
 	{8, 12, 4, 8},
 	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
 }
+var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
+	GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, GetReadVersionReplyVTableClosure,
+)
 
 type GetReadVersionReply struct {
-	ProcessBusyTime           int32    // slot 0, ReadInt32
-	Version                   int64    // slot 1, ReadInt64
-	Locked                    bool     // slot 2, ReadBool
-	HasMetadataVersion        bool     // slot 3, Optional, presence flag
-	MetadataVersion           []byte   // slot 4, Optional, ReadBytes
-	TagThrottleInfo           []byte   // slot 5, ReadBytes
-	MidShardSize              int64    // slot 6, ReadInt64
-	RkDefaultThrottled        bool     // slot 7, ReadBool
-	RkBatchThrottled          bool     // slot 8, ReadBool
-	SsVersionVectorDelta      []byte   // slot 9, ReadBytes
-	ProxyId                   [16]byte // slot 10, ReadUID
-	ProxyTagThrottledDuration float64  // slot 11, ReadFloat64
+	ProcessBusyTime           int32    // slot 0
+	Version                   int64    // slot 1
+	Locked                    bool     // slot 2
+	HasMetadataVersion        bool     // slot 3, optional tag
+	MetadataVersion           []byte   // slot 4, optional value
+	TagThrottleInfo           []byte   // slot 5
+	MidShardSize              int64    // slot 6
+	RkDefaultThrottled        bool     // slot 7
+	RkBatchThrottled          bool     // slot 8
+	SsVersionVectorDelta      []byte   // slot 9
+	ProxyId                   [16]byte // slot 10
+	ProxyTagThrottledDuration float64  // slot 11
+}
+
+func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
+		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotVersion) {
+		m.Version = r.ReadInt64(GetReadVersionReplySlotVersion)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotLocked) {
+		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
+		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
+		m.HasMetadataVersion = true
+	}
+	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
+		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
+		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkDefaultThrottled) {
+		m.RkDefaultThrottled = r.ReadBool(GetReadVersionReplySlotRkDefaultThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkBatchThrottled) {
+		m.RkBatchThrottled = r.ReadBool(GetReadVersionReplySlotRkBatchThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotSsVersionVectorDelta) {
+		m.SsVersionVectorDelta = r.ReadBytes(GetReadVersionReplySlotSsVersionVectorDelta)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyId) {
+		m.ProxyId = r.ReadUID(GetReadVersionReplySlotProxyId)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
+		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
+	}
 }
 
 func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
@@ -99,59 +126,27 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
-		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotVersion) {
-		m.Version = r.ReadInt64(GetReadVersionReplySlotVersion)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotLocked) {
-		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
-		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
-		m.HasMetadataVersion = true
-	}
-	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
-		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
-		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotRkDefaultThrottled) {
-		m.RkDefaultThrottled = r.ReadBool(GetReadVersionReplySlotRkDefaultThrottled)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotRkBatchThrottled) {
-		m.RkBatchThrottled = r.ReadBool(GetReadVersionReplySlotRkBatchThrottled)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotSsVersionVectorDelta) {
-		m.SsVersionVectorDelta = r.ReadBytes(GetReadVersionReplySlotSsVersionVectorDelta)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotProxyId) {
-		m.ProxyId = r.ReadUID(GetReadVersionReplySlotProxyId)
-	}
-	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
-		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
-	}
-}
-
 func (m *GetReadVersionReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetReadVersionReplyVTable
 	obj.WriteInt32(int(vt[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
 	obj.WriteInt64(int(vt[GetReadVersionReplySlotVersion+2]), m.Version)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotLocked+2]), m.Locked)
-	if len(m.TagThrottleInfo) > 0 {
+	if m.TagThrottleInfo != nil {
 		obj.WriteRawOOL(int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
 	}
 	obj.WriteInt64(int(vt[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
-	if len(m.SsVersionVectorDelta) > 0 {
+	if m.SsVersionVectorDelta != nil {
 		obj.WriteBytes(int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
 	}
 	obj.WriteUID(int(vt[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
 	obj.WriteFloat64(int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
+}
+
+func (m *GetReadVersionReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetReadVersionReplyTemplate, m.MarshalInto)
 }
 
 func WriteGetReadVersionReply(obj *wire.ObjectWriter, parentOffset int, processBusyTime int32, version int64, locked bool, tagThrottleInfo []byte, midShardSize int64, rkDefaultThrottled bool, rkBatchThrottled bool, ssVersionVectorDelta []byte, proxyId [16]byte, proxyTagThrottledDuration float64) {
@@ -164,26 +159,21 @@ func MarshalGetReadVersionReply(processBusyTime int32, version int64, locked boo
 	return wire.MarshalStructBlob(GetReadVersionReplyVTable, m.MarshalInto)
 }
 
-func (m *GetReadVersionReply) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetReadVersionReplyTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteInt32(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
-		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotVersion+2]), m.Version)
-		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotLocked+2]), m.Locked)
-		if len(m.TagThrottleInfo) > 0 {
-			obj.WriteRawOOL(int(GetReadVersionReplyVTable[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+// ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply.
+func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) []GetReadVersionReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetReadVersionReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
-		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
-		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
-		if len(m.SsVersionVectorDelta) > 0 {
-			obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
-		}
-		obj.WriteUID(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
-		obj.WriteFloat64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
-	})
+		var elem GetReadVersionReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
-	GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, GetReadVersionReplyVTableClosure,
-)

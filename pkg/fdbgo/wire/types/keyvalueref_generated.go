@@ -8,10 +8,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-// KeyValueRef fields:
-//
-//	slot 0: key — dynamic_size, size=4, align=4, indirection
-//	slot 1: value — dynamic_size, size=4, align=4, indirection
 const (
 	KeyValueRefSlotKey   = 0
 	KeyValueRefSlotValue = 1
@@ -20,8 +16,17 @@ const (
 var KeyValueRefVTable = wire.VTable{8, 12, 4, 8}
 
 type KeyValueRef struct {
-	Key   []byte // slot 0, ReadBytes
-	Value []byte // slot 1, ReadBytes
+	Key   []byte // slot 0
+	Value []byte // slot 1
+}
+
+func (m *KeyValueRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(KeyValueRefSlotKey) {
+		m.Key = r.ReadBytes(KeyValueRefSlotKey)
+	}
+	if r.FieldPresent(KeyValueRefSlotValue) {
+		m.Value = r.ReadBytes(KeyValueRefSlotValue)
+	}
 }
 
 func (m *KeyValueRef) UnmarshalFDB(data []byte) error {
@@ -38,21 +43,12 @@ func (m *KeyValueRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *KeyValueRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeyValueRefSlotKey) {
-		m.Key = r.ReadBytes(KeyValueRefSlotKey)
-	}
-	if r.FieldPresent(KeyValueRefSlotValue) {
-		m.Value = r.ReadBytes(KeyValueRefSlotValue)
-	}
-}
-
 func (m *KeyValueRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeyValueRefVTable
-	if len(m.Key) > 0 {
+	if m.Key != nil {
 		obj.WriteBytes(int(vt[KeyValueRefSlotKey+2]), m.Key)
 	}
-	if len(m.Value) > 0 {
+	if m.Value != nil {
 		obj.WriteBytes(int(vt[KeyValueRefSlotValue+2]), m.Value)
 	}
 }
@@ -67,9 +63,28 @@ func MarshalKeyValueRef(key []byte, value []byte) []byte {
 	return wire.MarshalStructBlob(KeyValueRefVTable, m.MarshalInto)
 }
 
-// ParseKeyValueRefVector decodes a VectorRef<KeyValueRef, VecSerStrategy::String>.
-// Each element's dynamic_size fields are inline: [len(4)][data] per field.
-func ParseKeyValueRefVector(data []byte) []KeyValueRef {
+// ParseKeyValueRefVectorFromReader reads a FlatBuffers vector of KeyValueRef.
+func ParseKeyValueRefVectorFromReader(r *wire.Reader, slot int) []KeyValueRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]KeyValueRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem KeyValueRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}
+
+// ParseKeyValueRefStringVector decodes a VectorRef<KeyValueRef, VecSerStrategy::String>.
+// Each element's DynamicSize fields are inline: [len(4)][data] per field.
+func ParseKeyValueRefStringVector(data []byte) []KeyValueRef {
 	if len(data) < 4 {
 		return nil
 	}
@@ -87,7 +102,7 @@ func ParseKeyValueRefVector(data []byte) []KeyValueRef {
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if pos+n > len(data) {
+			if n < 0 || pos+n > len(data) {
 				break
 			}
 			elem.Key = make([]byte, n)
@@ -100,7 +115,7 @@ func ParseKeyValueRefVector(data []byte) []KeyValueRef {
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if pos+n > len(data) {
+			if n < 0 || pos+n > len(data) {
 				break
 			}
 			elem.Value = make([]byte, n)

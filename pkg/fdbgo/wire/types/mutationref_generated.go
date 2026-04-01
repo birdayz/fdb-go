@@ -4,11 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// MutationRef fields:
-//
-//	slot 0: mutType — scalar, size=1, align=1
-//	slot 1: param1 — dynamic_size, size=4, align=4, indirection
-//	slot 2: param2 — dynamic_size, size=4, align=4, indirection
 const (
 	MutationRefSlotMutType = 0
 	MutationRefSlotParam1  = 1
@@ -18,9 +13,21 @@ const (
 var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
 
 type MutationRef struct {
-	MutType uint8  // slot 0, ReadUint8
-	Param1  []byte // slot 1, ReadBytes
-	Param2  []byte // slot 2, ReadBytes
+	MutType uint8  // slot 0
+	Param1  []byte // slot 1
+	Param2  []byte // slot 2
+}
+
+func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(MutationRefSlotMutType) {
+		m.MutType = r.ReadUint8(MutationRefSlotMutType)
+	}
+	if r.FieldPresent(MutationRefSlotParam1) {
+		m.Param1 = r.ReadBytes(MutationRefSlotParam1)
+	}
+	if r.FieldPresent(MutationRefSlotParam2) {
+		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
+	}
 }
 
 func (m *MutationRef) UnmarshalFDB(data []byte) error {
@@ -40,25 +47,13 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(MutationRefSlotMutType) {
-		m.MutType = r.ReadUint8(MutationRefSlotMutType)
-	}
-	if r.FieldPresent(MutationRefSlotParam1) {
-		m.Param1 = r.ReadBytes(MutationRefSlotParam1)
-	}
-	if r.FieldPresent(MutationRefSlotParam2) {
-		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
-	}
-}
-
 func (m *MutationRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := MutationRefVTable
 	obj.WriteUint8(int(vt[MutationRefSlotMutType+2]), m.MutType)
-	if len(m.Param1) > 0 {
+	if m.Param1 != nil {
 		obj.WriteBytes(int(vt[MutationRefSlotParam1+2]), m.Param1)
 	}
-	if len(m.Param2) > 0 {
+	if m.Param2 != nil {
 		obj.WriteBytes(int(vt[MutationRefSlotParam2+2]), m.Param2)
 	}
 }
@@ -71,4 +66,23 @@ func WriteMutationRef(obj *wire.ObjectWriter, parentOffset int, mutType uint8, p
 func MarshalMutationRef(mutType uint8, param1 []byte, param2 []byte) []byte {
 	m := MutationRef{MutType: mutType, Param1: param1, Param2: param2}
 	return wire.MarshalStructBlob(MutationRefVTable, m.MarshalInto)
+}
+
+// ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
+func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]MutationRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem MutationRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

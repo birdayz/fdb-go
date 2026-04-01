@@ -4,11 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// SpanContext fields:
-//
-//	slot 0: traceID — scalar, size=16, align=8
-//	slot 1: spanID — scalar, size=8, align=8
-//	slot 2: m_Flags — scalar, size=1, align=1
 const (
 	SpanContextSlotTraceID = 0
 	SpanContextSlotSpanID  = 1
@@ -18,9 +13,21 @@ const (
 var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
 
 type SpanContext struct {
-	TraceID [16]byte // slot 0, ReadUID
-	SpanID  uint64   // slot 1, ReadUint64
-	Flags   uint8    // slot 2, ReadUint8
+	TraceID [16]byte // slot 0
+	SpanID  uint64   // slot 1
+	Flags   uint8    // slot 2
+}
+
+func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(SpanContextSlotTraceID) {
+		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
+	}
+	if r.FieldPresent(SpanContextSlotSpanID) {
+		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
+	}
+	if r.FieldPresent(SpanContextSlotFlags) {
+		m.Flags = r.ReadUint8(SpanContextSlotFlags)
+	}
 }
 
 func (m *SpanContext) UnmarshalFDB(data []byte) error {
@@ -40,18 +47,6 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(SpanContextSlotTraceID) {
-		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
-	}
-	if r.FieldPresent(SpanContextSlotSpanID) {
-		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
-	}
-	if r.FieldPresent(SpanContextSlotFlags) {
-		m.Flags = r.ReadUint8(SpanContextSlotFlags)
-	}
-}
-
 func (m *SpanContext) MarshalInto(obj *wire.ObjectWriter) {
 	vt := SpanContextVTable
 	obj.WriteUID(int(vt[SpanContextSlotTraceID+2]), m.TraceID)
@@ -67,4 +62,23 @@ func WriteSpanContext(obj *wire.ObjectWriter, parentOffset int, traceID [16]byte
 func MarshalSpanContext(traceID [16]byte, spanID uint64, flags uint8) []byte {
 	m := SpanContext{TraceID: traceID, SpanID: spanID, Flags: flags}
 	return wire.MarshalStructBlob(SpanContextVTable, m.MarshalInto)
+}
+
+// ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
+func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]SpanContext, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem SpanContext
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

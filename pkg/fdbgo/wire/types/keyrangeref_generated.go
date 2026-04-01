@@ -2,12 +2,12 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
 
-// KeyRangeRef fields:
-//
-//	slot 0: const_cast<KeyRef&>(begin) — dynamic_size, size=4, align=4, indirection
-//	slot 1: const_cast<KeyRef&>(end) — dynamic_size, size=4, align=4, indirection
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
+
 const (
 	KeyRangeRefSlotBegin = 0
 	KeyRangeRefSlotEnd   = 1
@@ -16,8 +16,17 @@ const (
 var KeyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 
 type KeyRangeRef struct {
-	Begin []byte // slot 0, ReadBytes
-	End   []byte // slot 1, ReadBytes
+	Begin []byte // slot 0
+	End   []byte // slot 1
+}
+
+func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(KeyRangeRefSlotBegin) {
+		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
+	}
+	if r.FieldPresent(KeyRangeRefSlotEnd) {
+		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
+	}
 }
 
 func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
@@ -34,21 +43,12 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeyRangeRefSlotBegin) {
-		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
-	}
-	if r.FieldPresent(KeyRangeRefSlotEnd) {
-		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
-	}
-}
-
 func (m *KeyRangeRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeyRangeRefVTable
-	if len(m.Begin) > 0 {
+	if m.Begin != nil {
 		obj.WriteBytes(int(vt[KeyRangeRefSlotBegin+2]), m.Begin)
 	}
-	if len(m.End) > 0 {
+	if m.End != nil {
 		obj.WriteBytes(int(vt[KeyRangeRefSlotEnd+2]), m.End)
 	}
 }
@@ -61,4 +61,68 @@ func WriteKeyRangeRef(obj *wire.ObjectWriter, parentOffset int, begin []byte, en
 func MarshalKeyRangeRef(begin []byte, end []byte) []byte {
 	m := KeyRangeRef{Begin: begin, End: end}
 	return wire.MarshalStructBlob(KeyRangeRefVTable, m.MarshalInto)
+}
+
+// ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
+func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]KeyRangeRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem KeyRangeRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}
+
+// ParseKeyRangeRefStringVector decodes a VectorRef<KeyRangeRef, VecSerStrategy::String>.
+// Each element's DynamicSize fields are inline: [len(4)][data] per field.
+func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
+	if len(data) < 4 {
+		return nil
+	}
+	count := binary.LittleEndian.Uint32(data[0:4])
+	if count == 0 {
+		return nil
+	}
+	pos := 4
+	result := make([]KeyRangeRef, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var elem KeyRangeRef
+		if pos+4 > len(data) {
+			break
+		}
+		{
+			n := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if n < 0 || pos+n > len(data) {
+				break
+			}
+			elem.Begin = make([]byte, n)
+			copy(elem.Begin, data[pos:pos+n])
+			pos += n
+		}
+		if pos+4 > len(data) {
+			break
+		}
+		{
+			n := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if n < 0 || pos+n > len(data) {
+				break
+			}
+			elem.End = make([]byte, n)
+			copy(elem.End, data[pos:pos+n])
+			pos += n
+		}
+		result = append(result, elem)
+	}
+	return result
 }

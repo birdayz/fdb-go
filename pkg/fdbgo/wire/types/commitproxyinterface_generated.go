@@ -4,11 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// CommitProxyInterface fields:
-//
-//	slot 0: processId — union_like, size=4, align=4, indirection
-//	slot 2: provisional — scalar, size=1, align=1
-//	slot 3: commit — serialize_member, size=4, align=4, indirection
 const (
 	CommitProxyInterfaceSlotProcessId   = 0
 	CommitProxyInterfaceSlotProvisional = 2
@@ -20,10 +15,20 @@ var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
 const CommitProxyInterfaceFileID uint32 = 8954922
 
 type CommitProxyInterface struct {
-	HasProcessId bool   // slot 0, Optional, presence flag
-	ProcessId    []byte // slot 1, Optional, ReadBytes
-	Provisional  bool   // slot 2, ReadBool
-	// Commit: nested struct at slot 3 — use ReadNestedReader(CommitProxyInterfaceSlotCommit)
+	HasProcessId bool   // slot 0, optional tag
+	ProcessId    []byte // slot 1, optional value
+	Provisional  bool   // slot 2
+	// Commit: unregistered nested struct at slot 3
+}
+
+func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
+		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
+		m.HasProcessId = true
+	}
+	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
+		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
+	}
 }
 
 func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
@@ -38,19 +43,7 @@ func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
 		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
 	}
-	// Commit (slot 3): unknown nested struct
 	return nil
-}
-
-func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
-		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
-		m.HasProcessId = true
-	}
-	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
-		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
-	}
-	// Commit (slot 3): unknown nested struct
 }
 
 func (m *CommitProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
@@ -61,4 +54,28 @@ func (m *CommitProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
 func WriteCommitProxyInterface(obj *wire.ObjectWriter, parentOffset int, provisional bool) {
 	m := CommitProxyInterface{Provisional: provisional}
 	obj.WriteStruct(parentOffset, CommitProxyInterfaceVTable, 4, m.MarshalInto)
+}
+
+func MarshalCommitProxyInterface(provisional bool) []byte {
+	m := CommitProxyInterface{Provisional: provisional}
+	return wire.MarshalStructBlob(CommitProxyInterfaceVTable, m.MarshalInto)
+}
+
+// ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.
+func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []CommitProxyInterface {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitProxyInterface, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitProxyInterface
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

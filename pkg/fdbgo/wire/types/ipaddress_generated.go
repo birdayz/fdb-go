@@ -4,19 +4,28 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// IPAddress fields:
-//
-//	slot 0: field_0 — union_like, size=4, align=4, indirection
 const (
-	IPAddressSlotField_0 = 0
+	IPAddressSlotAddr = 0
 )
 
 var IPAddressVTable = wire.VTable{8, 9, 8, 4}
 
 type IPAddress struct {
-	Field_0Tag  uint8  // slot 0, variant tag
-	Field_0Alt0 uint32 // tag=1, size=4
-	Field_0Alt1 []byte // tag=2, size=4
+	AddrTag  uint8  // slot 0, variant tag
+	AddrAlt0 uint32 // tag=1
+	AddrAlt1 []byte // tag=2
+}
+
+func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(IPAddressSlotAddr) {
+		m.AddrTag = r.ReadUint8(IPAddressSlotAddr)
+		switch m.AddrTag {
+		case 1:
+			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
+		case 2:
+			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
+		}
+	}
 }
 
 func (m *IPAddress) UnmarshalFDB(data []byte) error {
@@ -24,41 +33,46 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(IPAddressSlotField_0) {
-		m.Field_0Tag = r.ReadUint8(IPAddressSlotField_0)
-		switch m.Field_0Tag {
+	if r.FieldPresent(IPAddressSlotAddr) {
+		m.AddrTag = r.ReadUint8(IPAddressSlotAddr)
+		switch m.AddrTag {
 		case 1:
-			m.Field_0Alt0 = r.ReadRelOffUint32(IPAddressSlotField_0 + 1)
+			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
 		case 2:
-			raw := r.ReadRelOffRaw(IPAddressSlotField_0+1, 4)
-			m.Field_0Alt1 = raw
+			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
 		}
 	}
 	return nil
 }
 
-func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(IPAddressSlotField_0) {
-		m.Field_0Tag = r.ReadUint8(IPAddressSlotField_0)
-		switch m.Field_0Tag {
-		case 1:
-			m.Field_0Alt0 = r.ReadRelOffUint32(IPAddressSlotField_0 + 1)
-		case 2:
-			raw := r.ReadRelOffRaw(IPAddressSlotField_0+1, 4)
-			m.Field_0Alt1 = raw
-		}
-	}
-}
-
 func (m *IPAddress) MarshalInto(obj *wire.ObjectWriter) {
 }
 
-func WriteIPAddress(obj *wire.ObjectWriter, parentOffset int) {
-	m := IPAddress{}
+func WriteIPAddress(obj *wire.ObjectWriter, parentOffset int, addrTag uint8, addrAlt0 uint32, addrAlt1 []byte) {
+	m := IPAddress{AddrTag: addrTag, AddrAlt0: addrAlt0, AddrAlt1: addrAlt1}
 	obj.WriteStruct(parentOffset, IPAddressVTable, 4, m.MarshalInto)
 }
 
-func MarshalIPAddress() []byte {
-	m := IPAddress{}
+func MarshalIPAddress(addrTag uint8, addrAlt0 uint32, addrAlt1 []byte) []byte {
+	m := IPAddress{AddrTag: addrTag, AddrAlt0: addrAlt0, AddrAlt1: addrAlt1}
 	return wire.MarshalStructBlob(IPAddressVTable, m.MarshalInto)
+}
+
+// ParseIPAddressVectorFromReader reads a FlatBuffers vector of IPAddress.
+func ParseIPAddressVectorFromReader(r *wire.Reader, slot int) []IPAddress {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]IPAddress, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem IPAddress
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

@@ -4,15 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetKeyValuesReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: data — dynamic_size, size=4, align=4, indirection
-//	slot 4: version — scalar, size=8, align=8
-//	slot 5: more — scalar, size=1, align=1
-//	slot 6: cached — scalar, size=1, align=1
-//	slot 7: arena — scalar, size=0, align=1
 const (
 	GetKeyValuesReplySlotPenalty = 0
 	GetKeyValuesReplySlotError   = 1
@@ -32,16 +23,44 @@ var GetKeyValuesReplyVTableClosure = []wire.VTable{
 	{6, 6, 4},
 	{18, 31, 4, 28, 20, 24, 12, 29, 30},
 }
+var GetKeyValuesReplyTemplate = wire.NewMessageTemplate(
+	GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, GetKeyValuesReplyVTableClosure,
+)
 
 type GetKeyValuesReply struct {
-	Penalty  float64 // slot 0, ReadFloat64
-	HasError bool    // slot 1, Optional, presence flag
-	Error    []byte  // slot 2, Optional, ReadBytes
-	Data     []byte  // slot 3, ReadBytes
-	Version  int64   // slot 4, ReadInt64
-	More     bool    // slot 5, ReadBool
-	Cached   bool    // slot 6, ReadBool
-	Arena    []byte  // slot 7, ReadBytes
+	Penalty  float64 // slot 0
+	HasError bool    // slot 1, optional tag
+	Error    []byte  // slot 2, optional value
+	Data     []byte  // slot 3
+	Version  int64   // slot 4
+	More     bool    // slot 5
+	Cached   bool    // slot 6
+	Arena    []byte  // slot 7
+}
+
+func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetKeyValuesReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotData) {
+		m.Data = r.ReadBytes(GetKeyValuesReplySlotData)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotVersion) {
+		m.Version = r.ReadInt64(GetKeyValuesReplySlotVersion)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotMore) {
+		m.More = r.ReadBool(GetKeyValuesReplySlotMore)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotCached) {
+		m.Cached = r.ReadBool(GetKeyValuesReplySlotCached)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotArena) {
+		m.Arena = r.ReadBytes(GetKeyValuesReplySlotArena)
+	}
 }
 
 func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
@@ -74,40 +93,20 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyValuesReplySlotError + 1)
-		m.HasError = true
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotData) {
-		m.Data = r.ReadBytes(GetKeyValuesReplySlotData)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotVersion) {
-		m.Version = r.ReadInt64(GetKeyValuesReplySlotVersion)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotMore) {
-		m.More = r.ReadBool(GetKeyValuesReplySlotMore)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotCached) {
-		m.Cached = r.ReadBool(GetKeyValuesReplySlotCached)
-	}
-	if r.FieldPresent(GetKeyValuesReplySlotArena) {
-		m.Arena = r.ReadBytes(GetKeyValuesReplySlotArena)
-	}
-}
-
 func (m *GetKeyValuesReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyValuesReplyVTable
 	obj.WriteFloat64(int(vt[GetKeyValuesReplySlotPenalty+2]), m.Penalty)
-	if len(m.Data) > 0 {
+	if m.Data != nil {
 		obj.WriteBytes(int(vt[GetKeyValuesReplySlotData+2]), m.Data)
 	}
 	obj.WriteInt64(int(vt[GetKeyValuesReplySlotVersion+2]), m.Version)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotMore+2]), m.More)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotCached+2]), m.Cached)
+}
+
+func (m *GetKeyValuesReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyValuesReplyTemplate, m.MarshalInto)
 }
 
 func WriteGetKeyValuesReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, data []byte, version int64, more bool, cached bool) {
@@ -120,19 +119,21 @@ func MarshalGetKeyValuesReply(penalty float64, data []byte, version int64, more 
 	return wire.MarshalStructBlob(GetKeyValuesReplyVTable, m.MarshalInto)
 }
 
-func (m *GetKeyValuesReply) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetKeyValuesReplyTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteFloat64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotPenalty+2]), m.Penalty)
-		if len(m.Data) > 0 {
-			obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotData+2]), m.Data)
+// ParseGetKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetKeyValuesReply.
+func ParseGetKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyValuesReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		obj.WriteInt64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotVersion+2]), m.Version)
-		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotMore+2]), m.More)
-		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotCached+2]), m.Cached)
-	})
+		var elem GetKeyValuesReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetKeyValuesReplyTemplate = wire.NewMessageTemplate(
-	GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, GetKeyValuesReplyVTableClosure,
-)

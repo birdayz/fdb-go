@@ -4,12 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetValueReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: value — union_like, size=4, align=4, indirection
-//	slot 5: cached — scalar, size=1, align=1
 const (
 	GetValueReplySlotPenalty = 0
 	GetValueReplySlotError   = 1
@@ -26,14 +20,34 @@ var GetValueReplyVTableClosure = []wire.VTable{
 	{6, 6, 4},
 	{16, 23, 4, 20, 12, 21, 16, 22},
 }
+var GetValueReplyTemplate = wire.NewMessageTemplate(
+	GetValueReplyFileID, GetValueReplyVTable, 8, GetValueReplyVTableClosure,
+)
 
 type GetValueReply struct {
-	Penalty  float64 // slot 0, ReadFloat64
-	HasError bool    // slot 1, Optional, presence flag
-	Error    []byte  // slot 2, Optional, ReadBytes
-	HasValue bool    // slot 3, Optional, presence flag
-	Value    []byte  // slot 4, Optional, ReadBytes
-	Cached   bool    // slot 5, ReadBool
+	Penalty  float64 // slot 0
+	HasError bool    // slot 1, optional tag
+	Error    []byte  // slot 2, optional value
+	HasValue bool    // slot 3, optional tag
+	Value    []byte  // slot 4, optional value
+	Cached   bool    // slot 5
+}
+
+func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetValueReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
+	}
+	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
+		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
+		m.HasValue = true
+	}
+	if r.FieldPresent(GetValueReplySlotCached) {
+		m.Cached = r.ReadBool(GetValueReplySlotCached)
+	}
 }
 
 func (m *GetValueReply) UnmarshalFDB(data []byte) error {
@@ -58,27 +72,15 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetValueReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
-	}
-	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
-		m.HasError = true
-	}
-	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
-		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
-		m.HasValue = true
-	}
-	if r.FieldPresent(GetValueReplySlotCached) {
-		m.Cached = r.ReadBool(GetValueReplySlotCached)
-	}
-}
-
 func (m *GetValueReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetValueReplyVTable
 	obj.WriteFloat64(int(vt[GetValueReplySlotPenalty+2]), m.Penalty)
 	obj.WriteBool(int(vt[GetValueReplySlotCached+2]), m.Cached)
+}
+
+func (m *GetValueReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetValueReplyTemplate, m.MarshalInto)
 }
 
 func WriteGetValueReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, cached bool) {
@@ -91,14 +93,21 @@ func MarshalGetValueReply(penalty float64, cached bool) []byte {
 	return wire.MarshalStructBlob(GetValueReplyVTable, m.MarshalInto)
 }
 
-func (m *GetValueReply) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetValueReplyTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteFloat64(int(GetValueReplyVTable[GetValueReplySlotPenalty+2]), m.Penalty)
-		obj.WriteBool(int(GetValueReplyVTable[GetValueReplySlotCached+2]), m.Cached)
-	})
+// ParseGetValueReplyVectorFromReader reads a FlatBuffers vector of GetValueReply.
+func ParseGetValueReplyVectorFromReader(r *wire.Reader, slot int) []GetValueReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetValueReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetValueReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetValueReplyTemplate = wire.NewMessageTemplate(
-	GetValueReplyFileID, GetValueReplyVTable, 8, GetValueReplyVTableClosure,
-)

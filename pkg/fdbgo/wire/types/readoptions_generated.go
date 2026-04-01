@@ -4,31 +4,44 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// ReadOptions fields:
-//
-//	slot 0: type — scalar, size=4, align=4
-//	slot 1: cacheResult — scalar, size=1, align=1
-//	slot 2: debugID — union_like, size=4, align=4, indirection
-//	slot 4: consistencyCheckStartVersion — union_like, size=4, align=4, indirection
-//	slot 6: lockAware — scalar, size=1, align=1
 const (
-	ReadOptionsSlotType                         = 0
-	ReadOptionsSlotCacheResult                  = 1
-	ReadOptionsSlotDebugID                      = 2
-	ReadOptionsSlotConsistencyCheckStartVersion = 4
-	ReadOptionsSlotLockAware                    = 6
+	ReadOptionsSlotType        = 0
+	ReadOptionsSlotCacheResult = 1
+	ReadOptionsSlotLockAware   = 2
+	ReadOptionsSlotField_4     = 4
+	ReadOptionsSlotField_6     = 6
 )
 
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
 
 type ReadOptions struct {
-	Type                            uint32 // slot 0, ReadUint32
-	CacheResult                     bool   // slot 1, ReadBool
-	HasDebugID                      bool   // slot 2, Optional, presence flag
-	DebugID                         []byte // slot 3, Optional, ReadBytes
-	HasConsistencyCheckStartVersion bool   // slot 4, Optional, presence flag
-	ConsistencyCheckStartVersion    []byte // slot 5, Optional, ReadBytes
-	LockAware                       bool   // slot 6, ReadBool
+	Type         int32  // slot 0
+	CacheResult  bool   // slot 1
+	HasLockAware bool   // slot 2, optional tag
+	LockAware    []byte // slot 3, optional value
+	HasField_4   bool   // slot 4, optional tag
+	Field_4      []byte // slot 5, optional value
+	Field_6      bool   // slot 6
+}
+
+func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ReadOptionsSlotType) {
+		m.Type = r.ReadInt32(ReadOptionsSlotType)
+	}
+	if r.FieldPresent(ReadOptionsSlotCacheResult) {
+		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
+	}
+	if r.FieldPresent(ReadOptionsSlotLockAware) && r.ReadUint8(ReadOptionsSlotLockAware) > 0 {
+		m.LockAware = r.ReadBytes(ReadOptionsSlotLockAware + 1)
+		m.HasLockAware = true
+	}
+	if r.FieldPresent(ReadOptionsSlotField_4) && r.ReadUint8(ReadOptionsSlotField_4) > 0 {
+		m.Field_4 = r.ReadBytes(ReadOptionsSlotField_4 + 1)
+		m.HasField_4 = true
+	}
+	if r.FieldPresent(ReadOptionsSlotField_6) {
+		m.Field_6 = r.ReadBool(ReadOptionsSlotField_6)
+	}
 }
 
 func (m *ReadOptions) UnmarshalFDB(data []byte) error {
@@ -37,58 +50,57 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(ReadOptionsSlotType) {
-		m.Type = r.ReadUint32(ReadOptionsSlotType)
+		m.Type = r.ReadInt32(ReadOptionsSlotType)
 	}
 	if r.FieldPresent(ReadOptionsSlotCacheResult) {
 		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
 	}
-	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(ReadOptionsSlotDebugID + 1)
-		m.HasDebugID = true
+	if r.FieldPresent(ReadOptionsSlotLockAware) && r.ReadUint8(ReadOptionsSlotLockAware) > 0 {
+		m.LockAware = r.ReadBytes(ReadOptionsSlotLockAware + 1)
+		m.HasLockAware = true
 	}
-	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
-		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
-		m.HasConsistencyCheckStartVersion = true
+	if r.FieldPresent(ReadOptionsSlotField_4) && r.ReadUint8(ReadOptionsSlotField_4) > 0 {
+		m.Field_4 = r.ReadBytes(ReadOptionsSlotField_4 + 1)
+		m.HasField_4 = true
 	}
-	if r.FieldPresent(ReadOptionsSlotLockAware) {
-		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
+	if r.FieldPresent(ReadOptionsSlotField_6) {
+		m.Field_6 = r.ReadBool(ReadOptionsSlotField_6)
 	}
 	return nil
 }
 
-func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ReadOptionsSlotType) {
-		m.Type = r.ReadUint32(ReadOptionsSlotType)
-	}
-	if r.FieldPresent(ReadOptionsSlotCacheResult) {
-		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
-	}
-	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
-		m.DebugID = r.ReadBytes(ReadOptionsSlotDebugID + 1)
-		m.HasDebugID = true
-	}
-	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
-		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
-		m.HasConsistencyCheckStartVersion = true
-	}
-	if r.FieldPresent(ReadOptionsSlotLockAware) {
-		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
-	}
-}
-
 func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReadOptionsVTable
-	obj.WriteUint32(int(vt[ReadOptionsSlotType+2]), m.Type)
+	obj.WriteInt32(int(vt[ReadOptionsSlotType+2]), m.Type)
 	obj.WriteBool(int(vt[ReadOptionsSlotCacheResult+2]), m.CacheResult)
-	obj.WriteBool(int(vt[ReadOptionsSlotLockAware+2]), m.LockAware)
+	obj.WriteBool(int(vt[ReadOptionsSlotField_6+2]), m.Field_6)
 }
 
-func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, type_ uint32, cacheResult bool, lockAware bool) {
-	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
+func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, type_ int32, cacheResult bool, field_6 bool) {
+	m := ReadOptions{Type: type_, CacheResult: cacheResult, Field_6: field_6}
 	obj.WriteStruct(parentOffset, ReadOptionsVTable, 4, m.MarshalInto)
 }
 
-func MarshalReadOptions(type_ uint32, cacheResult bool, lockAware bool) []byte {
-	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
+func MarshalReadOptions(type_ int32, cacheResult bool, field_6 bool) []byte {
+	m := ReadOptions{Type: type_, CacheResult: cacheResult, Field_6: field_6}
 	return wire.MarshalStructBlob(ReadOptionsVTable, m.MarshalInto)
+}
+
+// ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
+func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ReadOptions, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ReadOptions
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

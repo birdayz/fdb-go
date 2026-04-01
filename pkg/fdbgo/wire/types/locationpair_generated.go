@@ -4,10 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// LocationPair fields:
-//
-//	slot 0: keyRange — serialize_member, size=4, align=4, indirection
-//	slot 1: servers — vector_like, size=4, align=4, indirection
 const (
 	LocationPairSlotKeyRange = 0
 	LocationPairSlotServers  = 1
@@ -17,7 +13,16 @@ var LocationPairVTable = wire.VTable{8, 12, 4, 8}
 
 type LocationPair struct {
 	KeyRange KeyRangeRef // slot 0, nested
-	Servers  []byte      // slot 1, ReadBytes
+	Servers  []byte      // slot 1
+}
+
+func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
+	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
+		m.KeyRange.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(LocationPairSlotServers) {
+		m.Servers = r.ReadBytes(LocationPairSlotServers)
+	}
 }
 
 func (m *LocationPair) UnmarshalFDB(data []byte) error {
@@ -25,8 +30,8 @@ func (m *LocationPair) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nestedR, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
-		m.KeyRange.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
+		m.KeyRange.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(LocationPairSlotServers) {
 		m.Servers = r.ReadBytes(LocationPairSlotServers)
@@ -34,18 +39,10 @@ func (m *LocationPair) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
-	if nestedR, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
-		m.KeyRange.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(LocationPairSlotServers) {
-		m.Servers = r.ReadBytes(LocationPairSlotServers)
-	}
-}
-
 func (m *LocationPair) MarshalInto(obj *wire.ObjectWriter) {
 	vt := LocationPairVTable
-	if len(m.Servers) > 0 {
+	obj.WriteStruct(int(vt[LocationPairSlotKeyRange+2]), KeyRangeRefVTable, 8, m.KeyRange.MarshalInto)
+	if m.Servers != nil {
 		obj.WriteRawOOL(int(vt[LocationPairSlotServers+2]), m.Servers)
 	}
 }
@@ -60,7 +57,7 @@ func MarshalLocationPair(servers []byte) []byte {
 	return wire.MarshalStructBlob(LocationPairVTable, m.MarshalInto)
 }
 
-// ParseLocationPairVectorFromReader reads a vector of LocationPair from a FlatBuffers vector field.
+// ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.
 func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) []LocationPair {
 	count, err := r.ReadVectorCount(slot)
 	if err != nil || count == 0 {

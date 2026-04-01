@@ -4,11 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// KeySelectorRef fields:
-//
-//	slot 0: key — dynamic_size, size=4, align=4, indirection
-//	slot 1: orEqual — scalar, size=1, align=1
-//	slot 2: offset — scalar, size=4, align=4
 const (
 	KeySelectorRefSlotKey     = 0
 	KeySelectorRefSlotOrEqual = 1
@@ -18,9 +13,21 @@ const (
 var KeySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
 
 type KeySelectorRef struct {
-	Key     []byte // slot 0, ReadBytes
-	OrEqual bool   // slot 1, ReadBool
-	Offset  int32  // slot 2, ReadInt32
+	Key     []byte // slot 0
+	OrEqual bool   // slot 1
+	Offset  int32  // slot 2
+}
+
+func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(KeySelectorRefSlotKey) {
+		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOrEqual) {
+		m.OrEqual = r.ReadBool(KeySelectorRefSlotOrEqual)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOffset) {
+		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
+	}
 }
 
 func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
@@ -40,21 +47,9 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(KeySelectorRefSlotKey) {
-		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
-	}
-	if r.FieldPresent(KeySelectorRefSlotOrEqual) {
-		m.OrEqual = r.ReadBool(KeySelectorRefSlotOrEqual)
-	}
-	if r.FieldPresent(KeySelectorRefSlotOffset) {
-		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
-	}
-}
-
 func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeySelectorRefVTable
-	if len(m.Key) > 0 {
+	if m.Key != nil {
 		obj.WriteBytes(int(vt[KeySelectorRefSlotKey+2]), m.Key)
 	}
 	obj.WriteBool(int(vt[KeySelectorRefSlotOrEqual+2]), m.OrEqual)
@@ -69,4 +64,23 @@ func WriteKeySelectorRef(obj *wire.ObjectWriter, parentOffset int, key []byte, o
 func MarshalKeySelectorRef(key []byte, orEqual bool, offset int32) []byte {
 	m := KeySelectorRef{Key: key, OrEqual: orEqual, Offset: offset}
 	return wire.MarshalStructBlob(KeySelectorRefVTable, m.MarshalInto)
+}
+
+// ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.
+func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) []KeySelectorRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]KeySelectorRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem KeySelectorRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }

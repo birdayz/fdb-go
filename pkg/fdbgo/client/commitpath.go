@@ -70,10 +70,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 
 	req := types.CommitTransactionRequest{
 		Transaction: types.CommitTransactionRef{
-			Field_0: readCRData,     // read_conflict_ranges
-			Field_1: writeCRData,    // write_conflict_ranges
-			Field_2: mutData,        // mutations
-			Field_3: tx.readVersion, // read_snapshot
+			ReadConflictRanges:  readCRData,
+			WriteConflictRanges: writeCRData,
+			Mutations:           mutData,
+			ReadSnapshot:        tx.readVersion,
 		},
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo: types.TenantInfo{TenantId: NoTenantID},

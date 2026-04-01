@@ -4,16 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetValueRequest fields:
-//
-//	slot 0: key — dynamic_size, size=4, align=4, indirection
-//	slot 1: version — scalar, size=8, align=8
-//	slot 2: tags — union_like, size=4, align=4, indirection
-//	slot 4: reply — serialize_member, size=4, align=4, indirection
-//	slot 5: spanContext — serialize_member, size=4, align=4, indirection
-//	slot 6: tenantInfo — serialize_member, size=4, align=4, indirection
-//	slot 7: options — union_like, size=4, align=4, indirection
-//	slot 9: ssLatestCommitVersions — dynamic_size, size=4, align=4, indirection
 const (
 	GetValueRequestSlotKey                    = 0
 	GetValueRequestSlotVersion                = 1
@@ -37,18 +27,50 @@ var GetValueRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
+var GetValueRequestTemplate = wire.NewMessageTemplate(
+	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
+)
 
 type GetValueRequest struct {
-	Key                    []byte       // slot 0, ReadBytes
-	Version                int64        // slot 1, ReadInt64
-	HasTags                bool         // slot 2, Optional, presence flag
-	Tags                   []byte       // slot 3, Optional, ReadBytes
+	Key                    []byte       // slot 0
+	Version                int64        // slot 1
+	HasTags                bool         // slot 2, optional tag
+	Tags                   []byte       // slot 3, optional value
 	Reply                  ReplyPromise // slot 4, nested
 	SpanContext            SpanContext  // slot 5, nested
 	TenantInfo             TenantInfo   // slot 6, nested
-	HasOptions             bool         // slot 7, Optional, presence flag
-	Options                []byte       // slot 8, Optional, ReadBytes
-	SsLatestCommitVersions []byte       // slot 9, ReadBytes
+	HasOptions             bool         // slot 7, optional tag
+	Options                []byte       // slot 8, optional value
+	SsLatestCommitVersions []byte       // slot 9
+}
+
+func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetValueRequestSlotKey) {
+		m.Key = r.ReadBytes(GetValueRequestSlotKey)
+	}
+	if r.FieldPresent(GetValueRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
+	}
+	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
+	}
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
+	}
+	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
+	}
 }
 
 func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
@@ -66,14 +88,14 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nr)
 	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nestedR)
+	if nr, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
 		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
@@ -85,44 +107,23 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetValueRequestSlotKey) {
-		m.Key = r.ReadBytes(GetValueRequestSlotKey)
-	}
-	if r.FieldPresent(GetValueRequestSlotVersion) {
-		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
-	}
-	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
-		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
-		m.HasTags = true
-	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nestedR)
-	}
-	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nestedR)
-	}
-	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
-		m.HasOptions = true
-	}
-	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
-		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
-	}
-}
-
 func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetValueRequestVTable
-	if len(m.Key) > 0 {
+	if m.Key != nil {
 		obj.WriteBytes(int(vt[GetValueRequestSlotKey+2]), m.Key)
 	}
 	obj.WriteInt64(int(vt[GetValueRequestSlotVersion+2]), m.Version)
-	if len(m.SsLatestCommitVersions) > 0 {
+	obj.WriteStruct(int(vt[GetValueRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+	obj.WriteStruct(int(vt[GetValueRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+	obj.WriteStruct(int(vt[GetValueRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+	if m.SsLatestCommitVersions != nil {
 		obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
 	}
+}
+
+func (m *GetValueRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetValueRequestTemplate, m.MarshalInto)
 }
 
 func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, key []byte, version int64, ssLatestCommitVersions []byte) {
@@ -135,22 +136,21 @@ func MarshalGetValueRequest(key []byte, version int64, ssLatestCommitVersions []
 	return wire.MarshalStructBlob(GetValueRequestVTable, m.MarshalInto)
 }
 
-func (m *GetValueRequest) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetValueRequestTemplate, func(obj *wire.ObjectWriter) {
-		if len(m.Key) > 0 {
-			obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotKey+2]), m.Key)
+// ParseGetValueRequestVectorFromReader reads a FlatBuffers vector of GetValueRequest.
+func ParseGetValueRequestVectorFromReader(r *wire.Reader, slot int) []GetValueRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetValueRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
 		}
-		obj.WriteInt64(int(GetValueRequestVTable[GetValueRequestSlotVersion+2]), m.Version)
-		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
-		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
-		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
-		if len(m.SsLatestCommitVersions) > 0 {
-			obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
-		}
-	})
+		var elem GetValueRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetValueRequestTemplate = wire.NewMessageTemplate(
-	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
-)

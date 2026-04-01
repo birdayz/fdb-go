@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-func TestParseKeyValueRefVector(t *testing.T) {
+func TestParseKeyValueRefStringVector(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil", func(t *testing.T) {
 		t.Parallel()
-		if got := ParseKeyValueRefVector(nil); got != nil {
+		if got := ParseKeyValueRefStringVector(nil); got != nil {
 			t.Errorf("expected nil, got %v", got)
 		}
 	})
@@ -18,7 +18,7 @@ func TestParseKeyValueRefVector(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
 		data := make([]byte, 4) // count=0
-		if got := ParseKeyValueRefVector(data); got != nil {
+		if got := ParseKeyValueRefStringVector(data); got != nil {
 			t.Errorf("expected nil, got %v", got)
 		}
 	})
@@ -26,7 +26,7 @@ func TestParseKeyValueRefVector(t *testing.T) {
 	t.Run("single", func(t *testing.T) {
 		t.Parallel()
 		data := packKVVector([]KeyValueRef{{Key: []byte("k"), Value: []byte("v")}})
-		got := ParseKeyValueRefVector(data)
+		got := ParseKeyValueRefStringVector(data)
 		if len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}
@@ -43,7 +43,7 @@ func TestParseKeyValueRefVector(t *testing.T) {
 			{Key: []byte("gamma"), Value: []byte("333")},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueRefVector(data)
+		got := ParseKeyValueRefStringVector(data)
 		if len(got) != 3 {
 			t.Fatalf("expected 3, got %d", len(got))
 		}
@@ -59,7 +59,7 @@ func TestParseKeyValueRefVector(t *testing.T) {
 		t.Parallel()
 		data := packKVVector([]KeyValueRef{{Key: []byte("hello"), Value: []byte("world")}})
 		// Truncate inside the key data
-		got := ParseKeyValueRefVector(data[:8])
+		got := ParseKeyValueRefStringVector(data[:8])
 		if len(got) != 0 {
 			t.Errorf("expected 0 on truncated data, got %d", len(got))
 		}
@@ -71,7 +71,7 @@ func TestParseKeyValueRefVector(t *testing.T) {
 			{Key: []byte("k"), Value: []byte{}},
 		}
 		data := packKVVector(input)
-		got := ParseKeyValueRefVector(data)
+		got := ParseKeyValueRefStringVector(data)
 		if len(got) != 1 {
 			t.Fatalf("expected 1, got %d", len(got))
 		}

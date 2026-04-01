@@ -4,9 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// ReplyPromise fields:
-//
-//	slot 0: token — scalar, size=16, align=8
 const (
 	ReplyPromiseSlotToken = 0
 )
@@ -19,9 +16,18 @@ var ReplyPromiseVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
 }
+var ReplyPromiseTemplate = wire.NewMessageTemplate(
+	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
+)
 
 type ReplyPromise struct {
-	Token [16]byte // slot 0, ReadUID
+	Token [16]byte // slot 0
+}
+
+func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ReplyPromiseSlotToken) {
+		m.Token = r.ReadUID(ReplyPromiseSlotToken)
+	}
 }
 
 func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
@@ -35,15 +41,14 @@ func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ReplyPromiseSlotToken) {
-		m.Token = r.ReadUID(ReplyPromiseSlotToken)
-	}
-}
-
 func (m *ReplyPromise) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReplyPromiseVTable
 	obj.WriteUID(int(vt[ReplyPromiseSlotToken+2]), m.Token)
+}
+
+func (m *ReplyPromise) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(ReplyPromiseTemplate, m.MarshalInto)
 }
 
 func WriteReplyPromise(obj *wire.ObjectWriter, parentOffset int, token [16]byte) {
@@ -51,6 +56,26 @@ func WriteReplyPromise(obj *wire.ObjectWriter, parentOffset int, token [16]byte)
 	obj.WriteStruct(parentOffset, ReplyPromiseVTable, 8, m.MarshalInto)
 }
 
-var ReplyPromiseTemplate = wire.NewMessageTemplate(
-	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
-)
+func MarshalReplyPromise(token [16]byte) []byte {
+	m := ReplyPromise{Token: token}
+	return wire.MarshalStructBlob(ReplyPromiseVTable, m.MarshalInto)
+}
+
+// ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise.
+func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) []ReplyPromise {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ReplyPromise, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ReplyPromise
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -4,12 +4,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// GetKeyReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: sel — serialize_member, size=4, align=4, indirection
-//	slot 4: cached — scalar, size=1, align=1
 const (
 	GetKeyReplySlotPenalty = 0
 	GetKeyReplySlotError   = 1
@@ -27,13 +21,29 @@ var GetKeyReplyVTableClosure = []wire.VTable{
 	{10, 13, 4, 12, 8},
 	{14, 22, 4, 20, 12, 16, 21},
 }
+var GetKeyReplyTemplate = wire.NewMessageTemplate(
+	GetKeyReplyFileID, GetKeyReplyVTable, 8, GetKeyReplyVTableClosure,
+)
 
 type GetKeyReply struct {
-	Penalty  float64 // slot 0, ReadFloat64
-	HasError bool    // slot 1, Optional, presence flag
-	Error    []byte  // slot 2, Optional, ReadBytes
-	// Sel: nested struct at slot 3 — use ReadNestedReader(GetKeyReplySlotSel)
-	Cached bool // slot 4, ReadBool
+	Penalty  float64 // slot 0
+	HasError bool    // slot 1, optional tag
+	Error    []byte  // slot 2, optional value
+	// Sel: unregistered nested struct at slot 3
+	Cached bool // slot 4
+}
+
+func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
+	}
+	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetKeyReplySlotCached) {
+		m.Cached = r.ReadBool(GetKeyReplySlotCached)
+	}
 }
 
 func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
@@ -48,31 +58,21 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
 		m.HasError = true
 	}
-	// Sel (slot 3): unknown nested struct
 	if r.FieldPresent(GetKeyReplySlotCached) {
 		m.Cached = r.ReadBool(GetKeyReplySlotCached)
 	}
 	return nil
 }
 
-func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetKeyReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
-	}
-	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
-		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
-		m.HasError = true
-	}
-	// Sel (slot 3): unknown nested struct
-	if r.FieldPresent(GetKeyReplySlotCached) {
-		m.Cached = r.ReadBool(GetKeyReplySlotCached)
-	}
-}
-
 func (m *GetKeyReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyReplyVTable
 	obj.WriteFloat64(int(vt[GetKeyReplySlotPenalty+2]), m.Penalty)
 	obj.WriteBool(int(vt[GetKeyReplySlotCached+2]), m.Cached)
+}
+
+func (m *GetKeyReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyReplyTemplate, m.MarshalInto)
 }
 
 func WriteGetKeyReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, cached bool) {
@@ -85,14 +85,21 @@ func MarshalGetKeyReply(penalty float64, cached bool) []byte {
 	return wire.MarshalStructBlob(GetKeyReplyVTable, m.MarshalInto)
 }
 
-func (m *GetKeyReply) MarshalFDB() []byte {
-	w := wire.NewWriter(nil)
-	return w.WriteMessagePacked(GetKeyReplyTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteFloat64(int(GetKeyReplyVTable[GetKeyReplySlotPenalty+2]), m.Penalty)
-		obj.WriteBool(int(GetKeyReplyVTable[GetKeyReplySlotCached+2]), m.Cached)
-	})
+// ParseGetKeyReplyVectorFromReader reads a FlatBuffers vector of GetKeyReply.
+func ParseGetKeyReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
 }
-
-var GetKeyReplyTemplate = wire.NewMessageTemplate(
-	GetKeyReplyFileID, GetKeyReplyVTable, 8, GetKeyReplyVTableClosure,
-)
