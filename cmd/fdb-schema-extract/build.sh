@@ -22,6 +22,8 @@ docker run --rm \
     -e JOBS="$JOBS" \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$SCRIPT_DIR/main.cpp:/work/main.cpp:ro" \
+    -v "$SCRIPT_DIR/extract.h:/work/extract.h:ro" \
+    -v "$SCRIPT_DIR/gen_v5.cpp:/work/gen_v5.cpp:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/build" \
     -v "$SRC_CACHE:/fdb" \
@@ -35,8 +37,10 @@ docker run --rm \
             cp -r /fdb_src/* /fdb/
         fi
 
-        # Copy our source file.
+        # Copy our source files.
         cp /work/main.cpp /fdb/schema_extract_main.cpp
+        cp /work/extract.h /fdb/extract.h
+        cp /work/gen_v5.cpp /fdb/gen_v5.cpp
 
         # Patches: disable binding tester + fix any missing includes.
         sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
@@ -48,6 +52,19 @@ docker run --rm \
 add_executable(schema_extract schema_extract_main.cpp)
 target_link_libraries(schema_extract PRIVATE fdbclient fdbrpc flow)
 target_include_directories(schema_extract PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_BINARY_DIR}/fdbclient/include
+    ${CMAKE_BINARY_DIR}/fdbclient
+    ${CMAKE_BINARY_DIR}/fdbrpc/include
+    ${CMAKE_BINARY_DIR}/fdbrpc
+    ${CMAKE_BINARY_DIR}/flow/include
+    ${CMAKE_BINARY_DIR}/flow
+)
+
+add_executable(gen_v5 gen_v5.cpp)
+target_link_libraries(gen_v5 PRIVATE fdbclient fdbrpc flow)
+target_include_directories(gen_v5 PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}
     ${CMAKE_BINARY_DIR}/fdbclient/include
@@ -86,12 +103,16 @@ CMAKE_EOF
         ninja -C $BUILD -j$JOBS fdb_c 2>&1 | tail -3
         echo "=== fdbclient built ==="
 
-        echo "=== Building schema_extract ==="
-        ninja -C $BUILD -j$JOBS schema_extract 2>&1 | tail -30
-        echo "=== schema_extract built ==="
+        echo "=== Building schema_extract + gen_v5 ==="
+        ninja -C $BUILD -j$JOBS schema_extract gen_v5 2>&1 | tail -30
+        echo "=== built ==="
 
-        echo "=== Running schema_extract ==="
+        echo "=== Running schema_extract (v4) ==="
         $BUILD/bin/schema_extract /output
+
+        echo "=== Running gen_v5 ==="
+        mkdir -p /output/v5
+        $BUILD/bin/gen_v5 /output/v5
     '
 
 echo "Done: $OUTPUT_DIR"
