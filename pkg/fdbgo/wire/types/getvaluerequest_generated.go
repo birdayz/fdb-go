@@ -6,7 +6,7 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 // GetValueRequest fields:
 //
-//	slot 0: key — serialize_member, size=4, align=4, indirection
+//	slot 0: key — dynamic_size, size=4, align=4, indirection
 //	slot 1: version — scalar, size=8, align=8
 //	slot 2: tags — union_like, size=4, align=4, indirection
 //	slot 4: reply — serialize_member, size=4, align=4, indirection
@@ -39,7 +39,7 @@ var GetValueRequestVTableClosure = []wire.VTable{
 }
 
 type GetValueRequest struct {
-	// Key: nested struct at slot 0 — use ReadNestedReader(GetValueRequestSlotKey)
+	Key                    []byte       // slot 0, ReadBytes
 	Version                int64        // slot 1, ReadInt64
 	HasTags                bool         // slot 2, Optional, presence flag
 	Tags                   []byte       // slot 3, Optional, ReadBytes
@@ -56,7 +56,9 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	// Key (slot 0): nested struct — use r.ReadNestedReader(GetValueRequestSlotKey)
+	if r.FieldPresent(GetValueRequestSlotKey) {
+		m.Key = r.ReadBytes(GetValueRequestSlotKey)
+	}
 	if r.FieldPresent(GetValueRequestSlotVersion) {
 		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
 	}
@@ -79,13 +81,31 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetValueRequestVTable
+	obj.WriteBytes(int(vt[GetValueRequestSlotKey+2]), m.Key)
 	obj.WriteInt64(int(vt[GetValueRequestSlotVersion+2]), m.Version)
 	obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
 }
 
-func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, version int64, ssLatestCommitVersions []byte) {
-	m := GetValueRequest{Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
+func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, key []byte, version int64, ssLatestCommitVersions []byte) {
+	m := GetValueRequest{Key: key, Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetValueRequestVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetValueRequest(key []byte, version int64, ssLatestCommitVersions []byte) []byte {
+	m := GetValueRequest{Key: key, Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
+	return wire.MarshalStructBlob(GetValueRequestVTable, m.MarshalInto)
+}
+
+func (m *GetValueRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetValueRequestTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotKey+2]), m.Key)
+		obj.WriteInt64(int(GetValueRequestVTable[GetValueRequestSlotVersion+2]), m.Version)
+		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+		obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	})
 }
 
 var GetValueRequestTemplate = wire.NewMessageTemplate(

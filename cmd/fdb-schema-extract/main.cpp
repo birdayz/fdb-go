@@ -47,11 +47,26 @@ struct FieldInfo {
     const char* cppTypeName; // C++ type name for nested structs (e.g. "TenantInfo")
 };
 
+// Detect Standalone<T> types.
+template <class T> struct is_standalone : std::false_type {};
+template <class T> struct is_standalone<Standalone<T>> : std::true_type {};
+
+// Detect if Standalone<T>'s inner type T has dynamic_size_traits.
+template <class T> constexpr bool standalone_is_dynamic() {
+    if constexpr (is_standalone<T>::value) {
+        using Inner = typename T::RefType; // Standalone<T> defines RefType = T
+        return detail::is_dynamic_size<Inner>;
+    }
+    return false;
+}
+
 template <class T>
 const char* classifyTrait() {
     using namespace detail;
     if constexpr (is_scalar<T>) return "scalar";
     else if constexpr (is_dynamic_size<T>) return "dynamic_size";
+    // Standalone<T> where T has dynamic_size_traits → treat as dynamic_size.
+    else if constexpr (standalone_is_dynamic<T>()) return "dynamic_size";
     else if constexpr (is_vector_like<T>) return "vector_like";
     else if constexpr (is_union_like<T>) return "union_like";
     else if constexpr (is_struct_like<T>) return "struct_like";
@@ -759,7 +774,7 @@ int main(int argc, char** argv) {
     extractType<CommitID>(outDir, "CommitID");
 
     // --- Request types: GENERATED struct + template + constants, CUSTOM MarshalFDB ---
-    extractType<GetValueRequest, false, false>(outDir, "GetValueRequest");
+    extractType<GetValueRequest>(outDir, "GetValueRequest");
     extractType<GetKeyValuesRequest, false, false>(outDir, "GetKeyValuesRequest");
     extractType<GetKeyRequest, false, false>(outDir, "GetKeyRequest");
     extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");

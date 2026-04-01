@@ -285,12 +285,19 @@ type KeyValue struct {
 	Value []byte
 }
 
+// emptyVersionVector is the serialized form of an empty VersionVector.
+// C++ VersionVector::getEncodedSize() = sizeof(size_t) + sizeof(Version) = 16.
+var emptyVersionVector = make([]byte, 16)
+
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	return types.MarshalGetValueRequest(
-		key, version,
-		replyToken.First, replyToken.Second,
-		NoTenantID,
-	)
+	req := types.GetValueRequest{
+		Key:                    key,
+		Version:                version,
+		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
+		SsLatestCommitVersions: emptyVersionVector,
+	}
+	return req.MarshalFDB()
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.

@@ -8,9 +8,9 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 //
 //	slot 0: issues — serialize_member, size=4, align=4, indirection
 //	slot 1: supportedVersions — serialize_member, size=4, align=4, indirection
-//	slot 2: traceLogGroup — serialize_member, size=4, align=4, indirection
+//	slot 2: traceLogGroup — dynamic_size, size=4, align=4, indirection
 //	slot 3: knownClientInfoID — scalar, size=16, align=8
-//	slot 4: clusterKey — serialize_member, size=4, align=4, indirection
+//	slot 4: clusterKey — dynamic_size, size=4, align=4, indirection
 //	slot 5: coordinators — vector_like, size=4, align=4, indirection
 //	slot 6: reply — serialize_member, size=4, align=4, indirection
 //	slot 7: hostnames — vector_like, size=4, align=4, indirection
@@ -44,10 +44,10 @@ var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
 type OpenDatabaseCoordRequest struct {
 	// Issues: nested struct at slot 0 — use ReadNestedReader(OpenDatabaseCoordRequestSlotIssues)
 	// SupportedVersions: nested struct at slot 1 — use ReadNestedReader(OpenDatabaseCoordRequestSlotSupportedVersions)
-	// TraceLogGroup: nested struct at slot 2 — use ReadNestedReader(OpenDatabaseCoordRequestSlotTraceLogGroup)
+	TraceLogGroup     []byte   // slot 2, ReadBytes
 	KnownClientInfoID [16]byte // slot 3, ReadUID
-	// ClusterKey: nested struct at slot 4 — use ReadNestedReader(OpenDatabaseCoordRequestSlotClusterKey)
-	Coordinators []byte // slot 5, ReadBytes
+	ClusterKey        []byte   // slot 4, ReadBytes
+	Coordinators      []byte   // slot 5, ReadBytes
 	// Reply: nested struct at slot 6 — use ReadNestedReader(OpenDatabaseCoordRequestSlotReply)
 	Hostnames []byte // slot 7, ReadBytes
 	Internal  bool   // slot 8, ReadBool
@@ -60,11 +60,15 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 	}
 	// Issues (slot 0): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotIssues)
 	// SupportedVersions (slot 1): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotSupportedVersions)
-	// TraceLogGroup (slot 2): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotTraceLogGroup)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotTraceLogGroup) {
+		m.TraceLogGroup = r.ReadBytes(OpenDatabaseCoordRequestSlotTraceLogGroup)
+	}
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotKnownClientInfoID) {
 		m.KnownClientInfoID = r.ReadUID(OpenDatabaseCoordRequestSlotKnownClientInfoID)
 	}
-	// ClusterKey (slot 4): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotClusterKey)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotClusterKey) {
+		m.ClusterKey = r.ReadBytes(OpenDatabaseCoordRequestSlotClusterKey)
+	}
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
 		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
 	}
@@ -80,14 +84,16 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 
 func (m *OpenDatabaseCoordRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := OpenDatabaseCoordRequestVTable
+	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotTraceLogGroup+2]), m.TraceLogGroup)
 	obj.WriteUID(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]), m.KnownClientInfoID)
+	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), m.ClusterKey)
 	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]), m.Coordinators)
 	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotHostnames+2]), m.Hostnames)
 	obj.WriteBool(int(vt[OpenDatabaseCoordRequestSlotInternal+2]), m.Internal)
 }
 
-func WriteOpenDatabaseCoordRequest(obj *wire.ObjectWriter, parentOffset int, knownClientInfoID [16]byte, coordinators []byte, hostnames []byte, internal bool) {
-	m := OpenDatabaseCoordRequest{KnownClientInfoID: knownClientInfoID, Coordinators: coordinators, Hostnames: hostnames, Internal: internal}
+func WriteOpenDatabaseCoordRequest(obj *wire.ObjectWriter, parentOffset int, traceLogGroup []byte, knownClientInfoID [16]byte, clusterKey []byte, coordinators []byte, hostnames []byte, internal bool) {
+	m := OpenDatabaseCoordRequest{TraceLogGroup: traceLogGroup, KnownClientInfoID: knownClientInfoID, ClusterKey: clusterKey, Coordinators: coordinators, Hostnames: hostnames, Internal: internal}
 	obj.WriteStruct(parentOffset, OpenDatabaseCoordRequestVTable, 8, m.MarshalInto)
 }
 
