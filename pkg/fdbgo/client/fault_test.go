@@ -196,6 +196,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 		t.Fatalf("reconnect: %v", err)
 	}
 	db.locationCache = NewLocationCache(cluster)
+	db.grvBatcher.InvalidateCache() // Stale cache from pre-fault connections.
 
 	// Read the counter. It should be 15 (10 + 5, applied once by server).
 	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {

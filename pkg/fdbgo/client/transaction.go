@@ -244,6 +244,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return err
 	}
 	tx.state = txStateCommitted
+
+	// Feed committed version to GRV cache so subsequent reads see this write.
+	if tx.committedVersion > 0 {
+		tx.db.grvBatcher.UpdateCachedReadVersion(time.Now(), tx.committedVersion)
+	}
 	return nil
 }
 

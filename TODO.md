@@ -1906,6 +1906,10 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 - [ ] **AddReadConflictRange** — range version (not just key) against real DB
 - [ ] **AddWriteConflictRange** — range version against real DB
 
+### CRITICAL — Refactor Database into DatabaseContext (C++ alignment)
+
+Our Go `Database` is split across `Database`, `GRVBatcher`, `LocationCache`, and `Cluster` — each with independent state. C++ has a single `DatabaseContext` that owns ALL per-database state: GRV cache, batcher, location cache, proxy list, connection pool, throttle tracking, background actors. Our split architecture creates friction every time we port C++ behavior — cross-component state sharing requires manual wiring that would be trivial in a unified struct. Examples: GRV cache update after commit, cache invalidation on reconnect, topology monitoring feeding proxy list + location cache + GRV cache simultaneously. Refactor `Database` to be the single owner, matching C++ `DatabaseContext` structure.
+
 ### CRITICAL — Performance: close the 6.4x gap with CGo client
 
 **Baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
