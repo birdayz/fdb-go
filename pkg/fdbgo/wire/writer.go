@@ -3,7 +3,6 @@ package wire
 import (
 	"encoding/binary"
 	"fmt"
-	"sort"
 )
 
 // MessageTemplate pre-computes everything that is static per message type.
@@ -33,9 +32,8 @@ func NewMessageTemplate(fileID uint32, msgVTable VTable, maxFieldAlign int, clos
 
 	// Pack vtables exactly once.
 	set := newVTableSet()
-	set.ordered = true
 	for _, vt := range closure {
-		set.addOrdered(vt)
+		set.add(vt)
 	}
 	packed := set.pack()
 
@@ -98,14 +96,13 @@ type vtableSetEntry struct {
 type vTableSet struct {
 	entries []vtableSetEntry
 	seen    map[vtableKey]bool
-	ordered bool
 }
 
 func newVTableSet() *vTableSet {
 	return &vTableSet{seen: make(map[vtableKey]bool)}
 }
 
-func (s *vTableSet) addOrdered(vt VTable) {
+func (s *vTableSet) add(vt VTable) {
 	key := makeVTableKey(vt)
 	if s.seen[key] {
 		return
@@ -114,28 +111,9 @@ func (s *vTableSet) addOrdered(vt VTable) {
 	s.entries = append(s.entries, vtableSetEntry{vt: vt})
 }
 
-func (s *vTableSet) add(vt VTable) {
-	s.addOrdered(vt)
-}
-
 // pack serializes all vtables into a contiguous byte buffer.
-// Returns the packed bytes. Each vtable is written as raw uint16 entries.
+// Vtables are written in insertion order (matching C++ closure order).
 func (s *vTableSet) pack() []byte {
-	if !s.ordered {
-		sort.Slice(s.entries, func(i, j int) bool {
-			a, b := s.entries[i].vt, s.entries[j].vt
-			if len(a) != len(b) {
-				return len(a) < len(b)
-			}
-			for k := range a {
-				if a[k] != b[k] {
-					return a[k] < b[k]
-				}
-			}
-			return false
-		})
-	}
-
 	totalBytes := 0
 	for _, e := range s.entries {
 		totalBytes += len(e.vt) * 2

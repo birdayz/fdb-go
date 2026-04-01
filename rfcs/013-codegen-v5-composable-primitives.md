@@ -1,6 +1,6 @@
 # RFC 013: Code Generator v5 — Composable Primitives
 
-## Status: Proposed
+## Status: Implemented (2026-04-01)
 
 ## Problem
 
@@ -14,7 +14,7 @@ The root cause: the generator treats each type as a special case, emitting bespo
 
 ### Core Insight
 
-There are exactly **10 field primitives**. Every FDB wire type is a composition of these. The generator's job is to walk a type's field list and emit the correct primitive per field. No type-specific logic.
+Every FDB wire type is a composition of a small set of **field primitives** (7 FieldKind enum values in the generator, shown as 10 rows below for clarity). The generator's job is to walk a type's field list and emit the correct primitive per field. No type-specific logic.
 
 ### Primitive Table
 
@@ -109,8 +109,8 @@ The maxAlign is already known at extraction time (from C++ `fb_size<T>` and alig
 | Adding new strategy | Add another per-type method + field loop | Add column to primitive table, generator emits it |
 | Vector\<struct\> marshal | Pre-serialize each element → pack blobs → N+2 allocs | Inline: measure all → write all → 0 extra allocs |
 | Two-pass direct-write | Hand-written per type (prototype) | Generated from same field list as MarshalInto |
-| Per-type code volume | ~150 lines | ~100 lines (fewer methods, less redundancy) |
-| Total generated code | ~5000 lines | ~3500 lines (Vector<struct> inlined, no standalone marshal helpers) |
+| Per-type code volume | ~150 lines | ~175 lines (blobSize+writeBlob add per-type code, offset by dropping helpers) |
+| Total generated code | ~5000 lines (v4) | ~5600 lines (v5 — net growth from VectorOfStruct inlining; helpers dropped but blobSize/writeBlob added) |
 
 ### Generated Methods — Keep vs Drop
 
@@ -180,26 +180,30 @@ Each generated method is: header + iterate fields calling `emitFieldOp(fd, targe
 
 Each step is independently verifiable. Step 3 is the big switch — everything before it is additive.
 
-### Performance Target
+### Performance — Achieved (2026-04-01)
 
-After full migration:
+| Operation | v4 (before) | v5 (achieved) | Improvement |
+|---|---|---|---|
+| GetValueRequest marshal | 405ns / 2 allocs | 271ns / 2 allocs | 1.5x faster |
+| GetKeyValuesRequest marshal | 756ns / 8 allocs | 337ns / 2 allocs | 2.2x faster, 75% fewer allocs |
+| CommitTransactionRequest (5 muts) | 1,254ns / 8 allocs | 949ns / 2 allocs | 1.3x faster, 75% fewer allocs |
+| GetReadVersionRequest marshal | 299ns / 2 allocs | 210ns / 2 allocs | 1.4x faster |
+| ParseKeyValueRefStringVector (10 KVs) | 622ns / 21 allocs | 181ns / 1 alloc | 3.4x faster, 95% fewer allocs |
+| ParseKeyValueRefStringVector (100 KVs) | 5,679ns / 201 allocs | 1,443ns / 1 alloc | 3.9x faster, 99.5% fewer allocs |
+| GetValueReply unmarshal | 56ns / 1 alloc | 51ns / 1 alloc | (already optimal) |
 
-| Operation | Current | Target |
-|---|---|---|
-| GetKeyValuesRequest marshal | 660ns / 2 allocs | ~365ns / 1 alloc |
-| CommitTransactionRequest (100 muts) | ~12,000ns / 108 allocs | ~2,000ns / 1 alloc |
-| MutationRef blob (standalone) | 95ns / 1 alloc | N/A (inlined into commit) |
-| ParseKeyValueRefStringVector (100 KVs) | 5,679ns / 201 allocs | ~3,000ns / 1 alloc |
-| GetValueReply unmarshal | 56ns / 1 alloc | 56ns / 1 alloc (already optimal) |
+The 2 allocs on marshal are: output buffer + DirectWriter stack escape. Theoretical minimum is 1 (output buffer only).
 
 ### What Stays Hand-Written
 
-1. **`wire/writer_direct.go`** — `DirectWriter` struct + `WriteBytesOOL`, `WriteRawOOL`, `WriteObject`, `PatchRelOff`, `MeasureBytesOOL`, `MeasureRawOOL`, `MeasureObject`. These are the runtime primitives. ~100 lines. Stable.
+1. **`wire/writer_direct.go`** — `DirectWriter` struct + two-pass primitives (`WriteBytesOOL`, `WriteRawOOL`, `WriteObject`, `ReserveRawOOL`, `WriteBlobVTable`, `PatchRelOff`, `PatchBlobRelOff`, `MeasureBytesOOL`, `MeasureRawOOL`, `MeasureObject`). ~220 lines. Stable.
 
-2. **`wire/reader.go`** — `Reader` struct + all `ReadT` methods. Already stable.
+2. **`wire/writer.go`** — `MessageTemplate` (init-time vtable packing + O(1) offset lookup), `UIDFromParts`, `rightAlign`. ~140 lines. Stable.
 
-3. **`networkaddress_helpers.go`** — Endpoint reader chain (Go-side composition logic, no wire format knowledge). Will be eliminated when variant support + IPv6 is generated.
+3. **`wire/reader.go`** — `Reader` struct + all `ReadT` methods. Already stable.
 
-4. **Interface types** (CommitProxyInterface, GrvProxyInterface, StorageServerInterface) — `isDeserializing` post-processing (endpoint derivation). Needs `_custom.go` override.
+4. **`wire/types/erroror.go`** — `VoidReply` (PING response) and `ErrorOrError` (test helper). Root-union types using `WriteRootUnionFooter` (no FakeRoot). Will be generated when extractor supports `union_like_traits` at root level.
 
-5. **Client code** (`readpath.go`, `commitpath.go`, `grv.go`) — constructs generated structs, calls `MarshalFDB()`, parses replies. No wire format knowledge.
+5. **`client/endpoint.go`** — `ReadEndpointFromSlot` + IP/address formatting. Uses generated types directly, no wire format knowledge.
+
+6. **Client code** (`readpath.go`, `commitpath.go`, `grv.go`) — constructs generated structs, calls `MarshalFDB()`, parses replies. No wire format knowledge.
