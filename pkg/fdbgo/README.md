@@ -152,6 +152,29 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
 
 55 tests total across 4 packages. Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required).
 
+## Benchmarks
+
+```sh
+# Pure Go vs CGo (libfdb_c) — full Get path comparison
+bazelisk run //pkg/fdbgo/client:client_test -- \
+  -test.run='^$' \
+  -test.bench='BenchmarkGetValue' \
+  -test.benchtime=10s \
+  -test.benchmem \
+  -test.count=3
+```
+
+Both benchmarks read the same 100-byte key from FDB testcontainers. Measures the full path: GRV + locate + read + parse.
+
+**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-01):
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `BenchmarkGetValue_PureGo` | 1,350,000 | 5,490 | 78 |
+| `BenchmarkGetValue_CGo` | 210,000 | 383 | 13 |
+
+Pure Go is ~6.4x slower than CGo. The wire unmarshal itself is ~58ns (0.004% of total) — the gap is in the networking stack (TCP framing, connection management, GRV batching). The CGo client uses `libfdb_c`'s optimized C++ event loop with kernel-level async I/O.
+
 ## Fault injection
 
 The client supports a custom `DialFunc` for testing failure scenarios against real FDB. Same pattern as `http.Transport.DialContext` — no mocks, no artificial interfaces.

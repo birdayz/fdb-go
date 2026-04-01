@@ -24,6 +24,7 @@ go_library(
 go_test(
     name = "client_test",
     srcs = [
+        "bench_test.go",
         "client_test.go",
         "coordinator_test.go",
         "correctness_test.go",
