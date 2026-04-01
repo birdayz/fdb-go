@@ -46,6 +46,7 @@ REGISTER_GO_TYPE(SpanContext, "SpanContext");
 REGISTER_GO_TYPE(TenantInfo, "TenantInfo");
 REGISTER_GO_TYPE(KeySelectorRef, "KeySelectorRef");
 REGISTER_GO_TYPE(KeyRangeRef, "KeyRangeRef");
+REGISTER_GO_TYPE(MutationRef, "MutationRef");
 REGISTER_GO_TYPE(CommitTransactionRef, "CommitTransactionRef");
 REGISTER_GO_TYPE(ReadOptions, "ReadOptions");
 REGISTER_GO_TYPE(NetworkAddress, "NetworkAddress");
@@ -116,6 +117,10 @@ REGISTER_FIELD_NAMES(StorageServerInterface, "watchValue");
 
 // LocationPair — registered via template specialization (macro can't handle template commas).
 using LocationPair = std::pair<KeyRangeRef, std::vector<StorageServerInterface>>;
+template<> struct GoTypeName<LocationPair> {
+    static constexpr bool registered = true;
+    static const char* name() { return "LocationPair"; }
+};
 template<> struct FieldNames<LocationPair> {
     static const char* get(int index) {
         static const char* names[] = { "keyRange", "servers" };
@@ -127,7 +132,7 @@ template<> struct FieldNames<LocationPair> {
 // 3. Field Classification — compile-time from FDB traits
 // ============================================================
 
-enum class FieldKind { Scalar, DynamicSize, VectorLike, Optional, NestedStruct, Variant };
+enum class FieldKind { Scalar, DynamicSize, VectorLike, VectorOfStruct, Optional, NestedStruct, Variant };
 
 struct ScalarInfo {
     const char* goType;
@@ -199,6 +204,16 @@ std::vector<VariantAlt> getVariantAlts() {
     return {};
 }
 
+// Detect element type of VectorRef<T, S>.
+template <class T> struct VectorElementGoType {
+    static constexpr bool registered = false;
+    static const char* name() { return ""; }
+};
+template <class T, VecSerStrategy S> struct VectorElementGoType<VectorRef<T, S>> {
+    static constexpr bool registered = GoTypeName<T>::registered;
+    static const char* name() { return GoTypeName<T>::name(); }
+};
+
 // Classify a field type into FieldKind.
 template <class T>
 FieldKind classifyField() {
@@ -207,11 +222,19 @@ FieldKind classifyField() {
     else if constexpr (is_dynamic_size<T>) return FieldKind::DynamicSize;
     else if constexpr (is_standalone<T>::value) {
         using Inner = typename T::RefType;
-        if constexpr (is_vector_like<Inner>) return FieldKind::VectorLike;
+        if constexpr (is_vector_like<Inner>) {
+            if constexpr (VectorElementGoType<Inner>::registered)
+                return FieldKind::VectorOfStruct;
+            return FieldKind::VectorLike;
+        }
         else if constexpr (is_dynamic_size<Inner>) return FieldKind::DynamicSize;
         else return FieldKind::NestedStruct;
     }
-    else if constexpr (is_vector_like<T>) return FieldKind::VectorLike;
+    else if constexpr (is_vector_like<T>) {
+        if constexpr (VectorElementGoType<T>::registered)
+            return FieldKind::VectorOfStruct;
+        return FieldKind::VectorLike;
+    }
     else if constexpr (is_union_like<T>) {
         if constexpr (is_std_variant<T>::value) return FieldKind::Variant;
         else return FieldKind::Optional;
@@ -228,6 +251,7 @@ struct FieldDesc {
     FieldKind kind;
     ScalarInfo scalar;
     const char* nestedGoType;
+    const char* elementGoType;  // For VectorOfStruct: the element's Go type name
     std::vector<VariantAlt> variantAlts;
     int vtableSlot;
     uint32_t size;
@@ -273,6 +297,14 @@ private:
             break;
         case FieldKind::Variant:
             fd.variantAlts = getVariantAlts<T>();
+            break;
+        case FieldKind::VectorOfStruct:
+            if constexpr (is_standalone<T>::value) {
+                using Inner = typename T::RefType;
+                fd.elementGoType = VectorElementGoType<Inner>::name();
+            } else {
+                fd.elementGoType = VectorElementGoType<T>::name();
+            }
             break;
         default:
             break;

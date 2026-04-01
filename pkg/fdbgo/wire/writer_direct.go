@@ -62,6 +62,45 @@ func (dw *DirectWriter) WriteObject(vt VTable, maxAlign int) (int, []byte) {
 	return objPos, obj
 }
 
+// ReserveRawOOL reserves `size` bytes below cursor (aligned to 4) and returns
+// the start position + a slice into the buffer for direct writing.
+// Used for inline vector block construction (header + blobs written by caller).
+func (dw *DirectWriter) ReserveRawOOL(size int) (int, []byte) {
+	padded := (size + 3) &^ 3
+	start := dw.Cursor - padded
+	dw.Cursor = start
+	return start, dw.buf[start : start+size]
+}
+
+// BlobLayout computes the byte layout of a self-contained struct blob.
+// Returns (objPos, oolPos, totalSize) relative to blob start.
+func BlobLayout(vt VTable) (objPos, oolPos, blobHeaderSize int) {
+	vtBytes := len(vt) * 2
+	objPos = (vtBytes + 3) &^ 3
+	oolPos = (objPos + int(vt[1]) + 3) &^ 3
+	blobHeaderSize = vtBytes
+	return
+}
+
+// WriteBlobVTable writes a vtable + soffset at the given position in buf.
+// Returns the object slice (buf[objPos:objPos+objSize]) for field writes.
+func WriteBlobVTable(buf []byte, blobStart int, vt VTable) []byte {
+	vtBytes := len(vt) * 2
+	for i, v := range vt {
+		binary.LittleEndian.PutUint16(buf[blobStart+i*2:], v)
+	}
+	objPos := blobStart + (vtBytes+3)&^3
+	objSize := int(vt[1])
+	// soffset: distance from object to vtable (always points back to blob start)
+	binary.LittleEndian.PutUint32(buf[objPos:], uint32(int32(objPos-blobStart)))
+	return buf[objPos : objPos+objSize]
+}
+
+// PatchBlobRelOff writes a RelativeOffset within a blob's object.
+func PatchBlobRelOff(obj []byte, fieldOff int, objAbsPos int, targetAbsPos int) {
+	binary.LittleEndian.PutUint32(obj[fieldOff:], uint32(targetAbsPos-(objAbsPos+fieldOff)))
+}
+
 // PatchRelOff writes a RelativeOffset at obj[fieldOff] pointing to targetPos.
 func PatchRelOff(obj []byte, fieldOff int, objPos int, targetPos int) {
 	binary.LittleEndian.PutUint32(obj[fieldOff:], uint32(targetPos-(objPos+fieldOff)))
