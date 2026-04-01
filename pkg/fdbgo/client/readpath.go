@@ -46,17 +46,14 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			continue
 		}
 		replyToken, replyCh := conn.PrepareReply()
-		req := types.GetKeyRequest{
-			SelectorKey:     selectorKey,
-			SelectorOrEqual: orEqual,
-			SelectorOffset:  offset,
-			Version:         tx.readVersion,
-			ReplyFirst:      replyToken.First,
-			ReplySecond:     replyToken.Second,
-			TenantId:        NoTenantID,
-		}
+		reqData := types.MarshalGetKeyRequest(
+			selectorKey, offset, orEqual,
+			tx.readVersion,
+			replyToken.First, replyToken.Second,
+			NoTenantID,
+		)
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
-		if err := conn.SendFrame(gkToken, req.MarshalFDB()); err != nil {
+		if err := conn.SendFrame(gkToken, reqData); err != nil {
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -254,21 +251,13 @@ func isWrongShardServer(err error) bool {
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	req := types.GetKeyValuesRequest{
-		BeginKey:     begin,
-		BeginOffset:  1,    // firstGreaterOrEqual
-		BeginOrEqual: true, // orEqual=true for firstGreaterOrEqual
-		EndKey:       end,
-		EndOffset:    1,
-		EndOrEqual:   true,
-		Version:      version,
-		Limit:        limit,
-		LimitBytes:   UnlimitedBytes,
-		ReplyFirst:   replyToken.First,
-		ReplySecond:  replyToken.Second,
-		TenantId:     -1,
-	}
-	return req.MarshalFDB()
+	return types.MarshalGetKeyValuesRequest(
+		begin, 1, true, // firstGreaterOrEqual
+		end, 1, true,
+		version, limit, UnlimitedBytes,
+		replyToken.First, replyToken.Second,
+		-1, // tenantId
+	)
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
@@ -297,14 +286,11 @@ type KeyValue struct {
 }
 
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
-	req := types.GetValueRequest{
-		Key:         key,
-		Version:     version,
-		ReplyFirst:  replyToken.First,
-		ReplySecond: replyToken.Second,
-		TenantId:    NoTenantID,
-	}
-	return req.MarshalFDB()
+	return types.MarshalGetValueRequest(
+		key, version,
+		replyToken.First, replyToken.Second,
+		NoTenantID,
+	)
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.

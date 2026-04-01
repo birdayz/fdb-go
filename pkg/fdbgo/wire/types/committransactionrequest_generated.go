@@ -62,6 +62,46 @@ type CommitTransactionRequest struct {
 	Arena         []byte // slot 12, ReadBytes
 }
 
+func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// Transaction (slot 0): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotTransaction)
+	// Reply (slot 1): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotReply)
+	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
+		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
+		m.HasCommitCostEstimation = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
+		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
+		m.HasTagSet = true
+	}
+	// SpanContext (slot 9): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotSpanContext)
+	// TenantInfo (slot 10): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo)
+	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
+		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotArena) {
+		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
+	}
+	return nil
+}
+
+func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := CommitTransactionRequestVTable
+	obj.WriteUint32(int(vt[CommitTransactionRequestSlotFlags+2]), m.Flags)
+	obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
+	obj.WriteBytes(int(vt[CommitTransactionRequestSlotArena+2]), m.Arena)
+}
+
 var CommitTransactionRequestTemplate = wire.NewMessageTemplate(
 	CommitTransactionRequestFileID, CommitTransactionRequestVTable, 4, CommitTransactionRequestVTableClosure,
 )

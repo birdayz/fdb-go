@@ -39,3 +39,47 @@ type CommitTransactionRef struct {
 	HasField_7 bool   // slot 8, Optional, presence flag
 	Field_7    []byte // slot 9, Optional, ReadBytes
 }
+
+func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_0) {
+		m.Field_0 = r.ReadBytes(CommitTransactionRefSlotField_0)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_1) {
+		m.Field_1 = r.ReadBytes(CommitTransactionRefSlotField_1)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_2) {
+		m.Field_2 = r.ReadBytes(CommitTransactionRefSlotField_2)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_3) {
+		m.Field_3 = r.ReadInt64(CommitTransactionRefSlotField_3)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_4) {
+		m.Field_4 = r.ReadBool(CommitTransactionRefSlotField_4)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_5) {
+		m.Field_5 = r.ReadBool(CommitTransactionRefSlotField_5)
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_6) && r.ReadUint8(CommitTransactionRefSlotField_6) > 0 {
+		m.Field_6 = r.ReadBytes(CommitTransactionRefSlotField_6 + 1)
+		m.HasField_6 = true
+	}
+	if r.FieldPresent(CommitTransactionRefSlotField_7) && r.ReadUint8(CommitTransactionRefSlotField_7) > 0 {
+		m.Field_7 = r.ReadBytes(CommitTransactionRefSlotField_7 + 1)
+		m.HasField_7 = true
+	}
+	return nil
+}
+
+func (m *CommitTransactionRef) MarshalInto(obj *wire.ObjectWriter) {
+	vt := CommitTransactionRefVTable
+	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_0+2]), m.Field_0)
+	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_1+2]), m.Field_1)
+	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_2+2]), m.Field_2)
+	obj.WriteInt64(int(vt[CommitTransactionRefSlotField_3+2]), m.Field_3)
+	obj.WriteBool(int(vt[CommitTransactionRefSlotField_4+2]), m.Field_4)
+	obj.WriteBool(int(vt[CommitTransactionRefSlotField_5+2]), m.Field_5)
+}

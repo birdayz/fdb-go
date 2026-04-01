@@ -24,6 +24,22 @@ type Error struct {
 	Error_code uint16 // slot 0, ReadUint16
 }
 
+func (m *Error) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(ErrorSlotError_code) {
+		m.Error_code = r.ReadUint16(ErrorSlotError_code)
+	}
+	return nil
+}
+
+func (m *Error) MarshalInto(obj *wire.ObjectWriter) {
+	vt := ErrorVTable
+	obj.WriteUint16(int(vt[ErrorSlotError_code+2]), m.Error_code)
+}
+
 var ErrorTemplate = wire.NewMessageTemplate(
 	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
 )

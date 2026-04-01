@@ -22,3 +22,27 @@ type SpanContext struct {
 	SpanID  uint64 // slot 1, ReadUint64
 	Flags   []byte // slot 2, ReadBytes
 }
+
+func (m *SpanContext) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(SpanContextSlotTraceID) {
+		m.TraceID = r.ReadBytes(SpanContextSlotTraceID)
+	}
+	if r.FieldPresent(SpanContextSlotSpanID) {
+		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
+	}
+	if r.FieldPresent(SpanContextSlotFlags) {
+		m.Flags = r.ReadBytes(SpanContextSlotFlags)
+	}
+	return nil
+}
+
+func (m *SpanContext) MarshalInto(obj *wire.ObjectWriter) {
+	vt := SpanContextVTable
+	obj.WriteBytes(int(vt[SpanContextSlotTraceID+2]), m.TraceID)
+	obj.WriteUint64(int(vt[SpanContextSlotSpanID+2]), m.SpanID)
+	obj.WriteBytes(int(vt[SpanContextSlotFlags+2]), m.Flags)
+}

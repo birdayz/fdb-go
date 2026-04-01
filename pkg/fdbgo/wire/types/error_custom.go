@@ -4,10 +4,6 @@ package types
 // Port the C++ serialize() method to Go.
 // Use the generated struct, slot constants, and template from error_generated.go.
 
-func (m *Error) UnmarshalFDB(data []byte) error {
-	panic("Error.UnmarshalFDB not implemented")
-}
-
 func (m *Error) MarshalFDB() []byte {
 	panic("Error.MarshalFDB not implemented")
 }

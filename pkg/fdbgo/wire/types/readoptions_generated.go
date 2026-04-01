@@ -30,3 +30,35 @@ type ReadOptions struct {
 	ConsistencyCheckStartVersion    []byte // slot 5, Optional, ReadBytes
 	LockAware                       bool   // slot 6, ReadBool
 }
+
+func (m *ReadOptions) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(ReadOptionsSlotType) {
+		m.Type = r.ReadBytes(ReadOptionsSlotType)
+	}
+	if r.FieldPresent(ReadOptionsSlotCacheResult) {
+		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
+	}
+	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(ReadOptionsSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
+		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.HasConsistencyCheckStartVersion = true
+	}
+	if r.FieldPresent(ReadOptionsSlotLockAware) {
+		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
+	}
+	return nil
+}
+
+func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
+	vt := ReadOptionsVTable
+	obj.WriteBytes(int(vt[ReadOptionsSlotType+2]), m.Type)
+	obj.WriteBool(int(vt[ReadOptionsSlotCacheResult+2]), m.CacheResult)
+	obj.WriteBool(int(vt[ReadOptionsSlotLockAware+2]), m.LockAware)
+}

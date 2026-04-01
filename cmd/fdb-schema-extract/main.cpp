@@ -371,6 +371,34 @@ struct GoEmitter {
         fprintf(f, "\treturn nil\n}\n\n");
     }
 
+    // Emit MarshalInto — writes all non-optional, non-struct fields into an ObjectWriter.
+    // Used by WriteStruct callers and MarshalStructBlob.
+    void emitMarshalInto(const char* typeName, const std::vector<FieldInfo>& fields) {
+        fprintf(f, "func (m *%s) MarshalInto(obj *wire.ObjectWriter) {\n", typeName);
+        fprintf(f, "\tvt := %sVTable\n", typeName);
+
+        int readerSlot = 0;
+        for (auto& fi : fields) {
+            if (strcmp(fi.trait, "union_like") == 0) {
+                // Optional: skip (needs conditional write logic).
+                readerSlot += 2;
+                continue;
+            }
+            if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
+                // Nested struct: skip.
+                readerSlot++;
+                continue;
+            }
+
+            std::string goName = sanitizeGoName(fi.name);
+            std::string slotConst = std::string(typeName) + "Slot" + goName;
+            fprintf(f, "\tobj.%s(int(vt[%s+2]), m.%s)\n",
+                    fi.writerMethod, slotConst.c_str(), goName.c_str());
+            readerSlot++;
+        }
+        fprintf(f, "}\n\n");
+    }
+
     // Emit MarshalFDB using the template (emitted separately by extractType).
     // Only emitted for types with a file_identifier.
     void emitMarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields,
@@ -464,12 +492,13 @@ void extractType(const char* outDir, const char* name) {
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
 
-        // All types get struct + template (even custom types — struct is always generated).
+        // All types get struct + UnmarshalFDB + MarshalInto.
         e.emitStruct(name, visitor.fields);
+        e.emitUnmarshalFDB(name, visitor.fields);
+        e.emitMarshalInto(name, visitor.fields);
 
         if constexpr (EmitStructs) {
-            // Simple type: emit full UnmarshalFDB + MarshalFDB in _generated.go.
-            e.emitUnmarshalFDB(name, visitor.fields);
+            // Simple type: also emit MarshalFDB in _generated.go.
             e.emitMarshalFDB(name, visitor.fields, getFileId<T>(), !closure.empty());
         }
         // Template is always emitted (custom types use it from _custom.go).
@@ -524,12 +553,9 @@ wait:
         FILE* cf = fopen(customPath.c_str(), "w");
         if (!cf) { perror(customPath.c_str()); return; }
         fprintf(cf, "package types\n\n");
-        fprintf(cf, "// %s has custom serialize() logic.\n", name);
-        fprintf(cf, "// Port the C++ serialize() method to Go.\n");
-        fprintf(cf, "// Use the generated struct, slot constants, and template from %s_generated.go.\n\n", lowerName.c_str());
-        fprintf(cf, "func (m *%s) UnmarshalFDB(data []byte) error {\n", name);
-        fprintf(cf, "\tpanic(\"%s.UnmarshalFDB not implemented\")\n", name);
-        fprintf(cf, "}\n\n");
+        fprintf(cf, "// %s has custom MarshalFDB logic.\n", name);
+        fprintf(cf, "// UnmarshalFDB and MarshalInto are generated in %s_generated.go.\n", lowerName.c_str());
+        fprintf(cf, "// Fill in MarshalFDB below (use the generated Template and MarshalInto).\n\n");
         // Only emit MarshalFDB stub for types with file_identifier (top-level messages).
         if (getFileId<T>() != 0) {
             fprintf(cf, "func (m *%s) MarshalFDB() []byte {\n", name);

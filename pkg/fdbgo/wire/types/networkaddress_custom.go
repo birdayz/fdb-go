@@ -8,10 +8,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
-	panic("NetworkAddress.UnmarshalFDB not implemented")
-}
-
 func (m *NetworkAddress) MarshalFDB() []byte {
 	panic("NetworkAddress.MarshalFDB not implemented")
 }

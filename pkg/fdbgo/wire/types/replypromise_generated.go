@@ -24,6 +24,22 @@ type ReplyPromise struct {
 	Field_0 []byte // slot 0, ReadBytes
 }
 
+func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(ReplyPromiseSlotField_0) {
+		m.Field_0 = r.ReadBytes(ReplyPromiseSlotField_0)
+	}
+	return nil
+}
+
+func (m *ReplyPromise) MarshalInto(obj *wire.ObjectWriter) {
+	vt := ReplyPromiseVTable
+	obj.WriteBytes(int(vt[ReplyPromiseSlotField_0+2]), m.Field_0)
+}
+
 var ReplyPromiseTemplate = wire.NewMessageTemplate(
 	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
 )

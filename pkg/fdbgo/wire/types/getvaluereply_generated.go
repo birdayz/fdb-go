@@ -58,6 +58,12 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetValueReply) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetValueReplyVTable
+	obj.WriteFloat64(int(vt[GetValueReplySlotPenalty+2]), m.Penalty)
+	obj.WriteBool(int(vt[GetValueReplySlotCached+2]), m.Cached)
+}
+
 func (m *GetValueReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetValueReplyTemplate, func(obj *wire.ObjectWriter) {

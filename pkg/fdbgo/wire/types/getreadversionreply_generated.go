@@ -99,6 +99,20 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetReadVersionReply) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetReadVersionReplyVTable
+	obj.WriteInt32(int(vt[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
+	obj.WriteInt64(int(vt[GetReadVersionReplySlotVersion+2]), m.Version)
+	obj.WriteBool(int(vt[GetReadVersionReplySlotLocked+2]), m.Locked)
+	obj.WriteBytes(int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+	obj.WriteInt64(int(vt[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
+	obj.WriteBool(int(vt[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
+	obj.WriteBool(int(vt[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
+	obj.WriteBytes(int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+	obj.WriteBytes(int(vt[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
+	obj.WriteFloat64(int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
+}
+
 func (m *GetReadVersionReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetReadVersionReplyTemplate, func(obj *wire.ObjectWriter) {

@@ -62,6 +62,55 @@ type ClientDBInfo struct {
 	MetaclusterName    []byte // slot 12, Optional, ReadBytes
 }
 
+func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
+		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotCommitProxies) {
+		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotId) {
+		m.Id = r.ReadBytes(ClientDBInfoSlotId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
+		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
+		m.HasForward = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotHistory) {
+		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
+	}
+	// TenantMode (slot 6): nested struct — use r.ReadNestedReader(ClientDBInfoSlotTenantMode)
+	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
+		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
+		m.HasEncryptKeyProxy = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterId) {
+		m.ClusterId = r.ReadBytes(ClientDBInfoSlotClusterId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterType) {
+		m.ClusterType = r.ReadBytes(ClientDBInfoSlotClusterType)
+	}
+	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
+		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
+		m.HasMetaclusterName = true
+	}
+	return nil
+}
+
+func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {
+	vt := ClientDBInfoVTable
+	obj.WriteBytes(int(vt[ClientDBInfoSlotGrvProxies+2]), m.GrvProxies)
+	obj.WriteBytes(int(vt[ClientDBInfoSlotCommitProxies+2]), m.CommitProxies)
+	obj.WriteBytes(int(vt[ClientDBInfoSlotId+2]), m.Id)
+	obj.WriteBytes(int(vt[ClientDBInfoSlotHistory+2]), m.History)
+	obj.WriteBytes(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
+	obj.WriteBytes(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
+}
+
 var ClientDBInfoTemplate = wire.NewMessageTemplate(
 	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
 )

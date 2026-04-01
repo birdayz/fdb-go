@@ -22,3 +22,27 @@ type MutationRef struct {
 	Field_1 []byte // slot 1, ReadBytes
 	Field_2 []byte // slot 2, ReadBytes
 }
+
+func (m *MutationRef) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(MutationRefSlotField_0) {
+		m.Field_0 = r.ReadUint8(MutationRefSlotField_0)
+	}
+	if r.FieldPresent(MutationRefSlotField_1) {
+		m.Field_1 = r.ReadBytes(MutationRefSlotField_1)
+	}
+	if r.FieldPresent(MutationRefSlotField_2) {
+		m.Field_2 = r.ReadBytes(MutationRefSlotField_2)
+	}
+	return nil
+}
+
+func (m *MutationRef) MarshalInto(obj *wire.ObjectWriter) {
+	vt := MutationRefVTable
+	obj.WriteUint8(int(vt[MutationRefSlotField_0+2]), m.Field_0)
+	obj.WriteBytes(int(vt[MutationRefSlotField_1+2]), m.Field_1)
+	obj.WriteBytes(int(vt[MutationRefSlotField_2+2]), m.Field_2)
+}

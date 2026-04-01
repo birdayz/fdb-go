@@ -22,3 +22,27 @@ type KeySelectorRef struct {
 	OrEqual bool   // slot 1, ReadBool
 	Offset  int32  // slot 2, ReadInt32
 }
+
+func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(KeySelectorRefSlotKey) {
+		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOrEqual) {
+		m.OrEqual = r.ReadBool(KeySelectorRefSlotOrEqual)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOffset) {
+		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
+	}
+	return nil
+}
+
+func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
+	vt := KeySelectorRefVTable
+	obj.WriteBytes(int(vt[KeySelectorRefSlotKey+2]), m.Key)
+	obj.WriteBool(int(vt[KeySelectorRefSlotOrEqual+2]), m.OrEqual)
+	obj.WriteInt32(int(vt[KeySelectorRefSlotOffset+2]), m.Offset)
+}

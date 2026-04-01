@@ -49,28 +49,64 @@ var GetKeyValuesRequestVTableClosure = []wire.VTable{
 
 type GetKeyValuesRequest struct {
 	// Begin: nested struct at slot 0 — use ReadNestedReader(GetKeyValuesRequestSlotBegin)
-	BeginKey     []byte // marshal-only: begin key selector key
-	BeginOffset  int32  // marshal-only: begin key selector offset
-	BeginOrEqual bool   // marshal-only: begin key selector orEqual
 	// End: nested struct at slot 1 — use ReadNestedReader(GetKeyValuesRequestSlotEnd)
-	EndKey     []byte // marshal-only: end key selector key
-	EndOffset  int32  // marshal-only: end key selector offset
-	EndOrEqual bool   // marshal-only: end key selector orEqual
 	Version    int64  // slot 2, ReadInt64
 	Limit      int32  // slot 3, ReadInt32
 	LimitBytes int32  // slot 4, ReadInt32
 	HasTags    bool   // slot 5, Optional, presence flag
 	Tags       []byte // slot 6, Optional, ReadBytes
 	// Reply: nested struct at slot 7 — use ReadNestedReader(GetKeyValuesRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
 	// SpanContext: nested struct at slot 8 — use ReadNestedReader(GetKeyValuesRequestSlotSpanContext)
 	// TenantInfo: nested struct at slot 9 — use ReadNestedReader(GetKeyValuesRequestSlotTenantInfo)
-	TenantId               int64  // marshal-only: tenant ID (-1 = no tenant)
 	HasOptions             bool   // slot 10, Optional, presence flag
 	Options                []byte // slot 11, Optional, ReadBytes
 	SsLatestCommitVersions []byte // slot 12, ReadBytes
 	Arena                  []byte // slot 13, ReadBytes
+}
+
+func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// Begin (slot 0): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotBegin)
+	// End (slot 1): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotEnd)
+	if r.FieldPresent(GetKeyValuesRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetKeyValuesRequestSlotVersion)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotLimit) {
+		m.Limit = r.ReadInt32(GetKeyValuesRequestSlotLimit)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotLimitBytes) {
+		m.LimitBytes = r.ReadInt32(GetKeyValuesRequestSlotLimitBytes)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotTags) && r.ReadUint8(GetKeyValuesRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetKeyValuesRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	// Reply (slot 7): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotReply)
+	// SpanContext (slot 8): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext)
+	// TenantInfo (slot 9): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo)
+	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetKeyValuesRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetKeyValuesRequestSlotSsLatestCommitVersions)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotArena) {
+		m.Arena = r.ReadBytes(GetKeyValuesRequestSlotArena)
+	}
+	return nil
+}
+
+func (m *GetKeyValuesRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyValuesRequestVTable
+	obj.WriteInt64(int(vt[GetKeyValuesRequestSlotVersion+2]), m.Version)
+	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimit+2]), m.Limit)
+	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimitBytes+2]), m.LimitBytes)
+	obj.WriteBytes(int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	obj.WriteBytes(int(vt[GetKeyValuesRequestSlotArena+2]), m.Arena)
 }
 
 var GetKeyValuesRequestTemplate = wire.NewMessageTemplate(

@@ -2,10 +2,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
-	panic("CommitTransactionRequest.UnmarshalFDB not implemented")
-}
-
 func (m *CommitTransactionRequest) MarshalFDB() []byte {
 	panic("CommitTransactionRequest.MarshalFDB not implemented — use MarshalCommitTransactionRequest function")
 }

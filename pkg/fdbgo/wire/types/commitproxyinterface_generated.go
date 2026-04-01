@@ -25,3 +25,24 @@ type CommitProxyInterface struct {
 	Provisional  bool   // slot 2, ReadBool
 	// Commit: nested struct at slot 3 — use ReadNestedReader(CommitProxyInterfaceSlotCommit)
 }
+
+func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
+		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
+		m.HasProcessId = true
+	}
+	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
+		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
+	}
+	// Commit (slot 3): nested struct — use r.ReadNestedReader(CommitProxyInterfaceSlotCommit)
+	return nil
+}
+
+func (m *CommitProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
+	vt := CommitProxyInterfaceVTable
+	obj.WriteBool(int(vt[CommitProxyInterfaceSlotProvisional+2]), m.Provisional)
+}

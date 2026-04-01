@@ -47,13 +47,43 @@ type OpenDatabaseCoordRequest struct {
 	// TraceLogGroup: nested struct at slot 2 — use ReadNestedReader(OpenDatabaseCoordRequestSlotTraceLogGroup)
 	KnownClientInfoID []byte // slot 3, ReadBytes
 	// ClusterKey: nested struct at slot 4 — use ReadNestedReader(OpenDatabaseCoordRequestSlotClusterKey)
-	ClusterKey   string // marshal-only: cluster key string
 	Coordinators []byte // slot 5, ReadBytes
 	// Reply: nested struct at slot 6 — use ReadNestedReader(OpenDatabaseCoordRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
-	Hostnames   []byte // slot 7, ReadBytes
-	Internal    bool   // slot 8, ReadBool
+	Hostnames []byte // slot 7, ReadBytes
+	Internal  bool   // slot 8, ReadBool
+}
+
+func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// Issues (slot 0): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotIssues)
+	// SupportedVersions (slot 1): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotSupportedVersions)
+	// TraceLogGroup (slot 2): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotTraceLogGroup)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotKnownClientInfoID) {
+		m.KnownClientInfoID = r.ReadBytes(OpenDatabaseCoordRequestSlotKnownClientInfoID)
+	}
+	// ClusterKey (slot 4): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotClusterKey)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
+		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
+	}
+	// Reply (slot 6): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply)
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotHostnames) {
+		m.Hostnames = r.ReadBytes(OpenDatabaseCoordRequestSlotHostnames)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotInternal) {
+		m.Internal = r.ReadBool(OpenDatabaseCoordRequestSlotInternal)
+	}
+	return nil
+}
+
+func (m *OpenDatabaseCoordRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := OpenDatabaseCoordRequestVTable
+	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]), m.KnownClientInfoID)
+	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]), m.Coordinators)
+	obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotHostnames+2]), m.Hostnames)
+	obj.WriteBool(int(vt[OpenDatabaseCoordRequestSlotInternal+2]), m.Internal)
 }
 
 var OpenDatabaseCoordRequestTemplate = wire.NewMessageTemplate(

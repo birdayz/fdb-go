@@ -23,3 +23,27 @@ type TenantInfo struct {
 	Field_1    []byte // slot 2, Optional, ReadBytes
 	Field_2    []byte // slot 3, ReadBytes
 }
+
+func (m *TenantInfo) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(TenantInfoSlotField_0) {
+		m.Field_0 = r.ReadInt64(TenantInfoSlotField_0)
+	}
+	if r.FieldPresent(TenantInfoSlotField_1) && r.ReadUint8(TenantInfoSlotField_1) > 0 {
+		m.Field_1 = r.ReadBytes(TenantInfoSlotField_1 + 1)
+		m.HasField_1 = true
+	}
+	if r.FieldPresent(TenantInfoSlotField_2) {
+		m.Field_2 = r.ReadBytes(TenantInfoSlotField_2)
+	}
+	return nil
+}
+
+func (m *TenantInfo) MarshalInto(obj *wire.ObjectWriter) {
+	vt := TenantInfoVTable
+	obj.WriteInt64(int(vt[TenantInfoSlotField_0+2]), m.Field_0)
+	obj.WriteBytes(int(vt[TenantInfoSlotField_2+2]), m.Field_2)
+}

@@ -134,13 +134,12 @@ func (b *GRVBatcher) sendGRVRequest() (int64, error) {
 }
 
 func buildGetReadVersionRequest(replyToken transport.UID) []byte {
-	req := types.GetReadVersionRequest{
-		TransactionCount: 1,
-		MaxVersion:       -1,
-		ReplyFirst:       replyToken.First,
-		ReplySecond:      replyToken.Second,
-	}
-	return req.MarshalFDB()
+	return types.MarshalGetReadVersionRequest(
+		1,  // transactionCount
+		0,  // flags
+		-1, // maxVersion
+		replyToken.First, replyToken.Second,
+	)
 }
 
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.

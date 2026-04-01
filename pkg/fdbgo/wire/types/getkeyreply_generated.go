@@ -55,6 +55,12 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetKeyReply) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyReplyVTable
+	obj.WriteFloat64(int(vt[GetKeyReplySlotPenalty+2]), m.Penalty)
+	obj.WriteBool(int(vt[GetKeyReplySlotCached+2]), m.Cached)
+}
+
 func (m *GetKeyReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetKeyReplyTemplate, func(obj *wire.ObjectWriter) {

@@ -57,6 +57,12 @@ func (m *CommitID) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *CommitID) MarshalInto(obj *wire.ObjectWriter) {
+	vt := CommitIDVTable
+	obj.WriteInt64(int(vt[CommitIDSlotVersion+2]), m.Version)
+	obj.WriteUint16(int(vt[CommitIDSlotTxnBatchId+2]), m.TxnBatchId)
+}
+
 func (m *CommitID) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(CommitIDTemplate, func(obj *wire.ObjectWriter) {

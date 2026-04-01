@@ -61,6 +61,14 @@ func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyServerLocationsReplyVTable
+	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
+	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
+	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotArena+2]), m.Arena)
+}
+
 func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetKeyServerLocationsReplyTemplate, func(obj *wire.ObjectWriter) {

@@ -46,13 +46,49 @@ type GetKeyServerLocationsRequest struct {
 	Limit   int32  // slot 3, ReadInt32
 	Reverse bool   // slot 4, ReadBool
 	// Reply: nested struct at slot 5 — use ReadNestedReader(GetKeyServerLocationsRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
 	// SpanContext: nested struct at slot 6 — use ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext)
 	// Tenant: nested struct at slot 7 — use ReadNestedReader(GetKeyServerLocationsRequestSlotTenant)
-	TenantId         int64  // marshal-only: tenant ID (-1 = no tenant)
 	MinTenantVersion int64  // slot 8, ReadInt64
 	Arena            []byte // slot 9, ReadBytes
+}
+
+func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
+		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotEnd) && r.ReadUint8(GetKeyServerLocationsRequestSlotEnd) > 0 {
+		m.End = r.ReadBytes(GetKeyServerLocationsRequestSlotEnd + 1)
+		m.HasEnd = true
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotLimit) {
+		m.Limit = r.ReadInt32(GetKeyServerLocationsRequestSlotLimit)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotReverse) {
+		m.Reverse = r.ReadBool(GetKeyServerLocationsRequestSlotReverse)
+	}
+	// Reply (slot 5): nested struct — use r.ReadNestedReader(GetKeyServerLocationsRequestSlotReply)
+	// SpanContext (slot 6): nested struct — use r.ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext)
+	// Tenant (slot 7): nested struct — use r.ReadNestedReader(GetKeyServerLocationsRequestSlotTenant)
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotMinTenantVersion) {
+		m.MinTenantVersion = r.ReadInt64(GetKeyServerLocationsRequestSlotMinTenantVersion)
+	}
+	if r.FieldPresent(GetKeyServerLocationsRequestSlotArena) {
+		m.Arena = r.ReadBytes(GetKeyServerLocationsRequestSlotArena)
+	}
+	return nil
+}
+
+func (m *GetKeyServerLocationsRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyServerLocationsRequestVTable
+	obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
+	obj.WriteInt32(int(vt[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
+	obj.WriteBool(int(vt[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
+	obj.WriteInt64(int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
+	obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotArena+2]), m.Arena)
 }
 
 var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(

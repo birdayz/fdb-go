@@ -2,11 +2,12 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
-	panic("OpenDatabaseCoordRequest.UnmarshalFDB not implemented")
-}
-
-func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
+// MarshalOpenDatabaseCoordRequest builds an OpenDatabaseCoordRequest from parameters.
+func MarshalOpenDatabaseCoordRequest(
+	clusterKey string,
+	replyFirst, replySecond uint64,
+	internal bool,
+) []byte {
 	vt := OpenDatabaseCoordRequestVTable
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(OpenDatabaseCoordRequestTemplate,
@@ -14,8 +15,8 @@ func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
 			// knownClientInfoID: UID all zeros (inline 16 bytes)
 			obj.WriteUint64(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]), 0)
 			obj.WriteUint64(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2])+8, 0)
-			WriteReplyPromise(obj, int(vt[OpenDatabaseCoordRequestSlotReply+2]), m.ReplyFirst, m.ReplySecond)
-			obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), []byte(m.ClusterKey))
-			obj.WriteBool(int(vt[OpenDatabaseCoordRequestSlotInternal+2]), m.Internal)
+			WriteReplyPromise(obj, int(vt[OpenDatabaseCoordRequestSlotReply+2]), replyFirst, replySecond)
+			obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), []byte(clusterKey))
+			obj.WriteBool(int(vt[OpenDatabaseCoordRequestSlotInternal+2]), internal)
 		})
 }

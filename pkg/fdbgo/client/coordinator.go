@@ -36,13 +36,11 @@ func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, a
 }
 
 func buildOpenDatabaseCoordRequest(cf *ClusterFile, replyToken transport.UID) []byte {
-	req := types.OpenDatabaseCoordRequest{
-		ClusterKey:  cf.Description + ":" + cf.ID,
-		ReplyFirst:  replyToken.First,
-		ReplySecond: replyToken.Second,
-		Internal:    true,
-	}
-	return req.MarshalFDB()
+	return types.MarshalOpenDatabaseCoordRequest(
+		cf.Description+":"+cf.ID,
+		replyToken.First, replyToken.Second,
+		true, // internal
+	)
 }
 
 func parseCoordinatorResponse(data []byte) (*DBInfo, error) {

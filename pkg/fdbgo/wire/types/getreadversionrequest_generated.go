@@ -42,10 +42,42 @@ type GetReadVersionRequest struct {
 	HasDebugID       bool   // slot 3, Optional, presence flag
 	DebugID          []byte // slot 4, Optional, ReadBytes
 	// Reply: nested struct at slot 5 — use ReadNestedReader(GetReadVersionRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
 	// SpanContext: nested struct at slot 6 — use ReadNestedReader(GetReadVersionRequestSlotSpanContext)
 	MaxVersion int64 // slot 7, ReadInt64
+}
+
+func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
+		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotTags) {
+		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	// Reply (slot 5): nested struct — use r.ReadNestedReader(GetReadVersionRequestSlotReply)
+	// SpanContext (slot 6): nested struct — use r.ReadNestedReader(GetReadVersionRequestSlotSpanContext)
+	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
+		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
+	}
+	return nil
+}
+
+func (m *GetReadVersionRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetReadVersionRequestVTable
+	obj.WriteUint32(int(vt[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
+	obj.WriteUint32(int(vt[GetReadVersionRequestSlotFlags+2]), m.Flags)
+	obj.WriteBytes(int(vt[GetReadVersionRequestSlotTags+2]), m.Tags)
+	obj.WriteInt64(int(vt[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
 }
 
 var GetReadVersionRequestTemplate = wire.NewMessageTemplate(

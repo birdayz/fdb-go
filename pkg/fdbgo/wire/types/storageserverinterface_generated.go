@@ -31,3 +31,29 @@ type StorageServerInterface struct {
 	Field_3    []byte // slot 4, Optional, ReadBytes
 	Field_4    bool   // slot 5, ReadBool
 }
+
+func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
+		m.WatchValue = r.ReadBytes(StorageServerInterfaceSlotWatchValue)
+	}
+	// Field_1 (slot 1): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_1)
+	// Field_2 (slot 2): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_2)
+	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
+		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
+		m.HasField_3 = true
+	}
+	if r.FieldPresent(StorageServerInterfaceSlotField_4) {
+		m.Field_4 = r.ReadBool(StorageServerInterfaceSlotField_4)
+	}
+	return nil
+}
+
+func (m *StorageServerInterface) MarshalInto(obj *wire.ObjectWriter) {
+	vt := StorageServerInterfaceVTable
+	obj.WriteBytes(int(vt[StorageServerInterfaceSlotWatchValue+2]), m.WatchValue)
+	obj.WriteBool(int(vt[StorageServerInterfaceSlotField_4+2]), m.Field_4)
+}

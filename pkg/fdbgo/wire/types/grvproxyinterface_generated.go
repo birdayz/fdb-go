@@ -25,3 +25,24 @@ type GrvProxyInterface struct {
 	Provisional  bool   // slot 2, ReadBool
 	// GetConsistentReadVersion: nested struct at slot 3 — use ReadNestedReader(GrvProxyInterfaceSlotGetConsistentReadVersion)
 }
+
+func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
+		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
+		m.HasProcessId = true
+	}
+	if r.FieldPresent(GrvProxyInterfaceSlotProvisional) {
+		m.Provisional = r.ReadBool(GrvProxyInterfaceSlotProvisional)
+	}
+	// GetConsistentReadVersion (slot 3): nested struct — use r.ReadNestedReader(GrvProxyInterfaceSlotGetConsistentReadVersion)
+	return nil
+}
+
+func (m *GrvProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GrvProxyInterfaceVTable
+	obj.WriteBool(int(vt[GrvProxyInterfaceSlotProvisional+2]), m.Provisional)
+}

@@ -40,19 +40,47 @@ var GetValueRequestVTableClosure = []wire.VTable{
 
 type GetValueRequest struct {
 	// Key: nested struct at slot 0 — use ReadNestedReader(GetValueRequestSlotKey)
-	Key     []byte // marshal-only: key bytes for MarshalFDB
 	Version int64  // slot 1, ReadInt64
 	HasTags bool   // slot 2, Optional, presence flag
 	Tags    []byte // slot 3, Optional, ReadBytes
 	// Reply: nested struct at slot 4 — use ReadNestedReader(GetValueRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
 	// SpanContext: nested struct at slot 5 — use ReadNestedReader(GetValueRequestSlotSpanContext)
 	// TenantInfo: nested struct at slot 6 — use ReadNestedReader(GetValueRequestSlotTenantInfo)
-	TenantId               int64  // marshal-only: tenant ID (-1 = no tenant)
 	HasOptions             bool   // slot 7, Optional, presence flag
 	Options                []byte // slot 8, Optional, ReadBytes
 	SsLatestCommitVersions []byte // slot 9, ReadBytes
+}
+
+func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// Key (slot 0): nested struct — use r.ReadNestedReader(GetValueRequestSlotKey)
+	if r.FieldPresent(GetValueRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
+	}
+	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	// Reply (slot 4): nested struct — use r.ReadNestedReader(GetValueRequestSlotReply)
+	// SpanContext (slot 5): nested struct — use r.ReadNestedReader(GetValueRequestSlotSpanContext)
+	// TenantInfo (slot 6): nested struct — use r.ReadNestedReader(GetValueRequestSlotTenantInfo)
+	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
+	}
+	return nil
+}
+
+func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetValueRequestVTable
+	obj.WriteInt64(int(vt[GetValueRequestSlotVersion+2]), m.Version)
+	obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
 }
 
 var GetValueRequestTemplate = wire.NewMessageTemplate(

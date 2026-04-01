@@ -124,15 +124,11 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 // slot 5 (Reply) at offset 24: nested ReplyPromise struct
 // slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	req := types.GetKeyServerLocationsRequest{
-		Begin:            key,
-		Limit:            100,
-		ReplyFirst:       replyToken.First,
-		ReplySecond:      replyToken.Second,
-		TenantId:         NoTenantID,
-		MinTenantVersion: NoTenantID,
-	}
-	return req.MarshalFDB()
+	return types.MarshalGetKeyServerLocationsRequest(
+		key, 100,
+		replyToken.First, replyToken.Second,
+		NoTenantID, NoTenantID, // tenantId, minTenantVersion
+	)
 }
 
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {

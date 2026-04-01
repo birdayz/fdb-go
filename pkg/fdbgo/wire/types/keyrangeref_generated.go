@@ -19,3 +19,23 @@ type KeyRangeRef struct {
 	Begin []byte // slot 0, ReadBytes
 	End   []byte // slot 1, ReadBytes
 }
+
+func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(KeyRangeRefSlotBegin) {
+		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
+	}
+	if r.FieldPresent(KeyRangeRefSlotEnd) {
+		m.End = r.ReadBytes(KeyRangeRefSlotEnd)
+	}
+	return nil
+}
+
+func (m *KeyRangeRef) MarshalInto(obj *wire.ObjectWriter) {
+	vt := KeyRangeRefVTable
+	obj.WriteBytes(int(vt[KeyRangeRefSlotBegin+2]), m.Begin)
+	obj.WriteBytes(int(vt[KeyRangeRefSlotEnd+2]), m.End)
+}

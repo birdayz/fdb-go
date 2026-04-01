@@ -17,3 +17,19 @@ type IPAddress struct {
 	HasField_0 bool   // slot 0, Optional, presence flag
 	Field_0    []byte // slot 1, Optional, ReadBytes
 }
+
+func (m *IPAddress) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(IPAddressSlotField_0) && r.ReadUint8(IPAddressSlotField_0) > 0 {
+		m.Field_0 = r.ReadBytes(IPAddressSlotField_0 + 1)
+		m.HasField_0 = true
+	}
+	return nil
+}
+
+func (m *IPAddress) MarshalInto(obj *wire.ObjectWriter) {
+	_ = IPAddressVTable
+}

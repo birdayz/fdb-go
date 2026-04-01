@@ -34,6 +34,31 @@ type NetworkAddress struct {
 	Field_3 bool   // slot 3, ReadBool
 }
 
+func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// FromHostname (slot 0): nested struct — use r.ReadNestedReader(NetworkAddressSlotFromHostname)
+	if r.FieldPresent(NetworkAddressSlotField_1) {
+		m.Field_1 = r.ReadUint16(NetworkAddressSlotField_1)
+	}
+	if r.FieldPresent(NetworkAddressSlotField_2) {
+		m.Field_2 = r.ReadUint16(NetworkAddressSlotField_2)
+	}
+	if r.FieldPresent(NetworkAddressSlotField_3) {
+		m.Field_3 = r.ReadBool(NetworkAddressSlotField_3)
+	}
+	return nil
+}
+
+func (m *NetworkAddress) MarshalInto(obj *wire.ObjectWriter) {
+	vt := NetworkAddressVTable
+	obj.WriteUint16(int(vt[NetworkAddressSlotField_1+2]), m.Field_1)
+	obj.WriteUint16(int(vt[NetworkAddressSlotField_2+2]), m.Field_2)
+	obj.WriteBool(int(vt[NetworkAddressSlotField_3+2]), m.Field_3)
+}
+
 var NetworkAddressTemplate = wire.NewMessageTemplate(
 	NetworkAddressFileID, NetworkAddressVTable, 4, NetworkAddressVTableClosure,
 )

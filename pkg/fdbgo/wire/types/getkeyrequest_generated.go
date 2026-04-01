@@ -43,22 +43,52 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 
 type GetKeyRequest struct {
 	// Sel: nested struct at slot 0 — use ReadNestedReader(GetKeyRequestSlotSel)
-	SelectorKey     []byte // marshal-only: key selector key
-	SelectorOrEqual bool   // marshal-only: key selector orEqual
-	SelectorOffset  int32  // marshal-only: key selector offset
-	Version         int64  // slot 1, ReadInt64
-	HasTags         bool   // slot 2, Optional, presence flag
-	Tags            []byte // slot 3, Optional, ReadBytes
+	Version int64  // slot 1, ReadInt64
+	HasTags bool   // slot 2, Optional, presence flag
+	Tags    []byte // slot 3, Optional, ReadBytes
 	// Reply: nested struct at slot 4 — use ReadNestedReader(GetKeyRequestSlotReply)
-	ReplyFirst  uint64 // marshal-only: reply promise UID first
-	ReplySecond uint64 // marshal-only: reply promise UID second
 	// SpanContext: nested struct at slot 5 — use ReadNestedReader(GetKeyRequestSlotSpanContext)
 	// TenantInfo: nested struct at slot 6 — use ReadNestedReader(GetKeyRequestSlotTenantInfo)
-	TenantId               int64  // marshal-only: tenant ID (-1 = no tenant)
 	HasOptions             bool   // slot 7, Optional, presence flag
 	Options                []byte // slot 8, Optional, ReadBytes
 	SsLatestCommitVersions []byte // slot 9, ReadBytes
 	Arena                  []byte // slot 10, ReadBytes
+}
+
+func (m *GetKeyRequest) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	// Sel (slot 0): nested struct — use r.ReadNestedReader(GetKeyRequestSlotSel)
+	if r.FieldPresent(GetKeyRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetKeyRequestSlotVersion)
+	}
+	if r.FieldPresent(GetKeyRequestSlotTags) && r.ReadUint8(GetKeyRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetKeyRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	// Reply (slot 4): nested struct — use r.ReadNestedReader(GetKeyRequestSlotReply)
+	// SpanContext (slot 5): nested struct — use r.ReadNestedReader(GetKeyRequestSlotSpanContext)
+	// TenantInfo (slot 6): nested struct — use r.ReadNestedReader(GetKeyRequestSlotTenantInfo)
+	if r.FieldPresent(GetKeyRequestSlotOptions) && r.ReadUint8(GetKeyRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetKeyRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetKeyRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetKeyRequestSlotSsLatestCommitVersions)
+	}
+	if r.FieldPresent(GetKeyRequestSlotArena) {
+		m.Arena = r.ReadBytes(GetKeyRequestSlotArena)
+	}
+	return nil
+}
+
+func (m *GetKeyRequest) MarshalInto(obj *wire.ObjectWriter) {
+	vt := GetKeyRequestVTable
+	obj.WriteInt64(int(vt[GetKeyRequestSlotVersion+2]), m.Version)
+	obj.WriteBytes(int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	obj.WriteBytes(int(vt[GetKeyRequestSlotArena+2]), m.Arena)
 }
 
 var GetKeyRequestTemplate = wire.NewMessageTemplate(

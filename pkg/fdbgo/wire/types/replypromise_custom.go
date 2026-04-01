@@ -2,10 +2,6 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
-	panic("ReplyPromise.UnmarshalFDB not implemented")
-}
-
 func (m *ReplyPromise) MarshalFDB() []byte {
 	panic("ReplyPromise.MarshalFDB not implemented")
 }
