@@ -77,7 +77,9 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 func (m *GetKeyValuesReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyValuesReplyVTable
 	obj.WriteFloat64(int(vt[GetKeyValuesReplySlotPenalty+2]), m.Penalty)
-	obj.WriteBytes(int(vt[GetKeyValuesReplySlotData+2]), m.Data)
+	if len(m.Data) > 0 {
+		obj.WriteBytes(int(vt[GetKeyValuesReplySlotData+2]), m.Data)
+	}
 	obj.WriteInt64(int(vt[GetKeyValuesReplySlotVersion+2]), m.Version)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotMore+2]), m.More)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotCached+2]), m.Cached)
@@ -97,7 +99,9 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetKeyValuesReplyTemplate, func(obj *wire.ObjectWriter) {
 		obj.WriteFloat64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotPenalty+2]), m.Penalty)
-		obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotData+2]), m.Data)
+		if len(m.Data) > 0 {
+			obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotData+2]), m.Data)
+		}
 		obj.WriteInt64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotVersion+2]), m.Version)
 		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotMore+2]), m.More)
 		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotCached+2]), m.Cached)

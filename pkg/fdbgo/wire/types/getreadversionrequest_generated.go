@@ -76,7 +76,9 @@ func (m *GetReadVersionRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetReadVersionRequestVTable
 	obj.WriteUint32(int(vt[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
 	obj.WriteUint32(int(vt[GetReadVersionRequestSlotFlags+2]), m.Flags)
-	obj.WriteBytes(int(vt[GetReadVersionRequestSlotTags+2]), m.Tags)
+	if len(m.Tags) > 0 {
+		obj.WriteRawOOL(int(vt[GetReadVersionRequestSlotTags+2]), m.Tags)
+	}
 	obj.WriteInt64(int(vt[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
 }
 
@@ -95,7 +97,9 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	return w.WriteMessagePacked(GetReadVersionRequestTemplate, func(obj *wire.ObjectWriter) {
 		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
 		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotFlags+2]), m.Flags)
-		obj.WriteBytes(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTags+2]), m.Tags)
+		if len(m.Tags) > 0 {
+			obj.WriteRawOOL(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTags+2]), m.Tags)
+		}
 		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
 		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
 		obj.WriteInt64(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)

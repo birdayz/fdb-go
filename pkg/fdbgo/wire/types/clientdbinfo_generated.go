@@ -103,10 +103,16 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 
 func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ClientDBInfoVTable
-	obj.WriteBytes(int(vt[ClientDBInfoSlotGrvProxies+2]), m.GrvProxies)
-	obj.WriteBytes(int(vt[ClientDBInfoSlotCommitProxies+2]), m.CommitProxies)
+	if len(m.GrvProxies) > 0 {
+		obj.WriteRawOOL(int(vt[ClientDBInfoSlotGrvProxies+2]), m.GrvProxies)
+	}
+	if len(m.CommitProxies) > 0 {
+		obj.WriteRawOOL(int(vt[ClientDBInfoSlotCommitProxies+2]), m.CommitProxies)
+	}
 	obj.WriteUID(int(vt[ClientDBInfoSlotId+2]), m.Id)
-	obj.WriteBytes(int(vt[ClientDBInfoSlotHistory+2]), m.History)
+	if len(m.History) > 0 {
+		obj.WriteRawOOL(int(vt[ClientDBInfoSlotHistory+2]), m.History)
+	}
 	obj.WriteUID(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
 	obj.WriteUint32(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
 }

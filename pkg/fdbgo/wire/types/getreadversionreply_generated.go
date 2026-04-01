@@ -104,11 +104,15 @@ func (m *GetReadVersionReply) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt32(int(vt[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
 	obj.WriteInt64(int(vt[GetReadVersionReplySlotVersion+2]), m.Version)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotLocked+2]), m.Locked)
-	obj.WriteBytes(int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+	if len(m.TagThrottleInfo) > 0 {
+		obj.WriteRawOOL(int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+	}
 	obj.WriteInt64(int(vt[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
 	obj.WriteBool(int(vt[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
-	obj.WriteBytes(int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+	if len(m.SsVersionVectorDelta) > 0 {
+		obj.WriteBytes(int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+	}
 	obj.WriteUID(int(vt[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
 	obj.WriteFloat64(int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
 }
@@ -129,11 +133,15 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 		obj.WriteInt32(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
 		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotVersion+2]), m.Version)
 		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotLocked+2]), m.Locked)
-		obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+		if len(m.TagThrottleInfo) > 0 {
+			obj.WriteRawOOL(int(GetReadVersionReplyVTable[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+		}
 		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
 		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
 		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
-		obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+		if len(m.SsVersionVectorDelta) > 0 {
+			obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+		}
 		obj.WriteUID(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
 		obj.WriteFloat64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
 	})

@@ -87,12 +87,33 @@ func (m *GetKeyRequest) UnmarshalFDB(data []byte) error {
 func (m *GetKeyRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyRequestVTable
 	obj.WriteInt64(int(vt[GetKeyRequestSlotVersion+2]), m.Version)
-	obj.WriteBytes(int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	if len(m.SsLatestCommitVersions) > 0 {
+		obj.WriteBytes(int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	}
 }
 
 func WriteGetKeyRequest(obj *wire.ObjectWriter, parentOffset int, version int64, ssLatestCommitVersions []byte) {
 	m := GetKeyRequest{Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetKeyRequestVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetKeyRequest(version int64, ssLatestCommitVersions []byte) []byte {
+	m := GetKeyRequest{Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
+	return wire.MarshalStructBlob(GetKeyRequestVTable, m.MarshalInto)
+}
+
+func (m *GetKeyRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyRequestTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteStruct(int(GetKeyRequestVTable[GetKeyRequestSlotSel+2]), KeySelectorRefVTable, 8, m.Sel.MarshalInto)
+		obj.WriteInt64(int(GetKeyRequestVTable[GetKeyRequestSlotVersion+2]), m.Version)
+		obj.WriteStruct(int(GetKeyRequestVTable[GetKeyRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteStruct(int(GetKeyRequestVTable[GetKeyRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteStruct(int(GetKeyRequestVTable[GetKeyRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+		if len(m.SsLatestCommitVersions) > 0 {
+			obj.WriteBytes(int(GetKeyRequestVTable[GetKeyRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+		}
+	})
 }
 
 var GetKeyRequestTemplate = wire.NewMessageTemplate(

@@ -42,7 +42,9 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 
 func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeySelectorRefVTable
-	obj.WriteBytes(int(vt[KeySelectorRefSlotKey+2]), m.Key)
+	if len(m.Key) > 0 {
+		obj.WriteBytes(int(vt[KeySelectorRefSlotKey+2]), m.Key)
+	}
 	obj.WriteBool(int(vt[KeySelectorRefSlotOrEqual+2]), m.OrEqual)
 	obj.WriteInt32(int(vt[KeySelectorRefSlotOffset+2]), m.Offset)
 }

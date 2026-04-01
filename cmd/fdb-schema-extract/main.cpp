@@ -51,11 +51,19 @@ struct FieldInfo {
 template <class T> struct is_standalone : std::false_type {};
 template <class T> struct is_standalone<Standalone<T>> : std::true_type {};
 
-// Detect if Standalone<T>'s inner type T has dynamic_size_traits.
+// Detect if Standalone<T>'s inner type T has dynamic_size_traits or vector_like_traits.
 template <class T> constexpr bool standalone_is_dynamic() {
     if constexpr (is_standalone<T>::value) {
-        using Inner = typename T::RefType; // Standalone<T> defines RefType = T
-        return detail::is_dynamic_size<Inner>;
+        using Inner = typename T::RefType;
+        return detail::is_dynamic_size<Inner> && !detail::is_vector_like<Inner>;
+    }
+    return false;
+}
+
+template <class T> constexpr bool standalone_is_vector_like() {
+    if constexpr (is_standalone<T>::value) {
+        using Inner = typename T::RefType;
+        return detail::is_vector_like<Inner>;
     }
     return false;
 }
@@ -65,9 +73,9 @@ const char* classifyTrait() {
     using namespace detail;
     if constexpr (is_scalar<T>) return "scalar";
     else if constexpr (is_dynamic_size<T>) return "dynamic_size";
-    // Standalone<T> where T has dynamic_size_traits → treat as dynamic_size.
     else if constexpr (standalone_is_dynamic<T>()) return "dynamic_size";
     else if constexpr (is_vector_like<T>) return "vector_like";
+    else if constexpr (standalone_is_vector_like<T>()) return "vector_like";
     else if constexpr (is_union_like<T>) return "union_like";
     else if constexpr (is_struct_like<T>) return "struct_like";
     else return "serialize_member";
@@ -161,6 +169,7 @@ template<> const char* getCppTypeName<ReplyPromise<GetReadVersionReply>>() { ret
 template<> const char* getCppTypeName<ReplyPromise<GetKeyServerLocationsReply>>() { return "ReplyPromise"; }
 template<> const char* getCppTypeName<ReplyPromise<CommitID>>() { return "ReplyPromise"; }
 template<> const char* getCppTypeName<ReplyPromise<Void>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<CachedSerialization<ClientDBInfo>>>() { return "ReplyPromise"; }
 
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
@@ -196,7 +205,14 @@ private:
                 case 8: goType = "uint64"; reader = "ReadUint64"; writer = "WriteUint64"; break;
             }
         }
-        fields.push_back(FieldInfo{"", classifyTrait<T>(),
+        // VectorRef<T> (vector_like trait): reading is same as bytes (ReadBytes),
+        // but writing uses WriteRawOOL (no extra length prefix — the vector data
+        // already has its own count header).
+        const char* trait = classifyTrait<T>();
+        if (std::string(trait) == "vector_like") {
+            writer = "WriteRawOOL";
+        }
+        fields.push_back(FieldInfo{"", trait,
             (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>,
             goType, reader, writer,
             getCppTypeName<T>()});
@@ -468,8 +484,15 @@ struct GoEmitter {
 
             std::string goName = sanitizeGoName(fi.name);
             std::string slotConst = std::string(typeName) + "Slot" + goName;
-            fprintf(f, "\tobj.%s(int(vt[%s+2]), m.%s)\n",
-                    fi.writerMethod, slotConst.c_str(), goName.c_str());
+            if (std::string(fi.goType) == "[]byte") {
+                fprintf(f, "\tif len(m.%s) > 0 {\n", goName.c_str());
+                fprintf(f, "\t\tobj.%s(int(vt[%s+2]), m.%s)\n",
+                        fi.writerMethod, slotConst.c_str(), goName.c_str());
+                fprintf(f, "\t}\n");
+            } else {
+                fprintf(f, "\tobj.%s(int(vt[%s+2]), m.%s)\n",
+                        fi.writerMethod, slotConst.c_str(), goName.c_str());
+            }
             readerSlot++;
         }
         fprintf(f, "}\n\n");
@@ -603,9 +626,17 @@ struct GoEmitter {
                 fprintf(f, "\t\tobj.WriteStruct(int(%sVTable[%s+2]), %sVTable, 8, m.%s.MarshalInto)\n",
                         typeName, slotConst.c_str(), fi.cppTypeName, goName.c_str());
             } else if (strcmp(fi.trait, "serialize_member") != 0 && strcmp(fi.trait, "struct_like") != 0) {
-                // Scalar/bytes field — direct write.
-                fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
-                        fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+                // Scalar/bytes/vector field.
+                if (std::string(fi.goType) == "[]byte") {
+                    // Skip nil/empty byte slices — absent fields have vtable offset 0.
+                    fprintf(f, "\t\tif len(m.%s) > 0 {\n", goName.c_str());
+                    fprintf(f, "\t\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
+                            fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+                    fprintf(f, "\t\t}\n");
+                } else {
+                    fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
+                            fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+                }
             }
             // Unknown nested struct (cppTypeName empty) — skip, needs manual handling.
             readerSlot++;
@@ -773,14 +804,14 @@ int main(int argc, char** argv) {
     extractType<GetKeyServerLocationsReply>(outDir, "GetKeyServerLocationsReply");
     extractType<CommitID>(outDir, "CommitID");
 
-    // --- Request types: GENERATED struct + template + constants, CUSTOM MarshalFDB ---
+    // --- Request types: GENERATED struct + template + MarshalFDB ---
     extractType<GetValueRequest>(outDir, "GetValueRequest");
-    extractType<GetKeyValuesRequest, false, false>(outDir, "GetKeyValuesRequest");
-    extractType<GetKeyRequest, false, false>(outDir, "GetKeyRequest");
+    extractType<GetKeyValuesRequest>(outDir, "GetKeyValuesRequest");
+    extractType<GetKeyRequest>(outDir, "GetKeyRequest");
     extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");
-    extractType<GetKeyServerLocationsRequest, false, false>(outDir, "GetKeyServerLocationsRequest");
-    extractType<CommitTransactionRequest, false, false>(outDir, "CommitTransactionRequest");
-    extractType<OpenDatabaseCoordRequest, false, false>(outDir, "OpenDatabaseCoordRequest");
+    extractType<GetKeyServerLocationsRequest>(outDir, "GetKeyServerLocationsRequest");
+    extractType<CommitTransactionRequest>(outDir, "CommitTransactionRequest");
+    extractType<OpenDatabaseCoordRequest>(outDir, "OpenDatabaseCoordRequest");
 
     // --- Nested types: GENERATED struct + constants, CUSTOM marshal/unmarshal ---
     extractType<SpanContext, false, false>(outDir, "SpanContext");

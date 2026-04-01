@@ -76,9 +76,15 @@ func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 
 func (m *CommitTransactionRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitTransactionRefVTable
-	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_0+2]), m.Field_0)
-	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_1+2]), m.Field_1)
-	obj.WriteBytes(int(vt[CommitTransactionRefSlotField_2+2]), m.Field_2)
+	if len(m.Field_0) > 0 {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_0+2]), m.Field_0)
+	}
+	if len(m.Field_1) > 0 {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_1+2]), m.Field_1)
+	}
+	if len(m.Field_2) > 0 {
+		obj.WriteRawOOL(int(vt[CommitTransactionRefSlotField_2+2]), m.Field_2)
+	}
 	obj.WriteInt64(int(vt[CommitTransactionRefSlotField_3+2]), m.Field_3)
 	obj.WriteBool(int(vt[CommitTransactionRefSlotField_4+2]), m.Field_4)
 	obj.WriteBool(int(vt[CommitTransactionRefSlotField_5+2]), m.Field_5)

@@ -98,12 +98,33 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitTransactionRequestVTable
 	obj.WriteUint32(int(vt[CommitTransactionRequestSlotFlags+2]), m.Flags)
-	obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
+	if len(m.IdempotencyId) > 0 {
+		obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
+	}
 }
 
 func WriteCommitTransactionRequest(obj *wire.ObjectWriter, parentOffset int, flags uint32, idempotencyId []byte) {
 	m := CommitTransactionRequest{Flags: flags, IdempotencyId: idempotencyId}
 	obj.WriteStruct(parentOffset, CommitTransactionRequestVTable, 4, m.MarshalInto)
+}
+
+func MarshalCommitTransactionRequest(flags uint32, idempotencyId []byte) []byte {
+	m := CommitTransactionRequest{Flags: flags, IdempotencyId: idempotencyId}
+	return wire.MarshalStructBlob(CommitTransactionRequestVTable, m.MarshalInto)
+}
+
+func (m *CommitTransactionRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(CommitTransactionRequestTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTransaction+2]), CommitTransactionRefVTable, 8, m.Transaction.MarshalInto)
+		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteUint32(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotFlags+2]), m.Flags)
+		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteStruct(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+		if len(m.IdempotencyId) > 0 {
+			obj.WriteBytes(int(CommitTransactionRequestVTable[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
+		}
+	})
 }
 
 var CommitTransactionRequestTemplate = wire.NewMessageTemplate(

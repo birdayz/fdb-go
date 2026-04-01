@@ -63,9 +63,15 @@ func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 
 func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyServerLocationsReplyVTable
-	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
-	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
-	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+	if len(m.Results) > 0 {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
+	}
+	if len(m.ResultsTssMapping) > 0 {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
+	}
+	if len(m.ResultsTagMapping) > 0 {
+		obj.WriteRawOOL(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+	}
 }
 
 func WriteGetKeyServerLocationsReply(obj *wire.ObjectWriter, parentOffset int, results []byte, resultsTssMapping []byte, resultsTagMapping []byte) {
@@ -81,9 +87,15 @@ func MarshalGetKeyServerLocationsReply(results []byte, resultsTssMapping []byte,
 func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetKeyServerLocationsReplyTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]), m.Results)
-		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
-		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+		if len(m.Results) > 0 {
+			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]), m.Results)
+		}
+		if len(m.ResultsTssMapping) > 0 {
+			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
+		}
+		if len(m.ResultsTagMapping) > 0 {
+			obj.WriteRawOOL(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+		}
 	})
 }
 

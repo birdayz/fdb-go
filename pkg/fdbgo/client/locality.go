@@ -120,15 +120,15 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
-// Real vtable from test vector: {22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
-// slot 5 (Reply) at offset 24: nested ReplyPromise struct
-// slot 8 (MinTenantVersion) at offset 4: int64
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
-	return types.MarshalGetKeyServerLocationsRequest(
-		key, 100,
-		replyToken.First, replyToken.Second,
-		NoTenantID, NoTenantID, // tenantId, minTenantVersion
-	)
+	req := types.GetKeyServerLocationsRequest{
+		Begin:            key,
+		Limit:            100,
+		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		Tenant:           types.TenantInfo{TenantId: NoTenantID},
+		MinTenantVersion: NoTenantID,
+	}
+	return req.MarshalFDB()
 }
 
 func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {

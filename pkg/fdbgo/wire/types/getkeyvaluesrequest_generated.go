@@ -105,12 +105,36 @@ func (m *GetKeyValuesRequest) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt64(int(vt[GetKeyValuesRequestSlotVersion+2]), m.Version)
 	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimit+2]), m.Limit)
 	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimitBytes+2]), m.LimitBytes)
-	obj.WriteBytes(int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	if len(m.SsLatestCommitVersions) > 0 {
+		obj.WriteBytes(int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	}
 }
 
 func WriteGetKeyValuesRequest(obj *wire.ObjectWriter, parentOffset int, version int64, limit int32, limitBytes int32, ssLatestCommitVersions []byte) {
 	m := GetKeyValuesRequest{Version: version, Limit: limit, LimitBytes: limitBytes, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetKeyValuesRequestVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetKeyValuesRequest(version int64, limit int32, limitBytes int32, ssLatestCommitVersions []byte) []byte {
+	m := GetKeyValuesRequest{Version: version, Limit: limit, LimitBytes: limitBytes, SsLatestCommitVersions: ssLatestCommitVersions}
+	return wire.MarshalStructBlob(GetKeyValuesRequestVTable, m.MarshalInto)
+}
+
+func (m *GetKeyValuesRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyValuesRequestTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteStruct(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotBegin+2]), KeySelectorRefVTable, 8, m.Begin.MarshalInto)
+		obj.WriteStruct(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotEnd+2]), KeySelectorRefVTable, 8, m.End.MarshalInto)
+		obj.WriteInt64(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotVersion+2]), m.Version)
+		obj.WriteInt32(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotLimit+2]), m.Limit)
+		obj.WriteInt32(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotLimitBytes+2]), m.LimitBytes)
+		obj.WriteStruct(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteStruct(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteStruct(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
+		if len(m.SsLatestCommitVersions) > 0 {
+			obj.WriteBytes(int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+		}
+	})
 }
 
 var GetKeyValuesRequestTemplate = wire.NewMessageTemplate(

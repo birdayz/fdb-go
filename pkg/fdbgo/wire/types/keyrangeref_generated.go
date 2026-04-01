@@ -36,8 +36,12 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 
 func (m *KeyRangeRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeyRangeRefVTable
-	obj.WriteBytes(int(vt[KeyRangeRefSlotBegin+2]), m.Begin)
-	obj.WriteBytes(int(vt[KeyRangeRefSlotEnd+2]), m.End)
+	if len(m.Begin) > 0 {
+		obj.WriteBytes(int(vt[KeyRangeRefSlotBegin+2]), m.Begin)
+	}
+	if len(m.End) > 0 {
+		obj.WriteBytes(int(vt[KeyRangeRefSlotEnd+2]), m.End)
+	}
 }
 
 func WriteKeyRangeRef(obj *wire.ObjectWriter, parentOffset int, begin []byte, end []byte) {

@@ -81,9 +81,13 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetValueRequestVTable
-	obj.WriteBytes(int(vt[GetValueRequestSlotKey+2]), m.Key)
+	if len(m.Key) > 0 {
+		obj.WriteBytes(int(vt[GetValueRequestSlotKey+2]), m.Key)
+	}
 	obj.WriteInt64(int(vt[GetValueRequestSlotVersion+2]), m.Version)
-	obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	if len(m.SsLatestCommitVersions) > 0 {
+		obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+	}
 }
 
 func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, key []byte, version int64, ssLatestCommitVersions []byte) {
@@ -99,12 +103,16 @@ func MarshalGetValueRequest(key []byte, version int64, ssLatestCommitVersions []
 func (m *GetValueRequest) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetValueRequestTemplate, func(obj *wire.ObjectWriter) {
-		obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotKey+2]), m.Key)
+		if len(m.Key) > 0 {
+			obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotKey+2]), m.Key)
+		}
 		obj.WriteInt64(int(GetValueRequestVTable[GetValueRequestSlotVersion+2]), m.Version)
 		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
 		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
 		obj.WriteStruct(int(GetValueRequestVTable[GetValueRequestSlotTenantInfo+2]), TenantInfoVTable, 8, m.TenantInfo.MarshalInto)
-		obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+		if len(m.SsLatestCommitVersions) > 0 {
+			obj.WriteBytes(int(GetValueRequestVTable[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
+		}
 	})
 }
 

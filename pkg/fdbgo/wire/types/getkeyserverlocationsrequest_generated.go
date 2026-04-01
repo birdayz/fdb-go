@@ -84,7 +84,9 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 
 func (m *GetKeyServerLocationsRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyServerLocationsRequestVTable
-	obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
+	if len(m.Begin) > 0 {
+		obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
+	}
 	obj.WriteInt32(int(vt[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
 	obj.WriteBool(int(vt[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
 	obj.WriteInt64(int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
@@ -93,6 +95,26 @@ func (m *GetKeyServerLocationsRequest) MarshalInto(obj *wire.ObjectWriter) {
 func WriteGetKeyServerLocationsRequest(obj *wire.ObjectWriter, parentOffset int, begin []byte, limit int32, reverse bool, minTenantVersion int64) {
 	m := GetKeyServerLocationsRequest{Begin: begin, Limit: limit, Reverse: reverse, MinTenantVersion: minTenantVersion}
 	obj.WriteStruct(parentOffset, GetKeyServerLocationsRequestVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetKeyServerLocationsRequest(begin []byte, limit int32, reverse bool, minTenantVersion int64) []byte {
+	m := GetKeyServerLocationsRequest{Begin: begin, Limit: limit, Reverse: reverse, MinTenantVersion: minTenantVersion}
+	return wire.MarshalStructBlob(GetKeyServerLocationsRequestVTable, m.MarshalInto)
+}
+
+func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetKeyServerLocationsRequestTemplate, func(obj *wire.ObjectWriter) {
+		if len(m.Begin) > 0 {
+			obj.WriteBytes(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotBegin+2]), m.Begin)
+		}
+		obj.WriteInt32(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
+		obj.WriteBool(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
+		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteStruct(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotTenant+2]), TenantInfoVTable, 8, m.Tenant.MarshalInto)
+		obj.WriteInt64(int(GetKeyServerLocationsRequestVTable[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
+	})
 }
 
 var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(

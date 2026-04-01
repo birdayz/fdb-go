@@ -43,8 +43,12 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 func (m *MutationRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := MutationRefVTable
 	obj.WriteUint8(int(vt[MutationRefSlotMutType+2]), m.MutType)
-	obj.WriteBytes(int(vt[MutationRefSlotParam1+2]), m.Param1)
-	obj.WriteBytes(int(vt[MutationRefSlotParam2+2]), m.Param2)
+	if len(m.Param1) > 0 {
+		obj.WriteBytes(int(vt[MutationRefSlotParam1+2]), m.Param1)
+	}
+	if len(m.Param2) > 0 {
+		obj.WriteBytes(int(vt[MutationRefSlotParam2+2]), m.Param2)
+	}
 }
 
 func WriteMutationRef(obj *wire.ObjectWriter, parentOffset int, mutType uint8, param1 []byte, param2 []byte) {

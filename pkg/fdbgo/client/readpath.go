@@ -46,12 +46,18 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			continue
 		}
 		replyToken, replyCh := conn.PrepareReply()
-		reqData := types.MarshalGetKeyRequest(
-			selectorKey, offset, orEqual,
-			tx.readVersion,
-			replyToken.First, replyToken.Second,
-			NoTenantID,
-		)
+		req := types.GetKeyRequest{
+			Sel: types.KeySelectorRef{
+				Key:     selectorKey,
+				OrEqual: orEqual,
+				Offset:  offset,
+			},
+			Version:                tx.readVersion,
+			Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
+			SsLatestCommitVersions: emptyVersionVector,
+		}
+		reqData := req.MarshalFDB()
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
 			continue
@@ -251,13 +257,17 @@ func isWrongShardServer(err error) bool {
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
-	return types.MarshalGetKeyValuesRequest(
-		begin, 1, true, // firstGreaterOrEqual
-		end, 1, true,
-		version, limit, UnlimitedBytes,
-		replyToken.First, replyToken.Second,
-		-1, // tenantId
-	)
+	req := types.GetKeyValuesRequest{
+		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: true, Offset: 1},
+		End:                    types.KeySelectorRef{Key: end, OrEqual: true, Offset: 1},
+		Version:                version,
+		Limit:                  limit,
+		LimitBytes:             UnlimitedBytes,
+		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		TenantInfo:             types.TenantInfo{TenantId: -1},
+		SsLatestCommitVersions: emptyVersionVector,
+	}
+	return req.MarshalFDB()
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
