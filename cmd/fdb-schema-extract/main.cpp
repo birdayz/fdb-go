@@ -44,6 +44,7 @@ struct FieldInfo {
     const char* goType;      // Go type string (e.g. "int64", "bool", "[]byte")
     const char* readerMethod; // e.g. "ReadInt64", "ReadBool", "ReadBytes"
     const char* writerMethod; // e.g. "WriteInt64", "WriteBool", "WriteBytes"
+    const char* cppTypeName; // C++ type name for nested structs (e.g. "TenantInfo")
 };
 
 template <class T>
@@ -124,6 +125,21 @@ template<> struct GoTypeMapping<UID> {
     static constexpr const char* writer = "WriteUID";
 };
 
+// Get a human-readable C++ type name for code generation comments and
+// nested struct dispatch. Returns "" for scalar/dynamic types (not needed).
+template <class T>
+const char* getCppTypeName() {
+    // Only needed for serialize_member types (nested structs).
+    // Add entries as needed for types we compose in MarshalFDB.
+    return "";
+}
+template<> const char* getCppTypeName<SpanContext>() { return "SpanContext"; }
+template<> const char* getCppTypeName<TenantInfo>() { return "TenantInfo"; }
+template<> const char* getCppTypeName<CommitTransactionRef>() { return "CommitTransactionRef"; }
+template<> const char* getCppTypeName<KeySelectorRef>() { return "KeySelectorRef"; }
+template<> const char* getCppTypeName<ReadOptions>() { return "ReadOptions"; }
+template<> const char* getCppTypeName<ReplyPromise<GetValueReply>>() { return "ReplyPromise"; }
+
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
     static constexpr bool isSerializing = false;
@@ -146,7 +162,8 @@ private:
         using namespace detail;
         fields.push_back(FieldInfo{"", classifyTrait<T>(),
             (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>,
-            GoTypeMapping<T>::goType, GoTypeMapping<T>::reader, GoTypeMapping<T>::writer});
+            GoTypeMapping<T>::goType, GoTypeMapping<T>::reader, GoTypeMapping<T>::writer,
+            getCppTypeName<T>()});
     }
 };
 
@@ -532,15 +549,22 @@ struct GoEmitter {
                 readerSlot += 2;
                 continue;
             }
-            if (isSkippedField(fi)) {
-                readerSlot++;
-                continue;
-            }
+            if (fi.size == 0) { readerSlot++; continue; } // zero-size (Arena)
 
             std::string goName = sanitizeGoName(fi.name);
             std::string slotConst = std::string(typeName) + "Slot" + goName;
-            fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
-                    fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+
+            if ((strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0)
+                && fi.cppTypeName[0] != '\0') {
+                // Known nested struct — call generated WriteXxx helper.
+                fprintf(f, "\t\tWrite%s(obj, int(%sVTable[%s+2]))\n",
+                        fi.cppTypeName, typeName, slotConst.c_str());
+            } else if (strcmp(fi.trait, "serialize_member") != 0 && strcmp(fi.trait, "struct_like") != 0) {
+                // Scalar/bytes field — direct write.
+                fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
+                        fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+            }
+            // Unknown nested struct (cppTypeName empty) — skip, needs manual handling.
             readerSlot++;
         }
         fprintf(f, "\t})\n}\n");
