@@ -6,15 +6,15 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 // NetworkAddress fields:
 //
-//	slot 0: fromHostname — serialize_member, size=4, align=4, indirection
-//	slot 1: field_1 — scalar, size=2, align=2
-//	slot 2: field_2 — scalar, size=2, align=2
-//	slot 3: field_3 — scalar, size=1, align=1
+//	slot 0: ip — serialize_member, size=4, align=4, indirection
+//	slot 1: port — scalar, size=2, align=2
+//	slot 2: flags — scalar, size=2, align=2
+//	slot 3: fromHostname — scalar, size=1, align=1
 const (
-	NetworkAddressSlotFromHostname = 0
-	NetworkAddressSlotField_1      = 1
-	NetworkAddressSlotField_2      = 2
-	NetworkAddressSlotField_3      = 3
+	NetworkAddressSlotIp           = 0
+	NetworkAddressSlotPort         = 1
+	NetworkAddressSlotFlags        = 2
+	NetworkAddressSlotFromHostname = 3
 )
 
 var NetworkAddressVTable = wire.VTable{12, 13, 4, 8, 10, 12}
@@ -28,10 +28,10 @@ var NetworkAddressVTableClosure = []wire.VTable{
 }
 
 type NetworkAddress struct {
-	// FromHostname: nested struct at slot 0 — use ReadNestedReader(NetworkAddressSlotFromHostname)
-	Field_1 uint16 // slot 1, ReadUint16
-	Field_2 uint16 // slot 2, ReadUint16
-	Field_3 bool   // slot 3, ReadBool
+	Ip           IPAddress // slot 0, nested
+	Port         uint16    // slot 1, ReadUint16
+	Flags        uint16    // slot 2, ReadUint16
+	FromHostname bool      // slot 3, ReadBool
 }
 
 func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
@@ -39,42 +39,61 @@ func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	// FromHostname (slot 0): unknown nested struct
-	if r.FieldPresent(NetworkAddressSlotField_1) {
-		m.Field_1 = r.ReadUint16(NetworkAddressSlotField_1)
+	if nestedR, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
+		m.Ip.UnmarshalFromReader(nestedR)
 	}
-	if r.FieldPresent(NetworkAddressSlotField_2) {
-		m.Field_2 = r.ReadUint16(NetworkAddressSlotField_2)
+	if r.FieldPresent(NetworkAddressSlotPort) {
+		m.Port = r.ReadUint16(NetworkAddressSlotPort)
 	}
-	if r.FieldPresent(NetworkAddressSlotField_3) {
-		m.Field_3 = r.ReadBool(NetworkAddressSlotField_3)
+	if r.FieldPresent(NetworkAddressSlotFlags) {
+		m.Flags = r.ReadUint16(NetworkAddressSlotFlags)
+	}
+	if r.FieldPresent(NetworkAddressSlotFromHostname) {
+		m.FromHostname = r.ReadBool(NetworkAddressSlotFromHostname)
 	}
 	return nil
 }
 
 func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
-	// FromHostname (slot 0): unknown nested struct
-	if r.FieldPresent(NetworkAddressSlotField_1) {
-		m.Field_1 = r.ReadUint16(NetworkAddressSlotField_1)
+	if nestedR, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
+		m.Ip.UnmarshalFromReader(nestedR)
 	}
-	if r.FieldPresent(NetworkAddressSlotField_2) {
-		m.Field_2 = r.ReadUint16(NetworkAddressSlotField_2)
+	if r.FieldPresent(NetworkAddressSlotPort) {
+		m.Port = r.ReadUint16(NetworkAddressSlotPort)
 	}
-	if r.FieldPresent(NetworkAddressSlotField_3) {
-		m.Field_3 = r.ReadBool(NetworkAddressSlotField_3)
+	if r.FieldPresent(NetworkAddressSlotFlags) {
+		m.Flags = r.ReadUint16(NetworkAddressSlotFlags)
+	}
+	if r.FieldPresent(NetworkAddressSlotFromHostname) {
+		m.FromHostname = r.ReadBool(NetworkAddressSlotFromHostname)
 	}
 }
 
 func (m *NetworkAddress) MarshalInto(obj *wire.ObjectWriter) {
 	vt := NetworkAddressVTable
-	obj.WriteUint16(int(vt[NetworkAddressSlotField_1+2]), m.Field_1)
-	obj.WriteUint16(int(vt[NetworkAddressSlotField_2+2]), m.Field_2)
-	obj.WriteBool(int(vt[NetworkAddressSlotField_3+2]), m.Field_3)
+	obj.WriteUint16(int(vt[NetworkAddressSlotPort+2]), m.Port)
+	obj.WriteUint16(int(vt[NetworkAddressSlotFlags+2]), m.Flags)
+	obj.WriteBool(int(vt[NetworkAddressSlotFromHostname+2]), m.FromHostname)
 }
 
-func WriteNetworkAddress(obj *wire.ObjectWriter, parentOffset int, field_1 uint16, field_2 uint16, field_3 bool) {
-	m := NetworkAddress{Field_1: field_1, Field_2: field_2, Field_3: field_3}
+func WriteNetworkAddress(obj *wire.ObjectWriter, parentOffset int, port uint16, flags uint16, fromHostname bool) {
+	m := NetworkAddress{Port: port, Flags: flags, FromHostname: fromHostname}
 	obj.WriteStruct(parentOffset, NetworkAddressVTable, 4, m.MarshalInto)
+}
+
+func MarshalNetworkAddress(port uint16, flags uint16, fromHostname bool) []byte {
+	m := NetworkAddress{Port: port, Flags: flags, FromHostname: fromHostname}
+	return wire.MarshalStructBlob(NetworkAddressVTable, m.MarshalInto)
+}
+
+func (m *NetworkAddress) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(NetworkAddressTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteStruct(int(NetworkAddressVTable[NetworkAddressSlotIp+2]), IPAddressVTable, 8, m.Ip.MarshalInto)
+		obj.WriteUint16(int(NetworkAddressVTable[NetworkAddressSlotPort+2]), m.Port)
+		obj.WriteUint16(int(NetworkAddressVTable[NetworkAddressSlotFlags+2]), m.Flags)
+		obj.WriteBool(int(NetworkAddressVTable[NetworkAddressSlotFromHostname+2]), m.FromHostname)
+	})
 }
 
 var NetworkAddressTemplate = wire.NewMessageTemplate(

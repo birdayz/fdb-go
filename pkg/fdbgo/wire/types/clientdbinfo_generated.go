@@ -34,9 +34,9 @@ var ClientDBInfoVTable = wire.VTable{30, 71, 36, 40, 4, 68, 44, 48, 52, 69, 56, 
 const ClientDBInfoFileID uint32 = 5355080
 
 var ClientDBInfoVTableClosure = []wire.VTable{
-	{8, 24, 20, 4},
 	{10, 28, 20, 4, 24},
 	{8, 16, 12, 4},
+	{8, 24, 20, 4},
 	{8, 9, 8, 4},
 	{12, 13, 4, 8, 10, 12},
 	{6, 8, 4},

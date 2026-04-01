@@ -162,6 +162,9 @@ template<> const char* getCppTypeName<TenantInfo>() { return "TenantInfo"; }
 template<> const char* getCppTypeName<CommitTransactionRef>() { return "CommitTransactionRef"; }
 template<> const char* getCppTypeName<KeySelectorRef>() { return "KeySelectorRef"; }
 template<> const char* getCppTypeName<KeyRangeRef>() { return "KeyRangeRef"; }
+template<> const char* getCppTypeName<NetworkAddressList>() { return "NetworkAddressList"; }
+template<> const char* getCppTypeName<NetworkAddress>() { return "NetworkAddress"; }
+template<> const char* getCppTypeName<IPAddress>() { return "IPAddress"; }
 template<> const char* getCppTypeName<ReadOptions>() { return "ReadOptions"; }
 
 // Detect VectorRef<KeyValueRef, VecSerStrategy::String> for typed vector parsing.
@@ -937,8 +940,11 @@ int main(int argc, char** argv) {
     extractType<GrvProxyInterface, true, false>(outDir, "GrvProxyInterface");
     extractType<CommitProxyInterface, true, false>(outDir, "CommitProxyInterface");
     extractType<StorageServerInterface, true, false>(outDir, "StorageServerInterface");
-    extractType<NetworkAddress, false, false>(outDir, "NetworkAddress");
-    extractType<IPAddress, false, false>(outDir, "IPAddress");
+    extractType<NetworkAddress>(outDir, "NetworkAddress");
+    extractType<IPAddress>(outDir, "IPAddress");
+    // Endpoint nesting chain: Endpoint → NetworkAddressList → NetworkAddress → IPAddress
+    extractType<Endpoint>(outDir, "Endpoint");
+    extractType<NetworkAddressList>(outDir, "NetworkAddressList");
     extractType<TenantInfo, false, false>(outDir, "TenantInfo");
     extractType<ReplyPromise<GetValueReply>, false, false>(outDir, "ReplyPromise");
 

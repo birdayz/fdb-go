@@ -116,7 +116,9 @@ void captureAllNames() {
         {"fdbrpc/include/fdbrpc/TenantInfo.h",
          {"TenantInfo"}},
         {"flow/include/flow/NetworkAddress.h",
-         {"NetworkAddress", "IPAddress"}},
+         {"NetworkAddress", "IPAddress", "NetworkAddressList"}},
+        {"fdbrpc/include/fdbrpc/FlowTransport.h",
+         {"Endpoint"}},
     };
 
     // Read and parse.
@@ -142,6 +144,11 @@ void captureAllNames() {
     g_names["MutationRef"] = "mutType, param1, param2";
     // TenantInfo: serialize is in serializable_traits<TenantInfo>, not inside struct body.
     g_names["TenantInfo"] = "tenantId, token, arena";
+    // NetworkAddress: the is_fb_function branch serializes (ip, port, flags, fromHostname).
+    // The name extractor picks the last serializer call which may be a different branch.
+    g_names["NetworkAddress"] = "ip, port, flags, fromHostname";
+    // Endpoint: is_fb_function branch serializes (addresses, token).
+    g_names["Endpoint"] = "addresses, token";
     // std::pair<KeyRangeRef, vector<SS>>: serialize(ar, first, second)
     g_names["LocationPair"] = "keyRange, servers";
 

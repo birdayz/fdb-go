@@ -22,9 +22,9 @@ var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
 const GetKeyServerLocationsReplyFileID uint32 = 10636023
 
 var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
+	{8, 24, 4, 20},
+	{8, 24, 4, 20},
 	{8, 24, 20, 4},
-	{8, 24, 4, 20},
-	{8, 24, 4, 20},
 	{8, 9, 8, 4},
 	{12, 13, 4, 8, 10, 12},
 	{6, 8, 4},
