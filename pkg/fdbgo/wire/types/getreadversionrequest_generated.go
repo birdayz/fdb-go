@@ -85,6 +85,23 @@ func WriteGetReadVersionRequest(obj *wire.ObjectWriter, parentOffset int, transa
 	obj.WriteStruct(parentOffset, GetReadVersionRequestVTable, 8, m.MarshalInto)
 }
 
+func MarshalGetReadVersionRequest(transactionCount uint32, flags uint32, tags []byte, maxVersion int64) []byte {
+	m := GetReadVersionRequest{TransactionCount: transactionCount, Flags: flags, Tags: tags, MaxVersion: maxVersion}
+	return wire.MarshalStructBlob(GetReadVersionRequestVTable, m.MarshalInto)
+}
+
+func (m *GetReadVersionRequest) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessagePacked(GetReadVersionRequestTemplate, func(obj *wire.ObjectWriter) {
+		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTransactionCount+2]), m.TransactionCount)
+		obj.WriteUint32(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotFlags+2]), m.Flags)
+		obj.WriteBytes(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotTags+2]), m.Tags)
+		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotReply+2]), ReplyPromiseVTable, 8, m.Reply.MarshalInto)
+		obj.WriteStruct(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotSpanContext+2]), SpanContextVTable, 8, m.SpanContext.MarshalInto)
+		obj.WriteInt64(int(GetReadVersionRequestVTable[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
+	})
+}
+
 var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
 	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
 )

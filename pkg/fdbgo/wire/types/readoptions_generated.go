@@ -22,7 +22,7 @@ const (
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
 
 type ReadOptions struct {
-	Type                            []byte // slot 0, ReadBytes
+	Type                            uint32 // slot 0, ReadUint32
 	CacheResult                     bool   // slot 1, ReadBool
 	HasDebugID                      bool   // slot 2, Optional, presence flag
 	DebugID                         []byte // slot 3, Optional, ReadBytes
@@ -37,7 +37,7 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(ReadOptionsSlotType) {
-		m.Type = r.ReadBytes(ReadOptionsSlotType)
+		m.Type = r.ReadUint32(ReadOptionsSlotType)
 	}
 	if r.FieldPresent(ReadOptionsSlotCacheResult) {
 		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
@@ -58,17 +58,17 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 
 func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReadOptionsVTable
-	obj.WriteBytes(int(vt[ReadOptionsSlotType+2]), m.Type)
+	obj.WriteUint32(int(vt[ReadOptionsSlotType+2]), m.Type)
 	obj.WriteBool(int(vt[ReadOptionsSlotCacheResult+2]), m.CacheResult)
 	obj.WriteBool(int(vt[ReadOptionsSlotLockAware+2]), m.LockAware)
 }
 
-func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, type_ []byte, cacheResult bool, lockAware bool) {
+func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, type_ uint32, cacheResult bool, lockAware bool) {
 	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
 	obj.WriteStruct(parentOffset, ReadOptionsVTable, 4, m.MarshalInto)
 }
 
-func MarshalReadOptions(type_ []byte, cacheResult bool, lockAware bool) []byte {
+func MarshalReadOptions(type_ uint32, cacheResult bool, lockAware bool) []byte {
 	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
 	return wire.MarshalStructBlob(ReadOptionsVTable, m.MarshalInto)
 }

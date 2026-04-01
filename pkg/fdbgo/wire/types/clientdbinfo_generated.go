@@ -57,7 +57,7 @@ type ClientDBInfo struct {
 	HasEncryptKeyProxy bool     // slot 7, Optional, presence flag
 	EncryptKeyProxy    []byte   // slot 8, Optional, ReadBytes
 	ClusterId          [16]byte // slot 9, ReadUID
-	ClusterType        []byte   // slot 10, ReadBytes
+	ClusterType        uint32   // slot 10, ReadUint32
 	HasMetaclusterName bool     // slot 11, Optional, presence flag
 	MetaclusterName    []byte   // slot 12, Optional, ReadBytes
 }
@@ -92,7 +92,7 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterType) {
-		m.ClusterType = r.ReadBytes(ClientDBInfoSlotClusterType)
+		m.ClusterType = r.ReadUint32(ClientDBInfoSlotClusterType)
 	}
 	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
 		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
@@ -108,10 +108,10 @@ func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteUID(int(vt[ClientDBInfoSlotId+2]), m.Id)
 	obj.WriteBytes(int(vt[ClientDBInfoSlotHistory+2]), m.History)
 	obj.WriteUID(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
-	obj.WriteBytes(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
+	obj.WriteUint32(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
 }
 
-func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType []byte) {
+func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType uint32) {
 	m := ClientDBInfo{GrvProxies: grvProxies, CommitProxies: commitProxies, Id: id, History: history, ClusterId: clusterId, ClusterType: clusterType}
 	obj.WriteStruct(parentOffset, ClientDBInfoVTable, 8, m.MarshalInto)
 }

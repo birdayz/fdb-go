@@ -167,9 +167,23 @@ struct TypeVisitor {
 private:
     template <class T> void pushField() {
         using namespace detail;
+        auto goType = GoTypeMapping<T>::goType;
+        auto reader = GoTypeMapping<T>::reader;
+        auto writer = GoTypeMapping<T>::writer;
+        // If the default GoTypeMapping applies ([]byte) but the field is actually
+        // a scalar, fall back to size-based mapping. Catches enum types, typedef'd
+        // scalars, and other types without explicit GoTypeMapping specialization.
+        if (is_scalar<T> && std::string(goType) == "[]byte") {
+            switch (fb_size<T>) {
+                case 1: goType = "uint8"; reader = "ReadUint8"; writer = "WriteUint8"; break;
+                case 2: goType = "uint16"; reader = "ReadUint16"; writer = "WriteUint16"; break;
+                case 4: goType = "uint32"; reader = "ReadUint32"; writer = "WriteUint32"; break;
+                case 8: goType = "uint64"; reader = "ReadUint64"; writer = "WriteUint64"; break;
+            }
+        }
         fields.push_back(FieldInfo{"", classifyTrait<T>(),
             (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>,
-            GoTypeMapping<T>::goType, GoTypeMapping<T>::reader, GoTypeMapping<T>::writer,
+            goType, reader, writer,
             getCppTypeName<T>()});
     }
 };
@@ -748,7 +762,7 @@ int main(int argc, char** argv) {
     extractType<GetValueRequest, false, false>(outDir, "GetValueRequest");
     extractType<GetKeyValuesRequest, false, false>(outDir, "GetKeyValuesRequest");
     extractType<GetKeyRequest, false, false>(outDir, "GetKeyRequest");
-    extractType<GetReadVersionRequest, false, false>(outDir, "GetReadVersionRequest");
+    extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");
     extractType<GetKeyServerLocationsRequest, false, false>(outDir, "GetKeyServerLocationsRequest");
     extractType<CommitTransactionRequest, false, false>(outDir, "CommitTransactionRequest");
     extractType<OpenDatabaseCoordRequest, false, false>(outDir, "OpenDatabaseCoordRequest");
