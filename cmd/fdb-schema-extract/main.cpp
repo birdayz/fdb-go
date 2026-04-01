@@ -138,7 +138,14 @@ template<> const char* getCppTypeName<TenantInfo>() { return "TenantInfo"; }
 template<> const char* getCppTypeName<CommitTransactionRef>() { return "CommitTransactionRef"; }
 template<> const char* getCppTypeName<KeySelectorRef>() { return "KeySelectorRef"; }
 template<> const char* getCppTypeName<ReadOptions>() { return "ReadOptions"; }
+// ReplyPromise<T> — all instantiations share the same vtable. Add each used instantiation.
 template<> const char* getCppTypeName<ReplyPromise<GetValueReply>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<GetKeyValuesReply>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<GetKeyReply>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<GetReadVersionReply>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<GetKeyServerLocationsReply>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<CommitID>>() { return "ReplyPromise"; }
+template<> const char* getCppTypeName<ReplyPromise<Void>>() { return "ReplyPromise"; }
 
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
@@ -349,9 +356,15 @@ struct GoEmitter {
                 fprintf(f, "\t%s    []byte // slot %d, Optional, ReadBytes\n", goName.c_str(), readerSlot + 1);
                 readerSlot += 2;
             } else if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
-                // Nested struct: skip field (must be handled manually).
-                fprintf(f, "\t// %s: nested struct at slot %d — use ReadNestedReader(%sSlot%s)\n",
-                        goName.c_str(), readerSlot, typeName, goName.c_str());
+                if (fi.cppTypeName[0] != '\0') {
+                    // Known nested struct — emit as a real field.
+                    fprintf(f, "\t%s %s // slot %d, nested\n",
+                            goName.c_str(), fi.cppTypeName, readerSlot);
+                } else {
+                    // Unknown nested struct — comment only.
+                    fprintf(f, "\t// %s: nested struct at slot %d — use ReadNestedReader(%sSlot%s)\n",
+                            goName.c_str(), readerSlot, typeName, goName.c_str());
+                }
                 readerSlot++;
             } else {
                 fprintf(f, "\t%s %s // slot %d, %s\n", goName.c_str(), fi.goType, readerSlot, fi.readerMethod);
@@ -556,9 +569,10 @@ struct GoEmitter {
 
             if ((strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0)
                 && fi.cppTypeName[0] != '\0') {
-                // Known nested struct — call generated WriteXxx helper.
-                fprintf(f, "\t\tWrite%s(obj, int(%sVTable[%s+2]))\n",
-                        fi.cppTypeName, typeName, slotConst.c_str());
+                // Known nested struct — use MarshalInto via WriteStruct.
+                // Compute max alignment for the nested type from its vtable.
+                fprintf(f, "\t\tobj.WriteStruct(int(%sVTable[%s+2]), %sVTable, 8, m.%s.MarshalInto)\n",
+                        typeName, slotConst.c_str(), fi.cppTypeName, goName.c_str());
             } else if (strcmp(fi.trait, "serialize_member") != 0 && strcmp(fi.trait, "struct_like") != 0) {
                 // Scalar/bytes field — direct write.
                 fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",

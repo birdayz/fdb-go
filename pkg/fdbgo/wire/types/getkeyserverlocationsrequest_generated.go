@@ -40,16 +40,16 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 }
 
 type GetKeyServerLocationsRequest struct {
-	Begin   []byte // slot 0, ReadBytes
-	HasEnd  bool   // slot 1, Optional, presence flag
-	End     []byte // slot 2, Optional, ReadBytes
-	Limit   int32  // slot 3, ReadInt32
-	Reverse bool   // slot 4, ReadBool
-	// Reply: nested struct at slot 5 — use ReadNestedReader(GetKeyServerLocationsRequestSlotReply)
-	// SpanContext: nested struct at slot 6 — use ReadNestedReader(GetKeyServerLocationsRequestSlotSpanContext)
-	// Tenant: nested struct at slot 7 — use ReadNestedReader(GetKeyServerLocationsRequestSlotTenant)
-	MinTenantVersion int64  // slot 8, ReadInt64
-	Arena            []byte // slot 9, ReadBytes
+	Begin            []byte       // slot 0, ReadBytes
+	HasEnd           bool         // slot 1, Optional, presence flag
+	End              []byte       // slot 2, Optional, ReadBytes
+	Limit            int32        // slot 3, ReadInt32
+	Reverse          bool         // slot 4, ReadBool
+	Reply            ReplyPromise // slot 5, nested
+	SpanContext      SpanContext  // slot 6, nested
+	Tenant           TenantInfo   // slot 7, nested
+	MinTenantVersion int64        // slot 8, ReadInt64
+	Arena            []byte       // slot 9, ReadBytes
 }
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {

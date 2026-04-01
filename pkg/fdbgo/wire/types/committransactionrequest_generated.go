@@ -47,19 +47,19 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 }
 
 type CommitTransactionRequest struct {
-	// Transaction: nested struct at slot 0 — use ReadNestedReader(CommitTransactionRequestSlotTransaction)
-	// Reply: nested struct at slot 1 — use ReadNestedReader(CommitTransactionRequestSlotReply)
-	Flags                   uint32 // slot 2, ReadUint32
-	HasDebugID              bool   // slot 3, Optional, presence flag
-	DebugID                 []byte // slot 4, Optional, ReadBytes
-	HasCommitCostEstimation bool   // slot 5, Optional, presence flag
-	CommitCostEstimation    []byte // slot 6, Optional, ReadBytes
-	HasTagSet               bool   // slot 7, Optional, presence flag
-	TagSet                  []byte // slot 8, Optional, ReadBytes
-	// SpanContext: nested struct at slot 9 — use ReadNestedReader(CommitTransactionRequestSlotSpanContext)
-	// TenantInfo: nested struct at slot 10 — use ReadNestedReader(CommitTransactionRequestSlotTenantInfo)
-	IdempotencyId []byte // slot 11, ReadBytes
-	Arena         []byte // slot 12, ReadBytes
+	Transaction             CommitTransactionRef // slot 0, nested
+	Reply                   ReplyPromise         // slot 1, nested
+	Flags                   uint32               // slot 2, ReadUint32
+	HasDebugID              bool                 // slot 3, Optional, presence flag
+	DebugID                 []byte               // slot 4, Optional, ReadBytes
+	HasCommitCostEstimation bool                 // slot 5, Optional, presence flag
+	CommitCostEstimation    []byte               // slot 6, Optional, ReadBytes
+	HasTagSet               bool                 // slot 7, Optional, presence flag
+	TagSet                  []byte               // slot 8, Optional, ReadBytes
+	SpanContext             SpanContext          // slot 9, nested
+	TenantInfo              TenantInfo           // slot 10, nested
+	IdempotencyId           []byte               // slot 11, ReadBytes
+	Arena                   []byte               // slot 12, ReadBytes
 }
 
 func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {

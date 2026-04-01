@@ -1970,3 +1970,15 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 - [ ] **Multi-version client** — plugin loading for older client versions.
 - [ ] **FDB status JSON parsing** — cluster status monitoring.
 - [ ] **Binding tester** — pass FDB's official binding test suite (47 core + 21 directory ops).
+
+### HIGH — Client code migration to generated structs
+
+Request type `_custom.go` files are eliminated by flipping `EmitStructs=true` in the C++ extractor. The generated `MarshalFDB()` composes nested structs via `MarshalInto`. Client code constructs the struct and calls `MarshalFDB()` instead of standalone `MarshalXxx(...)` functions.
+
+- [x] **GetReadVersionRequest** — flipped to EmitStructs=true, _custom.go deleted, grv.go updated
+- [ ] **GetValueRequest** — flip, delete _custom.go, update readpath.go
+- [ ] **GetKeyRequest** — flip, delete _custom.go, update readpath.go
+- [ ] **GetKeyValuesRequest** — flip, delete _custom.go, update readpath.go
+- [ ] **GetKeyServerLocationsRequest** — flip, delete _custom.go, update locality.go
+- [ ] **OpenDatabaseCoordRequest** — flip, delete _custom.go, update coordinator.go
+- [ ] **CommitTransactionRequest** — flip, delete _custom.go, update commitpath.go (most complex — nested CommitTransactionRef with pre-serialized vectors)

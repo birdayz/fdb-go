@@ -48,20 +48,20 @@ var GetKeyValuesRequestVTableClosure = []wire.VTable{
 }
 
 type GetKeyValuesRequest struct {
-	// Begin: nested struct at slot 0 — use ReadNestedReader(GetKeyValuesRequestSlotBegin)
-	// End: nested struct at slot 1 — use ReadNestedReader(GetKeyValuesRequestSlotEnd)
-	Version    int64  // slot 2, ReadInt64
-	Limit      int32  // slot 3, ReadInt32
-	LimitBytes int32  // slot 4, ReadInt32
-	HasTags    bool   // slot 5, Optional, presence flag
-	Tags       []byte // slot 6, Optional, ReadBytes
-	// Reply: nested struct at slot 7 — use ReadNestedReader(GetKeyValuesRequestSlotReply)
-	// SpanContext: nested struct at slot 8 — use ReadNestedReader(GetKeyValuesRequestSlotSpanContext)
-	// TenantInfo: nested struct at slot 9 — use ReadNestedReader(GetKeyValuesRequestSlotTenantInfo)
-	HasOptions             bool   // slot 10, Optional, presence flag
-	Options                []byte // slot 11, Optional, ReadBytes
-	SsLatestCommitVersions []byte // slot 12, ReadBytes
-	Arena                  []byte // slot 13, ReadBytes
+	Begin                  KeySelectorRef // slot 0, nested
+	End                    KeySelectorRef // slot 1, nested
+	Version                int64          // slot 2, ReadInt64
+	Limit                  int32          // slot 3, ReadInt32
+	LimitBytes             int32          // slot 4, ReadInt32
+	HasTags                bool           // slot 5, Optional, presence flag
+	Tags                   []byte         // slot 6, Optional, ReadBytes
+	Reply                  ReplyPromise   // slot 7, nested
+	SpanContext            SpanContext    // slot 8, nested
+	TenantInfo             TenantInfo     // slot 9, nested
+	HasOptions             bool           // slot 10, Optional, presence flag
+	Options                []byte         // slot 11, Optional, ReadBytes
+	SsLatestCommitVersions []byte         // slot 12, ReadBytes
+	Arena                  []byte         // slot 13, ReadBytes
 }
 
 func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {

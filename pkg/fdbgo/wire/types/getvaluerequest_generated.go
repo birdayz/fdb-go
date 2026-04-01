@@ -40,15 +40,15 @@ var GetValueRequestVTableClosure = []wire.VTable{
 
 type GetValueRequest struct {
 	// Key: nested struct at slot 0 — use ReadNestedReader(GetValueRequestSlotKey)
-	Version int64  // slot 1, ReadInt64
-	HasTags bool   // slot 2, Optional, presence flag
-	Tags    []byte // slot 3, Optional, ReadBytes
-	// Reply: nested struct at slot 4 — use ReadNestedReader(GetValueRequestSlotReply)
-	// SpanContext: nested struct at slot 5 — use ReadNestedReader(GetValueRequestSlotSpanContext)
-	// TenantInfo: nested struct at slot 6 — use ReadNestedReader(GetValueRequestSlotTenantInfo)
-	HasOptions             bool   // slot 7, Optional, presence flag
-	Options                []byte // slot 8, Optional, ReadBytes
-	SsLatestCommitVersions []byte // slot 9, ReadBytes
+	Version                int64        // slot 1, ReadInt64
+	HasTags                bool         // slot 2, Optional, presence flag
+	Tags                   []byte       // slot 3, Optional, ReadBytes
+	Reply                  ReplyPromise // slot 4, nested
+	SpanContext            SpanContext  // slot 5, nested
+	TenantInfo             TenantInfo   // slot 6, nested
+	HasOptions             bool         // slot 7, Optional, presence flag
+	Options                []byte       // slot 8, Optional, ReadBytes
+	SsLatestCommitVersions []byte       // slot 9, ReadBytes
 }
 
 func (m *GetValueRequest) UnmarshalFDB(data []byte) error {

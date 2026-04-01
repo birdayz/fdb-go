@@ -36,14 +36,14 @@ var GetReadVersionRequestVTableClosure = []wire.VTable{
 }
 
 type GetReadVersionRequest struct {
-	TransactionCount uint32 // slot 0, ReadUint32
-	Flags            uint32 // slot 1, ReadUint32
-	Tags             []byte // slot 2, ReadBytes
-	HasDebugID       bool   // slot 3, Optional, presence flag
-	DebugID          []byte // slot 4, Optional, ReadBytes
-	// Reply: nested struct at slot 5 — use ReadNestedReader(GetReadVersionRequestSlotReply)
-	// SpanContext: nested struct at slot 6 — use ReadNestedReader(GetReadVersionRequestSlotSpanContext)
-	MaxVersion int64 // slot 7, ReadInt64
+	TransactionCount uint32       // slot 0, ReadUint32
+	Flags            uint32       // slot 1, ReadUint32
+	Tags             []byte       // slot 2, ReadBytes
+	HasDebugID       bool         // slot 3, Optional, presence flag
+	DebugID          []byte       // slot 4, Optional, ReadBytes
+	Reply            ReplyPromise // slot 5, nested
+	SpanContext      SpanContext  // slot 6, nested
+	MaxVersion       int64        // slot 7, ReadInt64
 }
 
 func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {

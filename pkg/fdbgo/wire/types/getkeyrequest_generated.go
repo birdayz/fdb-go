@@ -42,17 +42,17 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 }
 
 type GetKeyRequest struct {
-	// Sel: nested struct at slot 0 — use ReadNestedReader(GetKeyRequestSlotSel)
-	Version int64  // slot 1, ReadInt64
-	HasTags bool   // slot 2, Optional, presence flag
-	Tags    []byte // slot 3, Optional, ReadBytes
-	// Reply: nested struct at slot 4 — use ReadNestedReader(GetKeyRequestSlotReply)
-	// SpanContext: nested struct at slot 5 — use ReadNestedReader(GetKeyRequestSlotSpanContext)
-	// TenantInfo: nested struct at slot 6 — use ReadNestedReader(GetKeyRequestSlotTenantInfo)
-	HasOptions             bool   // slot 7, Optional, presence flag
-	Options                []byte // slot 8, Optional, ReadBytes
-	SsLatestCommitVersions []byte // slot 9, ReadBytes
-	Arena                  []byte // slot 10, ReadBytes
+	Sel                    KeySelectorRef // slot 0, nested
+	Version                int64          // slot 1, ReadInt64
+	HasTags                bool           // slot 2, Optional, presence flag
+	Tags                   []byte         // slot 3, Optional, ReadBytes
+	Reply                  ReplyPromise   // slot 4, nested
+	SpanContext            SpanContext    // slot 5, nested
+	TenantInfo             TenantInfo     // slot 6, nested
+	HasOptions             bool           // slot 7, Optional, presence flag
+	Options                []byte         // slot 8, Optional, ReadBytes
+	SsLatestCommitVersions []byte         // slot 9, ReadBytes
+	Arena                  []byte         // slot 10, ReadBytes
 }
 
 func (m *GetKeyRequest) UnmarshalFDB(data []byte) error {
