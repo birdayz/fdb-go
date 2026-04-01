@@ -97,11 +97,7 @@ template<> struct GoTypeMapping<int32_t> {
     static constexpr const char* reader = "ReadInt32";
     static constexpr const char* writer = "WriteInt32";
 };
-template<> struct GoTypeMapping<int> {  // C++ int = 32-bit
-    static constexpr const char* goType = "int32";
-    static constexpr const char* reader = "ReadInt32";
-    static constexpr const char* writer = "WriteInt32";
-};
+// int and int32_t are the same type on most platforms — skip duplicate.
 template<> struct GoTypeMapping<uint32_t> {
     static constexpr const char* goType = "uint32";
     static constexpr const char* reader = "ReadUint32";
@@ -301,23 +297,14 @@ struct GoEmitter {
     }
 
     // Emit Go constants mapping field names to Reader slot indices.
-    // Only emitted when we have real field names (not "field_N" placeholders).
     void emitSlotConstants(const char* typeName, const std::vector<FieldInfo>& fields) {
-        // Check if we have any real names.
-        bool hasRealNames = false;
-        for (auto& fi : fields) {
-            if (fi.name.substr(0, 6) != "field_") { hasRealNames = true; break; }
-        }
-        if (!hasRealNames) return;
-
+        if (fields.empty()) return;
         fprintf(f, "const (\n");
         int readerSlot = 0;
         for (size_t i = 0; i < fields.size(); i++) {
             auto& fi = fields[i];
-            if (fi.name.substr(0, 6) != "field_") {
-                std::string goName = sanitizeGoName(fi.name);
-                fprintf(f, "\t%sSlot%s = %d\n", typeName, goName.c_str(), readerSlot);
-            }
+            std::string goName = sanitizeGoName(fi.name);
+            fprintf(f, "\t%sSlot%s = %d\n", typeName, goName.c_str(), readerSlot);
             readerSlot += (strcmp(fi.trait, "union_like") == 0) ? 2 : 1;
         }
         fprintf(f, ")\n");
@@ -385,7 +372,10 @@ struct GoEmitter {
     }
 
     // Emit MarshalFDB with all writes inlined. Skips optional and nested struct fields.
+    // Only emitted for types with a file_identifier (top-level messages, not nested types).
     void emitMarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields, uint32_t fileId) {
+        if (fileId == 0) return; // Nested type — no standalone MarshalFDB.
+
         // Compute max field alignment for WriteMessage.
         int maxAlign = 4;
         for (auto& fi : fields)
@@ -423,7 +413,9 @@ struct GoEmitter {
 // Runs in a forked child (crash-safe).
 // Set SkipObjectWriter=true for Interface types where default-constructed
 // RequestStream fields crash ObjectWriter.
-template <class T, bool SkipObjectWriter = false>
+// EmitStructs: if true, emit Go struct + UnmarshalFDB + MarshalFDB.
+// If false, emit only vtable + slot constants (type has hand-written Go code).
+template <class T, bool SkipObjectWriter = false, bool EmitStructs = true>
 void extractType(GoEmitter& out, const char* name) {
     // Extract in a child process to survive constructor crashes.
     int pipefd[2];
@@ -469,9 +461,11 @@ void extractType(GoEmitter& out, const char* name) {
         e.emitVTable(name, emitVT);
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
-        e.emitStruct(name, visitor.fields);
-        e.emitUnmarshalFDB(name, visitor.fields);
-        e.emitMarshalFDB(name, visitor.fields, getFileId<T>());
+        if constexpr (EmitStructs) {
+            e.emitStruct(name, visitor.fields);
+            e.emitUnmarshalFDB(name, visitor.fields);
+            e.emitMarshalFDB(name, visitor.fields, getFileId<T>());
+        }
         e.separator();
         fclose(pf);
         _exit(0);
@@ -511,41 +505,41 @@ int main(int argc, char** argv) {
     GoEmitter out{f};
     out.header();
 
-    // --- Client request/reply messages ---
-    extractType<GetValueRequest>(out, "GetValueRequest");
+    // --- Reply types: GENERATED struct + UnmarshalFDB + MarshalFDB ---
     extractType<GetValueReply>(out, "GetValueReply");
-    extractType<GetKeyValuesRequest>(out, "GetKeyValuesRequest");
     extractType<GetKeyValuesReply>(out, "GetKeyValuesReply");
-    extractType<GetKeyRequest>(out, "GetKeyRequest");
     extractType<GetKeyReply>(out, "GetKeyReply");
-    extractType<GetReadVersionRequest>(out, "GetReadVersionRequest");
     extractType<GetReadVersionReply>(out, "GetReadVersionReply");
-    extractType<GetKeyServerLocationsRequest>(out, "GetKeyServerLocationsRequest");
     extractType<GetKeyServerLocationsReply>(out, "GetKeyServerLocationsReply");
-    extractType<CommitTransactionRequest>(out, "CommitTransactionRequest");
     extractType<CommitID>(out, "CommitID");
-    extractType<OpenDatabaseCoordRequest>(out, "OpenDatabaseCoordRequest");
 
-    // --- Nested types (used in request serialization) ---
-    extractType<SpanContext>(out, "SpanContext");
-    extractType<KeySelectorRef>(out, "KeySelectorRef");
-    extractType<MutationRef>(out, "MutationRef");
-    extractType<KeyRangeRef>(out, "KeyRangeRef");
-    extractType<CommitTransactionRef>(out, "CommitTransactionRef");
-    extractType<ReadOptions>(out, "ReadOptions");
-    extractType<Error>(out, "Error");
+    // --- Request types: vtable + slot constants ONLY (hand-written MarshalFDB) ---
+    extractType<GetValueRequest, false, false>(out, "GetValueRequest");
+    extractType<GetKeyValuesRequest, false, false>(out, "GetKeyValuesRequest");
+    extractType<GetKeyRequest, false, false>(out, "GetKeyRequest");
+    extractType<GetReadVersionRequest, false, false>(out, "GetReadVersionRequest");
+    extractType<GetKeyServerLocationsRequest, false, false>(out, "GetKeyServerLocationsRequest");
+    extractType<CommitTransactionRequest, false, false>(out, "CommitTransactionRequest");
+    extractType<OpenDatabaseCoordRequest, false, false>(out, "OpenDatabaseCoordRequest");
 
-    // --- Response/nested types (used in reply parsing) ---
-    extractType<ClientDBInfo>(out, "ClientDBInfo");
-    extractType<GrvProxyInterface, true>(out, "GrvProxyInterface");
-    extractType<CommitProxyInterface, true>(out, "CommitProxyInterface");
-    extractType<StorageServerInterface, true>(out, "StorageServerInterface");
-    extractType<NetworkAddress>(out, "NetworkAddress");
-    extractType<IPAddress>(out, "IPAddress");
+    // --- Nested types: vtable + slot constants ONLY (hand-written marshal/unmarshal) ---
+    extractType<SpanContext, false, false>(out, "SpanContext");
+    extractType<KeySelectorRef, false, false>(out, "KeySelectorRef");
+    extractType<MutationRef, false, false>(out, "MutationRef");
+    extractType<KeyRangeRef, false, false>(out, "KeyRangeRef");
+    extractType<CommitTransactionRef, false, false>(out, "CommitTransactionRef");
+    extractType<ReadOptions, false, false>(out, "ReadOptions");
+    extractType<Error, false, false>(out, "Error");
 
-    extractType<TenantInfo>(out, "TenantInfo");
-    // ReplyPromise<T> is a template — vtable is same for all T (just a UID).
-    extractType<ReplyPromise<GetValueReply>>(out, "ReplyPromise");
+    // --- Interface/nested types: vtable + slot constants ONLY ---
+    extractType<ClientDBInfo, false, false>(out, "ClientDBInfo");
+    extractType<GrvProxyInterface, true, false>(out, "GrvProxyInterface");
+    extractType<CommitProxyInterface, true, false>(out, "CommitProxyInterface");
+    extractType<StorageServerInterface, true, false>(out, "StorageServerInterface");
+    extractType<NetworkAddress, false, false>(out, "NetworkAddress");
+    extractType<IPAddress, false, false>(out, "IPAddress");
+    extractType<TenantInfo, false, false>(out, "TenantInfo");
+    extractType<ReplyPromise<GetValueReply>, false, false>(out, "ReplyPromise");
 
     fclose(f);
     fprintf(stderr, "Done.\n");

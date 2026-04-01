@@ -80,11 +80,12 @@ func parseGetKeyReply(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GetKey: %w", err)
 	}
-	var reply types.GetKeyReply
-	if err := reply.UnmarshalFrom(r); err != nil {
-		return nil, fmt.Errorf("unmarshal GetKeyReply: %w", err)
+	// Navigate into the KeySelector nested struct (slot 3) to extract the key (inner slot 0).
+	selR, err := r.ReadNestedReader(types.GetKeyReplySlotSel)
+	if err != nil {
+		return nil, fmt.Errorf("read KeySelector: %w", err)
 	}
-	return reply.Key, nil
+	return selR.ReadBytes(types.KeySelectorRefSlotKey), nil
 }
 
 // getValue sends a GetValueRequest to the appropriate storage server.
@@ -308,12 +309,13 @@ func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
 func parseGetValueReply(data []byte) ([]byte, error) {
-	r, err := wire.ReadErrorOr(data)
-	if err != nil {
+	if _, err := wire.ReadErrorOr(data); err != nil {
 		return nil, fmt.Errorf("GetValue: %w", err)
 	}
 	var reply types.GetValueReply
-	reply.UnmarshalFrom(r)
+	if err := reply.UnmarshalFDB(data); err != nil {
+		return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
+	}
 	if !reply.HasValue {
 		return nil, nil // key not found
 	}

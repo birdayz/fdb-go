@@ -4,6 +4,448 @@ package types
 
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
+// GetValueReply fields:
+//
+//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
+//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
+//	slot 3: value — union_like, size=4, align=4, indirection
+//	slot 5: cached — scalar, size=1, align=1
+const (
+	GetValueReplySlotPenalty = 0
+	GetValueReplySlotError   = 1
+	GetValueReplySlotValue   = 3
+	GetValueReplySlotCached  = 5
+)
+
+var GetValueReplyVTable = wire.VTable{16, 23, 4, 20, 12, 21, 16, 22}
+
+const GetValueReplyFileID uint32 = 1378929
+
+var GetValueReplyVTableClosure = []wire.VTable{
+	{6, 8, 4},
+	{6, 6, 4},
+	{16, 23, 4, 20, 12, 21, 16, 22},
+}
+
+type GetValueReply struct {
+	Penalty  float64 // slot 0, ReadFloat64
+	HasError bool    // slot 1, Optional, presence flag
+	Error    []byte  // slot 2, Optional, ReadBytes
+	HasValue bool    // slot 3, Optional, presence flag
+	Value    []byte  // slot 4, Optional, ReadBytes
+	Cached   bool    // slot 5, ReadBool
+}
+
+func (m *GetValueReply) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetValueReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
+	}
+	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
+		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
+		m.HasValue = true
+	}
+	if r.FieldPresent(GetValueReplySlotCached) {
+		m.Cached = r.ReadBool(GetValueReplySlotCached)
+	}
+	return nil
+}
+
+func (m *GetValueReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(GetValueReplyFileID, GetValueReplyVTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteFloat64(int(GetValueReplyVTable[GetValueReplySlotPenalty+2]), m.Penalty)
+		obj.WriteBool(int(GetValueReplyVTable[GetValueReplySlotCached+2]), m.Cached)
+	})
+}
+
+// GetKeyValuesReply fields:
+//
+//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
+//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
+//	slot 3: data — dynamic_size, size=4, align=4, indirection
+//	slot 4: version — scalar, size=8, align=8
+//	slot 5: more — scalar, size=1, align=1
+//	slot 6: cached — scalar, size=1, align=1
+//	slot 7: arena — scalar, size=0, align=1
+const (
+	GetKeyValuesReplySlotPenalty = 0
+	GetKeyValuesReplySlotError   = 1
+	GetKeyValuesReplySlotData    = 3
+	GetKeyValuesReplySlotVersion = 4
+	GetKeyValuesReplySlotMore    = 5
+	GetKeyValuesReplySlotCached  = 6
+	GetKeyValuesReplySlotArena   = 7
+)
+
+var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
+
+const GetKeyValuesReplyFileID uint32 = 1783066
+
+var GetKeyValuesReplyVTableClosure = []wire.VTable{
+	{6, 8, 4},
+	{6, 6, 4},
+	{18, 31, 4, 28, 20, 24, 12, 29, 30},
+}
+
+type GetKeyValuesReply struct {
+	Penalty  float64 // slot 0, ReadFloat64
+	HasError bool    // slot 1, Optional, presence flag
+	Error    []byte  // slot 2, Optional, ReadBytes
+	Data     []byte  // slot 3, ReadBytes
+	Version  int64   // slot 4, ReadInt64
+	More     bool    // slot 5, ReadBool
+	Cached   bool    // slot 6, ReadBool
+	Arena    []byte  // slot 7, ReadBytes
+}
+
+func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotError) && r.ReadUint8(GetKeyValuesReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetKeyValuesReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotData) {
+		m.Data = r.ReadBytes(GetKeyValuesReplySlotData)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotVersion) {
+		m.Version = r.ReadInt64(GetKeyValuesReplySlotVersion)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotMore) {
+		m.More = r.ReadBool(GetKeyValuesReplySlotMore)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotCached) {
+		m.Cached = r.ReadBool(GetKeyValuesReplySlotCached)
+	}
+	if r.FieldPresent(GetKeyValuesReplySlotArena) {
+		m.Arena = r.ReadBytes(GetKeyValuesReplySlotArena)
+	}
+	return nil
+}
+
+func (m *GetKeyValuesReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteFloat64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotPenalty+2]), m.Penalty)
+		obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotData+2]), m.Data)
+		obj.WriteInt64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotVersion+2]), m.Version)
+		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotMore+2]), m.More)
+		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotCached+2]), m.Cached)
+		obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotArena+2]), m.Arena)
+	})
+}
+
+// GetKeyReply fields:
+//
+//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
+//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
+//	slot 3: sel — serialize_member, size=4, align=4, indirection
+//	slot 4: cached — scalar, size=1, align=1
+const (
+	GetKeyReplySlotPenalty = 0
+	GetKeyReplySlotError   = 1
+	GetKeyReplySlotSel     = 3
+	GetKeyReplySlotCached  = 4
+)
+
+var GetKeyReplyVTable = wire.VTable{14, 22, 4, 20, 12, 16, 21}
+
+const GetKeyReplyFileID uint32 = 11226513
+
+var GetKeyReplyVTableClosure = []wire.VTable{
+	{6, 8, 4},
+	{6, 6, 4},
+	{10, 13, 4, 12, 8},
+	{14, 22, 4, 20, 12, 16, 21},
+}
+
+type GetKeyReply struct {
+	Penalty  float64 // slot 0, ReadFloat64
+	HasError bool    // slot 1, Optional, presence flag
+	Error    []byte  // slot 2, Optional, ReadBytes
+	// Sel: nested struct at slot 3 — use ReadNestedReader(GetKeyReplySlotSel)
+	Cached bool // slot 4, ReadBool
+}
+
+func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetKeyReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
+	}
+	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
+		m.HasError = true
+	}
+	// Sel (slot 3): nested struct — use r.ReadNestedReader(GetKeyReplySlotSel)
+	if r.FieldPresent(GetKeyReplySlotCached) {
+		m.Cached = r.ReadBool(GetKeyReplySlotCached)
+	}
+	return nil
+}
+
+func (m *GetKeyReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(GetKeyReplyFileID, GetKeyReplyVTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteFloat64(int(GetKeyReplyVTable[GetKeyReplySlotPenalty+2]), m.Penalty)
+		obj.WriteBool(int(GetKeyReplyVTable[GetKeyReplySlotCached+2]), m.Cached)
+	})
+}
+
+// GetReadVersionReply fields:
+//
+//	slot 0: BasicLoadBalancedReply::processBusyTime — scalar, size=4, align=4
+//	slot 1: version — scalar, size=8, align=8
+//	slot 2: locked — scalar, size=1, align=1
+//	slot 3: metadataVersion — union_like, size=4, align=4, indirection
+//	slot 5: tagThrottleInfo — vector_like, size=4, align=4, indirection
+//	slot 6: midShardSize — scalar, size=8, align=8
+//	slot 7: rkDefaultThrottled — scalar, size=1, align=1
+//	slot 8: rkBatchThrottled — scalar, size=1, align=1
+//	slot 9: ssVersionVectorDelta — dynamic_size, size=4, align=4, indirection
+//	slot 10: proxyId — scalar, size=16, align=8
+//	slot 11: proxyTagThrottledDuration — scalar, size=8, align=8
+const (
+	GetReadVersionReplySlotProcessBusyTime           = 0
+	GetReadVersionReplySlotVersion                   = 1
+	GetReadVersionReplySlotLocked                    = 2
+	GetReadVersionReplySlotMetadataVersion           = 3
+	GetReadVersionReplySlotTagThrottleInfo           = 5
+	GetReadVersionReplySlotMidShardSize              = 6
+	GetReadVersionReplySlotRkDefaultThrottled        = 7
+	GetReadVersionReplySlotRkBatchThrottled          = 8
+	GetReadVersionReplySlotSsVersionVectorDelta      = 9
+	GetReadVersionReplySlotProxyId                   = 10
+	GetReadVersionReplySlotProxyTagThrottledDuration = 11
+)
+
+var GetReadVersionReplyVTable = wire.VTable{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36}
+
+const GetReadVersionReplyFileID uint32 = 15709388
+
+var GetReadVersionReplyVTableClosure = []wire.VTable{
+	{8, 20, 4, 12},
+	{6, 8, 4},
+	{8, 12, 4, 8},
+	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
+}
+
+type GetReadVersionReply struct {
+	ProcessBusyTime           int32   // slot 0, ReadInt32
+	Version                   int64   // slot 1, ReadInt64
+	Locked                    bool    // slot 2, ReadBool
+	HasMetadataVersion        bool    // slot 3, Optional, presence flag
+	MetadataVersion           []byte  // slot 4, Optional, ReadBytes
+	TagThrottleInfo           []byte  // slot 5, ReadBytes
+	MidShardSize              int64   // slot 6, ReadInt64
+	RkDefaultThrottled        bool    // slot 7, ReadBool
+	RkBatchThrottled          bool    // slot 8, ReadBool
+	SsVersionVectorDelta      []byte  // slot 9, ReadBytes
+	ProxyId                   []byte  // slot 10, ReadBytes
+	ProxyTagThrottledDuration float64 // slot 11, ReadFloat64
+}
+
+func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
+		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotVersion) {
+		m.Version = r.ReadInt64(GetReadVersionReplySlotVersion)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotLocked) {
+		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
+		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
+		m.HasMetadataVersion = true
+	}
+	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
+		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
+		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkDefaultThrottled) {
+		m.RkDefaultThrottled = r.ReadBool(GetReadVersionReplySlotRkDefaultThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkBatchThrottled) {
+		m.RkBatchThrottled = r.ReadBool(GetReadVersionReplySlotRkBatchThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotSsVersionVectorDelta) {
+		m.SsVersionVectorDelta = r.ReadBytes(GetReadVersionReplySlotSsVersionVectorDelta)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyId) {
+		m.ProxyId = r.ReadBytes(GetReadVersionReplySlotProxyId)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
+		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
+	}
+	return nil
+}
+
+func (m *GetReadVersionReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteInt32(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)
+		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotVersion+2]), m.Version)
+		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotLocked+2]), m.Locked)
+		obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotTagThrottleInfo+2]), m.TagThrottleInfo)
+		obj.WriteInt64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotMidShardSize+2]), m.MidShardSize)
+		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkDefaultThrottled+2]), m.RkDefaultThrottled)
+		obj.WriteBool(int(GetReadVersionReplyVTable[GetReadVersionReplySlotRkBatchThrottled+2]), m.RkBatchThrottled)
+		obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotSsVersionVectorDelta+2]), m.SsVersionVectorDelta)
+		obj.WriteBytes(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyId+2]), m.ProxyId)
+		obj.WriteFloat64(int(GetReadVersionReplyVTable[GetReadVersionReplySlotProxyTagThrottledDuration+2]), m.ProxyTagThrottledDuration)
+	})
+}
+
+// GetKeyServerLocationsReply fields:
+//
+//	slot 0: results — vector_like, size=4, align=4, indirection
+//	slot 1: resultsTssMapping — vector_like, size=4, align=4, indirection
+//	slot 2: resultsTagMapping — vector_like, size=4, align=4, indirection
+//	slot 3: arena — scalar, size=0, align=1
+const (
+	GetKeyServerLocationsReplySlotResults           = 0
+	GetKeyServerLocationsReplySlotResultsTssMapping = 1
+	GetKeyServerLocationsReplySlotResultsTagMapping = 2
+	GetKeyServerLocationsReplySlotArena             = 3
+)
+
+var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
+
+const GetKeyServerLocationsReplyFileID uint32 = 10636023
+
+var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
+	{8, 24, 20, 4},
+	{8, 24, 4, 20},
+	{8, 24, 4, 20},
+	{8, 9, 8, 4},
+	{12, 13, 4, 8, 10, 12},
+	{6, 8, 4},
+	{16, 34, 4, 20, 24, 32, 28, 33},
+	{8, 12, 4, 8},
+	{10, 13, 4, 12, 8},
+	{10, 16, 4, 8, 12},
+}
+
+type GetKeyServerLocationsReply struct {
+	Results           []byte // slot 0, ReadBytes
+	ResultsTssMapping []byte // slot 1, ReadBytes
+	ResultsTagMapping []byte // slot 2, ReadBytes
+	Arena             []byte // slot 3, ReadBytes
+}
+
+func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
+		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTssMapping) {
+		m.ResultsTssMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTssMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTagMapping) {
+		m.ResultsTagMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTagMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotArena) {
+		m.Arena = r.ReadBytes(GetKeyServerLocationsReplySlotArena)
+	}
+	return nil
+}
+
+func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, func(obj *wire.ObjectWriter) {
+		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]), m.Results)
+		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
+		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
+		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotArena+2]), m.Arena)
+	})
+}
+
+// CommitID fields:
+//
+//	slot 0: version — scalar, size=8, align=8
+//	slot 1: txnBatchId — scalar, size=2, align=2
+//	slot 2: metadataVersion — union_like, size=4, align=4, indirection
+//	slot 4: conflictingKRIndices — union_like, size=4, align=4, indirection
+const (
+	CommitIDSlotVersion              = 0
+	CommitIDSlotTxnBatchId           = 1
+	CommitIDSlotMetadataVersion      = 2
+	CommitIDSlotConflictingKRIndices = 4
+)
+
+var CommitIDVTable = wire.VTable{16, 24, 4, 20, 22, 12, 23, 16}
+
+const CommitIDFileID uint32 = 14254927
+
+var CommitIDVTableClosure = []wire.VTable{
+	{6, 8, 4},
+	{16, 24, 4, 20, 22, 12, 23, 16},
+}
+
+type CommitID struct {
+	Version                 int64  // slot 0, ReadInt64
+	TxnBatchId              uint16 // slot 1, ReadUint16
+	HasMetadataVersion      bool   // slot 2, Optional, presence flag
+	MetadataVersion         []byte // slot 3, Optional, ReadBytes
+	HasConflictingKRIndices bool   // slot 4, Optional, presence flag
+	ConflictingKRIndices    []byte // slot 5, Optional, ReadBytes
+}
+
+func (m *CommitID) UnmarshalFDB(data []byte) error {
+	r, err := wire.NewReader(data)
+	if err != nil {
+		return err
+	}
+	if r.FieldPresent(CommitIDSlotVersion) {
+		m.Version = r.ReadInt64(CommitIDSlotVersion)
+	}
+	if r.FieldPresent(CommitIDSlotTxnBatchId) {
+		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
+	}
+	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
+		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
+		m.HasMetadataVersion = true
+	}
+	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
+		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
+		m.HasConflictingKRIndices = true
+	}
+	return nil
+}
+
+func (m *CommitID) MarshalFDB() []byte {
+	w := wire.NewWriter(nil)
+	return w.WriteMessage(CommitIDFileID, CommitIDVTable, 8, func(obj *wire.ObjectWriter) {
+		obj.WriteInt64(int(CommitIDVTable[CommitIDSlotVersion+2]), m.Version)
+		obj.WriteUint16(int(CommitIDVTable[CommitIDSlotTxnBatchId+2]), m.TxnBatchId)
+	})
+}
+
 // GetValueRequest fields:
 //
 //	slot 0: key — serialize_member, size=4, align=4, indirection
@@ -36,29 +478,6 @@ var GetValueRequestVTableClosure = []wire.VTable{
 	{18, 20, 4, 16, 17, 8, 18, 12, 19},
 	{10, 29, 4, 20, 28},
 	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
-}
-
-// GetValueReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: value — union_like, size=4, align=4, indirection
-//	slot 5: cached — scalar, size=1, align=1
-const (
-	GetValueReplySlotPenalty = 0
-	GetValueReplySlotError   = 1
-	GetValueReplySlotValue   = 3
-	GetValueReplySlotCached  = 5
-)
-
-var GetValueReplyVTable = wire.VTable{16, 23, 4, 20, 12, 21, 16, 22}
-
-const GetValueReplyFileID uint32 = 1378929
-
-var GetValueReplyVTableClosure = []wire.VTable{
-	{6, 8, 4},
-	{6, 6, 4},
-	{16, 23, 4, 20, 12, 21, 16, 22},
 }
 
 // GetKeyValuesRequest fields:
@@ -104,35 +523,6 @@ var GetKeyValuesRequestVTableClosure = []wire.VTable{
 	{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48},
 }
 
-// GetKeyValuesReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: data — dynamic_size, size=4, align=4, indirection
-//	slot 4: version — scalar, size=8, align=8
-//	slot 5: more — scalar, size=1, align=1
-//	slot 6: cached — scalar, size=1, align=1
-//	slot 7: arena — scalar, size=0, align=1
-const (
-	GetKeyValuesReplySlotPenalty = 0
-	GetKeyValuesReplySlotError   = 1
-	GetKeyValuesReplySlotData    = 3
-	GetKeyValuesReplySlotVersion = 4
-	GetKeyValuesReplySlotMore    = 5
-	GetKeyValuesReplySlotCached  = 6
-	GetKeyValuesReplySlotArena   = 7
-)
-
-var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
-
-const GetKeyValuesReplyFileID uint32 = 1783066
-
-var GetKeyValuesReplyVTableClosure = []wire.VTable{
-	{6, 8, 4},
-	{6, 6, 4},
-	{18, 31, 4, 28, 20, 24, 12, 29, 30},
-}
-
 // GetKeyRequest fields:
 //
 //	slot 0: sel — serialize_member, size=4, align=4, indirection
@@ -170,30 +560,6 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
 
-// GetKeyReply fields:
-//
-//	slot 0: LoadBalancedReply::penalty — scalar, size=8, align=8
-//	slot 1: LoadBalancedReply::error — union_like, size=4, align=4, indirection
-//	slot 3: sel — serialize_member, size=4, align=4, indirection
-//	slot 4: cached — scalar, size=1, align=1
-const (
-	GetKeyReplySlotPenalty = 0
-	GetKeyReplySlotError   = 1
-	GetKeyReplySlotSel     = 3
-	GetKeyReplySlotCached  = 4
-)
-
-var GetKeyReplyVTable = wire.VTable{14, 22, 4, 20, 12, 16, 21}
-
-const GetKeyReplyFileID uint32 = 11226513
-
-var GetKeyReplyVTableClosure = []wire.VTable{
-	{6, 8, 4},
-	{6, 6, 4},
-	{10, 13, 4, 12, 8},
-	{14, 22, 4, 20, 12, 16, 21},
-}
-
 // GetReadVersionRequest fields:
 //
 //	slot 0: transactionCount — scalar, size=4, align=4
@@ -223,44 +589,6 @@ var GetReadVersionRequestVTableClosure = []wire.VTable{
 	{8, 12, 4, 8},
 	{10, 29, 4, 20, 28},
 	{20, 37, 12, 16, 20, 36, 24, 28, 32, 4},
-}
-
-// GetReadVersionReply fields:
-//
-//	slot 0: BasicLoadBalancedReply::processBusyTime — scalar, size=4, align=4
-//	slot 1: version — scalar, size=8, align=8
-//	slot 2: locked — scalar, size=1, align=1
-//	slot 3: metadataVersion — union_like, size=4, align=4, indirection
-//	slot 5: tagThrottleInfo — vector_like, size=4, align=4, indirection
-//	slot 6: midShardSize — scalar, size=8, align=8
-//	slot 7: rkDefaultThrottled — scalar, size=1, align=1
-//	slot 8: rkBatchThrottled — scalar, size=1, align=1
-//	slot 9: ssVersionVectorDelta — dynamic_size, size=4, align=4, indirection
-//	slot 10: proxyId — scalar, size=16, align=8
-//	slot 11: proxyTagThrottledDuration — scalar, size=8, align=8
-const (
-	GetReadVersionReplySlotProcessBusyTime           = 0
-	GetReadVersionReplySlotVersion                   = 1
-	GetReadVersionReplySlotLocked                    = 2
-	GetReadVersionReplySlotMetadataVersion           = 3
-	GetReadVersionReplySlotTagThrottleInfo           = 5
-	GetReadVersionReplySlotMidShardSize              = 6
-	GetReadVersionReplySlotRkDefaultThrottled        = 7
-	GetReadVersionReplySlotRkBatchThrottled          = 8
-	GetReadVersionReplySlotSsVersionVectorDelta      = 9
-	GetReadVersionReplySlotProxyId                   = 10
-	GetReadVersionReplySlotProxyTagThrottledDuration = 11
-)
-
-var GetReadVersionReplyVTable = wire.VTable{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36}
-
-const GetReadVersionReplyFileID uint32 = 15709388
-
-var GetReadVersionReplyVTableClosure = []wire.VTable{
-	{8, 20, 4, 12},
-	{6, 8, 4},
-	{8, 12, 4, 8},
-	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
 }
 
 // GetKeyServerLocationsRequest fields:
@@ -296,36 +624,6 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{10, 29, 4, 20, 28},
 	{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4},
-}
-
-// GetKeyServerLocationsReply fields:
-//
-//	slot 0: results — vector_like, size=4, align=4, indirection
-//	slot 1: resultsTssMapping — vector_like, size=4, align=4, indirection
-//	slot 2: resultsTagMapping — vector_like, size=4, align=4, indirection
-//	slot 3: arena — scalar, size=0, align=1
-const (
-	GetKeyServerLocationsReplySlotResults           = 0
-	GetKeyServerLocationsReplySlotResultsTssMapping = 1
-	GetKeyServerLocationsReplySlotResultsTagMapping = 2
-	GetKeyServerLocationsReplySlotArena             = 3
-)
-
-var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
-
-const GetKeyServerLocationsReplyFileID uint32 = 10636023
-
-var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
-	{8, 24, 20, 4},
-	{8, 24, 4, 20},
-	{8, 24, 4, 20},
-	{8, 9, 8, 4},
-	{12, 13, 4, 8, 10, 12},
-	{6, 8, 4},
-	{16, 34, 4, 20, 24, 32, 28, 33},
-	{8, 12, 4, 8},
-	{10, 13, 4, 12, 8},
-	{10, 16, 4, 8, 12},
 }
 
 // CommitTransactionRequest fields:
@@ -368,28 +666,6 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 	{10, 13, 12, 4, 8},
 	{10, 29, 4, 20, 28},
 	{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36},
-}
-
-// CommitID fields:
-//
-//	slot 0: version — scalar, size=8, align=8
-//	slot 1: txnBatchId — scalar, size=2, align=2
-//	slot 2: metadataVersion — union_like, size=4, align=4, indirection
-//	slot 4: conflictingKRIndices — union_like, size=4, align=4, indirection
-const (
-	CommitIDSlotVersion              = 0
-	CommitIDSlotTxnBatchId           = 1
-	CommitIDSlotMetadataVersion      = 2
-	CommitIDSlotConflictingKRIndices = 4
-)
-
-var CommitIDVTable = wire.VTable{16, 24, 4, 20, 22, 12, 23, 16}
-
-const CommitIDFileID uint32 = 14254927
-
-var CommitIDVTableClosure = []wire.VTable{
-	{6, 8, 4},
-	{16, 24, 4, 20, 22, 12, 23, 16},
 }
 
 // OpenDatabaseCoordRequest fields:
@@ -460,6 +736,12 @@ var KeySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
 //	slot 0: field_0 — scalar, size=1, align=1
 //	slot 1: field_1 — dynamic_size, size=4, align=4, indirection
 //	slot 2: field_2 — dynamic_size, size=4, align=4, indirection
+const (
+	MutationRefSlotField_0 = 0
+	MutationRefSlotField_1 = 1
+	MutationRefSlotField_2 = 2
+)
+
 var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
 
 // KeyRangeRef fields:
@@ -483,6 +765,17 @@ var KeyRangeRefVTable = wire.VTable{8, 12, 4, 8}
 //	slot 5: field_5 — scalar, size=1, align=1
 //	slot 6: field_6 — union_like, size=4, align=4, indirection
 //	slot 8: field_7 — union_like, size=4, align=4, indirection
+const (
+	CommitTransactionRefSlotField_0 = 0
+	CommitTransactionRefSlotField_1 = 1
+	CommitTransactionRefSlotField_2 = 2
+	CommitTransactionRefSlotField_3 = 3
+	CommitTransactionRefSlotField_4 = 4
+	CommitTransactionRefSlotField_5 = 5
+	CommitTransactionRefSlotField_6 = 6
+	CommitTransactionRefSlotField_7 = 8
+)
+
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
 
 // ReadOptions fields:
@@ -599,6 +892,10 @@ const CommitProxyInterfaceFileID uint32 = 8954922
 //	slot 5: field_4 — scalar, size=1, align=1
 const (
 	StorageServerInterfaceSlotWatchValue = 0
+	StorageServerInterfaceSlotField_1    = 1
+	StorageServerInterfaceSlotField_2    = 2
+	StorageServerInterfaceSlotField_3    = 3
+	StorageServerInterfaceSlotField_4    = 5
 )
 
 var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
@@ -613,6 +910,9 @@ const StorageServerInterfaceFileID uint32 = 15302073
 //	slot 3: field_3 — scalar, size=1, align=1
 const (
 	NetworkAddressSlotFromHostname = 0
+	NetworkAddressSlotField_1      = 1
+	NetworkAddressSlotField_2      = 2
+	NetworkAddressSlotField_3      = 3
 )
 
 var NetworkAddressVTable = wire.VTable{12, 13, 4, 8, 10, 12}
@@ -628,6 +928,10 @@ var NetworkAddressVTableClosure = []wire.VTable{
 // IPAddress fields:
 //
 //	slot 0: field_0 — union_like, size=4, align=4, indirection
+const (
+	IPAddressSlotField_0 = 0
+)
+
 var IPAddressVTable = wire.VTable{8, 9, 8, 4}
 
 // TenantInfo fields:
@@ -635,11 +939,21 @@ var IPAddressVTable = wire.VTable{8, 9, 8, 4}
 //	slot 0: field_0 — scalar, size=8, align=8
 //	slot 1: field_1 — union_like, size=4, align=4, indirection
 //	slot 3: field_2 — scalar, size=0, align=1
+const (
+	TenantInfoSlotField_0 = 0
+	TenantInfoSlotField_1 = 1
+	TenantInfoSlotField_2 = 3
+)
+
 var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
 
 // ReplyPromise fields:
 //
 //	slot 0: field_0 — scalar, size=16, align=8
+const (
+	ReplyPromiseSlotField_0 = 0
+)
+
 var ReplyPromiseVTable = wire.VTable{6, 20, 4}
 
 const ReplyPromiseFileID uint32 = 18156145
