@@ -1,26 +1,8 @@
 package types
 
-// GetKeyServerLocationsReply — fdbclient/include/fdbclient/CommitProxyInterface.h:414
-//
-// C++ serialize: serializer(ar, results, resultsTssMapping, resultsTagMapping, arena)
-//
-//	slot 0: results — vector<pair<KeyRangeRef, vector<StorageServerInterface>>>
-//	slot 1: resultsTssMapping — vector<pair<UID, StorageServerInterface>>
-//	slot 2: resultsTagMapping — vector<pair<UID, Tag>>
-//	(arena skipped)
-//
-// Each pair is a nested struct via serializable_traits::serialize(ar, p.first, p.second).
-//
-// pair<KeyRangeRef, vector<SS>> has 2 slots:
-//
-//	pair slot 0: KeyRangeRef (nested struct, auto-derived from struct fields)
-//	  KeyRangeRef slot 0: begin (bytes/StringRef)
-//	  KeyRangeRef slot 1: end (bytes/StringRef)
-//	pair slot 1: vector<StorageServerInterface>
-
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
-// LocationResult is a parsed element from the results vector:
+// LocationResult is a parsed element from the GetKeyServerLocationsReply results vector:
 // a key range + the storage servers that own it.
 type LocationResult struct {
 	Begin   []byte         // shard begin key
@@ -31,6 +13,13 @@ type LocationResult struct {
 // ParseGetKeyServerLocationsResults parses the results field (slot 0) of
 // a GetKeyServerLocationsReply. The Reader must be positioned at the reply
 // message (after ErrorOr unwrapping).
+//
+// Wire structure: vector<pair<KeyRangeRef, vector<StorageServerInterface>>>
+//
+//	pair slot 0: KeyRangeRef (nested struct)
+//	  inner slot 0: begin (bytes)
+//	  inner slot 1: end (bytes)
+//	pair slot 1: vector<StorageServerInterface>
 func ParseGetKeyServerLocationsResults(r *wire.Reader) ([]LocationResult, error) {
 	resultCount, err := r.ReadVectorCount(GetKeyServerLocationsReplySlotResults)
 	if err != nil || resultCount == 0 {
@@ -62,11 +51,9 @@ func ParseGetKeyServerLocationsResults(r *wire.Reader) ([]LocationResult, error)
 			if err != nil {
 				continue
 			}
-			// StorageServerInterface has many endpoint fields.
-			// Slot 2 = getValue endpoint (the primary one we route to).
+			// Slot 2 = getValue endpoint.
 			ep, err := ReadEndpointFromSlot(ssR, 2)
 			if err != nil || ep.First == 0 {
-				// Fallback: scan for any valid endpoint.
 				nf := ssR.VTableLength() - 2
 				for s := 0; s < nf; s++ {
 					ep, err = ReadEndpointFromSlot(ssR, s)

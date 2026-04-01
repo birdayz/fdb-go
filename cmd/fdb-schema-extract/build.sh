@@ -8,14 +8,14 @@
 set -euo pipefail
 
 FDB_SRC="$1"
-OUTPUT_FILE="$2"  # Single Go file, e.g., pkg/fdbgo/wire/types/vtables_generated.go
+OUTPUT_DIR="$2"  # Output directory, e.g., pkg/fdbgo/wire/types/
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="foundationdb/build:rockylinux9-latest"
 JOBS=12
 
 BUILD_CACHE="${FDB_BUILD_CACHE:-/tmp/fdb-docker-build}"
 SRC_CACHE="${FDB_SRC_CACHE:-/tmp/fdb-docker-src}"
-mkdir -p "$(dirname "$OUTPUT_FILE")" "$BUILD_CACHE" "$SRC_CACHE"
+mkdir -p "$OUTPUT_DIR" "$BUILD_CACHE" "$SRC_CACHE"
 
 docker run --rm \
     --user "$(id -u):$(id -g)" \
@@ -23,7 +23,7 @@ docker run --rm \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$SCRIPT_DIR/main.cpp:/work/main.cpp:ro" \
     -v "$SCRIPT_DIR/name_capture.cpp:/work/name_capture.cpp:ro" \
-    -v "$(realpath "$(dirname "$OUTPUT_FILE")"):/output" \
+    -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/build" \
     -v "$SRC_CACHE:/fdb" \
     "$IMAGE" \
@@ -93,7 +93,7 @@ CMAKE_EOF
         echo "=== schema_extract built ==="
 
         echo "=== Running schema_extract ==="
-        $BUILD/bin/schema_extract /output/vtables_generated.go
+        $BUILD/bin/schema_extract /output
     '
 
-echo "Done: $OUTPUT_FILE"
+echo "Done: $OUTPUT_DIR"

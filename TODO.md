@@ -1814,10 +1814,16 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 **For compound pair types** (`pair<KeyRangeRef, vector<SS>>`): extractor generates a concrete Go struct per instantiation with flattened fields. ~5 pair instantiations in FDB protocol.
 
-- [ ] **HIGH — Extend C++ extractor to emit Go struct + UnmarshalFDB + MarshalFields** — Currently emits vtable constants + slot constants only. Need: Go struct definition (field names, Go types, slot comments), UnmarshalFDB (mechanical slot reads), MarshalFields (mechanical slot writes), default MarshalFDB wrapper. Start with reply types we use: `GetReadVersionReply`, `GetValueReply`, `GetKeyValuesReply`, `CommitID`, `GetKeyReply`.
-- [ ] **HIGH — Extend C++ extractor for pair decomposition** — Emit concrete Go types for each `pair<A,B>` instantiation encountered in serialize() field types. Flatten nested struct reads into parent fields. Affects: `GetKeyServerLocationsReply`, `ClientDBInfo`, TSS mapping.
-- [ ] **HIGH — Replace hand-written types with generated** — Once extractor emits Go code, replace hand-written files in `wire/types/`. Keep `_custom.go` overrides for types with conditional logic.
-- [ ] **MEDIUM — `Error.UnmarshalFrom` wire type** — `error_code` is `uint16_t` on wire, but reads via `ReadInt32` (works via zero-padding). Will be fixed when Error is generated.
+**Status:** Per-file split DONE. Extractor emits `{type}_generated.go` (struct + constants + template + methods for simple types) and `{type}_custom.go` stubs (for custom types). All old hand-written type files deleted. Build broken until custom stubs are filled in.
+
+- [x] **HIGH — Per-file split** — Extractor emits one `_generated.go` per type + `_custom.go` stub for custom types. Old monolithic `vtables_generated.go` eliminated.
+- [x] **HIGH — MessageTemplate + WriteMessagePacked** — Pre-packed vtable closure + ObjectWriter pool + arena. 4.4x faster marshal (26→2 allocs). Generated for all types with closures.
+- [ ] **HIGH — MarshalStructBlob for nested types** — Extractor should generate `MarshalInto(*ObjectWriter)` for nested types (KeyRangeRef, MutationRef, ReplyPromise, TenantInfo, SpanContext, ReadOptions). Currently standalone helper functions. These are purely mechanical: WriteBytes/WriteUint8/WriteInt64 at vtable offsets. The extractor has all the info.
+- [ ] **HIGH — VecSerStrategy::String typed parser** — `ParseKeyValueVector` parses `VectorRef<KeyValueRef>` with inline packing `[count][keylen][key][vallen][val]...`. The extractor knows the field type (`VectorRef<KeyValueRef>` with `VecSerStrategy::String`). Should emit typed parser + `KeyValue` struct. Not normal FlatBuffers — special `dynamic_size_traits` case.
+- [ ] **HIGH — Endpoint/NetworkAddress/IPAddress nested unmarshal** — `ReadEndpointFromSlot` chains: Interface[slot] → Endpoint wrapper → inner (UID + NetworkAddressList → NetworkAddress → IPAddress). Currently uses heuristic (byte offset comparison) to find UID slot. Extractor should capture field names for Endpoint inner type and generate proper slot-based reads. Also: implement IPv6.
+- [ ] **HIGH — CommitTransactionRequest full generation** — Currently a standalone `MarshalCommitTransactionRequest` function taking pre-serialized vectors. The generated struct should have proper fields; `MarshalFDB` should use WriteMessagePacked + nested WriteStruct for CommitTransactionRef. The "pre-serialized vectors" pattern can be a second method.
+- [ ] **HIGH — Pair type decomposition** — `pair<KeyRangeRef, vector<SS>>` etc. Extractor should emit concrete Go types per instantiation with flattened fields. Affects: `GetKeyServerLocationsReply`, `ClientDBInfo`, TSS mapping.
+- [ ] **MEDIUM — `Error` wire type** — `error_code` is `uint16_t` on wire. Will be correct when Error is generated.
 
 ### HIGH — Audit findings: remaining hardcoded offsets and missing schema constants
 

@@ -371,30 +371,33 @@ struct GoEmitter {
         fprintf(f, "\treturn nil\n}\n\n");
     }
 
-    // Emit MarshalFDB with all writes inlined. Skips optional and nested struct fields.
-    // Only emitted for types with a file_identifier (top-level messages, not nested types).
-    void emitMarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields, uint32_t fileId) {
-        if (fileId == 0) return; // Nested type — no standalone MarshalFDB.
+    // Emit MarshalFDB using the template (emitted separately by extractType).
+    // Only emitted for types with a file_identifier.
+    void emitMarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields,
+                        uint32_t fileId, bool hasClosure) {
+        if (fileId == 0) return;
 
-        // Compute max field alignment for WriteMessage.
-        int maxAlign = 4;
-        for (auto& fi : fields)
-            if ((int)fi.align > maxAlign) maxAlign = fi.align;
-
+        // MarshalFDB references {TypeName}Template (always emitted by extractType).
         fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
         fprintf(f, "\tw := wire.NewWriter(nil)\n");
-        fprintf(f, "\treturn w.WriteMessage(%sFileID, %sVTable, %d, func(obj *wire.ObjectWriter) {\n",
-                typeName, typeName, maxAlign);
+        if (hasClosure) {
+            fprintf(f, "\treturn w.WriteMessagePacked(%sTemplate, func(obj *wire.ObjectWriter) {\n",
+                    typeName);
+        } else {
+            int maxAlign = 4;
+            for (auto& fi : fields)
+                if ((int)fi.align > maxAlign) maxAlign = fi.align;
+            fprintf(f, "\treturn w.WriteMessage(%sFileID, %sVTable, %d, func(obj *wire.ObjectWriter) {\n",
+                    typeName, typeName, maxAlign);
+        }
 
         int readerSlot = 0;
         for (auto& fi : fields) {
             if (strcmp(fi.trait, "union_like") == 0) {
-                // Optional: skip in marshal (needs conditional logic).
                 readerSlot += 2;
                 continue;
             }
             if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
-                // Nested struct: skip in marshal.
                 readerSlot++;
                 continue;
             }
@@ -409,15 +412,17 @@ struct GoEmitter {
     }
 };
 
-// Extract metadata for one type and write to the Go emitter.
-// Runs in a forked child (crash-safe).
-// Set SkipObjectWriter=true for Interface types where default-constructed
-// RequestStream fields crash ObjectWriter.
-// EmitStructs: if true, emit Go struct + UnmarshalFDB + MarshalFDB.
-// If false, emit only vtable + slot constants (type has hand-written Go code).
+// Convert TypeName to lowercase filename: "GetValueReply" → "getvaluereply"
+std::string toLowerFilename(const char* name) {
+    std::string s;
+    for (const char* p = name; *p; p++) s += tolower(*p);
+    return s;
+}
+
+// Extract metadata for one type and write to per-type _generated.go file.
+// For custom types (EmitStructs=false), also writes _custom.go stub if it doesn't exist.
 template <class T, bool SkipObjectWriter = false, bool EmitStructs = true>
-void extractType(GoEmitter& out, const char* name) {
-    // Extract in a child process to survive constructor crashes.
+void extractType(const char* outDir, const char* name) {
     int pipefd[2];
     pipe(pipefd);
 
@@ -432,13 +437,11 @@ void extractType(GoEmitter& out, const char* name) {
         else
             msg.serialize(visitor);
 
-        // Names.
         auto it = nameRegistry().find(name);
         auto names = (it != nameRegistry().end()) ? splitNames(it->second) : std::vector<std::string>{};
         for (size_t i = 0; i < visitor.fields.size(); i++)
             visitor.fields[i].name = (i < names.size()) ? names[i] : "field_" + std::to_string(i);
 
-        // Closure + authoritative root vtable from ObjectWriter.
         std::vector<std::vector<uint16_t>> closure;
         std::vector<uint16_t> rootVTable;
         if constexpr (!SkipObjectWriter && requires { T::file_identifier; }) {
@@ -448,43 +451,94 @@ void extractType(GoEmitter& out, const char* name) {
             closure = extractVTableClosure(bytes.begin(), bytes.size());
             rootVTable = extractMessageVTable(bytes.begin(), bytes.size());
         }
-        // For types with file_identifier, prefer ObjectWriter's root vtable
-        // (it includes conditionally-serialized fields like tenantInfo).
-        // Fall back to TypeVisitor vtable for nested types without file_identifier.
         auto& emitVT = rootVTable.empty() ? visitor.vtable : rootVTable;
 
-        // Write Go to pipe.
         FILE* pf = fdopen(pipefd[1], "w");
         GoEmitter e{pf};
+
+        // All types get: header, field comments, slot constants, vtable, fileID, closure.
+        e.header();
         e.emitFieldComment(name, visitor.fields);
         e.emitSlotConstants(name, visitor.fields);
         e.emitVTable(name, emitVT);
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
+
+        // All types get struct + template (even custom types — struct is always generated).
+        e.emitStruct(name, visitor.fields);
+
         if constexpr (EmitStructs) {
-            e.emitStruct(name, visitor.fields);
+            // Simple type: emit full UnmarshalFDB + MarshalFDB in _generated.go.
             e.emitUnmarshalFDB(name, visitor.fields);
-            e.emitMarshalFDB(name, visitor.fields, getFileId<T>());
+            e.emitMarshalFDB(name, visitor.fields, getFileId<T>(), !closure.empty());
         }
+        // Template is always emitted (custom types use it from _custom.go).
+        if (getFileId<T>() != 0 && !closure.empty()) {
+            int maxAlign = 4;
+            for (auto& fi : visitor.fields)
+                if ((int)fi.align > maxAlign) maxAlign = fi.align;
+            fprintf(pf, "var %sTemplate = wire.NewMessageTemplate(\n", name);
+            fprintf(pf, "\t%sFileID, %sVTable, %d, %sVTableClosure,\n)\n\n",
+                    name, name, maxAlign, name);
+        }
+
         e.separator();
         fclose(pf);
         _exit(0);
     }
 
     close(pipefd[1]);
-    // Read child output and append to main file.
-    char buf[4096];
-    ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
-        fwrite(buf, 1, n, out.f);
-    close(pipefd[0]);
 
+    // Read child output → write to {name}_generated.go.
+    std::string lowerName = toLowerFilename(name);
+    std::string genPath = std::string(outDir) + "/" + lowerName + "_generated.go";
+    FILE* genFile = fopen(genPath.c_str(), "w");
+    if (!genFile) { perror(genPath.c_str()); goto wait; }
+    {
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+            fwrite(buf, 1, n, genFile);
+        fclose(genFile);
+    }
+
+wait:
+    close(pipefd[0]);
     int status;
     waitpid(pid, &status, 0);
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-        fprintf(stderr, "OK %s\n", name);
-    else
+    if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
         fprintf(stderr, "SKIP %s\n", name);
+        unlink(genPath.c_str());
+        return;
+    }
+    fprintf(stderr, "OK %s → %s_generated.go\n", name, lowerName.c_str());
+
+    // For custom types: emit _custom.go stub if it doesn't exist.
+    if constexpr (!EmitStructs) {
+        std::string customPath = std::string(outDir) + "/" + lowerName + "_custom.go";
+        struct stat st;
+        if (stat(customPath.c_str(), &st) == 0) {
+            fprintf(stderr, "   %s_custom.go exists, skipping stub\n", lowerName.c_str());
+            return;
+        }
+        FILE* cf = fopen(customPath.c_str(), "w");
+        if (!cf) { perror(customPath.c_str()); return; }
+        fprintf(cf, "package types\n\n");
+        fprintf(cf, "// %s has custom serialize() logic.\n", name);
+        fprintf(cf, "// Port the C++ serialize() method to Go.\n");
+        fprintf(cf, "// Use the generated struct, slot constants, and template from %s_generated.go.\n\n", lowerName.c_str());
+        fprintf(cf, "func (m *%s) UnmarshalFDB(data []byte) error {\n", name);
+        fprintf(cf, "\tpanic(\"%s.UnmarshalFDB not implemented\")\n", name);
+        fprintf(cf, "}\n\n");
+        // Only emit MarshalFDB stub for types with file_identifier (top-level messages).
+        if (getFileId<T>() != 0) {
+            fprintf(cf, "func (m *%s) MarshalFDB() []byte {\n", name);
+            fprintf(cf, "\tpanic(\"%s.MarshalFDB not implemented\")\n", name);
+            fprintf(cf, "}\n");
+        }
+        fclose(cf);
+        fprintf(stderr, "   %s_custom.go stub created\n", lowerName.c_str());
+    }
 }
 
 // ============================================================
@@ -492,7 +546,8 @@ void extractType(GoEmitter& out, const char* name) {
 // ============================================================
 
 int main(int argc, char** argv) {
-    if (argc < 2) { fprintf(stderr, "Usage: %s <output-file>\n", argv[0]); return 1; }
+    if (argc < 2) { fprintf(stderr, "Usage: %s <output-dir>\n", argv[0]); return 1; }
+    const char* outDir = argv[1];
 
     TLSConfig tlsConfig;
     g_network = newNet2(tlsConfig, false, false);
@@ -500,48 +555,42 @@ int main(int argc, char** argv) {
 
     captureAllNames();
 
-    FILE* f = fopen(argv[1], "w");
-    if (!f) { perror(argv[1]); return 1; }
-    GoEmitter out{f};
-    out.header();
+    // --- Reply types: GENERATED struct + template + UnmarshalFDB + MarshalFDB ---
+    extractType<GetValueReply>(outDir, "GetValueReply");
+    extractType<GetKeyValuesReply>(outDir, "GetKeyValuesReply");
+    extractType<GetKeyReply>(outDir, "GetKeyReply");
+    extractType<GetReadVersionReply>(outDir, "GetReadVersionReply");
+    extractType<GetKeyServerLocationsReply>(outDir, "GetKeyServerLocationsReply");
+    extractType<CommitID>(outDir, "CommitID");
 
-    // --- Reply types: GENERATED struct + UnmarshalFDB + MarshalFDB ---
-    extractType<GetValueReply>(out, "GetValueReply");
-    extractType<GetKeyValuesReply>(out, "GetKeyValuesReply");
-    extractType<GetKeyReply>(out, "GetKeyReply");
-    extractType<GetReadVersionReply>(out, "GetReadVersionReply");
-    extractType<GetKeyServerLocationsReply>(out, "GetKeyServerLocationsReply");
-    extractType<CommitID>(out, "CommitID");
+    // --- Request types: GENERATED struct + template + constants, CUSTOM MarshalFDB ---
+    extractType<GetValueRequest, false, false>(outDir, "GetValueRequest");
+    extractType<GetKeyValuesRequest, false, false>(outDir, "GetKeyValuesRequest");
+    extractType<GetKeyRequest, false, false>(outDir, "GetKeyRequest");
+    extractType<GetReadVersionRequest, false, false>(outDir, "GetReadVersionRequest");
+    extractType<GetKeyServerLocationsRequest, false, false>(outDir, "GetKeyServerLocationsRequest");
+    extractType<CommitTransactionRequest, false, false>(outDir, "CommitTransactionRequest");
+    extractType<OpenDatabaseCoordRequest, false, false>(outDir, "OpenDatabaseCoordRequest");
 
-    // --- Request types: vtable + slot constants ONLY (hand-written MarshalFDB) ---
-    extractType<GetValueRequest, false, false>(out, "GetValueRequest");
-    extractType<GetKeyValuesRequest, false, false>(out, "GetKeyValuesRequest");
-    extractType<GetKeyRequest, false, false>(out, "GetKeyRequest");
-    extractType<GetReadVersionRequest, false, false>(out, "GetReadVersionRequest");
-    extractType<GetKeyServerLocationsRequest, false, false>(out, "GetKeyServerLocationsRequest");
-    extractType<CommitTransactionRequest, false, false>(out, "CommitTransactionRequest");
-    extractType<OpenDatabaseCoordRequest, false, false>(out, "OpenDatabaseCoordRequest");
+    // --- Nested types: GENERATED struct + constants, CUSTOM marshal/unmarshal ---
+    extractType<SpanContext, false, false>(outDir, "SpanContext");
+    extractType<KeySelectorRef, false, false>(outDir, "KeySelectorRef");
+    extractType<MutationRef, false, false>(outDir, "MutationRef");
+    extractType<KeyRangeRef, false, false>(outDir, "KeyRangeRef");
+    extractType<CommitTransactionRef, false, false>(outDir, "CommitTransactionRef");
+    extractType<ReadOptions, false, false>(outDir, "ReadOptions");
+    extractType<Error, false, false>(outDir, "Error");
 
-    // --- Nested types: vtable + slot constants ONLY (hand-written marshal/unmarshal) ---
-    extractType<SpanContext, false, false>(out, "SpanContext");
-    extractType<KeySelectorRef, false, false>(out, "KeySelectorRef");
-    extractType<MutationRef, false, false>(out, "MutationRef");
-    extractType<KeyRangeRef, false, false>(out, "KeyRangeRef");
-    extractType<CommitTransactionRef, false, false>(out, "CommitTransactionRef");
-    extractType<ReadOptions, false, false>(out, "ReadOptions");
-    extractType<Error, false, false>(out, "Error");
+    // --- Interface/nested types: GENERATED struct + constants, CUSTOM methods ---
+    extractType<ClientDBInfo, false, false>(outDir, "ClientDBInfo");
+    extractType<GrvProxyInterface, true, false>(outDir, "GrvProxyInterface");
+    extractType<CommitProxyInterface, true, false>(outDir, "CommitProxyInterface");
+    extractType<StorageServerInterface, true, false>(outDir, "StorageServerInterface");
+    extractType<NetworkAddress, false, false>(outDir, "NetworkAddress");
+    extractType<IPAddress, false, false>(outDir, "IPAddress");
+    extractType<TenantInfo, false, false>(outDir, "TenantInfo");
+    extractType<ReplyPromise<GetValueReply>, false, false>(outDir, "ReplyPromise");
 
-    // --- Interface/nested types: vtable + slot constants ONLY ---
-    extractType<ClientDBInfo, false, false>(out, "ClientDBInfo");
-    extractType<GrvProxyInterface, true, false>(out, "GrvProxyInterface");
-    extractType<CommitProxyInterface, true, false>(out, "CommitProxyInterface");
-    extractType<StorageServerInterface, true, false>(out, "StorageServerInterface");
-    extractType<NetworkAddress, false, false>(out, "NetworkAddress");
-    extractType<IPAddress, false, false>(out, "IPAddress");
-    extractType<TenantInfo, false, false>(out, "TenantInfo");
-    extractType<ReplyPromise<GetValueReply>, false, false>(out, "ReplyPromise");
-
-    fclose(f);
     fprintf(stderr, "Done.\n");
     return 0;
 }
