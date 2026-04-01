@@ -9,8 +9,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-// CommitTransactionRef, MutationRef, KeyRangeRef vtables from types.vtables_generated.go
-
 // commit sends a CommitTransactionRequest to a commit proxy.
 func (tx *Transaction) commit(ctx context.Context) error {
 	proxy, err := tx.db.cluster.GetCommitProxy()
@@ -47,32 +45,29 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	}
 }
 
-// buildCommitTransactionRequest constructs the full request with embedded
-// CommitTransactionRef (mutations + conflict ranges), ReplyPromise, and TenantInfo.
+// buildCommitTransactionRequest constructs the full request with
+// typed mutations and conflict ranges — no pre-serialization blobs.
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
-	mutBlobs := make([][]byte, len(tx.mutations))
+	mutations := make([]types.MutationRef, len(tx.mutations))
 	for i, m := range tx.mutations {
-		mutBlobs[i] = types.MarshalMutationRef(uint8(m.Type), m.Key, m.Value)
+		mutations[i] = types.MutationRef{MutType: uint8(m.Type), Param1: m.Key, Param2: m.Value}
 	}
-	mutData := wire.PackVectorOfStructBlobs(mutBlobs)
 
-	readCRBlobs := make([][]byte, len(tx.readConflicts))
+	readCRs := make([]types.KeyRangeRef, len(tx.readConflicts))
 	for i, kr := range tx.readConflicts {
-		readCRBlobs[i] = types.MarshalKeyRangeRef(kr.Begin, kr.End)
+		readCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
 	}
-	readCRData := wire.PackVectorOfStructBlobs(readCRBlobs)
 
-	writeCRBlobs := make([][]byte, len(tx.writeConflicts))
+	writeCRs := make([]types.KeyRangeRef, len(tx.writeConflicts))
 	for i, kr := range tx.writeConflicts {
-		writeCRBlobs[i] = types.MarshalKeyRangeRef(kr.Begin, kr.End)
+		writeCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
 	}
-	writeCRData := wire.PackVectorOfStructBlobs(writeCRBlobs)
 
 	req := types.CommitTransactionRequest{
 		Transaction: types.CommitTransactionRef{
-			ReadConflictRanges:  readCRData,
-			WriteConflictRanges: writeCRData,
-			Mutations:           mutData,
+			ReadConflictRanges:  readCRs,
+			WriteConflictRanges: writeCRs,
+			Mutations:           mutations,
 			ReadSnapshot:        tx.readVersion,
 		},
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
