@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	KeyRangeRefSlotField_0 = 0
@@ -52,4 +56,68 @@ func (m *KeyRangeRef) MarshalInto(obj *wire.ObjectWriter) {
 func WriteKeyRangeRef(obj *wire.ObjectWriter, parentOffset int, field_0 []byte, field_1 []byte) {
 	m := KeyRangeRef{Field_0: field_0, Field_1: field_1}
 	obj.WriteStruct(parentOffset, KeyRangeRefVTable, 4, m.MarshalInto)
+}
+
+// ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
+func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]KeyRangeRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem KeyRangeRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}
+
+// ParseKeyRangeRefStringVector decodes a VectorRef<KeyRangeRef, VecSerStrategy::String>.
+// Each element's DynamicSize fields are inline: [len(4)][data] per field.
+func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
+	if len(data) < 4 {
+		return nil
+	}
+	count := binary.LittleEndian.Uint32(data[0:4])
+	if count == 0 {
+		return nil
+	}
+	pos := 4
+	result := make([]KeyRangeRef, 0, count)
+	for i := uint32(0); i < count; i++ {
+		var elem KeyRangeRef
+		if pos+4 > len(data) {
+			break
+		}
+		{
+			n := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if n < 0 || pos+n > len(data) {
+				break
+			}
+			elem.Field_0 = make([]byte, n)
+			copy(elem.Field_0, data[pos:pos+n])
+			pos += n
+		}
+		if pos+4 > len(data) {
+			break
+		}
+		{
+			n := int(binary.LittleEndian.Uint32(data[pos:]))
+			pos += 4
+			if n < 0 || pos+n > len(data) {
+				break
+			}
+			elem.Field_1 = make([]byte, n)
+			copy(elem.Field_1, data[pos:pos+n])
+			pos += n
+		}
+		result = append(result, elem)
+	}
+	return result
 }

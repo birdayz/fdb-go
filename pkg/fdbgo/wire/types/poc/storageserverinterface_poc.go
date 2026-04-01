@@ -66,3 +66,22 @@ func WriteStorageServerInterface(obj *wire.ObjectWriter, parentOffset int, field
 	m := StorageServerInterface{Field_0: field_0, Field_5: field_5}
 	obj.WriteStruct(parentOffset, StorageServerInterfaceVTable, 8, m.MarshalInto)
 }
+
+// ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface.
+func ParseStorageServerInterfaceVectorFromReader(r *wire.Reader, slot int) []StorageServerInterface {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]StorageServerInterface, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem StorageServerInterface
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

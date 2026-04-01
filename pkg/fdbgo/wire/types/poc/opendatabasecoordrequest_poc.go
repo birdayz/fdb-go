@@ -144,3 +144,22 @@ func WriteOpenDatabaseCoordRequest(obj *wire.ObjectWriter, parentOffset int, iss
 	m := OpenDatabaseCoordRequest{Issues: issues, SupportedVersions: supportedVersions, TraceLogGroup: traceLogGroup, KnownClientInfoID: knownClientInfoID, ClusterKey: clusterKey, Coordinators: coordinators, Hostnames: hostnames, Internal: internal}
 	obj.WriteStruct(parentOffset, OpenDatabaseCoordRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseOpenDatabaseCoordRequestVectorFromReader reads a FlatBuffers vector of OpenDatabaseCoordRequest.
+func ParseOpenDatabaseCoordRequestVectorFromReader(r *wire.Reader, slot int) []OpenDatabaseCoordRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]OpenDatabaseCoordRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem OpenDatabaseCoordRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -51,3 +51,22 @@ func WriteLocationPair(obj *wire.ObjectWriter, parentOffset int, field_1 []byte)
 	m := LocationPair{Field_1: field_1}
 	obj.WriteStruct(parentOffset, LocationPairVTable, 4, m.MarshalInto)
 }
+
+// ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.
+func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) []LocationPair {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]LocationPair, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem LocationPair
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

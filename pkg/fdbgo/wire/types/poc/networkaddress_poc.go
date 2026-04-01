@@ -83,3 +83,22 @@ func WriteNetworkAddress(obj *wire.ObjectWriter, parentOffset int, port uint16, 
 	m := NetworkAddress{Port: port, Flags: flags, FromHostname: fromHostname}
 	obj.WriteStruct(parentOffset, NetworkAddressVTable, 4, m.MarshalInto)
 }
+
+// ParseNetworkAddressVectorFromReader reads a FlatBuffers vector of NetworkAddress.
+func ParseNetworkAddressVectorFromReader(r *wire.Reader, slot int) []NetworkAddress {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]NetworkAddress, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem NetworkAddress
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

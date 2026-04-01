@@ -95,3 +95,22 @@ func WriteGetKeyServerLocationsReply(obj *wire.ObjectWriter, parentOffset int, r
 	m := GetKeyServerLocationsReply{Results: results, ResultsTssMapping: resultsTssMapping, ResultsTagMapping: resultsTagMapping}
 	obj.WriteStruct(parentOffset, GetKeyServerLocationsReplyVTable, 4, m.MarshalInto)
 }
+
+// ParseGetKeyServerLocationsReplyVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsReply.
+func ParseGetKeyServerLocationsReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyServerLocationsReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyServerLocationsReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -137,3 +137,22 @@ func WriteGetKeyRequest(obj *wire.ObjectWriter, parentOffset int, version int64,
 	m := GetKeyRequest{Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetKeyRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseGetKeyRequestVectorFromReader reads a FlatBuffers vector of GetKeyRequest.
+func ParseGetKeyRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -60,3 +60,22 @@ func WriteKeySelectorRef(obj *wire.ObjectWriter, parentOffset int, field_0 []byt
 	m := KeySelectorRef{Field_0: field_0, Field_1: field_1, Field_2: field_2}
 	obj.WriteStruct(parentOffset, KeySelectorRefVTable, 4, m.MarshalInto)
 }
+
+// ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.
+func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) []KeySelectorRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]KeySelectorRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem KeySelectorRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

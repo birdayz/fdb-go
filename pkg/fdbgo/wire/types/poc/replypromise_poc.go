@@ -55,3 +55,22 @@ func WriteReplyPromise(obj *wire.ObjectWriter, parentOffset int, token [16]byte)
 	m := ReplyPromise{Token: token}
 	obj.WriteStruct(parentOffset, ReplyPromiseVTable, 8, m.MarshalInto)
 }
+
+// ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise.
+func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) []ReplyPromise {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ReplyPromise, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ReplyPromise
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

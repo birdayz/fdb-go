@@ -149,3 +149,22 @@ func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, field_0 []byte,
 	m := ClientDBInfo{Field_0: field_0, Field_1: field_1, Field_2: field_2, Field_5: field_5, Field_9: field_9, Field_10: field_10}
 	obj.WriteStruct(parentOffset, ClientDBInfoVTable, 8, m.MarshalInto)
 }
+
+// ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo.
+func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) []ClientDBInfo {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ClientDBInfo, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ClientDBInfo
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

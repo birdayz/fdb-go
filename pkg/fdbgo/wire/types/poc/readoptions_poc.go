@@ -80,3 +80,22 @@ func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, field_0 int32, f
 	m := ReadOptions{Field_0: field_0, Field_1: field_1, Field_6: field_6}
 	obj.WriteStruct(parentOffset, ReadOptionsVTable, 4, m.MarshalInto)
 }
+
+// ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
+func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]ReadOptions, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem ReadOptions
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

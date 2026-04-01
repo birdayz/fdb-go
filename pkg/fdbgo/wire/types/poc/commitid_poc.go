@@ -86,3 +86,22 @@ func WriteCommitID(obj *wire.ObjectWriter, parentOffset int, version int64, txnB
 	m := CommitID{Version: version, TxnBatchId: txnBatchId}
 	obj.WriteStruct(parentOffset, CommitIDVTable, 8, m.MarshalInto)
 }
+
+// ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID.
+func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) []CommitID {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitID, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitID
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

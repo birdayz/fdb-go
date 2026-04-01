@@ -153,3 +153,22 @@ func WriteGetReadVersionReply(obj *wire.ObjectWriter, parentOffset int, processB
 	m := GetReadVersionReply{ProcessBusyTime: processBusyTime, Version: version, Locked: locked, TagThrottleInfo: tagThrottleInfo, MidShardSize: midShardSize, RkDefaultThrottled: rkDefaultThrottled, RkBatchThrottled: rkBatchThrottled, SsVersionVectorDelta: ssVersionVectorDelta, ProxyId: proxyId, ProxyTagThrottledDuration: proxyTagThrottledDuration}
 	obj.WriteStruct(parentOffset, GetReadVersionReplyVTable, 8, m.MarshalInto)
 }
+
+// ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply.
+func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) []GetReadVersionReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetReadVersionReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetReadVersionReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

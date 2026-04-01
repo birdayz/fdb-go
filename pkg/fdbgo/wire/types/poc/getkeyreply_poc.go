@@ -79,3 +79,22 @@ func WriteGetKeyReply(obj *wire.ObjectWriter, parentOffset int, penalty float64,
 	m := GetKeyReply{Penalty: penalty, Cached: cached}
 	obj.WriteStruct(parentOffset, GetKeyReplyVTable, 8, m.MarshalInto)
 }
+
+// ParseGetKeyReplyVectorFromReader reads a FlatBuffers vector of GetKeyReply.
+func ParseGetKeyReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyReply {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyReply, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyReply
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

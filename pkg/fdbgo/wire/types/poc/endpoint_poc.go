@@ -67,3 +67,22 @@ func WriteEndpoint(obj *wire.ObjectWriter, parentOffset int, token [16]byte) {
 	m := Endpoint{Token: token}
 	obj.WriteStruct(parentOffset, EndpointVTable, 8, m.MarshalInto)
 }
+
+// ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint.
+func ParseEndpointVectorFromReader(r *wire.Reader, slot int) []Endpoint {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]Endpoint, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem Endpoint
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

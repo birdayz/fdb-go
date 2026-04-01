@@ -151,3 +151,22 @@ func WriteCommitTransactionRequest(obj *wire.ObjectWriter, parentOffset int, fla
 	m := CommitTransactionRequest{Flags: flags, IdempotencyId: idempotencyId}
 	obj.WriteStruct(parentOffset, CommitTransactionRequestVTable, 4, m.MarshalInto)
 }
+
+// ParseCommitTransactionRequestVectorFromReader reads a FlatBuffers vector of CommitTransactionRequest.
+func ParseCommitTransactionRequestVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitTransactionRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitTransactionRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

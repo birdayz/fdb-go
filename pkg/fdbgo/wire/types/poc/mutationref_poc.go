@@ -62,3 +62,22 @@ func WriteMutationRef(obj *wire.ObjectWriter, parentOffset int, mutType uint8, p
 	m := MutationRef{MutType: mutType, Param1: param1, Param2: param2}
 	obj.WriteStruct(parentOffset, MutationRefVTable, 4, m.MarshalInto)
 }
+
+// ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
+func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]MutationRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem MutationRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

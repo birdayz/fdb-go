@@ -113,3 +113,22 @@ func WriteCommitTransactionRef(obj *wire.ObjectWriter, parentOffset int, readCon
 	m := CommitTransactionRef{ReadConflictRanges: readConflictRanges, WriteConflictRanges: writeConflictRanges, Mutations: mutations, ReadSnapshot: readSnapshot, Report_conflicting_keys: report_conflicting_keys, Lock_aware: lock_aware}
 	obj.WriteStruct(parentOffset, CommitTransactionRefVTable, 8, m.MarshalInto)
 }
+
+// ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
+func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitTransactionRef, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitTransactionRef
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

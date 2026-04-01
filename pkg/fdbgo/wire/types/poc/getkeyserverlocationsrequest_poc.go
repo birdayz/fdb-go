@@ -133,3 +133,22 @@ func WriteGetKeyServerLocationsRequest(obj *wire.ObjectWriter, parentOffset int,
 	m := GetKeyServerLocationsRequest{Begin: begin, Limit: limit, Reverse: reverse, MinTenantVersion: minTenantVersion}
 	obj.WriteStruct(parentOffset, GetKeyServerLocationsRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest.
+func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyServerLocationsRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyServerLocationsRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

@@ -55,3 +55,22 @@ func WriteGrvProxyInterface(obj *wire.ObjectWriter, parentOffset int, field_2 bo
 	m := GrvProxyInterface{Field_2: field_2}
 	obj.WriteStruct(parentOffset, GrvProxyInterfaceVTable, 4, m.MarshalInto)
 }
+
+// ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.
+func ParseGrvProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []GrvProxyInterface {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GrvProxyInterface, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GrvProxyInterface
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

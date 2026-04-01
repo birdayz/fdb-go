@@ -130,3 +130,22 @@ func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, key []byte, 
 	m := GetValueRequest{Key: key, Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetValueRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseGetValueRequestVectorFromReader reads a FlatBuffers vector of GetValueRequest.
+func ParseGetValueRequestVectorFromReader(r *wire.Reader, slot int) []GetValueRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetValueRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetValueRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

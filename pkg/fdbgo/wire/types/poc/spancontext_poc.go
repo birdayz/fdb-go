@@ -58,3 +58,22 @@ func WriteSpanContext(obj *wire.ObjectWriter, parentOffset int, field_0 [16]byte
 	m := SpanContext{Field_0: field_0, Field_1: field_1, Field_2: field_2}
 	obj.WriteStruct(parentOffset, SpanContextVTable, 8, m.MarshalInto)
 }
+
+// ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
+func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]SpanContext, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem SpanContext
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

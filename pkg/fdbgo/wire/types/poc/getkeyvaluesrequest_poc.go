@@ -164,3 +164,22 @@ func WriteGetKeyValuesRequest(obj *wire.ObjectWriter, parentOffset int, version 
 	m := GetKeyValuesRequest{Version: version, Limit: limit, LimitBytes: limitBytes, SsLatestCommitVersions: ssLatestCommitVersions}
 	obj.WriteStruct(parentOffset, GetKeyValuesRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseGetKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetKeyValuesRequest.
+func ParseGetKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetKeyValuesRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetKeyValuesRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

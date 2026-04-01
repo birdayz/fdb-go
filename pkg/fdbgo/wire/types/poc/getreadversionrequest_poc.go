@@ -116,3 +116,22 @@ func WriteGetReadVersionRequest(obj *wire.ObjectWriter, parentOffset int, transa
 	m := GetReadVersionRequest{TransactionCount: transactionCount, Flags: flags, Tags: tags, MaxVersion: maxVersion}
 	obj.WriteStruct(parentOffset, GetReadVersionRequestVTable, 8, m.MarshalInto)
 }
+
+// ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest.
+func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) []GetReadVersionRequest {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]GetReadVersionRequest, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem GetReadVersionRequest
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}

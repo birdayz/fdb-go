@@ -55,3 +55,22 @@ func WriteCommitProxyInterface(obj *wire.ObjectWriter, parentOffset int, field_2
 	m := CommitProxyInterface{Field_2: field_2}
 	obj.WriteStruct(parentOffset, CommitProxyInterfaceVTable, 4, m.MarshalInto)
 }
+
+// ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.
+func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []CommitProxyInterface {
+	count, err := r.ReadVectorCount(slot)
+	if err != nil || count == 0 {
+		return nil
+	}
+	result := make([]CommitProxyInterface, 0, count)
+	for i := 0; i < count; i++ {
+		elemR, err := r.ReadVectorElementReader(slot, i)
+		if err != nil {
+			continue
+		}
+		var elem CommitProxyInterface
+		elem.UnmarshalFromReader(elemR)
+		result = append(result, elem)
+	}
+	return result
+}
