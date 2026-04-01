@@ -46,6 +46,14 @@ struct FieldInfo {
     const char* writerMethod; // e.g. "WriteInt64", "WriteBool", "WriteBytes"
     const char* cppTypeName; // C++ type name for nested structs (e.g. "TenantInfo")
     bool isKVVector;         // true for VectorRef<KeyValueRef, VecSerStrategy::String>
+
+    // Variant alternatives (for union_like fields that are std::variant, not Optional).
+    struct VariantAlt {
+        const char* goType;
+        const char* readerMethod;
+        uint32_t size;
+    };
+    std::vector<VariantAlt> variantAlts; // non-empty → variant, empty → Optional
 };
 
 // Detect Standalone<T> types.
@@ -170,6 +178,35 @@ template<> const char* getCppTypeName<ReadOptions>() { return "ReadOptions"; }
 // Detect VectorRef<KeyValueRef, VecSerStrategy::String> for typed vector parsing.
 template <class T> struct is_kv_string_vector : std::false_type {};
 template <> struct is_kv_string_vector<VectorRef<KeyValueRef, VecSerStrategy::String>> : std::true_type {};
+
+// Detect std::variant and extract alternative info.
+template <class T> struct is_std_variant : std::false_type {};
+template <class... Ts> struct is_std_variant<std::variant<Ts...>> : std::true_type {};
+
+// Extract variant alternatives into FieldInfo::VariantAlt vector.
+template <class T>
+std::vector<FieldInfo::VariantAlt> getVariantAlts() { return {}; }
+
+template <class... Ts>
+std::vector<FieldInfo::VariantAlt> getVariantAltsImpl(std::variant<Ts...>*) {
+    using namespace detail;
+    std::vector<FieldInfo::VariantAlt> alts;
+    // Each alternative: its size determines if it's read inline via RelOff target.
+    (alts.push_back(FieldInfo::VariantAlt{
+        GoTypeMapping<Ts>::goType,
+        GoTypeMapping<Ts>::reader,
+        (uint32_t)fb_size<Ts>
+    }), ...);
+    return alts;
+}
+
+template <class T>
+std::vector<FieldInfo::VariantAlt> getVariantAltsFor() {
+    if constexpr (is_std_variant<T>::value) {
+        return getVariantAltsImpl((T*)nullptr);
+    }
+    return {};
+}
 // ReplyPromise<T> — all instantiations share the same vtable. Add each used instantiation.
 template<> const char* getCppTypeName<ReplyPromise<GetValueReply>>() { return "ReplyPromise"; }
 template<> const char* getCppTypeName<ReplyPromise<GetKeyValuesReply>>() { return "ReplyPromise"; }
@@ -225,7 +262,8 @@ private:
             (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>,
             goType, reader, writer,
             getCppTypeName<T>(),
-            is_kv_string_vector<T>::value});
+            is_kv_string_vector<T>::value,
+            getVariantAltsFor<T>()});
     }
 };
 
@@ -412,7 +450,16 @@ struct GoEmitter {
         int readerSlot = 0;
         for (auto& fi : fields) {
             std::string goName = sanitizeGoName(fi.name);
-            if (strcmp(fi.trait, "union_like") == 0) {
+            if (strcmp(fi.trait, "union_like") == 0 && !fi.variantAlts.empty()) {
+                // Variant (std::variant): emit tag + per-alternative fields.
+                fprintf(f, "\t%sTag uint8 // slot %d, variant tag\n", goName.c_str(), readerSlot);
+                for (size_t a = 0; a < fi.variantAlts.size(); a++) {
+                    auto& alt = fi.variantAlts[a];
+                    fprintf(f, "\t%sAlt%zu %s // tag=%zu, size=%u\n",
+                            goName.c_str(), a, alt.goType, a + 1, alt.size);
+                }
+                readerSlot += 2;
+            } else if (strcmp(fi.trait, "union_like") == 0) {
                 // Optional: emit Has+Value fields.
                 fprintf(f, "\tHas%s bool   // slot %d, Optional, presence flag\n", goName.c_str(), readerSlot);
                 fprintf(f, "\t%s    []byte // slot %d, Optional, ReadBytes\n", goName.c_str(), readerSlot + 1);
@@ -444,7 +491,39 @@ struct GoEmitter {
             std::string goName = sanitizeGoName(fi.name);
             std::string slotConst = std::string(typeName) + "Slot" + goName;
 
-            if (strcmp(fi.trait, "union_like") == 0) {
+            if (strcmp(fi.trait, "union_like") == 0 && !fi.variantAlts.empty()) {
+                // Variant: read tag, switch on alternatives.
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", readerVar, slotConst.c_str());
+                fprintf(f, "\t\tm.%sTag = %s.ReadUint8(%s)\n", goName.c_str(), readerVar, slotConst.c_str());
+                fprintf(f, "\t\tswitch m.%sTag {\n", goName.c_str());
+                for (size_t a = 0; a < fi.variantAlts.size(); a++) {
+                    auto& alt = fi.variantAlts[a];
+                    fprintf(f, "\t\tcase %zu:\n", a + 1);
+                    if (alt.size <= 8 && std::string(alt.goType) != "[]byte" && std::string(alt.goType) != "[16]byte") {
+                        // Small scalar — read via ReadRelOffUint32 etc.
+                        // For now, only uint32 is supported.
+                        if (alt.size == 4) {
+                            fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffUint32(%s + 1)\n",
+                                    goName.c_str(), a, readerVar, slotConst.c_str());
+                        } else {
+                            fprintf(f, "\t\t\t// TODO: ReadRelOff for size=%u\n", alt.size);
+                        }
+                    } else {
+                        // Larger type — read raw bytes via RelOff.
+                        fprintf(f, "\t\t\traw := %s.ReadRelOffRaw(%s + 1, %u)\n",
+                                readerVar, slotConst.c_str(), alt.size);
+                        if (std::string(alt.goType) == "[16]byte") {
+                            fprintf(f, "\t\t\tcopy(m.%sAlt%zu[:], raw)\n", goName.c_str(), a);
+                        } else {
+                            fprintf(f, "\t\t\tm.%sAlt%zu = raw\n", goName.c_str(), a);
+                        }
+                    }
+                }
+                fprintf(f, "\t\t}\n");
+                fprintf(f, "\t}\n");
+                readerSlot += 2;
+            } else if (strcmp(fi.trait, "union_like") == 0) {
+                // Optional: read tag + bytes.
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
                         readerVar, slotConst.c_str(), readerVar, slotConst.c_str());
                 fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", goName.c_str(), readerVar, slotConst.c_str());

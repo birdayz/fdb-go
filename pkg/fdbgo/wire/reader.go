@@ -425,6 +425,45 @@ func (r *Reader) ReadUIDPair(vtableSlot int) (uint64, uint64) {
 // ReadIPv4 reads a uint32 IPv4 address from a RelativeOffset field and returns it
 // as a "host:0" string. The uint32 is stored little-endian on wire but represents
 // a network-byte-order IPv4 address.
+// ReadRelOffRaw reads N raw bytes at a RelativeOffset target.
+// Used for variant (union_like) values where the data at the RelOff
+// is raw (no length prefix), unlike ReadBytes which expects [len][data].
+func (r *Reader) ReadRelOffRaw(vtableSlot int, n int) []byte {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return nil
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return nil
+	}
+	target := r.objPos + int(off) + int(relOffset)
+	if target+n > len(r.data) {
+		return nil
+	}
+	result := make([]byte, n)
+	copy(result, r.data[target:target+n])
+	return result
+}
+
+// ReadRelOffUint32 reads a uint32 at a RelativeOffset target.
+// Used for variant alternatives that are scalar uint32 (e.g., IPv4 in IPAddress).
+func (r *Reader) ReadRelOffUint32(vtableSlot int) uint32 {
+	off := r.fieldOffset(vtableSlot)
+	if off < 4 {
+		return 0
+	}
+	relOffset := binary.LittleEndian.Uint32(r.object[off:])
+	if relOffset == 0 {
+		return 0
+	}
+	target := r.objPos + int(off) + int(relOffset)
+	if target+4 > len(r.data) {
+		return 0
+	}
+	return binary.LittleEndian.Uint32(r.data[target:])
+}
+
 func (r *Reader) ReadIPv4(vtableSlot int) uint32 {
 	off := r.fieldOffset(vtableSlot)
 	if off < 4 {

@@ -14,8 +14,9 @@ const (
 var IPAddressVTable = wire.VTable{8, 9, 8, 4}
 
 type IPAddress struct {
-	HasField_0 bool   // slot 0, Optional, presence flag
-	Field_0    []byte // slot 1, Optional, ReadBytes
+	Field_0Tag  uint8  // slot 0, variant tag
+	Field_0Alt0 uint32 // tag=1, size=4
+	Field_0Alt1 []byte // tag=2, size=4
 }
 
 func (m *IPAddress) UnmarshalFDB(data []byte) error {
@@ -23,17 +24,29 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(IPAddressSlotField_0) && r.ReadUint8(IPAddressSlotField_0) > 0 {
-		m.Field_0 = r.ReadBytes(IPAddressSlotField_0 + 1)
-		m.HasField_0 = true
+	if r.FieldPresent(IPAddressSlotField_0) {
+		m.Field_0Tag = r.ReadUint8(IPAddressSlotField_0)
+		switch m.Field_0Tag {
+		case 1:
+			m.Field_0Alt0 = r.ReadRelOffUint32(IPAddressSlotField_0 + 1)
+		case 2:
+			raw := r.ReadRelOffRaw(IPAddressSlotField_0+1, 4)
+			m.Field_0Alt1 = raw
+		}
 	}
 	return nil
 }
 
 func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(IPAddressSlotField_0) && r.ReadUint8(IPAddressSlotField_0) > 0 {
-		m.Field_0 = r.ReadBytes(IPAddressSlotField_0 + 1)
-		m.HasField_0 = true
+	if r.FieldPresent(IPAddressSlotField_0) {
+		m.Field_0Tag = r.ReadUint8(IPAddressSlotField_0)
+		switch m.Field_0Tag {
+		case 1:
+			m.Field_0Alt0 = r.ReadRelOffUint32(IPAddressSlotField_0 + 1)
+		case 2:
+			raw := r.ReadRelOffRaw(IPAddressSlotField_0+1, 4)
+			m.Field_0Alt1 = raw
+		}
 	}
 }
 
