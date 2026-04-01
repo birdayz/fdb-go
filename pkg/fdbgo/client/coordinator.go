@@ -142,13 +142,13 @@ func parseCommitProxyInterface(r *wire.Reader) (ProxyInfo, error) {
 }
 
 func parseEndpointAsProxy(r *wire.Reader, slot int) (ProxyInfo, error) {
-	ep, err := types.ReadEndpointFromSlot(r, slot)
+	ep, err := ReadEndpointFromSlot(r, slot)
 	if err != nil {
 		return ProxyInfo{}, err
 	}
 	return ProxyInfo{
-		Address: ep.Address,
-		Token:   transport.UID{First: ep.First, Second: ep.Second},
+		Address: endpointAddress(&ep),
+		Token:   endpointToken(&ep),
 	}, nil
 }
 

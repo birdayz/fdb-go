@@ -168,20 +168,20 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 			if err != nil {
 				continue
 			}
-			ep, err := types.ReadEndpointFromSlot(ssR, 2)
-			if err != nil || ep.First == 0 {
+			ep, err := ReadEndpointFromSlot(ssR, 2)
+			if err != nil || !endpointValid(&ep) {
 				nf := ssR.VTableLength() - 2
 				for s := 0; s < nf; s++ {
-					ep, err = types.ReadEndpointFromSlot(ssR, s)
-					if err == nil && ep.First != 0 {
+					ep, err = ReadEndpointFromSlot(ssR, s)
+					if err == nil && endpointValid(&ep) {
 						break
 					}
 				}
 			}
-			if ep.First != 0 {
+			if endpointValid(&ep) {
 				servers = append(servers, ServerInfo{
-					Address: ep.Address,
-					Token:   transport.UID{First: ep.First, Second: ep.Second},
+					Address: endpointAddress(&ep),
+					Token:   endpointToken(&ep),
 				})
 			}
 		}

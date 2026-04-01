@@ -7,6 +7,7 @@ go_library(
         "commitpath.go",
         "coordinator.go",
         "database.go",
+        "endpoint.go",
         "grv.go",
         "locality.go",
         "readpath.go",

@@ -28,7 +28,6 @@ go_library(
         "locationpair_generated.go",
         "mutationref_generated.go",
         "networkaddress_generated.go",
-        "networkaddress_helpers.go",
         "networkaddresslist_generated.go",
         "opendatabasecoordrequest_generated.go",
         "readoptions_generated.go",
