@@ -321,10 +321,14 @@ private:
         }
 
         // Step 3: Write object.
-        fprintf(f, "\tobjPos, obj := dw.WriteObject(%sVTable, %sMaxAlign)\n", typeName, typeName);
+        bool needsObj = !scalarFields.empty() || !oolFields.empty() || !nestedFields.empty();
+        if (needsObj)
+            fprintf(f, "\tobjPos, obj := dw.WriteObject(%sVTable, %sMaxAlign)\n", typeName, typeName);
+        else
+            fprintf(f, "\tobjPos, _ := dw.WriteObject(%sVTable, %sMaxAlign)\n", typeName, typeName);
 
         // Declare vt local if any field references vtable offsets.
-        bool needsVtLocal = !scalarFields.empty() || !oolFields.empty() || !nestedFields.empty();
+        bool needsVtLocal = needsObj;
         if (needsVtLocal) {
             fprintf(f, "\tvt := %sVTable\n", typeName);
         }

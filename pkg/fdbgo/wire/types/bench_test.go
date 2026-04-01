@@ -279,65 +279,6 @@ func BenchmarkParseKeyValueRefStringVector_100(b *testing.B) {
 	}
 }
 
-// --- Direct (two-pass) marshal benchmarks ---
-
-func BenchmarkMarshal_GetKeyValuesRequest_Direct(b *testing.B) {
-	req := GetKeyValuesRequest{
-		Begin:                  KeySelectorRef{Key: []byte("range_begin_key"), OrEqual: true, Offset: 1},
-		End:                    KeySelectorRef{Key: []byte("range_end_key_zz"), OrEqual: true, Offset: 1},
-		Version:                99999999999,
-		Limit:                  1000,
-		LimitBytes:             80000000,
-		Reply:                  ReplyPromise{Token: wire.UIDFromParts(0x11111111, 0x22222222)},
-		TenantInfo:             TenantInfo{TenantId: -1},
-		SsLatestCommitVersions: make([]byte, 16),
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = req.MarshalFDBDirect()
-	}
-}
-
-func TestMarshalDirect_GetKeyValuesRequest_ByteIdentical(t *testing.T) {
-	t.Parallel()
-	req := GetKeyValuesRequest{
-		Begin:                  KeySelectorRef{Key: []byte("range_begin_key"), OrEqual: true, Offset: 1},
-		End:                    KeySelectorRef{Key: []byte("range_end_key_zz"), OrEqual: true, Offset: 1},
-		Version:                99999999999,
-		Limit:                  1000,
-		LimitBytes:             80000000,
-		Reply:                  ReplyPromise{Token: wire.UIDFromParts(0x11111111, 0x22222222)},
-		TenantInfo:             TenantInfo{TenantId: -1},
-		SsLatestCommitVersions: make([]byte, 16),
-	}
-	expected := req.MarshalFDB()
-	got := req.MarshalFDBDirect()
-	if len(expected) != len(got) {
-		t.Fatalf("length mismatch: old=%d new=%d", len(expected), len(got))
-	}
-	diffs := 0
-	for i := range expected {
-		if expected[i] != got[i] {
-			if diffs < 10 {
-				t.Errorf("byte %d differs: old=0x%02x new=0x%02x", i, expected[i], got[i])
-			}
-			diffs++
-		}
-	}
-	if diffs > 0 {
-		t.Logf("total %d byte differences in %d-byte buffer", diffs, len(expected))
-		// Show hex dump of first 200 bytes for both
-		n := len(expected)
-		if n > 200 {
-			n = 200
-		}
-		t.Logf("OLD: %x", expected[:n])
-		t.Logf("NEW: %x", got[:n])
-		t.FailNow()
-	}
-}
-
 // --- StructBlob benchmarks (sub-object serialization) ---
 
 func BenchmarkMarshalStructBlob_MutationRef(b *testing.B) {
