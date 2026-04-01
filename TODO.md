@@ -1996,6 +1996,10 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [ ] **ParseKeyValueRefStringVector zero-copy** — Generator emits `make([]byte, n)` + `copy` per KV pair (2 allocs/element). Should slice into data buffer instead: `elem.Key = data[pos:pos+n:pos+n]`. Drops 100-KV parse from 201 allocs to 1. Generator fix in `cmd/fdb-schema-extract/main.cpp`.
 - [ ] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. Low priority — requests are not on the unmarshal hot path.
 
+### LOW — Missing primitives
+
+- [ ] **Vector\<scalar\> primitive (#8)** — Typed `[]int32`, `[]uint64` etc. instead of `[]byte` for `VectorRef<int>`, `VectorRef<uint64>`. No current FDB types need it (all scalar vectors are accessed as raw bytes). Add when a type with a typed scalar vector is needed.
+
 ### Phase 2
 
 - [ ] **Watch API** — `WatchValueRequest` long-poll to storage server.
