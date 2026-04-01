@@ -737,27 +737,48 @@ type ObjectWriter struct {
 // writerArena is a bump allocator for nested ObjectWriter and nestedStruct allocations.
 // Pre-allocated once per pool entry, eliminates per-WriteStruct heap allocations.
 type writerArena struct {
-	objWriters    [8]ObjectWriter // inline storage for nested ObjectWriters
-	nestedStructs [8]nestedStruct // inline storage for nestedStruct values
-	objBuf        [512]byte       // inline storage for nested object bytes
+	objWriters    [8]ObjectWriter    // inline storage for nested ObjectWriters
+	nestedStructs [8]nestedStruct    // inline storage for nestedStruct values
+	objBuf        [512]byte          // inline storage for nested object bytes
+	oolBuf        [1024]byte         // inline storage for nested out-of-line data
+	patchBuf      [16]relOffsetPatch // inline storage for nested patches
 	objWriterN    int
 	nestedStructN int
 	objBufPos     int
+	oolBufPos     int
+	patchBufPos   int
 }
 
 func (a *writerArena) reset() {
 	a.objWriterN = 0
 	a.nestedStructN = 0
 	a.objBufPos = 0
+	a.oolBufPos = 0
+	a.patchBufPos = 0
 }
 
 func (a *writerArena) allocObjectWriter(objSize int) *ObjectWriter {
 	if a.objWriterN < len(a.objWriters) && a.objBufPos+objSize <= len(a.objBuf) {
 		ow := &a.objWriters[a.objWriterN]
 		a.objWriterN++
+
+		// Provide pre-allocated outOfLine and patches slices from arena.
+		var ool []byte
+		if a.oolBufPos+64 <= len(a.oolBuf) {
+			ool = a.oolBuf[a.oolBufPos : a.oolBufPos : a.oolBufPos+64]
+			a.oolBufPos += 64
+		}
+		var patches []relOffsetPatch
+		if a.patchBufPos+2 <= len(a.patchBuf) {
+			patches = a.patchBuf[a.patchBufPos : a.patchBufPos : a.patchBufPos+2]
+			a.patchBufPos += 2
+		}
+
 		*ow = ObjectWriter{
-			object: a.objBuf[a.objBufPos : a.objBufPos+objSize : a.objBufPos+objSize],
-			arena:  a,
+			object:    a.objBuf[a.objBufPos : a.objBufPos+objSize : a.objBufPos+objSize],
+			outOfLine: ool,
+			patches:   patches,
+			arena:     a,
 		}
 		// Zero the object bytes.
 		clear(ow.object)
@@ -825,6 +846,9 @@ func UIDFromParts(first, second uint64) [16]byte {
 	return uid
 }
 
+// zeroPad is a static buffer for padding — avoids make([]byte, pad) allocations.
+var zeroPad [4]byte
+
 // --- Out-of-line data writers ---
 
 func (o *ObjectWriter) WriteBytes(vtableOffset int, data []byte) {
@@ -834,7 +858,7 @@ func (o *ObjectWriter) WriteBytes(vtableOffset int, data []byte) {
 	o.outOfLine = append(o.outOfLine, lenBuf[:]...)
 	o.outOfLine = append(o.outOfLine, data...)
 	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+		o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 	}
 	o.patches = append(o.patches, relOffsetPatch{vtableOffset, oolStart})
 }
@@ -849,7 +873,7 @@ func (o *ObjectWriter) WriteRawOOL(vtableOffset int, data []byte) {
 	oolStart := len(o.outOfLine)
 	o.outOfLine = append(o.outOfLine, data...)
 	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+		o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 	}
 	o.patches = append(o.patches, relOffsetPatch{vtableOffset, oolStart})
 }
@@ -864,7 +888,7 @@ func (o *ObjectWriter) WriteVectorInt32(vtableOffset int, values []int32) {
 		o.outOfLine = append(o.outOfLine, buf[:]...)
 	}
 	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+		o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 	}
 	o.patches = append(o.patches, relOffsetPatch{vtableOffset, oolStart})
 }
@@ -880,7 +904,7 @@ func (o *ObjectWriter) WriteVectorUint64(vtableOffset int, values []uint64) {
 		o.outOfLine = append(o.outOfLine, buf8[:]...)
 	}
 	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+		o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 	}
 	o.patches = append(o.patches, relOffsetPatch{vtableOffset, oolStart})
 }
@@ -908,7 +932,7 @@ func (o *ObjectWriter) WriteVectorStrings(vtableOffset int, values []string) {
 		o.outOfLine = append(o.outOfLine, lenBuf[:]...)
 		o.outOfLine = append(o.outOfLine, s...)
 		if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-			o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+			o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 		}
 	}
 
@@ -947,7 +971,7 @@ func (o *ObjectWriter) WriteOptionalStringPresent(typeOffset, valueOffset int, s
 	o.outOfLine = append(o.outOfLine, lenBuf[:]...)
 	o.outOfLine = append(o.outOfLine, s...)
 	if pad := (4 - len(o.outOfLine)%4) % 4; pad > 0 {
-		o.outOfLine = append(o.outOfLine, make([]byte, pad)...)
+		o.outOfLine = append(o.outOfLine, zeroPad[:pad]...)
 	}
 	o.patches = append(o.patches, relOffsetPatch{valueOffset, oolStart})
 }
@@ -1044,11 +1068,31 @@ func vtablesMatch(a, b VTable) bool {
 //
 // The soffset at the start of the object points back to the vtable.
 // OOL RelativeOffsets are patched to point forward into the OOL region.
+// blobWriterPool recycles ObjectWriter for MarshalStructBlob.
+var blobWriterPool = sync.Pool{
+	New: func() interface{} {
+		return &ObjectWriter{
+			object:    make([]byte, 0, 64),
+			outOfLine: make([]byte, 0, 128),
+			patches:   make([]relOffsetPatch, 0, 4),
+		}
+	},
+}
+
 func MarshalStructBlob(vt VTable, fn func(*ObjectWriter)) []byte {
 	objSize := int(vt[1])
-	obj := &ObjectWriter{
-		object: make([]byte, objSize),
+
+	obj := blobWriterPool.Get().(*ObjectWriter)
+	if cap(obj.object) >= objSize {
+		obj.object = obj.object[:objSize]
+	} else {
+		obj.object = make([]byte, objSize)
 	}
+	clear(obj.object)
+	obj.outOfLine = obj.outOfLine[:0]
+	obj.patches = obj.patches[:0]
+	obj.nestedStructs = obj.nestedStructs[:0]
+
 	fn(obj)
 
 	vtBytes := len(vt) * 2
@@ -1085,6 +1129,7 @@ func MarshalStructBlob(vt VTable, fn func(*ObjectWriter)) []byte {
 		}
 	}
 
+	blobWriterPool.Put(obj)
 	return buf
 }
 

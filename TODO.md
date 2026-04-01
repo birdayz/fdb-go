@@ -1930,17 +1930,54 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 | `wire.NewReader` | 142k | Pool or stack-allocate Reader |
 | `time.newTimer` | 80k | Timer pool |
 
-#### Tier 1: Zero-alloc vtable packing (CRITICAL, ~15% of allocs)
+#### Hot path analysis (2026-04-01)
 
-- [ ] **Pre-pack vtable closures at init** — `vTableSet` is rebuilt from scratch for every `WriteMessage` call: `newVTableSet()` → `addOrdered()` N times → `pack()`. The vtable closure is STATIC per message type (compile-time constant from C++ extractor). Pre-compute packed bytes + offset lookup table once at init via `PackedVTableClosure`. Add `WriteMessagePacked(*PackedVTableClosure)` fast path. Eliminates ~600k allocs/s.
+By frequency, ranked by impact:
+
+| Priority | Hot path | Frequency | Current perf | Fix |
+|---|---|---|---|---|
+| **1** | **GRV round trip** | Every tx | 299ns marshal + 81ns unmarshal + ~600µs RTT | **GRV caching** — skip entire RTT for read-only txns |
+| **2** | **ParseKeyValueRefStringVector** | Per range read, scales with result size | 622ns/21 allocs (10 KVs), 5.7µs/201 allocs (100 KVs) | Zero-copy: slice into buffer instead of make+copy per KV. Generator fix needed. |
+| **3** | **MarshalStructBlob (mutations/ranges)** | Per mutation + per conflict range on commit | ~~303ns/8 allocs~~ → **95ns/1 alloc** | **DONE** — pooled ObjectWriter + zeroPad. 3.4x speedup. |
+| **4** | **GetKeyValues request marshal** | Per range read shard | 756ns/8 allocs (4 nested structs) | Already uses arena for nested structs. 8 allocs = pooledWriter + output buf + nested OOL grows. |
+| **5** | **GetValue request marshal** | Per key read | 405ns/2 allocs | Already near-optimal (MessageTemplate + pool). 2 allocs = pooledWriter + output buf. |
+
+C++ comparison: unmarshal is zero-alloc zero-copy (StringRef = fat pointer into arena buffer). Our unmarshal is 1 alloc (Reader vtable slice) at 56-80ns for replies. Not worth optimizing — network RTT dominates by 1000x.
+
+#### Wire type benchmarks (Ryzen 9 3900X, 2026-04-01)
+
+Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.bench=. -test.benchmem`
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| Marshal GetValueRequest | 405 | 296 | 2 |
+| Marshal GetKeyValuesRequest | 756 | 456 | 8 |
+| Marshal CommitTransactionRequest (5 muts) | 1,254 | 3,676 | 8 |
+| Marshal GetReadVersionRequest | 299 | 184 | 2 |
+| Marshal MutationRef blob | 95 | 80 | 1 |
+| Marshal KeyRangeRef blob | 85 | 64 | 1 |
+| Unmarshal GetValueRequest | 237 | 384 | 4 |
+| Unmarshal GetValueReply | 56 | 96 | 1 |
+| Unmarshal GetKeyValuesReply | 62 | 96 | 1 |
+| Unmarshal GetReadVersionReply | 81 | 96 | 1 |
+| Unmarshal CommitTransactionRequest | 329 | 480 | 5 |
+| Roundtrip GetValueRequest | 681 | 681 | 6 |
+| ParseKeyValueRefStringVector (10 KVs) | 622 | 960 | 21 |
+| ParseKeyValueRefStringVector (100 KVs) | 5,679 | 9,664 | 201 |
+| PackVectorOfStructBlobs (5) | 127 | 432 | 2 |
+
+#### Tier 1: Zero-alloc vtable packing — DONE
+
+- [x] **Pre-pack vtable closures at init** — `MessageTemplate` pre-computes packed vtable bytes + O(1) offset lookup. `WriteMessagePacked` fast path. All top-level `MarshalFDB()` uses this. 2 allocs per message (pooledWriter + output buf).
+- [x] **Pool `ObjectWriter` for `MarshalStructBlob`** — Sub-object serialization (MutationRef, KeyRangeRef) went from 8 allocs/303ns to 1 alloc/95ns. sync.Pool + zeroPad static buffer.
+- [x] **writerArena for nested structs** — Inline [8]ObjectWriter + [8]nestedStruct + [512]byte bump allocator. Zero heap allocs for nested structs in WriteMessagePacked path.
 
 #### Tier 2: Buffer pooling (HIGH, ~30% of allocs)
 
-- [ ] **Pool `ObjectWriter` buffers** — `WriteMessage` allocates `make([]byte, msgObjSize)` per call. Pool via `sync.Pool` keyed by size.
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`.
 - [ ] **Pool frame write buffers** — `WriteFrame` allocates `make([]byte, headerSize+payloadLen)` per request. Pool via `sync.Pool`.
 - [ ] **Pool reply channels** — `PrepareReply` allocates `make(chan Response, 1)` per RPC. Pool via `sync.Pool`.
-- [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`.
+- [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (Low priority — 1 alloc at 56ns.)
 
 #### Tier 3: Reduce syscalls and scheduling (HIGH, main latency source)
 
@@ -1950,9 +1987,14 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 
 #### Tier 4: Reduce round trips (CRITICAL, main latency source)
 
-- [ ] **GRV caching** — cache read version across sequential transactions within a time window. Each Transact currently does GRV + GetValue = 2 round trips. Caching GRV would cut to 1 round trip, potentially halving latency.
+- [ ] **GRV caching** — cache read version across sequential transactions within a time window. Each Transact currently does GRV + GetValue = 2 round trips. Caching GRV would cut to 1 round trip, potentially halving latency. **#1 priority for closing the 6.4x gap with CGo.**
 - [ ] **Pipelined GRV + read** — send GRV request, don't wait for response; send GetValue with deferred read version. Resolve when both complete. Requires architectural change to Transaction.
 - [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
+
+#### Tier 5: Generated code improvements (HIGH, scales with data size)
+
+- [ ] **ParseKeyValueRefStringVector zero-copy** — Generator emits `make([]byte, n)` + `copy` per KV pair (2 allocs/element). Should slice into data buffer instead: `elem.Key = data[pos:pos+n:pos+n]`. Drops 100-KV parse from 201 allocs to 1. Generator fix in `cmd/fdb-schema-extract/main.cpp`.
+- [ ] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. Low priority — requests are not on the unmarshal hot path.
 
 ### Phase 2
 
