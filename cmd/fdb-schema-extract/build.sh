@@ -23,6 +23,7 @@ docker run --rm \
     -v "$FDB_SRC:/fdb_src:ro" \
     -v "$SCRIPT_DIR/main.cpp:/work/main.cpp:ro" \
     -v "$SCRIPT_DIR/name_capture.cpp:/work/name_capture.cpp:ro" \
+    -v "$SCRIPT_DIR/poc_generator.cpp:/work/poc_generator.cpp:ro" \
     -v "$(realpath "$OUTPUT_DIR"):/output" \
     -v "$BUILD_CACHE:/tmp/build" \
     -v "$SRC_CACHE:/fdb" \
@@ -39,6 +40,7 @@ docker run --rm \
         # Copy our source files.
         cp /work/main.cpp /fdb/schema_extract_main.cpp
         cp /work/name_capture.cpp /fdb/schema_extract_names.cpp
+        cp /work/poc_generator.cpp /fdb/poc_generator_main.cpp
 
         # Patches: disable binding tester + fix any missing includes.
         sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
@@ -49,7 +51,19 @@ docker run --rm \
         cat > /fdb/schema_extract.cmake << "CMAKE_EOF"
 add_executable(schema_extract schema_extract_main.cpp schema_extract_names.cpp)
 target_link_libraries(schema_extract PRIVATE fdbclient fdbrpc flow)
+add_executable(poc_gen poc_generator_main.cpp)
+target_link_libraries(poc_gen PRIVATE fdbclient fdbrpc flow)
 target_include_directories(schema_extract PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}
+    ${CMAKE_BINARY_DIR}/fdbclient/include
+    ${CMAKE_BINARY_DIR}/fdbclient
+    ${CMAKE_BINARY_DIR}/fdbrpc/include
+    ${CMAKE_BINARY_DIR}/fdbrpc
+    ${CMAKE_BINARY_DIR}/flow/include
+    ${CMAKE_BINARY_DIR}/flow
+)
+target_include_directories(poc_gen PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}
     ${CMAKE_BINARY_DIR}/fdbclient/include
@@ -92,8 +106,16 @@ CMAKE_EOF
         ninja -C $BUILD -j$JOBS schema_extract 2>&1 | tail -30
         echo "=== schema_extract built ==="
 
+        echo "=== Building poc_gen ==="
+        ninja -C $BUILD -j$JOBS poc_gen 2>&1 | tail -30
+        echo "=== poc_gen built ==="
+
         echo "=== Running schema_extract ==="
         $BUILD/bin/schema_extract /output
+
+        echo "=== Running poc_gen ==="
+        mkdir -p /output/poc
+        $BUILD/bin/poc_gen /output/poc
     '
 
 echo "Done: $OUTPUT_DIR"

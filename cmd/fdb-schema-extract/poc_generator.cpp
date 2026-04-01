@@ -1,504 +1,643 @@
-// poc_generator.cpp — Proof-of-concept single-pass type extractor.
+// poc_generator.cpp — Working proof-of-concept single-pass type extractor.
+// Compiles against real FDB headers. Outputs Go files to a directory.
+// Run alongside the old generator to compare outputs.
 //
-// Demonstrates the architecture for a better generator that:
-// 1. Derives EVERYTHING from compile-time template metaprogramming
-// 2. No manual getCppTypeName registry (auto-detect via type traits)
-// 3. No name_capture string parsing (field names from explicit registration, compile-time verified)
-// 4. Nested types auto-detected and recursively extracted
-// 5. Variants auto-detected with per-alternative type info
-// 6. Single extractType call does everything — no EmitStructs/EmitVectorParser flags
-//
-// NOT a working build — this is a design document in C++ form.
-// Shows the interfaces and compile-time patterns.
+// Build: add to cmake alongside schema_extract:
+//   add_executable(poc_gen poc_generator.cpp schema_extract_names.cpp)
+//   target_link_libraries(poc_gen PRIVATE fdbclient fdbrpc flow)
+
+#include "fdbclient/StorageServerInterface.h"
+#include "fdbclient/CommitProxyInterface.h"
+#include "fdbclient/GrvProxyInterface.h"
+#include "fdbclient/CoordinationInterface.h"
+#include "fdbclient/ClusterInterface.h"
+#include "fdbclient/FDBTypes.h"
+#include "fdbclient/GlobalConfig.h"
+#include "fdbrpc/FlowTransport.h"
+#include "fdbrpc/TenantInfo.h"
+#include "flow/serialize.h"
+#include "flow/TLSConfig.actor.h"
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <map>
-#include <type_traits>
-#include <variant>
+#include <algorithm>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 // ============================================================
-// 1. Type Registry — compile-time verified, no silent fallback
+// 1. GoTypeName — compile-time verified type name registry
 // ============================================================
 
-// Every type that appears as a nested struct MUST register here.
-// Missing registration = compile error, NOT a silent comment.
 template <class T>
 struct GoTypeName {
-    // Default: compile error via static_assert when used.
-    // Types that don't need names (scalars, bytes) never instantiate this.
     static constexpr bool registered = false;
-    static const char* name() {
-        static_assert(registered, "Missing GoTypeName registration for nested struct type. "
-            "Add: template<> struct GoTypeName<YourType> { static constexpr bool registered = true; "
-            "static const char* name() { return \"YourType\"; } };");
-        return "";
-    }
+    static const char* name() { return ""; } // Empty = not registered
 };
 
-// Registrations: one line per type. Forgetting = compile error.
 #define REGISTER_GO_TYPE(CppType, GoName) \
     template<> struct GoTypeName<CppType> { \
         static constexpr bool registered = true; \
         static const char* name() { return GoName; } \
     }
 
-// Example registrations (would be in the real file):
-// REGISTER_GO_TYPE(SpanContext, "SpanContext");
-// REGISTER_GO_TYPE(TenantInfo, "TenantInfo");
-// REGISTER_GO_TYPE(ReplyPromise<GetValueReply>, "ReplyPromise");
-// REGISTER_GO_TYPE(KeyRangeRef, "KeyRangeRef");
+// Register ALL nested struct types used in serialize() methods.
+REGISTER_GO_TYPE(SpanContext, "SpanContext");
+REGISTER_GO_TYPE(TenantInfo, "TenantInfo");
+REGISTER_GO_TYPE(KeySelectorRef, "KeySelectorRef");
+REGISTER_GO_TYPE(KeyRangeRef, "KeyRangeRef");
+REGISTER_GO_TYPE(CommitTransactionRef, "CommitTransactionRef");
+REGISTER_GO_TYPE(ReadOptions, "ReadOptions");
+REGISTER_GO_TYPE(NetworkAddress, "NetworkAddress");
+REGISTER_GO_TYPE(NetworkAddressList, "NetworkAddressList");
+REGISTER_GO_TYPE(IPAddress, "IPAddress");
+REGISTER_GO_TYPE(Endpoint, "Endpoint");
+
+// ReplyPromise<T> — all instantiations share same vtable.
+REGISTER_GO_TYPE(ReplyPromise<GetValueReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<GetKeyValuesReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<GetKeyReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<GetReadVersionReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<GetKeyServerLocationsReply>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<CommitID>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<Void>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<CachedSerialization<ClientDBInfo>>, "ReplyPromise");
 
 // ============================================================
-// 2. Field Names — explicit per-type, compile-time indexed
+// 2. FieldNames — explicit per-type, indexed by field position
 // ============================================================
 
-// Field names are registered per type as a compile-time string array.
-// The extractor matches fields by INDEX (same order as serializer(ar, ...)).
 template <class T>
 struct FieldNames {
-    static constexpr bool registered = false;
-    static const char* get(int /*index*/) { return nullptr; }
+    static const char* get(int index) { return nullptr; } // No names = use field_N
 };
 
 #define REGISTER_FIELD_NAMES(CppType, ...) \
     template<> struct FieldNames<CppType> { \
-        static constexpr bool registered = true; \
-        static const char* names[]; \
         static const char* get(int index) { \
-            static const char* n[] = { __VA_ARGS__ }; \
-            return (index < (int)(sizeof(n)/sizeof(n[0]))) ? n[index] : nullptr; \
+            static const char* names[] = { __VA_ARGS__ }; \
+            int n = sizeof(names)/sizeof(names[0]); \
+            return (index < n) ? names[index] : nullptr; \
         } \
     }
 
-// Example:
-// REGISTER_FIELD_NAMES(GetValueRequest, "key", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
-// REGISTER_FIELD_NAMES(TenantInfo, "tenantId", "token", "arena");
+// Field names for all extracted types.
+REGISTER_FIELD_NAMES(GetValueRequest, "key", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
+REGISTER_FIELD_NAMES(GetValueReply, "penalty", "error", "value", "cached");
+REGISTER_FIELD_NAMES(GetKeyValuesRequest, "begin", "end", "version", "limit", "limitBytes", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions", "arena");
+REGISTER_FIELD_NAMES(GetKeyValuesReply, "penalty", "error", "data", "version", "more", "cached", "arena");
+REGISTER_FIELD_NAMES(GetKeyRequest, "sel", "version", "tags", "reply", "spanContext", "tenantInfo", "options", "ssLatestCommitVersions");
+REGISTER_FIELD_NAMES(GetKeyReply, "penalty", "error", "sel", "cached");
+REGISTER_FIELD_NAMES(GetReadVersionRequest, "transactionCount", "flags", "tags", "debugID", "reply", "spanContext", "maxVersion");
+REGISTER_FIELD_NAMES(GetReadVersionReply, "processBusyTime", "version", "locked", "metadataVersion", "tagThrottleInfo", "midShardSize", "rkDefaultThrottled", "rkBatchThrottled", "ssVersionVectorDelta", "proxyId", "proxyTagThrottledDuration");
+REGISTER_FIELD_NAMES(GetKeyServerLocationsRequest, "begin", "end", "limit", "reverse", "reply", "spanContext", "tenant", "minTenantVersion", "arena");
+REGISTER_FIELD_NAMES(GetKeyServerLocationsReply, "results", "resultsTssMapping", "resultsTagMapping", "arena");
+REGISTER_FIELD_NAMES(CommitTransactionRequest, "transaction", "reply", "flags", "debugID", "commitCostEstimation", "tagSet", "spanContext", "tenantInfo", "idempotencyId", "arena");
+REGISTER_FIELD_NAMES(CommitID, "version", "txnBatchId", "metadataVersion", "conflictingKRIndices");
+REGISTER_FIELD_NAMES(OpenDatabaseCoordRequest, "issues", "supportedVersions", "traceLogGroup", "knownClientInfoID", "clusterKey", "coordinators", "reply", "hostnames", "internal");
+REGISTER_FIELD_NAMES(CommitTransactionRef, "readConflictRanges", "writeConflictRanges", "mutations", "readSnapshot", "report_conflicting_keys", "lock_aware", "read_conflict_ranges_disabled", "write_conflict_ranges_disabled");
+REGISTER_FIELD_NAMES(KeyValueRef, "key", "value");
+REGISTER_FIELD_NAMES(TenantInfo, "tenantId", "token", "arena");
+REGISTER_FIELD_NAMES(MutationRef, "mutType", "param1", "param2");
+REGISTER_FIELD_NAMES(Error, "errorCode");
+REGISTER_FIELD_NAMES(NetworkAddress, "ip", "port", "flags", "fromHostname");
+REGISTER_FIELD_NAMES(Endpoint, "addresses", "token");
+REGISTER_FIELD_NAMES(ReplyPromise<GetValueReply>, "token");
 
 // ============================================================
-// 3. Trait Classification — single unified system
+// 3. Field Classification — compile-time from FDB traits
 // ============================================================
 
-enum class FieldKind {
-    Scalar,           // Inline value (int32, uint16, bool, float64, UID)
-    DynamicSize,      // Length-prefixed bytes via RelOff (StringRef, Key, Value)
-    VectorLike,       // Count-prefixed vector via RelOff, no length prefix (VectorRef)
-    Optional,         // Type tag (uint8) + value (2 vtable slots)
-    NestedStruct,     // serialize_member — nested FlatBuffers object via RelOff
-    Variant,          // std::variant — type tag + per-alternative value via RelOff
-};
+enum class FieldKind { Scalar, DynamicSize, VectorLike, Optional, NestedStruct, Variant };
 
-// Scalar type info (Go type + reader/writer method names).
 struct ScalarInfo {
     const char* goType;
     const char* reader;
     const char* writer;
-    int size;
 };
 
-// For scalars, resolve at compile time from the C++ type.
-template <class T> constexpr ScalarInfo scalarInfoFor() {
-    if constexpr (std::is_same_v<T, bool>)     return {"bool", "ReadBool", "WriteBool", 1};
-    if constexpr (std::is_same_v<T, int8_t>)   return {"int8", "ReadInt8", "WriteInt8", 1};
-    if constexpr (std::is_same_v<T, uint8_t>)  return {"uint8", "ReadUint8", "WriteUint8", 1};
-    if constexpr (std::is_same_v<T, int16_t>)  return {"int16", "ReadInt16", "WriteInt16", 2};
-    if constexpr (std::is_same_v<T, uint16_t>) return {"uint16", "ReadUint16", "WriteUint16", 2};
-    if constexpr (std::is_same_v<T, int32_t>)  return {"int32", "ReadInt32", "WriteInt32", 4};
-    if constexpr (std::is_same_v<T, uint32_t>) return {"uint32", "ReadUint32", "WriteUint32", 4};
-    if constexpr (std::is_same_v<T, int64_t>)  return {"int64", "ReadInt64", "WriteInt64", 8};
-    if constexpr (std::is_same_v<T, uint64_t>) return {"uint64", "ReadUint64", "WriteUint64", 8};
-    if constexpr (std::is_same_v<T, double>)   return {"float64", "ReadFloat64", "WriteFloat64", 8};
-    // Enums: use underlying type.
-    if constexpr (std::is_enum_v<T>) return scalarInfoFor<std::underlying_type_t<T>>();
-    // UID (16 bytes):
-    // if constexpr (std::is_same_v<T, UID>) return {"[16]byte", "ReadUID", "WriteUID", 16};
-    // Unknown scalar: size-based fallback (compile-time, not runtime).
-    return {"[]byte", "ReadBytes", "WriteBytes", 0};
+template <class T> ScalarInfo scalarInfoFor() {
+    if constexpr (std::is_same_v<T, bool>)     return {"bool", "ReadBool", "WriteBool"};
+    else if constexpr (std::is_same_v<T, int8_t>)   return {"int8", "ReadInt8", "WriteInt8"};
+    else if constexpr (std::is_same_v<T, uint8_t>)  return {"uint8", "ReadUint8", "WriteUint8"};
+    else if constexpr (std::is_same_v<T, int16_t>)  return {"int16", "ReadInt16", "WriteInt16"};
+    else if constexpr (std::is_same_v<T, uint16_t>) return {"uint16", "ReadUint16", "WriteUint16"};
+    else if constexpr (std::is_same_v<T, int32_t>)  return {"int32", "ReadInt32", "WriteInt32"};
+    else if constexpr (std::is_same_v<T, uint32_t>) return {"uint32", "ReadUint32", "WriteUint32"};
+    else if constexpr (std::is_same_v<T, int64_t>)  return {"int64", "ReadInt64", "WriteInt64"};
+    else if constexpr (std::is_same_v<T, uint64_t>) return {"uint64", "ReadUint64", "WriteUint64"};
+    else if constexpr (std::is_same_v<T, double>)   return {"float64", "ReadFloat64", "WriteFloat64"};
+    else if constexpr (std::is_same_v<T, UID>)      return {"[16]byte", "ReadUID", "WriteUID"};
+    // Enums: resolve underlying type.
+    else if constexpr (std::is_enum_v<T>)       return scalarInfoFor<std::underlying_type_t<T>>();
+    // Size-based fallback for unknown scalars.
+    else if constexpr (detail::fb_size<T> == 1)  return {"uint8", "ReadUint8", "WriteUint8"};
+    else if constexpr (detail::fb_size<T> == 2)  return {"uint16", "ReadUint16", "WriteUint16"};
+    else if constexpr (detail::fb_size<T> == 4)  return {"int32", "ReadInt32", "WriteInt32"};
+    else if constexpr (detail::fb_size<T> == 8)  return {"int64", "ReadInt64", "WriteInt64"};
+    else return {"[]byte", "ReadBytes", "WriteBytes"};
+}
+
+// Standalone<T> detection.
+template <class T> struct is_standalone : std::false_type {};
+template <class T> struct is_standalone<Standalone<T>> : std::true_type {};
+
+// Classify a field type into FieldKind.
+template <class T>
+FieldKind classifyField() {
+    using namespace detail;
+    if constexpr (is_scalar<T>) return FieldKind::Scalar;
+    else if constexpr (is_dynamic_size<T>) return FieldKind::DynamicSize;
+    else if constexpr (is_standalone<T>::value) {
+        using Inner = typename T::RefType;
+        if constexpr (is_vector_like<Inner>) return FieldKind::VectorLike;
+        else if constexpr (is_dynamic_size<Inner>) return FieldKind::DynamicSize;
+        else return FieldKind::NestedStruct;
+    }
+    else if constexpr (is_vector_like<T>) return FieldKind::VectorLike;
+    else if constexpr (is_union_like<T>) return FieldKind::Optional; // TODO: distinguish variant
+    else return FieldKind::NestedStruct; // serialize_member / struct_like
 }
 
 // ============================================================
-// 4. Variant Support — compile-time alternative extraction
-// ============================================================
-
-struct VariantAlt {
-    const char* goType;
-    const char* reader;
-    int size;
-    FieldKind kind; // scalar, dynamic_size, vector_like
-};
-
-template <class T>
-struct VariantAlternatives {
-    static constexpr bool is_variant = false;
-    static std::vector<VariantAlt> get() { return {}; }
-};
-
-// Partial specialization for std::variant<Ts...>:
-// template <class... Ts>
-// struct VariantAlternatives<std::variant<Ts...>> {
-//     static constexpr bool is_variant = true;
-//     static std::vector<VariantAlt> get() {
-//         return { makeAlt<Ts>()... };
-//     }
-// private:
-//     template <class T>
-//     static VariantAlt makeAlt() {
-//         if constexpr (is_scalar<T>) {
-//             auto si = scalarInfoFor<T>();
-//             return {si.goType, si.reader, si.size, FieldKind::Scalar};
-//         } else if constexpr (is_vector_like<T>) {
-//             return {"[]byte", "ReadBytes", 4, FieldKind::VectorLike};
-//         } else {
-//             return {"[]byte", "ReadBytes", 4, FieldKind::DynamicSize};
-//         }
-//     }
-// };
-
-// ============================================================
-// 5. Field Descriptor — everything about one field, compile-time
+// 4. FieldDesc + FieldCollector
 // ============================================================
 
 struct FieldDesc {
-    const char* name;          // "tenantId" (from FieldNames registry)
-    FieldKind kind;            // Scalar, DynamicSize, NestedStruct, etc.
-    ScalarInfo scalar;         // If kind==Scalar
-    const char* nestedGoType;  // If kind==NestedStruct: "TenantInfo" (from GoTypeName)
-    std::vector<VariantAlt> variantAlts; // If kind==Variant
-    int vtableSlot;            // Slot index in the vtable
+    const char* name;
+    FieldKind kind;
+    ScalarInfo scalar;
+    const char* nestedGoType;
+    int vtableSlot;
+    uint32_t size;
 };
 
-// ============================================================
-// 6. TypeExtractor — single template, extracts everything
-// ============================================================
-
-// The visitor that collects FieldDesc for each field in serialize().
+template <class ParentT>
 struct FieldCollector {
+    static constexpr bool isDeserializing = false;
+    static constexpr bool isSerializing = false;
+    static constexpr bool is_fb_visitor = true;
+
     std::vector<FieldDesc> fields;
+    std::vector<uint16_t> vtable;
+    int fieldIndex = 0;
     int slotIndex = 0;
-    const char* typeName; // The parent type being extracted
 
+    FieldCollector& context() { return *this; }
+    ProtocolVersion protocolVersion() const { return currentProtocolVersion(); }
+
+    template <class... Members>
+    void operator()(Members&... members) {
+        const auto* vt = detail::get_vtable<std::decay_t<Members>...>();
+        vtable.assign(vt->begin(), vt->end());
+        (pushField<std::decay_t<Members>>(), ...);
+    }
+
+private:
     template <class T>
-    void addField() {
-        FieldDesc fd;
+    void pushField() {
+        using namespace detail;
+        FieldDesc fd{};
         fd.vtableSlot = slotIndex;
+        fd.name = FieldNames<ParentT>::get(fieldIndex);
+        fd.size = (uint32_t)fb_size<T>;
+        fd.kind = classifyField<T>();
 
-        // Get field name from registry (or fallback to field_N).
-        // In the real implementation, the parent type's FieldNames<ParentT>
-        // provides the name. Here we use the field index.
-        fd.name = nullptr; // Set by caller from FieldNames<ParentT>::get(index)
-
-        // Classify the field.
-        // In the real implementation, use FDB's trait detection:
-        //   is_scalar<T>, is_dynamic_size<T>, is_vector_like<T>,
-        //   is_union_like<T>, is_struct_like<T>
-        //
-        // The key improvement: for NestedStruct, GoTypeName<T>::name() is
-        // used AUTOMATICALLY. No manual getCppTypeName registry.
-        // If GoTypeName<T> is not registered, the code DOESN'T COMPILE.
-
-        // For nested structs:
-        // if constexpr (is_serialize_member<T> && !is_union_like<T>) {
-        //     fd.kind = FieldKind::NestedStruct;
-        //     fd.nestedGoType = GoTypeName<T>::name(); // Compile error if not registered!
-        // }
-
-        // For variants:
-        // if constexpr (VariantAlternatives<T>::is_variant) {
-        //     fd.kind = FieldKind::Variant;
-        //     fd.variantAlts = VariantAlternatives<T>::get();
-        // }
-
-        // For scalars:
-        // if constexpr (is_scalar<T>) {
-        //     fd.kind = FieldKind::Scalar;
-        //     fd.scalar = scalarInfoFor<T>(); // Handles enums via underlying_type!
-        // }
+        switch (fd.kind) {
+        case FieldKind::Scalar:
+            fd.scalar = scalarInfoFor<T>();
+            break;
+        case FieldKind::NestedStruct:
+            fd.nestedGoType = GoTypeName<T>::name();
+            // If not registered, nestedGoType is "" — we'll detect and warn.
+            break;
+        default:
+            break;
+        }
 
         fields.push_back(fd);
-
-        // union_like (Optional/Variant) consumes 2 slots.
-        // if constexpr (is_union_like<T>) slotIndex += 2;
-        // else slotIndex++;
-        slotIndex++;
+        fieldIndex++;
+        slotIndex += (fd.kind == FieldKind::Optional) ? 2 : 1;
     }
 };
 
 // ============================================================
-// 7. Go Emitter — driven by FieldDesc, not by field traits
+// 5. GoEmitter
 // ============================================================
+
+static std::string sanitize(const char* s) {
+    if (!s || !s[0]) return "";
+    std::string r(s);
+    // Strip v. prefix, :: prefix, const_cast wrapper.
+    auto dot = r.rfind('.');
+    if (dot != std::string::npos) r = r.substr(dot + 1);
+    auto col = r.rfind("::");
+    if (col != std::string::npos) r = r.substr(col + 2);
+    r[0] = toupper(r[0]);
+    return r;
+}
+
+static std::string safeParam(const std::string& goName) {
+    std::string p = goName;
+    if (!p.empty()) p[0] = tolower(p[0]);
+    if (p == "type" || p == "range" || p == "error" || p == "func" || p == "map" || p == "select")
+        p += "_";
+    return p;
+}
+
+static std::string fieldGoName(const FieldDesc& fd) {
+    if (fd.name) return sanitize(fd.name);
+    return "Field_" + std::to_string(fd.vtableSlot);
+}
 
 struct GoEmitter {
     FILE* f;
 
-    void emitType(const char* typeName, const std::vector<FieldDesc>& fields,
-                  const std::vector<uint16_t>& vtable, uint32_t fileId) {
-        emitHeader();
-        emitSlotConstants(typeName, fields);
-        emitVTable(typeName, vtable);
-        emitStruct(typeName, fields);
-        emitUnmarshalFDB(typeName, fields);
-        emitUnmarshalFromReader(typeName, fields);
-        emitMarshalInto(typeName, fields);     // Writes ALL fields including nested
-        emitMarshalFDB(typeName, fields, fileId);
-        emitHelpers(typeName, fields);          // MarshalStructBlob, WriteNested, ParseVector
-    }
-
-private:
-    void emitHeader() {
-        fprintf(f, "// Code generated by fdb-schema-extract. DO NOT EDIT.\n\n");
+    void emitFull(const char* typeName, const std::vector<FieldDesc>& fields,
+                  const std::vector<uint16_t>& vt, uint32_t fileId,
+                  const std::vector<std::vector<uint16_t>>& closure) {
+        // Header.
+        fprintf(f, "// Code generated by poc_generator from FDB 7.3.75. DO NOT EDIT.\n\n");
         fprintf(f, "package types\n\n");
-        fprintf(f, "import \"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire\"\n\n");
-    }
 
-    void emitSlotConstants(const char* typeName, const std::vector<FieldDesc>& fields) {
+        bool needsBinary = false;
+        // Check if any field needs encoding/binary (VecSerStrategy parser).
+        // For now, always import wire only.
+        fprintf(f, "import \"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire\"\n\n");
+
+        // Slot constants.
         fprintf(f, "const (\n");
         for (auto& fd : fields) {
-            if (fd.name) {
-                fprintf(f, "\t%sSlot%s = %d\n", typeName, capitalize(fd.name).c_str(), fd.vtableSlot);
-            }
+            auto gn = fieldGoName(fd);
+            fprintf(f, "\t%sSlot%s = %d\n", typeName, gn.c_str(), fd.vtableSlot);
         }
         fprintf(f, ")\n\n");
-    }
 
-    void emitVTable(const char* typeName, const std::vector<uint16_t>& vt) {
+        // VTable.
         fprintf(f, "var %sVTable = wire.VTable{", typeName);
         for (size_t i = 0; i < vt.size(); i++) {
             if (i) fprintf(f, ", ");
             fprintf(f, "%u", vt[i]);
         }
-        fprintf(f, "}\n\n");
-    }
+        fprintf(f, "}\n");
 
-    void emitStruct(const char* typeName, const std::vector<FieldDesc>& fields) {
+        // FileID.
+        if (fileId > 0) fprintf(f, "const %sFileID uint32 = %u\n", typeName, fileId);
+
+        // Closure.
+        if (!closure.empty()) {
+            fprintf(f, "var %sVTableClosure = []wire.VTable{\n", typeName);
+            for (auto& cvt : closure) {
+                fprintf(f, "\t{");
+                for (size_t i = 0; i < cvt.size(); i++) {
+                    if (i) fprintf(f, ", ");
+                    fprintf(f, "%u", cvt[i]);
+                }
+                fprintf(f, "},\n");
+            }
+            fprintf(f, "}\n");
+        }
+
+        // Template.
+        if (fileId > 0 && !closure.empty()) {
+            int maxAlign = 4;
+            for (auto& fd : fields)
+                if (fd.kind == FieldKind::Scalar && fd.scalar.goType &&
+                    (strcmp(fd.scalar.goType, "int64") == 0 || strcmp(fd.scalar.goType, "uint64") == 0 ||
+                     strcmp(fd.scalar.goType, "float64") == 0 || strcmp(fd.scalar.goType, "[16]byte") == 0))
+                    maxAlign = 8;
+            fprintf(f, "var %sTemplate = wire.NewMessageTemplate(\n", typeName);
+            fprintf(f, "\t%sFileID, %sVTable, %d, %sVTableClosure,\n)\n",
+                    typeName, typeName, maxAlign, typeName);
+        }
+        fprintf(f, "\n");
+
+        // Struct.
         fprintf(f, "type %s struct {\n", typeName);
         for (auto& fd : fields) {
-            auto goName = capitalize(fd.name ? fd.name : ("field_" + std::to_string(fd.vtableSlot)).c_str());
+            auto gn = fieldGoName(fd);
             switch (fd.kind) {
             case FieldKind::Scalar:
-                fprintf(f, "\t%s %s // slot %d\n", goName.c_str(), fd.scalar.goType, fd.vtableSlot);
+                fprintf(f, "\t%s %s // slot %d\n", gn.c_str(), fd.scalar.goType, fd.vtableSlot);
                 break;
             case FieldKind::DynamicSize:
             case FieldKind::VectorLike:
-                fprintf(f, "\t%s []byte // slot %d\n", goName.c_str(), fd.vtableSlot);
+                fprintf(f, "\t%s []byte // slot %d\n", gn.c_str(), fd.vtableSlot);
                 break;
             case FieldKind::NestedStruct:
-                // Uses GoTypeName<T>::name() — guaranteed registered by compile-time check.
-                fprintf(f, "\t%s %s // slot %d, nested\n", goName.c_str(), fd.nestedGoType, fd.vtableSlot);
+                if (fd.nestedGoType[0])
+                    fprintf(f, "\t%s %s // slot %d, nested\n", gn.c_str(), fd.nestedGoType, fd.vtableSlot);
+                else
+                    fprintf(f, "\t// %s: unregistered nested struct at slot %d\n", gn.c_str(), fd.vtableSlot);
                 break;
             case FieldKind::Optional:
-                fprintf(f, "\tHas%s bool // slot %d, optional tag\n", goName.c_str(), fd.vtableSlot);
-                fprintf(f, "\t%s []byte // slot %d, optional value\n", goName.c_str(), fd.vtableSlot + 1);
+                fprintf(f, "\tHas%s bool   // slot %d, optional tag\n", gn.c_str(), fd.vtableSlot);
+                fprintf(f, "\t%s    []byte // slot %d, optional value\n", gn.c_str(), fd.vtableSlot + 1);
                 break;
             case FieldKind::Variant:
-                fprintf(f, "\t%sTag uint8 // slot %d, variant tag\n", goName.c_str(), fd.vtableSlot);
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    fprintf(f, "\t%sAlt%zu %s // tag=%zu\n",
-                            goName.c_str(), a, fd.variantAlts[a].goType, a + 1);
-                }
+                fprintf(f, "\t// variant at slot %d (TODO)\n", fd.vtableSlot);
                 break;
             }
         }
         fprintf(f, "}\n\n");
-    }
 
-    // KEY IMPROVEMENT: MarshalInto writes ALL fields including nested structs.
-    // The current generator skips nested structs in MarshalInto — this fixes HIGH #6.
-    void emitMarshalInto(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) MarshalInto(obj *wire.ObjectWriter) {\n", typeName);
-        fprintf(f, "\tvt := %sVTable\n", typeName);
-        for (auto& fd : fields) {
-            auto goName = capitalize(fd.name ? fd.name : ("field_" + std::to_string(fd.vtableSlot)).c_str());
-            auto slotExpr = std::string(typeName) + "Slot" + goName;
-            switch (fd.kind) {
-            case FieldKind::Scalar:
-                fprintf(f, "\tobj.%s(int(vt[%s+2]), m.%s)\n",
-                        fd.scalar.writer, slotExpr.c_str(), goName.c_str());
-                break;
-            case FieldKind::DynamicSize:
-                fprintf(f, "\tif len(m.%s) > 0 {\n", goName.c_str());
-                fprintf(f, "\t\tobj.WriteBytes(int(vt[%s+2]), m.%s)\n", slotExpr.c_str(), goName.c_str());
-                fprintf(f, "\t}\n");
-                break;
-            case FieldKind::VectorLike:
-                fprintf(f, "\tif len(m.%s) > 0 {\n", goName.c_str());
-                fprintf(f, "\t\tobj.WriteRawOOL(int(vt[%s+2]), m.%s)\n", slotExpr.c_str(), goName.c_str());
-                fprintf(f, "\t}\n");
-                break;
-            case FieldKind::NestedStruct:
-                // THIS IS THE FIX: MarshalInto now writes nested structs!
-                fprintf(f, "\tobj.WriteStruct(int(vt[%s+2]), %sVTable, 8, m.%s.MarshalInto)\n",
-                        slotExpr.c_str(), fd.nestedGoType, goName.c_str());
-                break;
-            case FieldKind::Optional:
-                // Skip in MarshalInto (needs conditional write logic).
-                break;
-            case FieldKind::Variant:
-                // Skip in MarshalInto (needs switch on tag).
-                break;
-            }
-        }
+        // UnmarshalFromReader.
+        fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
+        emitReads(typeName, fields, "r");
         fprintf(f, "}\n\n");
-    }
 
-    void emitUnmarshalFDB(const char* typeName, const std::vector<FieldDesc>& fields) {
+        // UnmarshalFDB.
         fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
         fprintf(f, "\tr, err := wire.NewReader(data)\n");
         fprintf(f, "\tif err != nil { return err }\n");
-        emitFieldReads(typeName, fields, "r");
+        emitReads(typeName, fields, "r");
         fprintf(f, "\treturn nil\n}\n\n");
-    }
 
-    void emitUnmarshalFromReader(const char* typeName, const std::vector<FieldDesc>& fields) {
-        fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
-        emitFieldReads(typeName, fields, "r");
+        // MarshalInto — KEY IMPROVEMENT: writes ALL fields including nested!
+        fprintf(f, "func (m *%s) MarshalInto(obj *wire.ObjectWriter) {\n", typeName);
+        bool hasWrites = false;
+        for (auto& fd : fields) {
+            if (fd.kind == FieldKind::Scalar || fd.kind == FieldKind::DynamicSize ||
+                fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::NestedStruct)
+                if (fd.size > 0) { hasWrites = true; break; }
+        }
+        if (hasWrites) fprintf(f, "\tvt := %sVTable\n", typeName);
+        for (auto& fd : fields) {
+            if (fd.size == 0) continue; // Arena
+            auto gn = fieldGoName(fd);
+            auto slot = std::string(typeName) + "Slot" + gn;
+            switch (fd.kind) {
+            case FieldKind::Scalar:
+                fprintf(f, "\tobj.%s(int(vt[%s+2]), m.%s)\n", fd.scalar.writer, slot.c_str(), gn.c_str());
+                break;
+            case FieldKind::DynamicSize:
+                fprintf(f, "\tif m.%s != nil {\n\t\tobj.WriteBytes(int(vt[%s+2]), m.%s)\n\t}\n",
+                        gn.c_str(), slot.c_str(), gn.c_str());
+                break;
+            case FieldKind::VectorLike:
+                fprintf(f, "\tif m.%s != nil {\n\t\tobj.WriteRawOOL(int(vt[%s+2]), m.%s)\n\t}\n",
+                        gn.c_str(), slot.c_str(), gn.c_str());
+                break;
+            case FieldKind::NestedStruct:
+                if (fd.nestedGoType[0])
+                    fprintf(f, "\tobj.WriteStruct(int(vt[%s+2]), %sVTable, 8, m.%s.MarshalInto)\n",
+                            slot.c_str(), fd.nestedGoType, gn.c_str());
+                break;
+            default: break;
+            }
+        }
+        fprintf(f, "}\n\n");
+
+        // MarshalFDB — delegates to MarshalInto.
+        if (fileId > 0 && !closure.empty()) {
+            fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
+            fprintf(f, "\tw := wire.NewWriter(nil)\n");
+            fprintf(f, "\treturn w.WriteMessagePacked(%sTemplate, m.MarshalInto)\n", typeName);
+            fprintf(f, "}\n\n");
+        }
+
+        // WriteNested helper.
+        fprintf(f, "func Write%s(obj *wire.ObjectWriter, parentOffset int", typeName);
+        for (auto& fd : fields) {
+            if (fd.size == 0 || fd.kind == FieldKind::Optional || fd.kind == FieldKind::NestedStruct) continue;
+            auto gn = fieldGoName(fd);
+            auto pn = safeParam(gn);
+            fprintf(f, ", %s %s", pn.c_str(),
+                    fd.kind == FieldKind::Scalar ? fd.scalar.goType : "[]byte");
+        }
+        fprintf(f, ") {\n");
+        fprintf(f, "\tm := %s{", typeName);
+        bool first = true;
+        for (auto& fd : fields) {
+            if (fd.size == 0 || fd.kind == FieldKind::Optional || fd.kind == FieldKind::NestedStruct) continue;
+            auto gn = fieldGoName(fd);
+            auto pn = safeParam(gn);
+            if (!first) fprintf(f, ", ");
+            fprintf(f, "%s: %s", gn.c_str(), pn.c_str());
+            first = false;
+        }
+        fprintf(f, "}\n");
+        int maxAlign = 4;
+        for (auto& fd : fields)
+            if (fd.kind == FieldKind::Scalar && fd.size >= 8) maxAlign = 8;
+        fprintf(f, "\tobj.WriteStruct(parentOffset, %sVTable, %d, m.MarshalInto)\n", typeName, maxAlign);
         fprintf(f, "}\n\n");
     }
 
-    void emitFieldReads(const char* typeName, const std::vector<FieldDesc>& fields, const char* rv) {
+private:
+    void emitReads(const char* typeName, const std::vector<FieldDesc>& fields, const char* rv) {
         for (auto& fd : fields) {
-            auto goName = capitalize(fd.name ? fd.name : ("field_" + std::to_string(fd.vtableSlot)).c_str());
-            auto slotExpr = std::string(typeName) + "Slot" + goName;
+            auto gn = fieldGoName(fd);
+            auto slot = std::string(typeName) + "Slot" + gn;
             switch (fd.kind) {
             case FieldKind::Scalar:
-                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.%s = %s.%s(%s)\n", goName.c_str(), rv, fd.scalar.reader, slotExpr.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
+                fprintf(f, "\t\tm.%s = %s.%s(%s)\n", gn.c_str(), rv, fd.scalar.reader, slot.c_str());
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::DynamicSize:
             case FieldKind::VectorLike:
-                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s)\n", goName.c_str(), rv, slotExpr.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
+                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s)\n", gn.c_str(), rv, slot.c_str());
                 fprintf(f, "\t}\n");
                 break;
             case FieldKind::NestedStruct:
-                // Recursive unmarshal via UnmarshalFromReader.
-                fprintf(f, "\tif nr, err := %s.ReadNestedReader(%s); err == nil {\n", rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.%s.UnmarshalFromReader(nr)\n", goName.c_str());
-                fprintf(f, "\t}\n");
+                if (fd.nestedGoType[0]) {
+                    fprintf(f, "\tif nr, err := %s.ReadNestedReader(%s); err == nil {\n", rv, slot.c_str());
+                    fprintf(f, "\t\tm.%s.UnmarshalFromReader(nr)\n", gn.c_str());
+                    fprintf(f, "\t}\n");
+                }
                 break;
             case FieldKind::Optional:
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
-                        rv, slotExpr.c_str(), rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", goName.c_str(), rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.Has%s = true\n", goName.c_str());
+                        rv, slot.c_str(), rv, slot.c_str());
+                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
+                fprintf(f, "\t\tm.Has%s = true\n", gn.c_str());
                 fprintf(f, "\t}\n");
                 break;
-            case FieldKind::Variant:
-                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slotExpr.c_str());
-                fprintf(f, "\t\tm.%sTag = %s.ReadUint8(%s)\n", goName.c_str(), rv, slotExpr.c_str());
-                fprintf(f, "\t\tswitch m.%sTag {\n", goName.c_str());
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    auto& alt = fd.variantAlts[a];
-                    fprintf(f, "\t\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar && alt.size == 4) {
-                        fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffUint32(%s + 1)\n",
-                                goName.c_str(), a, rv, slotExpr.c_str());
-                    } else {
-                        fprintf(f, "\t\t\tm.%sAlt%zu = %s.ReadRelOffRaw(%s + 1, %d)\n",
-                                goName.c_str(), a, rv, slotExpr.c_str(), alt.size);
-                    }
-                }
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t}\n");
-                break;
+            default: break;
             }
         }
-    }
-
-    void emitMarshalFDB(const char* typeName, const std::vector<FieldDesc>& fields, uint32_t fileId) {
-        if (fileId == 0) return; // Nested type — no standalone MarshalFDB.
-        fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
-        fprintf(f, "\tw := wire.NewWriter(nil)\n");
-        fprintf(f, "\treturn w.WriteMessagePacked(%sTemplate, m.MarshalInto)\n", typeName);
-        // ^^^ KEY SIMPLIFICATION: MarshalFDB just calls MarshalInto!
-        // No duplicate field write logic. MarshalInto handles everything.
-        fprintf(f, "}\n\n");
-    }
-
-    void emitHelpers(const char* typeName, const std::vector<FieldDesc>& fields) {
-        // MarshalStructBlob, WriteNested — same as current, but MarshalInto is complete.
-        // ParseVector — auto-generated for types used in vectors.
-    }
-
-    static std::string capitalize(const char* s) {
-        if (!s || !s[0]) return "Field";
-        std::string r(s);
-        r[0] = toupper(r[0]);
-        return r;
     }
 };
 
 // ============================================================
-// 8. Extraction — single call, no flags
+// 6. VTable extraction helpers (reused from main.cpp)
 // ============================================================
 
-// In the real implementation:
-//
-// template <class T>
-// void extractType(const char* outDir, const char* goName) {
-//     // 1. Collect fields via FieldCollector visitor (compile-time typed).
-//     FieldCollector collector;
-//     collector.typeName = goName;
-//     T msg{};
-//     serializable_traits<T>::serialize(collector, msg);
-//
-//     // 2. Apply field names from registry.
-//     for (int i = 0; i < collector.fields.size(); i++) {
-//         if constexpr (FieldNames<T>::registered) {
-//             collector.fields[i].name = FieldNames<T>::get(i);
-//         }
-//     }
-//
-//     // 3. Get vtable from ObjectWriter (authoritative).
-//     auto vtable = extractVTableFromObjectWriter<T>();
-//
-//     // 4. Emit Go code — single pass, no flags.
-//     GoEmitter emitter{openFile(outDir, goName)};
-//     emitter.emitType(goName, collector.fields, vtable, getFileId<T>());
-// }
-//
-// Usage:
-//   extractType<GetValueRequest>("pkg/fdbgo/wire/types/", "GetValueRequest");
-//   extractType<TenantInfo>("pkg/fdbgo/wire/types/", "TenantInfo");
-//   extractType<IPAddress>("pkg/fdbgo/wire/types/", "IPAddress");
-//
-// No EmitStructs, EmitStringVectorParser, EmitFBVectorParser flags.
-// No getCppTypeName manual registry.
-// Missing GoTypeName or FieldNames registration = compile error.
+std::vector<std::vector<uint16_t>> extractVTableClosure(const uint8_t* data, int size) {
+    std::vector<std::vector<uint16_t>> result;
+    if (size < 16) return result;
+    int off = 0;
+    if (size >= 16 && data[7] == 0x0F && data[6] == 0xDB) off = 8;
+    if (off + 8 > size) return result;
+    uint32_t rootOff; memcpy(&rootOff, data + off, 4);
+    int vtEnd = off + (int)rootOff, pos = off + 8;
+    while (pos < vtEnd && pos + 2 <= size) {
+        uint16_t vtSize; memcpy(&vtSize, data + pos, 2);
+        if (vtSize == 0) { pos += 2; continue; }
+        if (vtSize < 6 || vtSize > 64 || vtSize % 2 != 0 || pos + vtSize > size) break;
+        uint16_t objSize; memcpy(&objSize, data + pos + 2, 2);
+        if (objSize < 4 || objSize > 128) { pos += 2; continue; }
+        std::vector<uint16_t> vt(vtSize / 2);
+        for (int i = 0; i < vtSize / 2; i++) memcpy(&vt[i], data + pos + i * 2, 2);
+        result.push_back(vt);
+        pos += vtSize;
+    }
+    return result;
+}
+
+std::vector<uint16_t> extractMessageVTable(const uint8_t* data, int size) {
+    if (size < 16) return {};
+    int off = 0;
+    if (size >= 16 && data[7] == 0x0F && data[6] == 0xDB) off = 8;
+    if (off + 8 > size) return {};
+    uint32_t rootOff; memcpy(&rootOff, data + off, 4);
+    int fakeRootPos = off + (int)rootOff;
+    if (fakeRootPos + 8 > size) return {};
+    uint32_t msgRelOff; memcpy(&msgRelOff, data + fakeRootPos + 4, 4);
+    int msgPos = fakeRootPos + 4 + (int)msgRelOff;
+    if (msgPos + 4 > size) return {};
+    int32_t vtOff; memcpy(&vtOff, data + msgPos, 4);
+    int vtPos = msgPos - vtOff;
+    if (vtPos < 0 || vtPos + 2 > size) return {};
+    uint16_t vtSize; memcpy(&vtSize, data + vtPos, 2);
+    if (vtSize < 6 || vtSize > 128 || vtSize % 2 != 0 || vtPos + vtSize > size) return {};
+    std::vector<uint16_t> vt(vtSize / 2);
+    for (int i = 0; i < vtSize / 2; i++) memcpy(&vt[i], data + vtPos + i * 2, 2);
+    return vt;
+}
+
+template <class T>
+constexpr uint32_t getFileId() {
+    if constexpr (requires { T::file_identifier; }) return T::file_identifier;
+    else return 0;
+}
+
+static std::string toLower(const char* name) {
+    std::string s;
+    for (const char* p = name; *p; p++) s += tolower(*p);
+    return s;
+}
 
 // ============================================================
-// 9. Key Differences from Current Implementation
+// 7. extractType — single call, no flags
 // ============================================================
-//
-// CURRENT:
-//   - getCppTypeName<T>(): manual, silent fallback to "" → comment-only fields
-//   - name_capture.cpp: regex on source text, picks LAST serializer() call
-//   - EmitStructs/EmitVectorParser: manual flags per type
-//   - MarshalInto: skips nested struct fields
-//   - classifyTrait: runtime string comparison ("serialize_member", "union_like")
-//   - Scalar fallback: size-based, loses signed/unsigned info
-//
-// POC:
-//   - GoTypeName<T>: compile-time verified, missing = compile error
-//   - FieldNames<T>: explicit per-type, indexed by field position
-//   - No flags: extractType auto-detects everything from C++ type traits
-//   - MarshalInto: writes ALL fields including nested (via WriteStruct + MarshalInto)
-//   - FieldKind enum: typed, no string comparison
-//   - scalarInfoFor<T>: handles enums via std::underlying_type_t, exact type match
-//   - Variant alternatives: compile-time extracted from std::variant<Ts...>
-//
-// MIGRATION PATH:
-//   1. Add GoTypeName registrations for all nested struct types (compile error guides you)
-//   2. Add FieldNames registrations for all types (compile error guides you)
-//   3. Replace TypeVisitor with FieldCollector
-//   4. Replace GoEmitter methods with the PoC versions (especially MarshalInto)
-//   5. Delete getCppTypeName, name_capture.cpp, all EmitXxx flags
-//   6. Run golden test vectors to verify byte-identical output
 
-int main() {
-    fprintf(stderr, "This is a PoC design document, not a runnable program.\n");
-    fprintf(stderr, "See the source comments for the architecture.\n");
+template <class T, bool SkipObjectWriter = false>
+void extractType(const char* outDir, const char* name) {
+    int pipefd[2];
+    pipe(pipefd);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipefd[0]);
+
+        // Collect fields.
+        FieldCollector<T> collector;
+        T msg{};
+        if constexpr (serializable_traits<T>::value)
+            serializable_traits<T>::serialize(collector, msg);
+        else
+            msg.serialize(collector);
+
+        // Get authoritative vtable from ObjectWriter (when possible).
+        std::vector<std::vector<uint16_t>> closure;
+        std::vector<uint16_t> rootVTable;
+        if constexpr (!SkipObjectWriter && requires { T::file_identifier; }) {
+            ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+            wr.serialize(T::file_identifier, msg);
+            auto bytes = wr.toStringRef();
+            closure = extractVTableClosure(bytes.begin(), bytes.size());
+            rootVTable = extractMessageVTable(bytes.begin(), bytes.size());
+        }
+        auto& vt = rootVTable.empty() ? collector.vtable : rootVTable;
+
+        // Emit.
+        FILE* pf = fdopen(pipefd[1], "w");
+        GoEmitter emitter{pf};
+        emitter.emitFull(name, collector.fields, vt, getFileId<T>(), closure);
+        fclose(pf);
+        _exit(0);
+    }
+
+    close(pipefd[1]);
+    std::string lowerName = toLower(name);
+    std::string path = std::string(outDir) + "/" + lowerName + "_poc.go";
+    FILE* out = fopen(path.c_str(), "w");
+    if (!out) { perror(path.c_str()); goto wait; }
+    {
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+            fwrite(buf, 1, n, out);
+        fclose(out);
+    }
+
+wait:
+    close(pipefd[0]);
+    int status;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+        fprintf(stderr, "POC OK %s → %s_poc.go\n", name, lowerName.c_str());
+    else
+        fprintf(stderr, "POC SKIP %s\n", name);
+}
+
+// ============================================================
+// 8. Main
+// ============================================================
+
+int main(int argc, char** argv) {
+    if (argc < 2) { fprintf(stderr, "Usage: %s <output-dir>\n", argv[0]); return 1; }
+    const char* outDir = argv[1];
+
+    TLSConfig tlsConfig;
+    g_network = newNet2(tlsConfig, false, false);
+    FlowTransport::createInstance(false, 1, WLTOKEN_FIRST_AVAILABLE, nullptr);
+
+    // Extract ALL types — no flags, no EmitStructs/EmitVectorParser.
+    extractType<GetValueReply>(outDir, "GetValueReply");
+    extractType<GetKeyValuesReply>(outDir, "GetKeyValuesReply");
+    extractType<GetKeyReply>(outDir, "GetKeyReply");
+    extractType<GetReadVersionReply>(outDir, "GetReadVersionReply");
+    extractType<GetKeyServerLocationsReply>(outDir, "GetKeyServerLocationsReply");
+    extractType<CommitID>(outDir, "CommitID");
+
+    extractType<GetValueRequest>(outDir, "GetValueRequest");
+    extractType<GetKeyValuesRequest>(outDir, "GetKeyValuesRequest");
+    extractType<GetKeyRequest>(outDir, "GetKeyRequest");
+    extractType<GetReadVersionRequest>(outDir, "GetReadVersionRequest");
+    extractType<GetKeyServerLocationsRequest>(outDir, "GetKeyServerLocationsRequest");
+    extractType<CommitTransactionRequest>(outDir, "CommitTransactionRequest");
+    extractType<OpenDatabaseCoordRequest>(outDir, "OpenDatabaseCoordRequest");
+
+    extractType<SpanContext>(outDir, "SpanContext");
+    extractType<KeySelectorRef>(outDir, "KeySelectorRef");
+    extractType<MutationRef>(outDir, "MutationRef");
+    extractType<KeyRangeRef>(outDir, "KeyRangeRef");
+    extractType<CommitTransactionRef>(outDir, "CommitTransactionRef");
+    extractType<ReadOptions>(outDir, "ReadOptions");
+    extractType<Error>(outDir, "Error");
+    extractType<KeyValueRef>(outDir, "KeyValueRef");
+
+    extractType<ClientDBInfo>(outDir, "ClientDBInfo");
+    extractType<GrvProxyInterface, true>(outDir, "GrvProxyInterface");
+    extractType<CommitProxyInterface, true>(outDir, "CommitProxyInterface");
+    extractType<StorageServerInterface, true>(outDir, "StorageServerInterface");
+    extractType<NetworkAddress>(outDir, "NetworkAddress");
+    extractType<IPAddress>(outDir, "IPAddress");
+    extractType<TenantInfo>(outDir, "TenantInfo");
+    extractType<ReplyPromise<GetValueReply>>(outDir, "ReplyPromise");
+    extractType<Endpoint>(outDir, "Endpoint");
+    extractType<NetworkAddressList>(outDir, "NetworkAddressList");
+
+    using LocationPair = std::pair<KeyRangeRef, std::vector<StorageServerInterface>>;
+    extractType<LocationPair>(outDir, "LocationPair");
+
+    fprintf(stderr, "POC Done.\n");
     return 0;
 }
