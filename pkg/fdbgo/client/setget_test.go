@@ -142,7 +142,30 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(ctx) })
+	t.Cleanup(func() {
+		if t.Failed() {
+			// Dump container state + logs on failure for debugging.
+			state, serr := container.State(ctx)
+			if serr == nil {
+				t.Logf("=== FDB container state: %s (exit=%d) ===", state.Status, state.ExitCode)
+			} else {
+				t.Logf("=== FDB container state error: %v ===", serr)
+			}
+			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			logs, lerr := container.Logs(logCtx)
+			if lerr == nil {
+				logBytes, _ := io.ReadAll(logs)
+				if len(logBytes) > 2000 {
+					logBytes = logBytes[len(logBytes)-2000:]
+				}
+				t.Logf("=== FDB container logs (last 2000 bytes) ===\n%s", string(logBytes))
+			} else {
+				t.Logf("=== FDB container logs error: %v ===", lerr)
+			}
+		}
+		container.Terminate(ctx)
+	})
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
