@@ -13,6 +13,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
@@ -210,29 +211,8 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 }
 
-// buildFDBErrorResponse crafts an ErrorOr<T> error response with the given
-// FDB error code. The wire format matches what an FDB server sends when a
-// storage server returns an error (e.g., wrong_shard_server = 1062).
-//
-// Layout: FakeRoot → Error object (vtable {6,6,4}, field 0 = int32 error_code).
-// ReadErrorOr() detects vtable with ≤1 field and reads field 0 as the error code.
 func buildFDBErrorResponse(errorCode int32) []byte {
-	// ErrorOr root vtable: type byte + value RelOff.
-	// NewReader treats the root as FakeRoot and follows field at offset 4 (value).
-	errorOrVT := wire.VTable{8, 9, 8, 4}
-	// Error vtable: 1 field (error_code uint16 at offset 4).
-	// Object size 6 = 4 vtable-backref + 2 uint16.
-	errorVT := wire.VTable{6, 6, 4}
-
-	w := wire.NewWriter(nil)
-	return w.WriteRootObject(0, errorOrVT, 4,
-		[]wire.VTable{errorVT, errorOrVT},
-		func(obj *wire.ObjectWriter) {
-			obj.WriteUint8(8, 1) // type = Error variant
-			obj.WriteStruct(4, errorVT, 4, func(inner *wire.ObjectWriter) {
-				inner.WriteUint16(4, uint16(errorCode))
-			})
-		})
+	return (&types.ErrorOrError{ErrorCode: uint16(errorCode)}).MarshalFDB()
 }
 
 // wrongShardConn wraps a net.Conn with a pipe-based proxy goroutine.

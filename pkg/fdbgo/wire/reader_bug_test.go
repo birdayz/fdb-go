@@ -2,11 +2,15 @@ package wire
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 )
 
 // These tests exercise bugs found by the 5-agent review (2026-04-01).
 // They should FAIL on the unfixed code and PASS after fixes.
+//
+// Tests 1-3 use pre-captured hex data (from the old ObjectWriter-based construction)
+// to avoid depending on ObjectWriter/NewWriter/WriteMessage/WriteStruct which are deleted.
 
 // TestReadVectorInt32_NestedStruct tests ReadVectorInt32 on a nested struct.
 // REVIEW NOTE: The reviewer flagged this as CRITICAL #1 (wrong RelOff calculation),
@@ -14,17 +18,21 @@ import (
 // IS the correct absolute position. The code is correct but lacks bounds checks.
 // This test verifies correctness and also that bounds checking doesn't panic.
 func TestReadVectorInt32_NestedStruct(t *testing.T) {
-	msgVT := VTable{10, 16, 4, 8, 12}
-	nestedVT := VTable{6, 8, 4}
-
-	w := NewWriter(nil)
-	data := w.WriteMessage(12345, msgVT, 4, func(obj *ObjectWriter) {
-		obj.WriteBytes(4, []byte("padding1padding1padding1padding1"))
-		obj.WriteBytes(8, []byte("padding2padding2padding2padding2"))
-		obj.WriteStruct(12, nestedVT, 4, func(inner *ObjectWriter) {
-			inner.WriteVectorInt32(4, []int32{100, 200, 300})
-		})
-	})
+	// Pre-captured wire data for a message (fileID=12345) with:
+	//   msgVT = {10, 16, 4, 8, 12}  (3 fields: bytes, bytes, nested struct)
+	//   nestedVT = {6, 8, 4}        (1 field: vectorInt32)
+	//   field 0 (offset 4): bytes "padding1padding1padding1padding1"
+	//   field 1 (offset 8): bytes "padding2padding2padding2padding2"
+	//   field 2 (offset 12): nested struct with VectorInt32 [100, 200, 300]
+	data, err := hex.DecodeString(
+		"18000000393000000a001000040008000c000600080004000600000004000000" +
+			"180000002400000044000000040000001e000000040000000300000064000000" +
+			"c80000002c0100002000000070616464696e673170616464696e673170616464" +
+			"696e673170616464696e67312000000070616464696e673270616464696e6732" +
+			"70616464696e673270616464696e6732")
+	if err != nil {
+		t.Fatalf("hex decode: %v", err)
+	}
 
 	r, err := NewReader(data)
 	if err != nil {
@@ -48,19 +56,21 @@ func TestReadVectorInt32_NestedStruct(t *testing.T) {
 // TestReadOptionalInt32_NestedStruct tests ReadOptionalInt32 on a nested struct.
 // Same as above — code is correct, reviewer was wrong about CRITICAL #2.
 func TestReadOptionalInt32_NestedStruct(t *testing.T) {
-	// Build a message with padding + nested struct that has an Optional<int32> field.
-	msgVT := VTable{10, 16, 4, 8, 12} // 3 fields: 2 padding + 1 nested struct
-	// Optional<int32>: slot 0 = type tag (uint8, offset 8), slot 1 = value (RelOff, offset 4)
-	nestedVT := VTable{8, 9, 8, 4} // 2 slots: type tag at 8, value at 4
-
-	w := NewWriter(nil)
-	data := w.WriteMessage(12345, msgVT, 4, func(obj *ObjectWriter) {
-		obj.WriteBytes(4, []byte("padding1padding1padding1padding1"))
-		obj.WriteBytes(8, []byte("padding2padding2padding2padding2"))
-		obj.WriteStruct(12, nestedVT, 4, func(inner *ObjectWriter) {
-			inner.WriteOptionalInt32Present(8, 4, 42)
-		})
-	})
+	// Pre-captured wire data for a message (fileID=12345) with:
+	//   msgVT = {10, 16, 4, 8, 12}    (3 fields: bytes, bytes, nested struct)
+	//   nestedVT = {8, 9, 8, 4}       (2 fields: type tag at 8, value at 4)
+	//   field 0 (offset 4): bytes "padding1padding1padding1padding1"
+	//   field 1 (offset 8): bytes "padding2padding2padding2padding2"
+	//   field 2 (offset 12): nested struct with OptionalInt32Present(typeOff=8, valOff=4, val=42)
+	data, err := hex.DecodeString(
+		"20000000393000000a001000040008000c0008000900080004000600080004000600000004000000" +
+			"200000001c0000003c000000040000002600000008000000010000002a000000" +
+			"2000000070616464696e673170616464696e673170616464696e673170616464" +
+			"696e67312000000070616464696e673270616464696e673270616464696e6732" +
+			"70616464696e673270616464696e6732")
+	if err != nil {
+		t.Fatalf("hex decode: %v", err)
+	}
 
 	r, err := NewReader(data)
 	if err != nil {
@@ -84,13 +94,14 @@ func TestReadOptionalInt32_NestedStruct(t *testing.T) {
 // TestReadUID_MissingField tests MEDIUM #9:
 // ReadUID has no bounds check — panics on missing fields.
 func TestReadUID_MissingField(t *testing.T) {
-	// Build a message with a UID field that is ABSENT (vtable offset = 0).
-	msgVT := VTable{6, 8, 0} // 1 field with offset 0 (absent)
-
-	w := NewWriter(nil)
-	data := w.WriteMessage(12345, msgVT, 4, func(obj *ObjectWriter) {
-		// Don't write anything — field is absent.
-	})
+	// Pre-captured wire data for a message (fileID=12345) with:
+	//   msgVT = {6, 8, 0}  (1 field with offset 0 = absent)
+	//   No fields written.
+	data, err := hex.DecodeString(
+		"1800000039300000000000000600080004000600080000000c000000040000000e00000000000000")
+	if err != nil {
+		t.Fatalf("hex decode: %v", err)
+	}
 
 	r, err := NewReader(data)
 	if err != nil {
@@ -151,8 +162,8 @@ func TestFieldOffset_CorruptedVTable(t *testing.T) {
 	binary.LittleEndian.PutUint16(buf[18:], 4) // field0 offset=4
 
 	// FakeRoot object at offset 20: soffset to vtable + field[0] RelOff
-	binary.LittleEndian.PutUint32(buf[20:], uint32(int32(20-14))) // soffset=6 → vtable at 14
-	binary.LittleEndian.PutUint32(buf[24:], 4)                    // field[0] RelOff → message at 28
+	binary.LittleEndian.PutUint32(buf[20:], uint32(int32(20-14))) // soffset=6 -> vtable at 14
+	binary.LittleEndian.PutUint32(buf[24:], 4)                    // field[0] RelOff -> message at 28
 
 	// Message at offset 28: vtable claims 20 bytes but only 6 exist
 	// Message vtable at offset 22: only 6 bytes ({20, 8, 4} but only first 6 bytes present)
@@ -161,7 +172,7 @@ func TestFieldOffset_CorruptedVTable(t *testing.T) {
 	binary.LittleEndian.PutUint16(buf[26:], 4)  // field0 offset=4
 
 	// Message object at offset 28
-	binary.LittleEndian.PutUint32(buf[28:], uint32(int32(28-22))) // soffset=6 → vtable at 22
+	binary.LittleEndian.PutUint32(buf[28:], uint32(int32(28-22))) // soffset=6 -> vtable at 22
 
 	r, err := NewReader(buf[:36])
 	if err != nil {
@@ -175,7 +186,7 @@ func TestFieldOffset_CorruptedVTable(t *testing.T) {
 		}
 	}()
 
-	// Slot 5 → entryIndex 7 → byte offset 14. The vtable only has 3 entries (6 bytes).
+	// Slot 5 -> entryIndex 7 -> byte offset 14. The vtable only has 3 entries (6 bytes).
 	// The buggy code checks VTableLength() (which returns 10) but not the actual slice bounds.
 	_ = r.FieldPresent(5)
 }

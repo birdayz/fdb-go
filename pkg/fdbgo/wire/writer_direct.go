@@ -160,6 +160,14 @@ func (t *MessageTemplate) WriteVTablesAndFooter(buf []byte, vtablePos, fakeRootP
 	binary.LittleEndian.PutUint32(buf[4:], t.fileID)
 }
 
+// WriteRootUnionFooter writes vtables + footer for root-union layout (no FakeRoot).
+// Used by ErrorOr and other union_like_traits types at the root level.
+func (t *MessageTemplate) WriteRootUnionFooter(buf []byte, vtablePos, msgObjPos int) {
+	copy(buf[vtablePos:], t.packedVTables)
+	binary.LittleEndian.PutUint32(buf[0:], uint32(msgObjPos))
+	binary.LittleEndian.PutUint32(buf[4:], t.fileID)
+}
+
 // MarshalDirect performs two-pass serialization. 1 allocation total.
 //
 // measureFn: returns the end-offset contributed by all nested content

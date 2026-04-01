@@ -10,6 +10,7 @@ go_library(
         "committransactionrequest_generated.go",
         "endpoint_generated.go",
         "error_generated.go",
+        "erroror.go",
         "getkeyreply_generated.go",
         "getkeyrequest_generated.go",
         "getkeyserverlocationsreply_generated.go",

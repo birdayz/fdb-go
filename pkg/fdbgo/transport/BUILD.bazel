@@ -12,6 +12,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
         "@com_github_zeebo_xxh3//:xxh3",
     ],
 )

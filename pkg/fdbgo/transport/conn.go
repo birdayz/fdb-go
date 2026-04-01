@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // Conn is a multiplexed FDB connection. Multiple concurrent requests
@@ -304,27 +305,8 @@ func extractPingReplyToken(body []byte) (UID, bool) {
 	return uid, true
 }
 
-// buildVoidReply constructs ErrorOr<EnsureTable<Void>> with success (type=2).
-//
-// FakeRoot FLATTENS ErrorOr (union_like_traits) into the root object.
-// The root object IS the ErrorOr: vtable {8,9,8,4} with type byte + value RelOff.
-// The value points to EnsureTable<Void>: vtable {4,4} (empty struct).
 func buildVoidReply() []byte {
-	const fileID uint32 = 0x021EAD4A
-
-	errorOrVT := wire.VTable{8, 9, 8, 4}   // type@8, value@4
-	emptyVT := wire.VTable{4, 4}           // EnsureTable<Void>
-	voidFakeRootVT := wire.VTable{6, 6, 4} // appears in closure
-
-	w := wire.NewWriter(nil)
-	return w.WriteRootObject(fileID, errorOrVT, 4,
-		[]wire.VTable{emptyVT, voidFakeRootVT, errorOrVT},
-		func(obj *wire.ObjectWriter) {
-			obj.WriteUint8(8, 2) // type = 2 (success, not Error)
-			obj.WriteStruct(4, emptyVT, 4, func(inner *wire.ObjectWriter) {
-				// EnsureTable<Void>: no fields
-			})
-		})
+	return (&types.VoidReply{}).MarshalFDB()
 }
 
 // NewUID generates a random 128-bit UID for endpoint tokens.
