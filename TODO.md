@@ -1980,3 +1980,24 @@ Request type `_custom.go` files are eliminated by flipping `EmitStructs=true` in
 - [ ] **GetKeyServerLocationsRequest** — flip, delete _custom.go, update locality.go
 - [ ] **OpenDatabaseCoordRequest** — flip, delete _custom.go, update coordinator.go
 - [ ] **CommitTransactionRequest** — flip, delete _custom.go, update commitpath.go (most complex — nested CommitTransactionRef with pre-serialized vectors)
+
+### CRITICAL — Wire protocol bugs found by 5-agent review (2026-04-01)
+
+- [ ] **CRITICAL #1 — Reader: ReadVectorInt32/ReadVectorUint64 wrong RelOff** — Uses `int(off) + relOffset` instead of `r.objPos + int(off) + relOffset`. Silent data corruption for vector fields in nested objects. `reader.go:211-248`. Need test: nested struct with vector int32 field.
+- [ ] **CRITICAL #2 — Reader: ReadOptionalInt32/ReadOptionalString wrong RelOff** — Same bug. `reader.go:252-274`. Need test: nested struct with optional int32 field.
+- [ ] **CRITICAL #3 — Writer: VTable hash key ignores field offsets** — `(vt[0]<<16|vt[1])` key in MessageTemplate.vtOffsets. Two vtables with same size+objSize but different field offsets collide → wrong soffset. `writer.go:98`. Need test: two vtables with same vt[0]/vt[1] but different fields.
+
+### HIGH — Wire protocol issues found by review
+
+- [ ] **HIGH #7 — Extractor: scalar fallback assumes unsigned** — GoTypeMapping size-based fallback maps all sizes to unsigned types. Signed int32/int16 in fallback path → sign inversion. `main.cpp:246-252`.
+- [ ] **HIGH #6 — Generated: MarshalInto missing nested struct writes** — emitMarshalInto skips serialize_member fields. MarshalFDB writes them via WriteStruct but MarshalInto doesn't. Callers of MarshalInto (MarshalStructBlob, WriteNested) produce incomplete wire data.
+
+### MEDIUM — Wire protocol issues found by review
+
+- [ ] **MEDIUM #9 — Reader: ReadUID no bounds check** — `r.object[off:off+16]` without bounds check. Panic on missing/small fields. `reader.go:167-173`.
+- [ ] **MEDIUM #10 — Reader: fieldOffset no vtable bounds check** — `r.vtable[entryIndex*2:]` without checking vtable slice length. Panic on corrupted vtable. `reader.go:99`.
+- [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — Generated code uses `len(m.Key) > 0` which skips empty non-nil slices. Should be `m.Key != nil` if FDB distinguishes absent from empty.
+- [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore.
+- [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data with n=MaxInt32 → huge allocation.
+- [ ] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Works because EndpointGetValue=0, but should use the constant for clarity.
+- [ ] **MEDIUM #17 — Client: CommitTransactionRef Field_0/1/2/3 fragile** — No semantic names for conflict range / mutation fields.

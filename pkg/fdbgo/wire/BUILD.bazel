@@ -16,6 +16,7 @@ go_test(
     name = "wire_test",
     srcs = [
         "conformance_test.go",
+        "reader_bug_test.go",
         "vtable_test.go",
         "writer_test.go",
     ],

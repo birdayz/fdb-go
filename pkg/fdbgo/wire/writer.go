@@ -22,9 +22,9 @@ type MessageTemplate struct {
 	// Pre-packed vtable bytes — copied directly into the output buffer.
 	packedVTables []byte
 
-	// Pre-computed vtable byte offsets. Key = (vt[0] << 16 | vt[1]).
+	// Pre-computed vtable byte offsets. Key = vtable content hash.
 	// O(1) lookup instead of linear scan.
-	vtOffsets map[uint32]int
+	vtOffsets map[vtableKey]int
 
 	// objectPool recycles ObjectWriter backing storage.
 	objectPool sync.Pool
@@ -46,11 +46,10 @@ func NewMessageTemplate(fileID uint32, msgVTable VTable, maxFieldAlign int, clos
 	}
 	packed := set.pack()
 
-	// Build O(1) offset lookup.
-	offsets := make(map[uint32]int, len(set.entries))
+	// Build O(1) offset lookup using full vtable content as key.
+	offsets := make(map[vtableKey]int, len(set.entries))
 	for _, e := range set.entries {
-		key := uint32(e.vt[0])<<16 | uint32(e.vt[1])
-		offsets[key] = e.offset
+		offsets[makeVTableKey(e.vt)] = e.offset
 	}
 
 	return &MessageTemplate{
@@ -93,9 +92,20 @@ func (t *MessageTemplate) getPooledWriter() *pooledWriter {
 	return pw
 }
 
+// vtableKey uniquely identifies a vtable by its full content.
+type vtableKey string
+
+func makeVTableKey(vt VTable) vtableKey {
+	b := make([]byte, len(vt)*2)
+	for i, v := range vt {
+		binary.LittleEndian.PutUint16(b[i*2:], v)
+	}
+	return vtableKey(b)
+}
+
 // vtableOffset returns the byte offset of vt within the pre-packed vtable data.
 func (t *MessageTemplate) vtableOffset(vt VTable) int {
-	key := uint32(vt[0])<<16 | uint32(vt[1])
+	key := makeVTableKey(vt)
 	if off, ok := t.vtOffsets[key]; ok {
 		return off
 	}
