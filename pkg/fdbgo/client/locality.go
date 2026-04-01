@@ -101,7 +101,19 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 		if resp.Err != nil {
 			return nil, fmt.Errorf("locations response: %w", resp.Err)
 		}
-		return parseGetKeyServerLocationsReply(resp.Body)
+		entries, err := parseGetKeyServerLocationsReply(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		// Cache the returned shard ranges.
+		lc.mu.Lock()
+		lc.entries = append(lc.entries, entries...)
+		lc.mu.Unlock()
+		// Return servers for the first entry (covers the queried key).
+		if len(entries) > 0 {
+			return entries[0].servers, nil
+		}
+		return nil, fmt.Errorf("no location entries")
 	case <-rctx.Done():
 		return nil, fmt.Errorf("locations request timed out: %w", rctx.Err())
 	}
@@ -123,62 +135,35 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 	return req.MarshalFDB()
 }
 
-func parseGetKeyServerLocationsReply(data []byte) ([]ServerInfo, error) {
+func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 	r, err := wire.ReadErrorOr(data)
 	if err != nil {
 		return nil, fmt.Errorf("locations reply: %w", err)
 	}
 
-	// Field 0: results — vector of nested structs.
-	// Each result is a pair(KeyRangeRef, vector<StorageServerInterface>).
-	resultCount, err := r.ReadVectorCount(0)
-	if err != nil || resultCount == 0 {
-		return nil, fmt.Errorf("no location results")
+	results, err := types.ParseGetKeyServerLocationsResults(r)
+	if err != nil {
+		return nil, err
 	}
 
-	var servers []ServerInfo
-	for i := 0; i < resultCount; i++ {
-		resultR, err := r.ReadVectorElementReader(0, i)
-		if err != nil {
-			continue
-		}
-
-		// The pair struct has N fields. We need the vector<StorageServerInterface>.
-		// Try each slot to find a vector field (ReadVectorCount > 0).
-		nf := resultR.VTableLength() - 2
-		for slot := 0; slot < nf; slot++ {
-			ssCount, err := resultR.ReadVectorCount(slot)
-			if err != nil || ssCount == 0 {
-				continue
-			}
-			for j := 0; j < ssCount; j++ {
-				ssR, err := resultR.ReadVectorElementReader(slot, j)
-				if err != nil {
-					continue
-				}
-				// StorageServerInterface has many endpoint fields.
-				// Find the first endpoint that has a valid address.
-				ssNf := ssR.VTableLength() - 2
-				for epSlot := 0; epSlot < ssNf; epSlot++ {
-					ep, err := types.ReadEndpointFromSlot(ssR, epSlot)
-					if err != nil || ep.First == 0 {
-						continue
-					}
-					servers = append(servers, ServerInfo{
-						Address: ep.Address,
-						Token:   transport.UID{First: ep.First, Second: ep.Second},
-					})
-					break // take the first valid endpoint (getValue)
-				}
-			}
-			if len(servers) > 0 {
-				break // found the vector<StorageServerInterface>
+	entries := make([]locationEntry, 0, len(results))
+	for _, res := range results {
+		servers := make([]ServerInfo, len(res.Servers))
+		for i, ep := range res.Servers {
+			servers[i] = ServerInfo{
+				Address: ep.Address,
+				Token:   transport.UID{First: ep.First, Second: ep.Second},
 			}
 		}
+		entries = append(entries, locationEntry{
+			begin:   res.Begin,
+			end:     res.End,
+			servers: servers,
+		})
 	}
 
-	if len(servers) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("no storage servers in locations reply")
 	}
-	return servers, nil
+	return entries, nil
 }

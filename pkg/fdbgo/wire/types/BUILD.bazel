@@ -8,6 +8,7 @@ go_library(
         "error.go",
         "get_key_reply.go",
         "get_key_request.go",
+        "get_key_server_locations_reply.go",
         "get_key_server_locations_request.go",
         "get_key_values_reply.go",
         "get_key_values_request.go",

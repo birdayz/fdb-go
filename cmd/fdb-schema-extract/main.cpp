@@ -41,6 +41,9 @@ struct FieldInfo {
     uint32_t size;
     uint32_t align;
     bool indirection;
+    const char* goType;      // Go type string (e.g. "int64", "bool", "[]byte")
+    const char* readerMethod; // e.g. "ReadInt64", "ReadBool", "ReadBytes"
+    const char* writerMethod; // e.g. "WriteInt64", "WriteBool", "WriteBytes"
 };
 
 template <class T>
@@ -53,6 +56,72 @@ const char* classifyTrait() {
     else if constexpr (is_struct_like<T>) return "struct_like";
     else return "serialize_member";
 }
+
+// Map a C++ type to its Go representation for code generation.
+// Returns {goType, readerMethod, writerMethod}.
+template <class T>
+struct GoTypeMapping {
+    static constexpr const char* goType = "[]byte";
+    static constexpr const char* reader = "ReadBytes";
+    static constexpr const char* writer = "WriteBytes";
+};
+
+// Scalar specializations — the compiler resolves the exact C++ type.
+template<> struct GoTypeMapping<bool> {
+    static constexpr const char* goType = "bool";
+    static constexpr const char* reader = "ReadBool";
+    static constexpr const char* writer = "WriteBool";
+};
+template<> struct GoTypeMapping<int8_t> {
+    static constexpr const char* goType = "int8";
+    static constexpr const char* reader = "ReadInt8";
+    static constexpr const char* writer = "WriteInt8";
+};
+template<> struct GoTypeMapping<uint8_t> {
+    static constexpr const char* goType = "uint8";
+    static constexpr const char* reader = "ReadUint8";
+    static constexpr const char* writer = "WriteUint8";
+};
+template<> struct GoTypeMapping<int16_t> {
+    static constexpr const char* goType = "int16";
+    static constexpr const char* reader = "ReadInt16";
+    static constexpr const char* writer = "WriteInt16";
+};
+template<> struct GoTypeMapping<uint16_t> {
+    static constexpr const char* goType = "uint16";
+    static constexpr const char* reader = "ReadUint16";
+    static constexpr const char* writer = "WriteUint16";
+};
+template<> struct GoTypeMapping<int32_t> {
+    static constexpr const char* goType = "int32";
+    static constexpr const char* reader = "ReadInt32";
+    static constexpr const char* writer = "WriteInt32";
+};
+template<> struct GoTypeMapping<int> {  // C++ int = 32-bit
+    static constexpr const char* goType = "int32";
+    static constexpr const char* reader = "ReadInt32";
+    static constexpr const char* writer = "WriteInt32";
+};
+template<> struct GoTypeMapping<uint32_t> {
+    static constexpr const char* goType = "uint32";
+    static constexpr const char* reader = "ReadUint32";
+    static constexpr const char* writer = "WriteUint32";
+};
+template<> struct GoTypeMapping<int64_t> {
+    static constexpr const char* goType = "int64";
+    static constexpr const char* reader = "ReadInt64";
+    static constexpr const char* writer = "WriteInt64";
+};
+template<> struct GoTypeMapping<uint64_t> {
+    static constexpr const char* goType = "uint64";
+    static constexpr const char* reader = "ReadUint64";
+    static constexpr const char* writer = "WriteUint64";
+};
+template<> struct GoTypeMapping<double> {
+    static constexpr const char* goType = "float64";
+    static constexpr const char* reader = "ReadFloat64";
+    static constexpr const char* writer = "WriteFloat64";
+};
 
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
@@ -75,7 +144,8 @@ private:
     template <class T> void pushField() {
         using namespace detail;
         fields.push_back(FieldInfo{"", classifyTrait<T>(),
-            (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>});
+            (uint32_t)fb_size<T>, (uint32_t)fb_align<T>, use_indirection<T>,
+            GoTypeMapping<T>::goType, GoTypeMapping<T>::reader, GoTypeMapping<T>::writer});
     }
 };
 
@@ -254,6 +324,99 @@ struct GoEmitter {
     }
 
     void separator() { fprintf(f, "\n"); }
+
+    // Emit a Go struct definition with fields annotated by slot and reader method.
+    void emitStruct(const char* typeName, const std::vector<FieldInfo>& fields) {
+        fprintf(f, "type %s struct {\n", typeName);
+        int readerSlot = 0;
+        for (auto& fi : fields) {
+            std::string goName = sanitizeGoName(fi.name);
+            if (strcmp(fi.trait, "union_like") == 0) {
+                // Optional: emit Has+Value fields.
+                fprintf(f, "\tHas%s bool   // slot %d, Optional, presence flag\n", goName.c_str(), readerSlot);
+                fprintf(f, "\t%s    []byte // slot %d, Optional, ReadBytes\n", goName.c_str(), readerSlot + 1);
+                readerSlot += 2;
+            } else if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
+                // Nested struct: skip field (must be handled manually).
+                fprintf(f, "\t// %s: nested struct at slot %d — use ReadNestedReader(%sSlot%s)\n",
+                        goName.c_str(), readerSlot, typeName, goName.c_str());
+                readerSlot++;
+            } else {
+                fprintf(f, "\t%s %s // slot %d, %s\n", goName.c_str(), fi.goType, readerSlot, fi.readerMethod);
+                readerSlot++;
+            }
+        }
+        fprintf(f, "}\n\n");
+    }
+
+    // Emit UnmarshalFDB with all reads inlined in one function.
+    void emitUnmarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields) {
+        fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
+        fprintf(f, "\tr, err := wire.NewReader(data)\n");
+        fprintf(f, "\tif err != nil {\n\t\treturn err\n\t}\n");
+
+        int readerSlot = 0;
+        for (auto& fi : fields) {
+            std::string goName = sanitizeGoName(fi.name);
+            std::string slotConst = std::string(typeName) + "Slot" + goName;
+
+            if (strcmp(fi.trait, "union_like") == 0) {
+                // Optional: check tag, read value.
+                fprintf(f, "\tif r.FieldPresent(%s) && r.ReadUint8(%s) > 0 {\n",
+                        slotConst.c_str(), slotConst.c_str());
+                fprintf(f, "\t\tm.%s = r.ReadBytes(%s + 1)\n", goName.c_str(), slotConst.c_str());
+                fprintf(f, "\t\tm.Has%s = true\n", goName.c_str());
+                fprintf(f, "\t}\n");
+                readerSlot += 2;
+            } else if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
+                // Nested struct: emit comment, skip.
+                fprintf(f, "\t// %s (slot %d): nested struct — use r.ReadNestedReader(%s)\n",
+                        goName.c_str(), readerSlot, slotConst.c_str());
+                readerSlot++;
+            } else {
+                // Scalar, dynamic_size, vector_like — direct read.
+                fprintf(f, "\tif r.FieldPresent(%s) {\n", slotConst.c_str());
+                fprintf(f, "\t\tm.%s = r.%s(%s)\n", goName.c_str(), fi.readerMethod, slotConst.c_str());
+                fprintf(f, "\t}\n");
+                readerSlot++;
+            }
+        }
+        fprintf(f, "\treturn nil\n}\n\n");
+    }
+
+    // Emit MarshalFDB with all writes inlined. Skips optional and nested struct fields.
+    void emitMarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields, uint32_t fileId) {
+        // Compute max field alignment for WriteMessage.
+        int maxAlign = 4;
+        for (auto& fi : fields)
+            if ((int)fi.align > maxAlign) maxAlign = fi.align;
+
+        fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
+        fprintf(f, "\tw := wire.NewWriter(nil)\n");
+        fprintf(f, "\treturn w.WriteMessage(%sFileID, %sVTable, %d, func(obj *wire.ObjectWriter) {\n",
+                typeName, typeName, maxAlign);
+
+        int readerSlot = 0;
+        for (auto& fi : fields) {
+            if (strcmp(fi.trait, "union_like") == 0) {
+                // Optional: skip in marshal (needs conditional logic).
+                readerSlot += 2;
+                continue;
+            }
+            if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
+                // Nested struct: skip in marshal.
+                readerSlot++;
+                continue;
+            }
+
+            std::string goName = sanitizeGoName(fi.name);
+            std::string slotConst = std::string(typeName) + "Slot" + goName;
+            fprintf(f, "\t\tobj.%s(int(%sVTable[%s+2]), m.%s)\n",
+                    fi.writerMethod, typeName, slotConst.c_str(), goName.c_str());
+            readerSlot++;
+        }
+        fprintf(f, "\t})\n}\n");
+    }
 };
 
 // Extract metadata for one type and write to the Go emitter.
@@ -306,6 +469,9 @@ void extractType(GoEmitter& out, const char* name) {
         e.emitVTable(name, emitVT);
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
+        e.emitStruct(name, visitor.fields);
+        e.emitUnmarshalFDB(name, visitor.fields);
+        e.emitMarshalFDB(name, visitor.fields, getFileId<T>());
         e.separator();
         fclose(pf);
         _exit(0);

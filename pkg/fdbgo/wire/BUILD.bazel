@@ -19,6 +19,9 @@ go_test(
         "vtable_test.go",
         "writer_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(
+        ["testdata/**"],
+        allow_empty = True,
+    ),
     embed = [":wire"],
 )
