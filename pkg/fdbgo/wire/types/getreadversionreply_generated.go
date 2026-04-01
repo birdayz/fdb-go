@@ -99,6 +99,43 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
+		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotVersion) {
+		m.Version = r.ReadInt64(GetReadVersionReplySlotVersion)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotLocked) {
+		m.Locked = r.ReadBool(GetReadVersionReplySlotLocked)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMetadataVersion) && r.ReadUint8(GetReadVersionReplySlotMetadataVersion) > 0 {
+		m.MetadataVersion = r.ReadBytes(GetReadVersionReplySlotMetadataVersion + 1)
+		m.HasMetadataVersion = true
+	}
+	if r.FieldPresent(GetReadVersionReplySlotTagThrottleInfo) {
+		m.TagThrottleInfo = r.ReadBytes(GetReadVersionReplySlotTagThrottleInfo)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotMidShardSize) {
+		m.MidShardSize = r.ReadInt64(GetReadVersionReplySlotMidShardSize)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkDefaultThrottled) {
+		m.RkDefaultThrottled = r.ReadBool(GetReadVersionReplySlotRkDefaultThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotRkBatchThrottled) {
+		m.RkBatchThrottled = r.ReadBool(GetReadVersionReplySlotRkBatchThrottled)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotSsVersionVectorDelta) {
+		m.SsVersionVectorDelta = r.ReadBytes(GetReadVersionReplySlotSsVersionVectorDelta)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyId) {
+		m.ProxyId = r.ReadUID(GetReadVersionReplySlotProxyId)
+	}
+	if r.FieldPresent(GetReadVersionReplySlotProxyTagThrottledDuration) {
+		m.ProxyTagThrottledDuration = r.ReadFloat64(GetReadVersionReplySlotProxyTagThrottledDuration)
+	}
+}
+
 func (m *GetReadVersionReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetReadVersionReplyVTable
 	obj.WriteInt32(int(vt[GetReadVersionReplySlotProcessBusyTime+2]), m.ProcessBusyTime)

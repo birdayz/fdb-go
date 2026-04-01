@@ -83,7 +83,7 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(ClientDBInfoSlotHistory) {
 		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
 	}
-	// TenantMode (slot 6): nested struct — use r.ReadNestedReader(ClientDBInfoSlotTenantMode)
+	// TenantMode (slot 6): unknown nested struct
 	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
 		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
 		m.HasEncryptKeyProxy = true
@@ -99,6 +99,40 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 		m.HasMetaclusterName = true
 	}
 	return nil
+}
+
+func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
+		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotCommitProxies) {
+		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
+	}
+	if r.FieldPresent(ClientDBInfoSlotId) {
+		m.Id = r.ReadUID(ClientDBInfoSlotId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
+		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
+		m.HasForward = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotHistory) {
+		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
+	}
+	// TenantMode (slot 6): unknown nested struct
+	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
+		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
+		m.HasEncryptKeyProxy = true
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterId) {
+		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
+	}
+	if r.FieldPresent(ClientDBInfoSlotClusterType) {
+		m.ClusterType = r.ReadUint32(ClientDBInfoSlotClusterType)
+	}
+	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
+		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
+		m.HasMetaclusterName = true
+	}
 }
 
 func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {

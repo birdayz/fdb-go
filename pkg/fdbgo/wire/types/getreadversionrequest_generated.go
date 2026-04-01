@@ -64,12 +64,41 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
 		m.HasDebugID = true
 	}
-	// Reply (slot 5): nested struct — use r.ReadNestedReader(GetReadVersionRequestSlotReply)
-	// SpanContext (slot 6): nested struct — use r.ReadNestedReader(GetReadVersionRequestSlotSpanContext)
+	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
 		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
 	}
 	return nil
+}
+
+func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
+		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(GetReadVersionRequestSlotFlags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotTags) {
+		m.Tags = r.ReadBytes(GetReadVersionRequestSlotTags)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotDebugID) && r.ReadUint8(GetReadVersionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(GetReadVersionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetReadVersionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(GetReadVersionRequestSlotMaxVersion) {
+		m.MaxVersion = r.ReadInt64(GetReadVersionRequestSlotMaxVersion)
+	}
 }
 
 func (m *GetReadVersionRequest) MarshalInto(obj *wire.ObjectWriter) {

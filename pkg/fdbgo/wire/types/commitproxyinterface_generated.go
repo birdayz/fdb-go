@@ -38,8 +38,19 @@ func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
 		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
 	}
-	// Commit (slot 3): nested struct — use r.ReadNestedReader(CommitProxyInterfaceSlotCommit)
+	// Commit (slot 3): unknown nested struct
 	return nil
+}
+
+func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
+		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
+		m.HasProcessId = true
+	}
+	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
+		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
+	}
+	// Commit (slot 3): unknown nested struct
 }
 
 func (m *CommitProxyInterface) MarshalInto(obj *wire.ObjectWriter) {

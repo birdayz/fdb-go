@@ -58,6 +58,23 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetValueReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
+	}
+	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetValueReplySlotError + 1)
+		m.HasError = true
+	}
+	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
+		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
+		m.HasValue = true
+	}
+	if r.FieldPresent(GetValueReplySlotCached) {
+		m.Cached = r.ReadBool(GetValueReplySlotCached)
+	}
+}
+
 func (m *GetValueReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetValueReplyVTable
 	obj.WriteFloat64(int(vt[GetValueReplySlotPenalty+2]), m.Penalty)

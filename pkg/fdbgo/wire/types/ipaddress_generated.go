@@ -30,6 +30,13 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(IPAddressSlotField_0) && r.ReadUint8(IPAddressSlotField_0) > 0 {
+		m.Field_0 = r.ReadBytes(IPAddressSlotField_0 + 1)
+		m.HasField_0 = true
+	}
+}
+
 func (m *IPAddress) MarshalInto(obj *wire.ObjectWriter) {
 }
 

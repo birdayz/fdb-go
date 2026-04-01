@@ -39,7 +39,7 @@ func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	// FromHostname (slot 0): nested struct — use r.ReadNestedReader(NetworkAddressSlotFromHostname)
+	// FromHostname (slot 0): unknown nested struct
 	if r.FieldPresent(NetworkAddressSlotField_1) {
 		m.Field_1 = r.ReadUint16(NetworkAddressSlotField_1)
 	}
@@ -50,6 +50,19 @@ func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 		m.Field_3 = r.ReadBool(NetworkAddressSlotField_3)
 	}
 	return nil
+}
+
+func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
+	// FromHostname (slot 0): unknown nested struct
+	if r.FieldPresent(NetworkAddressSlotField_1) {
+		m.Field_1 = r.ReadUint16(NetworkAddressSlotField_1)
+	}
+	if r.FieldPresent(NetworkAddressSlotField_2) {
+		m.Field_2 = r.ReadUint16(NetworkAddressSlotField_2)
+	}
+	if r.FieldPresent(NetworkAddressSlotField_3) {
+		m.Field_3 = r.ReadBool(NetworkAddressSlotField_3)
+	}
 }
 
 func (m *NetworkAddress) MarshalInto(obj *wire.ObjectWriter) {

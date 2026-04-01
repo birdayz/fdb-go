@@ -61,6 +61,21 @@ func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
+		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTssMapping) {
+		m.ResultsTssMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTssMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotResultsTagMapping) {
+		m.ResultsTagMapping = r.ReadBytes(GetKeyServerLocationsReplySlotResultsTagMapping)
+	}
+	if r.FieldPresent(GetKeyServerLocationsReplySlotArena) {
+		m.Arena = r.ReadBytes(GetKeyServerLocationsReplySlotArena)
+	}
+}
+
 func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GetKeyServerLocationsReplyVTable
 	if len(m.Results) > 0 {

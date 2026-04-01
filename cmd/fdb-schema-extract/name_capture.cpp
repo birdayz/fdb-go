@@ -142,6 +142,8 @@ void captureAllNames() {
     g_names["MutationRef"] = "mutType, param1, param2";
     // TenantInfo: serialize is in serializable_traits<TenantInfo>, not inside struct body.
     g_names["TenantInfo"] = "tenantId, token, arena";
+    // std::pair<KeyRangeRef, vector<SS>>: serialize(ar, first, second)
+    g_names["LocationPair"] = "keyRange, servers";
 
     fprintf(stderr, "name_capture: captured %zu type names\n", g_names.size());
 }

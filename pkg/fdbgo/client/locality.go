@@ -137,25 +137,61 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 		return nil, fmt.Errorf("locations reply: %w", err)
 	}
 
-	results, err := types.ParseGetKeyServerLocationsResults(r)
-	if err != nil {
-		return nil, err
+	// Parse vector of pair<KeyRangeRef, vector<StorageServerInterface>> using
+	// generated slot constants and types.
+	pairCount, err := r.ReadVectorCount(types.GetKeyServerLocationsReplySlotResults)
+	if err != nil || pairCount == 0 {
+		return nil, fmt.Errorf("no location results")
 	}
 
-	entries := make([]locationEntry, 0, len(results))
-	for _, res := range results {
-		servers := make([]ServerInfo, len(res.Servers))
-		for i, ep := range res.Servers {
-			servers[i] = ServerInfo{
-				Address: ep.Address,
-				Token:   transport.UID{First: ep.First, Second: ep.Second},
+	entries := make([]locationEntry, 0, pairCount)
+	for i := 0; i < pairCount; i++ {
+		pairR, err := r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, i)
+		if err != nil {
+			continue
+		}
+
+		// Pair slot 0: KeyRangeRef (nested struct).
+		var kr types.KeyRangeRef
+		if krR, err := pairR.ReadNestedReader(types.LocationPairSlotKeyRange); err == nil {
+			kr.UnmarshalFromReader(krR)
+		}
+
+		// Pair slot 1: vector<StorageServerInterface>.
+		var servers []ServerInfo
+		ssCount, err := pairR.ReadVectorCount(types.LocationPairSlotServers)
+		if err != nil || ssCount == 0 {
+			continue
+		}
+		for j := 0; j < ssCount; j++ {
+			ssR, err := pairR.ReadVectorElementReader(types.LocationPairSlotServers, j)
+			if err != nil {
+				continue
+			}
+			ep, err := types.ReadEndpointFromSlot(ssR, 2)
+			if err != nil || ep.First == 0 {
+				nf := ssR.VTableLength() - 2
+				for s := 0; s < nf; s++ {
+					ep, err = types.ReadEndpointFromSlot(ssR, s)
+					if err == nil && ep.First != 0 {
+						break
+					}
+				}
+			}
+			if ep.First != 0 {
+				servers = append(servers, ServerInfo{
+					Address: ep.Address,
+					Token:   transport.UID{First: ep.First, Second: ep.Second},
+				})
 			}
 		}
-		entries = append(entries, locationEntry{
-			begin:   res.Begin,
-			end:     res.End,
-			servers: servers,
-		})
+		if len(servers) > 0 {
+			entries = append(entries, locationEntry{
+				begin:   kr.Begin,
+				end:     kr.End,
+				servers: servers,
+			})
+		}
 	}
 
 	if len(entries) == 0 {

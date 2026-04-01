@@ -66,9 +66,15 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	// Reply (slot 4): nested struct — use r.ReadNestedReader(GetValueRequestSlotReply)
-	// SpanContext (slot 5): nested struct — use r.ReadNestedReader(GetValueRequestSlotSpanContext)
-	// TenantInfo (slot 6): nested struct — use r.ReadNestedReader(GetValueRequestSlotTenantInfo)
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
 		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
 		m.HasOptions = true
@@ -77,6 +83,35 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
 	}
 	return nil
+}
+
+func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetValueRequestSlotKey) {
+		m.Key = r.ReadBytes(GetValueRequestSlotKey)
+	}
+	if r.FieldPresent(GetValueRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetValueRequestSlotVersion)
+	}
+	if r.FieldPresent(GetValueRequestSlotTags) && r.ReadUint8(GetValueRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetValueRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetValueRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetValueRequestSlotSsLatestCommitVersions)
+	}
 }
 
 func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {

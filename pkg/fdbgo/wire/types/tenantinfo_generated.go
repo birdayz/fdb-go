@@ -42,6 +42,19 @@ func (m *TenantInfo) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(TenantInfoSlotTenantId) {
+		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
+	}
+	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
+		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
+		m.HasToken = true
+	}
+	if r.FieldPresent(TenantInfoSlotArena) {
+		m.Arena = r.ReadBytes(TenantInfoSlotArena)
+	}
+}
+
 func (m *TenantInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := TenantInfoVTable
 	obj.WriteInt64(int(vt[TenantInfoSlotTenantId+2]), m.TenantId)

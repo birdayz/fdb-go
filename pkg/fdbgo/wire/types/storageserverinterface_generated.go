@@ -40,8 +40,8 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
-	// Field_1 (slot 1): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_1)
-	// Field_2 (slot 2): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_2)
+	// Field_1 (slot 1): unknown nested struct
+	// Field_2 (slot 2): unknown nested struct
 	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
 		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
 		m.HasField_3 = true
@@ -50,6 +50,21 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 		m.Field_4 = r.ReadBool(StorageServerInterfaceSlotField_4)
 	}
 	return nil
+}
+
+func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
+		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
+	}
+	// Field_1 (slot 1): unknown nested struct
+	// Field_2 (slot 2): unknown nested struct
+	if r.FieldPresent(StorageServerInterfaceSlotField_3) && r.ReadUint8(StorageServerInterfaceSlotField_3) > 0 {
+		m.Field_3 = r.ReadBytes(StorageServerInterfaceSlotField_3 + 1)
+		m.HasField_3 = true
+	}
+	if r.FieldPresent(StorageServerInterfaceSlotField_4) {
+		m.Field_4 = r.ReadBool(StorageServerInterfaceSlotField_4)
+	}
 }
 
 func (m *StorageServerInterface) MarshalInto(obj *wire.ObjectWriter) {

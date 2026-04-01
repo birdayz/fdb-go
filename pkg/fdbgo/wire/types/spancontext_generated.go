@@ -40,6 +40,18 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(SpanContextSlotTraceID) {
+		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
+	}
+	if r.FieldPresent(SpanContextSlotSpanID) {
+		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
+	}
+	if r.FieldPresent(SpanContextSlotFlags) {
+		m.Flags = r.ReadUint8(SpanContextSlotFlags)
+	}
+}
+
 func (m *SpanContext) MarshalInto(obj *wire.ObjectWriter) {
 	vt := SpanContextVTable
 	obj.WriteUID(int(vt[SpanContextSlotTraceID+2]), m.TraceID)

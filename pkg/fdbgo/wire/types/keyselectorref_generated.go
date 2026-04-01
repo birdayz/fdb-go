@@ -40,6 +40,18 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(KeySelectorRefSlotKey) {
+		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOrEqual) {
+		m.OrEqual = r.ReadBool(KeySelectorRefSlotOrEqual)
+	}
+	if r.FieldPresent(KeySelectorRefSlotOffset) {
+		m.Offset = r.ReadInt32(KeySelectorRefSlotOffset)
+	}
+}
+
 func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeySelectorRefVTable
 	if len(m.Key) > 0 {

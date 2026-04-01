@@ -35,6 +35,12 @@ func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ReplyPromiseSlotToken) {
+		m.Token = r.ReadUID(ReplyPromiseSlotToken)
+	}
+}
+
 func (m *ReplyPromise) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReplyPromiseVTable
 	obj.WriteUID(int(vt[ReplyPromiseSlotToken+2]), m.Token)

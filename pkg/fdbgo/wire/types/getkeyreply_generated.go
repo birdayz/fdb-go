@@ -48,11 +48,25 @@ func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
 		m.HasError = true
 	}
-	// Sel (slot 3): nested struct — use r.ReadNestedReader(GetKeyReplySlotSel)
+	// Sel (slot 3): unknown nested struct
 	if r.FieldPresent(GetKeyReplySlotCached) {
 		m.Cached = r.ReadBool(GetKeyReplySlotCached)
 	}
 	return nil
+}
+
+func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GetKeyReplySlotPenalty) {
+		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
+	}
+	if r.FieldPresent(GetKeyReplySlotError) && r.ReadUint8(GetKeyReplySlotError) > 0 {
+		m.Error = r.ReadBytes(GetKeyReplySlotError + 1)
+		m.HasError = true
+	}
+	// Sel (slot 3): unknown nested struct
+	if r.FieldPresent(GetKeyReplySlotCached) {
+		m.Cached = r.ReadBool(GetKeyReplySlotCached)
+	}
 }
 
 func (m *GetKeyReply) MarshalInto(obj *wire.ObjectWriter) {

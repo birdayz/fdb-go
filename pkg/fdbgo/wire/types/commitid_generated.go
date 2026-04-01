@@ -57,6 +57,23 @@ func (m *CommitID) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *CommitID) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(CommitIDSlotVersion) {
+		m.Version = r.ReadInt64(CommitIDSlotVersion)
+	}
+	if r.FieldPresent(CommitIDSlotTxnBatchId) {
+		m.TxnBatchId = r.ReadUint16(CommitIDSlotTxnBatchId)
+	}
+	if r.FieldPresent(CommitIDSlotMetadataVersion) && r.ReadUint8(CommitIDSlotMetadataVersion) > 0 {
+		m.MetadataVersion = r.ReadBytes(CommitIDSlotMetadataVersion + 1)
+		m.HasMetadataVersion = true
+	}
+	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) > 0 {
+		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
+		m.HasConflictingKRIndices = true
+	}
+}
+
 func (m *CommitID) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitIDVTable
 	obj.WriteInt64(int(vt[CommitIDSlotVersion+2]), m.Version)

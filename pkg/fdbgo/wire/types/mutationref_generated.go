@@ -40,6 +40,18 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(MutationRefSlotMutType) {
+		m.MutType = r.ReadUint8(MutationRefSlotMutType)
+	}
+	if r.FieldPresent(MutationRefSlotParam1) {
+		m.Param1 = r.ReadBytes(MutationRefSlotParam1)
+	}
+	if r.FieldPresent(MutationRefSlotParam2) {
+		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
+	}
+}
+
 func (m *MutationRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := MutationRefVTable
 	obj.WriteUint8(int(vt[MutationRefSlotMutType+2]), m.MutType)

@@ -76,7 +76,9 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
 		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
 	}
-	// Reply (slot 6): nested struct — use r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply)
+	if nestedR, err := r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotHostnames) {
 		m.Hostnames = r.ReadBytes(OpenDatabaseCoordRequestSlotHostnames)
 	}
@@ -84,6 +86,36 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 		m.Internal = r.ReadBool(OpenDatabaseCoordRequestSlotInternal)
 	}
 	return nil
+}
+
+func (m *OpenDatabaseCoordRequest) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotIssues) {
+		m.Issues = r.ReadBytes(OpenDatabaseCoordRequestSlotIssues)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotSupportedVersions) {
+		m.SupportedVersions = r.ReadBytes(OpenDatabaseCoordRequestSlotSupportedVersions)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotTraceLogGroup) {
+		m.TraceLogGroup = r.ReadBytes(OpenDatabaseCoordRequestSlotTraceLogGroup)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotKnownClientInfoID) {
+		m.KnownClientInfoID = r.ReadUID(OpenDatabaseCoordRequestSlotKnownClientInfoID)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotClusterKey) {
+		m.ClusterKey = r.ReadBytes(OpenDatabaseCoordRequestSlotClusterKey)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotCoordinators) {
+		m.Coordinators = r.ReadBytes(OpenDatabaseCoordRequestSlotCoordinators)
+	}
+	if nestedR, err := r.ReadNestedReader(OpenDatabaseCoordRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotHostnames) {
+		m.Hostnames = r.ReadBytes(OpenDatabaseCoordRequestSlotHostnames)
+	}
+	if r.FieldPresent(OpenDatabaseCoordRequestSlotInternal) {
+		m.Internal = r.ReadBool(OpenDatabaseCoordRequestSlotInternal)
+	}
 }
 
 func (m *OpenDatabaseCoordRequest) MarshalInto(obj *wire.ObjectWriter) {

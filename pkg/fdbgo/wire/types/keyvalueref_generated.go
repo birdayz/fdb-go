@@ -38,6 +38,15 @@ func (m *KeyValueRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *KeyValueRef) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(KeyValueRefSlotKey) {
+		m.Key = r.ReadBytes(KeyValueRefSlotKey)
+	}
+	if r.FieldPresent(KeyValueRefSlotValue) {
+		m.Value = r.ReadBytes(KeyValueRefSlotValue)
+	}
+}
+
 func (m *KeyValueRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := KeyValueRefVTable
 	if len(m.Key) > 0 {

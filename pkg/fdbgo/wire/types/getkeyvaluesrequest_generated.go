@@ -69,8 +69,12 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	// Begin (slot 0): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotBegin)
-	// End (slot 1): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotEnd)
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin); err == nil {
+		m.Begin.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotEnd); err == nil {
+		m.End.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(GetKeyValuesRequestSlotVersion) {
 		m.Version = r.ReadInt64(GetKeyValuesRequestSlotVersion)
 	}
@@ -84,9 +88,15 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 		m.Tags = r.ReadBytes(GetKeyValuesRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	// Reply (slot 7): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotReply)
-	// SpanContext (slot 8): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext)
-	// TenantInfo (slot 9): nested struct — use r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo)
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) > 0 {
 		m.Options = r.ReadBytes(GetKeyValuesRequestSlotOptions + 1)
 		m.HasOptions = true
@@ -98,6 +108,47 @@ func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 		m.Arena = r.ReadBytes(GetKeyValuesRequestSlotArena)
 	}
 	return nil
+}
+
+func (m *GetKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) {
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin); err == nil {
+		m.Begin.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotEnd); err == nil {
+		m.End.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotVersion) {
+		m.Version = r.ReadInt64(GetKeyValuesRequestSlotVersion)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotLimit) {
+		m.Limit = r.ReadInt32(GetKeyValuesRequestSlotLimit)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotLimitBytes) {
+		m.LimitBytes = r.ReadInt32(GetKeyValuesRequestSlotLimitBytes)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotTags) && r.ReadUint8(GetKeyValuesRequestSlotTags) > 0 {
+		m.Tags = r.ReadBytes(GetKeyValuesRequestSlotTags + 1)
+		m.HasTags = true
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(GetKeyValuesRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotOptions) && r.ReadUint8(GetKeyValuesRequestSlotOptions) > 0 {
+		m.Options = r.ReadBytes(GetKeyValuesRequestSlotOptions + 1)
+		m.HasOptions = true
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotSsLatestCommitVersions) {
+		m.SsLatestCommitVersions = r.ReadBytes(GetKeyValuesRequestSlotSsLatestCommitVersions)
+	}
+	if r.FieldPresent(GetKeyValuesRequestSlotArena) {
+		m.Arena = r.ReadBytes(GetKeyValuesRequestSlotArena)
+	}
 }
 
 func (m *GetKeyValuesRequest) MarshalInto(obj *wire.ObjectWriter) {

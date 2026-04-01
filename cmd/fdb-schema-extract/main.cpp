@@ -161,6 +161,7 @@ template<> const char* getCppTypeName<SpanContext>() { return "SpanContext"; }
 template<> const char* getCppTypeName<TenantInfo>() { return "TenantInfo"; }
 template<> const char* getCppTypeName<CommitTransactionRef>() { return "CommitTransactionRef"; }
 template<> const char* getCppTypeName<KeySelectorRef>() { return "KeySelectorRef"; }
+template<> const char* getCppTypeName<KeyRangeRef>() { return "KeyRangeRef"; }
 template<> const char* getCppTypeName<ReadOptions>() { return "ReadOptions"; }
 
 // Detect VectorRef<KeyValueRef, VecSerStrategy::String> for typed vector parsing.
@@ -432,39 +433,55 @@ struct GoEmitter {
         fprintf(f, "}\n\n");
     }
 
-    // Emit UnmarshalFDB with all reads inlined in one function.
-    void emitUnmarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields) {
-        fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
-        fprintf(f, "\tr, err := wire.NewReader(data)\n");
-        fprintf(f, "\tif err != nil {\n\t\treturn err\n\t}\n");
-
+    // Emit field read code shared by UnmarshalFDB and UnmarshalFromReader.
+    // readerVar is "r" (the *wire.Reader variable name).
+    void emitFieldReads(const char* typeName, const std::vector<FieldInfo>& fields, const char* readerVar) {
         int readerSlot = 0;
         for (auto& fi : fields) {
             std::string goName = sanitizeGoName(fi.name);
             std::string slotConst = std::string(typeName) + "Slot" + goName;
 
             if (strcmp(fi.trait, "union_like") == 0) {
-                // Optional: check tag, read value.
-                fprintf(f, "\tif r.FieldPresent(%s) && r.ReadUint8(%s) > 0 {\n",
-                        slotConst.c_str(), slotConst.c_str());
-                fprintf(f, "\t\tm.%s = r.ReadBytes(%s + 1)\n", goName.c_str(), slotConst.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
+                        readerVar, slotConst.c_str(), readerVar, slotConst.c_str());
+                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", goName.c_str(), readerVar, slotConst.c_str());
                 fprintf(f, "\t\tm.Has%s = true\n", goName.c_str());
                 fprintf(f, "\t}\n");
                 readerSlot += 2;
+            } else if ((strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0)
+                       && fi.cppTypeName[0] != '\0') {
+                // Known nested struct — read via ReadNestedReader + UnmarshalFromReader.
+                fprintf(f, "\tif nestedR, err := %s.ReadNestedReader(%s); err == nil {\n",
+                        readerVar, slotConst.c_str());
+                fprintf(f, "\t\tm.%s.UnmarshalFromReader(nestedR)\n", goName.c_str());
+                fprintf(f, "\t}\n");
+                readerSlot++;
             } else if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
-                // Nested struct: emit comment, skip.
-                fprintf(f, "\t// %s (slot %d): nested struct — use r.ReadNestedReader(%s)\n",
-                        goName.c_str(), readerSlot, slotConst.c_str());
+                fprintf(f, "\t// %s (slot %d): unknown nested struct\n", goName.c_str(), readerSlot);
                 readerSlot++;
             } else {
-                // Scalar, dynamic_size, vector_like — direct read.
-                fprintf(f, "\tif r.FieldPresent(%s) {\n", slotConst.c_str());
-                fprintf(f, "\t\tm.%s = r.%s(%s)\n", goName.c_str(), fi.readerMethod, slotConst.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", readerVar, slotConst.c_str());
+                fprintf(f, "\t\tm.%s = %s.%s(%s)\n", goName.c_str(), readerVar, fi.readerMethod, slotConst.c_str());
                 fprintf(f, "\t}\n");
                 readerSlot++;
             }
         }
+    }
+
+    // Emit UnmarshalFDB (from raw bytes) and UnmarshalFromReader (from positioned Reader).
+    void emitUnmarshalFDB(const char* typeName, const std::vector<FieldInfo>& fields) {
+        // UnmarshalFDB: creates Reader from raw bytes.
+        fprintf(f, "func (m *%s) UnmarshalFDB(data []byte) error {\n", typeName);
+        fprintf(f, "\tr, err := wire.NewReader(data)\n");
+        fprintf(f, "\tif err != nil {\n\t\treturn err\n\t}\n");
+        emitFieldReads(typeName, fields, "r");
         fprintf(f, "\treturn nil\n}\n\n");
+
+        // UnmarshalFromReader: reads from an existing positioned Reader.
+        // Used for nested struct fields and vector element parsing.
+        fprintf(f, "func (m *%s) UnmarshalFromReader(r *wire.Reader) {\n", typeName);
+        emitFieldReads(typeName, fields, "r");
+        fprintf(f, "}\n\n");
     }
 
     // Emit MarshalInto — writes all non-optional, non-struct fields into an ObjectWriter.
@@ -546,6 +563,28 @@ struct GoEmitter {
             fprintf(f, "\t\t\tpos += n\n");
             fprintf(f, "\t\t}\n");
         }
+        fprintf(f, "\t\tresult = append(result, elem)\n");
+        fprintf(f, "\t}\n");
+        fprintf(f, "\treturn result\n");
+        fprintf(f, "}\n\n");
+    }
+
+    // Emit a standard FlatBuffers vector parser for a struct element type.
+    // Each element is a nested struct with its own vtable, read via ReadVectorElementReader.
+    // Emits: ParseXxxVectorFromReader(r *Reader, slot int) []Xxx
+    void emitFlatBuffersVectorParser(const char* elemTypeName) {
+        fprintf(f, "// Parse%sVectorFromReader reads a vector of %s from a FlatBuffers vector field.\n",
+                elemTypeName, elemTypeName);
+        fprintf(f, "func Parse%sVectorFromReader(r *wire.Reader, slot int) []%s {\n",
+                elemTypeName, elemTypeName);
+        fprintf(f, "\tcount, err := r.ReadVectorCount(slot)\n");
+        fprintf(f, "\tif err != nil || count == 0 {\n\t\treturn nil\n\t}\n");
+        fprintf(f, "\tresult := make([]%s, 0, count)\n", elemTypeName);
+        fprintf(f, "\tfor i := 0; i < count; i++ {\n");
+        fprintf(f, "\t\telemR, err := r.ReadVectorElementReader(slot, i)\n");
+        fprintf(f, "\t\tif err != nil {\n\t\t\tcontinue\n\t\t}\n");
+        fprintf(f, "\t\tvar elem %s\n", elemTypeName);
+        fprintf(f, "\t\telem.UnmarshalFromReader(elemR)\n");
         fprintf(f, "\t\tresult = append(result, elem)\n");
         fprintf(f, "\t}\n");
         fprintf(f, "\treturn result\n");
@@ -708,7 +747,8 @@ std::string toLowerFilename(const char* name) {
 
 // Extract metadata for one type and write to per-type _generated.go file.
 // For custom types (EmitStructs=false), also writes _custom.go stub if it doesn't exist.
-template <class T, bool SkipObjectWriter = false, bool EmitStructs = true, bool EmitVectorParser = false>
+template <class T, bool SkipObjectWriter = false, bool EmitStructs = true,
+          bool EmitStringVectorParser = false, bool EmitFBVectorParser = false>
 void extractType(const char* outDir, const char* name) {
     int pipefd[2];
     pipe(pipefd);
@@ -744,7 +784,7 @@ void extractType(const char* outDir, const char* name) {
         GoEmitter e{pf};
 
         // All types get: header, field comments, slot constants, vtable, fileID, closure.
-        e.header(EmitVectorParser);
+        e.header(EmitStringVectorParser);
         e.emitFieldComment(name, visitor.fields);
         e.emitSlotConstants(name, visitor.fields);
         e.emitVTable(name, emitVT);
@@ -766,9 +806,12 @@ void extractType(const char* outDir, const char* name) {
             e.emitMarshalStructBlob(name, visitor.fields);
         }
 
-        // Emit VecSerStrategy::String vector parser if requested.
-        if constexpr (EmitVectorParser) {
+        // Emit vector parsers if requested.
+        if constexpr (EmitStringVectorParser) {
             e.emitStringVectorParser(name, visitor.fields);
+        }
+        if constexpr (EmitFBVectorParser) {
+            e.emitFlatBuffersVectorParser(name);
         }
 
         if constexpr (EmitStructs) {
@@ -873,8 +916,12 @@ int main(int argc, char** argv) {
     extractType<OpenDatabaseCoordRequest>(outDir, "OpenDatabaseCoordRequest");
 
     // --- KeyValueRef: element type for VecSerStrategy::String vectors ---
-    // EmitVectorParser=true generates ParseKeyValueRefVector from field structure.
-    extractType<KeyValueRef, false, true, true>(outDir, "KeyValueRef");
+    extractType<KeyValueRef, false, true, true, false>(outDir, "KeyValueRef");
+
+    // --- Pair type: element of GetKeyServerLocationsReply.results ---
+    using LocationPair = std::pair<KeyRangeRef, std::vector<StorageServerInterface>>;
+    // EmitFBVectorParser to generate ParseLocationPairVectorFromReader.
+    extractType<LocationPair, false, true, false, true>(outDir, "LocationPair");
 
     // --- Nested types: GENERATED struct + constants, CUSTOM marshal/unmarshal ---
     extractType<SpanContext, false, false>(outDir, "SpanContext");

@@ -38,8 +38,19 @@ func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GrvProxyInterfaceSlotProvisional) {
 		m.Provisional = r.ReadBool(GrvProxyInterfaceSlotProvisional)
 	}
-	// GetConsistentReadVersion (slot 3): nested struct — use r.ReadNestedReader(GrvProxyInterfaceSlotGetConsistentReadVersion)
+	// GetConsistentReadVersion (slot 3): unknown nested struct
 	return nil
+}
+
+func (m *GrvProxyInterface) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
+		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
+		m.HasProcessId = true
+	}
+	if r.FieldPresent(GrvProxyInterfaceSlotProvisional) {
+		m.Provisional = r.ReadBool(GrvProxyInterfaceSlotProvisional)
+	}
+	// GetConsistentReadVersion (slot 3): unknown nested struct
 }
 
 func (m *GrvProxyInterface) MarshalInto(obj *wire.ObjectWriter) {

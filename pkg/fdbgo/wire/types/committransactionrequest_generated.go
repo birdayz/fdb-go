@@ -67,8 +67,12 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	// Transaction (slot 0): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotTransaction)
-	// Reply (slot 1): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotReply)
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
+		m.Transaction.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
 	}
@@ -84,8 +88,12 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
 		m.HasTagSet = true
 	}
-	// SpanContext (slot 9): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotSpanContext)
-	// TenantInfo (slot 10): nested struct — use r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo)
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
 	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
 		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
 	}
@@ -93,6 +101,42 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
 	}
 	return nil
+}
+
+func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
+		m.Transaction.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
+		m.Reply.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
+		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(CommitTransactionRequestSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
+		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
+		m.HasCommitCostEstimation = true
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
+		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
+		m.HasTagSet = true
+	}
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
+		m.SpanContext.UnmarshalFromReader(nestedR)
+	}
+	if nestedR, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
+		m.TenantInfo.UnmarshalFromReader(nestedR)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
+		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
+	}
+	if r.FieldPresent(CommitTransactionRequestSlotArena) {
+		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
+	}
 }
 
 func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {

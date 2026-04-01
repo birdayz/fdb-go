@@ -35,6 +35,12 @@ func (m *Error) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *Error) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ErrorSlotError_code) {
+		m.Error_code = r.ReadUint16(ErrorSlotError_code)
+	}
+}
+
 func (m *Error) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ErrorVTable
 	obj.WriteUint16(int(vt[ErrorSlotError_code+2]), m.Error_code)

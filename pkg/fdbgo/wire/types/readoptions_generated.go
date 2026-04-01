@@ -56,6 +56,26 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
+func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
+	if r.FieldPresent(ReadOptionsSlotType) {
+		m.Type = r.ReadUint32(ReadOptionsSlotType)
+	}
+	if r.FieldPresent(ReadOptionsSlotCacheResult) {
+		m.CacheResult = r.ReadBool(ReadOptionsSlotCacheResult)
+	}
+	if r.FieldPresent(ReadOptionsSlotDebugID) && r.ReadUint8(ReadOptionsSlotDebugID) > 0 {
+		m.DebugID = r.ReadBytes(ReadOptionsSlotDebugID + 1)
+		m.HasDebugID = true
+	}
+	if r.FieldPresent(ReadOptionsSlotConsistencyCheckStartVersion) && r.ReadUint8(ReadOptionsSlotConsistencyCheckStartVersion) > 0 {
+		m.ConsistencyCheckStartVersion = r.ReadBytes(ReadOptionsSlotConsistencyCheckStartVersion + 1)
+		m.HasConsistencyCheckStartVersion = true
+	}
+	if r.FieldPresent(ReadOptionsSlotLockAware) {
+		m.LockAware = r.ReadBool(ReadOptionsSlotLockAware)
+	}
+}
+
 func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReadOptionsVTable
 	obj.WriteUint32(int(vt[ReadOptionsSlotType+2]), m.Type)
