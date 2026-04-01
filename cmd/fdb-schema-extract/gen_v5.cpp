@@ -42,7 +42,7 @@ struct GoEmitterV5 {
             needsBinary = true;
         // writeBlob uses binary.LittleEndian for DynamicSize and VectorOfStruct OOL writes.
         for (auto& fd : fields) {
-            if (fd.kind == FieldKind::DynamicSize || fd.kind == FieldKind::VectorOfStruct) {
+            if (fd.kind == FieldKind::DynamicSize || fd.kind == FieldKind::VectorOfStruct || fd.kind == FieldKind::Variant) {
                 needsBinary = true;
                 break;
             }
@@ -284,6 +284,18 @@ private:
                 fprintf(f, "\t\toolSize += (vecSize + 3) &^ 3\n");
                 fprintf(f, "\t}\n");
                 break;
+            case FieldKind::Variant:
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    fprintf(f, "\tcase %zu:\n", a + 1);
+                    if (alt.kind == FieldKind::Scalar)
+                        fprintf(f, "\t\toolSize += (%d + 3) &^ 3\n", alt.size);
+                    else
+                        fprintf(f, "\t\toolSize += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
+                }
+                fprintf(f, "\t}\n");
+                break;
             default:
                 break;
             }
@@ -303,7 +315,8 @@ private:
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
             if (fd.kind == FieldKind::Scalar || fd.kind == FieldKind::DynamicSize ||
-                fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::VectorOfStruct)
+                fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::VectorOfStruct ||
+                fd.kind == FieldKind::Variant)
                 blobNeedsObj = true;
         }
         if (blobNeedsObj)
@@ -381,11 +394,47 @@ private:
                 fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+2]), objPos, vecStart)\n", slot.c_str());
                 fprintf(f, "\t\tcurOOL = (blobPos + 3) &^ 3\n");
                 fprintf(f, "\t}\n");
+            } else if (fd.kind == FieldKind::Variant) {
+                fprintf(f, "\tobj[int(vt[%s+2])] = m.%sTag\n", slot.c_str(), gn.c_str());
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    fprintf(f, "\tcase %zu:\n", a + 1);
+                    if (alt.kind == FieldKind::Scalar) {
+                        fprintf(f, "\t\tvar tmp [%d]byte\n", alt.size);
+                        emitScalarPut(alt.goType, "tmp[:]", gn, a);
+                        fprintf(f, "\t\tcopy(buf[curOOL:], tmp[:])\n");
+                    } else {
+                        fprintf(f, "\t\tcopy(buf[curOOL:], m.%sAlt%zu)\n", gn.c_str(), a);
+                    }
+                    fprintf(f, "\t\twire.PatchBlobRelOff(obj, int(vt[%s+1+2]), objPos, curOOL)\n", slot.c_str());
+                    if (alt.kind == FieldKind::Scalar)
+                        fprintf(f, "\t\tcurOOL += (%d + 3) &^ 3\n", alt.size);
+                    else
+                        fprintf(f, "\t\tcurOOL += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
+                }
+                fprintf(f, "\t}\n");
             }
         }
 
         fprintf(f, "\treturn curOOL - pos\n");
         fprintf(f, "}\n\n");
+    }
+
+    // Helper: emit binary.LittleEndian.PutXxx for scalar variant alternative into a temp buffer.
+    void emitScalarPut(const char* goType, const char* dst, const std::string& fieldName, size_t altIdx) {
+        if (strcmp(goType, "uint32") == 0)
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint32(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
+        else if (strcmp(goType, "int32") == 0)
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint32(%s, uint32(m.%sAlt%zu))\n", dst, fieldName.c_str(), altIdx);
+        else if (strcmp(goType, "uint64") == 0)
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint64(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
+        else if (strcmp(goType, "int64") == 0)
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint64(%s, uint64(m.%sAlt%zu))\n", dst, fieldName.c_str(), altIdx);
+        else if (strcmp(goType, "uint16") == 0)
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint16(%s, m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
+        else if (strcmp(goType, "uint8") == 0 || strcmp(goType, "int8") == 0)
+            fprintf(f, "\t\t%s[0] = byte(m.%sAlt%zu)\n", dst, fieldName.c_str(), altIdx);
     }
 
     // ---- measureEndOff ----
@@ -394,16 +443,17 @@ private:
         fprintf(f, "func (m *%s) measureEndOff(endOff int) int {\n", typeName);
 
         bool hasBody = false;
-        // Step 1: OOL fields (DynamicSize, VectorLike, VectorOfStruct).
+        // Step 1: OOL fields (DynamicSize, VectorLike, VectorOfStruct, Variant).
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
-            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike && fd.kind != FieldKind::VectorOfStruct) continue;
+            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
+                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant) continue;
             auto gn = fieldGoName(fd);
             if (fd.kind == FieldKind::DynamicSize) {
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorLike) {
                 fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
-            } else { // VectorOfStruct
+            } else if (fd.kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
                 fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
@@ -411,6 +461,17 @@ private:
                 fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t\tendOff += (vecSize + 3) &^ 3\n");
+                fprintf(f, "\t}\n");
+            } else { // Variant
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    fprintf(f, "\tcase %zu:\n", a + 1);
+                    if (alt.kind == FieldKind::Scalar)
+                        fprintf(f, "\t\tendOff += (%d + 3) &^ 3\n", alt.size);
+                    else
+                        fprintf(f, "\t\tendOff += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
+                }
                 fprintf(f, "\t}\n");
             }
             hasBody = true;
@@ -461,8 +522,11 @@ private:
             case FieldKind::Scalar:
                 scalarFields.push_back(&fd);
                 break;
+            case FieldKind::Variant:
+                oolFields.push_back(&fd);
+                break;
             default:
-                break; // Optional, Variant: skip for now
+                break; // Optional: skip
             }
         }
 
@@ -495,10 +559,27 @@ private:
                 fprintf(f, "\t\t\tblobOff += elem.writeBlob(vecBuf, blobOff)\n");
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t}\n");
-            } else { // VectorLike
+            } else if (fdp->kind == FieldKind::VectorLike) {
                 fprintf(f, "\tvar %s int\n", varName.c_str());
                 fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
                 fprintf(f, "\t\t%s = dw.WriteRawOOL(m.%s)\n", varName.c_str(), gn.c_str());
+                fprintf(f, "\t}\n");
+            } else { // Variant
+                fprintf(f, "\tvar %s int\n", varName.c_str());
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fdp->variantAlts.size(); a++) {
+                    auto& alt = fdp->variantAlts[a];
+                    fprintf(f, "\tcase %zu:\n", a + 1);
+                    if (alt.kind == FieldKind::Scalar) {
+                        fprintf(f, "\t\tvar tmp [%d]byte\n", alt.size);
+                        emitScalarPut(alt.goType, "tmp[:]", gn, a);
+                        fprintf(f, "\t\t%s = dw.WriteRawOOL(tmp[:])\n", varName.c_str());
+                    } else {
+                        fprintf(f, "\t\tif m.%sAlt%zu != nil {\n", gn.c_str(), a);
+                        fprintf(f, "\t\t\t%s = dw.WriteRawOOL(m.%sAlt%zu)\n", varName.c_str(), gn.c_str(), a);
+                        fprintf(f, "\t\t}\n");
+                    }
+                }
                 fprintf(f, "\t}\n");
             }
         }
@@ -563,19 +644,29 @@ private:
             }
         }
 
-        // Step 3b: Patch OOL RelOffs.
+        // Step 3b: Variant tags (inline) + OOL RelOffs.
         for (auto* fdp : oolFields) {
             auto gn = fieldGoName(*fdp);
             auto slot = std::string(typeName) + "Slot" + gn;
             auto varName = safeParam(gn) + "OOL";
-            if (fdp->kind == FieldKind::VectorOfStruct) {
+            if (fdp->kind == FieldKind::Variant) {
+                // Write tag inline, patch value RelOff at slot+1.
+                fprintf(f, "\tobj[int(vt[%s+2])] = m.%sTag\n", slot.c_str(), gn.c_str());
+                fprintf(f, "\tif m.%sTag > 0 {\n", gn.c_str());
+                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+1+2]), objPos, %s)\n",
+                        slot.c_str(), varName.c_str());
+                fprintf(f, "\t}\n");
+            } else if (fdp->kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
+                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
+                        slot.c_str(), varName.c_str());
+                fprintf(f, "\t}\n");
             } else {
                 fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
+                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
+                        slot.c_str(), varName.c_str());
+                fprintf(f, "\t}\n");
             }
-            fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
-                    slot.c_str(), varName.c_str());
-            fprintf(f, "\t}\n");
         }
 
         // Step 3c: Patch nested RelOffs.
@@ -603,13 +694,14 @@ private:
         // OOL field measures.
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
-            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike && fd.kind != FieldKind::VectorOfStruct) continue;
+            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
+                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant) continue;
             auto gn = fieldGoName(fd);
             if (fd.kind == FieldKind::DynamicSize) {
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorLike) {
                 fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
-            } else { // VectorOfStruct
+            } else if (fd.kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
                 fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
@@ -617,6 +709,17 @@ private:
                 fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t\tendOff += (vecSize + 3) &^ 3\n");
+                fprintf(f, "\t}\n");
+            } else { // Variant
+                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
+                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
+                    auto& alt = fd.variantAlts[a];
+                    fprintf(f, "\tcase %zu:\n", a + 1);
+                    if (alt.kind == FieldKind::Scalar)
+                        fprintf(f, "\t\tendOff += (%d + 3) &^ 3\n", alt.size);
+                    else
+                        fprintf(f, "\t\tendOff += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
+                }
                 fprintf(f, "\t}\n");
             }
         }
