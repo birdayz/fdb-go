@@ -6,22 +6,22 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 // TenantInfo fields:
 //
-//	slot 0: field_0 — scalar, size=8, align=8
-//	slot 1: field_1 — union_like, size=4, align=4, indirection
-//	slot 3: field_2 — scalar, size=0, align=1
+//	slot 0: tenantId — scalar, size=8, align=8
+//	slot 1: token — union_like, size=4, align=4, indirection
+//	slot 3: arena — scalar, size=0, align=1
 const (
-	TenantInfoSlotField_0 = 0
-	TenantInfoSlotField_1 = 1
-	TenantInfoSlotField_2 = 3
+	TenantInfoSlotTenantId = 0
+	TenantInfoSlotToken    = 1
+	TenantInfoSlotArena    = 3
 )
 
 var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
 
 type TenantInfo struct {
-	Field_0    int64  // slot 0, ReadInt64
-	HasField_1 bool   // slot 1, Optional, presence flag
-	Field_1    []byte // slot 2, Optional, ReadBytes
-	Field_2    []byte // slot 3, ReadBytes
+	TenantId int64  // slot 0, ReadInt64
+	HasToken bool   // slot 1, Optional, presence flag
+	Token    []byte // slot 2, Optional, ReadBytes
+	Arena    []byte // slot 3, ReadBytes
 }
 
 func (m *TenantInfo) UnmarshalFDB(data []byte) error {
@@ -29,21 +29,30 @@ func (m *TenantInfo) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(TenantInfoSlotField_0) {
-		m.Field_0 = r.ReadInt64(TenantInfoSlotField_0)
+	if r.FieldPresent(TenantInfoSlotTenantId) {
+		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
 	}
-	if r.FieldPresent(TenantInfoSlotField_1) && r.ReadUint8(TenantInfoSlotField_1) > 0 {
-		m.Field_1 = r.ReadBytes(TenantInfoSlotField_1 + 1)
-		m.HasField_1 = true
+	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) > 0 {
+		m.Token = r.ReadBytes(TenantInfoSlotToken + 1)
+		m.HasToken = true
 	}
-	if r.FieldPresent(TenantInfoSlotField_2) {
-		m.Field_2 = r.ReadBytes(TenantInfoSlotField_2)
+	if r.FieldPresent(TenantInfoSlotArena) {
+		m.Arena = r.ReadBytes(TenantInfoSlotArena)
 	}
 	return nil
 }
 
 func (m *TenantInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := TenantInfoVTable
-	obj.WriteInt64(int(vt[TenantInfoSlotField_0+2]), m.Field_0)
-	obj.WriteBytes(int(vt[TenantInfoSlotField_2+2]), m.Field_2)
+	obj.WriteInt64(int(vt[TenantInfoSlotTenantId+2]), m.TenantId)
+}
+
+func WriteTenantInfo(obj *wire.ObjectWriter, parentOffset int, tenantId int64) {
+	m := TenantInfo{TenantId: tenantId}
+	obj.WriteStruct(parentOffset, TenantInfoVTable, 8, m.MarshalInto)
+}
+
+func MarshalTenantInfo(tenantId int64) []byte {
+	m := TenantInfo{TenantId: tenantId}
+	return wire.MarshalStructBlob(TenantInfoVTable, m.MarshalInto)
 }

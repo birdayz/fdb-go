@@ -16,7 +16,7 @@ func MarshalGetKeyValuesRequest(
 		func(obj *wire.ObjectWriter) {
 			WriteTenantInfo(obj, int(vt[GetKeyValuesRequestSlotTenantInfo+2]), tenantId)
 			obj.WriteStruct(int(vt[GetKeyValuesRequestSlotSpanContext+2]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-			WriteReplyPromise(obj, int(vt[GetKeyValuesRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[GetKeyValuesRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 			writeKeySelectorRef(obj, int(vt[GetKeyValuesRequestSlotEnd+2]), endKey, endOffset, endOrEqual)
 			writeKeySelectorRef(obj, int(vt[GetKeyValuesRequestSlotBegin+2]), beginKey, beginOffset, beginOrEqual)
 			obj.WriteInt64(int(vt[GetKeyValuesRequestSlotVersion+2]), version)

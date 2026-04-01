@@ -83,6 +83,11 @@ func (m *GetValueRequest) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
 }
 
+func WriteGetValueRequest(obj *wire.ObjectWriter, parentOffset int, version int64, ssLatestCommitVersions []byte) {
+	m := GetValueRequest{Version: version, SsLatestCommitVersions: ssLatestCommitVersions}
+	obj.WriteStruct(parentOffset, GetValueRequestVTable, 8, m.MarshalInto)
+}
+
 var GetValueRequestTemplate = wire.NewMessageTemplate(
 	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
 )

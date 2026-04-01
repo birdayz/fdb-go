@@ -24,7 +24,7 @@ var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
 const StorageServerInterfaceFileID uint32 = 15302073
 
 type StorageServerInterface struct {
-	WatchValue []byte // slot 0, ReadBytes
+	WatchValue [16]byte // slot 0, ReadUID
 	// Field_1: nested struct at slot 1 — use ReadNestedReader(StorageServerInterfaceSlotField_1)
 	// Field_2: nested struct at slot 2 — use ReadNestedReader(StorageServerInterfaceSlotField_2)
 	HasField_3 bool   // slot 3, Optional, presence flag
@@ -38,7 +38,7 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
-		m.WatchValue = r.ReadBytes(StorageServerInterfaceSlotWatchValue)
+		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
 	// Field_1 (slot 1): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_1)
 	// Field_2 (slot 2): nested struct — use r.ReadNestedReader(StorageServerInterfaceSlotField_2)
@@ -54,6 +54,11 @@ func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 
 func (m *StorageServerInterface) MarshalInto(obj *wire.ObjectWriter) {
 	vt := StorageServerInterfaceVTable
-	obj.WriteBytes(int(vt[StorageServerInterfaceSlotWatchValue+2]), m.WatchValue)
+	obj.WriteUID(int(vt[StorageServerInterfaceSlotWatchValue+2]), m.WatchValue)
 	obj.WriteBool(int(vt[StorageServerInterfaceSlotField_4+2]), m.Field_4)
+}
+
+func WriteStorageServerInterface(obj *wire.ObjectWriter, parentOffset int, watchValue [16]byte, field_4 bool) {
+	m := StorageServerInterface{WatchValue: watchValue, Field_4: field_4}
+	obj.WriteStruct(parentOffset, StorageServerInterfaceVTable, 8, m.MarshalInto)
 }

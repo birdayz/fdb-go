@@ -807,6 +807,14 @@ func (o *ObjectWriter) WriteUID(vtableOffset int, v [16]byte) {
 	copy(o.object[vtableOffset:], v[:])
 }
 
+// UIDFromParts constructs a [16]byte UID from two uint64 halves (little-endian).
+func UIDFromParts(first, second uint64) [16]byte {
+	var uid [16]byte
+	binary.LittleEndian.PutUint64(uid[:8], first)
+	binary.LittleEndian.PutUint64(uid[8:], second)
+	return uid
+}
+
 // --- Out-of-line data writers ---
 
 func (o *ObjectWriter) WriteBytes(vtableOffset int, data []byte) {

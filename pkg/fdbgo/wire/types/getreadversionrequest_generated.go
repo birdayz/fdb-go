@@ -80,6 +80,11 @@ func (m *GetReadVersionRequest) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt64(int(vt[GetReadVersionRequestSlotMaxVersion+2]), m.MaxVersion)
 }
 
+func WriteGetReadVersionRequest(obj *wire.ObjectWriter, parentOffset int, transactionCount uint32, flags uint32, tags []byte, maxVersion int64) {
+	m := GetReadVersionRequest{TransactionCount: transactionCount, Flags: flags, Tags: tags, MaxVersion: maxVersion}
+	obj.WriteStruct(parentOffset, GetReadVersionRequestVTable, 8, m.MarshalInto)
+}
+
 var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
 	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
 )

@@ -6,9 +6,9 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 // ReplyPromise fields:
 //
-//	slot 0: field_0 — scalar, size=16, align=8
+//	slot 0: token — scalar, size=16, align=8
 const (
-	ReplyPromiseSlotField_0 = 0
+	ReplyPromiseSlotToken = 0
 )
 
 var ReplyPromiseVTable = wire.VTable{6, 20, 4}
@@ -21,7 +21,7 @@ var ReplyPromiseVTableClosure = []wire.VTable{
 }
 
 type ReplyPromise struct {
-	Field_0 []byte // slot 0, ReadBytes
+	Token [16]byte // slot 0, ReadUID
 }
 
 func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
@@ -29,15 +29,20 @@ func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(ReplyPromiseSlotField_0) {
-		m.Field_0 = r.ReadBytes(ReplyPromiseSlotField_0)
+	if r.FieldPresent(ReplyPromiseSlotToken) {
+		m.Token = r.ReadUID(ReplyPromiseSlotToken)
 	}
 	return nil
 }
 
 func (m *ReplyPromise) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ReplyPromiseVTable
-	obj.WriteBytes(int(vt[ReplyPromiseSlotField_0+2]), m.Field_0)
+	obj.WriteUID(int(vt[ReplyPromiseSlotToken+2]), m.Token)
+}
+
+func WriteReplyPromise(obj *wire.ObjectWriter, parentOffset int, token [16]byte) {
+	m := ReplyPromise{Token: token}
+	obj.WriteStruct(parentOffset, ReplyPromiseVTable, 8, m.MarshalInto)
 }
 
 var ReplyPromiseTemplate = wire.NewMessageTemplate(

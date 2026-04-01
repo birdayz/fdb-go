@@ -15,6 +15,6 @@ func MarshalGetReadVersionRequest(
 			obj.WriteUint32(int(vt[GetReadVersionRequestSlotTransactionCount+2]), transactionCount)
 			obj.WriteUint32(int(vt[GetReadVersionRequestSlotFlags+2]), flags)
 			obj.WriteInt64(int(vt[GetReadVersionRequestSlotMaxVersion+2]), maxVersion)
-			WriteReplyPromise(obj, int(vt[GetReadVersionRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[GetReadVersionRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 		})
 }

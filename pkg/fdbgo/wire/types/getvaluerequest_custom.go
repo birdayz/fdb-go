@@ -18,7 +18,7 @@ func MarshalGetValueRequest(
 		func(obj *wire.ObjectWriter) {
 			WriteTenantInfo(obj, int(vt[GetValueRequestSlotTenantInfo+2]), tenantId)
 			obj.WriteStruct(int(vt[GetValueRequestSlotSpanContext+2]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-			WriteReplyPromise(obj, int(vt[GetValueRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[GetValueRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 			obj.WriteInt64(int(vt[GetValueRequestSlotVersion+2]), version)
 			obj.WriteBytes(int(vt[GetValueRequestSlotKey+2]), key)
 			obj.WriteBytes(int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), emptyVersionVector)

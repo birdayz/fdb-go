@@ -15,7 +15,7 @@ func MarshalOpenDatabaseCoordRequest(
 			// knownClientInfoID: UID all zeros (inline 16 bytes)
 			obj.WriteUint64(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]), 0)
 			obj.WriteUint64(int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2])+8, 0)
-			WriteReplyPromise(obj, int(vt[OpenDatabaseCoordRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[OpenDatabaseCoordRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 			obj.WriteBytes(int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), []byte(clusterKey))
 			obj.WriteBool(int(vt[OpenDatabaseCoordRequestSlotInternal+2]), internal)
 		})

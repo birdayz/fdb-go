@@ -88,7 +88,11 @@ func (m *GetKeyServerLocationsRequest) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt32(int(vt[GetKeyServerLocationsRequestSlotLimit+2]), m.Limit)
 	obj.WriteBool(int(vt[GetKeyServerLocationsRequestSlotReverse+2]), m.Reverse)
 	obj.WriteInt64(int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), m.MinTenantVersion)
-	obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotArena+2]), m.Arena)
+}
+
+func WriteGetKeyServerLocationsRequest(obj *wire.ObjectWriter, parentOffset int, begin []byte, limit int32, reverse bool, minTenantVersion int64) {
+	m := GetKeyServerLocationsRequest{Begin: begin, Limit: limit, Reverse: reverse, MinTenantVersion: minTenantVersion}
+	obj.WriteStruct(parentOffset, GetKeyServerLocationsRequestVTable, 8, m.MarshalInto)
 }
 
 var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(

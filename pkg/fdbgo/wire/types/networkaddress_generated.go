@@ -59,6 +59,11 @@ func (m *NetworkAddress) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[NetworkAddressSlotField_3+2]), m.Field_3)
 }
 
+func WriteNetworkAddress(obj *wire.ObjectWriter, parentOffset int, field_1 uint16, field_2 uint16, field_3 bool) {
+	m := NetworkAddress{Field_1: field_1, Field_2: field_2, Field_3: field_3}
+	obj.WriteStruct(parentOffset, NetworkAddressVTable, 4, m.MarshalInto)
+}
+
 var NetworkAddressTemplate = wire.NewMessageTemplate(
 	NetworkAddressFileID, NetworkAddressVTable, 4, NetworkAddressVTableClosure,
 )

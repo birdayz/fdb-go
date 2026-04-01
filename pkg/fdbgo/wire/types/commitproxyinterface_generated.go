@@ -46,3 +46,8 @@ func (m *CommitProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitProxyInterfaceVTable
 	obj.WriteBool(int(vt[CommitProxyInterfaceSlotProvisional+2]), m.Provisional)
 }
+
+func WriteCommitProxyInterface(obj *wire.ObjectWriter, parentOffset int, provisional bool) {
+	m := CommitProxyInterface{Provisional: provisional}
+	obj.WriteStruct(parentOffset, CommitProxyInterfaceVTable, 4, m.MarshalInto)
+}

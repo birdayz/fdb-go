@@ -64,6 +64,16 @@ func (m *GetValueReply) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[GetValueReplySlotCached+2]), m.Cached)
 }
 
+func WriteGetValueReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, cached bool) {
+	m := GetValueReply{Penalty: penalty, Cached: cached}
+	obj.WriteStruct(parentOffset, GetValueReplyVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetValueReply(penalty float64, cached bool) []byte {
+	m := GetValueReply{Penalty: penalty, Cached: cached}
+	return wire.MarshalStructBlob(GetValueReplyVTable, m.MarshalInto)
+}
+
 func (m *GetValueReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetValueReplyTemplate, func(obj *wire.ObjectWriter) {

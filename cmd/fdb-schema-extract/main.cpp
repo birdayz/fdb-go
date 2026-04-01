@@ -118,6 +118,11 @@ template<> struct GoTypeMapping<double> {
     static constexpr const char* reader = "ReadFloat64";
     static constexpr const char* writer = "WriteFloat64";
 };
+template<> struct GoTypeMapping<UID> {
+    static constexpr const char* goType = "[16]byte";
+    static constexpr const char* reader = "ReadUID";
+    static constexpr const char* writer = "WriteUID";
+};
 
 struct TypeVisitor {
     static constexpr bool isDeserializing = false;
@@ -283,9 +288,12 @@ struct GoEmitter {
             if (paren != std::string::npos && endParen != std::string::npos)
                 s = s.substr(paren + 1, endParen - paren - 1);
         }
-        // Take only the part after last "::".
+        // Take only the part after last "::" or ".".
+        // Handles "Base::field", "v.tenantId", "p.first".
         auto colonPos = s.rfind("::");
         if (colonPos != std::string::npos) s = s.substr(colonPos + 2);
+        auto dotPos = s.rfind('.');
+        if (dotPos != std::string::npos) s = s.substr(dotPos + 1);
         // Strip leading underscores / m_ prefix.
         if (s.size() > 2 && s[0] == 'm' && s[1] == '_') s = s.substr(2);
         // Remove any non-alphanumeric chars.
@@ -374,18 +382,27 @@ struct GoEmitter {
     // Emit MarshalInto — writes all non-optional, non-struct fields into an ObjectWriter.
     // Used by WriteStruct callers and MarshalStructBlob.
     void emitMarshalInto(const char* typeName, const std::vector<FieldInfo>& fields) {
+        // Check if there are any writable fields.
+        bool hasWritable = false;
+        for (auto& fi : fields) {
+            if (strcmp(fi.trait, "union_like") != 0 &&
+                strcmp(fi.trait, "serialize_member") != 0 &&
+                strcmp(fi.trait, "struct_like") != 0 &&
+                fi.size > 0) {
+                hasWritable = true;
+                break;
+            }
+        }
         fprintf(f, "func (m *%s) MarshalInto(obj *wire.ObjectWriter) {\n", typeName);
-        fprintf(f, "\tvt := %sVTable\n", typeName);
+        if (hasWritable) fprintf(f, "\tvt := %sVTable\n", typeName);
 
         int readerSlot = 0;
         for (auto& fi : fields) {
             if (strcmp(fi.trait, "union_like") == 0) {
-                // Optional: skip (needs conditional write logic).
                 readerSlot += 2;
                 continue;
             }
-            if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
-                // Nested struct: skip.
+            if (isSkippedField(fi)) {
                 readerSlot++;
                 continue;
             }
@@ -396,6 +413,96 @@ struct GoEmitter {
                     fi.writerMethod, slotConst.c_str(), goName.c_str());
             readerSlot++;
         }
+        fprintf(f, "}\n\n");
+    }
+
+    // Make a safe Go parameter name (lowercase first letter, avoid keywords).
+    static std::string safeParamName(const std::string& goName) {
+        std::string p = goName;
+        if (!p.empty()) p[0] = tolower(p[0]);
+        // Avoid Go reserved words.
+        if (p == "type" || p == "range" || p == "error" || p == "func" ||
+            p == "map" || p == "chan" || p == "var" || p == "select" ||
+            p == "default" || p == "interface" || p == "struct" || p == "package")
+            p += "_";
+        return p;
+    }
+
+    static bool isSkippedField(const FieldInfo& fi) {
+        if (strcmp(fi.trait, "union_like") == 0) return true;
+        if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) return true;
+        if (fi.size == 0) return true; // zero-size (Arena)
+        return false;
+    }
+
+    // Emit MarshalStructBlob — for types used as vector elements.
+    // Produces: func MarshalXxx(field1, field2, ...) []byte
+    void emitMarshalStructBlob(const char* typeName, const std::vector<FieldInfo>& fields) {
+        // Compute max field alignment.
+        int maxAlign = 4;
+        for (auto& fi : fields)
+            if ((int)fi.align > maxAlign) maxAlign = fi.align;
+
+        // Build parameter list from struct fields.
+        fprintf(f, "func Marshal%s(", typeName);
+        bool first = true;
+        for (auto& fi : fields) {
+            if (isSkippedField(fi)) continue;
+            std::string goName = sanitizeGoName(fi.name);
+            // Lowercase first letter for parameter name.
+            std::string paramName = safeParamName(goName);
+
+            if (!first) fprintf(f, ", ");
+            fprintf(f, "%s %s", paramName.c_str(), fi.goType);
+            first = false;
+        }
+        fprintf(f, ") []byte {\n");
+        fprintf(f, "\tm := %s{", typeName);
+        first = true;
+        for (auto& fi : fields) {
+            if (isSkippedField(fi)) continue;
+            std::string goName = sanitizeGoName(fi.name);
+            std::string paramName = safeParamName(goName);
+
+            if (!first) fprintf(f, ", ");
+            fprintf(f, "%s: %s", goName.c_str(), paramName.c_str());
+            first = false;
+        }
+        fprintf(f, "}\n");
+        fprintf(f, "\treturn wire.MarshalStructBlob(%sVTable, m.MarshalInto)\n", typeName);
+        fprintf(f, "}\n\n");
+    }
+
+    // Emit WriteNested — helper for writing this type as a nested struct in a parent.
+    // Produces: func WriteXxx(obj *ObjectWriter, parentOffset int, field1, field2, ...)
+    void emitWriteNested(const char* typeName, const std::vector<FieldInfo>& fields) {
+        int maxAlign = 4;
+        for (auto& fi : fields)
+            if ((int)fi.align > maxAlign) maxAlign = fi.align;
+
+        fprintf(f, "func Write%s(obj *wire.ObjectWriter, parentOffset int", typeName);
+        for (auto& fi : fields) {
+            if (isSkippedField(fi)) continue;
+            std::string goName = sanitizeGoName(fi.name);
+            std::string paramName = safeParamName(goName);
+
+            fprintf(f, ", %s %s", paramName.c_str(), fi.goType);
+        }
+        fprintf(f, ") {\n");
+        fprintf(f, "\tm := %s{", typeName);
+        bool first = true;
+        for (auto& fi : fields) {
+            if (isSkippedField(fi)) continue;
+            std::string goName = sanitizeGoName(fi.name);
+            std::string paramName = safeParamName(goName);
+
+            if (!first) fprintf(f, ", ");
+            fprintf(f, "%s: %s", goName.c_str(), paramName.c_str());
+            first = false;
+        }
+        fprintf(f, "}\n");
+        fprintf(f, "\tobj.WriteStruct(parentOffset, %sVTable, %d, m.MarshalInto)\n",
+                typeName, maxAlign);
         fprintf(f, "}\n\n");
     }
 
@@ -425,7 +532,7 @@ struct GoEmitter {
                 readerSlot += 2;
                 continue;
             }
-            if (strcmp(fi.trait, "serialize_member") == 0 || strcmp(fi.trait, "struct_like") == 0) {
+            if (isSkippedField(fi)) {
                 readerSlot++;
                 continue;
             }
@@ -492,10 +599,20 @@ void extractType(const char* outDir, const char* name) {
         e.emitFileID(name, getFileId<T>());
         e.emitClosure(name, closure);
 
-        // All types get struct + UnmarshalFDB + MarshalInto.
+        // All types get struct + UnmarshalFDB + MarshalInto + helpers.
         e.emitStruct(name, visitor.fields);
         e.emitUnmarshalFDB(name, visitor.fields);
         e.emitMarshalInto(name, visitor.fields);
+        // WriteNested for ALL types — any type can be used as a nested struct.
+        e.emitWriteNested(name, visitor.fields);
+        // MarshalStructBlob for simple types and nested types (no file_identifier).
+        // Skip for custom types with file_identifier — they have hand-written
+        // MarshalXxx in _custom.go that would conflict.
+        if constexpr (EmitStructs) {
+            e.emitMarshalStructBlob(name, visitor.fields);
+        } else if (getFileId<T>() == 0) {
+            e.emitMarshalStructBlob(name, visitor.fields);
+        }
 
         if constexpr (EmitStructs) {
             // Simple type: also emit MarshalFDB in _generated.go.

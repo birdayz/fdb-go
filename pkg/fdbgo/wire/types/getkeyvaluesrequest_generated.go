@@ -106,7 +106,11 @@ func (m *GetKeyValuesRequest) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimit+2]), m.Limit)
 	obj.WriteInt32(int(vt[GetKeyValuesRequestSlotLimitBytes+2]), m.LimitBytes)
 	obj.WriteBytes(int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), m.SsLatestCommitVersions)
-	obj.WriteBytes(int(vt[GetKeyValuesRequestSlotArena+2]), m.Arena)
+}
+
+func WriteGetKeyValuesRequest(obj *wire.ObjectWriter, parentOffset int, version int64, limit int32, limitBytes int32, ssLatestCommitVersions []byte) {
+	m := GetKeyValuesRequest{Version: version, Limit: limit, LimitBytes: limitBytes, SsLatestCommitVersions: ssLatestCommitVersions}
+	obj.WriteStruct(parentOffset, GetKeyValuesRequestVTable, 8, m.MarshalInto)
 }
 
 var GetKeyValuesRequestTemplate = wire.NewMessageTemplate(

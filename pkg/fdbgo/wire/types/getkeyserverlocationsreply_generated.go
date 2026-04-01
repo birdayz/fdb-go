@@ -66,7 +66,16 @@ func (m *GetKeyServerLocationsReply) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResults+2]), m.Results)
 	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
 	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
-	obj.WriteBytes(int(vt[GetKeyServerLocationsReplySlotArena+2]), m.Arena)
+}
+
+func WriteGetKeyServerLocationsReply(obj *wire.ObjectWriter, parentOffset int, results []byte, resultsTssMapping []byte, resultsTagMapping []byte) {
+	m := GetKeyServerLocationsReply{Results: results, ResultsTssMapping: resultsTssMapping, ResultsTagMapping: resultsTagMapping}
+	obj.WriteStruct(parentOffset, GetKeyServerLocationsReplyVTable, 4, m.MarshalInto)
+}
+
+func MarshalGetKeyServerLocationsReply(results []byte, resultsTssMapping []byte, resultsTagMapping []byte) []byte {
+	m := GetKeyServerLocationsReply{Results: results, ResultsTssMapping: resultsTssMapping, ResultsTagMapping: resultsTagMapping}
+	return wire.MarshalStructBlob(GetKeyServerLocationsReplyVTable, m.MarshalInto)
 }
 
 func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
@@ -75,7 +84,6 @@ func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]), m.Results)
 		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]), m.ResultsTssMapping)
 		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]), m.ResultsTagMapping)
-		obj.WriteBytes(int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotArena+2]), m.Arena)
 	})
 }
 

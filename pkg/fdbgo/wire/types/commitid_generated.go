@@ -63,6 +63,16 @@ func (m *CommitID) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteUint16(int(vt[CommitIDSlotTxnBatchId+2]), m.TxnBatchId)
 }
 
+func WriteCommitID(obj *wire.ObjectWriter, parentOffset int, version int64, txnBatchId uint16) {
+	m := CommitID{Version: version, TxnBatchId: txnBatchId}
+	obj.WriteStruct(parentOffset, CommitIDVTable, 8, m.MarshalInto)
+}
+
+func MarshalCommitID(version int64, txnBatchId uint16) []byte {
+	m := CommitID{Version: version, TxnBatchId: txnBatchId}
+	return wire.MarshalStructBlob(CommitIDVTable, m.MarshalInto)
+}
+
 func (m *CommitID) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(CommitIDTemplate, func(obj *wire.ObjectWriter) {

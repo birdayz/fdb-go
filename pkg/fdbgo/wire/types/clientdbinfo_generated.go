@@ -47,19 +47,19 @@ var ClientDBInfoVTableClosure = []wire.VTable{
 }
 
 type ClientDBInfo struct {
-	GrvProxies    []byte // slot 0, ReadBytes
-	CommitProxies []byte // slot 1, ReadBytes
-	Id            []byte // slot 2, ReadBytes
-	HasForward    bool   // slot 3, Optional, presence flag
-	Forward       []byte // slot 4, Optional, ReadBytes
-	History       []byte // slot 5, ReadBytes
+	GrvProxies    []byte   // slot 0, ReadBytes
+	CommitProxies []byte   // slot 1, ReadBytes
+	Id            [16]byte // slot 2, ReadUID
+	HasForward    bool     // slot 3, Optional, presence flag
+	Forward       []byte   // slot 4, Optional, ReadBytes
+	History       []byte   // slot 5, ReadBytes
 	// TenantMode: nested struct at slot 6 — use ReadNestedReader(ClientDBInfoSlotTenantMode)
-	HasEncryptKeyProxy bool   // slot 7, Optional, presence flag
-	EncryptKeyProxy    []byte // slot 8, Optional, ReadBytes
-	ClusterId          []byte // slot 9, ReadBytes
-	ClusterType        []byte // slot 10, ReadBytes
-	HasMetaclusterName bool   // slot 11, Optional, presence flag
-	MetaclusterName    []byte // slot 12, Optional, ReadBytes
+	HasEncryptKeyProxy bool     // slot 7, Optional, presence flag
+	EncryptKeyProxy    []byte   // slot 8, Optional, ReadBytes
+	ClusterId          [16]byte // slot 9, ReadUID
+	ClusterType        []byte   // slot 10, ReadBytes
+	HasMetaclusterName bool     // slot 11, Optional, presence flag
+	MetaclusterName    []byte   // slot 12, Optional, ReadBytes
 }
 
 func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
@@ -74,7 +74,7 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
 	}
 	if r.FieldPresent(ClientDBInfoSlotId) {
-		m.Id = r.ReadBytes(ClientDBInfoSlotId)
+		m.Id = r.ReadUID(ClientDBInfoSlotId)
 	}
 	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
 		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
@@ -89,7 +89,7 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 		m.HasEncryptKeyProxy = true
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterId) {
-		m.ClusterId = r.ReadBytes(ClientDBInfoSlotClusterId)
+		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterType) {
 		m.ClusterType = r.ReadBytes(ClientDBInfoSlotClusterType)
@@ -105,10 +105,15 @@ func (m *ClientDBInfo) MarshalInto(obj *wire.ObjectWriter) {
 	vt := ClientDBInfoVTable
 	obj.WriteBytes(int(vt[ClientDBInfoSlotGrvProxies+2]), m.GrvProxies)
 	obj.WriteBytes(int(vt[ClientDBInfoSlotCommitProxies+2]), m.CommitProxies)
-	obj.WriteBytes(int(vt[ClientDBInfoSlotId+2]), m.Id)
+	obj.WriteUID(int(vt[ClientDBInfoSlotId+2]), m.Id)
 	obj.WriteBytes(int(vt[ClientDBInfoSlotHistory+2]), m.History)
-	obj.WriteBytes(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
+	obj.WriteUID(int(vt[ClientDBInfoSlotClusterId+2]), m.ClusterId)
 	obj.WriteBytes(int(vt[ClientDBInfoSlotClusterType+2]), m.ClusterType)
+}
+
+func WriteClientDBInfo(obj *wire.ObjectWriter, parentOffset int, grvProxies []byte, commitProxies []byte, id [16]byte, history []byte, clusterId [16]byte, clusterType []byte) {
+	m := ClientDBInfo{GrvProxies: grvProxies, CommitProxies: commitProxies, Id: id, History: history, ClusterId: clusterId, ClusterType: clusterType}
+	obj.WriteStruct(parentOffset, ClientDBInfoVTable, 8, m.MarshalInto)
 }
 
 var ClientDBInfoTemplate = wire.NewMessageTemplate(

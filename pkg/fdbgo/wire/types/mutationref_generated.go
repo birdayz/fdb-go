@@ -6,21 +6,21 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 // MutationRef fields:
 //
-//	slot 0: field_0 — scalar, size=1, align=1
-//	slot 1: field_1 — dynamic_size, size=4, align=4, indirection
-//	slot 2: field_2 — dynamic_size, size=4, align=4, indirection
+//	slot 0: mutType — scalar, size=1, align=1
+//	slot 1: param1 — dynamic_size, size=4, align=4, indirection
+//	slot 2: param2 — dynamic_size, size=4, align=4, indirection
 const (
-	MutationRefSlotField_0 = 0
-	MutationRefSlotField_1 = 1
-	MutationRefSlotField_2 = 2
+	MutationRefSlotMutType = 0
+	MutationRefSlotParam1  = 1
+	MutationRefSlotParam2  = 2
 )
 
 var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
 
 type MutationRef struct {
-	Field_0 uint8  // slot 0, ReadUint8
-	Field_1 []byte // slot 1, ReadBytes
-	Field_2 []byte // slot 2, ReadBytes
+	MutType uint8  // slot 0, ReadUint8
+	Param1  []byte // slot 1, ReadBytes
+	Param2  []byte // slot 2, ReadBytes
 }
 
 func (m *MutationRef) UnmarshalFDB(data []byte) error {
@@ -28,21 +28,31 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(MutationRefSlotField_0) {
-		m.Field_0 = r.ReadUint8(MutationRefSlotField_0)
+	if r.FieldPresent(MutationRefSlotMutType) {
+		m.MutType = r.ReadUint8(MutationRefSlotMutType)
 	}
-	if r.FieldPresent(MutationRefSlotField_1) {
-		m.Field_1 = r.ReadBytes(MutationRefSlotField_1)
+	if r.FieldPresent(MutationRefSlotParam1) {
+		m.Param1 = r.ReadBytes(MutationRefSlotParam1)
 	}
-	if r.FieldPresent(MutationRefSlotField_2) {
-		m.Field_2 = r.ReadBytes(MutationRefSlotField_2)
+	if r.FieldPresent(MutationRefSlotParam2) {
+		m.Param2 = r.ReadBytes(MutationRefSlotParam2)
 	}
 	return nil
 }
 
 func (m *MutationRef) MarshalInto(obj *wire.ObjectWriter) {
 	vt := MutationRefVTable
-	obj.WriteUint8(int(vt[MutationRefSlotField_0+2]), m.Field_0)
-	obj.WriteBytes(int(vt[MutationRefSlotField_1+2]), m.Field_1)
-	obj.WriteBytes(int(vt[MutationRefSlotField_2+2]), m.Field_2)
+	obj.WriteUint8(int(vt[MutationRefSlotMutType+2]), m.MutType)
+	obj.WriteBytes(int(vt[MutationRefSlotParam1+2]), m.Param1)
+	obj.WriteBytes(int(vt[MutationRefSlotParam2+2]), m.Param2)
+}
+
+func WriteMutationRef(obj *wire.ObjectWriter, parentOffset int, mutType uint8, param1 []byte, param2 []byte) {
+	m := MutationRef{MutType: mutType, Param1: param1, Param2: param2}
+	obj.WriteStruct(parentOffset, MutationRefVTable, 4, m.MarshalInto)
+}
+
+func MarshalMutationRef(mutType uint8, param1 []byte, param2 []byte) []byte {
+	m := MutationRef{MutType: mutType, Param1: param1, Param2: param2}
+	return wire.MarshalStructBlob(MutationRefVTable, m.MarshalInto)
 }

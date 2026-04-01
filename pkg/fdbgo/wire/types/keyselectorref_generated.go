@@ -46,3 +46,13 @@ func (m *KeySelectorRef) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[KeySelectorRefSlotOrEqual+2]), m.OrEqual)
 	obj.WriteInt32(int(vt[KeySelectorRefSlotOffset+2]), m.Offset)
 }
+
+func WriteKeySelectorRef(obj *wire.ObjectWriter, parentOffset int, key []byte, orEqual bool, offset int32) {
+	m := KeySelectorRef{Key: key, OrEqual: orEqual, Offset: offset}
+	obj.WriteStruct(parentOffset, KeySelectorRefVTable, 4, m.MarshalInto)
+}
+
+func MarshalKeySelectorRef(key []byte, orEqual bool, offset int32) []byte {
+	m := KeySelectorRef{Key: key, OrEqual: orEqual, Offset: offset}
+	return wire.MarshalStructBlob(KeySelectorRefVTable, m.MarshalInto)
+}

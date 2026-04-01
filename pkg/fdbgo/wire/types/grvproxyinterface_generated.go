@@ -46,3 +46,8 @@ func (m *GrvProxyInterface) MarshalInto(obj *wire.ObjectWriter) {
 	vt := GrvProxyInterfaceVTable
 	obj.WriteBool(int(vt[GrvProxyInterfaceSlotProvisional+2]), m.Provisional)
 }
+
+func WriteGrvProxyInterface(obj *wire.ObjectWriter, parentOffset int, provisional bool) {
+	m := GrvProxyInterface{Provisional: provisional}
+	obj.WriteStruct(parentOffset, GrvProxyInterfaceVTable, 4, m.MarshalInto)
+}

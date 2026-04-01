@@ -22,7 +22,7 @@ func MarshalCommitTransactionRequest(
 		func(obj *wire.ObjectWriter) {
 			WriteTenantInfo(obj, int(vt[CommitTransactionRequestSlotTenantInfo+2]), tenantId)
 			obj.WriteStruct(int(vt[CommitTransactionRequestSlotSpanContext+2]), SpanContextVTable, 8, func(inner *wire.ObjectWriter) {})
-			WriteReplyPromise(obj, int(vt[CommitTransactionRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[CommitTransactionRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 
 			// CommitTransactionRef
 			obj.WriteStruct(int(vt[CommitTransactionRequestSlotTransaction+2]), ctVT, 8, func(inner *wire.ObjectWriter) {

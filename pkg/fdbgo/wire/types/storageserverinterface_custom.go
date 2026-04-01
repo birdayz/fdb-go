@@ -1,8 +1,8 @@
 package types
 
-// StorageServerInterface has custom serialize() logic.
-// Port the C++ serialize() method to Go.
-// Use the generated struct, slot constants, and template from storageserverinterface_generated.go.
+// StorageServerInterface has custom MarshalFDB logic.
+// UnmarshalFDB and MarshalInto are generated in storageserverinterface_generated.go.
+// Fill in MarshalFDB below (use the generated Template and MarshalInto).
 
 func (m *StorageServerInterface) MarshalFDB() []byte {
 	panic("StorageServerInterface.MarshalFDB not implemented")

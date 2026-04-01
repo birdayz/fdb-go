@@ -62,3 +62,13 @@ func (m *ReadOptions) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[ReadOptionsSlotCacheResult+2]), m.CacheResult)
 	obj.WriteBool(int(vt[ReadOptionsSlotLockAware+2]), m.LockAware)
 }
+
+func WriteReadOptions(obj *wire.ObjectWriter, parentOffset int, type_ []byte, cacheResult bool, lockAware bool) {
+	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
+	obj.WriteStruct(parentOffset, ReadOptionsVTable, 4, m.MarshalInto)
+}
+
+func MarshalReadOptions(type_ []byte, cacheResult bool, lockAware bool) []byte {
+	m := ReadOptions{Type: type_, CacheResult: cacheResult, LockAware: lockAware}
+	return wire.MarshalStructBlob(ReadOptionsVTable, m.MarshalInto)
+}

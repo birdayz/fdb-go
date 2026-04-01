@@ -1,8 +1,8 @@
 package types
 
-// GrvProxyInterface has custom serialize() logic.
-// Port the C++ serialize() method to Go.
-// Use the generated struct, slot constants, and template from grvproxyinterface_generated.go.
+// GrvProxyInterface has custom MarshalFDB logic.
+// UnmarshalFDB and MarshalInto are generated in grvproxyinterface_generated.go.
+// Fill in MarshalFDB below (use the generated Template and MarshalInto).
 
 func (m *GrvProxyInterface) MarshalFDB() []byte {
 	panic("GrvProxyInterface.MarshalFDB not implemented")

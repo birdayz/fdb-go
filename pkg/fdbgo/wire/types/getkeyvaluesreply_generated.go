@@ -81,7 +81,16 @@ func (m *GetKeyValuesReply) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteInt64(int(vt[GetKeyValuesReplySlotVersion+2]), m.Version)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotMore+2]), m.More)
 	obj.WriteBool(int(vt[GetKeyValuesReplySlotCached+2]), m.Cached)
-	obj.WriteBytes(int(vt[GetKeyValuesReplySlotArena+2]), m.Arena)
+}
+
+func WriteGetKeyValuesReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, data []byte, version int64, more bool, cached bool) {
+	m := GetKeyValuesReply{Penalty: penalty, Data: data, Version: version, More: more, Cached: cached}
+	obj.WriteStruct(parentOffset, GetKeyValuesReplyVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetKeyValuesReply(penalty float64, data []byte, version int64, more bool, cached bool) []byte {
+	m := GetKeyValuesReply{Penalty: penalty, Data: data, Version: version, More: more, Cached: cached}
+	return wire.MarshalStructBlob(GetKeyValuesReplyVTable, m.MarshalInto)
 }
 
 func (m *GetKeyValuesReply) MarshalFDB() []byte {
@@ -92,7 +101,6 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 		obj.WriteInt64(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotVersion+2]), m.Version)
 		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotMore+2]), m.More)
 		obj.WriteBool(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotCached+2]), m.Cached)
-		obj.WriteBytes(int(GetKeyValuesReplyVTable[GetKeyValuesReplySlotArena+2]), m.Arena)
 	})
 }
 

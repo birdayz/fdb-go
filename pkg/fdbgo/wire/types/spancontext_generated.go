@@ -18,9 +18,9 @@ const (
 var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
 
 type SpanContext struct {
-	TraceID []byte // slot 0, ReadBytes
-	SpanID  uint64 // slot 1, ReadUint64
-	Flags   []byte // slot 2, ReadBytes
+	TraceID [16]byte // slot 0, ReadUID
+	SpanID  uint64   // slot 1, ReadUint64
+	Flags   []byte   // slot 2, ReadBytes
 }
 
 func (m *SpanContext) UnmarshalFDB(data []byte) error {
@@ -29,7 +29,7 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 		return err
 	}
 	if r.FieldPresent(SpanContextSlotTraceID) {
-		m.TraceID = r.ReadBytes(SpanContextSlotTraceID)
+		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
 	}
 	if r.FieldPresent(SpanContextSlotSpanID) {
 		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
@@ -42,7 +42,17 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 
 func (m *SpanContext) MarshalInto(obj *wire.ObjectWriter) {
 	vt := SpanContextVTable
-	obj.WriteBytes(int(vt[SpanContextSlotTraceID+2]), m.TraceID)
+	obj.WriteUID(int(vt[SpanContextSlotTraceID+2]), m.TraceID)
 	obj.WriteUint64(int(vt[SpanContextSlotSpanID+2]), m.SpanID)
 	obj.WriteBytes(int(vt[SpanContextSlotFlags+2]), m.Flags)
+}
+
+func WriteSpanContext(obj *wire.ObjectWriter, parentOffset int, traceID [16]byte, spanID uint64, flags []byte) {
+	m := SpanContext{TraceID: traceID, SpanID: spanID, Flags: flags}
+	obj.WriteStruct(parentOffset, SpanContextVTable, 8, m.MarshalInto)
+}
+
+func MarshalSpanContext(traceID [16]byte, spanID uint64, flags []byte) []byte {
+	m := SpanContext{TraceID: traceID, SpanID: spanID, Flags: flags}
+	return wire.MarshalStructBlob(SpanContextVTable, m.MarshalInto)
 }

@@ -39,3 +39,13 @@ func (m *KeyRangeRef) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBytes(int(vt[KeyRangeRefSlotBegin+2]), m.Begin)
 	obj.WriteBytes(int(vt[KeyRangeRefSlotEnd+2]), m.End)
 }
+
+func WriteKeyRangeRef(obj *wire.ObjectWriter, parentOffset int, begin []byte, end []byte) {
+	m := KeyRangeRef{Begin: begin, End: end}
+	obj.WriteStruct(parentOffset, KeyRangeRefVTable, 4, m.MarshalInto)
+}
+
+func MarshalKeyRangeRef(begin []byte, end []byte) []byte {
+	m := KeyRangeRef{Begin: begin, End: end}
+	return wire.MarshalStructBlob(KeyRangeRefVTable, m.MarshalInto)
+}

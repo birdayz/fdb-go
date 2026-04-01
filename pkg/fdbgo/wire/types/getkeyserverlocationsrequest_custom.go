@@ -14,7 +14,7 @@ func MarshalGetKeyServerLocationsRequest(
 		func(obj *wire.ObjectWriter) {
 			obj.WriteBytes(int(vt[GetKeyServerLocationsRequestSlotBegin+2]), begin)
 			obj.WriteInt32(int(vt[GetKeyServerLocationsRequestSlotLimit+2]), limit)
-			WriteReplyPromise(obj, int(vt[GetKeyServerLocationsRequestSlotReply+2]), replyFirst, replySecond)
+			WriteReplyPromise(obj, int(vt[GetKeyServerLocationsRequestSlotReply+2]), wire.UIDFromParts(replyFirst, replySecond))
 			WriteTenantInfo(obj, int(vt[GetKeyServerLocationsRequestSlotTenant+2]), tenantId)
 			obj.WriteInt64(int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]), minTenantVersion)
 		})

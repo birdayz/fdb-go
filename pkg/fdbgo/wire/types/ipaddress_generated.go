@@ -31,5 +31,14 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 }
 
 func (m *IPAddress) MarshalInto(obj *wire.ObjectWriter) {
-	_ = IPAddressVTable
+}
+
+func WriteIPAddress(obj *wire.ObjectWriter, parentOffset int) {
+	m := IPAddress{}
+	obj.WriteStruct(parentOffset, IPAddressVTable, 4, m.MarshalInto)
+}
+
+func MarshalIPAddress() []byte {
+	m := IPAddress{}
+	return wire.MarshalStructBlob(IPAddressVTable, m.MarshalInto)
 }

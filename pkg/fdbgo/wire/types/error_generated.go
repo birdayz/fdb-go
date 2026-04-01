@@ -40,6 +40,11 @@ func (m *Error) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteUint16(int(vt[ErrorSlotError_code+2]), m.Error_code)
 }
 
+func WriteError(obj *wire.ObjectWriter, parentOffset int, error_code uint16) {
+	m := Error{Error_code: error_code}
+	obj.WriteStruct(parentOffset, ErrorVTable, 4, m.MarshalInto)
+}
+
 var ErrorTemplate = wire.NewMessageTemplate(
 	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
 )

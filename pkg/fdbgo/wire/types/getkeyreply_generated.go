@@ -61,6 +61,16 @@ func (m *GetKeyReply) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[GetKeyReplySlotCached+2]), m.Cached)
 }
 
+func WriteGetKeyReply(obj *wire.ObjectWriter, parentOffset int, penalty float64, cached bool) {
+	m := GetKeyReply{Penalty: penalty, Cached: cached}
+	obj.WriteStruct(parentOffset, GetKeyReplyVTable, 8, m.MarshalInto)
+}
+
+func MarshalGetKeyReply(penalty float64, cached bool) []byte {
+	m := GetKeyReply{Penalty: penalty, Cached: cached}
+	return wire.MarshalStructBlob(GetKeyReplyVTable, m.MarshalInto)
+}
+
 func (m *GetKeyReply) MarshalFDB() []byte {
 	w := wire.NewWriter(nil)
 	return w.WriteMessagePacked(GetKeyReplyTemplate, func(obj *wire.ObjectWriter) {

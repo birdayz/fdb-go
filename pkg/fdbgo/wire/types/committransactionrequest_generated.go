@@ -99,7 +99,11 @@ func (m *CommitTransactionRequest) MarshalInto(obj *wire.ObjectWriter) {
 	vt := CommitTransactionRequestVTable
 	obj.WriteUint32(int(vt[CommitTransactionRequestSlotFlags+2]), m.Flags)
 	obj.WriteBytes(int(vt[CommitTransactionRequestSlotIdempotencyId+2]), m.IdempotencyId)
-	obj.WriteBytes(int(vt[CommitTransactionRequestSlotArena+2]), m.Arena)
+}
+
+func WriteCommitTransactionRequest(obj *wire.ObjectWriter, parentOffset int, flags uint32, idempotencyId []byte) {
+	m := CommitTransactionRequest{Flags: flags, IdempotencyId: idempotencyId}
+	obj.WriteStruct(parentOffset, CommitTransactionRequestVTable, 4, m.MarshalInto)
 }
 
 var CommitTransactionRequestTemplate = wire.NewMessageTemplate(

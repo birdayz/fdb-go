@@ -1,8 +1,8 @@
 package types
 
-// Error has custom serialize() logic.
-// Port the C++ serialize() method to Go.
-// Use the generated struct, slot constants, and template from error_generated.go.
+// Error has custom MarshalFDB logic.
+// UnmarshalFDB and MarshalInto are generated in error_generated.go.
+// Fill in MarshalFDB below (use the generated Template and MarshalInto).
 
 func (m *Error) MarshalFDB() []byte {
 	panic("Error.MarshalFDB not implemented")

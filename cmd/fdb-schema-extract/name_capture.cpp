@@ -136,8 +136,12 @@ void captureAllNames() {
             }
         }
     }
-    // Error has a trivial serialize.
+    // Types with trivial, non-standard, or external serialize — manually specified names.
     g_names["Error"] = "error_code";
+    g_names["ReplyPromise"] = "token";
+    g_names["MutationRef"] = "mutType, param1, param2";
+    // TenantInfo: serialize is in serializable_traits<TenantInfo>, not inside struct body.
+    g_names["TenantInfo"] = "tenantId, token, arena";
 
     fprintf(stderr, "name_capture: captured %zu type names\n", g_names.size());
 }

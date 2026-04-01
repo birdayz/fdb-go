@@ -83,3 +83,13 @@ func (m *CommitTransactionRef) MarshalInto(obj *wire.ObjectWriter) {
 	obj.WriteBool(int(vt[CommitTransactionRefSlotField_4+2]), m.Field_4)
 	obj.WriteBool(int(vt[CommitTransactionRefSlotField_5+2]), m.Field_5)
 }
+
+func WriteCommitTransactionRef(obj *wire.ObjectWriter, parentOffset int, field_0 []byte, field_1 []byte, field_2 []byte, field_3 int64, field_4 bool, field_5 bool) {
+	m := CommitTransactionRef{Field_0: field_0, Field_1: field_1, Field_2: field_2, Field_3: field_3, Field_4: field_4, Field_5: field_5}
+	obj.WriteStruct(parentOffset, CommitTransactionRefVTable, 8, m.MarshalInto)
+}
+
+func MarshalCommitTransactionRef(field_0 []byte, field_1 []byte, field_2 []byte, field_3 int64, field_4 bool, field_5 bool) []byte {
+	m := CommitTransactionRef{Field_0: field_0, Field_1: field_1, Field_2: field_2, Field_3: field_3, Field_4: field_4, Field_5: field_5}
+	return wire.MarshalStructBlob(CommitTransactionRefVTable, m.MarshalInto)
+}
