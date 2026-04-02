@@ -54,7 +54,16 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
-# Regenerate FDB wire schema (Bazel, sandboxed)
+# Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
+# Uses Bazel-fetched FDB source + Docker (foundationdb/build image for cmake).
+# Docker caches cmake build in /tmp/fdb-schema-extract-build.
+generate-wire-types:
+    bash cmd/fdb-schema-extract/build.sh \
+        $$(bazelisk info output_base)/external/foundationdb+ \
+        pkg/fdbgo/wire/types
+    just gazelle
+
+# Regenerate FDB wire schema JSON files (Bazel, sandboxed)
 wire-schema:
     bazelisk build //cmd/fdb-wire-schema-generator:gen_schema
     rm -rf pkg/fdbgo/wire/schema

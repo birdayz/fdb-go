@@ -9,10 +9,10 @@ go_test(
         "@foundationdb//:bindingtester",
         "@foundationdb//:python_fdb",
     ],
+    tags = ["manual"],  # Don't run in just test — needs Docker image build, slow
     deps = [
         "//pkg/testcontainers/foundationdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//wait",
     ],
-    tags = ["manual"],  # Don't run in just test — needs Docker image build, slow
 )
