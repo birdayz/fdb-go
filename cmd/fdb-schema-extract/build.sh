@@ -42,6 +42,7 @@ docker run --rm \
 
         cp /work/main.cpp /fdb/schema_extract_main.cpp
         cp /work/extract.h /fdb/extract.h
+        touch /fdb/schema_extract_main.cpp /fdb/extract.h
 
         # Patches: disable binding tester + suppress warnings-as-errors.
         sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true

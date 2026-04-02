@@ -388,7 +388,7 @@ private:
                 fprintf(f, "\t\tblobPos := curOOL + 4 + n*4\n");
                 fprintf(f, "\t\tfor i, elem := range m.%s {\n", gn.c_str());
                 fprintf(f, "\t\t\tblobPos = (blobPos + 3) &^ 3\n");
-                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fd->nestedGoType);
+                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fd.elementGoType);
                 fprintf(f, "\t\t\tbinary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))\n");
                 fprintf(f, "\t\t\tblobPos += elem.writeBlob(buf, blobPos)\n");
                 fprintf(f, "\t\t}\n");
@@ -556,7 +556,7 @@ private:
                 fprintf(f, "\t\tblobOff := 4 + n*4\n");
                 fprintf(f, "\t\tfor i, elem := range m.%s {\n", gn.c_str());
                 fprintf(f, "\t\t\tblobOff = (blobOff + 3) &^ 3\n");
-                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fdp->nestedGoType);
+                fprintf(f, "\t\t\tobjInBlob := (len(%sVTable)*2 + 3) &^ 3\n", fdp->elementGoType);
                 fprintf(f, "\t\t\tbinary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))\n");
                 fprintf(f, "\t\t\tblobOff += elem.writeBlob(vecBuf, blobOff)\n");
                 fprintf(f, "\t\t}\n");

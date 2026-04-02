@@ -83,6 +83,7 @@ genrule(
 
                 cp /in/main.cpp /tmp/fdb/schema_extract_main.cpp
                 cp /in/extract.h /tmp/fdb/extract.h
+                touch /tmp/fdb/schema_extract_main.cpp /tmp/fdb/extract.h
 
                 cat > /tmp/fdb/schema_extract.cmake << "EOF"
 add_executable(schema_extract schema_extract_main.cpp)
