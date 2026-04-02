@@ -72,12 +72,9 @@ wire-testvecs:
     cp /tmp/testvecs_docker/*.json pkg/fdbgo/wire/testdata/
     @echo "Updated: $$(ls pkg/fdbgo/wire/testdata/[A-Z]*.json | wc -l) test vectors"
 
-# Run FDB binding tester (stack machine conformance).
-# Requires a running FDB cluster. Pass cluster file as arg.
-# Usage: just binding-test /path/to/fdb.cluster [num-ops]
-binding-test CLUSTER_FILE NUM_OPS="100":
-    bazelisk build //cmd/fdb-stacktester
-    bash cmd/fdb-stacktester/run_binding_test.sh {{CLUSTER_FILE}} {{NUM_OPS}}
+# Run FDB binding tester (stack machine conformance via Bazel + testcontainers).
+binding-test:
+    bazelisk test //cmd/fdb-stacktester/bindingtester --test_output=streamed
 
 # Run tests with coverage
 coverage:
