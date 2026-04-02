@@ -55,13 +55,13 @@ bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
-# Uses Bazel-fetched FDB source + Docker (foundationdb/build image for cmake).
-# Docker caches cmake build in /tmp/fdb-schema-extract-build.
+# Two Bazel genrules: fdb_cmake_build (cached on FDB version) → generate_wire_types (cached on generator code).
 generate-wire-types:
-    bash cmd/fdb-schema-extract/build.sh \
-        $$(bazelisk info output_base)/external/foundationdb+ \
-        pkg/fdbgo/wire/types
+    bazelisk build //cmd/fdb-schema-extract:generate_wire_types
+    rm -f pkg/fdbgo/wire/types/*_generated.go
+    tar xf bazel-bin/cmd/fdb-schema-extract/wire_types.tar -C pkg/fdbgo/wire/types/ --strip-components=1
     just gazelle
+    @echo "Generated: $$(ls pkg/fdbgo/wire/types/*_generated.go | wc -l) files"
 
 # Regenerate FDB wire schema JSON files (Bazel, sandboxed)
 wire-schema:

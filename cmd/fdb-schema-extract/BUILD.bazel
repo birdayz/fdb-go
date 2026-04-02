@@ -1,3 +1,114 @@
+# Two-stage schema extractor with proper Bazel caching.
+#
+# Stage 1 (fdb_cmake_build): cmake + ninja fdb_c inside Docker.
+#   Input: FDB source. Output: tar of build dir.
+#   Only reruns when FDB version changes (~5 min first run, cached after).
+#
+# Stage 2 (generate_wire_types): compile + run schema_extract inside Docker.
+#   Input: stage 1 tar + main.cpp + extract.h. Output: generated Go files tar.
+#   Only reruns when generator code changes (~30s).
+#
+# Run: bazelisk build //cmd/fdb-schema-extract:generate_wire_types
+# Then: tar xf bazel-bin/cmd/fdb-schema-extract/wire_types.tar -C pkg/fdbgo/wire/types/
+
+genrule(
+    name = "fdb_cmake_build",
+    srcs = ["@foundationdb//:all_srcs"],
+    outs = ["fdb_build.tar"],
+    cmd = """
+        set -e
+        # Find FDB source root (the dir containing CMakeLists.txt).
+        FDB_SRC=$$(dirname $$(echo $(SRCS) | tr ' ' '\\n' | grep 'CMakeLists.txt$$' | head -1))
+        TMPOUT=$$(mktemp -d)
+        IMAGE="foundationdb/build:rockylinux9-latest"
+
+        docker run --rm \
+            -v "$$FDB_SRC:/fdb_src:ro" \
+            -v "$$TMPOUT:/out" \
+            "$$IMAGE" \
+            bash -c '
+                set -e
+                source /opt/rh/gcc-toolset-13/enable
+                cp -r /fdb_src /fdb
+                sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
+
+                cmake -S /fdb -B /build -G Ninja \
+                    -DCMAKE_BUILD_TYPE=Release \
+                    -DBUILD_PYTHON_BINDING=OFF -DBUILD_C_BINDING=ON \
+                    -DBUILD_JAVA_BINDING=OFF -DBUILD_GO_BINDING=OFF \
+                    -DBUILD_SWIFT_BINDING=OFF -DBUILD_RUBY_BINDING=OFF \
+                    -DBUILD_DOCUMENTATION=OFF -DWITH_CSHARP=OFF \
+                    -DWITH_PYTHON=OFF -DUSE_WERROR=OFF -DBUILD_TESTING=OFF \
+                    2>&1 | tail -3
+
+                ninja -C /build -j$$(nproc) fdb_c 2>&1 | tail -3
+                tar cf /out/fdb_build.tar -C / build fdb
+            '
+
+        mv "$$TMPOUT/fdb_build.tar" $@
+        rm -rf "$$TMPOUT"
+    """,
+    local = True,
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "generate_wire_types",
+    srcs = [
+        ":fdb_cmake_build",
+        "main.cpp",
+        "extract.h",
+    ],
+    outs = ["wire_types.tar"],
+    cmd = """
+        set -e
+        BUILD_TAR=$(location :fdb_cmake_build)
+        MAIN_CPP=$(location main.cpp)
+        EXTRACT_H=$(location extract.h)
+        TMPOUT=$$(mktemp -d)
+        IMAGE="foundationdb/build:rockylinux9-latest"
+
+        docker run --rm \
+            -v "$$BUILD_TAR:/build.tar:ro" \
+            -v "$$MAIN_CPP:/work/main.cpp:ro" \
+            -v "$$EXTRACT_H:/work/extract.h:ro" \
+            -v "$$TMPOUT:/out" \
+            "$$IMAGE" \
+            bash -c '
+                set -e
+                source /opt/rh/gcc-toolset-13/enable
+                cd / && tar xf /build.tar
+
+                cp /work/main.cpp /fdb/schema_extract_main.cpp
+                cp /work/extract.h /fdb/extract.h
+
+                cat > /fdb/schema_extract.cmake << "EOF"
+add_executable(schema_extract schema_extract_main.cpp)
+target_link_libraries(schema_extract PRIVATE fdbclient fdbrpc flow)
+target_include_directories(schema_extract PRIVATE
+    $${CMAKE_SOURCE_DIR} $${CMAKE_BINARY_DIR}
+    $${CMAKE_BINARY_DIR}/fdbclient/include $${CMAKE_BINARY_DIR}/fdbclient
+    $${CMAKE_BINARY_DIR}/fdbrpc/include $${CMAKE_BINARY_DIR}/fdbrpc
+    $${CMAKE_BINARY_DIR}/flow/include $${CMAKE_BINARY_DIR}/flow)
+EOF
+                grep -q schema_extract.cmake /fdb/CMakeLists.txt || \
+                    echo "include(schema_extract.cmake)" >> /fdb/CMakeLists.txt
+
+                ninja -C /build -j$$(nproc) schema_extract 2>&1 | tail -3
+                mkdir -p /out/types
+                /build/bin/schema_extract /out/types
+                cd /out && tar cf /out/wire_types.tar types/
+            '
+
+        mv "$$TMPOUT/wire_types.tar" $@
+        rm -rf "$$TMPOUT"
+    """,
+    local = True,
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
 exports_files([
     "main.cpp",
     "extract.h",
