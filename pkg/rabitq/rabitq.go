@@ -441,11 +441,11 @@ type rescaleNode struct {
 // rescaleHeap is a min-heap of rescaleNodes ordered by t.
 type rescaleHeap []rescaleNode
 
-func (h rescaleHeap) Len() int            { return len(h) }
-func (h rescaleHeap) Less(i, j int) bool  { return h[i].t < h[j].t }
-func (h rescaleHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *rescaleHeap) Push(x interface{}) { *h = append(*h, x.(rescaleNode)) }
-func (h *rescaleHeap) Pop() interface{} {
+func (h rescaleHeap) Len() int           { return len(h) }
+func (h rescaleHeap) Less(i, j int) bool { return h[i].t < h[j].t }
+func (h rescaleHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *rescaleHeap) Push(x any)        { *h = append(*h, x.(rescaleNode)) }
+func (h *rescaleHeap) Pop() any {
 	old := *h
 	n := len(old)
 	x := old[n-1]

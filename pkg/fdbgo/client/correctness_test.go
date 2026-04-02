@@ -20,7 +20,7 @@ func TestClear(t *testing.T) {
 	defer db.Close()
 
 	// Write a key.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("clear_me"), []byte("exists"))
 		return nil, nil
 	})
@@ -29,7 +29,7 @@ func TestClear(t *testing.T) {
 	}
 
 	// Verify it exists.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("clear_me"))
 	})
 	if err != nil {
@@ -40,7 +40,7 @@ func TestClear(t *testing.T) {
 	}
 
 	// Clear it.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Clear([]byte("clear_me"))
 		return nil, nil
 	})
@@ -49,7 +49,7 @@ func TestClear(t *testing.T) {
 	}
 
 	// Verify it's gone.
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("clear_me"))
 	})
 	if err != nil {
@@ -68,7 +68,7 @@ func TestClearRange(t *testing.T) {
 	defer db.Close()
 
 	// Write 5 keys: cr_a, cr_b, cr_c, cr_d, cr_e
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for _, suffix := range []string{"a", "b", "c", "d", "e"} {
 			tx.Set([]byte("cr_"+suffix), []byte("v"))
 		}
@@ -79,7 +79,7 @@ func TestClearRange(t *testing.T) {
 	}
 
 	// Clear range [cr_b, cr_d) — should delete cr_b, cr_c.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.ClearRange([]byte("cr_b"), []byte("cr_d"))
 		return nil, nil
 	})
@@ -88,7 +88,7 @@ func TestClearRange(t *testing.T) {
 	}
 
 	// Verify: cr_a and cr_d and cr_e survive.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, _, err := tx.GetRange(ctx, []byte("cr_"), []byte("cr_~"), 100)
 		return kvs, err
 	})
@@ -123,7 +123,7 @@ func TestAtomicAdd(t *testing.T) {
 	// Initialize counter to 10.
 	var buf [8]byte
 	binary.LittleEndian.PutUint64(buf[:], 10)
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, buf[:])
 		return nil, nil
 	})
@@ -133,7 +133,7 @@ func TestAtomicAdd(t *testing.T) {
 
 	// Atomic ADD +5.
 	binary.LittleEndian.PutUint64(buf[:], 5)
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutAddValue, key, buf[:])
 		return nil, nil
 	})
@@ -142,7 +142,7 @@ func TestAtomicAdd(t *testing.T) {
 	}
 
 	// Read back — should be 15.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, key)
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestGetRangeWithLimit(t *testing.T) {
 	defer db.Close()
 
 	// Write 10 keys.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < 10; i++ {
 			tx.Set([]byte("lim_"+string(rune('a'+i))), []byte{byte(i)})
 		}
@@ -177,7 +177,7 @@ func TestGetRangeWithLimit(t *testing.T) {
 		kvs  []KeyValue
 		more bool
 	}
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, more, err := tx.GetRange(ctx, []byte("lim_"), []byte("lim_~"), 3)
 		return rangeResult{kvs, more}, err
 	})
@@ -208,7 +208,7 @@ func TestMultiKeyTransaction(t *testing.T) {
 	defer db.Close()
 
 	// Write two keys in one transaction, read both back in another.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("mk_x"), []byte("100"))
 		tx.Set([]byte("mk_y"), []byte("200"))
 		return nil, nil
@@ -217,7 +217,7 @@ func TestMultiKeyTransaction(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		x, err := tx.Get(ctx, []byte("mk_x"))
 		if err != nil {
 			return nil, err
@@ -244,7 +244,7 @@ func TestGetNonExistentKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("does_not_exist_ever"))
 	})
 	if err != nil {
@@ -263,7 +263,7 @@ func TestGetKey(t *testing.T) {
 	defer db.Close()
 
 	// Write keys: gk_a, gk_b, gk_c, gk_d, gk_e
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for _, s := range []string{"a", "b", "c", "d", "e"} {
 			tx.Set([]byte("gk_"+s), []byte("v"))
 		}
@@ -274,7 +274,7 @@ func TestGetKey(t *testing.T) {
 	}
 
 	// firstGreaterOrEqual("gk_c") → should return "gk_c" (exact match)
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte("gk_c"), false, 1) // orEqual=false, offset=1 = firstGreaterOrEqual
 	})
 	if err != nil {
@@ -285,7 +285,7 @@ func TestGetKey(t *testing.T) {
 	}
 
 	// firstGreaterThan("gk_c") → should return "gk_d"
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte("gk_c"), true, 1) // orEqual=true, offset=1 = firstGreaterThan
 	})
 	if err != nil {
@@ -296,7 +296,7 @@ func TestGetKey(t *testing.T) {
 	}
 
 	// lastLessOrEqual("gk_c") → should return "gk_c"
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte("gk_c"), true, 0) // orEqual=true, offset=0 = lastLessOrEqual
 	})
 	if err != nil {
@@ -307,7 +307,7 @@ func TestGetKey(t *testing.T) {
 	}
 
 	// lastLessThan("gk_c") → should return "gk_b"
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte("gk_c"), false, 0) // orEqual=false, offset=0 = lastLessThan
 	})
 	if err != nil {
@@ -326,7 +326,7 @@ func TestSnapshotRead(t *testing.T) {
 	defer db.Close()
 
 	// Seed a key.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("snap_key"), []byte("v0"))
 		return nil, nil
 	})
@@ -354,7 +354,7 @@ func TestSnapshotRead(t *testing.T) {
 	}
 
 	// tx2 writes the same key and commits.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("snap_key"), []byte("v1"))
 		return nil, nil
 	})
@@ -379,7 +379,7 @@ func TestSnapshotRead(t *testing.T) {
 	_, _ = tx3.Get(ctx, []byte("snap_key"))
 
 	// Another transaction writes the same key.
-	_, _ = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, _ = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("snap_key"), []byte("v2"))
 		return nil, nil
 	})
@@ -401,7 +401,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	defer db.Close()
 
 	// Seed.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("ecr_key"), []byte("v0"))
 		return nil, nil
 	})
@@ -418,7 +418,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	tx1.Set([]byte("ecr_other"), []byte("unrelated"))
 
 	// tx2 writes the conflicting key.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("ecr_key"), []byte("v1"))
 		return nil, nil
 	})
@@ -467,7 +467,7 @@ func TestCancel(t *testing.T) {
 	defer db.Close()
 
 	// Write a key so there's something to read.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("cancel_key"), []byte("exists"))
 		return nil, nil
 	})
@@ -501,7 +501,7 @@ func TestCancel(t *testing.T) {
 	}
 
 	// Verify the key was NOT modified (cancel prevented commit).
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("cancel_key"))
 	})
 	if err != nil {
@@ -520,7 +520,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 	defer db.Close()
 
 	// Transact with only reads, no writes — commit should be a no-op.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		// Read a non-existent key. No mutations.
 		_, err := tx.Get(ctx, []byte("readonly_nonexistent"))
 		return nil, err
@@ -530,7 +530,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 	}
 
 	// Seed a key, then read it in a read-only transaction.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("readonly_key"), []byte("val"))
 		return nil, nil
 	})
@@ -538,7 +538,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("readonly_key"))
 	})
 	if err != nil {
@@ -556,7 +556,7 @@ func TestAddReadConflictRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("rcr_a"), []byte("1"))
 		tx.Set([]byte("rcr_b"), []byte("2"))
 		tx.Set([]byte("rcr_c"), []byte("3"))
@@ -574,7 +574,7 @@ func TestAddReadConflictRange(t *testing.T) {
 	tx1.Set([]byte("rcr_unrelated"), []byte("x"))
 
 	// tx2: write rcr_b (inside the conflict range).
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("rcr_b"), []byte("modified"))
 		return nil, nil
 	})
@@ -630,7 +630,7 @@ func TestReadTransact(t *testing.T) {
 	defer db.Close()
 
 	// Seed keys.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("rt_a"), []byte("1"))
 		tx.Set([]byte("rt_b"), []byte("2"))
 		return nil, nil
@@ -640,7 +640,7 @@ func TestReadTransact(t *testing.T) {
 	}
 
 	// ReadTransact: read two keys, return their values.
-	result, err := db.ReadTransact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
 		a, err := tx.Get(ctx, []byte("rt_a"))
 		if err != nil {
 			return nil, err
@@ -661,7 +661,7 @@ func TestReadTransact(t *testing.T) {
 
 	// ReadTransact does NOT commit — verify by writing inside it
 	// and checking the write didn't persist.
-	_, err = db.ReadTransact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("rt_phantom"), []byte("should_not_persist"))
 		return nil, nil
 	})
@@ -670,7 +670,7 @@ func TestReadTransact(t *testing.T) {
 	}
 
 	// Verify the write didn't persist.
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("rt_phantom"))
 	})
 	if err != nil {
@@ -748,7 +748,7 @@ func TestEmptyRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, more, err := tx.GetRange(ctx, []byte("empty_range_prefix_"), []byte("empty_range_prefix_~"), 100)
 		if err != nil {
 			return nil, err

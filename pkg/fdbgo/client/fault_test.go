@@ -155,7 +155,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	// Seed counter = 10.
 	var counterBuf [8]byte
 	binary.LittleEndian.PutUint64(counterBuf[:], 10)
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("fault_counter"), counterBuf[:])
 		return nil, nil
 	})
@@ -197,7 +197,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	db.db.grvCache.invalidate() // Stale cache from pre-fault connections.
 
 	// Read the counter. It should be 15 (10 + 5, applied once by server).
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("fault_counter"))
 	})
 	if err != nil {
@@ -388,7 +388,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	expected := []byte("correct_value")
 
 	// Seed the key.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, expected)
 		return nil, nil
 	})
@@ -397,7 +397,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	// Warm the location cache with a successful read.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, key)
 	})
 	if err != nil {

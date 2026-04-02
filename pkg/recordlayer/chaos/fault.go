@@ -105,7 +105,7 @@ func (c *ChaosTransactor) InjectOnce(fault FaultType) {
 }
 
 // Transact implements fdb.Transactor. Wraps the inner Transact with fault injection.
-func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (interface{}, error)) (interface{}, error) {
+func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (any, error)) (any, error) {
 	c.mu.Lock()
 	pending := c.pendingFault
 	if pending != nil {
@@ -147,7 +147,7 @@ func (c *ChaosTransactor) Transact(fn func(fdb.Transaction) (interface{}, error)
 }
 
 // ReadTransact implements fdb.ReadTransactor. No fault injection on reads.
-func (c *ChaosTransactor) ReadTransact(fn func(fdb.ReadTransaction) (interface{}, error)) (interface{}, error) {
+func (c *ChaosTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
 	return c.inner.ReadTransact(fn)
 }
 

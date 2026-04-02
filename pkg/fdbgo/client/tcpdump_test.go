@@ -58,7 +58,7 @@ func TestCaptureCBindingTraffic(t *testing.T) {
 	if err != nil {
 		t.Logf("C binding open: %v", err)
 	} else {
-		_, err = db.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		_, err = db.Transact(func(tx fdb.Transaction) (any, error) {
 			tx.Set(fdb.Key("test"), []byte("hello"))
 			return nil, nil
 		})

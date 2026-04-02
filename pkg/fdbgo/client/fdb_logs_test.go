@@ -78,7 +78,7 @@ func TestFDBServerLogs(t *testing.T) {
 	if cErr != nil {
 		t.Logf("C binding OpenDatabase: %v", cErr)
 	} else {
-		_, txErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		_, txErr := cdb.Transact(func(tx fdb.Transaction) (any, error) {
 			tx.Set(fdb.Key("_go_test"), []byte("ping"))
 			return nil, nil
 		})

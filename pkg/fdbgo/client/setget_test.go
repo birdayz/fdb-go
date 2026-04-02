@@ -24,7 +24,7 @@ func TestTransactRetry(t *testing.T) {
 	defer db.Close()
 
 	// Seed the key.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("conflict_key"), []byte("v0"))
 		return nil, nil
 	})
@@ -47,7 +47,7 @@ func TestTransactRetry(t *testing.T) {
 
 	// tx2 reads and writes the same key, commits first.
 	// This creates the conflict.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		if _, err := tx.Get(ctx, []byte("conflict_key")); err != nil {
 			return nil, err
 		}
@@ -74,7 +74,7 @@ func TestTransactRetry(t *testing.T) {
 	// Now verify Transact handles this automatically: a conflicting
 	// write should be retried and eventually succeed.
 	attempt := 0
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		attempt++
 		// On every attempt, read then write. The first attempt will
 		// conflict with the write above; retry should succeed.
@@ -91,7 +91,7 @@ func TestTransactRetry(t *testing.T) {
 	t.Logf("Transact succeeded after %d attempt(s)", attempt)
 
 	// Verify final value.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("conflict_key"))
 	})
 	if err != nil {
@@ -114,7 +114,7 @@ func TestSetGet(t *testing.T) {
 	defer db.Close()
 
 	// Write
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("hello"), []byte("world"))
 		return nil, nil
 	})
@@ -123,7 +123,7 @@ func TestSetGet(t *testing.T) {
 	}
 
 	// Read
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("hello"))
 	})
 	if err != nil {

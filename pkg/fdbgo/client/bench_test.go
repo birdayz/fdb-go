@@ -33,7 +33,7 @@ func BenchmarkGetValue_PureGo(b *testing.B) {
 	db := openBenchDB(b, ctx)
 	defer db.Close()
 
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte("bench_key"), make([]byte, 100))
 		return nil, nil
 	})
@@ -41,14 +41,14 @@ func BenchmarkGetValue_PureGo(b *testing.B) {
 		b.Fatalf("seed: %v", err)
 	}
 
-	db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte("bench_key"))
 	})
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			return tx.Get(ctx, []byte("bench_key"))
 		})
 		if err != nil {
@@ -86,7 +86,7 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 	fdb.MustAPIVersion(730)
 	cgoDB := fdb.MustOpenDatabase(clusterFile)
 
-	_, err = cgoDB.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	_, err = cgoDB.Transact(func(tx fdb.Transaction) (any, error) {
 		tx.Set(fdb.Key("bench_key"), make([]byte, 100))
 		return nil, nil
 	})
@@ -94,14 +94,14 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 		b.Fatalf("seed: %v", err)
 	}
 
-	cgoDB.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	cgoDB.Transact(func(tx fdb.Transaction) (any, error) {
 		return tx.Get(fdb.Key("bench_key")).Get()
 	})
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := cgoDB.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		_, err := cgoDB.Transact(func(tx fdb.Transaction) (any, error) {
 			return tx.Get(fdb.Key("bench_key")).Get()
 		})
 		if err != nil {

@@ -467,7 +467,7 @@ func TestTupleElementEndPos(t *testing.T) {
 
 	// Helper: pack a single-element tuple and verify tupleElementEndPos finds
 	// the correct boundary.
-	testSingleElement := func(t *testing.T, name string, elem interface{}) {
+	testSingleElement := func(t *testing.T, name string, elem any) {
 		t.Helper()
 		packed := tuple.Tuple{elem}.Pack()
 		endPos, err := tupleElementEndPos(packed, 0)
@@ -1222,7 +1222,7 @@ func TestOrderFunctionProtoFieldsPopulated(t *testing.T) {
 
 // tupleElemEqual compares two tuple elements for equality, handling type
 // normalization (int64 from tuple.Unpack, nil, []byte, etc.).
-func tupleElemEqual(a, b interface{}) bool {
+func tupleElemEqual(a, b any) bool {
 	if a == nil && b == nil {
 		return true
 	}

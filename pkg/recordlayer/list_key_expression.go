@@ -29,7 +29,7 @@ func ListExpr(children ...KeyExpression) *ListKeyExpression {
 //
 // IMPORTANT: Child values must be wrapped as tuple.Tuple (named type), NOT bare
 // []any. The FDB tuple packer's type switch uses `case Tuple:` which only matches
-// the named type. Bare []interface{} causes a runtime panic during Pack().
+// the named type. Bare []any causes a runtime panic during Pack().
 func (l *ListKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if len(l.children) == 0 {
 		return [][]any{{}}, nil
@@ -69,7 +69,7 @@ func (l *ListKeyExpression) combine(combined *[][]any, listSoFar []any, valuesIn
 	for _, childValue := range childrenValues[valuesIndex] {
 		// Wrap child's evaluated values as a nested tuple.Tuple.
 		// This is critical: the FDB tuple packer only recognizes the named
-		// type tuple.Tuple for nested tuples, not bare []interface{}.
+		// type tuple.Tuple for nested tuples, not bare []any.
 		nested := wrapAsTuple(childValue)
 
 		nextList := make([]any, len(listSoFar)+1)
@@ -82,7 +82,7 @@ func (l *ListKeyExpression) combine(combined *[][]any, listSoFar []any, valuesIn
 
 // wrapAsTuple converts a []any slice to a tuple.Tuple for proper FDB nested tuple
 // encoding. This is necessary because the FDB tuple packer checks `case Tuple:`
-// (the named type), not `case []interface{}`.
+// (the named type), not `case []any`.
 func wrapAsTuple(values []any) tuple.Tuple {
 	t := make(tuple.Tuple, len(values))
 	for i, v := range values {

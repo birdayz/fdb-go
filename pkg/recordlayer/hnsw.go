@@ -1388,7 +1388,7 @@ func (s *hnswStorage) saveAccessInfo(tx fdb.Transaction, info *hnswAccessInfo) {
 	key := s.accessSubspace.Pack(tuple.Tuple{})
 
 	// Serialize centroid as a vector tuple (or nil).
-	var centroidElement interface{}
+	var centroidElement any
 	if info.centroid != nil {
 		centroidElement = tuple.Tuple{serializeVector(info.centroid)}
 	}

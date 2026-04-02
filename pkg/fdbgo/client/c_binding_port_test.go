@@ -34,7 +34,7 @@ func TestGetRangeReverse(t *testing.T) {
 	prefix := "c_range_rev_"
 
 	// Write 4 keys: a, b, c, d.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(prefix+"a"), []byte("1"))
 		tx.Set([]byte(prefix+"b"), []byte("2"))
 		tx.Set([]byte(prefix+"c"), []byte("3"))
@@ -46,7 +46,7 @@ func TestGetRangeReverse(t *testing.T) {
 	}
 
 	// Read forward — verify ascending order.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, _, err := tx.GetRange(ctx, []byte(prefix+"a"), []byte(prefix+"d\x00"), 100)
 		return kvs, err
 	})
@@ -68,7 +68,7 @@ func TestGetRangeReverse(t *testing.T) {
 	}
 
 	// Read reverse — verify descending order (matching C test line 1213-1221).
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, _, err := tx.GetRangeReverse(ctx, []byte(prefix+"a"), []byte(prefix+"d\x00"), 100)
 		return kvs, err
 	})
@@ -103,7 +103,7 @@ func TestGetRangeLimit(t *testing.T) {
 	prefix := "c_range_lim_"
 
 	// Write 4 keys: a, b, c, d.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(prefix+"a"), []byte("1"))
 		tx.Set([]byte(prefix+"b"), []byte("2"))
 		tx.Set([]byte(prefix+"c"), []byte("3"))
@@ -118,7 +118,7 @@ func TestGetRangeLimit(t *testing.T) {
 		kvs  []KeyValue
 		more bool
 	}
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, more, err := tx.GetRange(ctx, []byte(prefix+"a"), []byte(prefix+"d\x00"), 2)
 		return rangeResult{kvs, more}, err
 	})
@@ -159,7 +159,7 @@ func TestClearSingleKey(t *testing.T) {
 	key := []byte("c_clear_foo")
 
 	// Set key.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, []byte("bar"))
 		return nil, nil
 	})
@@ -168,7 +168,7 @@ func TestClearSingleKey(t *testing.T) {
 	}
 
 	// Clear key.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Clear(key)
 		return nil, nil
 	})
@@ -177,7 +177,7 @@ func TestClearSingleKey(t *testing.T) {
 	}
 
 	// Verify gone.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, key)
 	})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestAtomicAdd_CPort(t *testing.T) {
 	key := []byte("c_add_foo")
 
 	// Initialize to 0.
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set(key, []byte{0x00})
 		return nil, nil
 	})
@@ -213,7 +213,7 @@ func TestAtomicAdd_CPort(t *testing.T) {
 	}
 
 	// Atomic ADD +1.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutAddValue, key, []byte{0x01})
 		return nil, nil
 	})
@@ -222,7 +222,7 @@ func TestAtomicAdd_CPort(t *testing.T) {
 	}
 
 	// Read back — should be > 0 and <= 1.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, key)
 	})
 	if err != nil {
@@ -253,7 +253,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 	pfx := "c_and_"
 
 	// foo='a'(97), bar='c'(99), baz="abc"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("c"))
 		tx.Set([]byte(pfx+"baz"), []byte("abc"))
@@ -267,7 +267,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 	// foo: 'a'(0x61) & 'b'(0x62) = 0x60 = 96
 	// bar: 'c'(0x63,0x00) & "ad"(0x61,0x64) = (0x61, 0x00) = 'a', 0
 	// baz: "abc" truncated to 'a' & 'e'(0x65) = 'a'(0x61) & 0x65 = 0x61 = 'a'
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutAnd, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutAnd, []byte(pfx+"bar"), []byte{'a', 'd'})
 		tx.Atomic(MutAnd, []byte(pfx+"baz"), []byte("e"))
@@ -278,7 +278,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 	}
 
 	// Verify foo = 96.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -290,7 +290,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 	}
 
 	// Verify bar = ['a', 0].
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -302,7 +302,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 	}
 
 	// Verify baz = 'a' (97).
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -327,7 +327,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 	pfx := "c_or_"
 
 	// foo='a'(97), bar='b'(98), baz="abc"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("abc"))
@@ -341,7 +341,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 	// foo: 'a'(0x61) | 'b'(0x62) = 0x63 = 'c'(99)
 	// bar: 'b'(0x62,0x00) | "ad"(0x61,0x64) = (0x63, 0x64) = "cd"
 	// baz: "abc" truncated to 'a' | 'd'(0x64) = 0x61|0x64 = 0x65 = 'e'(101)
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutOr, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutOr, []byte(pfx+"bar"), []byte{'a', 'd'})
 		tx.Atomic(MutOr, []byte(pfx+"baz"), []byte("d"))
@@ -352,7 +352,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 	}
 
 	// Verify foo = 99 = 'c'.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -364,7 +364,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 	}
 
 	// Verify bar = "cd".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -376,7 +376,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 	}
 
 	// Verify baz = 101 = 'e'.
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -401,7 +401,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 	pfx := "c_xor_"
 
 	// foo='a'(97), bar='b'(98), baz="abc"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("abc"))
@@ -415,7 +415,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 	// foo: 'a'(0x61) ^ 'b'(0x62) = 0x03
 	// bar: 'b'(0x62,0x00) ^ "ad"(0x61,0x64) = (0x03, 0x64)
 	// baz: "abc" truncated to 'a' ^ 'd'(0x64) = 0x61^0x64 = 0x05
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutXor, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutXor, []byte(pfx+"bar"), []byte{'a', 'd'})
 		tx.Atomic(MutXor, []byte(pfx+"baz"), []byte("d"))
@@ -426,7 +426,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 	}
 
 	// Verify foo = 0x03.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -438,7 +438,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 	}
 
 	// Verify bar = [0x03, 0x64].
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -450,7 +450,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 	}
 
 	// Verify baz = 0x05.
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -476,7 +476,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	pfx := "c_cac_"
 
 	// foo="bar", fdb="foundation"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("bar"))
 		tx.Set([]byte(pfx+"fdb"), []byte("foundation"))
 		return nil, nil
@@ -486,7 +486,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	}
 
 	// COMPARE_AND_CLEAR: foo with operand "bar" (matches) -> should clear.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutCompareAndClear, []byte(pfx+"foo"), []byte("bar"))
 		return nil, nil
 	})
@@ -495,7 +495,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	}
 
 	// foo should be gone.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -506,7 +506,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	}
 
 	// fdb should still exist.
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"fdb"))
 	})
 	if err != nil {
@@ -530,7 +530,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	pfx := "c_aif_"
 
 	// foo="f"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("f"))
 		return nil, nil
 	})
@@ -539,7 +539,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	}
 
 	// APPEND_IF_FITS: foo += "db", bar = "foundation" (insert).
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutAppendIfFits, []byte(pfx+"foo"), []byte("db"))
 		tx.Atomic(MutAppendIfFits, []byte(pfx+"bar"), []byte("foundation"))
 		return nil, nil
@@ -549,7 +549,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	}
 
 	// foo should be "fdb".
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -565,7 +565,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	}
 
 	// bar should be "foundation".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -593,7 +593,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 	pfx := "c_max_"
 
 	// foo='a', bar='b', baz="cba"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("cba"))
@@ -610,7 +610,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 	//   bar='b'(0x62) zero-extended to 0x62,0x00 vs param "aa"(0x61,0x61).
 	//   As LE integer: bar=0x0062 vs param=0x6161. param > bar, so result = "aa".
 	// baz with 'b' -> truncated: "cba" truncated to 'c' vs 'b' -> 'c' wins.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutMax, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutMax, []byte(pfx+"bar"), []byte("aa"))
 		tx.Atomic(MutMax, []byte(pfx+"baz"), []byte("b"))
@@ -621,7 +621,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 	}
 
 	// foo = "b".
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -632,7 +632,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 	}
 
 	// bar = "aa".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -643,7 +643,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 	}
 
 	// baz = "c" (truncated to param length, 'c' > 'b').
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -667,7 +667,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 	pfx := "c_min_"
 
 	// foo='a', bar='b', baz="cba"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("cba"))
@@ -681,7 +681,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 	// bar with "aa" -> 'b' zero-extended to 'b',0x00 vs "aa"(0x61,0x61).
 	//   As LE integer: bar=0x0062 vs param=0x6161. bar < param, so result = 'b',0x00.
 	// baz with 'b' -> truncated: "cba" truncated to 'c' vs 'b' -> 'b' wins.
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutMin, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutMin, []byte(pfx+"bar"), []byte("aa"))
 		tx.Atomic(MutMin, []byte(pfx+"baz"), []byte("b"))
@@ -692,7 +692,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 	}
 
 	// foo = "a".
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -703,7 +703,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 	}
 
 	// bar = ['b', 0x00] (2 bytes, zero-extended).
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -715,7 +715,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 	}
 
 	// baz = "b".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -740,7 +740,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 	pfx := "c_bmax_"
 
 	// foo='a', bar='b', baz="cba"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("cba"))
@@ -754,7 +754,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 	// foo: 'a' vs 'b' -> 'b' (b > a)
 	// bar: 'b' vs "cc" -> "cc" (c > b byte-wise)
 	// baz: "cba" vs 'b' -> "cba" (c > b byte-wise, longer wins)
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutByteMax, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutByteMax, []byte(pfx+"bar"), []byte("cc"))
 		tx.Atomic(MutByteMax, []byte(pfx+"baz"), []byte("b"))
@@ -765,7 +765,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 	}
 
 	// foo = "b".
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -776,7 +776,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 	}
 
 	// bar = "cc".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -787,7 +787,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 	}
 
 	// baz = "cba".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -812,7 +812,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 	pfx := "c_bmin_"
 
 	// foo='a', bar='b', baz="abc"
-	_, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Set([]byte(pfx+"foo"), []byte("a"))
 		tx.Set([]byte(pfx+"bar"), []byte("b"))
 		tx.Set([]byte(pfx+"baz"), []byte("abc"))
@@ -826,7 +826,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 	// foo: 'a' vs 'b' -> 'a' (a < b)
 	// bar: 'b' vs "aa" -> "aa" (a < b byte-wise)
 	// baz: "abc" vs 'b' -> "abc" (a < b byte-wise, abc wins)
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.Atomic(MutByteMin, []byte(pfx+"foo"), []byte("b"))
 		tx.Atomic(MutByteMin, []byte(pfx+"bar"), []byte("aa"))
 		tx.Atomic(MutByteMin, []byte(pfx+"baz"), []byte("b"))
@@ -837,7 +837,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 	}
 
 	// foo = "a".
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"foo"))
 	})
 	if err != nil {
@@ -848,7 +848,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 	}
 
 	// bar = "aa".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"bar"))
 	})
 	if err != nil {
@@ -859,7 +859,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 	}
 
 	// baz = "abc".
-	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, []byte(pfx+"baz"))
 	})
 	if err != nil {
@@ -919,7 +919,7 @@ func TestAtomicSetVersionstampedKey_CPort(t *testing.T) {
 	expectedKey = append(expectedKey, versionstamp...)
 
 	// Read back.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, expectedKey)
 	})
 	if err != nil {
@@ -981,7 +981,7 @@ func TestAtomicSetVersionstampedValue_CPort(t *testing.T) {
 	expectedVal = append(expectedVal, versionstamp...)
 
 	// Read back.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.Get(ctx, keyName)
 	})
 	if err != nil {
@@ -1174,7 +1174,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 	// tx2 writes a key and commits — this creates a version gap.
 	tx2key := []byte(pfx + "a")
 	tx2end := append([]byte(pfx+"a"), 0) // strinc equivalent
-	_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		tx.AddWriteConflictRange(tx2key, tx2end)
 		tx.Set([]byte(pfx+"dummy"), []byte("x"))
 		return nil, nil

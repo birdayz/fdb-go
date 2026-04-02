@@ -146,7 +146,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	if cErr != nil {
 		t.Logf("C binding: %v", cErr)
 	} else {
-		_, txErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		_, txErr := cdb.Transact(func(tx fdb.Transaction) (any, error) {
 			tx.Set(fdb.Key("test_key"), []byte("hello_from_go"))
 			return nil, nil
 		})
@@ -204,7 +204,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		t.Logf("Go client committed at version %d", committedVer)
 
 		// Read back via C binding.
-		cVal, readErr := cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+		cVal, readErr := cdb.Transact(func(tx fdb.Transaction) (any, error) {
 			return tx.Get(fdb.Key("go_native_key")).Get()
 		})
 		if readErr != nil {
@@ -232,14 +232,14 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 		// Test Transact API — the standard way to use FDB.
 		t.Log("Testing Transact API...")
-		_, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 			tx.Set([]byte("transact_key"), []byte("transact_value"))
 			return nil, nil
 		})
 		if err != nil {
 			t.Fatalf("Transact write: %v", err)
 		}
-		result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			val, err := tx.Get(ctx, []byte("transact_key"))
 			return string(val), err
 		})
@@ -372,7 +372,7 @@ func TestGetRange(t *testing.T) {
 	if cErr != nil {
 		t.Fatalf("C binding open: %v", cErr)
 	}
-	_, err = cdb.Transact(func(tx fdb.Transaction) (interface{}, error) {
+	_, err = cdb.Transact(func(tx fdb.Transaction) (any, error) {
 		tx.Set(fdb.Key("range_a"), []byte("value_a"))
 		tx.Set(fdb.Key("range_b"), []byte("value_b"))
 		tx.Set(fdb.Key("range_c"), []byte("value_c"))
@@ -385,16 +385,16 @@ func TestGetRange(t *testing.T) {
 	time.Sleep(1 * time.Second) // ensure version advances past the commit
 
 	// Range read via Go client.
-	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		kvs, more, err := tx.GetRange(ctx, []byte("range_"), []byte("range_~"), 100)
-		return []interface{}{kvs, more}, err
+		return []any{kvs, more}, err
 	})
 	if err != nil {
 		t.Fatalf("range read: %v", err)
 	}
 
-	kvs := result.([]interface{})[0].([]KeyValue)
-	more := result.([]interface{})[1].(bool)
+	kvs := result.([]any)[0].([]KeyValue)
+	more := result.([]any)[1].(bool)
 	t.Logf("GetRange: %d keys, more=%v", len(kvs), more)
 	for _, kv := range kvs {
 		t.Logf("  %s = %s", kv.Key, kv.Value)

@@ -307,7 +307,7 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 // Transact runs a function in a transaction with automatic retry.
 // This is the primary API for interacting with FDB.
 // The transaction is reused across retries — retryCount and backoff escalate.
-func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (interface{}, error)) (interface{}, error) {
+func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.CreateTransaction()
 	for {
 		result, err := fn(tx)
@@ -331,7 +331,7 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (inter
 
 // ReadTransact runs a read-only function in a transaction with automatic retry.
 // The transaction is never committed — only reads are performed.
-func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (interface{}, error)) (interface{}, error) {
+func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.CreateTransaction()
 	for {
 		result, err := fn(tx)
