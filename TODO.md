@@ -1665,10 +1665,55 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 **Overall: ~37/47 Transaction methods = ~79% API surface.**
 **By usage weight: ~98%+ of real application needs covered.**
 
-**Next priorities:**
-1. Transaction options (SetRetryLimit, SetTimeout) — safety for production use
-2. Watch — needed for reactive patterns
-3. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
+### Way of working
+
+**C code is the source of truth for the client.** Development is test-driven from the C binding tests:
+
+1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 23 ported so far)
+2. **Add functionality** only when a test needs it — no speculative API additions
+3. **Principles first** — if a test needs a feature, port it COMPLETELY, not a stub
+4. **Tests are authoritative** — if Go behavior differs from C, Go is wrong
+5. **After tests pass**, launch 5 FDB maintainer subagents to cross-review Go vs C++ source
+6. Each ported test references the C source file + line number + GitHub link
+
+This workflow already found 2 critical bugs on first run: 13 wrong mutation type wire values, GetRange key selector skipping first key.
+
+### C binding test port status
+
+Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
+
+**Ported (23 tests) — `c_binding_port_test.go`:**
+- [x] GetRange forward, GetRange limit, Clear
+- [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue)
+- [x] SetReadVersion old/future (skipped — client-side validation needed)
+- [x] GetCommittedVersion (read-only + write)
+- [x] Cancel, AddConflictRange, CommitDoesNotReset, ErrorPredicate
+
+**Next to port (need API additions):**
+- [ ] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetSizeLimit` (~6 tests). Needs: transaction option wire support. HIGH — Record Layer needs SetTimeout/SetRetryLimit.
+- [ ] **RYW disable** — `read_your_writes_disable`, `snapshot_ryw_enable/disable` (~4 tests). Needs: transaction option for RYW disable.
+- [ ] **GetRange reverse** — reverse scan (~1 test). Needs: reverse parameter in GetRange API.
+- [ ] **GetRange streaming modes** — EXACT mode (~1 test). Needs: streaming mode parameter.
+- [ ] **Watch** — `fdb_transaction_watch` (~4 tests). Needs: WatchValueRequest wire type.
+- [ ] **Tenant** — create, access, delete (~1 large test). Needs: tenant wire types.
+- [ ] **GetApproximateSize** — 1 test. Needs: new wire type.
+
+**Not applicable (internal/niche):**
+- System key read/write (server-level permissions)
+- Mapped range (niche feature)
+- Blob granule (niche feature)
+- Special-key-space (client internals)
+- Database reboot/force recovery/snapshot (admin ops)
+- Fast alloc thread cleanup (C runtime)
+- Network busyness monitoring (C runtime)
+
+**Gold standard target:** FDB binding tester (stack machine, `bindings/bindingtester/`) — 47 core ops, language-agnostic spec. Passing this = officially conformant binding.
+
+### Next priorities
+1. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
+2. GetRange reverse — port C test, add reverse parameter
+3. Watch — port C tests, implement WatchValueRequest
+4. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
 
 ### Done
 
