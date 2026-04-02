@@ -8,8 +8,7 @@
 #   Input: stage 1 tar + main.cpp + extract.h. Output: generated Go files tar.
 #   Only reruns when generator code changes (~30s).
 #
-# Run: bazelisk build //cmd/fdb-schema-extract:generate_wire_types
-# Then: tar xf bazel-bin/cmd/fdb-schema-extract/wire_types.tar -C pkg/fdbgo/wire/types/
+# Run: just generate-wire-types
 
 genrule(
     name = "fdb_cmake_build",
@@ -17,9 +16,9 @@ genrule(
     outs = ["fdb_build.tar"],
     cmd = """
         set -e
-        # Find FDB source root (the dir containing CMakeLists.txt).
-        FDB_SRC=$$(dirname $$(echo $(SRCS) | tr ' ' '\\n' | grep 'CMakeLists.txt$$' | head -1))
+        FDB_SRC=$$(realpath $$(dirname $$(echo $(SRCS) | tr ' ' '\\n' | grep 'CMakeLists.txt$$' | head -1)))
         TMPOUT=$$(mktemp -d)
+        chmod 777 "$$TMPOUT"
         IMAGE="foundationdb/build:rockylinux9-latest"
 
         docker run --rm \
@@ -29,10 +28,10 @@ genrule(
             bash -c '
                 set -e
                 source /opt/rh/gcc-toolset-13/enable
-                cp -r /fdb_src /fdb
-                sed -i "s/package_bindingtester/#package_bindingtester/" /fdb/bindings/CMakeLists.txt 2>/dev/null || true
+                cp -r /fdb_src /tmp/fdb
+                sed -i "s/package_bindingtester/#package_bindingtester/" /tmp/fdb/bindings/CMakeLists.txt 2>/dev/null || true
 
-                cmake -S /fdb -B /build -G Ninja \
+                cmake -S /tmp/fdb -B /tmp/build -G Ninja \
                     -DCMAKE_BUILD_TYPE=Release \
                     -DBUILD_PYTHON_BINDING=OFF -DBUILD_C_BINDING=ON \
                     -DBUILD_JAVA_BINDING=OFF -DBUILD_GO_BINDING=OFF \
@@ -41,8 +40,9 @@ genrule(
                     -DWITH_PYTHON=OFF -DUSE_WERROR=OFF -DBUILD_TESTING=OFF \
                     2>&1 | tail -3
 
-                ninja -C /build -j$$(nproc) fdb_c 2>&1 | tail -3
-                tar cf /out/fdb_build.tar -C / build fdb
+                ninja -C /tmp/build -j$$(nproc) fdb_c 2>&1 | tail -3
+                tar cf /out/fdb_build.tar -C /tmp build fdb
+                chmod 666 /out/fdb_build.tar
             '
 
         mv "$$TMPOUT/fdb_build.tar" $@
@@ -63,27 +63,28 @@ genrule(
     outs = ["wire_types.tar"],
     cmd = """
         set -e
-        BUILD_TAR=$(location :fdb_cmake_build)
-        MAIN_CPP=$(location main.cpp)
-        EXTRACT_H=$(location extract.h)
+        BUILD_TAR=$$(realpath $(location :fdb_cmake_build))
+        MAIN_CPP=$$(realpath $(location main.cpp))
+        EXTRACT_H=$$(realpath $(location extract.h))
         TMPOUT=$$(mktemp -d)
+        chmod 777 "$$TMPOUT"
         IMAGE="foundationdb/build:rockylinux9-latest"
 
         docker run --rm \
-            -v "$$BUILD_TAR:/build.tar:ro" \
-            -v "$$MAIN_CPP:/work/main.cpp:ro" \
-            -v "$$EXTRACT_H:/work/extract.h:ro" \
+            -v "$$BUILD_TAR:/in/build.tar:ro" \
+            -v "$$MAIN_CPP:/in/main.cpp:ro" \
+            -v "$$EXTRACT_H:/in/extract.h:ro" \
             -v "$$TMPOUT:/out" \
             "$$IMAGE" \
             bash -c '
                 set -e
                 source /opt/rh/gcc-toolset-13/enable
-                cd / && tar xf /build.tar
+                cd /tmp && tar xf /in/build.tar
 
-                cp /work/main.cpp /fdb/schema_extract_main.cpp
-                cp /work/extract.h /fdb/extract.h
+                cp /in/main.cpp /tmp/fdb/schema_extract_main.cpp
+                cp /in/extract.h /tmp/fdb/extract.h
 
-                cat > /fdb/schema_extract.cmake << "EOF"
+                cat > /tmp/fdb/schema_extract.cmake << "EOF"
 add_executable(schema_extract schema_extract_main.cpp)
 target_link_libraries(schema_extract PRIVATE fdbclient fdbrpc flow)
 target_include_directories(schema_extract PRIVATE
@@ -92,13 +93,15 @@ target_include_directories(schema_extract PRIVATE
     $${CMAKE_BINARY_DIR}/fdbrpc/include $${CMAKE_BINARY_DIR}/fdbrpc
     $${CMAKE_BINARY_DIR}/flow/include $${CMAKE_BINARY_DIR}/flow)
 EOF
-                grep -q schema_extract.cmake /fdb/CMakeLists.txt || \
-                    echo "include(schema_extract.cmake)" >> /fdb/CMakeLists.txt
+                grep -q schema_extract.cmake /tmp/fdb/CMakeLists.txt || \
+                    echo "include(schema_extract.cmake)" >> /tmp/fdb/CMakeLists.txt
 
-                ninja -C /build -j$$(nproc) schema_extract 2>&1 | tail -3
+                ninja -C /tmp/build -j$$(nproc) schema_extract 2>&1 | tail -3
                 mkdir -p /out/types
-                /build/bin/schema_extract /out/types
+                /tmp/build/bin/schema_extract /out/types
                 cd /out && tar cf /out/wire_types.tar types/
+                # Fix permissions so host user can read/delete.
+                chmod -R a+rwX /out/
             '
 
         mv "$$TMPOUT/wire_types.tar" $@

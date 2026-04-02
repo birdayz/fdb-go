@@ -57,11 +57,14 @@ bench-one NAME:
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
 # Two Bazel genrules: fdb_cmake_build (cached on FDB version) → generate_wire_types (cached on generator code).
 generate-wire-types:
+    #!/usr/bin/env bash
+    set -euo pipefail
     bazelisk build //cmd/fdb-schema-extract:generate_wire_types
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     rm -f pkg/fdbgo/wire/types/*_generated.go
-    tar xf bazel-bin/cmd/fdb-schema-extract/wire_types.tar -C pkg/fdbgo/wire/types/ --strip-components=1
+    tar xf "$BAZEL_BIN/cmd/fdb-schema-extract/wire_types.tar" -C pkg/fdbgo/wire/types/ --strip-components=1
     just gazelle
-    @echo "Generated: $$(ls pkg/fdbgo/wire/types/*_generated.go | wc -l) files"
+    echo "Generated: $(ls pkg/fdbgo/wire/types/*_generated.go | wc -l) files"
 
 # Regenerate FDB wire schema JSON files (Bazel, sandboxed)
 wire-schema:
