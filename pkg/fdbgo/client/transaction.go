@@ -365,7 +365,7 @@ func (tx *Transaction) OnError(err error) error {
 
 	case ErrNotCommitted, ErrDatabaseLocked, ErrProxyMemoryLimitExceeded,
 		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled,
-		ErrAllProxiesUnreachable, ErrAllAlternativesFailed:
+		ErrAllProxiesUnreachable:
 		// Commit-related: exponential backoff.
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff())

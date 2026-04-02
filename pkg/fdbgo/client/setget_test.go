@@ -135,10 +135,15 @@ func TestSetGet(t *testing.T) {
 }
 
 // openTestDB starts an FDB testcontainer and returns a connected Database.
+// Uses a 60s setup context for container creation + configuration, independent
+// of the caller's ctx (which may be shorter for the actual test operations).
 func openTestDB(t *testing.T, ctx context.Context) *Database {
 	t.Helper()
 
-	container, err := tcfdb.Run(ctx, "")
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer setupCancel()
+
+	container, err := tcfdb.Run(setupCtx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -177,15 +182,29 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 		t.Fatalf("parse cluster string: %v", err)
 	}
 
-	// Configure cluster
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
+	// Configure cluster and wait for it to be fully ready.
+	// The "configure" command returns before resolvers are initialized.
+	// "status minimal" reports "Healthy" only when all roles are up.
+	exitCode, _, _ := container.Exec(setupCtx, []string{"fdbcli", "--exec", "configure new single ssd"})
 	if exitCode != 0 {
 		t.Fatalf("fdbcli configure exit: %d", exitCode)
 	}
-	time.Sleep(2 * time.Second)
+	for i := 0; i < 30; i++ {
+		time.Sleep(1 * time.Second)
+		code, reader, err := container.Exec(setupCtx, []string{"fdbcli", "--exec", "status minimal"})
+		if err != nil || reader == nil {
+			continue
+		}
+		if code == 0 {
+			out, _ := io.ReadAll(reader)
+			if strings.Contains(string(out), "Healthy") {
+				break
+			}
+		}
+	}
 
 	// Read internal cluster file for correct cluster key
-	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
+	_, internalReader, err := container.Exec(setupCtx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {
 		t.Fatalf("read internal cluster file: %v", err)
 	}
@@ -212,7 +231,7 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 		connectCF.InternalKey += a
 	}
 
-	db, err := openDatabaseFromConfig(ctx, connectCF, nil)
+	db, err := openDatabaseFromConfig(setupCtx, connectCF, nil)
 	if err != nil {
 		t.Fatalf("openDatabaseFromConfig: %v", err)
 	}

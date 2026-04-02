@@ -310,6 +310,10 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.CreateTransaction()
 	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		result, err := fn(tx)
 		if err != nil {
 			if retryErr := tx.OnError(err); retryErr != nil {
@@ -334,6 +338,10 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
 	tx := d.CreateTransaction()
 	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		result, err := fn(tx)
 		if err != nil {
 			if retryErr := tx.OnError(err); retryErr != nil {

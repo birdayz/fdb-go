@@ -174,7 +174,10 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"process_behind", ErrProcessBehind},
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
 		{"all_proxies_unreachable", ErrAllProxiesUnreachable},
-		{"all_alternatives_failed", ErrAllAlternativesFailed},
+		// all_alternatives_failed (1006) is NOT retryable at OnError level.
+		// It's retried at Layer 2 (read path wrong-shard loop). If it
+		// escapes to OnError, it means the read path exhausted retries
+		// and the transaction should fail, not retry forever.
 	}
 	for _, tc := range retryable {
 		tc := tc
