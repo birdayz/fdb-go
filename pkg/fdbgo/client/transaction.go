@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"time"
 
@@ -13,10 +14,16 @@ import (
 
 // FDB error codes.
 const (
-	ErrNotCommitted        = 1020
-	ErrCommitUnknownResult = 1021
-	ErrTransactionTooOld   = 1007
-	ErrWrongShardServer    = 1062
+	ErrNotCommitted              = 1020
+	ErrCommitUnknownResult       = 1021
+	ErrTransactionTooOld         = 1007
+	ErrFutureVersion             = 1009
+	ErrWrongShardServer          = 1062
+	ErrDatabaseLocked            = 1031
+	ErrProxyMemoryLimitExceeded  = 1037
+	ErrGrvProxyMemoryLimit       = 1038
+	ErrProcessBehind             = 1039
+	ErrBatchTransactionThrottled = 1040
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -25,6 +32,14 @@ const (
 	UnlimitedBytes       int32 = 0x7FFFFFFF
 	DefaultRPCTimeout          = 5 * time.Second
 	MaxWrongShardRetries       = 5
+)
+
+// Backoff constants — match C++ CLIENT_KNOBS.
+const (
+	defaultBackoff     = 10 * time.Millisecond // C++: DEFAULT_BACKOFF
+	backoffGrowthRate  = 2.0                   // C++: BACKOFF_GROWTH_RATE
+	maxBackoff         = 1 * time.Second       // C++: DEFAULT_MAX_BACKOFF
+	futureVersionDelay = 10 * time.Millisecond // C++: FUTURE_VERSION_RETRY_DELAY
 )
 
 // Endpoint indices from C++ interface definitions.
@@ -84,7 +99,7 @@ type KeyRange struct {
 // Transaction represents an FDB transaction.
 // Mutations are buffered locally and sent on Commit().
 type Transaction struct {
-	db    *Database
+	db    *database
 	state txState
 
 	readVersion      int64
@@ -146,7 +161,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		return fmt.Errorf("transaction not active")
 	}
 	if !tx.hasReadVersion {
-		rv, err := tx.getReadVersion(ctx)
+		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx)
 		if err != nil {
 			return err
 		}
@@ -247,7 +262,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
 	if tx.committedVersion > 0 {
-		tx.db.grvBatcher.UpdateCachedReadVersion(time.Now(), tx.committedVersion)
+		tx.db.grvCache.update(time.Now(), tx.committedVersion)
 	}
 	return nil
 }
@@ -288,41 +303,42 @@ func (tx *Transaction) OnError(err error) error {
 		return err
 	}
 
-	if !fdbErr.Retryable() {
+	switch fdbErr.Code {
+	case ErrTransactionTooOld, ErrFutureVersion:
+		// Version-related: fixed delay, no backoff growth. Match C++.
+		tx.retryCount++
+		time.Sleep(futureVersionDelay)
+		tx.reset()
+		return nil
+
+	case ErrNotCommitted, ErrDatabaseLocked, ErrProxyMemoryLimitExceeded,
+		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled:
+		// Commit-related: exponential backoff.
+		tx.retryCount++
+		time.Sleep(tx.nextBackoff())
+		tx.reset()
+		return nil
+
+	case ErrCommitUnknownResult:
+		// Self-conflicting: copy write conflicts to read conflicts.
+		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
+		copy(selfConflicts, tx.writeConflicts)
+		tx.retryCount++
+		time.Sleep(tx.nextBackoff())
+		tx.reset()
+		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
+		return nil
+
+	default:
 		tx.state = txStateErrored
 		return err
 	}
-
-	// For commit_unknown_result: the transaction MAY have committed on the
-	// server. To prevent double-apply on retry, copy the write conflict ranges
-	// into a "self-conflict" set. On retry, these become read conflicts — if
-	// the original did commit, the retry will conflict with its own writes.
-	// This matches C++ NativeAPI's makeSelfConflicting().
-	var selfConflicts []KeyRange
-	if fdbErr.Code == ErrCommitUnknownResult {
-		selfConflicts = make([]KeyRange, len(tx.writeConflicts))
-		copy(selfConflicts, tx.writeConflicts)
-	}
-
-	tx.retryCount++
-	tx.backoff = tx.nextBackoff()
-	time.Sleep(tx.backoff)
-	tx.reset()
-
-	// Inject self-conflicts after reset so the retry carries them.
-	tx.readConflicts = append(tx.readConflicts, selfConflicts...)
-
-	return nil
 }
 
 // SetReadVersion sets the read version manually.
 func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
-}
-
-func (tx *Transaction) getReadVersion(ctx context.Context) (int64, error) {
-	return tx.db.grvBatcher.GetReadVersion(ctx)
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
@@ -351,6 +367,8 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: key, End: append(key, 0)})
 }
 
+// reset clears transaction state for retry, preserving retryCount and backoff.
+// Matches C++ TransactionState::reset() which preserves numErrors and backoff.
 func (tx *Transaction) reset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false
@@ -360,17 +378,17 @@ func (tx *Transaction) reset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	// retryCount and backoff are preserved across reset (match C++).
 }
 
+// nextBackoff returns the current backoff duration with jitter, then grows
+// the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
 func (tx *Transaction) nextBackoff() time.Duration {
-	base := 100 * time.Millisecond
-	for i := 0; i < tx.retryCount && base < 5*time.Second; i++ {
-		base *= 2
+	if tx.backoff == 0 {
+		tx.backoff = defaultBackoff
 	}
-	if base > 5*time.Second {
-		base = 5 * time.Second
-	}
-	// Add jitter: multiply by random [0.0, 1.0).
-	jitter := time.Duration(float64(base) * rand.Float64())
-	return jitter
+	// C++ pattern: return current * jitter, then grow for next time.
+	delay := time.Duration(float64(tx.backoff) * rand.Float64())
+	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(maxBackoff)))
+	return delay
 }

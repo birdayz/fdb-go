@@ -72,6 +72,17 @@ func (d *faultDialer) disarm() {
 	}
 }
 
+// newTestDatabase creates a Database from a ClusterFile with custom dialer,
+// bootstrapping the connection against the provided context.
+func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) *Database {
+	t.Helper()
+	db, err := openDatabaseFromConfig(ctx, cf, dialFn)
+	if err != nil {
+		t.Fatalf("newTestDatabase: %v", err)
+	}
+	return db
+}
+
 // TestCommitUnknownResult_NoDoubleApply verifies that the self-conflicting
 // mechanism prevents double-apply of non-idempotent operations.
 //
@@ -138,19 +149,8 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	}
 
 	fd := &faultDialer{}
-	cluster := NewClusterFromConfig(connectCF)
-	cluster.SetDialFunc(fd.dial)
-	defer cluster.Close()
-
-	if err := cluster.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	db := &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
-	}
+	db := newTestDatabase(t, ctx, connectCF, fd.dial)
+	defer db.Close()
 
 	// Seed counter = 10.
 	var counterBuf [8]byte
@@ -166,7 +166,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// Manual commit with fault: ADD 5, then kill connection.
 	tx := db.CreateTransaction()
-	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -184,19 +184,17 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 		t.Fatal("commit should have failed (connection killed)")
 	}
 
-	// Disarm and reconnect.
+	// Disarm and clear connection pool to force reconnect.
 	fd.disarm()
-	cluster.mu.Lock()
-	for k := range cluster.connPool {
-		delete(cluster.connPool, k)
+	db.db.connMu.Lock()
+	for k := range db.db.connPool {
+		delete(db.db.connPool, k)
 	}
-	cluster.mu.Unlock()
+	db.db.connMu.Unlock()
 
-	if err := cluster.Connect(ctx); err != nil {
-		t.Fatalf("reconnect: %v", err)
-	}
-	db.locationCache = NewLocationCache(cluster)
-	db.grvBatcher.InvalidateCache() // Stale cache from pre-fault connections.
+	// Re-bootstrap to get fresh topology.
+	db.db.refreshTopology()
+	db.db.grvCache.invalidate() // Stale cache from pre-fault connections.
 
 	// Read the counter. It should be 15 (10 + 5, applied once by server).
 	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
@@ -383,19 +381,8 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	wd := &wrongShardDialer{errBody: errBody}
-	cluster := NewClusterFromConfig(connectCF)
-	cluster.SetDialFunc(wd.dial)
-	defer cluster.Close()
-
-	if err := cluster.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	db := &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
-	}
+	db := newTestDatabase(t, ctx, connectCF, wd.dial)
+	defer db.Close()
 
 	key := []byte("fault_wss_key")
 	expected := []byte("correct_value")
@@ -421,7 +408,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}

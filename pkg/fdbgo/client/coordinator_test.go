@@ -56,16 +56,12 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Read the INTERNAL cluster file from the container.
-	// The coordinator compares req.clusterKey with its own cluster key,
-	// so we must use the INTERNAL address (not the external socat address).
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {
 		t.Fatalf("read internal cluster file: %v", err)
 	}
 	internalBytes, _ := io.ReadAll(internalReader)
 	internalStr := string(internalBytes)
-	// Docker multiplexer prepends 8-byte binary header per chunk.
-	// Find the actual cluster string by looking for the known pattern.
 	idx := strings.Index(internalStr, cf.Description)
 	if idx >= 0 {
 		internalStr = internalStr[idx:]
@@ -73,21 +69,17 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	internalConnStr := strings.TrimSpace(internalStr)
 	t.Logf("internal cluster file: %q (raw len=%d)", internalConnStr, len(internalBytes))
 
-	// Parse internal cluster file for the cluster key
 	internalCF, err := ParseClusterString(internalConnStr)
 	if err != nil {
 		t.Logf("parse internal cluster string: %v, falling back to external", err)
 		internalCF = cf
 	}
 
-	// The request clusterKey must use the INTERNAL addresses. Store both.
-	// Create a ClusterFile with external addresses for TCP, internal for clusterKey.
 	connectCF := &ClusterFile{
 		Description:  internalCF.Description,
 		ID:           internalCF.ID,
-		Coordinators: cf.Coordinators, // external (socat) for TCP connection
+		Coordinators: cf.Coordinators,
 	}
-	// Store the internal connection string for the request's clusterKey field
 	internalClusterKey := internalCF.Description + ":" + internalCF.ID + "@"
 	for i, a := range internalCF.Coordinators {
 		if i > 0 {
@@ -98,27 +90,21 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	t.Logf("internal cluster key: %s", internalClusterKey)
 	connectCF.InternalKey = internalClusterKey
 
-	// Create cluster and connect.
-	cluster := NewClusterFromConfig(connectCF)
-	defer cluster.Close()
-
-	err = cluster.Connect(ctx)
+	// Create database and connect.
+	db, err := openDatabaseFromConfig(ctx, connectCF, nil)
 	if err != nil {
-		// If Connect fails, let's try to see what happened at a lower level.
-		// Connect to coordinator manually and dump the raw response.
-		t.Logf("Connect failed: %v", err)
+		// If bootstrap fails, try raw coordinator exchange for debugging.
+		t.Logf("openDatabaseFromConfig failed: %v", err)
 		t.Logf("Attempting raw coordinator exchange for debugging...")
 		debugCoordinatorExchange(t, ctx, cf)
 		t.FailNow()
 	}
+	defer db.Close()
 
 	// Validate the result.
-	cluster.mu.RLock()
-	dbInfo := cluster.dbInfo
-	cluster.mu.RUnlock()
-
+	dbInfo := db.db.dbInfo.Load()
 	if dbInfo == nil {
-		t.Fatal("dbInfo is nil after successful Connect")
+		t.Fatal("dbInfo is nil after successful bootstrap")
 	}
 
 	t.Logf("GRV proxies: %d", len(dbInfo.GRVProxies))
@@ -140,8 +126,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try location lookup
 	t.Log("Attempting GetKeyServerLocations...")
-	lc := NewLocationCache(cluster)
-	servers, locErr := lc.Locate(ctx, []byte("test_key"))
+	servers, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"))
 	if locErr != nil {
 		t.Logf("Locate: %v", locErr)
 	} else {
@@ -170,8 +155,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try GRV — GetReadVersion from the GRV proxy
 	t.Log("Attempting GetReadVersion...")
-	batcher := NewGRVBatcher(cluster)
-	version, err := batcher.GetReadVersion(ctx)
+	version, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
 	if err != nil {
 		t.Logf("GetReadVersion: %v", err)
 	} else {
@@ -184,12 +168,6 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	// Try GetValue — read the key we wrote via C binding
 	if version > 0 && len(dbInfo.GRVProxies) > 0 {
 		t.Log("Attempting GetValue for 'test_key'...")
-		// Create a minimal Database + Transaction for the getValue call
-		db := &Database{
-			cluster:       cluster,
-			grvBatcher:    batcher,
-			locationCache: NewLocationCache(cluster),
-		}
 		tx := db.CreateTransaction()
 		tx.readVersion = version
 		tx.hasReadVersion = true
@@ -208,15 +186,10 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	// Test WRITE path: Go client writes, C binding reads back.
 	if len(dbInfo.CommitProxies) > 0 && cErr == nil {
 		t.Log("Attempting Go client write...")
-		db := &Database{
-			cluster:       cluster,
-			grvBatcher:    batcher,
-			locationCache: NewLocationCache(cluster),
-		}
 
 		// Write via Go client.
 		writeTx := db.CreateTransaction()
-		rv, err := batcher.GetReadVersion(ctx)
+		rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
 		if err != nil {
 			t.Fatalf("GRV for write: %v", err)
 		}
@@ -245,7 +218,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 		// Also verify via Go client read.
 		readTx := db.CreateTransaction()
-		rv2, _ := batcher.GetReadVersion(ctx)
+		rv2, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
 		readTx.readVersion = rv2
 		readTx.hasReadVersion = true
 		val2, err := readTx.getValue(ctx, []byte("go_native_key"))
@@ -283,7 +256,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		tx1 := db.CreateTransaction()
 		tx2 := db.CreateTransaction()
 		// Both get the same read version.
-		sharedRV, _ := batcher.GetReadVersion(ctx)
+		sharedRV, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
 		tx1.readVersion = sharedRV
 		tx1.hasReadVersion = true
 		tx2.readVersion = sharedRV
@@ -367,31 +340,26 @@ func TestGetRange(t *testing.T) {
 	}
 	connectCF.InternalKey = internalClusterKey
 
-	cluster := NewClusterFromConfig(connectCF)
-	defer cluster.Close()
-
-	if err := cluster.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
+	db, err := openDatabaseFromConfig(ctx, connectCF, nil)
+	if err != nil {
+		t.Fatalf("openDatabaseFromConfig: %v", err)
 	}
+	defer db.Close()
 
 	// Enable debug tracing on ALL connections.
-	cluster.mu.RLock()
-	for _, conn := range cluster.connPool {
+	db.db.connMu.RLock()
+	for _, conn := range db.db.connPool {
 		conn.SetDebug(true)
 	}
-	cluster.mu.RUnlock()
-	t.Logf("Connected! GRV proxies=%d commit proxies=%d", len(cluster.dbInfo.GRVProxies), len(cluster.dbInfo.CommitProxies))
-	if len(cluster.dbInfo.GRVProxies) > 0 {
-		t.Logf("GRV proxy: %s", cluster.dbInfo.GRVProxies[0].Address)
-	}
-	if len(cluster.dbInfo.CommitProxies) > 0 {
-		t.Logf("Commit proxy: %s", cluster.dbInfo.CommitProxies[0].Address)
-	}
+	db.db.connMu.RUnlock()
 
-	db := &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
+	dbInfo := db.db.dbInfo.Load()
+	t.Logf("Connected! GRV proxies=%d commit proxies=%d", len(dbInfo.GRVProxies), len(dbInfo.CommitProxies))
+	if len(dbInfo.GRVProxies) > 0 {
+		t.Logf("GRV proxy: %s", dbInfo.GRVProxies[0].Address)
+	}
+	if len(dbInfo.CommitProxies) > 0 {
+		t.Logf("Commit proxy: %s", dbInfo.CommitProxies[0].Address)
 	}
 
 	// Write keys via C binding (avoids Go commit server crashes for now).
@@ -484,17 +452,14 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 	t.Logf("peer has ObjectSerializer: %v", peerPkt.HasObjectSerializerFlag())
 
 	// Read the initial PING from the server (connection keepalive init).
-	// Then respond with our own PING to establish the connection fully.
 	rawConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var lenBuf0 [4]byte
 	if _, err := io.ReadFull(rawConn, lenBuf0[:]); err == nil {
 		pktLen0 := binary.LittleEndian.Uint32(lenBuf0[:])
 		t.Logf("initial frame: packetLen=%d", pktLen0)
-		// Read rest of frame (checksum + payload)
 		rest := make([]byte, 8+int(pktLen0))
 		io.ReadFull(rawConn, rest)
 
-		// Check if it's a PING
 		if int(pktLen0) >= 16 {
 			tok1 := binary.LittleEndian.Uint64(rest[8:])
 			tok2 := binary.LittleEndian.Uint64(rest[16:])
@@ -507,23 +472,18 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 	} else {
 		t.Logf("no initial frame: %v", err)
 	}
-	rawConn.SetReadDeadline(time.Time{}) // clear deadline
+	rawConn.SetReadDeadline(time.Time{})
 
-	// Small delay to let server finish initialization
 	time.Sleep(500 * time.Millisecond)
 
-	// Build request.
 	replyToken := transport.NewUID()
 	body := buildOpenDatabaseCoordRequest(cf, replyToken)
 	t.Logf("request body (%d bytes)", len(body))
 	t.Logf("reply token: %016x:%016x", replyToken.First, replyToken.Second)
 
-	// Try both the expected token (4) and a bogus token (100) to see
-	// if the connection close is token-specific or universal.
 	for _, testTokenID := range []int{100, transport.WLTokenClientLeaderRegOpenDatabase} {
 		t.Logf("--- Trying token ID %d ---", testTokenID)
 
-		// Reconnect for each attempt.
 		rawConn.Close()
 		rawConn, err = d.DialContext(ctx, "tcp", addr)
 		if err != nil {
@@ -535,7 +495,6 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 			t.Logf("rehandshake: %v", err)
 			continue
 		}
-		// Drain PING
 		rawConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		pingBuf := make([]byte, 256)
 		rawConn.Read(pingBuf)
@@ -594,14 +553,12 @@ func TestProbeWellKnownTokens_WIP(t *testing.T) {
 
 	addr := cf.Coordinators[0]
 
-	// Ensure cluster is fully configured first.
 	exitCode, _, err := container.Exec(ctx, []string{
 		"fdbcli", "--exec", "configure new single ssd; status",
 	})
 	t.Logf("fdbcli exit: %d err: %v", exitCode, err)
 	time.Sleep(3 * time.Second)
 
-	// Use separate connections per probe to avoid interference.
 	for tokenID := 2; tokenID <= 15; tokenID++ {
 		func(tid int) {
 			var d net.Dialer

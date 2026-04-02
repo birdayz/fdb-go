@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -11,13 +12,16 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
-// LocationCache maps key ranges to storage server addresses.
-// Populated by GetKeyServerLocationsRequest to commit proxies.
-// Invalidated on wrong_shard_server errors.
-type LocationCache struct {
-	cluster *Cluster
+// locationCache maps key ranges to storage server endpoints.
+// C++: CoalescedKeyRangeMap<Reference<LocationInfo>>.
+//
+// Methods receive *database as argument — no stored back-pointer.
+// Size-capped to maxSize entries (C++ default: LOCATION_CACHE_EVICTION_SIZE = 600,000).
+// Random eviction on overflow, matching C++ setCachedLocation behavior.
+type locationCache struct {
 	mu      sync.RWMutex
 	entries []locationEntry
+	maxSize int // default 600_000
 }
 
 type locationEntry struct {
@@ -32,14 +36,9 @@ type ServerInfo struct {
 	Token   transport.UID
 }
 
-// NewLocationCache creates a location cache.
-func NewLocationCache(cluster *Cluster) *LocationCache {
-	return &LocationCache{cluster: cluster}
-}
-
-// Locate finds the storage servers responsible for a key.
+// locate finds the storage servers responsible for a key.
 // On cache miss, queries a commit proxy.
-func (lc *LocationCache) Locate(ctx context.Context, key []byte) ([]ServerInfo, error) {
+func (lc *locationCache) locate(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
 	// Check cache first.
 	lc.mu.RLock()
 	for _, entry := range lc.entries {
@@ -53,12 +52,12 @@ func (lc *LocationCache) Locate(ctx context.Context, key []byte) ([]ServerInfo, 
 	lc.mu.RUnlock()
 
 	// Cache miss — query commit proxy.
-	return lc.refresh(ctx, key)
+	return lc.refresh(db, ctx, key)
 }
 
-// Invalidate removes cached entries containing the given key.
+// invalidate removes cached entries containing the given key.
 // Called on wrong_shard_server errors.
-func (lc *LocationCache) Invalidate(key []byte) {
+func (lc *locationCache) invalidate(key []byte) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
@@ -73,13 +72,13 @@ func (lc *LocationCache) Invalidate(key []byte) {
 	lc.entries = filtered
 }
 
-func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo, error) {
-	proxy, err := lc.cluster.GetCommitProxy()
+func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
+	proxy, err := db.getCommitProxy()
 	if err != nil {
 		return nil, fmt.Errorf("get commit proxy: %w", err)
 	}
 
-	conn, err := lc.cluster.getOrDial(ctx, proxy.Address)
+	conn, err := db.getOrDial(ctx, proxy.Address)
 	if err != nil {
 		return nil, fmt.Errorf("dial commit proxy: %w", err)
 	}
@@ -105,9 +104,17 @@ func (lc *LocationCache) refresh(ctx context.Context, key []byte) ([]ServerInfo,
 		if err != nil {
 			return nil, err
 		}
-		// Cache the returned shard ranges.
+		// Cache the returned shard ranges with size cap.
 		lc.mu.Lock()
-		lc.entries = append(lc.entries, entries...)
+		for _, entry := range entries {
+			if lc.maxSize > 0 && len(lc.entries) >= lc.maxSize {
+				// Random eviction matching C++ behavior.
+				idx := rand.Intn(len(lc.entries))
+				lc.entries[idx] = lc.entries[len(lc.entries)-1]
+				lc.entries = lc.entries[:len(lc.entries)-1]
+			}
+			lc.entries = append(lc.entries, entry)
+		}
 		lc.mu.Unlock()
 		// Return servers for the first entry (covers the queried key).
 		if len(entries) > 0 {

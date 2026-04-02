@@ -12,9 +12,9 @@ import (
 
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
 // and returns the parsed ClientDBInfo with proxy addresses and tokens.
-func (c *Cluster) openDatabaseCoord(ctx context.Context, conn *transport.Conn, addr string) (*DBInfo, error) {
+func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, addr string) (*DBInfo, error) {
 	replyToken, replyCh := conn.PrepareReply()
-	body := buildOpenDatabaseCoordRequest(c.clusterFile, replyToken)
+	body := buildOpenDatabaseCoordRequest(db.clusterFile, replyToken)
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {

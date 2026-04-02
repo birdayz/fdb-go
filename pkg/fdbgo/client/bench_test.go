@@ -162,16 +162,11 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 		connectCF.InternalKey += a
 	}
 
-	cluster := NewClusterFromConfig(connectCF)
-	b.Cleanup(func() { cluster.Close() })
-
-	if err := cluster.Connect(ctx); err != nil {
-		b.Fatalf("Connect: %v", err)
+	db, err := openDatabaseFromConfig(ctx, connectCF, nil)
+	if err != nil {
+		b.Fatalf("openDatabaseFromConfig: %v", err)
 	}
+	b.Cleanup(func() { db.Close() })
 
-	return &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
-	}
+	return db
 }

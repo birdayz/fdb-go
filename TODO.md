@@ -2031,23 +2031,21 @@ Request type `_custom.go` files are eliminated by flipping `EmitStructs=true` in
 - [ ] **OpenDatabaseCoordRequest** — flip, delete _custom.go, update coordinator.go
 - [ ] **CommitTransactionRequest** — flip, delete _custom.go, update commitpath.go (most complex — nested CommitTransactionRef with pre-serialized vectors)
 
-### CRITICAL — Wire protocol bugs found by 5-agent review (2026-04-01)
+### Wire protocol bugs found by 5-agent review (2026-04-01) — ALL RESOLVED by v5 codegen
 
-- [ ] **CRITICAL #1 — Reader: ReadVectorInt32/ReadVectorUint64 wrong RelOff** — Uses `int(off) + relOffset` instead of `r.objPos + int(off) + relOffset`. Silent data corruption for vector fields in nested objects. `reader.go:211-248`. Need test: nested struct with vector int32 field.
-- [ ] **CRITICAL #2 — Reader: ReadOptionalInt32/ReadOptionalString wrong RelOff** — Same bug. `reader.go:252-274`. Need test: nested struct with optional int32 field.
-- [ ] **CRITICAL #3 — Writer: VTable hash key ignores field offsets** — `(vt[0]<<16|vt[1])` key in MessageTemplate.vtOffsets. Two vtables with same size+objSize but different field offsets collide → wrong soffset. `writer.go:98`. Need test: two vtables with same vt[0]/vt[1] but different fields.
+v5 composable-primitives generator (RFC 013) rewrote all marshal/unmarshal code. These bugs are no longer relevant:
 
-### HIGH — Wire protocol issues found by review
+- [x] **CRITICAL #1 — Reader: ReadVectorInt32/ReadVectorUint64 wrong RelOff** — Code already fixed (`r.objPos + int(off) + int(relOffset)`). Additionally, zero callers in v5 generated code — each type has its own `UnmarshalFromReader`.
+- [x] **CRITICAL #2 — Reader: ReadOptionalInt32/ReadOptionalString wrong RelOff** — Same: already fixed + zero callers.
+- [x] **CRITICAL #3 — Writer: VTable hash key ignores field offsets** — `makeVTableKey` now hashes full vtable content (all uint16 entries as bytes). No collision possible.
+- [x] **HIGH #6 — Generated: MarshalInto missing nested struct writes** — `MarshalInto` deleted. v5 uses `measureEndOff`/`writeDirect`/`MarshalFDB` exclusively.
+- [x] **HIGH #7 — Extractor: scalar fallback assumes unsigned** — `GoTypeMapping` deleted. v5 extractor uses `classifyField()` with proper C++ type trait inspection.
+- [x] **MEDIUM #9 — Reader: ReadUID no bounds check** — Already fixed: `off+16 > len(r.object)` guard added.
+- [x] **MEDIUM #10 — Reader: fieldOffset no vtable bounds check** — Already fixed: `byteOff+2 > len(r.vtable)` guard added.
+- [x] **MEDIUM #17 — Client: CommitTransactionRef Field_0/1/2/3 fragile** — v5 generates named fields (Mutations, ReadConflictRanges, WriteConflictRanges).
 
-- [ ] **HIGH #7 — Extractor: scalar fallback assumes unsigned** — GoTypeMapping size-based fallback maps all sizes to unsigned types. Signed int32/int16 in fallback path → sign inversion. `main.cpp:246-252`.
-- [ ] **HIGH #6 — Generated: MarshalInto missing nested struct writes** — emitMarshalInto skips serialize_member fields. MarshalFDB writes them via WriteStruct but MarshalInto doesn't. Callers of MarshalInto (MarshalStructBlob, WriteNested) produce incomplete wire data.
-
-### MEDIUM — Wire protocol issues found by review
-
-- [ ] **MEDIUM #9 — Reader: ReadUID no bounds check** — `r.object[off:off+16]` without bounds check. Panic on missing/small fields. `reader.go:167-173`.
-- [ ] **MEDIUM #10 — Reader: fieldOffset no vtable bounds check** — `r.vtable[entryIndex*2:]` without checking vtable slice length. Panic on corrupted vtable. `reader.go:99`.
-- [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — Generated code uses `len(m.Key) > 0` which skips empty non-nil slices. Should be `m.Key != nil` if FDB distinguishes absent from empty.
-- [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore.
-- [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data with n=MaxInt32 → huge allocation.
+Remaining (still relevant but low impact):
+- [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — v5 uses `len(m.Key) > 0`. FDB wire format likely doesn't distinguish absent from empty StringRef, but verify.
+- [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore. Low risk — tag=0 means no value present.
+- [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data risk. Should add bounds check.
 - [ ] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Works because EndpointGetValue=0, but should use the constant for clarity.
-- [ ] **MEDIUM #17 — Client: CommitTransactionRef Field_0/1/2/3 fragile** — No semantic names for conflict range / mutation fields.

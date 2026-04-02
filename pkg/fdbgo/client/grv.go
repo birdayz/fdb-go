@@ -19,36 +19,85 @@ const (
 	grvCacheRKCooldown = 60 * time.Second       // GRV_CACHE_RK_COOLDOWN = 60s
 )
 
-// GRVBatcher batches concurrent GetReadVersion requests into a single
-// RPC to a GRV proxy, then fans out the result.
+// grvCache holds the cached read version state.
+// C++: DatabaseContext fields cachedReadVersion, lastGrvTime,
 //
-// GRV caching (matching C++ DatabaseContext):
-// - Cached version served if <100ms old (MAX_VERSION_CACHE_LAG)
-// - Background refresher keeps cache warm (MAX_PROXY_CONTACT_LAG)
-// - Monotonic: cache only accepts newer versions
-// - Updated on GRV response AND after successful commit
-// - Ratekeeper throttle awareness: cache disabled for 60s after throttle
-type GRVBatcher struct {
-	cluster *Cluster
+//	lastProxyRequestTime, lastRkBatchThrottleTime, lastRkDefaultThrottleTime.
+//
+// C++ does NOT explicitly invalidate this cache on proxy change — it relies
+// on natural expiry via MAX_VERSION_CACHE_LAG (100ms). We match this behavior.
+type grvCache struct {
+	version          atomic.Int64 // monotonic (CAS loop, matches C++ guarded store)
+	lastTime         atomic.Int64 // UnixNano
+	lastProxyContact atomic.Int64 // UnixNano
+	lastRkDefault    atomic.Int64 // ratekeeper throttle
+	lastRkBatch      atomic.Int64
+}
 
-	// Batching state.
-	mu        sync.Mutex
-	pending   []grvRequest
-	batchTime time.Duration
-	timer     *time.Timer
+// tryCache returns the cached version if it's fresh enough.
+func (c *grvCache) tryCache() (int64, bool) {
+	v := c.version.Load()
+	if v == 0 {
+		return 0, false
+	}
 
-	// Cache state (atomic for lock-free reads on hot path).
-	cachedVersion    atomic.Int64 // monotonic: only increases
-	lastGrvTime      atomic.Int64 // UnixNano of last cache update
-	lastProxyContact atomic.Int64 // UnixNano of last proxy RPC
+	now := time.Now().UnixNano()
+	lastTime := c.lastTime.Load()
+	if time.Duration(now-lastTime) > maxVersionCacheLag {
+		return 0, false // stale
+	}
 
-	// Ratekeeper throttle tracking.
-	lastRkDefaultThrottle atomic.Int64 // UnixNano
-	lastRkBatchThrottle   atomic.Int64 // UnixNano
+	// Check ratekeeper throttle cooldown (default priority).
+	lastThrottle := c.lastRkDefault.Load()
+	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
+		return 0, false // throttled — must contact proxy
+	}
 
-	// Background refresher.
+	return v, true
+}
+
+// update updates the cache with a new version.
+// Monotonic: only accepts versions >= current cached version.
+// Called after GRV response and after successful commit.
+func (c *grvCache) update(t time.Time, v int64) {
+	for {
+		cur := c.version.Load()
+		if v < cur {
+			return // don't go backwards
+		}
+		if c.version.CompareAndSwap(cur, v) {
+			break
+		}
+	}
+	// Update time only if strictly newer (matching C++).
+	tNano := t.UnixNano()
+	for {
+		cur := c.lastTime.Load()
+		if tNano <= cur {
+			return
+		}
+		if c.lastTime.CompareAndSwap(cur, tNano) {
+			return
+		}
+	}
+}
+
+// invalidate clears the cached version.
+func (c *grvCache) invalidate() {
+	c.version.Store(0)
+	c.lastTime.Store(0)
+}
+
+// grvBatcher batches concurrent GetReadVersion calls.
+// C++: DatabaseContext::VersionBatcher + readVersionBatcher actor.
+//
+// Methods receive *database as argument — no stored back-pointer.
+type grvBatcher struct {
+	mu          sync.Mutex
+	pending     []grvRequest
+	batchTime   time.Duration
+	timer       *time.Timer
 	refreshOnce sync.Once
-	stopRefresh chan struct{}
 }
 
 type grvRequest struct {
@@ -60,19 +109,15 @@ type grvResult struct {
 	err     error
 }
 
-// NewGRVBatcher creates a batcher with GRV caching.
-func NewGRVBatcher(cluster *Cluster) *GRVBatcher {
-	return &GRVBatcher{
-		cluster:     cluster,
-		batchTime:   1 * time.Millisecond,
-		stopRefresh: make(chan struct{}),
-	}
-}
-
-// GetReadVersion returns a read version, using the cache if fresh.
-func (b *GRVBatcher) GetReadVersion(ctx context.Context) (int64, error) {
+// getReadVersion returns a read version, using the cache if fresh.
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
-	if v, ok := b.tryCache(); ok {
+	if v, ok := db.grvCache.tryCache(); ok {
+		// Start background refresher on first cache hit.
+		b.refreshOnce.Do(func() {
+			db.wg.Add(1)
+			go b.backgroundRefresher(db)
+		})
 		return v, nil
 	}
 
@@ -82,7 +127,7 @@ func (b *GRVBatcher) GetReadVersion(ctx context.Context) (int64, error) {
 	b.mu.Lock()
 	b.pending = append(b.pending, req)
 	if len(b.pending) == 1 {
-		b.timer = time.AfterFunc(b.batchTime, b.flush)
+		b.timer = time.AfterFunc(b.batchTime, func() { b.flush(db) })
 	}
 	b.mu.Unlock()
 
@@ -94,61 +139,8 @@ func (b *GRVBatcher) GetReadVersion(ctx context.Context) (int64, error) {
 	}
 }
 
-// tryCache returns the cached version if it's fresh enough.
-func (b *GRVBatcher) tryCache() (int64, bool) {
-	v := b.cachedVersion.Load()
-	if v == 0 {
-		return 0, false
-	}
-
-	now := time.Now().UnixNano()
-	lastTime := b.lastGrvTime.Load()
-	if time.Duration(now-lastTime) > maxVersionCacheLag {
-		return 0, false // stale
-	}
-
-	// Check ratekeeper throttle cooldown (default priority).
-	lastThrottle := b.lastRkDefaultThrottle.Load()
-	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
-		return 0, false // throttled — must contact proxy
-	}
-
-	// Start background refresher on first cache hit.
-	b.refreshOnce.Do(func() {
-		go b.backgroundRefresher()
-	})
-
-	return v, true
-}
-
-// UpdateCachedReadVersion updates the cache with a new version.
-// Monotonic: only accepts versions >= current cached version.
-// Called after GRV response and after successful commit.
-func (b *GRVBatcher) UpdateCachedReadVersion(t time.Time, v int64) {
-	for {
-		cur := b.cachedVersion.Load()
-		if v < cur {
-			return // don't go backwards
-		}
-		if b.cachedVersion.CompareAndSwap(cur, v) {
-			break
-		}
-	}
-	// Update time only if strictly newer (matching C++).
-	tNano := t.UnixNano()
-	for {
-		cur := b.lastGrvTime.Load()
-		if tNano <= cur {
-			return
-		}
-		if b.lastGrvTime.CompareAndSwap(cur, tNano) {
-			return
-		}
-	}
-}
-
 // flush sends the batched GRV request and updates the cache.
-func (b *GRVBatcher) flush() {
+func (b *grvBatcher) flush(db *database) {
 	b.mu.Lock()
 	batch := b.pending
 	b.pending = nil
@@ -159,20 +151,20 @@ func (b *GRVBatcher) flush() {
 	}
 
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest()
+	version, rkDefault, rkBatch, err := b.sendGRVRequest(db)
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
 		// Update cache with fresh version.
-		b.UpdateCachedReadVersion(requestTime, version)
-		b.lastProxyContact.Store(time.Now().UnixNano())
+		db.grvCache.update(requestTime, version)
+		db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
 
 		// Track ratekeeper throttle state.
 		if rkDefault {
-			b.lastRkDefaultThrottle.Store(time.Now().UnixNano())
+			db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
 		}
 		if rkBatch {
-			b.lastRkBatchThrottle.Store(time.Now().UnixNano())
+			db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
 		}
 	}
 
@@ -182,8 +174,8 @@ func (b *GRVBatcher) flush() {
 	if b.batchTime < 100*time.Microsecond {
 		b.batchTime = 100 * time.Microsecond
 	}
-	if b.batchTime > 10*time.Millisecond {
-		b.batchTime = 10 * time.Millisecond
+	if b.batchTime > 5*time.Millisecond { // C++ GRV_BATCH_TIMEOUT = 5ms
+		b.batchTime = 5 * time.Millisecond
 	}
 	b.mu.Unlock()
 
@@ -195,7 +187,8 @@ func (b *GRVBatcher) flush() {
 
 // backgroundRefresher proactively keeps the cache fresh.
 // Matches C++ backgroundGrvUpdater: contacts proxy before cache goes stale.
-func (b *GRVBatcher) backgroundRefresher() {
+func (b *grvBatcher) backgroundRefresher(db *database) {
+	defer db.wg.Done()
 	ticker := time.NewTicker(maxVersionCacheLag / 2) // refresh at half the staleness window
 	defer ticker.Stop()
 
@@ -203,8 +196,8 @@ func (b *GRVBatcher) backgroundRefresher() {
 		select {
 		case <-ticker.C:
 			now := time.Now().UnixNano()
-			lastProxy := b.lastProxyContact.Load()
-			lastGrv := b.lastGrvTime.Load()
+			lastProxy := db.grvCache.lastProxyContact.Load()
+			lastGrv := db.grvCache.lastTime.Load()
 
 			// Refresh if cache is getting stale or we haven't contacted proxy recently.
 			needsRefresh := time.Duration(now-lastGrv) > (maxVersionCacheLag/2) ||
@@ -212,45 +205,31 @@ func (b *GRVBatcher) backgroundRefresher() {
 
 			if needsRefresh {
 				requestTime := time.Now()
-				version, rkDefault, rkBatch, err := b.sendGRVRequest()
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db)
 				if err == nil {
-					b.UpdateCachedReadVersion(requestTime, version)
-					b.lastProxyContact.Store(time.Now().UnixNano())
+					db.grvCache.update(requestTime, version)
+					db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
 					if rkDefault {
-						b.lastRkDefaultThrottle.Store(time.Now().UnixNano())
+						db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
 					}
 					if rkBatch {
-						b.lastRkBatchThrottle.Store(time.Now().UnixNano())
+						db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
 					}
 				}
 			}
-		case <-b.stopRefresh:
+		case <-db.ctx.Done():
 			return
 		}
 	}
 }
 
-// InvalidateCache clears the cached version. Called on reconnect or error recovery.
-func (b *GRVBatcher) InvalidateCache() {
-	b.cachedVersion.Store(0)
-	b.lastGrvTime.Store(0)
-}
-
-// Stop shuts down the background refresher.
-func (b *GRVBatcher) Stop() {
-	select {
-	case b.stopRefresh <- struct{}{}:
-	default:
-	}
-}
-
-func (b *GRVBatcher) sendGRVRequest() (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
-	proxy, err := b.cluster.GetGRVProxy()
+func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+	proxy, err := db.getGRVProxy()
 	if err != nil {
 		return 0, false, false, err
 	}
 
-	conn, err := b.cluster.getOrDial(context.Background(), proxy.Address)
+	conn, err := db.getOrDial(context.Background(), proxy.Address)
 	if err != nil {
 		return 0, false, false, err
 	}

@@ -17,7 +17,7 @@ const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_
 // getKey resolves a key selector via the storage server.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locationCache.Locate(ctx, selectorKey)
+		servers, err := tx.db.locCache.locate(tx.db, ctx, selectorKey)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -30,7 +30,7 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 			return key, nil
 		}
 		if isWrongShardServer(err) {
-			tx.db.locationCache.Invalidate(selectorKey)
+			tx.db.locCache.invalidate(selectorKey)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
@@ -41,7 +41,7 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
 	for _, server := range servers {
-		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			continue
 		}
@@ -98,7 +98,7 @@ func parseGetKeyReply(data []byte) ([]byte, error) {
 // for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locationCache.Locate(ctx, key)
+		servers, err := tx.db.locCache.locate(tx.db, ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -112,7 +112,7 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		}
 		// wrong_shard_server → invalidate cache, retry.
 		if isWrongShardServer(err) {
-			tx.db.locationCache.Invalidate(key)
+			tx.db.locCache.invalidate(key)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
@@ -124,7 +124,7 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
 	for _, server := range servers {
-		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			continue
 		}
@@ -200,7 +200,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 // getRangeOneShard queries a single shard with wrong_shard_server retry.
 func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locationCache.Locate(ctx, begin)
+		servers, err := tx.db.locCache.locate(tx.db, ctx, begin)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range begin: %w", err)
 		}
@@ -213,7 +213,7 @@ func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, 
 			return kvs, more, nil
 		}
 		if isWrongShardServer(err) {
-			tx.db.locationCache.Invalidate(begin)
+			tx.db.locCache.invalidate(begin)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
@@ -224,7 +224,7 @@ func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, 
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, servers []ServerInfo) ([]KeyValue, bool, error) {
 	for _, server := range servers {
-		conn, err := tx.db.cluster.getOrDial(ctx, server.Address)
+		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			continue
 		}

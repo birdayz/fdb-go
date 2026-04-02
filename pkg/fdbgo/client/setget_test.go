@@ -34,7 +34,7 @@ func TestTransactRetry(t *testing.T) {
 
 	// tx1 reads and writes the key, but doesn't commit yet.
 	tx1 := db.CreateTransaction()
-	rv, err := db.grvBatcher.GetReadVersion(ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -212,16 +212,11 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 		connectCF.InternalKey += a
 	}
 
-	cluster := NewClusterFromConfig(connectCF)
-	t.Cleanup(func() { cluster.Close() })
-
-	if err := cluster.Connect(ctx); err != nil {
-		t.Fatalf("Connect: %v", err)
+	db, err := openDatabaseFromConfig(ctx, connectCF, nil)
+	if err != nil {
+		t.Fatalf("openDatabaseFromConfig: %v", err)
 	}
+	t.Cleanup(func() { db.Close() })
 
-	return &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
-	}
+	return db
 }

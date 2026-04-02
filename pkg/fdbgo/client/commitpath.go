@@ -11,12 +11,12 @@ import (
 
 // commit sends a CommitTransactionRequest to a commit proxy.
 func (tx *Transaction) commit(ctx context.Context) error {
-	proxy, err := tx.db.cluster.GetCommitProxy()
+	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
 		return fmt.Errorf("get commit proxy: %w", err)
 	}
 
-	conn, err := tx.db.cluster.getOrDial(ctx, proxy.Address)
+	conn, err := tx.db.getOrDial(ctx, proxy.Address)
 	if err != nil {
 		return fmt.Errorf("dial commit proxy (%s): %w", proxy.Address, err)
 	}

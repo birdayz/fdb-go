@@ -3,7 +3,6 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "client",
     srcs = [
-        "cluster.go",
         "commitpath.go",
         "coordinator.go",
         "database.go",
@@ -11,6 +10,7 @@ go_library(
         "grv.go",
         "locality.go",
         "readpath.go",
+        "topology.go",
         "transaction.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client",

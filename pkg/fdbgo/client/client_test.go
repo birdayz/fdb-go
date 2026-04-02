@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
@@ -163,15 +164,15 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		name string
 		code int
 	}{
-		{"not_committed", 1020},
-		{"commit_unknown_result", 1021},
-		{"transaction_too_old", 1007},
-		{"future_version", 1009},
-		{"process_behind", 1037},
-		{"database_locked", 1039},
-		{"proxy_memory_limit_exceeded", 1042},
-		{"batch_transaction_throttled", 1051},
-		{"tag_throttled", 1213},
+		{"not_committed", ErrNotCommitted},
+		{"commit_unknown_result", ErrCommitUnknownResult},
+		{"transaction_too_old", ErrTransactionTooOld},
+		{"future_version", ErrFutureVersion},
+		{"database_locked", ErrDatabaseLocked},
+		{"proxy_memory_limit_exceeded", ErrProxyMemoryLimitExceeded},
+		{"grv_proxy_memory_limit", ErrGrvProxyMemoryLimit},
+		{"process_behind", ErrProcessBehind},
+		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
 	}
 	for _, tc := range retryable {
 		tc := tc
@@ -289,12 +290,7 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 func TestReadOnlyCommit(t *testing.T) {
 	t.Parallel()
 
-	cluster := NewClusterFromConfig(&ClusterFile{Coordinators: []string{"127.0.0.1:4500"}})
-	db := &Database{
-		cluster:       cluster,
-		grvBatcher:    NewGRVBatcher(cluster),
-		locationCache: NewLocationCache(cluster),
-	}
+	db := newTestDatabaseStub()
 	tx := db.CreateTransaction()
 
 	// No mutations → read-only → commit succeeds immediately.
@@ -305,4 +301,19 @@ func TestReadOnlyCommit(t *testing.T) {
 	if tx.state != txStateCommitted {
 		t.Errorf("state: got %d, want %d", tx.state, txStateCommitted)
 	}
+}
+
+// newTestDatabaseStub creates a minimal Database for unit tests that don't
+// need real FDB connectivity (e.g., testing mutation buffering, state transitions).
+func newTestDatabaseStub() *Database {
+	ctx, cancel := context.WithCancel(context.Background())
+	db := &database{
+		clusterFile:  &ClusterFile{Coordinators: []string{"127.0.0.1:4500"}},
+		connPool:     make(map[string]*transport.Conn),
+		topologyKick: make(chan struct{}, 1),
+		connected:    make(chan struct{}),
+		ctx:          ctx,
+		cancel:       cancel,
+	}
+	return &Database{db: db}
 }
