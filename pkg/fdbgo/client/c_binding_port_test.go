@@ -22,14 +22,9 @@ import (
 // ---------------------------------------------------------------------------
 
 // TestGetRangeReverse verifies that reading a range in reverse returns keys
-// in descending order.
+// in descending order. C++ uses negative limit for reverse scans.
 // Ported from unit_tests.cpp line 1185
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1185
-//
-// NOTE: The pure Go client does not currently expose a reverse GetRange API.
-// This test writes keys in forward order, reads them forward, and verifies
-// the ordering is correct (ascending). When reverse support is added, this
-// test should be updated to verify descending order.
 func TestGetRangeReverse(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -50,27 +45,47 @@ func TestGetRangeReverse(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Read all 4 keys forward (no reverse API yet).
+	// Read forward — verify ascending order.
 	result, err := db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
 		kvs, _, err := tx.GetRange(ctx, []byte(prefix+"a"), []byte(prefix+"d\x00"), 100)
 		return kvs, err
 	})
 	if err != nil {
-		t.Fatalf("GetRange: %v", err)
+		t.Fatalf("GetRange forward: %v", err)
 	}
 	kvs := result.([]KeyValue)
-	for i, kv := range kvs {
-		t.Logf("key[%d] = %q, val = %q", i, kv.Key, kv.Value)
-	}
 	if len(kvs) != 4 {
-		t.Fatalf("expected 4 keys, got %d", len(kvs))
+		for i, kv := range kvs {
+			t.Logf("fwd key[%d] = %q", i, kv.Key)
+		}
+		t.Fatalf("forward: expected 4 keys, got %d", len(kvs))
+	}
+	fwdExpected := []string{prefix + "a", prefix + "b", prefix + "c", prefix + "d"}
+	for i, kv := range kvs {
+		if string(kv.Key) != fwdExpected[i] {
+			t.Errorf("fwd key[%d]: got %q, want %q", i, kv.Key, fwdExpected[i])
+		}
 	}
 
-	// Verify ascending order (matching the C test's expectation of ordering).
-	expected := []string{prefix + "a", prefix + "b", prefix + "c", prefix + "d"}
+	// Read reverse — verify descending order (matching C test line 1213-1221).
+	result, err = db.Transact(ctx, func(tx *Transaction) (interface{}, error) {
+		kvs, _, err := tx.GetRangeReverse(ctx, []byte(prefix+"a"), []byte(prefix+"d\x00"), 100)
+		return kvs, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange reverse: %v", err)
+	}
+	kvs = result.([]KeyValue)
+	if len(kvs) != 4 {
+		for i, kv := range kvs {
+			t.Logf("rev key[%d] = %q", i, kv.Key)
+		}
+		t.Fatalf("reverse: expected 4 keys, got %d", len(kvs))
+	}
+	revExpected := []string{prefix + "d", prefix + "c", prefix + "b", prefix + "a"}
 	for i, kv := range kvs {
-		if string(kv.Key) != expected[i] {
-			t.Errorf("key[%d]: got %q, want %q", i, kv.Key, expected[i])
+		if string(kv.Key) != revExpected[i] {
+			t.Errorf("rev key[%d]: got %q, want %q", i, kv.Key, revExpected[i])
 		}
 	}
 }

@@ -165,7 +165,15 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	return s.tx.getRange(ctx, begin, end, limit)
+	return s.tx.getRange(ctx, begin, end, limit, false)
+}
+
+// GetRangeReverse reads a range in reverse without adding a read conflict range.
+func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	if err := s.tx.ensureReadVersion(ctx); err != nil {
+		return nil, false, err
+	}
+	return s.tx.getRange(ctx, begin, end, limit, true)
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
@@ -207,14 +215,24 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
 
-// GetRange reads a range of keys [begin, end).
+// GetRange reads a range of keys [begin, end) in forward order.
 func (tx *Transaction) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	return tx.getRangeDir(ctx, begin, end, limit, false)
+}
+
+// GetRangeReverse reads a range of keys [begin, end) in reverse order.
+// Matches C++ where negative limit = reverse scan.
+func (tx *Transaction) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+	return tx.getRangeDir(ctx, begin, end, limit, true)
+}
+
+func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
 
-	return tx.getRange(ctx, begin, end, limit)
+	return tx.getRange(ctx, begin, end, limit, reverse)
 }
 
 // Set writes a key-value pair.

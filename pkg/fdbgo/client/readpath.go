@@ -161,14 +161,28 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 // getRange reads a key range, automatically continuing across shard boundaries.
 // Each shard is queried independently; results are concatenated until limit is
-// reached or no more data exists.
-func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+// reached or no more data exists. If reverse is true, keys are returned in
+// descending order (C++ uses negative limit for reverse scans).
+func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	var allKVs []KeyValue
 	remaining := limit
 	curBegin := begin
+	curEnd := end
 
 	for remaining > 0 {
-		kvs, more, err := tx.getRangeOneShard(ctx, curBegin, end, remaining)
+		// For reverse scans, locate by end key (we scan backwards).
+		locateKey := curBegin
+		if reverse {
+			// Locate the shard containing the last key in range.
+			// Use end-1 conceptually; the shard containing end covers it.
+			locateKey = curEnd
+			if len(locateKey) > 0 {
+				locateKey = append([]byte(nil), curEnd...)
+				// Decrement to get into the right shard.
+				locateKey[len(locateKey)-1]--
+			}
+		}
+		kvs, more, err := tx.getRangeOneShard(ctx, curBegin, curEnd, remaining, reverse)
 		if err != nil {
 			return nil, false, err
 		}
@@ -177,38 +191,45 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 		remaining -= len(kvs)
 
 		if remaining <= 0 {
-			// Hit our limit. There may be more data.
 			return allKVs, more || len(kvs) > 0, nil
 		}
 
 		if len(kvs) == 0 {
-			// Shard returned nothing for this range — done.
 			return allKVs, false, nil
 		}
 
 		if !more {
-			// Shard exhausted for this range. Continue from next key
-			// on the next shard (if the range extends past this shard).
-			lastKey := kvs[len(kvs)-1].Key
-			curBegin = append(lastKey, 0) // next key after lastKey
-			if bytes.Compare(curBegin, end) >= 0 {
-				// Past the end of our range — done.
-				return allKVs, false, nil
+			if reverse {
+				// For reverse: advance end backwards past first key returned.
+				firstKey := kvs[len(kvs)-1].Key // last in result = smallest key
+				curEnd = firstKey
+				if bytes.Compare(curEnd, begin) <= 0 {
+					return allKVs, false, nil
+				}
+			} else {
+				lastKey := kvs[len(kvs)-1].Key
+				curBegin = append(lastKey, 0)
+				if bytes.Compare(curBegin, end) >= 0 {
+					return allKVs, false, nil
+				}
 			}
-			continue // query next shard
+			continue
 		}
 
-		// more=true but we haven't hit limit: server had more data but
-		// we need to continue. Advance past last key.
-		lastKey := kvs[len(kvs)-1].Key
-		curBegin = append(lastKey, 0)
+		if reverse {
+			firstKey := kvs[len(kvs)-1].Key
+			curEnd = firstKey
+		} else {
+			lastKey := kvs[len(kvs)-1].Key
+			curBegin = append(lastKey, 0)
+		}
 	}
 
 	return allKVs, remaining <= 0, nil
 }
 
 // getRangeOneShard queries a single shard with wrong_shard_server retry.
-func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		servers, err := tx.db.locCache.locate(tx.db, ctx, begin)
 		if err != nil {
@@ -218,7 +239,7 @@ func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, 
 			return nil, false, fmt.Errorf("no storage servers for range")
 		}
 
-		kvs, more, err := tx.sendGetRange(ctx, begin, end, limit, servers)
+		kvs, more, err := tx.sendGetRange(ctx, begin, end, limit, reverse, servers)
 		if err == nil {
 			return kvs, more, nil
 		}
@@ -232,7 +253,12 @@ func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, 
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, servers []ServerInfo) ([]KeyValue, bool, error) {
+func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
+	// C++ uses negative limit for reverse scans (transformRangeLimits in NativeAPI.actor.cpp:4231).
+	wireLimit := int32(limit)
+	if reverse {
+		wireLimit = -wireLimit
+	}
 	for _, server := range servers {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
@@ -240,7 +266,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, int32(limit), replyToken, server.Token)
+		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			cancelReply()
