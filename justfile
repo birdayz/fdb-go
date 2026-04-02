@@ -86,7 +86,7 @@ wire-testvecs:
 
 # Run FDB binding tester (stack machine conformance via Bazel + testcontainers).
 binding-test:
-    bazelisk test //cmd/fdb-stacktester/bindingtester --test_output=streamed
+    bazelisk test //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_output=streamed
 
 # Run tests with coverage
 coverage:
