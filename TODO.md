@@ -1674,7 +1674,8 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 3. **Principles first** — if a test needs a feature, port it COMPLETELY, not a stub
 4. **Tests are authoritative** — if Go behavior differs from C, Go is wrong
 5. **After tests pass**, launch 5 FDB maintainer subagents to cross-review Go vs C++ source
-6. Each ported test references the C source file + line number + GitHub link
+6. **Track progress** in this TODO.md — mark tests ported, APIs added, bugs found
+7. Each ported test references the C source file + line number + GitHub link
 
 This workflow already found 2 critical bugs on first run: 13 wrong mutation type wire values, GetRange key selector skipping first key.
 
