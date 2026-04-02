@@ -274,6 +274,28 @@ func (c *Container) ClusterFile(ctx context.Context) (string, error) {
 	return fmt.Sprintf("docker:docker@%s:%s", host, port.Port()), nil
 }
 
+// NetworkName returns the Docker network name this container is on.
+// Use this to attach other containers to the same network.
+func (c *Container) NetworkName() string {
+	return c.network.Name
+}
+
+// InternalAddress returns the FDB address reachable from within the Docker network.
+// Format: "foundationdb:<port>" — the container alias on the shared network.
+func (c *Container) InternalAddress() string {
+	return fmt.Sprintf("foundationdb:%d", c.externalPort)
+}
+
+// InternalClusterFile returns a cluster file string usable from within the Docker network.
+func (c *Container) InternalClusterFile() string {
+	return fmt.Sprintf("docker:docker@%s", c.InternalAddress())
+}
+
+// Exec runs a command inside the FDB container.
+func (c *Container) Exec(ctx context.Context, cmd []string) (int, io.Reader, error) {
+	return c.Container.Exec(ctx, cmd)
+}
+
 // APIVersion returns the configured FDB API version
 func (c *Container) APIVersion() int {
 	return c.config.APIVersion
