@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -223,46 +224,103 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 	}
 }
 
+// Load balance knobs — match C++ FLOW_KNOBS.
+const (
+	loadBalanceStartBackoff = 10 * time.Millisecond // LOAD_BALANCE_START_BACKOFF
+	loadBalanceMaxBackoff   = 5 * time.Second       // LOAD_BALANCE_MAX_BACKOFF
+	loadBalanceBackoffRate  = 2.0                   // LOAD_BALANCE_BACKOFF_RATE
+)
+
+// sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
+// with AtMostOnce::False. On broken_promise (transport error), tries next
+// proxy. On FDB application error, propagates immediately. If all proxies
+// fail, applies exponential backoff and retries — loops until success or
+// db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
-	proxies := db.getGRVProxies()
-	if len(proxies) == 0 {
-		return 0, false, false, &wire.FDBError{Code: ErrAllProxiesUnreachable}
-	}
+	var backoff time.Duration
+	numAttempts := 0
 
-	for _, proxy := range proxies {
-		conn, err := db.getOrDial(context.Background(), proxy.Address)
-		if err != nil {
-			db.handleConnError(proxy.Address)
-			continue
-		}
-
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetReadVersionRequest(replyToken)
-
-		if err := conn.SendFrame(proxy.Token, body); err != nil {
-			cancelReply()
-			db.handleConnError(proxy.Address)
-			continue
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				db.handleConnError(proxy.Address)
-				continue
+	for {
+		// Re-read proxy list each cycle — topology may have refreshed.
+		proxies := db.getGRVProxies()
+		if len(proxies) == 0 {
+			// No proxies known. Kick topology, wait with backoff.
+			db.kickTopology()
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
 			}
-			return parseGetReadVersionReply(resp.Body)
-		case <-ctx.Done():
-			cancel()
-			cancelReply()
-			continue
+			select {
+			case <-time.After(backoff):
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
+				continue
+			case <-db.ctx.Done():
+				return 0, false, false, db.ctx.Err()
+			}
 		}
-	}
 
-	db.kickTopology()
-	return 0, false, false, &wire.FDBError{Code: ErrAllProxiesUnreachable}
+		// Apply backoff if we've cycled all proxies at least once.
+		if backoff > 0 {
+			select {
+			case <-time.After(backoff):
+			case <-db.ctx.Done():
+				return 0, false, false, db.ctx.Err()
+			}
+		}
+
+		// Cycle all proxies. Only broken_promise (transport error) → next proxy.
+		// FDB application errors propagate immediately.
+		for _, proxy := range proxies {
+			conn, err := db.getOrDial(db.ctx, proxy.Address)
+			if err != nil {
+				db.handleConnError(proxy.Address)
+				numAttempts++
+				continue // transport error → try next proxy
+			}
+
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			body := buildGetReadVersionRequest(replyToken)
+
+			if err := conn.SendFrame(proxy.Token, body); err != nil {
+				cancelReply()
+				db.handleConnError(proxy.Address)
+				numAttempts++
+				continue // transport error → try next proxy
+			}
+
+			rpcCtx, rpcCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+			select {
+			case resp := <-replyCh:
+				rpcCancel()
+				if resp.Err != nil {
+					// Transport error (broken_promise equivalent) → try next.
+					db.handleConnError(proxy.Address)
+					numAttempts++
+					continue
+				}
+				// Got a response. Parse it — FDB errors propagate to caller.
+				return parseGetReadVersionReply(resp.Body)
+			case <-rpcCtx.Done():
+				rpcCancel()
+				cancelReply()
+				if db.ctx.Err() != nil {
+					return 0, false, false, db.ctx.Err() // database shutting down
+				}
+				numAttempts++
+				continue // RPC timeout → try next proxy
+			}
+		}
+
+		// All proxies failed in this cycle. Kick topology, apply backoff.
+		db.kickTopology()
+		if numAttempts >= len(proxies) {
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
+			} else {
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
+			}
+		}
+		numAttempts = 0
+	}
 }
 
 func buildGetReadVersionRequest(replyToken transport.UID) []byte {

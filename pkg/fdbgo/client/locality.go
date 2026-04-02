@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -72,62 +74,102 @@ func (lc *locationCache) invalidate(key []byte) {
 	lc.entries = filtered
 }
 
+// refresh queries commit proxies for the location of a key, matching C++
+// basicLoadBalance with AtMostOnce::False. Cycles all proxies with backoff.
+// Loops until success or ctx cancellation.
 func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
-	proxies := db.getCommitProxies()
-	if len(proxies) == 0 {
-		return nil, &wire.FDBError{Code: ErrAllProxiesUnreachable}
-	}
+	var backoff time.Duration
 
-	for _, proxy := range proxies {
-		conn, err := db.getOrDial(ctx, proxy.Address)
-		if err != nil {
-			db.handleConnError(proxy.Address)
-			continue
+	for {
+		proxies := db.getCommitProxies()
+		if len(proxies) == 0 {
+			db.kickTopology()
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
+			}
+			select {
+			case <-time.After(backoff):
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-db.ctx.Done():
+				return nil, db.ctx.Err()
+			}
 		}
 
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyServerLocationsRequest(key, replyToken)
-		locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
-
-		if err := conn.SendFrame(locToken, body); err != nil {
-			cancelReply()
-			db.handleConnError(proxy.Address)
-			continue
+		if backoff > 0 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-db.ctx.Done():
+				return nil, db.ctx.Err()
+			}
 		}
 
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
+		cycledAll := true
+		for _, proxy := range proxies {
+			conn, err := db.getOrDial(ctx, proxy.Address)
+			if err != nil {
 				db.handleConnError(proxy.Address)
 				continue
 			}
-			entries, err := parseGetKeyServerLocationsReply(resp.Body)
-			if err != nil {
+
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			body := buildGetKeyServerLocationsRequest(key, replyToken)
+			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
+
+			if err := conn.SendFrame(locToken, body); err != nil {
+				cancelReply()
+				db.handleConnError(proxy.Address)
 				continue
 			}
-			// Cache the returned shard ranges with size cap.
-			lc.mu.Lock()
-			lc.entries = append(lc.entries, entries...)
-			for len(lc.entries) > lc.maxSize {
-				idx := rand.Intn(len(lc.entries))
-				lc.entries[idx] = lc.entries[len(lc.entries)-1]
-				lc.entries = lc.entries[:len(lc.entries)-1]
+
+			rctx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+			select {
+			case resp := <-replyCh:
+				rpcCancel()
+				if resp.Err != nil {
+					db.handleConnError(proxy.Address)
+					continue
+				}
+				entries, err := parseGetKeyServerLocationsReply(resp.Body)
+				if err != nil {
+					continue
+				}
+				lc.mu.Lock()
+				lc.entries = append(lc.entries, entries...)
+				for len(lc.entries) > lc.maxSize {
+					idx := rand.Intn(len(lc.entries))
+					lc.entries[idx] = lc.entries[len(lc.entries)-1]
+					lc.entries = lc.entries[:len(lc.entries)-1]
+				}
+				lc.mu.Unlock()
+				if len(entries) > 0 {
+					return entries[0].servers, nil
+				}
+			case <-rctx.Done():
+				rpcCancel()
+				cancelReply()
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				continue
 			}
-			lc.mu.Unlock()
-			if len(entries) > 0 {
-				return entries[0].servers, nil
+			cycledAll = false
+		}
+
+		// All proxies failed. Kick topology, grow backoff.
+		db.kickTopology()
+		if cycledAll {
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
+			} else {
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 			}
-		case <-rctx.Done():
-			cancel()
-			cancelReply()
-			continue
 		}
 	}
-
-	db.kickTopology()
-	return nil, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
