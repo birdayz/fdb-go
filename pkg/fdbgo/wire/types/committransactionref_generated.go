@@ -195,7 +195,8 @@ func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
 		blobPos := curOOL + 4 + n*4
 		for i, elem := range m.ReadConflictRanges {
 			blobPos = (blobPos + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos-(curOOL+4+i*4)))
+			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
 			blobPos += elem.writeBlob(buf, blobPos)
 		}
 		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotReadConflictRanges+2]), objPos, vecStart)
@@ -208,7 +209,8 @@ func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
 		blobPos := curOOL + 4 + n*4
 		for i, elem := range m.WriteConflictRanges {
 			blobPos = (blobPos + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos-(curOOL+4+i*4)))
+			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
 			blobPos += elem.writeBlob(buf, blobPos)
 		}
 		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]), objPos, vecStart)
@@ -221,7 +223,8 @@ func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
 		blobPos := curOOL + 4 + n*4
 		for i, elem := range m.Mutations {
 			blobPos = (blobPos + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos-(curOOL+4+i*4)))
+			objInBlob := (len(MutationRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
 			blobPos += elem.writeBlob(buf, blobPos)
 		}
 		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotMutations+2]), objPos, vecStart)
@@ -275,7 +278,8 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 		blobOff := 4 + n*4
 		for i, elem := range m.ReadConflictRanges {
 			blobOff = (blobOff + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff-(4+i*4)))
+			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
 			blobOff += elem.writeBlob(vecBuf, blobOff)
 		}
 	}
@@ -294,7 +298,8 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 		blobOff := 4 + n*4
 		for i, elem := range m.WriteConflictRanges {
 			blobOff = (blobOff + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff-(4+i*4)))
+			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
 			blobOff += elem.writeBlob(vecBuf, blobOff)
 		}
 	}
@@ -313,7 +318,8 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 		blobOff := 4 + n*4
 		for i, elem := range m.Mutations {
 			blobOff = (blobOff + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff-(4+i*4)))
+			objInBlob := (len(MutationRefVTable)*2 + 3) &^ 3
+			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
 			blobOff += elem.writeBlob(vecBuf, blobOff)
 		}
 	}
