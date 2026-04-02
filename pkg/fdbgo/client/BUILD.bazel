@@ -26,7 +26,6 @@ go_test(
     name = "client_test",
     size = "large",
     timeout = "eternal",  # 900s
-    args = ["-test.parallel=8"],  # Limit parallel containers for CI
     srcs = [
         "bench_test.go",
         "c_binding_port_test.go",
@@ -39,6 +38,7 @@ go_test(
         "setget_test.go",
         "tcpdump_test.go",
     ],
+    args = ["-test.parallel=8"],  # Limit parallel containers for CI
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",
