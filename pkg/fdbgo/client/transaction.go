@@ -19,11 +19,12 @@ const (
 	ErrTransactionTooOld         = 1007
 	ErrFutureVersion             = 1009
 	ErrWrongShardServer          = 1062
-	ErrDatabaseLocked            = 1031
-	ErrProxyMemoryLimitExceeded  = 1037
-	ErrGrvProxyMemoryLimit       = 1038
-	ErrProcessBehind             = 1039
-	ErrBatchTransactionThrottled = 1040
+	ErrTransactionTimedOut       = 1031
+	ErrProcessBehind             = 1037
+	ErrDatabaseLocked            = 1038
+	ErrProxyMemoryLimitExceeded  = 1042
+	ErrBatchTransactionThrottled = 1051
+	ErrGrvProxyMemoryLimit       = 1078
 	ErrAllAlternativesFailed     = 1006 // C++: all_alternatives_failed (storage reads)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
 )
@@ -117,6 +118,16 @@ type Transaction struct {
 
 	retryCount int
 	backoff    time.Duration
+
+	// Timeout: if non-zero, operations fail with ErrTransactionTimedOut
+	// after this duration from transaction creation (or last reset).
+	timeout  time.Duration
+	deadline time.Time
+
+	// Retry limit: if hasRetryLimit is true, OnError will not retry
+	// when retryCount >= retryLimit.
+	retryLimit    int
+	hasRetryLimit bool
 }
 
 // Snapshot returns a snapshot view of this transaction.
@@ -163,6 +174,9 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	}
 	if tx.state != txStateActive {
 		return fmt.Errorf("transaction not active")
+	}
+	if err := tx.checkTimeout(); err != nil {
+		return err
 	}
 	if !tx.hasReadVersion {
 		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx)
@@ -252,6 +266,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if tx.state != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
+	if err := tx.checkTimeout(); err != nil {
+		return err
+	}
 
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
@@ -307,6 +324,19 @@ func (tx *Transaction) OnError(err error) error {
 		return err
 	}
 
+	// Transaction timeout is NEVER retryable — matches C++ behavior where
+	// OnError(1031) returns 1031 and the error escapes the retry loop.
+	if fdbErr.Code == ErrTransactionTimedOut {
+		tx.state = txStateErrored
+		return err
+	}
+
+	// Check retry limit before allowing any retry.
+	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
+		tx.state = txStateErrored
+		return err
+	}
+
 	switch fdbErr.Code {
 	case ErrTransactionTooOld, ErrFutureVersion:
 		// Version-related: fixed delay, no backoff growth. Match C++.
@@ -346,6 +376,41 @@ func (tx *Transaction) SetReadVersion(version int64) {
 	tx.hasReadVersion = true
 }
 
+// SetTimeout sets a timeout in milliseconds for this transaction.
+// If the transaction does not complete within this duration (from creation
+// or last reset), operations return ErrTransactionTimedOut (1031).
+// A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
+func (tx *Transaction) SetTimeout(ms int64) {
+	if ms <= 0 {
+		tx.timeout = 0
+		tx.deadline = time.Time{}
+		return
+	}
+	tx.timeout = time.Duration(ms) * time.Millisecond
+	tx.deadline = time.Now().Add(tx.timeout)
+}
+
+// SetRetryLimit limits the number of retries in OnError.
+// A value of 0 means "don't retry at all" (first error escapes).
+// A value of -1 means "unlimited" (default behavior).
+// Matches C++ FDB_TR_OPTION_RETRY_LIMIT.
+func (tx *Transaction) SetRetryLimit(retries int64) {
+	if retries < 0 {
+		tx.hasRetryLimit = false
+		return
+	}
+	tx.retryLimit = int(retries)
+	tx.hasRetryLimit = true
+}
+
+// checkTimeout returns a timeout error if the deadline has passed.
+func (tx *Transaction) checkTimeout() error {
+	if tx.timeout > 0 && time.Now().After(tx.deadline) {
+		return &wire.FDBError{Code: ErrTransactionTimedOut}
+	}
+	return nil
+}
+
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
 }
@@ -372,8 +437,11 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: key, End: append(key, 0)})
 }
 
-// reset clears transaction state for retry, preserving retryCount and backoff.
-// Matches C++ TransactionState::reset() which preserves numErrors and backoff.
+// reset clears transaction state for retry, preserving retryCount, backoff,
+// timeout, and retryLimit. Matches C++ TransactionState::reset() which
+// re-applies options. The deadline is re-computed from timeout so each
+// retry gets a fresh timeout window (matches C++ where set_option is
+// re-applied on reset, restarting the timer).
 func (tx *Transaction) reset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false
@@ -383,7 +451,11 @@ func (tx *Transaction) reset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
-	// retryCount and backoff are preserved across reset (match C++).
+	// Re-compute deadline from timeout (matches C++ option re-application).
+	if tx.timeout > 0 {
+		tx.deadline = time.Now().Add(tx.timeout)
+	}
+	// retryCount, backoff, timeout, and retryLimit are preserved.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows

@@ -232,6 +232,20 @@ func TestOnError_NonRetryable(t *testing.T) {
 			t.Error("wrong_shard_server should not be retryable at Transact level")
 		}
 	})
+
+	t.Run("transaction_timed_out", func(t *testing.T) {
+		t.Parallel()
+		// 1031 = transaction_timed_out — NEVER retryable.
+		// Matches C++ where OnError(1031) returns 1031.
+		tx := &Transaction{state: txStateActive}
+		err := fmt.Errorf("timed out: %w", &wire.FDBError{Code: ErrTransactionTimedOut})
+		if tx.OnError(err) == nil {
+			t.Error("transaction_timed_out should not be retryable")
+		}
+		if tx.state != txStateErrored {
+			t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
+		}
+	})
 }
 
 func TestCommitUnknownResult_SelfConflicting(t *testing.T) {

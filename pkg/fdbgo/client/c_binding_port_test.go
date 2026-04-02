@@ -1256,6 +1256,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 		1007, // transaction_too_old
 		1020, // not_committed
 		1021, // commit_unknown_result
+		1038, // database_locked
 	}
 	for _, code := range retryable {
 		if !isRetryable(code) {
@@ -1265,6 +1266,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 
 	// NON-RETRYABLE errors.
 	nonRetryable := []int{
+		1031, // transaction_timed_out
 		2000, // client_invalid_operation
 		2004, // key_outside_legal_range
 		2005, // inverted_range
@@ -1304,5 +1306,215 @@ func TestErrorPredicate_CPort(t *testing.T) {
 	plainErr := fmt.Errorf("some random error")
 	if tx.OnError(plainErr) == nil {
 		t.Error("non-FDB error should not be retryable")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Transaction timeout and retry limit
+// ---------------------------------------------------------------------------
+
+// TestSetTimeout_CPort verifies that a 1ms timeout eventually fires with error 1031.
+// Ported from unit_tests.cpp line 769
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L769
+//
+// The C test sets a 1ms timeout and loops Get + OnError until 1031 escapes.
+// Our Go implementation checks the deadline before each operation, so with
+// a 1ms timeout the first or second operation will return 1031, and OnError
+// will refuse to retry it.
+func TestSetTimeout_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(1) // 1 millisecond
+
+	// Burn through the timeout — sleep to guarantee deadline passes.
+	time.Sleep(2 * time.Millisecond)
+
+	// Now any operation should return 1031.
+	err := tx.checkTimeout()
+	if err == nil {
+		t.Fatal("expected timeout error after 1ms")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != ErrTransactionTimedOut {
+		t.Errorf("error code: got %d, want %d", fdbErr.Code, ErrTransactionTimedOut)
+	}
+
+	// OnError(1031) should NOT retry — error must escape.
+	retryErr := tx.OnError(err)
+	if retryErr == nil {
+		t.Fatal("OnError should not retry transaction_timed_out")
+	}
+	if !errors.As(retryErr, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Errorf("OnError returned wrong error: %v", retryErr)
+	}
+}
+
+// TestSetRetryLimit verifies that OnError respects the retry limit.
+// After retryLimit retries, the next OnError call returns the error
+// instead of retrying.
+func TestSetRetryLimit(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetRetryLimit(2) // allow 2 retries
+
+	retryableErr := &wire.FDBError{Code: ErrNotCommitted}
+
+	// First retry — should succeed.
+	if err := tx.OnError(retryableErr); err != nil {
+		t.Fatalf("retry 1 should succeed, got: %v", err)
+	}
+	if tx.retryCount != 1 {
+		t.Errorf("retryCount after 1st: got %d, want 1", tx.retryCount)
+	}
+
+	// Second retry — should succeed.
+	if err := tx.OnError(retryableErr); err != nil {
+		t.Fatalf("retry 2 should succeed, got: %v", err)
+	}
+	if tx.retryCount != 2 {
+		t.Errorf("retryCount after 2nd: got %d, want 2", tx.retryCount)
+	}
+
+	// Third attempt — retryCount(2) >= retryLimit(2), should fail.
+	err := tx.OnError(retryableErr)
+	if err == nil {
+		t.Fatal("retry 3 should fail (limit reached)")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrNotCommitted {
+		t.Errorf("expected not_committed error, got: %v", err)
+	}
+}
+
+// TestSetRetryLimit_Zero verifies that retryLimit=0 means no retries at all.
+func TestSetRetryLimit_Zero(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetRetryLimit(0) // no retries
+
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("retryLimit=0 should not allow any retries")
+	}
+}
+
+// TestSetTimeout_Get verifies that a timed-out transaction returns 1031 on Get.
+// This is a pure unit test — no database needed — using ensureReadVersion
+// which calls checkTimeout before the GRV fetch.
+func TestSetTimeout_Get(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(1) // 1ms
+
+	// Wait for deadline to pass.
+	time.Sleep(2 * time.Millisecond)
+
+	// ensureReadVersion should return timeout error.
+	err := tx.ensureReadVersion(context.Background())
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Errorf("expected error 1031, got: %v", err)
+	}
+}
+
+// TestSetTimeout_Preserved verifies that timeout survives OnError + reset.
+// The timeout option is preserved across retries (matching C++ where options
+// are re-applied on reset).
+func TestSetTimeout_Preserved(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(500) // 500ms — long enough to not fire during test
+
+	// Force a retryable error.
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err != nil {
+		t.Fatalf("OnError should retry: %v", err)
+	}
+
+	// After reset, timeout should still be set.
+	if tx.timeout != 500*time.Millisecond {
+		t.Errorf("timeout not preserved: got %v, want 500ms", tx.timeout)
+	}
+	if tx.deadline.IsZero() {
+		t.Error("deadline should be re-computed after reset")
+	}
+
+	// And checkTimeout should not fire (we have 500ms).
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("timeout should not fire yet: %v", err)
+	}
+}
+
+// TestSetTimeout_Disabled verifies that timeout=0 disables the timeout.
+func TestSetTimeout_Disabled(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(100) // set a timeout
+	tx.SetTimeout(0)   // then disable it
+
+	if tx.timeout != 0 {
+		t.Errorf("timeout should be 0, got %v", tx.timeout)
+	}
+	if !tx.deadline.IsZero() {
+		t.Error("deadline should be zero when timeout disabled")
+	}
+
+	// checkTimeout should always pass.
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("disabled timeout should not fire: %v", err)
+	}
+}
+
+// TestSetRetryLimit_Unlimited verifies that SetRetryLimit(-1) removes the limit.
+func TestSetRetryLimit_Unlimited(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetRetryLimit(0) // set limit to 0
+
+	// Should not retry.
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("retryLimit=0 should not retry")
+	}
+
+	// Now remove the limit.
+	tx.state = txStateActive
+	tx.SetRetryLimit(-1)
+
+	// Should retry now.
+	if err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted}); err != nil {
+		t.Fatalf("unlimited retry should succeed: %v", err)
+	}
+}
+
+// TestSetTimeout_CommitCheck verifies that Commit checks the timeout.
+func TestSetTimeout_CommitCheck(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(1)                     // 1ms
+	tx.Set([]byte("key"), []byte("val")) // need mutations for commit path
+	time.Sleep(2 * time.Millisecond)
+
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected timeout error on Commit")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
+		t.Errorf("expected error 1031 from Commit, got: %v", err)
 	}
 }
