@@ -77,5 +77,10 @@ jobs:
           curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.46/foundationdb-clients_7.3.46-1_amd64.deb
           sudo dpkg -i foundationdb-clients_7.3.46-1_amd64.deb
 
+      - name: Expand Docker network pool
+        run: |
+          echo '{"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+
       - name: Run tests
         run: bazelisk test //... --test_summary=detailed
