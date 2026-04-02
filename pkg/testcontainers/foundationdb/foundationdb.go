@@ -27,10 +27,18 @@ import (
 
 const (
 	defaultImage      = "foundationdb/foundationdb"
-	defaultTag        = "7.3.46"
 	defaultClientPort = "4500/tcp"
-	defaultAPIVersion = 720
+	defaultAPIVersion = 730
 )
+
+// fdbVersion returns the FDB version from the FDB_VERSION env var
+// (set by .bazelrc for Bazel tests) or falls back to a default.
+func fdbVersion() string {
+	if v := os.Getenv("FDB_VERSION"); v != "" {
+		return v
+	}
+	return "7.3.75" // fallback for non-Bazel runs
+}
 
 var (
 	apiVersionOnce  sync.Once
@@ -65,7 +73,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 		Database:   "test",
 		APIVersion: defaultAPIVersion,
 		Memory:     "4GB",
-		Version:    defaultTag,
+		Version:    fdbVersion(),
 	}
 
 	// Process config customizers first to get version

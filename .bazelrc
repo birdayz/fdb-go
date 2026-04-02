@@ -6,3 +6,7 @@ test --test_summary=terse
 
 # Testcontainers need Docker socket and HOME for config
 test --test_env=HOME
+
+# FDB version — single source of truth for all tests.
+# MUST match MODULE.bazel archive_override version.
+test --test_env=FDB_VERSION=7.3.75

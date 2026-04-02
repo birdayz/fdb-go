@@ -61,7 +61,7 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		b.Fatalf("start container: %v", err)
 	}
@@ -113,7 +113,7 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 func openBenchDB(b *testing.B, ctx context.Context) *Database {
 	b.Helper()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		b.Fatalf("start FDB container: %v", err)
 	}

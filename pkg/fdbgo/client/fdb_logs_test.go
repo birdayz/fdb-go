@@ -24,7 +24,7 @@ func TestFDBServerLogs(t *testing.T) {
 	defer cancel()
 
 	// Start FDB testcontainer.
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}

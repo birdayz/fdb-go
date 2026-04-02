@@ -3,9 +3,16 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "bindingtester_test",
     srcs = ["binding_test.go"],
+    data = [
+        "Dockerfile",
+        "//cmd/fdb-stacktester",
+        "@foundationdb//:bindingtester",
+        "@foundationdb//:python_fdb",
+    ],
     deps = [
         "//pkg/testcontainers/foundationdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//wait",
     ],
+    tags = ["manual"],  # Don't run in just test — needs Docker image build, slow
 )

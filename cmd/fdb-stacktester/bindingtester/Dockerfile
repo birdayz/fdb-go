@@ -1,20 +1,22 @@
-FROM foundationdb/foundationdb:7.3.75
+ARG FDB_VERSION=7.3.75
+FROM foundationdb/foundationdb:${FDB_VERSION}
 
-# Override entrypoint (default runs fdbserver).
 ENTRYPOINT []
+ENV LD_LIBRARY_PATH=/usr/lib
 
-# Install pip. The FDB image is Ubuntu-based.
-RUN apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null 2>&1
+# Bootstrap pip, install FDB Python binding matching the image version.
+ARG FDB_VERSION=7.3.75
+RUN python3 -m ensurepip && \
+    FDB_MAJOR_MINOR=$(echo ${FDB_VERSION} | cut -d. -f1,2) && \
+    python3 -m pip install "foundationdb>=${FDB_MAJOR_MINOR},<${FDB_MAJOR_MINOR}.99"
 
-# Install FDB Python binding. It uses the libfdb_c.so already in the image.
-RUN pip3 install foundationdb --break-system-packages 2>/dev/null || pip3 install foundationdb
-
-# bindingtester source is copied from FDB source at build time.
 COPY bindingtester/ /opt/fdb/bindings/bindingtester/
-# Python fdb binding is also needed (bindingtester imports it via sys.path).
-COPY python/ /opt/fdb/bindings/python/
 
-# Our stacktester binary.
+# Patch __init__.py: remove sys.path hack that shadows pip fdb with source tree.
+RUN sed -i "s|sys.path\[:0\].*||" /opt/fdb/bindings/bindingtester/__init__.py && \
+    sed -i "s|import util|from bindingtester import util|" /opt/fdb/bindings/bindingtester/__init__.py && \
+    sed -i "s|from fdb import LATEST_API_VERSION|LATEST_API_VERSION = 730|" /opt/fdb/bindings/bindingtester/__init__.py
+
 COPY fdb-stacktester /usr/local/bin/fdb-stacktester
 RUN chmod +x /usr/local/bin/fdb-stacktester
 

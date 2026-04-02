@@ -138,7 +138,7 @@ func TestSetGet(t *testing.T) {
 func openTestDB(t *testing.T, ctx context.Context) *Database {
 	t.Helper()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}

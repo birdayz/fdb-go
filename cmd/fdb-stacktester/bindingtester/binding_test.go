@@ -1,5 +1,5 @@
 // Package bindingtester runs the official FDB binding tester against our
-// pure Go stacktester. Fully Bazel-native via testcontainers.
+// pure Go stacktester. Fully Bazel-native via testcontainers + data deps.
 //
 // Architecture:
 //
@@ -8,7 +8,9 @@
 //	└── Tester container (custom image: Python + fdb + bindingtester.py + our binary)
 //	    └── runs: bindingtester.py --tester-binary /usr/local/bin/fdb-stacktester
 //
-// Run: bazelisk test //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_output=streamed
+// Run:
+//
+//	bazelisk test //cmd/fdb-stacktester/bindingtester --test_output=streamed
 package bindingtester
 
 import (
@@ -18,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -36,13 +37,12 @@ func TestBindingTester(t *testing.T) {
 	defer cancel()
 
 	// 1. Start FDB container.
-	fdbContainer, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	fdbContainer, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB: %v", err)
 	}
 	defer fdbContainer.Terminate(ctx)
 
-	// Initialize database.
 	if err := fdbContainer.InitializeDatabase(ctx); err != nil {
 		t.Fatalf("init DB: %v", err)
 	}
@@ -51,18 +51,19 @@ func TestBindingTester(t *testing.T) {
 	networkName := fdbContainer.NetworkName()
 	t.Logf("FDB cluster: %s (network: %s)", clusterFile, networkName)
 
-	// 2. Build the Docker context with everything the tester needs.
+	// 2. Build Docker context from Bazel runfiles.
 	dockerCtx, err := buildDockerContext(t)
 	if err != nil {
 		t.Fatalf("build docker context: %v", err)
 	}
 
-	// 3. Start tester container on the same Docker network.
+	// 3. Start tester container on same Docker network.
 	testerContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			FromDockerfile: testcontainers.FromDockerfile{
 				Context:    dockerCtx,
 				Dockerfile: "Dockerfile",
+				BuildArgs:  map[string]*string{"FDB_VERSION": strPtr(fdbVersion())},
 			},
 			Networks: []string{networkName},
 			Cmd:      []string{"sleep", "infinity"},
@@ -76,7 +77,6 @@ func TestBindingTester(t *testing.T) {
 	}
 	defer testerContainer.Terminate(ctx)
 
-	// Write cluster file inside tester container.
 	err = testerContainer.CopyToContainer(ctx, []byte(clusterFile), "/etc/foundationdb/fdb.cluster", 0644)
 	if err != nil {
 		t.Fatalf("copy cluster file: %v", err)
@@ -89,7 +89,9 @@ func TestBindingTester(t *testing.T) {
 		"--cluster-file", "/etc/foundationdb/fdb.cluster",
 		"--test-name", "api",
 		"--num-ops", fmt.Sprintf("%d", numOps),
-		"--tester-binary", "/usr/local/bin/fdb-stacktester",
+		"--no-threads",
+		"--no-tenants",
+		"/usr/local/bin/fdb-stacktester",
 	})
 	if err != nil {
 		t.Fatalf("exec bindingtester: %v", err)
@@ -105,8 +107,6 @@ func TestBindingTester(t *testing.T) {
 	t.Log("binding tester PASSED")
 }
 
-// buildDockerContext assembles a temp dir with: Dockerfile, bindingtester.py,
-// Python fdb binding, and our stacktester binary.
 func buildDockerContext(t *testing.T) (string, error) {
 	t.Helper()
 
@@ -116,82 +116,77 @@ func buildDockerContext(t *testing.T) (string, error) {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	fdbSrc := findFDBSource()
-	if fdbSrc == "" {
-		return "", fmt.Errorf("cannot find FDB source; run 'bazelisk build //...' first")
+	runfiles := findRunfilesDir()
+	if runfiles == "" {
+		return "", fmt.Errorf("cannot find Bazel runfiles directory (TEST_SRCDIR not set)")
 	}
+	t.Logf("runfiles: %s", runfiles)
+
+	ws := "_main"
 
 	// Dockerfile.
-	repoRoot := getRepoRoot()
-	copyFile(t, filepath.Join(repoRoot, "cmd/fdb-stacktester/bindingtester/Dockerfile"), filepath.Join(dir, "Dockerfile"))
+	src := filepath.Join(runfiles, ws, "cmd/fdb-stacktester/bindingtester/Dockerfile")
+	if err := copyFile(src, filepath.Join(dir, "Dockerfile")); err != nil {
+		return "", fmt.Errorf("Dockerfile: %w", err)
+	}
 
-	// bindingtester Python files.
-	copyDir(t, filepath.Join(fdbSrc, "bindings/bindingtester"), filepath.Join(dir, "bindingtester"))
+	// bindingtester Python files (@foundationdb+).
+	if err := copyDirFollow(filepath.Join(runfiles, "foundationdb+", "bindings/bindingtester"), filepath.Join(dir, "bindingtester")); err != nil {
+		return "", fmt.Errorf("bindingtester: %w", err)
+	}
 
-	// Python fdb binding + generated apiversion.py.
-	copyDir(t, filepath.Join(fdbSrc, "bindings/python"), filepath.Join(dir, "python"))
+	// Python fdb binding (@foundationdb+).
+	if err := copyDirFollow(filepath.Join(runfiles, "foundationdb+", "bindings/python"), filepath.Join(dir, "python")); err != nil {
+		return "", fmt.Errorf("python fdb: %w", err)
+	}
+
+	// Generate apiversion.py (cmake template → constant).
 	os.WriteFile(filepath.Join(dir, "python/fdb/apiversion.py"), []byte("LATEST_API_VERSION = 730\n"), 0644)
 
-	// Build and copy stacktester binary (linux/amd64).
-	testerBin, err := buildStacktester()
-	if err != nil {
-		return "", fmt.Errorf("build stacktester: %v", err)
+	// stacktester binary (//cmd/fdb-stacktester).
+	bin := filepath.Join(runfiles, ws, "cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
+	if err := copyFile(bin, filepath.Join(dir, "fdb-stacktester")); err != nil {
+		return "", fmt.Errorf("stacktester binary: %w", err)
 	}
-	copyFile(t, testerBin, filepath.Join(dir, "fdb-stacktester"))
+	os.Chmod(filepath.Join(dir, "fdb-stacktester"), 0755)
 
 	return dir, nil
 }
 
-func findFDBSource() string {
-	out, err := exec.Command("bazelisk", "info", "output_base").Output()
-	if err == nil {
-		p := filepath.Join(strings.TrimSpace(string(out)), "external/foundationdb+")
-		if _, err := os.Stat(filepath.Join(p, "bindings/bindingtester")); err == nil {
-			return p
-		}
+func findRunfilesDir() string {
+	if d := os.Getenv("TEST_SRCDIR"); d != "" {
+		return d
+	}
+	exe, _ := os.Executable()
+	rf := exe + ".runfiles"
+	if fi, err := os.Stat(rf); err == nil && fi.IsDir() {
+		return rf
 	}
 	return ""
 }
 
-func getRepoRoot() string {
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "."
-		}
-		dir = parent
+func fdbVersion() string {
+	if v := os.Getenv("FDB_VERSION"); v != "" {
+		return v
 	}
+	return "7.3.75"
 }
 
-func buildStacktester() (string, error) {
-	cmd := exec.Command("bazelisk", "build", "//cmd/fdb-stacktester")
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	out, err := exec.Command("bazelisk", "info", "bazel-bin").Output()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(strings.TrimSpace(string(out)), "cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester"), nil
-}
+func strPtr(s string) *string { return &s }
 
-func copyFile(t *testing.T, src, dst string) {
-	t.Helper()
+func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
-		t.Fatalf("read %s: %v", src, err)
+		return fmt.Errorf("read %s: %w", src, err)
 	}
-	os.WriteFile(dst, data, 0755)
+	return os.WriteFile(dst, data, 0755)
 }
 
-func copyDir(t *testing.T, src, dst string) {
-	t.Helper()
-	if err := exec.Command("cp", "-r", src, dst).Run(); err != nil {
-		t.Fatalf("cp -r %s %s: %v", src, dst, err)
+// copyDirFollow copies a directory, following symlinks (Bazel runfiles are symlink forests).
+func copyDirFollow(src, dst string) error {
+	cmd := exec.Command("cp", "-rL", src, dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("cp -rL %s %s: %s: %w", src, dst, out, err)
 	}
+	return nil
 }

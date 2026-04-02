@@ -23,7 +23,7 @@ func TestCaptureCBindingTraffic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

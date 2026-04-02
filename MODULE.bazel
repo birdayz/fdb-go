@@ -41,6 +41,7 @@ bazel_dep(name = "rules_cc", version = "0.1.1")
 
 # FDB C++ source — fetched automatically from GitHub, pinned to tag.
 # Bazel downloads, caches, and injects MODULE.bazel + BUILD.bazel via patch_cmds.
+# FDB version — MUST match .bazelrc FDB_VERSION.
 bazel_dep(name = "foundationdb", version = "7.3.75")
 archive_override(
     module_name = "foundationdb",
@@ -69,6 +70,18 @@ cc_library(
     includes = ["flow/include"],
 )
 exports_files(["flow/flat_buffers.cpp"])
+
+# Binding tester Python files (for conformance testing).
+filegroup(
+    name = "bindingtester",
+    srcs = glob(["bindings/bindingtester/**/*.py"]),
+)
+
+# Python FDB binding (needed by bindingtester).
+filegroup(
+    name = "python_fdb",
+    srcs = glob(["bindings/python/**/*.py", "bindings/python/**/*.cmake"]),
+)
 BUILDEOF""",
     ],
 )

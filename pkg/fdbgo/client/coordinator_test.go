@@ -28,7 +28,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	defer cancel()
 
 	// Start FDB testcontainer with version matching our wire protocol (7.3.75).
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestGetRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -536,7 +536,7 @@ func TestProbeWellKnownTokens_WIP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "", tcfdb.WithVersion("7.3.75"))
+	container, err := tcfdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
