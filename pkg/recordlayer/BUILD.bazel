@@ -189,6 +189,7 @@ go_test(
         "metadata_test.go",
         "metadata_validation_test.go",
         "metadata_validator_additions_test.go",
+        "million_record_test.go",
         "min_max_ever_tuple_index_test.go",
         "min_max_index_test.go",
         "multi_type_index_test.go",
