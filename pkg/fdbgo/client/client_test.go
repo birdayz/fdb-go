@@ -174,6 +174,7 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"process_behind", ErrProcessBehind},
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
 		{"all_proxies_unreachable", ErrAllProxiesUnreachable},
+		{"all_alternatives_failed", ErrAllAlternativesFailed},
 	}
 	for _, tc := range retryable {
 		tc := tc

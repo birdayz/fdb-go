@@ -426,6 +426,7 @@ func (e *FDBError) Retryable() bool {
 		1039, // database_locked
 		1042, // proxy_memory_limit_exceeded
 		1051, // batch_transaction_throttled
+		1006, // all_alternatives_failed
 		1200, // all_proxies_unreachable (Go-internal)
 		1213: // tag_throttled
 		return true

@@ -36,7 +36,7 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 		}
 		return nil, err
 	}
-	return nil, fmt.Errorf("getKey: wrong_shard_server after %d attempts", MaxWrongShardRetries)
+	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
@@ -124,7 +124,7 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		// Other FDB error → bubble up for Transact retry.
 		return nil, err
 	}
-	return nil, fmt.Errorf("getValue: wrong_shard_server after 5 attempts")
+	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
@@ -229,7 +229,7 @@ func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, 
 		}
 		return nil, false, err
 	}
-	return nil, false, fmt.Errorf("getRange: wrong_shard_server after %d attempts", MaxWrongShardRetries)
+	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, servers []ServerInfo) ([]KeyValue, bool, error) {
