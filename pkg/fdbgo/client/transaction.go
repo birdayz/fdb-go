@@ -73,23 +73,25 @@ type Mutation struct {
 // MutationType is the type of mutation.
 type MutationType uint8
 
+// Mutation types — MUST match C++ MutationRef::Type enum values exactly.
+// Wire format uses these values directly. See CommitTransaction.h.
 const (
 	MutSetValue               MutationType = 0
 	MutClearRange             MutationType = 1
 	MutAddValue               MutationType = 2
-	MutAnd                    MutationType = 3
-	MutOr                     MutationType = 4
-	MutXor                    MutationType = 5
-	MutAppendIfFits           MutationType = 6
-	MutMax                    MutationType = 7
-	MutMin                    MutationType = 8
-	MutSetVersionstampedKey   MutationType = 9
-	MutSetVersionstampedValue MutationType = 10
-	MutByteMin                MutationType = 11
-	MutByteMax                MutationType = 12
-	MutMinV2                  MutationType = 13
-	MutAndV2                  MutationType = 14
-	MutCompareAndClear        MutationType = 15
+	MutAnd                    MutationType = 6  // C++: And (skips DebugKeyRange=3, DebugKey=4, NoOp=5)
+	MutOr                     MutationType = 7  // C++: Or
+	MutXor                    MutationType = 8  // C++: Xor
+	MutAppendIfFits           MutationType = 9  // C++: AppendIfFits
+	MutMax                    MutationType = 12 // C++: Max (skips AvailableForReuse=10, Reserved=11)
+	MutMin                    MutationType = 13 // C++: Min
+	MutSetVersionstampedKey   MutationType = 14 // C++: SetVersionstampedKey
+	MutSetVersionstampedValue MutationType = 15 // C++: SetVersionstampedValue
+	MutByteMin                MutationType = 16 // C++: ByteMin
+	MutByteMax                MutationType = 17 // C++: ByteMax
+	MutMinV2                  MutationType = 18 // C++: MinV2
+	MutAndV2                  MutationType = 19 // C++: AndV2
+	MutCompareAndClear        MutationType = 20 // C++: CompareAndClear
 )
 
 // KeyRange represents a range [Begin, End).

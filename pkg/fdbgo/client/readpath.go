@@ -279,8 +279,8 @@ func isAllAlternativesFailed(err error) bool {
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetKeyValuesRequest{
-		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: true, Offset: 1},
-		End:                    types.KeySelectorRef{Key: end, OrEqual: true, Offset: 1},
+		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
+		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
 		Version:                version,
 		Limit:                  limit,
 		LimitBytes:             UnlimitedBytes,
