@@ -140,7 +140,7 @@ func TestSetGet(t *testing.T) {
 func openTestDB(t *testing.T, ctx context.Context) *Database {
 	t.Helper()
 
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer setupCancel()
 
 	container, err := tcfdb.Run(setupCtx, "")
