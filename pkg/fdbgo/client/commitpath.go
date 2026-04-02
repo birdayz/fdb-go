@@ -10,25 +10,30 @@ import (
 )
 
 // commit sends a CommitTransactionRequest to a commit proxy.
+// ALL connection errors → commit_unknown_result, matching C++ AtMostOnce::True.
+// No distinction between dial/send/response failure — C++ makes zero distinction
+// (all are broken_promise → request_maybe_delivered → commit_unknown_result).
 func (tx *Transaction) commit(ctx context.Context) error {
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
-		return fmt.Errorf("get commit proxy: %w", err)
+		return &wire.FDBError{Code: ErrAllProxiesUnreachable}
 	}
 
 	conn, err := tx.db.getOrDial(ctx, proxy.Address)
 	if err != nil {
-		return fmt.Errorf("dial commit proxy (%s): %w", proxy.Address, err)
+		tx.db.handleConnError(proxy.Address)
+		tx.db.kickTopology()
+		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 
-	// Allocate reply token first — embedded in request body.
-	replyToken, replyCh := conn.PrepareReply()
-
+	replyToken, replyCh, cancelReply := conn.PrepareReply()
 	body := buildCommitTransactionRequest(tx, replyToken)
 
-	// commit is at endpoint index 0 from commit proxy (base token).
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
-		return fmt.Errorf("send commit: %w", err)
+		cancelReply()
+		tx.db.handleConnError(proxy.Address)
+		tx.db.kickTopology()
+		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 
 	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -37,11 +42,14 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	select {
 	case resp := <-replyCh:
 		if resp.Err != nil {
-			return fmt.Errorf("commit response: %w", resp.Err)
+			tx.db.handleConnError(proxy.Address)
+			tx.db.kickTopology()
+			return &wire.FDBError{Code: ErrCommitUnknownResult}
 		}
 		return tx.parseCommitReply(resp.Body)
 	case <-rctx.Done():
-		return fmt.Errorf("commit timed out: %w", rctx.Err())
+		cancelReply()
+		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 }
 

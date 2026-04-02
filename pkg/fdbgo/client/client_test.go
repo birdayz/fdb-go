@@ -173,6 +173,7 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"grv_proxy_memory_limit", ErrGrvProxyMemoryLimit},
 		{"process_behind", ErrProcessBehind},
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
+		{"all_proxies_unreachable", ErrAllProxiesUnreachable},
 	}
 	for _, tc := range retryable {
 		tc := tc

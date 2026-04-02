@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
@@ -134,11 +135,17 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // PrepareReply allocates a reply token and registers it for response routing.
 // Use this when you need the token BEFORE building the request body
 // (e.g., to embed it in the FDB request's Reply field).
-func (c *Conn) PrepareReply() (UID, <-chan Response) {
+//
+// Returns a cancel function that removes the pending token from the map.
+// Callers should defer cancel() immediately to prevent token leak if
+// SendFrame fails. Deleting a non-existent key from sync.Map is a no-op,
+// so it's safe to call cancel() even after a successful response.
+func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
 	token := NewUID()
 	ch := make(chan Response, 1)
 	c.pending.Store(token, ch)
-	return token, ch
+	cancel := func() { c.pending.Delete(token) }
+	return token, ch, cancel
 }
 
 // SendFrame writes a raw frame to the connection. The destToken is the
@@ -219,7 +226,8 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 // Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
 	defer c.loopWG.Done()
-	defer c.cancel() // if server kills us, mark connection dead
+	defer c.cancel()     // if server kills us, mark connection dead
+	defer c.conn.Close() // close TCP socket — prevents fd leak on Path B (server dies)
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
 
@@ -287,7 +295,9 @@ func (c *Conn) handlePing(body []byte) {
 	replyBody := buildVoidReply()
 
 	c.mu.Lock()
+	c.conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 	_ = WriteFrame(c.conn, replyToken, replyBody, c.tls)
+	c.conn.SetWriteDeadline(time.Time{}) // clear
 	c.mu.Unlock()
 }
 

@@ -24,6 +24,8 @@ const (
 	ErrGrvProxyMemoryLimit       = 1038
 	ErrProcessBehind             = 1039
 	ErrBatchTransactionThrottled = 1040
+	ErrAllAlternativesFailed     = 1006 // C++: all_alternatives_failed (storage reads)
+	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -312,7 +314,8 @@ func (tx *Transaction) OnError(err error) error {
 		return nil
 
 	case ErrNotCommitted, ErrDatabaseLocked, ErrProxyMemoryLimitExceeded,
-		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled:
+		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled,
+		ErrAllProxiesUnreachable:
 		// Commit-related: exponential backoff.
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff())

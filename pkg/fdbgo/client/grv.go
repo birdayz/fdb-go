@@ -224,35 +224,45 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 }
 
 func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
-	proxy, err := db.getGRVProxy()
-	if err != nil {
-		return 0, false, false, err
+	proxies := db.getGRVProxies()
+	if len(proxies) == 0 {
+		return 0, false, false, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 	}
 
-	conn, err := db.getOrDial(context.Background(), proxy.Address)
-	if err != nil {
-		return 0, false, false, err
-	}
-
-	replyToken, replyCh := conn.PrepareReply()
-	body := buildGetReadVersionRequest(replyToken)
-
-	if err := conn.SendFrame(proxy.Token, body); err != nil {
-		return 0, false, false, err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-replyCh:
-		if resp.Err != nil {
-			return 0, false, false, resp.Err
+	for _, proxy := range proxies {
+		conn, err := db.getOrDial(context.Background(), proxy.Address)
+		if err != nil {
+			db.handleConnError(proxy.Address)
+			continue
 		}
-		return parseGetReadVersionReply(resp.Body)
-	case <-ctx.Done():
-		return 0, false, false, ctx.Err()
+
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		body := buildGetReadVersionRequest(replyToken)
+
+		if err := conn.SendFrame(proxy.Token, body); err != nil {
+			cancelReply()
+			db.handleConnError(proxy.Address)
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				db.handleConnError(proxy.Address)
+				continue
+			}
+			return parseGetReadVersionReply(resp.Body)
+		case <-ctx.Done():
+			cancel()
+			cancelReply()
+			continue
+		}
 	}
+
+	db.kickTopology()
+	return 0, false, false, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 }
 
 func buildGetReadVersionRequest(replyToken transport.UID) []byte {

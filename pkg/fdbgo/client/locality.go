@@ -73,57 +73,61 @@ func (lc *locationCache) invalidate(key []byte) {
 }
 
 func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
-	proxy, err := db.getCommitProxy()
-	if err != nil {
-		return nil, fmt.Errorf("get commit proxy: %w", err)
+	proxies := db.getCommitProxies()
+	if len(proxies) == 0 {
+		return nil, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 	}
 
-	conn, err := db.getOrDial(ctx, proxy.Address)
-	if err != nil {
-		return nil, fmt.Errorf("dial commit proxy: %w", err)
-	}
-
-	replyToken, replyCh := conn.PrepareReply()
-	body := buildGetKeyServerLocationsRequest(key, replyToken)
-
-	locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
-
-	if err := conn.SendFrame(locToken, body); err != nil {
-		return nil, fmt.Errorf("send GetKeyServerLocations: %w", err)
-	}
-
-	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-replyCh:
-		if resp.Err != nil {
-			return nil, fmt.Errorf("locations response: %w", resp.Err)
-		}
-		entries, err := parseGetKeyServerLocationsReply(resp.Body)
+	for _, proxy := range proxies {
+		conn, err := db.getOrDial(ctx, proxy.Address)
 		if err != nil {
-			return nil, err
+			db.handleConnError(proxy.Address)
+			continue
 		}
-		// Cache the returned shard ranges with size cap.
-		lc.mu.Lock()
-		for _, entry := range entries {
-			if lc.maxSize > 0 && len(lc.entries) >= lc.maxSize {
-				// Random eviction matching C++ behavior.
+
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		body := buildGetKeyServerLocationsRequest(key, replyToken)
+		locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
+
+		if err := conn.SendFrame(locToken, body); err != nil {
+			cancelReply()
+			db.handleConnError(proxy.Address)
+			continue
+		}
+
+		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				db.handleConnError(proxy.Address)
+				continue
+			}
+			entries, err := parseGetKeyServerLocationsReply(resp.Body)
+			if err != nil {
+				continue
+			}
+			// Cache the returned shard ranges with size cap.
+			lc.mu.Lock()
+			lc.entries = append(lc.entries, entries...)
+			for len(lc.entries) > lc.maxSize {
 				idx := rand.Intn(len(lc.entries))
 				lc.entries[idx] = lc.entries[len(lc.entries)-1]
 				lc.entries = lc.entries[:len(lc.entries)-1]
 			}
-			lc.entries = append(lc.entries, entry)
+			lc.mu.Unlock()
+			if len(entries) > 0 {
+				return entries[0].servers, nil
+			}
+		case <-rctx.Done():
+			cancel()
+			cancelReply()
+			continue
 		}
-		lc.mu.Unlock()
-		// Return servers for the first entry (covers the queried key).
-		if len(entries) > 0 {
-			return entries[0].servers, nil
-		}
-		return nil, fmt.Errorf("no location entries")
-	case <-rctx.Done():
-		return nil, fmt.Errorf("locations request timed out: %w", rctx.Err())
 	}
+
+	db.kickTopology()
+	return nil, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.

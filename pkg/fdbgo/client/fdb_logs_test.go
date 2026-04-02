@@ -99,7 +99,8 @@ func TestFDBServerLogs(t *testing.T) {
 		t.Logf("connected, peer protocol version: %#x", conn.PeerProtocolVersion())
 
 		// Allocate reply token before building the request body so we can embed it.
-		replyToken, replyCh := conn.PrepareReply()
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		defer cancelReply()
 		t.Logf("reply token allocated: %016x:%016x", replyToken.First, replyToken.Second)
 
 		// Build the OpenDatabaseCoordRequest body.

@@ -154,6 +154,24 @@ func (db *database) getCommitProxy() (*ProxyInfo, error) {
 	return &info.CommitProxies[0], nil
 }
 
+// getGRVProxies returns all GRV proxies from the current topology.
+func (db *database) getGRVProxies() []ProxyInfo {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return nil
+	}
+	return info.GRVProxies
+}
+
+// getCommitProxies returns all commit proxies from the current topology.
+func (db *database) getCommitProxies() []ProxyInfo {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return nil
+	}
+	return info.CommitProxies
+}
+
 func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
 	db.connMu.Lock()
 	defer db.connMu.Unlock()
