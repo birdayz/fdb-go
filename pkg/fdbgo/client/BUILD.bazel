@@ -24,6 +24,8 @@ go_library(
 
 go_test(
     name = "client_test",
+    size = "large",  # 39 parallel Docker containers — needs >300s on slow CI
+    timeout = "eternal",  # 900s
     srcs = [
         "bench_test.go",
         "c_binding_port_test.go",

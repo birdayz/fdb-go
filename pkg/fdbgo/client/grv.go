@@ -151,8 +151,15 @@ func (b *grvBatcher) flush(db *database) {
 		return
 	}
 
+	// Bound the GRV request. C++ cancels the actor when callers drop
+	// the future. Our equivalent: context with timeout. If all callers
+	// have given up (their ctx expired), this ensures the batcher
+	// goroutine doesn't hang forever.
+	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
+	defer batchCancel()
+
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest(db)
+	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx)
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -206,7 +213,9 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 
 			if needsRefresh {
 				requestTime := time.Now()
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db)
+				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx)
+				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)
 					db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
@@ -236,7 +245,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
 	var backoff time.Duration
 	numAttempts := 0
 
@@ -244,7 +253,6 @@ func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrot
 		// Re-read proxy list each cycle — topology may have refreshed.
 		proxies := db.getGRVProxies()
 		if len(proxies) == 0 {
-			// No proxies known. Kick topology, wait with backoff.
 			db.kickTopology()
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
@@ -253,28 +261,25 @@ func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrot
 			case <-time.After(backoff):
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
-			case <-db.ctx.Done():
-				return 0, false, false, db.ctx.Err()
+			case <-ctx.Done():
+				return 0, false, false, ctx.Err()
 			}
 		}
 
-		// Apply backoff if we've cycled all proxies at least once.
 		if backoff > 0 {
 			select {
 			case <-time.After(backoff):
-			case <-db.ctx.Done():
-				return 0, false, false, db.ctx.Err()
+			case <-ctx.Done():
+				return 0, false, false, ctx.Err()
 			}
 		}
 
-		// Cycle all proxies. Only broken_promise (transport error) → next proxy.
-		// FDB application errors propagate immediately.
 		for _, proxy := range proxies {
-			conn, err := db.getOrDial(db.ctx, proxy.Address)
+			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
 				db.handleConnError(proxy.Address)
 				numAttempts++
-				continue // transport error → try next proxy
+				continue
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
@@ -284,33 +289,30 @@ func (b *grvBatcher) sendGRVRequest(db *database) (version int64, rkDefaultThrot
 				cancelReply()
 				db.handleConnError(proxy.Address)
 				numAttempts++
-				continue // transport error → try next proxy
+				continue
 			}
 
-			rpcCtx, rpcCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
+			rpcCtx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 			select {
 			case resp := <-replyCh:
 				rpcCancel()
 				if resp.Err != nil {
-					// Transport error (broken_promise equivalent) → try next.
 					db.handleConnError(proxy.Address)
 					numAttempts++
 					continue
 				}
-				// Got a response. Parse it — FDB errors propagate to caller.
 				return parseGetReadVersionReply(resp.Body)
 			case <-rpcCtx.Done():
 				rpcCancel()
 				cancelReply()
-				if db.ctx.Err() != nil {
-					return 0, false, false, db.ctx.Err() // database shutting down
+				if ctx.Err() != nil {
+					return 0, false, false, ctx.Err()
 				}
 				numAttempts++
-				continue // RPC timeout → try next proxy
+				continue
 			}
 		}
 
-		// All proxies failed in this cycle. Kick topology, apply backoff.
 		db.kickTopology()
 		if numAttempts >= len(proxies) {
 			if backoff == 0 {
