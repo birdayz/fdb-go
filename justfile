@@ -33,24 +33,16 @@ tidy:
 fmt:
     gofmt -w $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*')
 
-# Check Go formatting + style rules (fails if any file needs fixing)
+# Check Go formatting (fails if any file needs formatting)
+# Note: interface{} → any is enforced by nogo (noemptyiface analyzer)
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
-    gofiles=$(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*')
-    unformatted=$(gofmt -l $gofiles)
+    unformatted=$(gofmt -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"
         echo "Run 'just fmt' to fix."
-        exit 1
-    fi
-    # Ban interface{} — use any instead (Go 1.18+)
-    offenders=$(grep -rn 'interface{}' $gofiles || true)
-    if [ -n "$offenders" ]; then
-        echo "Use 'any' instead of 'interface{}':"
-        echo "$offenders"
-        echo "Run: sed -i 's/interface{}/any/g' <files>"
         exit 1
     fi
 
