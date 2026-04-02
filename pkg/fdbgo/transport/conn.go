@@ -16,13 +16,20 @@ import (
 
 // Conn is a multiplexed FDB connection. Multiple concurrent requests
 // share one TCP connection, matched by endpoint tokens.
+//
+// Lifecycle: after Close() returns, zero goroutines are running.
+// If the server kills the connection, readLoop cancels the context
+// and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
-	conn    net.Conn
-	tls     bool
-	mu      sync.Mutex     // protects writes
+	conn   net.Conn
+	tls    bool
+	mu     sync.Mutex // protects writes only
+	ctx    context.Context
+	cancel context.CancelFunc
+	loopWG sync.WaitGroup // tracks readLoop goroutine
+
 	pending sync.Map       // UID → chan Response
 	peerPkt *ConnectPacket // peer's connect packet
-	done    chan struct{}
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -59,26 +66,31 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 
+	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
-		conn: netConn,
-		tls:  tls,
-		done: make(chan struct{}),
+		conn:   netConn,
+		tls:    tls,
+		ctx:    connCtx,
+		cancel: cancel,
 	}
 
 	// Exchange ConnectPackets.
 	connID := newConnectionID()
 	if err := WriteConnectPacket(netConn, netConn.LocalAddr(), connID); err != nil {
+		cancel()
 		netConn.Close()
 		return nil, fmt.Errorf("write connect packet: %w", err)
 	}
 
 	peerPkt, err := ReadConnectPacket(netConn)
 	if err != nil {
+		cancel()
 		netConn.Close()
 		return nil, fmt.Errorf("read connect packet: %w", err)
 	}
 
 	if !peerPkt.IsCompatible(ProtocolVersion73) {
+		cancel()
 		netConn.Close()
 		peerVer := peerPkt.ProtocolVersion & ^ObjectSerializerFlag
 		return nil, fmt.Errorf("incompatible protocol version: peer=%#x, ours=%#x", peerVer, ProtocolVersion73)
@@ -93,6 +105,7 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 	}
 
 	// Start read loop.
+	c.loopWG.Add(1)
 	go c.readLoop()
 
 	return c, nil
@@ -152,20 +165,26 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 		return resp.Body, resp.Err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.done:
+	case <-c.ctx.Done():
 		return nil, fmt.Errorf("connection closed")
 	}
 }
 
-// Close closes the connection.
+// Close closes the connection and waits for readLoop to exit.
+// Safe to call multiple times. After Close returns, zero goroutines
+// are running on this connection.
+//
+// Shutdown sequence (matches C++ connectionKeeper):
+// 1. Cancel context — signals all waiters that conn is dead
+// 2. Close TCP socket — unblocks readLoop's ReadFrame
+// 3. readLoop delivers errors to all pending requests
+// 4. readLoop exits, signals WaitGroup
+// 5. Close returns
 func (c *Conn) Close() error {
-	select {
-	case <-c.done:
-		return nil // already closed
-	default:
-		close(c.done)
-	}
-	return c.conn.Close()
+	c.cancel() // idempotent — safe to call multiple times
+	err := c.conn.Close()
+	c.loopWG.Wait()
+	return err
 }
 
 // SetDebug enables frame-level debug tracing to stderr.
@@ -174,14 +193,16 @@ func (c *Conn) SetDebug(enabled bool) {
 	c.debugWriter = os.Stderr
 }
 
-// IsClosed returns true if the connection has been closed.
+// IsClosed returns true if the connection has been closed or the server
+// killed it. Uses context cancellation — works for both shutdown paths.
 func (c *Conn) IsClosed() bool {
-	select {
-	case <-c.done:
-		return true
-	default:
-		return false
-	}
+	return c.ctx.Err() != nil
+}
+
+// Done returns a channel that is closed when the connection is dead.
+// Use in select statements to detect connection death.
+func (c *Conn) Done() <-chan struct{} {
+	return c.ctx.Done()
 }
 
 // PeerProtocolVersion returns the peer's protocol version.
@@ -190,27 +211,27 @@ func (c *Conn) PeerProtocolVersion() uint64 {
 }
 
 // readLoop reads frames and dispatches responses to waiting goroutines.
+//
+// Two exit paths:
+// 1. Client calls Close() → conn.Close() → ReadFrame returns error → we exit
+// 2. Server dies → ReadFrame returns EOF → we cancel ctx → pool sees IsClosed()
+//
+// Both paths: deliver errors to all pending, signal WaitGroup, return.
 func (c *Conn) readLoop() {
-	defer c.Close()
+	defer c.loopWG.Done()
+	defer c.cancel() // if server kills us, mark connection dead
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
 
 	for {
 		token, body, err := ReadFrame(c.conn, c.tls)
 		if err != nil {
-			if c.debugFrames {
+			// Only log if this is unexpected (server died, not our Close).
+			if c.debugFrames && c.ctx.Err() == nil {
 				fmt.Fprintf(c.debugWriter, "[recv] ERROR: %v\n", err)
 			}
-			// Deliver error to all pending requests.
-			c.pending.Range(func(key, value any) bool {
-				ch := value.(chan Response)
-				select {
-				case ch <- Response{Err: err}:
-				default:
-				}
-				c.pending.Delete(key)
-				return true
-			})
+			// Deliver error to all pending requests (C++ disconnect promise equivalent).
+			c.failAllPending(err)
 			return
 		}
 
@@ -233,6 +254,21 @@ func (c *Conn) readLoop() {
 		}
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
+}
+
+// failAllPending delivers an error to all pending request channels.
+// Matches C++ connectionKeeper's disconnect promise that wakes all
+// in-flight deliver() actors.
+func (c *Conn) failAllPending(err error) {
+	c.pending.Range(func(key, value any) bool {
+		ch := value.(chan Response)
+		select {
+		case ch <- Response{Err: err}:
+		default:
+		}
+		c.pending.Delete(key)
+		return true
+	})
 }
 
 // WLTokenPingPacket is the well-known token for PING keepalive.
