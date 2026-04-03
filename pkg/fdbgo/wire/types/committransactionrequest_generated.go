@@ -219,40 +219,48 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *CommitTransactionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
+	m.Transaction.precomputeSize(ps)
+	m.Reply.precomputeSize(ps)
 	if m.HasDebugID { ps.VisitDynamicSize(len(m.DebugID)) }
 	if m.HasCommitCostEstimation { ps.VisitDynamicSize(len(m.CommitCostEstimation)) }
 	if m.HasTagSet { ps.VisitDynamicSize(len(m.TagSet)) }
-	ps.VisitDynamicSize(len(m.IdempotencyId))
-	m.Transaction.precomputeSize(ps)
-	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
 	m.TenantInfo.precomputeSize(ps)
+	ps.VisitDynamicSize(len(m.IdempotencyId))
 	{ n := ps.GetMessageWriter(int(CommitTransactionRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRequestVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *CommitTransactionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var transactionStart int
+	var replyStart int
 	var debugIDOff int
-	if m.HasDebugID { debugIDOff, _ = wb.VisitDynamicSize(m.DebugID) }
 	var commitCostEstimationOff int
-	if m.HasCommitCostEstimation { commitCostEstimationOff, _ = wb.VisitDynamicSize(m.CommitCostEstimation) }
 	var tagSetOff int
+	var spanContextStart int
+	var tenantInfoStart int
+	var idempotencyIdOff int
+	transactionStart = m.Transaction.writeToBuffer(wb, vtableStart, tmpl)
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	if m.HasDebugID { debugIDOff, _ = wb.VisitDynamicSize(m.DebugID) }
+	if m.HasCommitCostEstimation { commitCostEstimationOff, _ = wb.VisitDynamicSize(m.CommitCostEstimation) }
 	if m.HasTagSet { tagSetOff, _ = wb.VisitDynamicSize(m.TagSet) }
-	idempotencyIdOff, _ := wb.VisitDynamicSize(m.IdempotencyId)
-	transactionStart := m.Transaction.writeToBuffer(wb, vtableStart, tmpl)
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
-	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
-	tenantInfoStart := m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	idempotencyIdOff, _ = wb.VisitDynamicSize(m.IdempotencyId)
 	selfW := wb.GetMessageWriter(int(CommitTransactionRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := CommitTransactionRequestVTable
 	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Flags)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRequestSlotFlags+2])) }
+	selfW.WriteRelativeOffset(transactionStart, int(vt[CommitTransactionRequestSlotTransaction+2]))
+	selfW.WriteRelativeOffset(replyStart, int(vt[CommitTransactionRequestSlotReply+2]))
 	if m.HasDebugID {
 		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRequestSlotDebugID+2]))
 		selfW.WriteRelativeOffset(debugIDOff, int(vt[CommitTransactionRequestSlotDebugID+1+2]))
@@ -265,11 +273,9 @@ func (m *CommitTransactionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableS
 		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRequestSlotTagSet+2]))
 		selfW.WriteRelativeOffset(tagSetOff, int(vt[CommitTransactionRequestSlotTagSet+1+2]))
 	}
-	selfW.WriteRelativeOffset(idempotencyIdOff, int(vt[CommitTransactionRequestSlotIdempotencyId+2]))
-	selfW.WriteRelativeOffset(transactionStart, int(vt[CommitTransactionRequestSlotTransaction+2]))
-	selfW.WriteRelativeOffset(replyStart, int(vt[CommitTransactionRequestSlotReply+2]))
 	selfW.WriteRelativeOffset(spanContextStart, int(vt[CommitTransactionRequestSlotSpanContext+2]))
 	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[CommitTransactionRequestSlotTenantInfo+2]))
+	selfW.WriteRelativeOffset(idempotencyIdOff, int(vt[CommitTransactionRequestSlotIdempotencyId+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }

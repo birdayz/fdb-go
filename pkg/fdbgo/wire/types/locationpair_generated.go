@@ -85,26 +85,29 @@ func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *LocationPair) precomputeSize(ps *wire.PrecomputeSize) int {
-	ps.VisitDynamicSize(len(m.Servers))
 	m.KeyRange.precomputeSize(ps)
+	ps.VisitDynamicSize(len(m.Servers))
 	{ n := ps.GetMessageWriter(int(LocationPairVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(LocationPairVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *LocationPair) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	serversOff, _ := wb.VisitDynamicSize(m.Servers)
-	keyRangeStart := m.KeyRange.writeToBuffer(wb, vtableStart, tmpl)
+	var keyRangeStart int
+	var serversOff int
+	keyRangeStart = m.KeyRange.writeToBuffer(wb, vtableStart, tmpl)
+	serversOff, _ = wb.VisitDynamicSize(m.Servers)
 	selfW := wb.GetMessageWriter(int(LocationPairVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := LocationPairVTable
 	{ soff := int32(vtableStart - tmpl.VTableOffset(LocationPairVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	selfW.WriteRelativeOffset(serversOff, int(vt[LocationPairSlotServers+2]))
 	selfW.WriteRelativeOffset(keyRangeStart, int(vt[LocationPairSlotKeyRange+2]))
+	selfW.WriteRelativeOffset(serversOff, int(vt[LocationPairSlotServers+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }

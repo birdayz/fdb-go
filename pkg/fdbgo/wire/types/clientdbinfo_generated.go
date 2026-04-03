@@ -222,7 +222,8 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *ClientDBInfo) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.GrvProxies))
 	ps.VisitDynamicSize(len(m.CommitProxies))
@@ -235,17 +236,20 @@ func (m *ClientDBInfo) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *ClientDBInfo) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	grvProxiesOff, _ := wb.VisitDynamicSize(m.GrvProxies)
-	commitProxiesOff, _ := wb.VisitDynamicSize(m.CommitProxies)
+	var grvProxiesOff int
+	var commitProxiesOff int
 	var forwardOff int
-	if m.HasForward { forwardOff, _ = wb.VisitDynamicSize(m.Forward) }
-	historyOff, _ := wb.VisitDynamicSize(m.History)
+	var historyOff int
 	var encryptKeyProxyOff int
-	if m.HasEncryptKeyProxy { encryptKeyProxyOff, _ = wb.VisitDynamicSize(m.EncryptKeyProxy) }
 	var metaclusterNameOff int
+	grvProxiesOff, _ = wb.VisitDynamicSize(m.GrvProxies)
+	commitProxiesOff, _ = wb.VisitDynamicSize(m.CommitProxies)
+	if m.HasForward { forwardOff, _ = wb.VisitDynamicSize(m.Forward) }
+	historyOff, _ = wb.VisitDynamicSize(m.History)
+	if m.HasEncryptKeyProxy { encryptKeyProxyOff, _ = wb.VisitDynamicSize(m.EncryptKeyProxy) }
 	if m.HasMetaclusterName { metaclusterNameOff, _ = wb.VisitDynamicSize(m.MetaclusterName) }
 	selfW := wb.GetMessageWriter(int(ClientDBInfoVTable[1]), true)
 	selfStart := selfW.FinalLocation

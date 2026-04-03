@@ -129,7 +129,8 @@ func (m *CommitID) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *CommitID) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasMetadataVersion { ps.VisitDynamicSize(len(m.MetadataVersion)) }
 	if m.HasConflictingKRIndices { ps.VisitDynamicSize(len(m.ConflictingKRIndices)) }
@@ -138,12 +139,12 @@ func (m *CommitID) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *CommitID) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var metadataVersionOff int
-	if m.HasMetadataVersion { metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion) }
 	var conflictingKRIndicesOff int
+	if m.HasMetadataVersion { metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion) }
 	if m.HasConflictingKRIndices { conflictingKRIndicesOff, _ = wb.VisitDynamicSize(m.ConflictingKRIndices) }
 	selfW := wb.GetMessageWriter(int(CommitIDVTable[1]), true)
 	selfStart := selfW.FinalLocation

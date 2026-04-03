@@ -103,7 +103,8 @@ func (m *MutationRef) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *MutationRef) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Param1))
 	ps.VisitDynamicSize(len(m.Param2))
@@ -112,11 +113,13 @@ func (m *MutationRef) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *MutationRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	param1Off, _ := wb.VisitDynamicSize(m.Param1)
-	param2Off, _ := wb.VisitDynamicSize(m.Param2)
+	var param1Off int
+	var param2Off int
+	param1Off, _ = wb.VisitDynamicSize(m.Param1)
+	param2Off, _ = wb.VisitDynamicSize(m.Param2)
 	selfW := wb.GetMessageWriter(int(MutationRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := MutationRefVTable

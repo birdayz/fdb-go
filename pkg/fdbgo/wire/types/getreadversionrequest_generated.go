@@ -159,7 +159,8 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetReadVersionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Tags))
 	if m.HasDebugID { ps.VisitDynamicSize(len(m.DebugID)) }
@@ -170,14 +171,17 @@ func (m *GetReadVersionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GetReadVersionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	tagsOff, _ := wb.VisitDynamicSize(m.Tags)
+	var tagsOff int
 	var debugIDOff int
+	var replyStart int
+	var spanContextStart int
+	tagsOff, _ = wb.VisitDynamicSize(m.Tags)
 	if m.HasDebugID { debugIDOff, _ = wb.VisitDynamicSize(m.DebugID) }
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
-	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
 	selfW := wb.GetMessageWriter(int(GetReadVersionRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetReadVersionRequestVTable

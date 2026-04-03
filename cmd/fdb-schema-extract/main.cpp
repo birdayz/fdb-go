@@ -532,51 +532,50 @@ private:
 
     void emitPrecomputeSize(const char* typeName, const std::vector<FieldDesc>& fields, int maxAlign) {
         fprintf(f, "// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.\n");
-        fprintf(f, "// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.\n");
+        fprintf(f, "// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).\n");
+        fprintf(f, "// Returns end-offset of this object (C++ RelativeOffset).\n");
         fprintf(f, "func (m *%s) precomputeSize(ps *wire.PrecomputeSize) int {\n", typeName);
 
-        // Step 1: OOL fields (same order as serialize)
+        // ONE loop over fields in serialize order — matching C++ SaveVisitorLambda::for_each.
+        // C++ dispatches per field: dynamic_size → visitDynamicSize, nested → recurse,
+        // scalar → inline (no cbs change), union_like → tag + optional recurse.
         for (auto& fd : fields) {
-            if (fd.size == 0) continue;
+            if (fd.size == 0) continue; // Arena
             auto gn = fieldGoName(fd);
-            if (fd.kind == FieldKind::DynamicSize || fd.kind == FieldKind::VectorLike) {
+            switch (fd.kind) {
+            case FieldKind::DynamicSize:
+            case FieldKind::VectorLike:
                 fprintf(f, "\tps.VisitDynamicSize(len(m.%s))\n", gn.c_str());
-            } else if (fd.kind == FieldKind::Optional) {
+                break;
+            case FieldKind::NestedStruct:
+                if (fd.nestedGoType && fd.nestedGoType[0])
+                    fprintf(f, "\tm.%s.precomputeSize(ps)\n", gn.c_str());
+                break;
+            case FieldKind::Optional:
                 if (fd.nestedGoType && fd.nestedGoType[0]) {
-                    // Optional<struct>: when present, recurse into nested type.
-                    // C++ uses EnsureTable<T> which creates a nested object.
                     fprintf(f, "\tif m.Has%s { m.%s.precomputeSize(ps) }\n", gn.c_str(), gn.c_str());
                 } else {
-                    // Optional<bytes>: when present, OOL data.
                     fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
                 }
-            } else if (fd.kind == FieldKind::VectorOfStruct) {
-                // C++ flat_buffers.h:1218-1236: vector_like save.
-                // Each element is recursively serialized via save_helper.
-                // A message writer holds the RelativeOffset array (len * fb_size<T> bytes).
-                // fb_size<T> for struct elements = 4 (sizeof(RelativeOffset)).
+                break;
+            case FieldKind::VectorOfStruct:
                 fprintf(f, "\t{\n");
                 fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
                 fprintf(f, "\t\tif n > 0 {\n");
-                fprintf(f, "\t\t\tself := ps.GetMessageWriter(n * 4)\n"); // RelativeOffset array
+                fprintf(f, "\t\t\tself := ps.GetMessageWriter(n * 4)\n");
                 fprintf(f, "\t\t\tfor i := 0; i < n; i++ { m.%s[i].precomputeSize(ps) }\n", gn.c_str());
-                // C++: RightAlign(cbs + len, max(4, fb_align<T>)) + 4
-                // fb_align for struct elements that have serialize() = 4 (they're RelativeOffsets)
                 fprintf(f, "\t\t\tself.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)\n");
-                fprintf(f, "\t\t} else { ps.VisitDynamicSize(0) }\n"); // empty vector sentinel
+                fprintf(f, "\t\t} else { ps.VisitDynamicSize(0) }\n");
                 fprintf(f, "\t}\n");
+                break;
+            case FieldKind::Scalar:
+                break; // inline in object, no cbs change
+            default:
+                break;
             }
         }
 
-        // Step 2: Nested structs (forward serializer order) — recurse
-        for (auto& fd : fields) {
-            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0]) {
-                auto gn = fieldGoName(fd);
-                fprintf(f, "\tm.%s.precomputeSize(ps)\n", gn.c_str());
-            }
-        }
-
-        // Step 3: Own object — GetMessageWriter + align + WriteToAt
+        // Own object — GetMessageWriter + align + WriteToAt
         // C++ SaveVisitorLambda line 972: RightAlign(cbs + vtable[1] - 4, max(4, fb_align<Members>...)) + 4
         fprintf(f, "\t{ n := ps.GetMessageWriter(int(%sVTable[1])); ", typeName);
         fprintf(f, "n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(%sVTable[1])-4, %d)+4) }\n",
@@ -590,54 +589,65 @@ private:
 
     void emitWriteToBuffer(const char* typeName, const std::vector<FieldDesc>& fields, int maxAlign) {
         fprintf(f, "// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.\n");
-        fprintf(f, "// Must call GetMessageWriter in the SAME order as precomputeSize.\n");
+        fprintf(f, "// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).\n");
         fprintf(f, "// Returns selfStart (end-offset of this object) for parent's RelativeOffset.\n");
         fprintf(f, "func (m *%s) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {\n", typeName);
 
-        // Collect field groups
-        std::vector<const FieldDesc*> oolFields, nestedFields, scalarFields;
+        // Collect scalar fields for later (written into self object).
+        std::vector<const FieldDesc*> scalarFields;
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
+            if (fd.kind == FieldKind::Scalar) scalarFields.push_back(&fd);
+        }
+
+        // Declare result variables for all non-scalar fields (used for reloff patching).
+        for (auto& fd : fields) {
+            if (fd.size == 0) continue;
+            auto gn = fieldGoName(fd);
             switch (fd.kind) {
             case FieldKind::DynamicSize:
             case FieldKind::VectorLike:
-            case FieldKind::VectorOfStruct:
-            case FieldKind::Optional:
-                oolFields.push_back(&fd);
+                fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Off").c_str());
                 break;
             case FieldKind::NestedStruct:
                 if (fd.nestedGoType && fd.nestedGoType[0])
-                    nestedFields.push_back(&fd);
+                    fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Start").c_str());
                 break;
-            case FieldKind::Scalar:
-                scalarFields.push_back(&fd);
+            case FieldKind::Optional:
+                fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Off").c_str());
                 break;
-            case FieldKind::Variant:
-                oolFields.push_back(&fd);
+            case FieldKind::VectorOfStruct:
+                fprintf(f, "\tvar %s int\n", (safeParam(gn) + "Off").c_str());
                 break;
             default: break;
             }
         }
 
-        // Step 1: OOL writes — same order as precomputeSize
-        for (auto* fdp : oolFields) {
-            auto gn = fieldGoName(*fdp);
-            auto varName = safeParam(gn) + "Off";
-            if (fdp->kind == FieldKind::DynamicSize || fdp->kind == FieldKind::VectorLike) {
-                fprintf(f, "\t%s, _ := wb.VisitDynamicSize(m.%s)\n", varName.c_str(), gn.c_str());
-            } else if (fdp->kind == FieldKind::Optional) {
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                if (fdp->nestedGoType && fdp->nestedGoType[0]) {
-                    // Optional<struct>: recurse into nested type's writeToBuffer
+        // ONE loop in serialize order — same as precomputeSize.
+        for (auto& fd : fields) {
+            if (fd.size == 0) continue;
+            auto gn = fieldGoName(fd);
+            switch (fd.kind) {
+            case FieldKind::DynamicSize:
+            case FieldKind::VectorLike:
+                fprintf(f, "\t%s, _ = wb.VisitDynamicSize(m.%s)\n", (safeParam(gn) + "Off").c_str(), gn.c_str());
+                break;
+            case FieldKind::NestedStruct:
+                if (fd.nestedGoType && fd.nestedGoType[0])
+                    fprintf(f, "\t%s = m.%s.writeToBuffer(wb, vtableStart, tmpl)\n",
+                            (safeParam(gn) + "Start").c_str(), gn.c_str());
+                break;
+            case FieldKind::Optional:
+                if (fd.nestedGoType && fd.nestedGoType[0]) {
                     fprintf(f, "\tif m.Has%s { %s = m.%s.writeToBuffer(wb, vtableStart, tmpl) }\n",
-                            gn.c_str(), varName.c_str(), gn.c_str());
+                            gn.c_str(), (safeParam(gn) + "Off").c_str(), gn.c_str());
                 } else {
                     fprintf(f, "\tif m.Has%s { %s, _ = wb.VisitDynamicSize(m.%s) }\n",
-                            gn.c_str(), varName.c_str(), gn.c_str());
+                            gn.c_str(), (safeParam(gn) + "Off").c_str(), gn.c_str());
                 }
-            } else if (fdp->kind == FieldKind::VectorOfStruct) {
-                // C++ flat_buffers.h:1218-1236: vector_like save (write pass).
-                fprintf(f, "\tvar %s int\n", varName.c_str());
+                break;
+            case FieldKind::VectorOfStruct: {
+                auto offVar = safeParam(gn) + "Off";
                 fprintf(f, "\t{\n");
                 fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
                 fprintf(f, "\t\tif n > 0 {\n");
@@ -646,35 +656,36 @@ private:
                 fprintf(f, "\t\t\t\telemStart := m.%s[i].writeToBuffer(wb, vtableStart, tmpl)\n", gn.c_str());
                 fprintf(f, "\t\t\t\tself.WriteRelativeOffset(elemStart, i*4)\n");
                 fprintf(f, "\t\t\t}\n");
-                // Write count header
-                fprintf(f, "\t\t\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(n)); ");
-                fprintf(f, "wb.WriteUint32(uint32(n), self.FinalLocation+4) }\n"); // count at self.FinalLocation + len
+                fprintf(f, "\t\t\twb.WriteUint32(uint32(n), self.FinalLocation+4)\n");
                 fprintf(f, "\t\t\tself.WriteToAt(self.FinalLocation)\n");
-                fprintf(f, "\t\t\t%s = wb.CurrentBufferSize\n", varName.c_str());
+                fprintf(f, "\t\t\t%s = wb.CurrentBufferSize\n", offVar.c_str());
                 fprintf(f, "\t\t} else {\n");
-                fprintf(f, "\t\t\t%s, _ = wb.VisitDynamicSize(nil)\n", varName.c_str());
+                fprintf(f, "\t\t\t%s, _ = wb.VisitDynamicSize(nil)\n", offVar.c_str());
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t}\n");
+                break;
             }
-        }
-
-        // Step 2: Nested structs — recurse (captures return = nested object start end-offset)
-        for (auto* fdp : nestedFields) {
-            auto gn = fieldGoName(*fdp);
-            auto startVar = safeParam(gn) + "Start";
-            // C++ save_helper returns RelativeOffset{cbs}. Parent uses it for self.write(&result, vtable[i++]).
-            fprintf(f, "\t%s := m.%s.writeToBuffer(wb, vtableStart, tmpl)\n", startVar.c_str(), gn.c_str());
+            case FieldKind::Scalar:
+                break; // written later into self object
+            default:
+                break;
+            }
         }
 
         // Step 3: Own object — GetMessageWriter (zeroed), write fields, soffset, WriteToAt
         fprintf(f, "\tselfW := wb.GetMessageWriter(int(%sVTable[1]), true)\n", typeName);
         fprintf(f, "\tselfStart := selfW.FinalLocation\n");
         // vt is needed for scalars (field offset), OOL reloffs, and nested reloffs.
-        // Variant-only types don't need it yet (TODO).
-        bool hasNonVariantOol = false;
-        for (auto* fdp : oolFields)
-            if (fdp->kind != FieldKind::Variant) { hasNonVariantOol = true; break; }
-        bool needsVt = !scalarFields.empty() || hasNonVariantOol || !nestedFields.empty();
+        bool needsVt = false;
+        for (auto& fd : fields) {
+            if (fd.size == 0) continue;
+            if (fd.kind == FieldKind::Scalar || fd.kind == FieldKind::DynamicSize ||
+                fd.kind == FieldKind::VectorLike || fd.kind == FieldKind::VectorOfStruct ||
+                fd.kind == FieldKind::Optional ||
+                (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0])) {
+                needsVt = true; break;
+            }
+        }
         if (needsVt)
             fprintf(f, "\tvt := %sVTable\n", typeName);
 
@@ -709,31 +720,38 @@ private:
             }
         }
 
-        // Write OOL RelativeOffsets
-        for (auto* fdp : oolFields) {
-            auto gn = fieldGoName(*fdp);
+        // Write RelativeOffsets for all non-scalar fields.
+        // C++ self.write(&result, vtable[i++], sizeof(result)) per field.
+        for (auto& fd : fields) {
+            if (fd.size == 0) continue;
+            auto gn = fieldGoName(fd);
             auto slot = std::string(typeName) + "Slot" + gn;
-            auto offVar = safeParam(gn) + "Off";
-            if (fdp->kind == FieldKind::DynamicSize || fdp->kind == FieldKind::VectorLike) {
-                fprintf(f, "\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n", offVar.c_str(), slot.c_str());
-            } else if (fdp->kind == FieldKind::Optional) {
+            switch (fd.kind) {
+            case FieldKind::DynamicSize:
+            case FieldKind::VectorLike:
+                fprintf(f, "\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n",
+                        (safeParam(gn) + "Off").c_str(), slot.c_str());
+                break;
+            case FieldKind::NestedStruct:
+                if (fd.nestedGoType && fd.nestedGoType[0])
+                    fprintf(f, "\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n",
+                            (safeParam(gn) + "Start").c_str(), slot.c_str());
+                break;
+            case FieldKind::Optional:
                 fprintf(f, "\tif m.Has%s {\n", gn.c_str());
                 fprintf(f, "\t\tselfW.WriteScalar([]byte{1}, int(vt[%s+2]))\n", slot.c_str());
-                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+1+2]))\n", offVar.c_str(), slot.c_str());
+                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+1+2]))\n",
+                        (safeParam(gn) + "Off").c_str(), slot.c_str());
                 fprintf(f, "\t}\n");
-            } else if (fdp->kind == FieldKind::VectorOfStruct) {
+                break;
+            case FieldKind::VectorOfStruct:
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n", offVar.c_str(), slot.c_str());
+                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n",
+                        (safeParam(gn) + "Off").c_str(), slot.c_str());
                 fprintf(f, "\t}\n");
+                break;
+            default: break; // Scalar: already written inline
             }
-        }
-
-        // Write nested RelativeOffsets
-        for (auto* fdp : nestedFields) {
-            auto gn = fieldGoName(*fdp);
-            auto slot = std::string(typeName) + "Slot" + gn;
-            auto startVar = safeParam(gn) + "Start";
-            fprintf(f, "\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n", startVar.c_str(), slot.c_str());
         }
 
         fprintf(f, "\tselfW.WriteToAt(selfStart)\n");

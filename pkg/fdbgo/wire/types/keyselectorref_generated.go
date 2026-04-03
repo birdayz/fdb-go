@@ -97,7 +97,8 @@ func (m *KeySelectorRef) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *KeySelectorRef) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Key))
 	{ n := ps.GetMessageWriter(int(KeySelectorRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, 4)+4) }
@@ -105,10 +106,11 @@ func (m *KeySelectorRef) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *KeySelectorRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	keyOff, _ := wb.VisitDynamicSize(m.Key)
+	var keyOff int
+	keyOff, _ = wb.VisitDynamicSize(m.Key)
 	selfW := wb.GetMessageWriter(int(KeySelectorRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := KeySelectorRefVTable

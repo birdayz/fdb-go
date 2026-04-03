@@ -135,7 +135,8 @@ func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasLockAware { ps.VisitDynamicSize(len(m.LockAware)) }
 	if m.HasField_4 { ps.VisitDynamicSize(len(m.Field_4)) }
@@ -144,12 +145,12 @@ func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var lockAwareOff int
-	if m.HasLockAware { lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware) }
 	var field_4Off int
+	if m.HasLockAware { lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware) }
 	if m.HasField_4 { field_4Off, _ = wb.VisitDynamicSize(m.Field_4) }
 	selfW := wb.GetMessageWriter(int(ReadOptionsVTable[1]), true)
 	selfStart := selfW.FinalLocation

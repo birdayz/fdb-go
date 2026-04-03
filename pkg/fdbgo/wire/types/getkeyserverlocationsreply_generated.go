@@ -132,7 +132,8 @@ func (m *GetKeyServerLocationsReply) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyServerLocationsReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Results))
 	ps.VisitDynamicSize(len(m.ResultsTssMapping))
@@ -142,12 +143,15 @@ func (m *GetKeyServerLocationsReply) precomputeSize(ps *wire.PrecomputeSize) int
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GetKeyServerLocationsReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	resultsOff, _ := wb.VisitDynamicSize(m.Results)
-	resultsTssMappingOff, _ := wb.VisitDynamicSize(m.ResultsTssMapping)
-	resultsTagMappingOff, _ := wb.VisitDynamicSize(m.ResultsTagMapping)
+	var resultsOff int
+	var resultsTssMappingOff int
+	var resultsTagMappingOff int
+	resultsOff, _ = wb.VisitDynamicSize(m.Results)
+	resultsTssMappingOff, _ = wb.VisitDynamicSize(m.ResultsTssMapping)
+	resultsTagMappingOff, _ = wb.VisitDynamicSize(m.ResultsTagMapping)
 	selfW := wb.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyServerLocationsReplyVTable

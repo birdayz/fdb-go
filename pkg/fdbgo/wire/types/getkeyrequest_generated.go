@@ -196,50 +196,56 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyRequest) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
-	if m.HasOptions { m.Options.precomputeSize(ps) }
-	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	m.Sel.precomputeSize(ps)
+	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
 	m.TenantInfo.precomputeSize(ps)
+	if m.HasOptions { m.Options.precomputeSize(ps) }
+	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	{ n := ps.GetMessageWriter(int(GetKeyRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyRequestVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GetKeyRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var selStart int
 	var tagsOff int
-	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
+	var replyStart int
+	var spanContextStart int
+	var tenantInfoStart int
 	var optionsOff int
+	var ssLatestCommitVersionsOff int
+	selStart = m.Sel.writeToBuffer(wb, vtableStart, tmpl)
+	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
 	if m.HasOptions { optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl) }
-	ssLatestCommitVersionsOff, _ := wb.VisitDynamicSize(m.SsLatestCommitVersions)
-	selStart := m.Sel.writeToBuffer(wb, vtableStart, tmpl)
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
-	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
-	tenantInfoStart := m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	ssLatestCommitVersionsOff, _ = wb.VisitDynamicSize(m.SsLatestCommitVersions)
 	selfW := wb.GetMessageWriter(int(GetKeyRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyRequestVTable
 	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
 	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[GetKeyRequestSlotVersion+2])) }
+	selfW.WriteRelativeOffset(selStart, int(vt[GetKeyRequestSlotSel+2]))
 	if m.HasTags {
 		selfW.WriteScalar([]byte{1}, int(vt[GetKeyRequestSlotTags+2]))
 		selfW.WriteRelativeOffset(tagsOff, int(vt[GetKeyRequestSlotTags+1+2]))
 	}
+	selfW.WriteRelativeOffset(replyStart, int(vt[GetKeyRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetKeyRequestSlotSpanContext+2]))
+	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetKeyRequestSlotTenantInfo+2]))
 	if m.HasOptions {
 		selfW.WriteScalar([]byte{1}, int(vt[GetKeyRequestSlotOptions+2]))
 		selfW.WriteRelativeOffset(optionsOff, int(vt[GetKeyRequestSlotOptions+1+2]))
 	}
 	selfW.WriteRelativeOffset(ssLatestCommitVersionsOff, int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]))
-	selfW.WriteRelativeOffset(selStart, int(vt[GetKeyRequestSlotSel+2]))
-	selfW.WriteRelativeOffset(replyStart, int(vt[GetKeyRequestSlotReply+2]))
-	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetKeyRequestSlotSpanContext+2]))
-	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetKeyRequestSlotTenantInfo+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }

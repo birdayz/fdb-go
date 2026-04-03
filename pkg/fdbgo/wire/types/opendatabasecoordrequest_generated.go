@@ -207,30 +207,38 @@ func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *OpenDatabaseCoordRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Issues))
 	ps.VisitDynamicSize(len(m.SupportedVersions))
 	ps.VisitDynamicSize(len(m.TraceLogGroup))
 	ps.VisitDynamicSize(len(m.ClusterKey))
 	ps.VisitDynamicSize(len(m.Coordinators))
-	ps.VisitDynamicSize(len(m.Hostnames))
 	m.Reply.precomputeSize(ps)
+	ps.VisitDynamicSize(len(m.Hostnames))
 	{ n := ps.GetMessageWriter(int(OpenDatabaseCoordRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(OpenDatabaseCoordRequestVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *OpenDatabaseCoordRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	issuesOff, _ := wb.VisitDynamicSize(m.Issues)
-	supportedVersionsOff, _ := wb.VisitDynamicSize(m.SupportedVersions)
-	traceLogGroupOff, _ := wb.VisitDynamicSize(m.TraceLogGroup)
-	clusterKeyOff, _ := wb.VisitDynamicSize(m.ClusterKey)
-	coordinatorsOff, _ := wb.VisitDynamicSize(m.Coordinators)
-	hostnamesOff, _ := wb.VisitDynamicSize(m.Hostnames)
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	var issuesOff int
+	var supportedVersionsOff int
+	var traceLogGroupOff int
+	var clusterKeyOff int
+	var coordinatorsOff int
+	var replyStart int
+	var hostnamesOff int
+	issuesOff, _ = wb.VisitDynamicSize(m.Issues)
+	supportedVersionsOff, _ = wb.VisitDynamicSize(m.SupportedVersions)
+	traceLogGroupOff, _ = wb.VisitDynamicSize(m.TraceLogGroup)
+	clusterKeyOff, _ = wb.VisitDynamicSize(m.ClusterKey)
+	coordinatorsOff, _ = wb.VisitDynamicSize(m.Coordinators)
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	hostnamesOff, _ = wb.VisitDynamicSize(m.Hostnames)
 	selfW := wb.GetMessageWriter(int(OpenDatabaseCoordRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := OpenDatabaseCoordRequestVTable
@@ -242,8 +250,8 @@ func (m *OpenDatabaseCoordRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableS
 	selfW.WriteRelativeOffset(traceLogGroupOff, int(vt[OpenDatabaseCoordRequestSlotTraceLogGroup+2]))
 	selfW.WriteRelativeOffset(clusterKeyOff, int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]))
 	selfW.WriteRelativeOffset(coordinatorsOff, int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]))
-	selfW.WriteRelativeOffset(hostnamesOff, int(vt[OpenDatabaseCoordRequestSlotHostnames+2]))
 	selfW.WriteRelativeOffset(replyStart, int(vt[OpenDatabaseCoordRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(hostnamesOff, int(vt[OpenDatabaseCoordRequestSlotHostnames+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }

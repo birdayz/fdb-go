@@ -181,7 +181,8 @@ func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyServerLocationsRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Begin))
 	if m.HasEnd { ps.VisitDynamicSize(len(m.End)) }
@@ -193,15 +194,19 @@ func (m *GetKeyServerLocationsRequest) precomputeSize(ps *wire.PrecomputeSize) i
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GetKeyServerLocationsRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	beginOff, _ := wb.VisitDynamicSize(m.Begin)
+	var beginOff int
 	var endOff int
+	var replyStart int
+	var spanContextStart int
+	var tenantStart int
+	beginOff, _ = wb.VisitDynamicSize(m.Begin)
 	if m.HasEnd { endOff, _ = wb.VisitDynamicSize(m.End) }
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
-	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
-	tenantStart := m.Tenant.writeToBuffer(wb, vtableStart, tmpl)
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantStart = m.Tenant.writeToBuffer(wb, vtableStart, tmpl)
 	selfW := wb.GetMessageWriter(int(GetKeyServerLocationsRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyServerLocationsRequestVTable

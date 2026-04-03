@@ -194,32 +194,38 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 }
 
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
-// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Key))
 	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
-	if m.HasOptions { m.Options.precomputeSize(ps) }
-	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
 	m.TenantInfo.precomputeSize(ps)
+	if m.HasOptions { m.Options.precomputeSize(ps) }
+	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	{ n := ps.GetMessageWriter(int(GetValueRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetValueRequestVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
 // writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
-// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GetValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
-	keyOff, _ := wb.VisitDynamicSize(m.Key)
+	var keyOff int
 	var tagsOff int
-	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
+	var replyStart int
+	var spanContextStart int
+	var tenantInfoStart int
 	var optionsOff int
+	var ssLatestCommitVersionsOff int
+	keyOff, _ = wb.VisitDynamicSize(m.Key)
+	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
 	if m.HasOptions { optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl) }
-	ssLatestCommitVersionsOff, _ := wb.VisitDynamicSize(m.SsLatestCommitVersions)
-	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
-	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
-	tenantInfoStart := m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	ssLatestCommitVersionsOff, _ = wb.VisitDynamicSize(m.SsLatestCommitVersions)
 	selfW := wb.GetMessageWriter(int(GetValueRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetValueRequestVTable
@@ -230,14 +236,14 @@ func (m *GetValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int,
 		selfW.WriteScalar([]byte{1}, int(vt[GetValueRequestSlotTags+2]))
 		selfW.WriteRelativeOffset(tagsOff, int(vt[GetValueRequestSlotTags+1+2]))
 	}
+	selfW.WriteRelativeOffset(replyStart, int(vt[GetValueRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetValueRequestSlotSpanContext+2]))
+	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetValueRequestSlotTenantInfo+2]))
 	if m.HasOptions {
 		selfW.WriteScalar([]byte{1}, int(vt[GetValueRequestSlotOptions+2]))
 		selfW.WriteRelativeOffset(optionsOff, int(vt[GetValueRequestSlotOptions+1+2]))
 	}
 	selfW.WriteRelativeOffset(ssLatestCommitVersionsOff, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]))
-	selfW.WriteRelativeOffset(replyStart, int(vt[GetValueRequestSlotReply+2]))
-	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetValueRequestSlotSpanContext+2]))
-	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetValueRequestSlotTenantInfo+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }
