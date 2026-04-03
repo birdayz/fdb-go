@@ -131,3 +131,26 @@ func (s *vTableSet) pack() []byte {
 
 	return buf
 }
+
+// Exported VTableSet for testing.
+type VTableSet = vTableSet
+
+func NewVTableSetForTest() *VTableSet { return newVTableSet() }
+func (s *VTableSet) Add(vt VTable)    { s.add(vt) }
+func (s *VTableSet) Pack() []byte     { return s.pack() }
+
+func (s *VTableSet) GetOffset(vt VTable) int {
+	key := makeVTableKey(vt)
+	for _, e := range s.entries {
+		if makeVTableKey(e.vt) == key {
+			return e.offset
+		}
+	}
+	return -1
+}
+
+// PackedVTables returns the pre-packed vtable bytes.
+func (t *MessageTemplate) PackedVTables() []byte { return t.packedVTables }
+
+// VTableOffset returns the byte offset of vt within packed vtable data (exported for testing).
+func (t *MessageTemplate) VTableOffset(vt VTable) int { return t.vtableOffset(vt) }
