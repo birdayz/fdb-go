@@ -32,8 +32,8 @@ type countKVCursor struct {
 // newCountIndexCursor creates a cursor that scans a COUNT index.
 // Each entry's Value is the count decoded from the little-endian int64 FDB value.
 func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction,
-	scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-
+	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
 	return &countKVCursor{
 		index:         index,
 		indexSubspace: indexSubspace,
@@ -48,8 +48,8 @@ func newCountIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.T
 // newTupleValueIndexCursor creates a cursor that scans an aggregate index with tuple-packed values.
 // Each entry's Value is decoded from tuple-packed bytes (for MIN_EVER_TUPLE/MAX_EVER_TUPLE).
 func newTupleValueIndexCursor(index *Index, indexSubspace subspace.Subspace, tx fdb.Transaction,
-	scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
-
+	scanRange TupleRange, continuation []byte, scanProperties ScanProperties,
+) RecordCursor[*IndexEntry] {
 	return &countKVCursor{
 		index:         index,
 		indexSubspace: indexSubspace,

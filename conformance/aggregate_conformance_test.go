@@ -16,7 +16,6 @@ import (
 )
 
 var _ = Describe("EvaluateAggregateFunction Conformance", func() {
-
 	// ========== COUNT aggregate ==========
 	Describe("COUNT aggregate via COUNT index", func() {
 		var (

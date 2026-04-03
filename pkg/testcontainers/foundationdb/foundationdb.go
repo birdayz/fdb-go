@@ -107,7 +107,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 			{
 				Reader:            strings.NewReader(string(socatEntrypoint)),
 				ContainerFilePath: "/entrypoint-tc.sh",
-				FileMode:          0755,
+				FileMode:          0o755,
 			},
 		},
 		Entrypoint: []string{"/entrypoint-tc.sh"},
@@ -151,7 +151,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	// Step 4: Inject socat configuration (listen on internal port 4500, forward to foundationdb on shared port)
 	socatConfig := fmt.Sprintf("# Injected by testcontainers\nTARGET_PORT=%d", sharedPort)
-	err = socatContainer.CopyToContainer(ctx, []byte(socatConfig), "/tmp/socat.conf", 0644)
+	err = socatContainer.CopyToContainer(ctx, []byte(socatConfig), "/tmp/socat.conf", 0o644)
 	if err != nil {
 		_ = socatContainer.Terminate(ctx)
 		_ = nw.Remove(ctx)
@@ -172,7 +172,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 			{
 				Reader:            strings.NewReader(string(fdbEntrypoint)),
 				ContainerFilePath: "/entrypoint-tc.sh",
-				FileMode:          0755,
+				FileMode:          0o755,
 			},
 		},
 		Entrypoint: []string{"/entrypoint-tc.sh"},
@@ -220,7 +220,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	// Step 7: Inject FDB configuration with the shared port (same as socat)
 	fdbConfig := fmt.Sprintf("# Injected by testcontainers\nFDB_PORT=%d", sharedPort)
-	err = container.CopyToContainer(ctx, []byte(fdbConfig), "/tmp/fdb.conf", 0644)
+	err = container.CopyToContainer(ctx, []byte(fdbConfig), "/tmp/fdb.conf", 0o644)
 	if err != nil {
 		_ = container.Terminate(ctx)
 		_ = socatContainer.Terminate(ctx)

@@ -1168,9 +1168,11 @@ func (t *stubTokenizer) Name() string { return t.name }
 func (t *stubTokenizer) Tokenize(_ string, _ int, _ TokenizerMode) (TokenIterator, error) {
 	return &emptyIter{}, nil
 }
+
 func (t *stubTokenizer) TokenizeToMap(_ string, _ int, _ TokenizerMode) (map[string][]int, error) {
 	return nil, nil
 }
+
 func (t *stubTokenizer) TokenizeToList(_ string, _ int, _ TokenizerMode) ([]string, error) {
 	return nil, nil
 }

@@ -29,6 +29,7 @@ var voidReplyVTableClosure = []wire.VTable{
 	{6, 6, 4},    // appears in C++ vtable closure
 	{8, 9, 8, 4}, // ErrorOr
 }
+
 var VoidReplyTemplate = wire.NewMessageTemplate(
 	VoidReplyFileID, errorOrVTable, 4, voidReplyVTableClosure,
 )
@@ -71,6 +72,7 @@ var errorOrErrorVTableClosure = []wire.VTable{
 	{6, 6, 4},    // Error
 	{8, 9, 8, 4}, // ErrorOr
 }
+
 var ErrorOrErrorTemplate = wire.NewMessageTemplate(
 	0, errorOrVTable, 4, errorOrErrorVTableClosure,
 )

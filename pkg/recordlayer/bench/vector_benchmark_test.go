@@ -2,6 +2,7 @@ package bench
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand"
@@ -12,8 +13,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"encoding/binary"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"

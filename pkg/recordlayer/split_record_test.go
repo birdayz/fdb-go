@@ -41,7 +41,6 @@ func splitMetadata() *RecordMetaData {
 }
 
 var _ = Describe("SplitRecords", func() {
-
 	It("saves and loads a record that exceeds 100KB", func() {
 		ctx := context.Background()
 		metaData := splitMetadata()

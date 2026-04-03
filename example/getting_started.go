@@ -53,7 +53,6 @@ func main() {
 			SetMetaDataProvider(recordMetaData).
 			SetSubspace(keyspace).
 			CreateOrOpen()
-
 		if err != nil {
 			return nil, fmt.Errorf("failed to open store: %w", err)
 		}

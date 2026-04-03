@@ -1,6 +1,5 @@
-// Package gofmtcheck defines an analyzer that reports unformatted Go source files.
-// Uses go/format directly — no shell out to gofmt.
-package gofmtcheck
+// Package gofmt defines an analyzer that reports unformatted Go source files.
+package gofmt
 
 import (
 	"bytes"
@@ -11,7 +10,7 @@ import (
 )
 
 var Analyzer = &analysis.Analyzer{
-	Name: "gofmtcheck",
+	Name: "gofmt",
 	Doc:  "reports Go source files not formatted with gofmt",
 	Run:  run,
 }

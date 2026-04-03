@@ -20,7 +20,6 @@ func makeTestBytes(size int) []byte {
 }
 
 var _ = Describe("SplitHelper", func() {
-
 	// Each test gets its own subspace from specSubspace(), and within that
 	// we use sub(RecordKey) as the recordSubspace — mirroring the real store layout.
 	recordSub := func() subspace.Subspace {

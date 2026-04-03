@@ -12,7 +12,6 @@ import (
 )
 
 var _ = Describe("StoreBugVerify", func() {
-
 	// Bug 1: ErrorIfTypeChanged must propagate deserialization errors, not swallow them.
 	// Before fix: `if deserErr == nil` silently swallowed errors, so corrupted records
 	// would pass the type check instead of erroring.

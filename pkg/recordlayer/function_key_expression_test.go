@@ -9,7 +9,6 @@ import (
 )
 
 var _ = Describe("FunctionKeyExpression", func() {
-
 	Describe("Constructor", func() {
 		It("creates with correct name and arguments", func() {
 			args := EmptyKey()

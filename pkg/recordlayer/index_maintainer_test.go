@@ -14,7 +14,6 @@ import (
 )
 
 var _ = Describe("indexMaintainer internals", func() {
-
 	Describe("removeCommonEntries", func() {
 		// Helper: build an Index with no PK dedup for simpler entry construction.
 		simpleIndex := func() *Index {

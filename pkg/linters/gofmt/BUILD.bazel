@@ -1,16 +1,16 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "gofmtcheck",
+    name = "gofmt",
     srcs = ["analyzer.go"],
-    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/linters/gofmtcheck",
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/linters/gofmt",
     visibility = ["//visibility:public"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )
 
 go_test(
-    name = "gofmtcheck_test",
+    name = "gofmt_test",
     srcs = ["analyzer_test.go"],
-    embed = [":gofmtcheck"],
+    embed = [":gofmt"],
     deps = ["@org_golang_x_tools//go/analysis"],
 )

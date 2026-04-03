@@ -15,9 +15,7 @@ import (
 
 // Java equivalent: FDBRecordStoreCrudTest.writeNotUnionType()
 var _ = Describe("SaveRecord_NotInUnion", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -92,9 +90,7 @@ var _ = Describe("SaveRecord_NotInUnion", func() {
 })
 
 var _ = Describe("LoadRecord_InvalidRecordTypeKey", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -216,9 +212,7 @@ var _ = Describe("RecordExists_InvalidRecordTypeKey", func() {
 })
 
 var _ = Describe("UnionDescriptor_Validation", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto

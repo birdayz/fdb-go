@@ -12,7 +12,6 @@ import (
 )
 
 var _ = Describe("Bug Bounty Round 2", func() {
-
 	// =========================================================================
 	// BUG #1: OnlineIndexer.buildRange does not reset recordsProcessed on FDB
 	// internal retry, causing inflated counts returned AND inflated progress

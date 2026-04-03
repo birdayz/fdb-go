@@ -14,7 +14,6 @@ import (
 )
 
 var _ = Describe("MetadataBugVerify", func() {
-
 	// Bug 1: RemoveIndex must pre-increment version before recording RemovedVersion.
 	Describe("RemoveIndex version increment", func() {
 		It("RemovedVersion > AddedVersion for FormerIndex", func() {

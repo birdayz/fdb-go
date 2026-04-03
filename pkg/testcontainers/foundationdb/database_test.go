@@ -41,7 +41,6 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 		tr.Get(fdb.Key("test_key")).MustGet()
 		return "success", nil
 	})
-
 	if err != nil {
 		t.Fatalf("Failed to execute transaction: %v", err)
 	}

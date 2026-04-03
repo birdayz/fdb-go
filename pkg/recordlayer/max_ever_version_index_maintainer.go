@@ -194,5 +194,7 @@ func (m *maxEverVersionIndexMaintainer) aggregate(accum, entry tuple.Tuple) tupl
 	return maxAggregate(accum, entry)
 }
 
-var _ IndexMaintainer = (*maxEverVersionIndexMaintainer)(nil)
-var _ indexAggregator = (*maxEverVersionIndexMaintainer)(nil)
+var (
+	_ IndexMaintainer = (*maxEverVersionIndexMaintainer)(nil)
+	_ indexAggregator = (*maxEverVersionIndexMaintainer)(nil)
+)

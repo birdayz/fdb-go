@@ -77,7 +77,7 @@ func TestBindingTester(t *testing.T) {
 	}
 	defer testerContainer.Terminate(ctx)
 
-	err = testerContainer.CopyToContainer(ctx, []byte(clusterFile), "/etc/foundationdb/fdb.cluster", 0644)
+	err = testerContainer.CopyToContainer(ctx, []byte(clusterFile), "/etc/foundationdb/fdb.cluster", 0o644)
 	if err != nil {
 		t.Fatalf("copy cluster file: %v", err)
 	}
@@ -141,14 +141,14 @@ func buildDockerContext(t *testing.T) (string, error) {
 	}
 
 	// Generate apiversion.py (cmake template → constant).
-	os.WriteFile(filepath.Join(dir, "python/fdb/apiversion.py"), []byte("LATEST_API_VERSION = 730\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "python/fdb/apiversion.py"), []byte("LATEST_API_VERSION = 730\n"), 0o644)
 
 	// stacktester binary (//cmd/fdb-stacktester).
 	bin := filepath.Join(runfiles, ws, "cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")
 	if err := copyFile(bin, filepath.Join(dir, "fdb-stacktester")); err != nil {
 		return "", fmt.Errorf("stacktester binary: %w", err)
 	}
-	os.Chmod(filepath.Join(dir, "fdb-stacktester"), 0755)
+	os.Chmod(filepath.Join(dir, "fdb-stacktester"), 0o755)
 
 	return dir, nil
 }
@@ -179,7 +179,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
-	return os.WriteFile(dst, data, 0755)
+	return os.WriteFile(dst, data, 0o755)
 }
 
 // copyDirFollow copies a directory, following symlinks (Bazel runfiles are symlink forests).

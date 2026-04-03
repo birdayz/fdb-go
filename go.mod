@@ -12,9 +12,12 @@ require (
 	github.com/rivo/uniseg v0.4.7
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/socat v0.41.0
+	github.com/zeebo/xxh3 v1.1.0
 	golang.org/x/text v0.34.0
+	golang.org/x/tools v0.42.0
 	google.golang.org/protobuf v1.36.11
 	honnef.co/go/tools v0.7.0
+	mvdan.cc/gofumpt v0.9.2
 )
 
 require (
@@ -66,7 +69,6 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.49.0 // indirect
 	go.opentelemetry.io/otel v1.41.0 // indirect
@@ -79,6 +81,5 @@ require (
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

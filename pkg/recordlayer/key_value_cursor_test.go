@@ -42,7 +42,6 @@ func drainOrderIDs(cursor RecordCursor[*FDBStoredRecord[proto.Message]]) ([]int6
 }
 
 var _ = Describe("KeyValueCursor", func() {
-
 	var (
 		metaData *RecordMetaData
 		ctx      context.Context
@@ -63,7 +62,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Endpoint type combinations
 	// =========================================================================
 	Describe("Endpoint type combinations", func() {
-
 		It("RANGE_EXCLUSIVE low + RANGE_INCLUSIVE high", func() {
 			// Data: records 1..5. Range (1, 4] should return 2, 3, 4.
 			ks := specSubspace()
@@ -333,7 +331,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Empty / edge range scenarios
 	// =========================================================================
 	Describe("Empty range scenarios", func() {
-
 		It("no keys in range (non-overlapping range)", func() {
 			// Data: records 1..5. Range [100, 200] has nothing.
 			ks := specSubspace()
@@ -450,7 +447,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Limit interactions
 	// =========================================================================
 	Describe("Limit interactions", func() {
-
 		It("row limit of 0 (unlimited) returns all records", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -640,7 +636,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Continuation resume correctness
 	// =========================================================================
 	Describe("Continuation resume", func() {
-
 		It("resume mid-scan forward direction", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -873,7 +868,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Reverse scan edge cases
 	// =========================================================================
 	Describe("Reverse scan edge cases", func() {
-
 		It("single record reverse scan", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -1002,7 +996,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// NoNextReason correctness
 	// =========================================================================
 	Describe("NoNextReason correctness", func() {
-
 		It("SOURCE_EXHAUSTED when range is fully scanned", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -1202,7 +1195,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Closed cursor behavior
 	// =========================================================================
 	Describe("Closed cursor", func() {
-
 		It("returns error after Close", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -1228,7 +1220,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Range endpoint with row limit combinations
 	// =========================================================================
 	Describe("Range with limits", func() {
-
 		It("inclusive range + row limit returns correct subset", func() {
 			// Data: 1..10. Range [3, 8] with limit 2 should return 3, 4.
 			ks := specSubspace()
@@ -1339,7 +1330,6 @@ var _ = Describe("KeyValueCursor", func() {
 	// Continuation token format edge cases
 	// =========================================================================
 	Describe("Continuation token edge cases", func() {
-
 		It("unwrapContinuation handles raw bytes (TO_OLD format)", func() {
 			raw := []byte{0x01, 0x02, 0x03}
 			result := unwrapContinuation(raw)

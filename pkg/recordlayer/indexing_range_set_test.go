@@ -9,9 +9,7 @@ import (
 )
 
 var _ = Describe("IndexingRangeSet", func() {
-	var (
-		idx *Index
-	)
+	var idx *Index
 
 	BeforeEach(func() {
 		idx = NewIndex("test_range_idx", Field("order_id"))

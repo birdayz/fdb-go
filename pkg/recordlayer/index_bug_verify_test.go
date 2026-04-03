@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("IndexBugVerify", func() {
-
 	// Bug 1: checkUniqueness must use getEntryPrimaryKey (not raw slice) for PK dedup.
 	// When a composite index has overlapping PK components, the raw slice after index
 	// columns is the TRIMMED PK. Using it directly gives wrong comparisons and wrong

@@ -11,9 +11,7 @@ import (
 )
 
 var _ = Describe("TypedStoreConformance", func() {
-	var (
-		metaData *RecordMetaData
-	)
+	var metaData *RecordMetaData
 
 	BeforeEach(func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)

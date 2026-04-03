@@ -553,5 +553,4 @@ var _ = Describe("BugBounty3Index", func() {
 	// totalSize (corrupted or truncated), we'd get a runtime panic from
 	// slice out-of-bounds.
 	// =========================================================================
-
 })

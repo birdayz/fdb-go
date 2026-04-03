@@ -200,7 +200,6 @@ func readTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *re
 
 		return order, nil
 	})
-
 	if err != nil {
 		return nil, err
 	}

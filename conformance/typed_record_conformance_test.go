@@ -153,7 +153,8 @@ func genColorPtr(c gen.Color) *gen.Color {
 // buildTypedRecord constructs a TypedRecord with all supported field types set.
 func buildTypedRecord(id int64, i32 int32, i64 int64,
 	si32 int32, si64 int64, sf32 int32, sf64 int64,
-	vFloat float32, vDouble float64, vBool bool, vString string, vBytes []byte, vEnum gen.Color) *gen.TypedRecord {
+	vFloat float32, vDouble float64, vBool bool, vString string, vBytes []byte, vEnum gen.Color,
+) *gen.TypedRecord {
 	return &gen.TypedRecord{
 		Id:          proto.Int64(id),
 		ValInt32:    proto.Int32(i32),

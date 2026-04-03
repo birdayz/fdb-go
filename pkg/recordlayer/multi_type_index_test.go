@@ -11,9 +11,7 @@ import (
 )
 
 var _ = Describe("Multi-type indexes", func() {
-	var (
-		ctx context.Context
-	)
+	var ctx context.Context
 
 	BeforeEach(func() {
 		ctx = context.Background()

@@ -603,5 +603,4 @@ func TestMaxEverVersionIdempotencyExplanation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify idempotency: %v", err)
 	}
-
 }

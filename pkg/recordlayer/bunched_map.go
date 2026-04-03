@@ -398,8 +398,8 @@ func (m *BunchedMap) insertAlone(tx fdb.Transaction, keyBytes []byte, entry bunc
 // but without size checking.
 // Matches Java's BunchedMap.writeEntryListWithoutChecking().
 func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceKey, keyBytes []byte,
-	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry, serializedBytes []byte) {
-
+	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry, serializedBytes []byte,
+) {
 	// Order matters: add read conflict range BEFORE writing (see Java comment about
 	// explicit read conflict ranges skipping keys in write cache).
 	m.addEntryListReadConflictRange(tx, subspaceKey, newKey, entryList)
@@ -426,8 +426,8 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.Transaction, subspaceK
 // Matches Java's BunchedMap.writeEntryList().
 func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []byte,
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry,
-	kvAfter *fdb.KeyValue, isFirst, isLast bool) error {
-
+	kvAfter *fdb.KeyValue, isFirst, isLast bool,
+) error {
 	serializedBytes, err := m.serializer.SerializeEntries(entryList)
 	if err != nil {
 		return err
@@ -498,8 +498,8 @@ func (m *BunchedMap) writeEntryList(tx fdb.Transaction, subspaceKey, keyBytes []
 // a standalone signpost if kvAfter doesn't exist or is full.
 // Matches Java's BunchedMap.insertAfter().
 func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byte,
-	kvAfter *fdb.KeyValue, entry bunchedEntry) error {
-
+	kvAfter *fdb.KeyValue, entry bunchedEntry,
+) error {
 	if kvAfter == nil {
 		return m.insertAlone(tx, keyBytes, entry)
 	}
@@ -528,8 +528,8 @@ func (m *BunchedMap) insertAfter(tx fdb.Transaction, subspaceKey, keyBytes []byt
 // Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.insertEntry().
 func (m *BunchedMap) insertEntry(tx fdb.Transaction, subspaceKey, keyBytes []byte,
-	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry) ([]int, bool, error) {
-
+	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry,
+) ([]int, bool, error) {
 	if kvBefore == nil {
 		if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry); err != nil {
 			return nil, false, err

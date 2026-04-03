@@ -9,7 +9,6 @@ import (
 )
 
 var _ = Describe("compareKeys", func() {
-
 	// --- Part C: Unit tests for compareKeys ---
 
 	It("returns 0 for both empty tuples", func() {
@@ -111,7 +110,6 @@ var _ = Describe("compareKeys", func() {
 })
 
 var _ = Describe("Union/Intersection with compareKeys", func() {
-
 	// --- Part D: Integration tests with UnionCursor ---
 
 	Describe("Union with int64 comparison keys", func() {

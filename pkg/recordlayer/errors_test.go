@@ -9,7 +9,6 @@ import (
 )
 
 var _ = Describe("Error types", func() {
-
 	// Verify all error types satisfy the error interface and are matchable via errors.As().
 
 	Describe("RecordStoreAlreadyExistsError", func() {

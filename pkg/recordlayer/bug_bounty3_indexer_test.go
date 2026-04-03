@@ -31,7 +31,6 @@ var _ = Describe("BugBounty3Indexer", func() {
 	// RangeSet edge cases
 	// =========================================================================
 	Describe("RangeSet edge cases", func() {
-
 		It("InsertRange with begin==end is a no-op", func() {
 			ks := specSubspace()
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

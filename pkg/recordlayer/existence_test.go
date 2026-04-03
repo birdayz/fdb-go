@@ -13,9 +13,7 @@ import (
 )
 
 var _ = Describe("RecordExists_BasicFunctionality", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -162,9 +160,7 @@ var _ = Describe("RecordExists_BasicFunctionality", func() {
 })
 
 var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -260,9 +256,7 @@ var _ = Describe("RecordExistenceCheck_ErrorIfExists", func() {
 })
 
 var _ = Describe("InsertRecord", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -358,9 +352,7 @@ var _ = Describe("InsertRecord", func() {
 })
 
 var _ = Describe("UpdateRecord", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto
@@ -482,9 +474,7 @@ var _ = Describe("UpdateRecord", func() {
 })
 
 var _ = Describe("RecordExistenceCheck_ErrorIfTypeChanged", func() {
-	var (
-		recordMetaData *RecordMetaData
-	)
+	var recordMetaData *RecordMetaData
 
 	BeforeEach(func() {
 		fileDesc := gen.File_record_layer_demo_proto

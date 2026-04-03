@@ -11,7 +11,6 @@ import (
 )
 
 var _ = Describe("MetadataValidation", func() {
-
 	// Bug 1: Duplicate index names must error at Build() time.
 	// Java's addIndexCommon() throws MetaDataException("Index X already defined").
 	Describe("duplicate index name", func() {

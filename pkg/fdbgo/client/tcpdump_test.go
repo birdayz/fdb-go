@@ -82,7 +82,7 @@ func TestCaptureCBindingTraffic(t *testing.T) {
 
 	// Write pcap to temp file for analysis
 	pcapFile := "/tmp/fdb_traffic.pcap"
-	os.WriteFile(pcapFile, pcapData, 0644)
+	os.WriteFile(pcapFile, pcapData, 0o644)
 	t.Logf("wrote pcap to %s", pcapFile)
 
 	// Also try reading raw hex of the first few packets

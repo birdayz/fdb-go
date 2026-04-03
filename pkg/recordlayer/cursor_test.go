@@ -538,7 +538,7 @@ var _ = Describe("Seq / Seq2 / SeqWithContinuation", func() {
 		It("yields nothing from an error cursor", func() {
 			c := &errorCursor[string]{err: errors.New("x")}
 			var got []string
-			for v, _ := range SeqWithContinuation(c, ctx) {
+			for v := range SeqWithContinuation(c, ctx) {
 				got = append(got, v)
 			}
 			Expect(got).To(BeEmpty())

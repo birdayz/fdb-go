@@ -140,5 +140,7 @@ func (m *atomicMutationIndexMaintainer) aggregate(accum, entry tuple.Tuple) tupl
 	return m.mutation.aggregate(accum, entry)
 }
 
-var _ IndexMaintainer = (*atomicMutationIndexMaintainer)(nil)
-var _ indexAggregator = (*atomicMutationIndexMaintainer)(nil)
+var (
+	_ IndexMaintainer = (*atomicMutationIndexMaintainer)(nil)
+	_ indexAggregator = (*atomicMutationIndexMaintainer)(nil)
+)

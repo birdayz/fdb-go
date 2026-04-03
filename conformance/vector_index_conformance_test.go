@@ -706,7 +706,8 @@ func (s *VectorIndexConformanceStore) SearchJava(ctx context.Context, query []fl
 func (s *VectorIndexConformanceStore) SaveMultipleOrdersJava(ctx context.Context, orders []struct {
 	ID     int64
 	Vector []float64
-}) error {
+},
+) error {
 	type orderEntry struct {
 		OrderID int64     `json:"orderId"`
 		Vector  []float64 `json:"vector"`

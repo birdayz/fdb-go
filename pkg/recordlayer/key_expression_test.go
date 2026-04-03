@@ -37,7 +37,6 @@ func asStored(msg proto.Message) *FDBStoredRecord[proto.Message] {
 }
 
 var _ = Describe("KeyExpression unit tests", func() {
-
 	// ---------------------------------------------------------------------------
 	// FieldKeyExpression
 	// ---------------------------------------------------------------------------
