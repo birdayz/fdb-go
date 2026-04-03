@@ -71,7 +71,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "--- Installing Docker ---"
 apt-get update -qq
-apt-get install -y -qq docker.io curl git jq
+apt-get install -y -qq docker.io curl git jq build-essential
 systemctl enable --now docker
 
 # Expand Docker network pool (same as CI)
