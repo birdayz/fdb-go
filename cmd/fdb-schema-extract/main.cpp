@@ -551,13 +551,19 @@ private:
                     fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
                 }
             } else if (fd.kind == FieldKind::VectorOfStruct) {
-                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
-                fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
-                fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
-                fprintf(f, "\t\t\tvecSize = (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
-                fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\tvn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)\n");
+                // C++ flat_buffers.h:1218-1236: vector_like save.
+                // Each element is recursively serialized via save_helper.
+                // A message writer holds the RelativeOffset array (len * fb_size<T> bytes).
+                // fb_size<T> for struct elements = 4 (sizeof(RelativeOffset)).
+                fprintf(f, "\t{\n");
+                fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
+                fprintf(f, "\t\tif n > 0 {\n");
+                fprintf(f, "\t\t\tself := ps.GetMessageWriter(n * 4)\n"); // RelativeOffset array
+                fprintf(f, "\t\t\tfor i := 0; i < n; i++ { m.%s[i].precomputeSize(ps) }\n", gn.c_str());
+                // C++: RightAlign(cbs + len, max(4, fb_align<T>)) + 4
+                // fb_align for struct elements that have serialize() = 4 (they're RelativeOffsets)
+                fprintf(f, "\t\t\tself.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)\n");
+                fprintf(f, "\t\t} else { ps.VisitDynamicSize(0) }\n"); // empty vector sentinel
                 fprintf(f, "\t}\n");
             }
         }
@@ -630,8 +636,25 @@ private:
                             gn.c_str(), varName.c_str(), gn.c_str());
                 }
             } else if (fdp->kind == FieldKind::VectorOfStruct) {
+                // C++ flat_buffers.h:1218-1236: vector_like save (write pass).
                 fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\t_ = %s // TODO: vector-of-struct write for %s\n", varName.c_str(), gn.c_str());
+                fprintf(f, "\t{\n");
+                fprintf(f, "\t\tn := len(m.%s)\n", gn.c_str());
+                fprintf(f, "\t\tif n > 0 {\n");
+                fprintf(f, "\t\t\tself := wb.GetMessageWriter(n*4, false)\n");
+                fprintf(f, "\t\t\tfor i := 0; i < n; i++ {\n");
+                fprintf(f, "\t\t\t\telemStart := m.%s[i].writeToBuffer(wb, vtableStart, tmpl)\n", gn.c_str());
+                fprintf(f, "\t\t\t\tself.WriteRelativeOffset(elemStart, i*4)\n");
+                fprintf(f, "\t\t\t}\n");
+                // Write count header
+                fprintf(f, "\t\t\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(n)); ");
+                fprintf(f, "wb.WriteUint32(uint32(n), self.FinalLocation+4) }\n"); // count at self.FinalLocation + len
+                fprintf(f, "\t\t\tself.WriteToAt(self.FinalLocation)\n");
+                fprintf(f, "\t\t\t%s = wb.CurrentBufferSize\n", varName.c_str());
+                fprintf(f, "\t\t} else {\n");
+                fprintf(f, "\t\t\t%s, _ = wb.VisitDynamicSize(nil)\n", varName.c_str());
+                fprintf(f, "\t\t}\n");
+                fprintf(f, "\t}\n");
             }
         }
 
@@ -697,6 +720,10 @@ private:
                 fprintf(f, "\tif m.Has%s {\n", gn.c_str());
                 fprintf(f, "\t\tselfW.WriteScalar([]byte{1}, int(vt[%s+2]))\n", slot.c_str());
                 fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+1+2]))\n", offVar.c_str(), slot.c_str());
+                fprintf(f, "\t}\n");
+            } else if (fdp->kind == FieldKind::VectorOfStruct) {
+                fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
+                fprintf(f, "\t\tselfW.WriteRelativeOffset(%s, int(vt[%s+2]))\n", offVar.c_str(), slot.c_str());
                 fprintf(f, "\t}\n");
             }
         }

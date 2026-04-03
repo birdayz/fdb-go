@@ -362,29 +362,29 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
 func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
-	if len(m.ReadConflictRanges) > 0 {
-		vecSize := 4 + len(m.ReadConflictRanges)*4
-		for _, elem := range m.ReadConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	{
+		n := len(m.ReadConflictRanges)
+		if n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			for i := 0; i < n; i++ { m.ReadConflictRanges[i].precomputeSize(ps) }
+			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+		} else { ps.VisitDynamicSize(0) }
 	}
-	if len(m.WriteConflictRanges) > 0 {
-		vecSize := 4 + len(m.WriteConflictRanges)*4
-		for _, elem := range m.WriteConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	{
+		n := len(m.WriteConflictRanges)
+		if n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			for i := 0; i < n; i++ { m.WriteConflictRanges[i].precomputeSize(ps) }
+			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+		} else { ps.VisitDynamicSize(0) }
 	}
-	if len(m.Mutations) > 0 {
-		vecSize := 4 + len(m.Mutations)*4
-		for _, elem := range m.Mutations {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	{
+		n := len(m.Mutations)
+		if n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			for i := 0; i < n; i++ { m.Mutations[i].precomputeSize(ps) }
+			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+		} else { ps.VisitDynamicSize(0) }
 	}
 	if m.HasRead_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled)) }
 	if m.HasWrite_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled)) }
@@ -397,11 +397,53 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var readConflictRangesOff int
-	_ = readConflictRangesOff // TODO: vector-of-struct write for ReadConflictRanges
+	{
+		n := len(m.ReadConflictRanges)
+		if n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i := 0; i < n; i++ {
+				elemStart := m.ReadConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
+				self.WriteRelativeOffset(elemStart, i*4)
+			}
+			{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(n)); wb.WriteUint32(uint32(n), self.FinalLocation+4) }
+			self.WriteToAt(self.FinalLocation)
+			readConflictRangesOff = wb.CurrentBufferSize
+		} else {
+			readConflictRangesOff, _ = wb.VisitDynamicSize(nil)
+		}
+	}
 	var writeConflictRangesOff int
-	_ = writeConflictRangesOff // TODO: vector-of-struct write for WriteConflictRanges
+	{
+		n := len(m.WriteConflictRanges)
+		if n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i := 0; i < n; i++ {
+				elemStart := m.WriteConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
+				self.WriteRelativeOffset(elemStart, i*4)
+			}
+			{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(n)); wb.WriteUint32(uint32(n), self.FinalLocation+4) }
+			self.WriteToAt(self.FinalLocation)
+			writeConflictRangesOff = wb.CurrentBufferSize
+		} else {
+			writeConflictRangesOff, _ = wb.VisitDynamicSize(nil)
+		}
+	}
 	var mutationsOff int
-	_ = mutationsOff // TODO: vector-of-struct write for Mutations
+	{
+		n := len(m.Mutations)
+		if n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i := 0; i < n; i++ {
+				elemStart := m.Mutations[i].writeToBuffer(wb, vtableStart, tmpl)
+				self.WriteRelativeOffset(elemStart, i*4)
+			}
+			{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(n)); wb.WriteUint32(uint32(n), self.FinalLocation+4) }
+			self.WriteToAt(self.FinalLocation)
+			mutationsOff = wb.CurrentBufferSize
+		} else {
+			mutationsOff, _ = wb.VisitDynamicSize(nil)
+		}
+	}
 	var read_conflict_ranges_disabledOff int
 	if m.HasRead_conflict_ranges_disabled { read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled) }
 	var write_conflict_ranges_disabledOff int
@@ -413,6 +455,15 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2])) }
 	if m.Report_conflicting_keys { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])) }
 	if m.Lock_aware { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2])) }
+	if len(m.ReadConflictRanges) > 0 {
+		selfW.WriteRelativeOffset(readConflictRangesOff, int(vt[CommitTransactionRefSlotReadConflictRanges+2]))
+	}
+	if len(m.WriteConflictRanges) > 0 {
+		selfW.WriteRelativeOffset(writeConflictRangesOff, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]))
+	}
+	if len(m.Mutations) > 0 {
+		selfW.WriteRelativeOffset(mutationsOff, int(vt[CommitTransactionRefSlotMutations+2]))
+	}
 	if m.HasRead_conflict_ranges_disabled {
 		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+2]))
 		selfW.WriteRelativeOffset(read_conflict_ranges_disabledOff, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+1+2]))
