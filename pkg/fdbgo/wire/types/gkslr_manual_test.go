@@ -212,26 +212,20 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	// Scalars:
 	var limBuf [4]byte
 	binary.LittleEndian.PutUint32(limBuf[:], uint32(limit))
-	rootW.WriteScalar(limBuf[:], int(gkslrVT[5])) // slot 3 = limit
+	// Use slot constants + 2 to index vtable (vtable[slot+2] = field offset)
+	rootW.WriteScalar(limBuf[:], int(gkslrVT[GetKeyServerLocationsRequestSlotLimit+2]))
 	if reverse {
-		rootW.WriteScalar([]byte{1}, int(gkslrVT[6])) // slot 4 = reverse
+		rootW.WriteScalar([]byte{1}, int(gkslrVT[GetKeyServerLocationsRequestSlotReverse+2]))
 	}
 	var mvBuf [8]byte
 	binary.LittleEndian.PutUint64(mvBuf[:], uint64(minTenantVersion))
-	rootW.WriteScalar(mvBuf[:], int(gkslrVT[9+2])) // slot 8 = minTenantVersion... wait need proper index
+	rootW.WriteScalar(mvBuf[:], int(gkslrVT[GetKeyServerLocationsRequestSlotMinTenantVersion+2]))
 
-	// RelativeOffsets for nested objects:
-	// begin → beginOff
-	rootW.WriteRelativeOffset(beginOff, int(gkslrVT[2])) // slot 0 = begin
-
-	// reply → replyStart
-	rootW.WriteRelativeOffset(replyStart, int(gkslrVT[7])) // slot 5 = reply
-
-	// spanContext → spanStart
-	rootW.WriteRelativeOffset(spanStart, int(gkslrVT[8])) // slot 6 = spanContext
-
-	// tenant → tenantStart
-	rootW.WriteRelativeOffset(tenantStart, int(gkslrVT[9])) // slot 7 = tenant
+	// RelativeOffsets for nested/OOL objects:
+	rootW.WriteRelativeOffset(beginOff, int(gkslrVT[GetKeyServerLocationsRequestSlotBegin+2]))
+	rootW.WriteRelativeOffset(replyStart, int(gkslrVT[GetKeyServerLocationsRequestSlotReply+2]))
+	rootW.WriteRelativeOffset(spanStart, int(gkslrVT[GetKeyServerLocationsRequestSlotSpanContext+2]))
+	rootW.WriteRelativeOffset(tenantStart, int(gkslrVT[GetKeyServerLocationsRequestSlotTenant+2]))
 
 	// soffset
 	rootVTOff := vtableStart - tmpl.VTableOffset(GetKeyServerLocationsRequestVTable)
@@ -240,6 +234,19 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	rootW.WriteScalar(soffBuf[:], 0)
 
 	rootW.WriteToAt(rootStart)
+
+	// --- FakeRoot object (wraps root message) ---
+	// vtable {6, 8, 4}, objSize=8, one field: RelativeOffset to root message
+	fakeRootVT := wire.VTable{6, 8, 4}
+	fakeRootW := wb.GetMessageWriter(8, true)
+	// Field 0 at offset 4: RelativeOffset to root message object
+	fakeRootW.WriteRelativeOffset(rootStart, int(fakeRootVT[2])) // field 0 offset = 4
+	// soffset
+	fakeRootVTOff := vtableStart - tmpl.VTableOffset(fakeRootVT)
+	fakeRootSOff := int32(fakeRootVTOff - fakeRootObjStart)
+	binary.LittleEndian.PutUint32(soffBuf[:], uint32(fakeRootSOff))
+	fakeRootW.WriteScalar(soffBuf[:], 0)
+	fakeRootW.WriteToAt(fakeRootObjStart)
 
 	// vtable_writer.writeTo(writer)
 	vtableW.WriteTo()

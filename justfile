@@ -106,3 +106,7 @@ binding-test:
 # Run tests with coverage
 coverage:
     bazelisk coverage //...
+
+# Run a specific test with forced rebuild (no stale binary)
+test-fresh target *args:
+    bazelisk test {{target}} --cache_test_results=no {{args}}
