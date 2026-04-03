@@ -1,6 +1,9 @@
 # Don't inherit shell environment into actions — use Bazel's fixed defaults
 build --incompatible_strict_action_env
 
+# Use remote JDK — no system Java dependency required
+build --java_runtime_version=remotejdk_21
+
 test --test_output=errors
 test --test_summary=terse
 
