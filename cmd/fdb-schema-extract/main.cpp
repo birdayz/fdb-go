@@ -881,6 +881,16 @@ wait:
 // Serialize a message using C++ ObjectWriter and emit JSON test vector.
 // This is the AUTHORITATIVE serialization — if our Go output differs,
 // our Go code is wrong.
+// Emit the reply token from a ReplyPromise (16 bytes as hex).
+template <class T>
+std::string getReplyToken(const ReplyPromise<T>& rp) {
+    auto& ep = rp.getEndpoint().token;
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%016llx%016llx",
+        (unsigned long long)ep.first(), (unsigned long long)ep.second());
+    return buf;
+}
+
 template <class T>
 void emitTestVector(FILE* out, const char* name, T& msg) {
     static_assert(requires { T::file_identifier; }, "Type must have file_identifier");
@@ -888,9 +898,6 @@ void emitTestVector(FILE* out, const char* name, T& msg) {
     wr.serialize(T::file_identifier, msg);
     auto bytes = wr.toStringRef();
 
-    // Strip 12-byte protocol version prefix if present.
-    // FDB prepends [8-byte protocolVersion][4-byte something] in IncludeVersion mode.
-    // Our Go code expects the message without this prefix (or handles it in NewReader).
     const uint8_t* data = bytes.begin();
     int len = bytes.size();
 
@@ -913,6 +920,17 @@ void generateTestVectors(const char* outDir) {
     fprintf(out, "[\n");
     bool first = true;
     auto comma = [&]() { if (!first) fprintf(out, ",\n"); first = false; };
+
+    // Helper: zero out the reply token bytes in the serialized output.
+    // The reply token is a random UID assigned by FlowTransport. We can't
+    // control it from C++, so we zero it post-serialization and match with
+    // Go's zero ReplyPromise. We locate it by its known position in the
+    // serialized buffer (the ReplyPromise is always a 16-byte UID token).
+    // Instead of finding its position, we emit the token value so Go can
+    // set the same token.
+
+    // Actually: simplest approach — just emit the token hex alongside so
+    // Go sets the same bytes. No zeroing needed.
 
     // --- GetKeyServerLocationsRequest (the type that crashes FDB) ---
     {
