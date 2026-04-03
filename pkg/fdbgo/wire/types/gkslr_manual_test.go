@@ -125,7 +125,15 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	rootNoop.WriteToAt(ps, rootStart)
 	t.Logf("After root: cbs=%d rootStart=%d", ps.CurrentBufferSize, rootStart)
 
-	// save_helper returns RelativeOffset{cbs}. Store it.
+	// save_helper wraps the root in a fake_root (vtable {6,8,4}, objSize=8).
+	// The fake_root has one field: RelativeOffset to the actual root message.
+	// C++ SaveVisitorLambda for fake_root: RightAlign(cbs + 8 - 4, max(4, 4)) + 4
+	fakeRootObjNoop := ps.GetMessageWriter(8) // fake_root objSize = 8
+	fakeRootObjStart := wire.RightAlign(ps.CurrentBufferSize+8-4, 4) + 4
+	fakeRootObjNoop.WriteToAt(ps, fakeRootObjStart)
+	t.Logf("After fakeRoot obj: cbs=%d fakeRootObjStart=%d", ps.CurrentBufferSize, fakeRootObjStart)
+
+	// save_helper returns RelativeOffset{cbs} for the fake_root.
 	rootRelOff := ps.CurrentBufferSize
 
 	// C++ save_with_vtables line 812: vtable_writer.writeTo(writer)
@@ -133,18 +141,21 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	vtableStart := ps.CurrentBufferSize
 	t.Logf("After vtables: cbs=%d vtableStart=%d", ps.CurrentBufferSize, vtableStart)
 
-	// C++ line 817-820: root_writer (FakeRoot: offset + fileId = 8 bytes)
-	rootWriterSize := 8
-	rootWriterNoop := ps.GetMessageWriter(rootWriterSize)
-	fakeRootStart := wire.RightAlign(ps.CurrentBufferSize+rootWriterSize, 8)
-	rootWriterNoop.WriteToAt(ps, fakeRootStart)
-	t.Logf("After fakeRoot: cbs=%d fakeRootStart=%d", ps.CurrentBufferSize, fakeRootStart)
+	// C++ line 817-820: root_writer = footer: [rootOff(4)][fileId(4)] = 8 bytes
+	// Aligned to 8 bytes.
+	footerSize := 8
+	footerNoop := ps.GetMessageWriter(footerSize)
+	footerStart := wire.RightAlign(ps.CurrentBufferSize+footerSize, 8)
+	footerNoop.WriteToAt(ps, footerStart)
+	t.Logf("After footer: cbs=%d footerStart=%d", ps.CurrentBufferSize, footerStart)
 
 	totalSize := ps.CurrentBufferSize
-	t.Logf("Total size: %d (Go) vs %d (C++)", totalSize, len(cppBytes))
+	// C++ bytes already had 8-byte version prefix stripped
+	t.Logf("Total size: %d (Go) vs %d (C++ without prefix)", totalSize, len(cppBytes))
 
 	if totalSize != len(cppBytes) {
-		t.Fatalf("SIZE MISMATCH: Go=%d C++=%d", totalSize, len(cppBytes))
+		t.Errorf("SIZE MISMATCH: Go=%d C++=%d (delta=%d)", totalSize, len(cppBytes), totalSize-len(cppBytes))
+		t.Logf("Note: C++ raw size is %d (with 8-byte IncludeVersion prefix)", len(cppBytes)+8)
 	}
 
 	// ====== PASS 2: WriteToBuffer ======
@@ -233,13 +244,13 @@ func TestManualMarshal_GetKeyServerLocationsRequest_basic(t *testing.T) {
 	// vtable_writer.writeTo(writer)
 	vtableW.WriteTo()
 
-	// FakeRoot: [rootRelOff as RelativeOffset][fileID]
-	fakeRootW := wb.GetMessageWriter(rootWriterSize, false)
-	fakeRootW.WriteRelativeOffset(rootRelOff, 0)
+	// Footer: [rootRelOff as RelativeOffset][fileID]
+	footerW := wb.GetMessageWriter(footerSize, false)
+	footerW.WriteRelativeOffset(rootRelOff, 0)
 	var fidBuf [4]byte
 	binary.LittleEndian.PutUint32(fidBuf[:], GetKeyServerLocationsRequestFileID)
-	fakeRootW.WriteScalar(fidBuf[:], 4)
-	fakeRootW.WriteToAt(fakeRootStart)
+	footerW.WriteScalar(fidBuf[:], 4)
+	footerW.WriteToAt(footerStart)
 
 	// Zero padding between fakeRoot and preceding content
 	// C++ line 821: writer.write(&zeros, cbs - root_writer_size, padding)
