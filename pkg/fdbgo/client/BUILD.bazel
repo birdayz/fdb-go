@@ -24,7 +24,7 @@ go_library(
 
 go_test(
     name = "client_test",
-    timeout = "eternal",  # eternal=900s default; CI --test_timeout overrides 4th slot
+    timeout = "eternal",
     srcs = [
         "bench_test.go",
         "c_binding_port_test.go",
@@ -38,8 +38,8 @@ go_test(
         "tcpdump_test.go",
     ],
     args = [
-        "-test.parallel=4",  # Limit parallel containers — CI has 7GB RAM
-        "-test.timeout=3600s",  # Override Go's default 10min test timeout
+        "-test.parallel=4",
+        "-test.timeout=3600s",
     ],
     embed = [":client"],
     deps = [

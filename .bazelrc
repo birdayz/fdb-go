@@ -12,10 +12,8 @@ test --test_env=HOME
 
 # FDB version — single source of truth for all tests.
 # MUST match MODULE.bazel archive_override version.
-# FDB version — single source of truth for all tests.
-# MUST match MODULE.bazel archive_override version.
 test --test_env=FDB_VERSION=7.3.75
 
-# Override test timeouts for CI (eternal slot = 3600s instead of 900s).
-# This affects all test targets with timeout=eternal.
+# Override eternal timeout slot (default 900s → 3600s).
+# client_test spawns ~40 FDB containers and needs ~7 min.
 test --test_timeout=60,300,900,3600
