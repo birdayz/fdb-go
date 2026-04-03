@@ -140,10 +140,10 @@ func TestSetGet(t *testing.T) {
 func openTestDB(t *testing.T, ctx context.Context) *Database {
 	t.Helper()
 
-	// No timeout on setup — Bazel's test timeout (eternal=900s) is the backstop.
-	// CI runners are 3-4x slower than local; explicit setup timeouts cause
-	// false failures when Docker is overloaded.
-	setupCtx := context.Background()
+	// 5 min setup timeout. If FDB crashes (assertion failure under load),
+	// the GRV infinite loop would hang forever without this.
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer setupCancel()
 
 	container, err := tcfdb.Run(setupCtx, "")
 	if err != nil {
