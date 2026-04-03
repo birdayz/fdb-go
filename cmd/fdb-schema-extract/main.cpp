@@ -133,7 +133,12 @@ struct GoEmitterV5 {
                 break;
             case FieldKind::Optional:
                 fprintf(f, "\tHas%s bool   // slot %d, optional tag\n", gn.c_str(), fd.vtableSlot);
-                fprintf(f, "\t%s    []byte // slot %d, optional value\n", gn.c_str(), fd.vtableSlot + 1);
+                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                    // Optional<struct>: value is a nested Go struct, not []byte.
+                    fprintf(f, "\t%s    %s // slot %d, optional nested value\n", gn.c_str(), fd.nestedGoType, fd.vtableSlot + 1);
+                } else {
+                    fprintf(f, "\t%s    []byte // slot %d, optional value\n", gn.c_str(), fd.vtableSlot + 1);
+                }
                 break;
             case FieldKind::Variant:
                 fprintf(f, "\t%sTag uint8 // slot %d, variant tag\n", gn.c_str(), fd.vtableSlot);
@@ -235,7 +240,14 @@ private:
             case FieldKind::Optional:
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) > 0 {\n",
                         rv, slot.c_str(), rv, slot.c_str());
-                fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
+                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                    // Optional<struct>: read as nested reader, unmarshal.
+                    fprintf(f, "\t\tif nr, err := %s.ReadNestedReader(%s + 1); err == nil {\n", rv, slot.c_str());
+                    fprintf(f, "\t\t\tm.%s.UnmarshalFromReader(nr)\n", gn.c_str());
+                    fprintf(f, "\t\t}\n");
+                } else {
+                    fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
+                }
                 fprintf(f, "\t\tm.Has%s = true\n", gn.c_str());
                 fprintf(f, "\t}\n");
                 break;
@@ -461,10 +473,14 @@ private:
             if (fd.kind == FieldKind::DynamicSize) {
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::Optional) {
-                // Optional<T> value is OOL bytes, same size calc as DynamicSize.
-                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-                fprintf(f, "\t}\n");
+                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                    // Optional<struct>: recurse.
+                    fprintf(f, "\tif m.Has%s { endOff = m.%s.measureEndOff(endOff) }\n", gn.c_str(), gn.c_str());
+                } else {
+                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                    fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
+                    fprintf(f, "\t}\n");
+                }
             } else if (fd.kind == FieldKind::VectorLike) {
                 // C++ visitDynamicSize: all dynamic types use [len(4)][data][pad].
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
@@ -526,7 +542,14 @@ private:
             if (fd.kind == FieldKind::DynamicSize || fd.kind == FieldKind::VectorLike) {
                 fprintf(f, "\tps.VisitDynamicSize(len(m.%s))\n", gn.c_str());
             } else if (fd.kind == FieldKind::Optional) {
-                fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
+                if (fd.nestedGoType && fd.nestedGoType[0]) {
+                    // Optional<struct>: when present, recurse into nested type.
+                    // C++ uses EnsureTable<T> which creates a nested object.
+                    fprintf(f, "\tif m.Has%s { m.%s.precomputeSize(ps) }\n", gn.c_str(), gn.c_str());
+                } else {
+                    // Optional<bytes>: when present, OOL data.
+                    fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
+                }
             } else if (fd.kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
@@ -598,8 +621,14 @@ private:
                 fprintf(f, "\t%s, _ := wb.VisitDynamicSize(m.%s)\n", varName.c_str(), gn.c_str());
             } else if (fdp->kind == FieldKind::Optional) {
                 fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tif m.Has%s { %s, _ = wb.VisitDynamicSize(m.%s) }\n",
-                        gn.c_str(), varName.c_str(), gn.c_str());
+                if (fdp->nestedGoType && fdp->nestedGoType[0]) {
+                    // Optional<struct>: recurse into nested type's writeToBuffer
+                    fprintf(f, "\tif m.Has%s { %s = m.%s.writeToBuffer(wb, vtableStart, tmpl) }\n",
+                            gn.c_str(), varName.c_str(), gn.c_str());
+                } else {
+                    fprintf(f, "\tif m.Has%s { %s, _ = wb.VisitDynamicSize(m.%s) }\n",
+                            gn.c_str(), varName.c_str(), gn.c_str());
+                }
             } else if (fdp->kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tvar %s int\n", varName.c_str());
                 fprintf(f, "\t_ = %s // TODO: vector-of-struct write for %s\n", varName.c_str(), gn.c_str());
@@ -754,10 +783,13 @@ private:
                 // C++ visitDynamicSize: all dynamic types write [len(4)][data][pad].
                 fprintf(f, "\t%s := dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
             } else if (fdp->kind == FieldKind::Optional) {
-                // Optional<T>: presence tag (uint8) at slot N, value bytes at slot N+1.
                 fprintf(f, "\tvar %s int\n", varName.c_str());
                 fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                fprintf(f, "\t\t%s = dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
+                if (fdp->nestedGoType && fdp->nestedGoType[0]) {
+                    fprintf(f, "\t\t%s = m.%s.writeDirect(dw)\n", varName.c_str(), gn.c_str());
+                } else {
+                    fprintf(f, "\t\t%s = dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
+                }
                 fprintf(f, "\t}\n");
             } else { // Variant
                 fprintf(f, "\tvar %s int\n", varName.c_str());

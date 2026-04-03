@@ -43,7 +43,7 @@ type GetValueRequest struct {
 	SpanContext SpanContext // slot 5, nested
 	TenantInfo TenantInfo // slot 6, nested
 	HasOptions bool   // slot 7, optional tag
-	Options    []byte // slot 8, optional value
+	Options    ReadOptions // slot 8, optional nested value
 	SsLatestCommitVersions []byte // slot 9
 }
 
@@ -68,7 +68,9 @@ func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
@@ -99,7 +101,9 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
@@ -147,9 +151,7 @@ func (m *GetValueRequest) measureEndOff(endOff int) int {
 	if m.HasTags {
 		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
 	}
-	if m.HasOptions {
-		endOff = wire.MeasureBytesOOL(endOff, m.Options)
-	}
+	if m.HasOptions { endOff = m.Options.measureEndOff(endOff) }
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
@@ -166,7 +168,7 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 	}
 	var optionsOOL int
 	if m.HasOptions {
-		optionsOOL = dw.WriteBytesOOL(m.Options)
+		optionsOOL = m.Options.writeDirect(dw)
 	}
 	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	replyPos := m.Reply.writeDirect(dw)
@@ -196,7 +198,7 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Key))
 	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
-	if m.HasOptions { ps.VisitDynamicSize(len(m.Options)) }
+	if m.HasOptions { m.Options.precomputeSize(ps) }
 	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
@@ -213,7 +215,7 @@ func (m *GetValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int,
 	var tagsOff int
 	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
 	var optionsOff int
-	if m.HasOptions { optionsOff, _ = wb.VisitDynamicSize(m.Options) }
+	if m.HasOptions { optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl) }
 	ssLatestCommitVersionsOff, _ := wb.VisitDynamicSize(m.SsLatestCommitVersions)
 	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)

@@ -45,7 +45,7 @@ type GetKeyRequest struct {
 	SpanContext SpanContext // slot 5, nested
 	TenantInfo TenantInfo // slot 6, nested
 	HasOptions bool   // slot 7, optional tag
-	Options    []byte // slot 8, optional value
+	Options    ReadOptions // slot 8, optional nested value
 	SsLatestCommitVersions []byte // slot 9
 	Field_10 []byte // slot 10
 }
@@ -71,7 +71,9 @@ func (m *GetKeyRequest) UnmarshalFromReader(r *wire.Reader) {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetKeyRequestSlotOptions) && r.ReadUint8(GetKeyRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetKeyRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetKeyRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetKeyRequestSlotSsLatestCommitVersions) {
@@ -105,7 +107,9 @@ func (m *GetKeyRequest) UnmarshalFDB(data []byte) error {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetKeyRequestSlotOptions) && r.ReadUint8(GetKeyRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetKeyRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetKeyRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetKeyRequestSlotSsLatestCommitVersions) {
@@ -148,9 +152,7 @@ func (m *GetKeyRequest) measureEndOff(endOff int) int {
 	if m.HasTags {
 		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
 	}
-	if m.HasOptions {
-		endOff = wire.MeasureBytesOOL(endOff, m.Options)
-	}
+	if m.HasOptions { endOff = m.Options.measureEndOff(endOff) }
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Sel.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
@@ -167,7 +169,7 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 	}
 	var optionsOOL int
 	if m.HasOptions {
-		optionsOOL = dw.WriteBytesOOL(m.Options)
+		optionsOOL = m.Options.writeDirect(dw)
 	}
 	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	selPos := m.Sel.writeDirect(dw)
@@ -197,7 +199,7 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 // Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
 func (m *GetKeyRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
-	if m.HasOptions { ps.VisitDynamicSize(len(m.Options)) }
+	if m.HasOptions { m.Options.precomputeSize(ps) }
 	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
 	m.Sel.precomputeSize(ps)
 	m.Reply.precomputeSize(ps)
@@ -214,7 +216,7 @@ func (m *GetKeyRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, t
 	var tagsOff int
 	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
 	var optionsOff int
-	if m.HasOptions { optionsOff, _ = wb.VisitDynamicSize(m.Options) }
+	if m.HasOptions { optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl) }
 	ssLatestCommitVersionsOff, _ := wb.VisitDynamicSize(m.SsLatestCommitVersions)
 	selStart := m.Sel.writeToBuffer(wb, vtableStart, tmpl)
 	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
