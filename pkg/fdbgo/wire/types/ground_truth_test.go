@@ -67,26 +67,39 @@ func TestGroundTruthMarshal(t *testing.T) {
 			}).MarshalFDB()
 		},
 		"GetValueRequest_basic": func() []byte {
+			// C++ VersionVector default encodes as 16 bytes:
+			// [utlCount=0 (8 bytes LE)][maxVersion=invalidVersion=-1 (8 bytes LE)]
+			emptyVV := make([]byte, 16)
+			emptyVV[8] = 0xFF; emptyVV[9] = 0xFF; emptyVV[10] = 0xFF; emptyVV[11] = 0xFF
+			emptyVV[12] = 0xFF; emptyVV[13] = 0xFF; emptyVV[14] = 0xFF; emptyVV[15] = 0xFF
 			return (&GetValueRequest{
-				Key:        []byte("my_key"),
-				Version:    12345678,
-				Reply:      ReplyPromise{},
-				TenantInfo: TenantInfo{TenantId: -1},
+				Key:                    []byte("my_key"),
+				Version:               12345678,
+				Reply:                  ReplyPromise{},
+				TenantInfo:            TenantInfo{TenantId: -1},
+				SsLatestCommitVersions: emptyVV,
 			}).MarshalFDB()
 		},
 		"GetKeyRequest_basic": func() []byte {
+			emptyVV := make([]byte, 16)
+			emptyVV[8] = 0xFF; emptyVV[9] = 0xFF; emptyVV[10] = 0xFF; emptyVV[11] = 0xFF
+			emptyVV[12] = 0xFF; emptyVV[13] = 0xFF; emptyVV[14] = 0xFF; emptyVV[15] = 0xFF
 			return (&GetKeyRequest{
 				Sel: KeySelectorRef{
 					Key:     []byte("selector_key"),
 					OrEqual: true,
 					Offset:  1,
 				},
-				Version:    99999,
-				Reply:      ReplyPromise{},
-				TenantInfo: TenantInfo{TenantId: -1},
+				Version:               99999,
+				Reply:                  ReplyPromise{},
+				TenantInfo:            TenantInfo{TenantId: -1},
+				SsLatestCommitVersions: emptyVV,
 			}).MarshalFDB()
 		},
 		"GetKeyValuesRequest_basic": func() []byte {
+			emptyVV := make([]byte, 16)
+			emptyVV[8] = 0xFF; emptyVV[9] = 0xFF; emptyVV[10] = 0xFF; emptyVV[11] = 0xFF
+			emptyVV[12] = 0xFF; emptyVV[13] = 0xFF; emptyVV[14] = 0xFF; emptyVV[15] = 0xFF
 			return (&GetKeyValuesRequest{
 				Begin: KeySelectorRef{
 					Key:     []byte("begin_key"),
@@ -98,11 +111,12 @@ func TestGroundTruthMarshal(t *testing.T) {
 					OrEqual: false,
 					Offset:  0,
 				},
-				Version:    54321,
-				Limit:      1000,
-				LimitBytes: 0x7fffffff,
-				Reply:      ReplyPromise{},
-				TenantInfo: TenantInfo{TenantId: -1},
+				Version:               54321,
+				Limit:                 1000,
+				LimitBytes:            0x7fffffff,
+				Reply:                  ReplyPromise{},
+				TenantInfo:            TenantInfo{TenantId: -1},
+				SsLatestCommitVersions: emptyVV,
 			}).MarshalFDB()
 		},
 		"CommitTransactionRequest_single_set": func() []byte {
