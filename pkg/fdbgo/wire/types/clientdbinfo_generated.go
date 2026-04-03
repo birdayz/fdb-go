@@ -166,12 +166,12 @@ func (m *ClientDBInfo) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *ClientDBInfo) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.GrvProxies)
-	endOff = wire.MeasureRawOOL(endOff, m.CommitProxies)
+	endOff = wire.MeasureBytesOOL(endOff, m.GrvProxies)
+	endOff = wire.MeasureBytesOOL(endOff, m.CommitProxies)
 	if m.HasForward {
 		endOff = wire.MeasureBytesOOL(endOff, m.Forward)
 	}
-	endOff = wire.MeasureRawOOL(endOff, m.History)
+	endOff = wire.MeasureBytesOOL(endOff, m.History)
 	if m.HasEncryptKeyProxy {
 		endOff = wire.MeasureBytesOOL(endOff, m.EncryptKeyProxy)
 	}
@@ -183,22 +183,13 @@ func (m *ClientDBInfo) measureEndOff(endOff int) int {
 }
 
 func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
-	var grvProxiesOOL int
-	if m.GrvProxies != nil {
-		grvProxiesOOL = dw.WriteRawOOL(m.GrvProxies)
-	}
-	var commitProxiesOOL int
-	if m.CommitProxies != nil {
-		commitProxiesOOL = dw.WriteRawOOL(m.CommitProxies)
-	}
+	grvProxiesOOL := dw.WriteBytesOOL(m.GrvProxies)
+	commitProxiesOOL := dw.WriteBytesOOL(m.CommitProxies)
 	var forwardOOL int
 	if m.HasForward {
 		forwardOOL = dw.WriteBytesOOL(m.Forward)
 	}
-	var historyOOL int
-	if m.History != nil {
-		historyOOL = dw.WriteRawOOL(m.History)
-	}
+	historyOOL := dw.WriteBytesOOL(m.History)
 	var encryptKeyProxyOOL int
 	if m.HasEncryptKeyProxy {
 		encryptKeyProxyOOL = dw.WriteBytesOOL(m.EncryptKeyProxy)
@@ -233,12 +224,12 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 func (m *ClientDBInfo) MarshalFDB() []byte {
 	t := ClientDBInfoTemplate
 	endOff := 0
-	endOff = wire.MeasureRawOOL(endOff, m.GrvProxies)
-	endOff = wire.MeasureRawOOL(endOff, m.CommitProxies)
+	endOff = wire.MeasureBytesOOL(endOff, m.GrvProxies)
+	endOff = wire.MeasureBytesOOL(endOff, m.CommitProxies)
 	if m.HasForward {
 		endOff = wire.MeasureBytesOOL(endOff, m.Forward)
 	}
-	endOff = wire.MeasureRawOOL(endOff, m.History)
+	endOff = wire.MeasureBytesOOL(endOff, m.History)
 	if m.HasEncryptKeyProxy {
 		endOff = wire.MeasureBytesOOL(endOff, m.EncryptKeyProxy)
 	}

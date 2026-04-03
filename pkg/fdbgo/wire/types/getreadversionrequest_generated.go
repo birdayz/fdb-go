@@ -125,7 +125,7 @@ func (m *GetReadVersionRequest) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetReadVersionRequest) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.Tags)
+	endOff = wire.MeasureBytesOOL(endOff, m.Tags)
 	if m.HasDebugID {
 		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
 	}
@@ -136,10 +136,7 @@ func (m *GetReadVersionRequest) measureEndOff(endOff int) int {
 }
 
 func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
-	var tagsOOL int
-	if m.Tags != nil {
-		tagsOOL = dw.WriteRawOOL(m.Tags)
-	}
+	tagsOOL := dw.WriteBytesOOL(m.Tags)
 	var debugIDOOL int
 	if m.HasDebugID {
 		debugIDOOL = dw.WriteBytesOOL(m.DebugID)
@@ -164,7 +161,7 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	t := GetReadVersionRequestTemplate
 	endOff := 0
-	endOff = wire.MeasureRawOOL(endOff, m.Tags)
+	endOff = wire.MeasureBytesOOL(endOff, m.Tags)
 	if m.HasDebugID {
 		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
 	}

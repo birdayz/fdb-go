@@ -172,7 +172,7 @@ func (m *GetReadVersionReply) measureEndOff(endOff int) int {
 	if m.HasMetadataVersion {
 		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
 	}
-	endOff = wire.MeasureRawOOL(endOff, m.TagThrottleInfo)
+	endOff = wire.MeasureBytesOOL(endOff, m.TagThrottleInfo)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsVersionVectorDelta)
 	endOff = wire.MeasureObject(endOff, GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
 	return endOff
@@ -183,10 +183,7 @@ func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasMetadataVersion {
 		metadataVersionOOL = dw.WriteBytesOOL(m.MetadataVersion)
 	}
-	var tagThrottleInfoOOL int
-	if m.TagThrottleInfo != nil {
-		tagThrottleInfoOOL = dw.WriteRawOOL(m.TagThrottleInfo)
-	}
+	tagThrottleInfoOOL := dw.WriteBytesOOL(m.TagThrottleInfo)
 	ssVersionVectorDeltaOOL := dw.WriteBytesOOL(m.SsVersionVectorDelta)
 	objPos, obj := dw.WriteObject(GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
 	vt := GetReadVersionReplyVTable
@@ -219,7 +216,7 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 	if m.HasMetadataVersion {
 		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
 	}
-	endOff = wire.MeasureRawOOL(endOff, m.TagThrottleInfo)
+	endOff = wire.MeasureBytesOOL(endOff, m.TagThrottleInfo)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsVersionVectorDelta)
 	bodySize := int(GetReadVersionReplyVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4

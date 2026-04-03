@@ -108,26 +108,17 @@ func (m *GetKeyServerLocationsReply) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetKeyServerLocationsReply) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.Results)
-	endOff = wire.MeasureRawOOL(endOff, m.ResultsTssMapping)
-	endOff = wire.MeasureRawOOL(endOff, m.ResultsTagMapping)
+	endOff = wire.MeasureBytesOOL(endOff, m.Results)
+	endOff = wire.MeasureBytesOOL(endOff, m.ResultsTssMapping)
+	endOff = wire.MeasureBytesOOL(endOff, m.ResultsTagMapping)
 	endOff = wire.MeasureObject(endOff, GetKeyServerLocationsReplyVTable, GetKeyServerLocationsReplyMaxAlign)
 	return endOff
 }
 
 func (m *GetKeyServerLocationsReply) writeDirect(dw *wire.DirectWriter) int {
-	var resultsOOL int
-	if m.Results != nil {
-		resultsOOL = dw.WriteRawOOL(m.Results)
-	}
-	var resultsTssMappingOOL int
-	if m.ResultsTssMapping != nil {
-		resultsTssMappingOOL = dw.WriteRawOOL(m.ResultsTssMapping)
-	}
-	var resultsTagMappingOOL int
-	if m.ResultsTagMapping != nil {
-		resultsTagMappingOOL = dw.WriteRawOOL(m.ResultsTagMapping)
-	}
+	resultsOOL := dw.WriteBytesOOL(m.Results)
+	resultsTssMappingOOL := dw.WriteBytesOOL(m.ResultsTssMapping)
+	resultsTagMappingOOL := dw.WriteBytesOOL(m.ResultsTagMapping)
 	objPos, obj := dw.WriteObject(GetKeyServerLocationsReplyVTable, GetKeyServerLocationsReplyMaxAlign)
 	vt := GetKeyServerLocationsReplyVTable
 	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResults+2]), objPos, resultsOOL)
@@ -139,9 +130,9 @@ func (m *GetKeyServerLocationsReply) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 	t := GetKeyServerLocationsReplyTemplate
 	endOff := 0
-	endOff = wire.MeasureRawOOL(endOff, m.Results)
-	endOff = wire.MeasureRawOOL(endOff, m.ResultsTssMapping)
-	endOff = wire.MeasureRawOOL(endOff, m.ResultsTagMapping)
+	endOff = wire.MeasureBytesOOL(endOff, m.Results)
+	endOff = wire.MeasureBytesOOL(endOff, m.ResultsTssMapping)
+	endOff = wire.MeasureBytesOOL(endOff, m.ResultsTagMapping)
 	bodySize := int(GetKeyServerLocationsReplyVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 4 - 1) &^ (4 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

@@ -459,7 +459,8 @@ private:
                 fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
                 fprintf(f, "\t}\n");
             } else if (fd.kind == FieldKind::VectorLike) {
-                fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
+                // C++ visitDynamicSize: all dynamic types use [len(4)][data][pad].
+                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
@@ -569,10 +570,8 @@ private:
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t}\n");
             } else if (fdp->kind == FieldKind::VectorLike) {
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
-                fprintf(f, "\t\t%s = dw.WriteRawOOL(m.%s)\n", varName.c_str(), gn.c_str());
-                fprintf(f, "\t}\n");
+                // C++ visitDynamicSize: all dynamic types write [len(4)][data][pad].
+                fprintf(f, "\t%s := dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
             } else if (fdp->kind == FieldKind::Optional) {
                 // Optional<T>: presence tag (uint8) at slot N, value bytes at slot N+1.
                 fprintf(f, "\tvar %s int\n", varName.c_str());
@@ -726,7 +725,8 @@ private:
                 fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
                 fprintf(f, "\t}\n");
             } else if (fd.kind == FieldKind::VectorLike) {
-                fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
+                // C++ visitDynamicSize: all dynamic types use [len(4)][data][pad].
+                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());

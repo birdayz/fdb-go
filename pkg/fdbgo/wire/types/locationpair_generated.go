@@ -64,17 +64,14 @@ func (m *LocationPair) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *LocationPair) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.Servers)
+	endOff = wire.MeasureBytesOOL(endOff, m.Servers)
 	endOff = m.KeyRange.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, LocationPairVTable, LocationPairMaxAlign)
 	return endOff
 }
 
 func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
-	var serversOOL int
-	if m.Servers != nil {
-		serversOOL = dw.WriteRawOOL(m.Servers)
-	}
+	serversOOL := dw.WriteBytesOOL(m.Servers)
 	keyRangePos := m.KeyRange.writeDirect(dw)
 	objPos, obj := dw.WriteObject(LocationPairVTable, LocationPairMaxAlign)
 	vt := LocationPairVTable

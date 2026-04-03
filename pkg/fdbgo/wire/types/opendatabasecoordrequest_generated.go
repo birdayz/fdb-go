@@ -171,36 +171,24 @@ func (m *OpenDatabaseCoordRequest) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *OpenDatabaseCoordRequest) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.Issues)
-	endOff = wire.MeasureRawOOL(endOff, m.SupportedVersions)
+	endOff = wire.MeasureBytesOOL(endOff, m.Issues)
+	endOff = wire.MeasureBytesOOL(endOff, m.SupportedVersions)
 	endOff = wire.MeasureBytesOOL(endOff, m.TraceLogGroup)
 	endOff = wire.MeasureBytesOOL(endOff, m.ClusterKey)
-	endOff = wire.MeasureRawOOL(endOff, m.Coordinators)
-	endOff = wire.MeasureRawOOL(endOff, m.Hostnames)
+	endOff = wire.MeasureBytesOOL(endOff, m.Coordinators)
+	endOff = wire.MeasureBytesOOL(endOff, m.Hostnames)
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, OpenDatabaseCoordRequestVTable, OpenDatabaseCoordRequestMaxAlign)
 	return endOff
 }
 
 func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
-	var issuesOOL int
-	if m.Issues != nil {
-		issuesOOL = dw.WriteRawOOL(m.Issues)
-	}
-	var supportedVersionsOOL int
-	if m.SupportedVersions != nil {
-		supportedVersionsOOL = dw.WriteRawOOL(m.SupportedVersions)
-	}
+	issuesOOL := dw.WriteBytesOOL(m.Issues)
+	supportedVersionsOOL := dw.WriteBytesOOL(m.SupportedVersions)
 	traceLogGroupOOL := dw.WriteBytesOOL(m.TraceLogGroup)
 	clusterKeyOOL := dw.WriteBytesOOL(m.ClusterKey)
-	var coordinatorsOOL int
-	if m.Coordinators != nil {
-		coordinatorsOOL = dw.WriteRawOOL(m.Coordinators)
-	}
-	var hostnamesOOL int
-	if m.Hostnames != nil {
-		hostnamesOOL = dw.WriteRawOOL(m.Hostnames)
-	}
+	coordinatorsOOL := dw.WriteBytesOOL(m.Coordinators)
+	hostnamesOOL := dw.WriteBytesOOL(m.Hostnames)
 	replyPos := m.Reply.writeDirect(dw)
 	objPos, obj := dw.WriteObject(OpenDatabaseCoordRequestVTable, OpenDatabaseCoordRequestMaxAlign)
 	vt := OpenDatabaseCoordRequestVTable
@@ -221,12 +209,12 @@ func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
 	t := OpenDatabaseCoordRequestTemplate
 	endOff := 0
-	endOff = wire.MeasureRawOOL(endOff, m.Issues)
-	endOff = wire.MeasureRawOOL(endOff, m.SupportedVersions)
+	endOff = wire.MeasureBytesOOL(endOff, m.Issues)
+	endOff = wire.MeasureBytesOOL(endOff, m.SupportedVersions)
 	endOff = wire.MeasureBytesOOL(endOff, m.TraceLogGroup)
 	endOff = wire.MeasureBytesOOL(endOff, m.ClusterKey)
-	endOff = wire.MeasureRawOOL(endOff, m.Coordinators)
-	endOff = wire.MeasureRawOOL(endOff, m.Hostnames)
+	endOff = wire.MeasureBytesOOL(endOff, m.Coordinators)
+	endOff = wire.MeasureBytesOOL(endOff, m.Hostnames)
 	endOff = m.Reply.measureEndOff(endOff)
 	bodySize := int(OpenDatabaseCoordRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4

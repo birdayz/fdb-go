@@ -118,14 +118,12 @@ func MeasureBytesOOL(endOff int, data []byte) int {
 }
 
 // MeasureRawOOL returns the end-offset contribution of a WriteRawOOL field.
-// Same as MeasureBytesOOL but without length prefix (used for VectorRef pre-packed).
-// C++ visitDynamicSize always allocates space. For RawOOL with nil data, the field
-// is still visited but contributes 0 bytes (no length prefix to allocate).
+// C++ flat_buffers.h:518 visitDynamicSize treats ALL dynamic_size types the same:
+// always [len(4)][data][pad], even for empty. Empty data still gets 4 bytes.
 func MeasureRawOOL(endOff int, data []byte) int {
-	if data == nil {
-		return endOff
-	}
-	return endOff + (len(data)+3)&^3
+	size := len(data) // 0 for nil
+	// C++: RightAlign(current_buffer_size + size + 4, 4)
+	return RightAlign(endOff+size+4, 4)
 }
 
 // MeasureObject returns the end-offset after adding a nested object.
