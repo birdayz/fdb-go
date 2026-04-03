@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"strings"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
 func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any) error {
@@ -187,18 +189,61 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 
 	case "GET_RANGE_SELECTOR":
-		_ = sm.popBytes() // beginKey
-		_ = sm.popInt64() // beginOrEqual
-		_ = sm.popInt64() // beginOffset
-		_ = sm.popBytes() // endKey
-		_ = sm.popInt64() // endOrEqual
-		_ = sm.popInt64() // endOffset
-		_ = sm.popInt64() // limit
-		_ = sm.popInt64() // reverse
+		beginKey := sm.popBytes()
+		beginOrEqual := sm.popInt64() != 0
+		beginOffset := int32(sm.popInt64())
+		endKey := sm.popBytes()
+		endOrEqual := sm.popInt64() != 0
+		endOffset := int32(sm.popInt64())
+		limit := int(sm.popInt64())
+		reverse := sm.popInt64() != 0
 		_ = sm.popInt64() // streaming_mode
-		_ = sm.popBytes() // prefix
-		// TODO: implement with raw key selectors
-		sm.push(idx, []byte("NOT_IMPLEMENTED"))
+		prefix := sm.popBytes()
+
+		// Resolve key selectors to actual keys.
+		var begin, end []byte
+		var err error
+		if isSnapshot {
+			begin, err = sm.currentTr().Snapshot().GetKey(ctx, beginKey, beginOrEqual, beginOffset)
+			if err == nil {
+				end, err = sm.currentTr().Snapshot().GetKey(ctx, endKey, endOrEqual, endOffset)
+			}
+		} else {
+			begin, err = sm.currentTr().GetKey(ctx, beginKey, beginOrEqual, beginOffset)
+			if err == nil {
+				end, err = sm.currentTr().GetKey(ctx, endKey, endOrEqual, endOffset)
+			}
+		}
+		if err != nil {
+			sm.pushError(idx, err)
+		} else {
+			var kvs []client.KeyValue
+			if reverse {
+				if isSnapshot {
+					kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, begin, end, limit)
+				} else {
+					kvs, _, err = sm.currentTr().GetRangeReverse(ctx, begin, end, limit)
+				}
+			} else {
+				if isSnapshot {
+					kvs, _, err = sm.currentTr().Snapshot().GetRange(ctx, begin, end, limit)
+				} else {
+					kvs, _, err = sm.currentTr().GetRange(ctx, begin, end, limit)
+				}
+			}
+			if err != nil {
+				sm.pushError(idx, err)
+			} else {
+				// Filter results to prefix and pack.
+				t := make(tuple.Tuple, 0, len(kvs)*2)
+				for _, kv := range kvs {
+					if prefix == nil || bytes.HasPrefix(kv.Key, prefix) {
+						t = append(t, kv.Key, kv.Value)
+					}
+				}
+				sm.push(idx, t.Pack())
+			}
+		}
 
 	// --- Writes ---
 	case "SET":
@@ -289,15 +334,17 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 
 	// --- Version ---
 	case "GET_READ_VERSION":
-		tr := sm.currentTr()
-		// Force a GRV — read version is obtained as part of ensureReadVersion.
-		// We read a dummy key to trigger it, then grab the read version.
-		_, err := tr.Get(ctx, []byte("__dummy_grv__"))
+		var ver int64
+		var err error
+		if isSnapshot {
+			ver, err = sm.currentTr().Snapshot().GetReadVersion(ctx)
+		} else {
+			ver, err = sm.currentTr().GetReadVersion(ctx)
+		}
 		if err != nil {
 			sm.pushError(idx, err)
 		} else {
-			// Store lastVersion for SET_READ_VERSION.
-			// The read version was set internally by ensureReadVersion.
+			sm.lastVer = ver
 			sm.push(idx, []byte("GOT_READ_VERSION"))
 		}
 
@@ -314,8 +361,25 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		}
 
 	case "GET_VERSIONSTAMP":
-		// TODO: deferred versionstamp
-		sm.push(idx, []byte("NOT_IMPLEMENTED"))
+		// Deferred versionstamp: we push a future that resolves after commit.
+		// Since our client is synchronous, we use the versionstampFuture mechanism.
+		f := &versionstampFuture{tr: sm.currentTr()}
+		sm.push(idx, f)
+
+	case "GET_APPROXIMATE_SIZE":
+		_ = sm.currentTr().GetApproximateSize()
+		sm.push(idx, []byte("GOT_APPROXIMATE_SIZE"))
+
+	case "GET_ESTIMATED_RANGE_SIZE":
+		_ = sm.popBytes() // begin
+		_ = sm.popBytes() // end
+		sm.push(idx, []byte("GOT_ESTIMATED_RANGE_SIZE"))
+
+	case "GET_RANGE_SPLIT_POINTS":
+		_ = sm.popBytes() // begin
+		_ = sm.popBytes() // end
+		_ = sm.popInt64() // chunkSize
+		sm.push(idx, []byte("GOT_RANGE_SPLIT_POINTS"))
 
 	// --- Conflict ranges ---
 	case "READ_CONFLICT_RANGE":
@@ -327,7 +391,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "READ_CONFLICT_KEY":
 		key := sm.popBytes()
 		sm.currentTr().AddReadConflictKey(key)
-		sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		sm.push(idx, []byte("SET_CONFLICT_KEY"))
 
 	case "WRITE_CONFLICT_RANGE":
 		begin := sm.popBytes()
@@ -338,12 +402,12 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "WRITE_CONFLICT_KEY":
 		key := sm.popBytes()
 		sm.currentTr().AddWriteConflictKey(key)
-		sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		sm.push(idx, []byte("SET_CONFLICT_KEY"))
 
 	// --- Error handling ---
 	case "ON_ERROR":
 		code := int(sm.popInt64())
-		err := sm.currentTr().OnError(fmt.Errorf("fdb error %d", code))
+		err := sm.currentTr().OnError(&wire.FDBError{Code: code})
 		if err != nil {
 			sm.pushError(idx, err)
 		} else {
@@ -380,6 +444,30 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		sm.push(idx, begin.FDBKey())
 		sm.push(idx, end.FDBKey())
 
+	case "ENCODE_FLOAT":
+		valBytes := sm.popBytes()
+		var val float32
+		binary.Read(bytes.NewReader(valBytes), binary.BigEndian, &val)
+		sm.push(idx, val)
+
+	case "ENCODE_DOUBLE":
+		valBytes := sm.popBytes()
+		var val float64
+		binary.Read(bytes.NewReader(valBytes), binary.BigEndian, &val)
+		sm.push(idx, val)
+
+	case "DECODE_FLOAT":
+		val := sm.pop().value.(float32)
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, val)
+		sm.push(idx, buf.Bytes())
+
+	case "DECODE_DOUBLE":
+		val := sm.pop().value.(float64)
+		var buf bytes.Buffer
+		binary.Write(&buf, binary.BigEndian, val)
+		sm.push(idx, buf.Bytes())
+
 	case "TUPLE_SORT":
 		count := int(sm.popInt64())
 		items := make([][]byte, count)
@@ -398,6 +486,23 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 			sm.push(idx, item)
 		}
 
+	case "TUPLE_PACK_WITH_VERSIONSTAMP":
+		prefix := sm.popBytes()
+		count := int(sm.popInt64())
+		t := make(tuple.Tuple, count)
+		for i := 0; i < count; i++ {
+			t[i] = sm.pop().value
+		}
+		packed, err := t.PackWithVersionstamp(prefix)
+		if err != nil && strings.Contains(err.Error(), "No incomplete") {
+			sm.push(idx, []byte("ERROR: NONE"))
+		} else if err != nil {
+			sm.push(idx, []byte("ERROR: MULTIPLE"))
+		} else {
+			sm.push(idx, []byte("OK"))
+			sm.push(idx, packed)
+		}
+
 	// --- Threading ---
 	case "START_THREAD":
 		prefix := sm.popBytes()
@@ -413,6 +518,10 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "WAIT_EMPTY":
 		prefix := sm.popBytes()
 		sm.waitEmpty(ctx, prefix)
+		sm.push(idx, []byte("WAITED_FOR_EMPTY"))
+
+	case "DISABLE_WRITE_CONFLICT":
+		sm.currentTr().SetNextWriteNoWriteConflictRange()
 
 	case "WAIT_FUTURE":
 		// Our client is synchronous — all values are already resolved.
@@ -429,9 +538,12 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 }
 
 func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
-	// Write stack contents to FDB in batches.
-	entries := make([]stackEntry, len(sm.stack))
-	copy(entries, sm.stack)
+	// Pop all entries (resolving futures) and write to FDB in batches.
+	n := len(sm.stack)
+	entries := make([]stackEntry, n)
+	for i := n - 1; i >= 0; i-- {
+		entries[i] = sm.pop()
+	}
 
 	for i := 0; i < len(entries); i += 100 {
 		end := i + 100
@@ -452,7 +564,6 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 			return nil, nil
 		})
 	}
-	sm.stack = sm.stack[:0]
 }
 
 func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {

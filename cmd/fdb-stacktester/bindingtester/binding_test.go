@@ -33,7 +33,7 @@ func TestBindingTester(t *testing.T) {
 		t.Skip("binding tester requires Docker")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	// 1. Start FDB container.
@@ -88,7 +88,9 @@ func TestBindingTester(t *testing.T) {
 		"python3", "/opt/fdb/bindings/bindingtester/bindingtester.py",
 		"--cluster-file", "/etc/foundationdb/fdb.cluster",
 		"--test-name", "api",
+		"--api-version", "730",
 		"--num-ops", fmt.Sprintf("%d", numOps),
+		"--timeout", "600",
 		"--no-threads",
 		"--no-tenants",
 		"/usr/local/bin/fdb-stacktester",

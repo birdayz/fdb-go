@@ -11,6 +11,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/fdbgo/client",
+        "//pkg/fdbgo/wire",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
     ],
 )
