@@ -81,9 +81,6 @@ func TestGroundTruthMarshal(t *testing.T) {
 			}).MarshalFDB()
 		},
 		"GetKeyRequest_basic": func() []byte {
-			emptyVV := make([]byte, 16)
-			emptyVV[8] = 0xFF; emptyVV[9] = 0xFF; emptyVV[10] = 0xFF; emptyVV[11] = 0xFF
-			emptyVV[12] = 0xFF; emptyVV[13] = 0xFF; emptyVV[14] = 0xFF; emptyVV[15] = 0xFF
 			return (&GetKeyRequest{
 				Sel: KeySelectorRef{
 					Key:     []byte("selector_key"),
@@ -91,9 +88,8 @@ func TestGroundTruthMarshal(t *testing.T) {
 					Offset:  1,
 				},
 				Version:               99999,
-				Reply:                  ReplyPromise{},
-				TenantInfo:            TenantInfo{TenantId: -1},
-				SsLatestCommitVersions: emptyVV,
+				Reply:      ReplyPromise{},
+				TenantInfo: TenantInfo{TenantId: -1},
 			}).MarshalFDB()
 		},
 		"GetKeyValuesRequest_basic": func() []byte {
