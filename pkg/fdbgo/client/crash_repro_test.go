@@ -5,7 +5,8 @@ import (
 	"io"
 	"os"
 	"testing"
-	// "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
 
 // TestDecodeCrashFrame reads the wire log from the binding tester crash
@@ -32,12 +33,27 @@ func TestDecodeCrashFrame(t *testing.T) {
 		}
 
 		if hdr[0] == 'S' {
-			tokenHi := binary.LittleEndian.Uint64(hdr[9:17])
 			tokenLo := binary.LittleEndian.Uint64(hdr[17:25])
-			// Endpoint is encoded in the low 32 bits of tokenLo
 			endpoint := tokenLo & 0xFFFFFFFF
-			t.Logf("#%04d SEND len=%5d token=%016x:%016x endpoint=0x%x",
-				idx, bodyLen, tokenHi, tokenLo, endpoint)
+			if endpoint == 0x9c { // commit proxy
+				t.Logf("#%04d COMMIT len=%d", idx, bodyLen)
+				var req types.CommitTransactionRequest
+				if err := req.UnmarshalFDB(body); err != nil {
+					t.Logf("  unmarshal error: %v", err)
+				} else {
+					t.Logf("  ReadSnapshot=%d Mutations=%d ReadCR=%d WriteCR=%d TenantId=%d",
+						req.Transaction.ReadSnapshot,
+						len(req.Transaction.Mutations),
+						len(req.Transaction.ReadConflictRanges),
+						len(req.Transaction.WriteConflictRanges),
+						req.TenantInfo.TenantId)
+					for i, m := range req.Transaction.Mutations {
+						if i < 5 {
+							t.Logf("    mut[%d] type=%d keyLen=%d valLen=%d", i, m.MutType, len(m.Param1), len(m.Param2))
+						}
+					}
+				}
+			}
 		}
 		idx++
 	}

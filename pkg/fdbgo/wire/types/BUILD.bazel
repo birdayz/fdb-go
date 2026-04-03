@@ -46,6 +46,7 @@ go_test(
     name = "types_test",
     srcs = [
         "bench_test.go",
+        "commit_marshal_test.go",
         "key_value_vector_test.go",
     ],
     embed = [":types"],
