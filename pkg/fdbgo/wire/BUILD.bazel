@@ -4,6 +4,7 @@ go_library(
     name = "wire",
     srcs = [
         "reader.go",
+        "serializer.go",
         "vtable.go",
         "writer.go",
         "writer_direct.go",
