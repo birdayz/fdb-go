@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -81,15 +82,18 @@ func TestGroundTruthMarshal(t *testing.T) {
 			}).MarshalFDB()
 		},
 		"GetKeyRequest_basic": func() []byte {
+			emptyVV := make([]byte, 16)
+			binary.LittleEndian.PutUint64(emptyVV[8:], ^uint64(0)) // maxVersion = -1
 			return (&GetKeyRequest{
 				Sel: KeySelectorRef{
 					Key:     []byte("selector_key"),
 					OrEqual: true,
 					Offset:  1,
 				},
-				Version:               99999,
-				Reply:      ReplyPromise{},
-				TenantInfo: TenantInfo{TenantId: -1},
+				Version:                99999,
+				Reply:                  ReplyPromise{},
+				TenantInfo:             TenantInfo{TenantId: -1},
+				SsLatestCommitVersions: emptyVV,
 			}).MarshalFDB()
 		},
 		"GetKeyValuesRequest_basic": func() []byte {
