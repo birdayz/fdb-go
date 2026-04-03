@@ -65,15 +65,26 @@ func (m *GrvProxyInterface) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GrvProxyInterface) measureEndOff(endOff int) int {
+	if m.HasProcessId {
+		endOff = wire.MeasureBytesOOL(endOff, m.ProcessId)
+	}
 	endOff = wire.MeasureObject(endOff, GrvProxyInterfaceVTable, GrvProxyInterfaceMaxAlign)
 	return endOff
 }
 
 func (m *GrvProxyInterface) writeDirect(dw *wire.DirectWriter) int {
+	var processIdOOL int
+	if m.HasProcessId {
+		processIdOOL = dw.WriteBytesOOL(m.ProcessId)
+	}
 	objPos, obj := dw.WriteObject(GrvProxyInterfaceVTable, GrvProxyInterfaceMaxAlign)
 	vt := GrvProxyInterfaceVTable
 	if m.Provisional {
 		obj[int(vt[GrvProxyInterfaceSlotProvisional+2])] = 1
+	}
+	if m.HasProcessId {
+		obj[int(vt[GrvProxyInterfaceSlotProcessId+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GrvProxyInterfaceSlotProcessId+1+2]), objPos, processIdOOL)
 	}
 	return objPos
 }

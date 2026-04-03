@@ -144,6 +144,12 @@ func (m *GetValueRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetValueRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.Key)
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
@@ -156,6 +162,14 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 	var keyOOL int
 	if m.Key != nil {
 		keyOOL = dw.WriteBytesOOL(m.Key)
+	}
+	var tagsOOL int
+	if m.HasTags {
+		tagsOOL = dw.WriteBytesOOL(m.Tags)
+	}
+	var optionsOOL int
+	if m.HasOptions {
+		optionsOOL = dw.WriteBytesOOL(m.Options)
 	}
 	var ssLatestCommitVersionsOOL int
 	if m.SsLatestCommitVersions != nil {
@@ -170,6 +184,14 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Key != nil {
 		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotKey+2]), objPos, keyOOL)
 	}
+	if m.HasTags {
+		obj[int(vt[GetValueRequestSlotTags+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotTags+1+2]), objPos, tagsOOL)
+	}
+	if m.HasOptions {
+		obj[int(vt[GetValueRequestSlotOptions+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotOptions+1+2]), objPos, optionsOOL)
+	}
 	if m.SsLatestCommitVersions != nil {
 		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	}
@@ -183,6 +205,12 @@ func (m *GetValueRequest) MarshalFDB() []byte {
 	t := GetValueRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.Key)
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)

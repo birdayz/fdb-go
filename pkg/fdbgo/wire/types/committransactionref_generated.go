@@ -251,6 +251,12 @@ func (m *CommitTransactionRef) measureEndOff(endOff int) int {
 		}
 		endOff += (vecSize + 3) &^ 3
 	}
+	if m.HasRead_conflict_ranges_disabled {
+		endOff = wire.MeasureBytesOOL(endOff, m.Read_conflict_ranges_disabled)
+	}
+	if m.HasWrite_conflict_ranges_disabled {
+		endOff = wire.MeasureBytesOOL(endOff, m.Write_conflict_ranges_disabled)
+	}
 	endOff = wire.MeasureObject(endOff, CommitTransactionRefVTable, CommitTransactionRefMaxAlign)
 	return endOff
 }
@@ -316,6 +322,14 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 			blobOff += elem.writeBlob(vecBuf, blobOff)
 		}
 	}
+	var read_conflict_ranges_disabledOOL int
+	if m.HasRead_conflict_ranges_disabled {
+		read_conflict_ranges_disabledOOL = dw.WriteBytesOOL(m.Read_conflict_ranges_disabled)
+	}
+	var write_conflict_ranges_disabledOOL int
+	if m.HasWrite_conflict_ranges_disabled {
+		write_conflict_ranges_disabledOOL = dw.WriteBytesOOL(m.Write_conflict_ranges_disabled)
+	}
 	objPos, obj := dw.WriteObject(CommitTransactionRefVTable, CommitTransactionRefMaxAlign)
 	vt := CommitTransactionRefVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[CommitTransactionRefSlotReadSnapshot+2]):], uint64(m.ReadSnapshot))
@@ -333,6 +347,14 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 	}
 	if len(m.Mutations) > 0 {
 		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotMutations+2]), objPos, mutationsOOL)
+	}
+	if m.HasRead_conflict_ranges_disabled {
+		obj[int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+1+2]), objPos, read_conflict_ranges_disabledOOL)
+	}
+	if m.HasWrite_conflict_ranges_disabled {
+		obj[int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+1+2]), objPos, write_conflict_ranges_disabledOOL)
 	}
 	return objPos
 }

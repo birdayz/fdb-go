@@ -76,16 +76,27 @@ func (m *StorageServerInterface) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *StorageServerInterface) measureEndOff(endOff int) int {
+	if m.HasField_3 {
+		endOff = wire.MeasureBytesOOL(endOff, m.Field_3)
+	}
 	endOff = wire.MeasureObject(endOff, StorageServerInterfaceVTable, StorageServerInterfaceMaxAlign)
 	return endOff
 }
 
 func (m *StorageServerInterface) writeDirect(dw *wire.DirectWriter) int {
+	var field_3OOL int
+	if m.HasField_3 {
+		field_3OOL = dw.WriteBytesOOL(m.Field_3)
+	}
 	objPos, obj := dw.WriteObject(StorageServerInterfaceVTable, StorageServerInterfaceMaxAlign)
 	vt := StorageServerInterfaceVTable
 	copy(obj[int(vt[StorageServerInterfaceSlotWatchValue+2]):], m.WatchValue[:])
 	if m.Field_5 {
 		obj[int(vt[StorageServerInterfaceSlotField_5+2])] = 1
+	}
+	if m.HasField_3 {
+		obj[int(vt[StorageServerInterfaceSlotField_3+2])] = 1
+		wire.PatchRelOff(obj, int(vt[StorageServerInterfaceSlotField_3+1+2]), objPos, field_3OOL)
 	}
 	return objPos
 }

@@ -145,6 +145,12 @@ func (m *GetKeyRequest) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetKeyRequest) measureEndOff(endOff int) int {
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Sel.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
@@ -155,6 +161,14 @@ func (m *GetKeyRequest) measureEndOff(endOff int) int {
 }
 
 func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
+	var tagsOOL int
+	if m.HasTags {
+		tagsOOL = dw.WriteBytesOOL(m.Tags)
+	}
+	var optionsOOL int
+	if m.HasOptions {
+		optionsOOL = dw.WriteBytesOOL(m.Options)
+	}
 	var ssLatestCommitVersionsOOL int
 	if m.SsLatestCommitVersions != nil {
 		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
@@ -166,6 +180,14 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 	objPos, obj := dw.WriteObject(GetKeyRequestVTable, GetKeyRequestMaxAlign)
 	vt := GetKeyRequestVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyRequestSlotVersion+2]):], uint64(m.Version))
+	if m.HasTags {
+		obj[int(vt[GetKeyRequestSlotTags+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotTags+1+2]), objPos, tagsOOL)
+	}
+	if m.HasOptions {
+		obj[int(vt[GetKeyRequestSlotOptions+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotOptions+1+2]), objPos, optionsOOL)
+	}
 	if m.SsLatestCommitVersions != nil {
 		wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	}
@@ -179,6 +201,12 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetKeyRequest) MarshalFDB() []byte {
 	t := GetKeyRequestTemplate
 	endOff := 0
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Sel.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)

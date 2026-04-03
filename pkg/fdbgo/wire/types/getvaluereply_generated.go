@@ -96,16 +96,38 @@ func (m *GetValueReply) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetValueReply) measureEndOff(endOff int) int {
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
+	if m.HasValue {
+		endOff = wire.MeasureBytesOOL(endOff, m.Value)
+	}
 	endOff = wire.MeasureObject(endOff, GetValueReplyVTable, GetValueReplyMaxAlign)
 	return endOff
 }
 
 func (m *GetValueReply) writeDirect(dw *wire.DirectWriter) int {
+	var error_OOL int
+	if m.HasError {
+		error_OOL = dw.WriteBytesOOL(m.Error)
+	}
+	var valueOOL int
+	if m.HasValue {
+		valueOOL = dw.WriteBytesOOL(m.Value)
+	}
 	objPos, obj := dw.WriteObject(GetValueReplyVTable, GetValueReplyMaxAlign)
 	vt := GetValueReplyVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetValueReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
 	if m.Cached {
 		obj[int(vt[GetValueReplySlotCached+2])] = 1
+	}
+	if m.HasError {
+		obj[int(vt[GetValueReplySlotError+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueReplySlotError+1+2]), objPos, error_OOL)
+	}
+	if m.HasValue {
+		obj[int(vt[GetValueReplySlotValue+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueReplySlotValue+1+2]), objPos, valueOOL)
 	}
 	return objPos
 }
@@ -113,6 +135,12 @@ func (m *GetValueReply) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetValueReply) MarshalFDB() []byte {
 	t := GetValueReplyTemplate
 	endOff := 0
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
+	if m.HasValue {
+		endOff = wire.MeasureBytesOOL(endOff, m.Value)
+	}
 	bodySize := int(GetValueReplyVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

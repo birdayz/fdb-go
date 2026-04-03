@@ -126,12 +126,19 @@ func (m *GetKeyValuesReply) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetKeyValuesReply) measureEndOff(endOff int) int {
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.Data)
 	endOff = wire.MeasureObject(endOff, GetKeyValuesReplyVTable, GetKeyValuesReplyMaxAlign)
 	return endOff
 }
 
 func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
+	var error_OOL int
+	if m.HasError {
+		error_OOL = dw.WriteBytesOOL(m.Error)
+	}
 	var dataOOL int
 	if m.Data != nil {
 		dataOOL = dw.WriteBytesOOL(m.Data)
@@ -146,6 +153,10 @@ func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
 	if m.Cached {
 		obj[int(vt[GetKeyValuesReplySlotCached+2])] = 1
 	}
+	if m.HasError {
+		obj[int(vt[GetKeyValuesReplySlotError+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotError+1+2]), objPos, error_OOL)
+	}
 	if m.Data != nil {
 		wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotData+2]), objPos, dataOOL)
 	}
@@ -155,6 +166,9 @@ func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetKeyValuesReply) MarshalFDB() []byte {
 	t := GetKeyValuesReplyTemplate
 	endOff := 0
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.Data)
 	bodySize := int(GetKeyValuesReplyVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4

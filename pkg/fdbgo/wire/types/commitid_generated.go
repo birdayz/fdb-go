@@ -94,21 +94,49 @@ func (m *CommitID) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *CommitID) measureEndOff(endOff int) int {
+	if m.HasMetadataVersion {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
+	}
+	if m.HasConflictingKRIndices {
+		endOff = wire.MeasureBytesOOL(endOff, m.ConflictingKRIndices)
+	}
 	endOff = wire.MeasureObject(endOff, CommitIDVTable, CommitIDMaxAlign)
 	return endOff
 }
 
 func (m *CommitID) writeDirect(dw *wire.DirectWriter) int {
+	var metadataVersionOOL int
+	if m.HasMetadataVersion {
+		metadataVersionOOL = dw.WriteBytesOOL(m.MetadataVersion)
+	}
+	var conflictingKRIndicesOOL int
+	if m.HasConflictingKRIndices {
+		conflictingKRIndicesOOL = dw.WriteBytesOOL(m.ConflictingKRIndices)
+	}
 	objPos, obj := dw.WriteObject(CommitIDVTable, CommitIDMaxAlign)
 	vt := CommitIDVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[CommitIDSlotVersion+2]):], uint64(m.Version))
 	binary.LittleEndian.PutUint16(obj[int(vt[CommitIDSlotTxnBatchId+2]):], m.TxnBatchId)
+	if m.HasMetadataVersion {
+		obj[int(vt[CommitIDSlotMetadataVersion+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitIDSlotMetadataVersion+1+2]), objPos, metadataVersionOOL)
+	}
+	if m.HasConflictingKRIndices {
+		obj[int(vt[CommitIDSlotConflictingKRIndices+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitIDSlotConflictingKRIndices+1+2]), objPos, conflictingKRIndicesOOL)
+	}
 	return objPos
 }
 
 func (m *CommitID) MarshalFDB() []byte {
 	t := CommitIDTemplate
 	endOff := 0
+	if m.HasMetadataVersion {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
+	}
+	if m.HasConflictingKRIndices {
+		endOff = wire.MeasureBytesOOL(endOff, m.ConflictingKRIndices)
+	}
 	bodySize := int(CommitIDVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

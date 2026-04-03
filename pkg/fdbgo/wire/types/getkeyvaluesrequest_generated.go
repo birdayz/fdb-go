@@ -171,6 +171,12 @@ func (m *GetKeyValuesRequest) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetKeyValuesRequest) measureEndOff(endOff int) int {
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Begin.measureEndOff(endOff)
 	endOff = m.End.measureEndOff(endOff)
@@ -182,6 +188,14 @@ func (m *GetKeyValuesRequest) measureEndOff(endOff int) int {
 }
 
 func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
+	var tagsOOL int
+	if m.HasTags {
+		tagsOOL = dw.WriteBytesOOL(m.Tags)
+	}
+	var optionsOOL int
+	if m.HasOptions {
+		optionsOOL = dw.WriteBytesOOL(m.Options)
+	}
 	var ssLatestCommitVersionsOOL int
 	if m.SsLatestCommitVersions != nil {
 		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
@@ -196,6 +210,14 @@ func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesRequestSlotVersion+2]):], uint64(m.Version))
 	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyValuesRequestSlotLimit+2]):], uint32(m.Limit))
 	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyValuesRequestSlotLimitBytes+2]):], uint32(m.LimitBytes))
+	if m.HasTags {
+		obj[int(vt[GetKeyValuesRequestSlotTags+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotTags+1+2]), objPos, tagsOOL)
+	}
+	if m.HasOptions {
+		obj[int(vt[GetKeyValuesRequestSlotOptions+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotOptions+1+2]), objPos, optionsOOL)
+	}
 	if m.SsLatestCommitVersions != nil {
 		wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	}
@@ -210,6 +232,12 @@ func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetKeyValuesRequest) MarshalFDB() []byte {
 	t := GetKeyValuesRequestTemplate
 	endOff := 0
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = wire.MeasureBytesOOL(endOff, m.Options)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Begin.measureEndOff(endOff)
 	endOff = m.End.measureEndOff(endOff)

@@ -61,15 +61,26 @@ func (m *NetworkAddressList) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *NetworkAddressList) measureEndOff(endOff int) int {
+	if m.HasSecondaryAddress {
+		endOff = wire.MeasureBytesOOL(endOff, m.SecondaryAddress)
+	}
 	endOff = m.Address.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, NetworkAddressListVTable, NetworkAddressListMaxAlign)
 	return endOff
 }
 
 func (m *NetworkAddressList) writeDirect(dw *wire.DirectWriter) int {
+	var secondaryAddressOOL int
+	if m.HasSecondaryAddress {
+		secondaryAddressOOL = dw.WriteBytesOOL(m.SecondaryAddress)
+	}
 	addressPos := m.Address.writeDirect(dw)
 	objPos, obj := dw.WriteObject(NetworkAddressListVTable, NetworkAddressListMaxAlign)
 	vt := NetworkAddressListVTable
+	if m.HasSecondaryAddress {
+		obj[int(vt[NetworkAddressListSlotSecondaryAddress+2])] = 1
+		wire.PatchRelOff(obj, int(vt[NetworkAddressListSlotSecondaryAddress+1+2]), objPos, secondaryAddressOOL)
+	}
 	wire.PatchRelOff(obj, int(vt[NetworkAddressListSlotAddress+2]), objPos, addressPos)
 	return objPos
 }

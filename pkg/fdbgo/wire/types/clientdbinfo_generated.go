@@ -168,7 +168,16 @@ func (m *ClientDBInfo) writeBlob(buf []byte, pos int) int {
 func (m *ClientDBInfo) measureEndOff(endOff int) int {
 	endOff = wire.MeasureRawOOL(endOff, m.GrvProxies)
 	endOff = wire.MeasureRawOOL(endOff, m.CommitProxies)
+	if m.HasForward {
+		endOff = wire.MeasureBytesOOL(endOff, m.Forward)
+	}
 	endOff = wire.MeasureRawOOL(endOff, m.History)
+	if m.HasEncryptKeyProxy {
+		endOff = wire.MeasureBytesOOL(endOff, m.EncryptKeyProxy)
+	}
+	if m.HasMetaclusterName {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetaclusterName)
+	}
 	endOff = wire.MeasureObject(endOff, ClientDBInfoVTable, ClientDBInfoMaxAlign)
 	return endOff
 }
@@ -182,9 +191,21 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 	if m.CommitProxies != nil {
 		commitProxiesOOL = dw.WriteRawOOL(m.CommitProxies)
 	}
+	var forwardOOL int
+	if m.HasForward {
+		forwardOOL = dw.WriteBytesOOL(m.Forward)
+	}
 	var historyOOL int
 	if m.History != nil {
 		historyOOL = dw.WriteRawOOL(m.History)
+	}
+	var encryptKeyProxyOOL int
+	if m.HasEncryptKeyProxy {
+		encryptKeyProxyOOL = dw.WriteBytesOOL(m.EncryptKeyProxy)
+	}
+	var metaclusterNameOOL int
+	if m.HasMetaclusterName {
+		metaclusterNameOOL = dw.WriteBytesOOL(m.MetaclusterName)
 	}
 	objPos, obj := dw.WriteObject(ClientDBInfoVTable, ClientDBInfoMaxAlign)
 	vt := ClientDBInfoVTable
@@ -197,8 +218,20 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 	if m.CommitProxies != nil {
 		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotCommitProxies+2]), objPos, commitProxiesOOL)
 	}
+	if m.HasForward {
+		obj[int(vt[ClientDBInfoSlotForward+2])] = 1
+		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotForward+1+2]), objPos, forwardOOL)
+	}
 	if m.History != nil {
 		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotHistory+2]), objPos, historyOOL)
+	}
+	if m.HasEncryptKeyProxy {
+		obj[int(vt[ClientDBInfoSlotEncryptKeyProxy+2])] = 1
+		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotEncryptKeyProxy+1+2]), objPos, encryptKeyProxyOOL)
+	}
+	if m.HasMetaclusterName {
+		obj[int(vt[ClientDBInfoSlotMetaclusterName+2])] = 1
+		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotMetaclusterName+1+2]), objPos, metaclusterNameOOL)
 	}
 	return objPos
 }
@@ -208,7 +241,16 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 	endOff := 0
 	endOff = wire.MeasureRawOOL(endOff, m.GrvProxies)
 	endOff = wire.MeasureRawOOL(endOff, m.CommitProxies)
+	if m.HasForward {
+		endOff = wire.MeasureBytesOOL(endOff, m.Forward)
+	}
 	endOff = wire.MeasureRawOOL(endOff, m.History)
+	if m.HasEncryptKeyProxy {
+		endOff = wire.MeasureBytesOOL(endOff, m.EncryptKeyProxy)
+	}
+	if m.HasMetaclusterName {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetaclusterName)
+	}
 	bodySize := int(ClientDBInfoVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

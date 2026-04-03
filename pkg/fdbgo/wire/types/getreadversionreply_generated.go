@@ -169,6 +169,9 @@ func (m *GetReadVersionReply) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetReadVersionReply) measureEndOff(endOff int) int {
+	if m.HasMetadataVersion {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
+	}
 	endOff = wire.MeasureRawOOL(endOff, m.TagThrottleInfo)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsVersionVectorDelta)
 	endOff = wire.MeasureObject(endOff, GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
@@ -176,6 +179,10 @@ func (m *GetReadVersionReply) measureEndOff(endOff int) int {
 }
 
 func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
+	var metadataVersionOOL int
+	if m.HasMetadataVersion {
+		metadataVersionOOL = dw.WriteBytesOOL(m.MetadataVersion)
+	}
 	var tagThrottleInfoOOL int
 	if m.TagThrottleInfo != nil {
 		tagThrottleInfoOOL = dw.WriteRawOOL(m.TagThrottleInfo)
@@ -200,6 +207,10 @@ func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
 	}
 	copy(obj[int(vt[GetReadVersionReplySlotProxyId+2]):], m.ProxyId[:])
 	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]):], math.Float64bits(m.ProxyTagThrottledDuration))
+	if m.HasMetadataVersion {
+		obj[int(vt[GetReadVersionReplySlotMetadataVersion+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotMetadataVersion+1+2]), objPos, metadataVersionOOL)
+	}
 	if m.TagThrottleInfo != nil {
 		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), objPos, tagThrottleInfoOOL)
 	}
@@ -212,6 +223,9 @@ func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetReadVersionReply) MarshalFDB() []byte {
 	t := GetReadVersionReplyTemplate
 	endOff := 0
+	if m.HasMetadataVersion {
+		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
+	}
 	endOff = wire.MeasureRawOOL(endOff, m.TagThrottleInfo)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsVersionVectorDelta)
 	bodySize := int(GetReadVersionReplyVTable[1]) - 4

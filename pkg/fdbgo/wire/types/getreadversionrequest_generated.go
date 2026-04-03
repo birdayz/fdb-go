@@ -126,6 +126,9 @@ func (m *GetReadVersionRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetReadVersionRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureRawOOL(endOff, m.Tags)
+	if m.HasDebugID {
+		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
+	}
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetReadVersionRequestVTable, GetReadVersionRequestMaxAlign)
@@ -137,6 +140,10 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Tags != nil {
 		tagsOOL = dw.WriteRawOOL(m.Tags)
 	}
+	var debugIDOOL int
+	if m.HasDebugID {
+		debugIDOOL = dw.WriteBytesOOL(m.DebugID)
+	}
 	replyPos := m.Reply.writeDirect(dw)
 	spanContextPos := m.SpanContext.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetReadVersionRequestVTable, GetReadVersionRequestMaxAlign)
@@ -147,6 +154,10 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Tags != nil {
 		wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotTags+2]), objPos, tagsOOL)
 	}
+	if m.HasDebugID {
+		obj[int(vt[GetReadVersionRequestSlotDebugID+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotDebugID+1+2]), objPos, debugIDOOL)
+	}
 	wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotSpanContext+2]), objPos, spanContextPos)
 	return objPos
@@ -156,6 +167,9 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	t := GetReadVersionRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureRawOOL(endOff, m.Tags)
+	if m.HasDebugID {
+		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
+	}
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
 	bodySize := int(GetReadVersionRequestVTable[1]) - 4

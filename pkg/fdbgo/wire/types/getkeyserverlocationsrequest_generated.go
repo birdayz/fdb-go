@@ -143,6 +143,9 @@ func (m *GetKeyServerLocationsRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetKeyServerLocationsRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
+	if m.HasEnd {
+		endOff = wire.MeasureBytesOOL(endOff, m.End)
+	}
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Tenant.measureEndOff(endOff)
@@ -154,6 +157,10 @@ func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
 	var beginOOL int
 	if m.Begin != nil {
 		beginOOL = dw.WriteBytesOOL(m.Begin)
+	}
+	var endOOL int
+	if m.HasEnd {
+		endOOL = dw.WriteBytesOOL(m.End)
 	}
 	replyPos := m.Reply.writeDirect(dw)
 	spanContextPos := m.SpanContext.writeDirect(dw)
@@ -168,6 +175,10 @@ func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Begin != nil {
 		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotBegin+2]), objPos, beginOOL)
 	}
+	if m.HasEnd {
+		obj[int(vt[GetKeyServerLocationsRequestSlotEnd+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotEnd+1+2]), objPos, endOOL)
+	}
 	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotSpanContext+2]), objPos, spanContextPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotTenant+2]), objPos, tenantPos)
@@ -178,6 +189,9 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 	t := GetKeyServerLocationsRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
+	if m.HasEnd {
+		endOff = wire.MeasureBytesOOL(endOff, m.End)
+	}
 	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Tenant.measureEndOff(endOff)

@@ -74,14 +74,25 @@ func (m *TenantInfo) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *TenantInfo) measureEndOff(endOff int) int {
+	if m.HasToken {
+		endOff = wire.MeasureBytesOOL(endOff, m.Token)
+	}
 	endOff = wire.MeasureObject(endOff, TenantInfoVTable, TenantInfoMaxAlign)
 	return endOff
 }
 
 func (m *TenantInfo) writeDirect(dw *wire.DirectWriter) int {
+	var tokenOOL int
+	if m.HasToken {
+		tokenOOL = dw.WriteBytesOOL(m.Token)
+	}
 	objPos, obj := dw.WriteObject(TenantInfoVTable, TenantInfoMaxAlign)
 	vt := TenantInfoVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[TenantInfoSlotTenantId+2]):], uint64(m.TenantId))
+	if m.HasToken {
+		obj[int(vt[TenantInfoSlotToken+2])] = 1
+		wire.PatchRelOff(obj, int(vt[TenantInfoSlotToken+1+2]), objPos, tokenOOL)
+	}
 	return objPos
 }
 

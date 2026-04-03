@@ -88,16 +88,27 @@ func (m *GetKeyReply) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GetKeyReply) measureEndOff(endOff int) int {
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
 	endOff = wire.MeasureObject(endOff, GetKeyReplyVTable, GetKeyReplyMaxAlign)
 	return endOff
 }
 
 func (m *GetKeyReply) writeDirect(dw *wire.DirectWriter) int {
+	var error_OOL int
+	if m.HasError {
+		error_OOL = dw.WriteBytesOOL(m.Error)
+	}
 	objPos, obj := dw.WriteObject(GetKeyReplyVTable, GetKeyReplyMaxAlign)
 	vt := GetKeyReplyVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
 	if m.Cached {
 		obj[int(vt[GetKeyReplySlotCached+2])] = 1
+	}
+	if m.HasError {
+		obj[int(vt[GetKeyReplySlotError+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetKeyReplySlotError+1+2]), objPos, error_OOL)
 	}
 	return objPos
 }
@@ -105,6 +116,9 @@ func (m *GetKeyReply) writeDirect(dw *wire.DirectWriter) int {
 func (m *GetKeyReply) MarshalFDB() []byte {
 	t := GetKeyReplyTemplate
 	endOff := 0
+	if m.HasError {
+		endOff = wire.MeasureBytesOOL(endOff, m.Error)
+	}
 	bodySize := int(GetKeyReplyVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

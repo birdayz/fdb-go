@@ -444,14 +444,20 @@ private:
         fprintf(f, "func (m *%s) measureEndOff(endOff int) int {\n", typeName);
 
         bool hasBody = false;
-        // Step 1: OOL fields (DynamicSize, VectorLike, VectorOfStruct, Variant).
+        // Step 1: OOL fields (DynamicSize, VectorLike, VectorOfStruct, Variant, Optional).
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
             if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
-                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant) continue;
+                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant &&
+                fd.kind != FieldKind::Optional) continue;
             auto gn = fieldGoName(fd);
             if (fd.kind == FieldKind::DynamicSize) {
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
+            } else if (fd.kind == FieldKind::Optional) {
+                // Optional<T> value is OOL bytes, same size calc as DynamicSize.
+                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
+                fprintf(f, "\t}\n");
             } else if (fd.kind == FieldKind::VectorLike) {
                 fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorOfStruct) {
@@ -525,8 +531,11 @@ private:
             case FieldKind::Variant:
                 oolFields.push_back(&fd);
                 break;
+            case FieldKind::Optional:
+                oolFields.push_back(&fd);
+                break;
             default:
-                break; // Optional: skip
+                break;
             }
         }
 
@@ -564,6 +573,12 @@ private:
                 fprintf(f, "\tvar %s int\n", varName.c_str());
                 fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
                 fprintf(f, "\t\t%s = dw.WriteRawOOL(m.%s)\n", varName.c_str(), gn.c_str());
+                fprintf(f, "\t}\n");
+            } else if (fdp->kind == FieldKind::Optional) {
+                // Optional<T>: presence tag (uint8) at slot N, value bytes at slot N+1.
+                fprintf(f, "\tvar %s int\n", varName.c_str());
+                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                fprintf(f, "\t\t%s = dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
                 fprintf(f, "\t}\n");
             } else { // Variant
                 fprintf(f, "\tvar %s int\n", varName.c_str());
@@ -662,6 +677,13 @@ private:
                 fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
                         slot.c_str(), varName.c_str());
                 fprintf(f, "\t}\n");
+            } else if (fdp->kind == FieldKind::Optional) {
+                // Presence tag at slot N, value RelOff at slot N+1.
+                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                fprintf(f, "\t\tobj[int(vt[%s+2])] = 1\n", slot.c_str());
+                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+1+2]), objPos, %s)\n",
+                        slot.c_str(), varName.c_str());
+                fprintf(f, "\t}\n");
             } else {
                 fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
                 fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
@@ -696,10 +718,15 @@ private:
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
             if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
-                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant) continue;
+                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant &&
+                fd.kind != FieldKind::Optional) continue;
             auto gn = fieldGoName(fd);
             if (fd.kind == FieldKind::DynamicSize) {
                 fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
+            } else if (fd.kind == FieldKind::Optional) {
+                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
+                fprintf(f, "\t}\n");
             } else if (fd.kind == FieldKind::VectorLike) {
                 fprintf(f, "\tendOff = wire.MeasureRawOOL(endOff, m.%s)\n", gn.c_str());
             } else if (fd.kind == FieldKind::VectorOfStruct) {

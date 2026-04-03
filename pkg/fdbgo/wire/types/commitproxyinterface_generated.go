@@ -65,15 +65,26 @@ func (m *CommitProxyInterface) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *CommitProxyInterface) measureEndOff(endOff int) int {
+	if m.HasProcessId {
+		endOff = wire.MeasureBytesOOL(endOff, m.ProcessId)
+	}
 	endOff = wire.MeasureObject(endOff, CommitProxyInterfaceVTable, CommitProxyInterfaceMaxAlign)
 	return endOff
 }
 
 func (m *CommitProxyInterface) writeDirect(dw *wire.DirectWriter) int {
+	var processIdOOL int
+	if m.HasProcessId {
+		processIdOOL = dw.WriteBytesOOL(m.ProcessId)
+	}
 	objPos, obj := dw.WriteObject(CommitProxyInterfaceVTable, CommitProxyInterfaceMaxAlign)
 	vt := CommitProxyInterfaceVTable
 	if m.Provisional {
 		obj[int(vt[CommitProxyInterfaceSlotProvisional+2])] = 1
+	}
+	if m.HasProcessId {
+		obj[int(vt[CommitProxyInterfaceSlotProcessId+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitProxyInterfaceSlotProcessId+1+2]), objPos, processIdOOL)
 	}
 	return objPos
 }

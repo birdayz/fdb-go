@@ -95,11 +95,25 @@ func (m *ReadOptions) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *ReadOptions) measureEndOff(endOff int) int {
+	if m.HasLockAware {
+		endOff = wire.MeasureBytesOOL(endOff, m.LockAware)
+	}
+	if m.HasField_4 {
+		endOff = wire.MeasureBytesOOL(endOff, m.Field_4)
+	}
 	endOff = wire.MeasureObject(endOff, ReadOptionsVTable, ReadOptionsMaxAlign)
 	return endOff
 }
 
 func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
+	var lockAwareOOL int
+	if m.HasLockAware {
+		lockAwareOOL = dw.WriteBytesOOL(m.LockAware)
+	}
+	var field_4OOL int
+	if m.HasField_4 {
+		field_4OOL = dw.WriteBytesOOL(m.Field_4)
+	}
 	objPos, obj := dw.WriteObject(ReadOptionsVTable, ReadOptionsMaxAlign)
 	vt := ReadOptionsVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[ReadOptionsSlotType+2]):], uint32(m.Type))
@@ -108,6 +122,14 @@ func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
 	}
 	if m.Field_6 {
 		obj[int(vt[ReadOptionsSlotField_6+2])] = 1
+	}
+	if m.HasLockAware {
+		obj[int(vt[ReadOptionsSlotLockAware+2])] = 1
+		wire.PatchRelOff(obj, int(vt[ReadOptionsSlotLockAware+1+2]), objPos, lockAwareOOL)
+	}
+	if m.HasField_4 {
+		obj[int(vt[ReadOptionsSlotField_4+2])] = 1
+		wire.PatchRelOff(obj, int(vt[ReadOptionsSlotField_4+1+2]), objPos, field_4OOL)
 	}
 	return objPos
 }

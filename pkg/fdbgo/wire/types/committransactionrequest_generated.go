@@ -159,6 +159,15 @@ func (m *CommitTransactionRequest) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *CommitTransactionRequest) measureEndOff(endOff int) int {
+	if m.HasDebugID {
+		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
+	}
+	if m.HasCommitCostEstimation {
+		endOff = wire.MeasureBytesOOL(endOff, m.CommitCostEstimation)
+	}
+	if m.HasTagSet {
+		endOff = wire.MeasureBytesOOL(endOff, m.TagSet)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.IdempotencyId)
 	endOff = m.Transaction.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
@@ -169,6 +178,18 @@ func (m *CommitTransactionRequest) measureEndOff(endOff int) int {
 }
 
 func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
+	var debugIDOOL int
+	if m.HasDebugID {
+		debugIDOOL = dw.WriteBytesOOL(m.DebugID)
+	}
+	var commitCostEstimationOOL int
+	if m.HasCommitCostEstimation {
+		commitCostEstimationOOL = dw.WriteBytesOOL(m.CommitCostEstimation)
+	}
+	var tagSetOOL int
+	if m.HasTagSet {
+		tagSetOOL = dw.WriteBytesOOL(m.TagSet)
+	}
 	var idempotencyIdOOL int
 	if m.IdempotencyId != nil {
 		idempotencyIdOOL = dw.WriteBytesOOL(m.IdempotencyId)
@@ -180,6 +201,18 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 	objPos, obj := dw.WriteObject(CommitTransactionRequestVTable, CommitTransactionRequestMaxAlign)
 	vt := CommitTransactionRequestVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[CommitTransactionRequestSlotFlags+2]):], m.Flags)
+	if m.HasDebugID {
+		obj[int(vt[CommitTransactionRequestSlotDebugID+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotDebugID+1+2]), objPos, debugIDOOL)
+	}
+	if m.HasCommitCostEstimation {
+		obj[int(vt[CommitTransactionRequestSlotCommitCostEstimation+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotCommitCostEstimation+1+2]), objPos, commitCostEstimationOOL)
+	}
+	if m.HasTagSet {
+		obj[int(vt[CommitTransactionRequestSlotTagSet+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotTagSet+1+2]), objPos, tagSetOOL)
+	}
 	if m.IdempotencyId != nil {
 		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotIdempotencyId+2]), objPos, idempotencyIdOOL)
 	}
@@ -193,6 +226,15 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 func (m *CommitTransactionRequest) MarshalFDB() []byte {
 	t := CommitTransactionRequestTemplate
 	endOff := 0
+	if m.HasDebugID {
+		endOff = wire.MeasureBytesOOL(endOff, m.DebugID)
+	}
+	if m.HasCommitCostEstimation {
+		endOff = wire.MeasureBytesOOL(endOff, m.CommitCostEstimation)
+	}
+	if m.HasTagSet {
+		endOff = wire.MeasureBytesOOL(endOff, m.TagSet)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.IdempotencyId)
 	endOff = m.Transaction.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
