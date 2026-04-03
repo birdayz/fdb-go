@@ -19,13 +19,31 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
   - [x] Bug 3: Empty `dynamic_size` fields allocated 0 bytes instead of 4. Fixed `MeasureBytesOOL`/`MeasureRawOOL` in `writer_direct.go`.
   - [x] Bug 4: Generated nil-guards skipped fields C++ always serializes. Fixed codegen `main.cpp` — removed nil-guards on DynamicSize/VectorLike writes.
 
-  **Status: 5/10 ground truth test vectors byte-identical to C++ (minus reply token).**
-  Two-pass codegen (`precomputeSize` + `writeToBuffer` per type) is in place and correct.
+  **Status: 6/10 ground truth byte-identical layout. 4/10 wrong size.** Branch `binding-tester-conformance` (24 commits).
+
+  Ground truth table (`pkg/fdbgo/wire/types/testdata.json` from C++ ObjectWriter):
+
+  | # | Type | Go | C++ | Status |
+  |---|------|-----|-----|--------|
+  | 1 | GetKeyServerLocationsRequest_basic | 208 | 208 | **CORRECT** (13 diffs = reply token) |
+  | 2 | GetKeyServerLocationsRequest_with_end | 248 | 248 | **CORRECT** |
+  | 3 | GetKeyServerLocationsRequest_empty | 200 | 200 | **CORRECT** |
+  | 4 | GetValueRequest_basic | 248 | 248 | **CORRECT** (43 diffs = reply token + VersionVector data) |
+  | 5 | GetKeyRequest_basic | 264 | 272 | **WRONG -8** |
+  | 6 | GetKeyValuesRequest_basic | 320 | 328 | **WRONG -8** |
+  | 7 | CommitTransactionRequest_single_set | 432 | 416 | **WRONG +16** |
+  | 8 | CommitTransactionRequest_three_sets | 568 | 536 | **WRONG +32** |
+  | 9 | CommitTransactionRequest_empty | 312 | 312 | **CORRECT** |
+  | 10 | GetReadVersionRequest | 168 | 168 | **CORRECT** |
+
+  **Fixed:**
+  - [x] Bug 5: `Optional<ReadOptions>` — extractor now detects struct inner type via `optionalInnerGoType<T>()`. Emits `ReadOptions` Go type + `ReadNestedReader` unmarshal. `precomputeSize`/`writeToBuffer` recurse into nested type.
+  - [x] Bug 6 (partial): `Vector<struct>` — two-pass `precomputeSize`/`writeToBuffer` for vector elements (recursive, not self-contained blobs). Reduced +40→+16 per mutation.
 
   **Remaining (CRITICAL — blocks all pure Go client use):**
-  - [ ] Bug 5: **`Optional<ReadOptions>` classified as bytes instead of nested struct.** `GetValueRequest`/`GetKeyRequest`/`GetKeyValuesRequest` have `Optional<ReadOptions>` which C++ serializes as a nested object (own vtable + alignment). Our extractor classifies it as `Optional + []byte`. Causes -16/-8/-24 size mismatches. Fix in `extract.h` field classification — detect when the Optional inner type is a struct and emit `FieldKind::NestedStruct` with Optional wrapping.
-  - [ ] Bug 6: **`Vector<struct>` two-pass write not implemented.** `CommitTransactionRequest` with mutations is +40/+96 bytes vs C++. The `precomputeSize`/`writeToBuffer` paths have TODO stubs for `FieldKind::VectorOfStruct`. Needs implementation matching C++ `SaveVisitorLambda` vector-of-struct handling (inline element serialization, not separate `blobSize`/`writeBlob`).
-  - [ ] Bug 7 (LOW): **C++ `emptyVector` re-use optimization missing.** C++ only allocates 4 bytes for the FIRST empty `dynamic_size` field; subsequent share the same offset. We always allocate 4 per empty field. No test vector currently fails from this.
+  - [ ] Bug 7: **Vtable packing 2-byte pad.** C++ vtable region has 2 leading zero bytes before vtable data. Our packed vtables have no padding. 2-byte diff → 8-byte total after alignment. Causes -8 for GetKeyRequest and GetKeyValuesRequest. Root cause: C++ `save_with_vtables` places vtables at a `writeTo` position that may not be 2-byte aligned, producing a gap. Fix: match C++ vtable placement exactly in `MarshalFDB`.
+  - [ ] Bug 8: **Vector\<struct\> per-element overhead.** CommitTransactionRequest +16 (1 mutation) / +32 (3 mutations). ~5 bytes per vector element. Likely from element object alignment padding that C++ doesn't add, or from the vector header/reloff-array layout differing from C++. Needs step-by-step comparison of vector element serialization.
+  - [ ] Bug 9 (LOW): **C++ `emptyVector` re-use optimization missing.** No test vector currently fails from this.
 - [x] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Fixed: added loop over `rt.multiTypeIndexes` matching single-type pattern. 2 regression tests. Found 2026-03-26 via 10-agent audit.
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
 - [x] **HIGH** — Missing cross-cutting test matrix. Fixed: `index_registration_matrix_test.go` with 3×7 matrix (21 specs, 1 skipped). **Found and fixed another bug**: `DeleteRecordsWhere` fully cleared multi-type indexes instead of scoping by PK prefix. Added `hasRecordTypeKeyPrefix()` helper + scoped clear for multi-type indexes with RecordTypeKey prefix, error for multi-type without. Matches Java's `canDeleteWhereForIndexOnStoredTypes`.
