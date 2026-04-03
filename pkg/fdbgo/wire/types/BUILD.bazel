@@ -48,6 +48,7 @@ go_test(
         "bench_test.go",
         "commit_marshal_test.go",
         "key_value_vector_test.go",
+        "locations_marshal_test.go",
     ],
     embed = [":types"],
     deps = ["//pkg/fdbgo/wire"],

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 
@@ -29,6 +30,14 @@ func (tx *Transaction) commit(ctx context.Context) error {
 
 	replyToken, replyCh, cancelReply := conn.PrepareReply()
 	body := buildCommitTransactionRequest(tx, replyToken)
+
+	// DEBUG: verify file ID in footer (first 8 bytes: [rootOff][fileID])
+	if len(body) >= 8 {
+		rootOff := binary.LittleEndian.Uint32(body[0:4])
+		fid := binary.LittleEndian.Uint32(body[4:8])
+		fmt.Fprintf(os.Stderr, "COMMIT bodyLen=%d rootOff=%d fileID=0x%x first16=%x\n",
+			len(body), rootOff, fid, body[:16])
+	}
 
 	// DEBUG: round-trip validation — marshal, unmarshal, compare.
 	if os.Getenv("FDB_DEBUG_COMMIT") != "" {

@@ -156,12 +156,30 @@ read version — the C++ Transaction holds onto the read version future from
 the previous GRV, and commit waits on it. Our `postCommitReset()` clears it
 too aggressively.
 
-### Fix
+### Update: frame #92 is NOT a commit — it's GetKeyServerLocationsRequest
 
-`Commit()` must call `ensureReadVersion()` before sending, just like read
-operations do. The C++ client does this implicitly — its commit path waits
-on `readVersionFuture` which was set during the transaction's first read
-or explicitly via `getReadVersion()`.
+The crashing frame has `fileID=0x8b8968 = 9144680` which is
+`GetKeyServerLocationsRequestFileID`, not `CommitTransactionRequestFileID`.
+The endpoint suffix `0x9c` is shared between commit and location requests
+on a single-node cluster.
+
+### Update: marshal round-trips correctly but layout differs from C++
+
+Our `MarshalFDB()` → `UnmarshalFDB()` round-trip passes for ALL tested
+inputs. But FDB server crashes parsing the same bytes. This means:
+
+**Our FlatBuffers layout is self-consistent but different from C++.**
+
+The codegen (RFC 013) produces a format where our reader and writer agree,
+but it does NOT match the C++ FlatBuffers layout that FDB server expects.
+The CGo client (using `libfdb_c.so`) produces the correct C++ layout.
+
+### Root cause: codegen layout divergence
+
+The issue is in `pkg/fdbgo/wire/writer.go` / `writer_direct.go` — the
+vtable packing, object alignment, or OOL data placement differs from
+C++'s ObjectSerializer. Need byte-by-byte comparison of a simple
+`GetKeyServerLocationsRequest` between our Go output and C++ output.
 
 ## Next steps
 
