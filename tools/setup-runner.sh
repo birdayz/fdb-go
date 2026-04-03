@@ -85,6 +85,12 @@ curl -fsSLO "https://github.com/apple/foundationdb/releases/download/${FDB_VERSI
 dpkg -i "foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
 rm -f "foundationdb-clients_${FDB_VERSION}-1_amd64.deb"
 
+echo "--- Installing Go ---"
+GO_VERSION="1.26.1"
+curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar xz -C /usr/local
+ln -sf /usr/local/go/bin/go /usr/local/bin/go
+ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
 echo "--- Installing Bazelisk ---"
 curl -fsSL -o /usr/local/bin/bazelisk \
     https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
