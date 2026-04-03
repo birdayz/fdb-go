@@ -16,14 +16,20 @@ type DirectWriter struct {
 
 // WriteBytesOOL writes [len(4)][data][padding] below cursor.
 // Returns the byte position of the length prefix (target for RelativeOffset).
+// C++ flat_buffers.h:615 WriteToBuffer::visitDynamicSize
 func (dw *DirectWriter) WriteBytesOOL(data []byte) int {
-	total := 4 + len(data)
-	padded := (total + 3) &^ 3
-	start := dw.Cursor - padded
-	binary.LittleEndian.PutUint32(dw.buf[start:], uint32(len(data)))
-	copy(dw.buf[start+4:], data)
-	dw.Cursor = start
-	return start
+	size := len(data) // 0 for nil
+	// Match C++: RightAlign(current_buffer_size + size + 4, 4)
+	endOff := dw.totalSize - dw.Cursor
+	newEndOff := RightAlign(endOff+size+4, 4)
+	// The length prefix is at the highest end-offset, data below it.
+	// C++: write(&size, start, 4) where start = RightAlign(cbs + size + 4, 4)
+	// Then data at start - 4, then start - 4 - size.
+	lenPos := dw.totalSize - newEndOff // abs position of length prefix
+	binary.LittleEndian.PutUint32(dw.buf[lenPos:], uint32(size))
+	copy(dw.buf[lenPos+4:], data)
+	dw.Cursor = lenPos
+	return lenPos
 }
 
 // WriteRawOOL writes [data][padding] below cursor (no length prefix).
