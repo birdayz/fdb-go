@@ -34,7 +34,6 @@ go_library(
 go_test(
     name = "chaos_test",
     size = "large",
-    timeout = "eternal",
     srcs = [
         "chaos_bitmap_test.go",
         "chaos_covering_test.go",

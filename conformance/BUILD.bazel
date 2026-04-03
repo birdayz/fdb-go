@@ -40,7 +40,6 @@ java_binary(
 go_test(
     name = "conformance_test",
     size = "large",
-    timeout = "eternal",
     srcs = [
         "aggregate_conformance_test.go",
         "bitmap_value_index_conformance_test.go",
