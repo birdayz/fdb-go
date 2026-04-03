@@ -28,6 +28,10 @@ runcmd:
   - ln -sf /usr/local/go/bin/go /usr/local/bin/go
   - ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
+  # Buf (protobuf codegen)
+  - curl -fsSL -o /usr/local/bin/buf https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64
+  - chmod +x /usr/local/bin/buf
+
   # Bazelisk
   - curl -fsSL -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
   - chmod +x /usr/local/bin/bazelisk

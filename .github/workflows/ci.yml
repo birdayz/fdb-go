@@ -26,6 +26,14 @@ jobs:
             exit 1
           fi
 
+      - name: Check generated protobuf code is up to date
+        run: |
+          buf generate
+          if ! git diff --exit-code -- 'gen/'; then
+            echo "Generated protobuf code is out of date. Run 'just generate' and commit."
+            exit 1
+          fi
+
       - name: Check Gazelle BUILD files are up to date
         run: |
           bazelisk run //:gazelle
