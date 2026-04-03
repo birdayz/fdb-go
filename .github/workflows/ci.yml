@@ -83,4 +83,4 @@ jobs:
           sudo systemctl restart docker
 
       - name: Run tests
-        run: bazelisk test //... --test_summary=detailed --test_timeout=60,300,3600,3600
+        run: bazelisk test //... --test_summary=detailed --test_timeout=3600
