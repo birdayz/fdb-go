@@ -185,24 +185,32 @@ them in forward serialization order. Fixed in main.cpp `emitMeasureEndOff`,
 FieldKind::Optional was not handled in measureEndOff, writeDirect, or
 MarshalFDB emit paths. Fixed: presence tag + WriteBytesOOL for value.
 
-**Bug 3 (INVESTIGATING):** VTable packing size mismatch.
-Our `VTableSet.pack()` in `writer.go` produces 50 bytes for a 5-vtable
-closure, C++ produces 52 bytes. The 2-byte difference + 8-byte alignment
-causes an 8-byte total size mismatch. This is in the **generic runtime
-code**, not per-type codegen.
+**Bug 3 (TODO):** Empty dynamic_size fields not serialized.
+C++ `PrecomputeSize::visitDynamicSize` allocates 4 bytes for empty
+fields (the empty vector sentinel). Our `MeasureBytesOOL(endOff, nil)`
+returns `endOff` unchanged (0 bytes). Additionally, C++ has an
+`emptyVector` optimization: only the FIRST empty vector allocates 4
+bytes, subsequent ones re-use the same offset.
+Fix: port C++ empty vector sentinel logic to `writer_direct.go`.
 
-C++ uses `packed_tables` from `VTableSet::pack()` in flat_buffers.h.
-Our Go `vTableSet.pack()` concatenates vtable entries without padding.
-C++ likely adds per-vtable alignment padding.
+**Bug 4 (TODO):** Generated nil-guards skip fields that C++ serializes.
+Our codegen emits `if m.Field != nil { ... }` guards that skip empty
+DynamicSize/VectorLike fields. C++ `serializer(ar, ...)` visits EVERY
+field regardless of whether it's empty. This means our vtable offsets
+for empty fields are 0 (field not present) while C++ has non-zero
+offsets pointing to the empty vector sentinel.
+Fix: generated code must always serialize every field, matching C++.
+The nil-guard should only suppress the OOL data, not the reloff.
 
-Options:
-1. Fix our Go `VTableSet.pack()` to match C++ packing algorithm
-2. Have the C++ extractor emit pre-packed vtable bytes as constants
-   (eliminates Go reimplementation of C++ vtable packing entirely)
+**Bug 5 (TODO):** CommitTransactionRequest Go output is LARGER than C++
+(+40/+88 bytes). Likely a Vector<struct> blob sizing issue — our
+`blobSize()`/`writeBlob()` may produce different padding than C++.
+Need to compare vector-of-struct serialization against C++ step by step.
 
-**Bug 4 (INVESTIGATING):** CommitTransactionRequest Go output is LARGER
-than C++ (+40/+88 bytes). This may be a Vector<struct> blob sizing issue
-where our `blobSize()`/`writeBlob()` produces different padding than C++.
+**Bug 6 (TODO — vtable packing):** VTableSet.pack() produces 50 bytes
+for a 5-vtable closure, C++ produces 52 bytes. 2-byte padding difference.
+Low priority since it only affects total buffer size, not field layout.
+May self-resolve when bugs 3-4 are fixed (different content changes alignment).
 
 ### Ground truth test infrastructure
 

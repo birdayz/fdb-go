@@ -44,12 +44,11 @@ func (dw *DirectWriter) WriteObject(vt VTable, maxAlign int) (int, []byte) {
 		maxAlign = 4
 	}
 	objSize := int(vt[1])
-	bodySize := objSize - 4
 
-	// Compute in end-offset space: rightAlign is not distributive over addition
-	// when alignment > 4, so we can't just subtract from cursor.
+	// C++ flat_buffers.h: nested objects just do current_buffer_size += vtable[1].
+	// No alignment. Alignment only happens for the root (always to 8, in MarshalFDB).
 	endOff := dw.totalSize - dw.Cursor
-	newEndOff := rightAlign(endOff+bodySize, maxAlign) + 4
+	newEndOff := endOff + objSize
 	objPos := dw.totalSize - newEndOff
 
 	obj := dw.buf[objPos : objPos+objSize]
@@ -122,13 +121,13 @@ func MeasureRawOOL(endOff int, data []byte) int {
 	return endOff + (len(data)+3)&^3
 }
 
-// MeasureObject returns the end-offset after adding an object.
-func MeasureObject(endOff int, vt VTable, maxAlign int) int {
-	if maxAlign < 4 {
-		maxAlign = 4
-	}
-	bodySize := int(vt[1]) - 4
-	return rightAlign(endOff+bodySize, maxAlign) + 4
+// MeasureObject returns the end-offset after adding a nested object.
+// C++ flat_buffers.h: nested objects just do current_buffer_size += vtable[1].
+// No alignment for nested objects — alignment only happens at the root
+// (always to 8, in MarshalFDB). The maxAlign parameter is unused but
+// kept for API compatibility.
+func MeasureObject(endOff int, vt VTable, _ int) int {
+	return endOff + int(vt[1])
 }
 
 // Init initializes a stack-allocated DirectWriter.
