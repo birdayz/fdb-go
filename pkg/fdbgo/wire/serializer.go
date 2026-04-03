@@ -283,3 +283,7 @@ func SaveWithVTables(ps *PrecomputeSize, packedVTables []byte,
 
 	return buf
 }
+
+// FakeRootVTable is the vtable for the FakeRoot wrapper object.
+// C++ uses fake_root<T> with vtable {6, 8, 4} — always the same.
+var FakeRootVTable = VTable{6, 8, 4}

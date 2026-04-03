@@ -110,24 +110,57 @@ func (m *NetworkAddress) writeDirect(dw *wire.DirectWriter) int {
 
 func (m *NetworkAddress) MarshalFDB() []byte {
 	t := NetworkAddressTemplate
-	endOff := 0
-	endOff = m.Ip.measureEndOff(endOff)
-	bodySize := int(NetworkAddressVTable[1]) - 4
-	msgObjEnd := ((endOff + bodySize + 4 - 1) &^ (4 - 1)) + 4
-	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4
-	vtableSize := t.PackedVTablesLen()
-	vtableEnd := fakeRootEnd + vtableSize
-	totalSize := (vtableEnd + 8 + 7) &^ 7
-	vtablePos := totalSize - vtableEnd
-	fakeRootPos := totalSize - fakeRootEnd
-	msgObjPos := totalSize - msgObjEnd
-	_ = msgObjPos
+	packedVT := t.PackedVTables()
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	{ n := ps.GetMessageWriter(int(IPAddressVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(IPAddressVTable[1])-4, IPAddressMaxAlign)+4) }
+	{ n := ps.GetMessageWriter(int(NetworkAddressVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressVTable[1])-4, 4)+4) }
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	totalSize := ps.CurrentBufferSize
 	buf := make([]byte, totalSize)
-	var dw wire.DirectWriter
-	dw.Init(buf, totalSize, vtablePos, t)
-	m.writeDirect(&dw)
-	t.WriteFakeRoot(buf, fakeRootPos, vtablePos, msgObjPos)
-	t.WriteVTablesAndFooter(buf, vtablePos, fakeRootPos)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	ipW := wb.GetMessageWriter(int(IPAddressVTable[1]), true)
+	ipStart := ipW.FinalLocation
+	{
+		soff := int32(vtableStart - t.VTableOffset(IPAddressVTable) - ipStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		ipW.WriteScalar(b[:], 0)
+	}
+	ipW.WriteToAt(ipStart)
+	rootW := wb.GetMessageWriter(int(NetworkAddressVTable[1]), true)
+	rootStart := rootW.FinalLocation
+	{
+		soff := int32(vtableStart - t.VTableOffset(NetworkAddressVTable) - rootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		rootW.WriteScalar(b[:], 0)
+	}
+	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.Port)); rootW.WriteScalar(b[:], int(NetworkAddressVTable[NetworkAddressSlotPort+2])) }
+	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.Flags)); rootW.WriteScalar(b[:], int(NetworkAddressVTable[NetworkAddressSlotFlags+2])) }
+	if m.FromHostname { rootW.WriteScalar([]byte{1}, int(NetworkAddressVTable[NetworkAddressSlotFromHostname+2])) }
+	rootW.WriteRelativeOffset(ipStart, int(NetworkAddressVTable[NetworkAddressSlotIp+2]))
+	rootW.WriteToAt(rootStart)
+	fakeRootW := wb.GetMessageWriter(8, true)
+	fakeRootStart := fakeRootW.FinalLocation
+	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
+	fakeRootW.WriteToAt(fakeRootStart)
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(fakeRootStart, 0)
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], NetworkAddressFileID); footerW.WriteScalar(b[:], 4) }
+	footerW.WriteToAt(wb.CurrentBufferSize)
 	return buf
 }
 

@@ -22,6 +22,8 @@ struct GoEmitterV5 {
         bool needsBinary = false;
         bool needsMath = false;
         bool isTopLevel = (fileId > 0 && !closure.empty());
+        // Two-pass MarshalFDB always uses binary for scalar writes + soffsets.
+        if (isTopLevel) needsBinary = true;
 
         for (auto& fd : fields) {
             if (fd.kind == FieldKind::Scalar && fd.scalar.goType) {
@@ -704,79 +706,227 @@ private:
 
     // ---- MarshalFDB — two-pass direct-write (top-level only) ----
 
+    // ---- MarshalFDB — two-pass: PrecomputeSize + WriteToBuffer ----
+    // Matches C++ detail::save (flat_buffers.h:1311) + save_with_vtables (flat_buffers.h:804).
+    //
+    // Pass 1 (PrecomputeSize): walk all fields, compute buffer size + record positions.
+    // Pass 2 (WriteToBuffer): walk fields AGAIN in same order, write bytes at recorded positions.
+
     void emitMarshalFDB(const char* typeName, const std::vector<FieldDesc>& fields, int maxAlign) {
         fprintf(f, "func (m *%s) MarshalFDB() []byte {\n", typeName);
         fprintf(f, "\tt := %sTemplate\n", typeName);
+        fprintf(f, "\tpackedVT := t.PackedVTables()\n");
 
-        // Pass 1: content-only measure (same as measureEndOff but WITHOUT final MeasureObject).
-        fprintf(f, "\tendOff := 0\n");
-
-        // OOL field measures.
+        // Collect field groups for ordered emission (same as writeDirect).
+        std::vector<const FieldDesc*> oolFields;
+        std::vector<const FieldDesc*> nestedFields;
+        std::vector<const FieldDesc*> scalarFields;
         for (auto& fd : fields) {
             if (fd.size == 0) continue;
-            if (fd.kind != FieldKind::DynamicSize && fd.kind != FieldKind::VectorLike &&
-                fd.kind != FieldKind::VectorOfStruct && fd.kind != FieldKind::Variant &&
-                fd.kind != FieldKind::Optional) continue;
-            auto gn = fieldGoName(fd);
-            if (fd.kind == FieldKind::DynamicSize) {
-                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-            } else if (fd.kind == FieldKind::Optional) {
-                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
-                fprintf(f, "\t\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-                fprintf(f, "\t}\n");
-            } else if (fd.kind == FieldKind::VectorLike) {
-                // C++ visitDynamicSize: all dynamic types use [len(4)][data][pad].
-                fprintf(f, "\tendOff = wire.MeasureBytesOOL(endOff, m.%s)\n", gn.c_str());
-            } else if (fd.kind == FieldKind::VectorOfStruct) {
+            switch (fd.kind) {
+            case FieldKind::DynamicSize:
+            case FieldKind::VectorLike:
+            case FieldKind::VectorOfStruct:
+            case FieldKind::Optional:
+                oolFields.push_back(&fd);
+                break;
+            case FieldKind::NestedStruct:
+                if (fd.nestedGoType && fd.nestedGoType[0])
+                    nestedFields.push_back(&fd);
+                break;
+            case FieldKind::Scalar:
+                scalarFields.push_back(&fd);
+                break;
+            case FieldKind::Variant:
+                oolFields.push_back(&fd);
+                break;
+            default: break;
+            }
+        }
+
+        // ====== Pass 1: PrecomputeSize ======
+        fprintf(f, "\tps := wire.NewPrecomputeSize()\n");
+        fprintf(f, "\tvtNoop := ps.GetMessageWriter(len(packedVT))\n");
+
+        // OOL fields
+        for (auto* fdp : oolFields) {
+            auto gn = fieldGoName(*fdp);
+            if (fdp->kind == FieldKind::DynamicSize || fdp->kind == FieldKind::VectorLike) {
+                fprintf(f, "\tps.VisitDynamicSize(len(m.%s))\n", gn.c_str());
+            } else if (fdp->kind == FieldKind::Optional) {
+                fprintf(f, "\tif m.Has%s { ps.VisitDynamicSize(len(m.%s)) }\n", gn.c_str(), gn.c_str());
+            } else if (fdp->kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
                 fprintf(f, "\t\tvecSize := 4 + len(m.%s)*4\n", gn.c_str());
                 fprintf(f, "\t\tfor _, elem := range m.%s {\n", gn.c_str());
                 fprintf(f, "\t\t\tvecSize = (vecSize + 3) &^ 3\n");
                 fprintf(f, "\t\t\tvecSize += elem.blobSize()\n");
                 fprintf(f, "\t\t}\n");
-                fprintf(f, "\t\tendOff += (vecSize + 3) &^ 3\n");
-                fprintf(f, "\t}\n");
-            } else { // Variant
-                fprintf(f, "\tswitch m.%sTag {\n", gn.c_str());
-                for (size_t a = 0; a < fd.variantAlts.size(); a++) {
-                    auto& alt = fd.variantAlts[a];
-                    fprintf(f, "\tcase %zu:\n", a + 1);
-                    if (alt.kind == FieldKind::Scalar)
-                        fprintf(f, "\t\tendOff += (%d + 3) &^ 3\n", alt.size);
-                    else
-                        fprintf(f, "\t\tendOff += (len(m.%sAlt%zu) + 3) &^ 3\n", gn.c_str(), a);
-                }
+                fprintf(f, "\t\tvn := ps.GetMessageWriter((vecSize + 3) &^ 3)\n");
+                fprintf(f, "\t\tvn.WriteTo(ps)\n");
                 fprintf(f, "\t}\n");
             }
         }
 
-        // Nested struct measures in FORWARD serialization order.
-        for (auto& fd : fields) {
-            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0]) {
-                auto gn = fieldGoName(fd);
-                fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
-            }
+        // Nested structs: each gets GetMessageWriter + align + WriteToAt
+        for (auto* fdp : nestedFields) {
+            auto gn = fieldGoName(*fdp);
+            fprintf(f, "\t{ n := ps.GetMessageWriter(int(%sVTable[1])); ", fdp->nestedGoType);
+            fprintf(f, "n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(%sVTable[1])-4, %sMaxAlign)+4) }\n",
+                    fdp->nestedGoType, fdp->nestedGoType);
         }
 
-        // Layout calculation.
-        fprintf(f, "\tbodySize := int(%sVTable[1]) - 4\n", typeName);
-        fprintf(f, "\tmsgObjEnd := ((endOff + bodySize + %d - 1) &^ (%d - 1)) + 4\n", maxAlign, maxAlign);
-        fprintf(f, "\tfakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4\n");
-        fprintf(f, "\tvtableSize := t.PackedVTablesLen()\n");
-        fprintf(f, "\tvtableEnd := fakeRootEnd + vtableSize\n");
-        fprintf(f, "\ttotalSize := (vtableEnd + 8 + 7) &^ 7\n");
-        fprintf(f, "\tvtablePos := totalSize - vtableEnd\n");
-        fprintf(f, "\tfakeRootPos := totalSize - fakeRootEnd\n");
-        fprintf(f, "\tmsgObjPos := totalSize - msgObjEnd\n");
-        fprintf(f, "\t_ = msgObjPos\n");
+        // Root object
+        fprintf(f, "\t{ n := ps.GetMessageWriter(int(%sVTable[1])); ", typeName);
+        fprintf(f, "n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(%sVTable[1])-4, %d)+4) }\n",
+                typeName, std::max(4, maxAlign));
 
-        // Allocate and write.
+        // FakeRoot object (objSize=8, maxAlign=4)
+        fprintf(f, "\t{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }\n");
+
+        // vtable_writer.writeTo + footer
+        fprintf(f, "\tvtNoop.WriteTo(ps)\n");
+        fprintf(f, "\tvtableStart := ps.CurrentBufferSize\n");
+        fprintf(f, "\t{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }\n");
+        fprintf(f, "\ttotalSize := ps.CurrentBufferSize\n");
+
+        // ====== Pass 2: WriteToBuffer ======
         fprintf(f, "\tbuf := make([]byte, totalSize)\n");
-        fprintf(f, "\tvar dw wire.DirectWriter\n");
-        fprintf(f, "\tdw.Init(buf, totalSize, vtablePos, t)\n");
-        fprintf(f, "\tm.writeDirect(&dw)\n");
-        fprintf(f, "\tt.WriteFakeRoot(buf, fakeRootPos, vtablePos, msgObjPos)\n");
-        fprintf(f, "\tt.WriteVTablesAndFooter(buf, vtablePos, fakeRootPos)\n");
+        fprintf(f, "\twb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)\n");
+
+        // vtable writer
+        fprintf(f, "\tvtW := wb.GetMessageWriter(len(packedVT), false)\n");
+        fprintf(f, "\tvtW.WriteScalar(packedVT, 0)\n");
+
+        // OOL fields — same order as Pass 1
+        for (auto* fdp : oolFields) {
+            auto gn = fieldGoName(*fdp);
+            auto varName = safeParam(gn) + "Off";
+            if (fdp->kind == FieldKind::DynamicSize || fdp->kind == FieldKind::VectorLike) {
+                fprintf(f, "\t%s, _ := wb.VisitDynamicSize(m.%s)\n", varName.c_str(), gn.c_str());
+            } else if (fdp->kind == FieldKind::Optional) {
+                fprintf(f, "\tvar %s int\n", varName.c_str());
+                fprintf(f, "\tif m.Has%s { %s, _ = wb.VisitDynamicSize(m.%s) }\n",
+                        gn.c_str(), varName.c_str(), gn.c_str());
+            } else if (fdp->kind == FieldKind::VectorOfStruct) {
+                fprintf(f, "\tvar %s int\n", varName.c_str());
+                fprintf(f, "\t// TODO: vector-of-struct write pass for %s\n", gn.c_str());
+            }
+        }
+
+        // Nested structs — GetMessageWriter (zeroed), write soffset, WriteToAt
+        for (auto* fdp : nestedFields) {
+            auto gn = fieldGoName(*fdp);
+            auto wName = safeParam(gn) + "W";
+            auto startName = safeParam(gn) + "Start";
+            fprintf(f, "\t%s := wb.GetMessageWriter(int(%sVTable[1]), true)\n", wName.c_str(), fdp->nestedGoType);
+            // soffset: vtableStart - vtableOffset - objectStart
+            fprintf(f, "\t%s := %s.FinalLocation\n", startName.c_str(), wName.c_str());
+            fprintf(f, "\t{\n");
+            fprintf(f, "\t\tsoff := int32(vtableStart - t.VTableOffset(%sVTable) - %s)\n", fdp->nestedGoType, startName.c_str());
+            fprintf(f, "\t\tvar b [4]byte\n");
+            fprintf(f, "\t\tbinary.LittleEndian.PutUint32(b[:], uint32(soff))\n");
+            fprintf(f, "\t\t%s.WriteScalar(b[:], 0)\n", wName.c_str());
+            fprintf(f, "\t}\n");
+            // TODO: write nested object's own scalar/reloff fields
+            // For now nested objects only write soffset (fields stay zeroed).
+            fprintf(f, "\t%s.WriteToAt(%s)\n", wName.c_str(), startName.c_str());
+        }
+
+        // Root object
+        fprintf(f, "\trootW := wb.GetMessageWriter(int(%sVTable[1]), true)\n", typeName);
+        fprintf(f, "\trootStart := rootW.FinalLocation\n");
+
+        // Root soffset
+        fprintf(f, "\t{\n");
+        fprintf(f, "\t\tsoff := int32(vtableStart - t.VTableOffset(%sVTable) - rootStart)\n", typeName);
+        fprintf(f, "\t\tvar b [4]byte\n");
+        fprintf(f, "\t\tbinary.LittleEndian.PutUint32(b[:], uint32(soff))\n");
+        fprintf(f, "\t\trootW.WriteScalar(b[:], 0)\n");
+        fprintf(f, "\t}\n");
+
+        // Root scalars
+        for (auto* fdp : scalarFields) {
+            auto gn = fieldGoName(*fdp);
+            auto slot = std::string(typeName) + "Slot" + gn;
+            const char* goType = fdp->scalar.goType;
+            int off = 0; // vtable[slot+2] gives the field offset
+
+            if (strcmp(goType, "bool") == 0) {
+                fprintf(f, "\tif m.%s { rootW.WriteScalar([]byte{1}, int(%sVTable[%s+2])) }\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "uint8") == 0 || strcmp(goType, "int8") == 0) {
+                fprintf(f, "\trootW.WriteScalar([]byte{byte(m.%s)}, int(%sVTable[%s+2]))\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "[16]byte") == 0) {
+                fprintf(f, "\trootW.WriteScalar(m.%s[:], int(%sVTable[%s+2]))\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "uint32") == 0 || strcmp(goType, "int32") == 0) {
+                fprintf(f, "\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.%s)); rootW.WriteScalar(b[:], int(%sVTable[%s+2])) }\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "uint64") == 0 || strcmp(goType, "int64") == 0) {
+                fprintf(f, "\t{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.%s)); rootW.WriteScalar(b[:], int(%sVTable[%s+2])) }\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "uint16") == 0 || strcmp(goType, "int16") == 0) {
+                fprintf(f, "\t{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.%s)); rootW.WriteScalar(b[:], int(%sVTable[%s+2])) }\n",
+                        gn.c_str(), typeName, slot.c_str());
+            } else if (strcmp(goType, "float64") == 0) {
+                fprintf(f, "\t{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], math.Float64bits(m.%s)); rootW.WriteScalar(b[:], int(%sVTable[%s+2])) }\n",
+                        gn.c_str(), typeName, slot.c_str());
+            }
+        }
+
+        // Root OOL RelativeOffsets
+        for (auto* fdp : oolFields) {
+            auto gn = fieldGoName(*fdp);
+            auto slot = std::string(typeName) + "Slot" + gn;
+            auto offVar = safeParam(gn) + "Off";
+            if (fdp->kind == FieldKind::DynamicSize || fdp->kind == FieldKind::VectorLike) {
+                fprintf(f, "\trootW.WriteRelativeOffset(%s, int(%sVTable[%s+2]))\n",
+                        offVar.c_str(), typeName, slot.c_str());
+            } else if (fdp->kind == FieldKind::Optional) {
+                fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                fprintf(f, "\t\trootW.WriteScalar([]byte{1}, int(%sVTable[%s+2]))\n", typeName, slot.c_str());
+                fprintf(f, "\t\trootW.WriteRelativeOffset(%s, int(%sVTable[%s+1+2]))\n",
+                        offVar.c_str(), typeName, slot.c_str());
+                fprintf(f, "\t}\n");
+            } else if (fdp->kind == FieldKind::VectorOfStruct) {
+                fprintf(f, "\t// TODO: vector-of-struct reloff for %s\n", gn.c_str());
+            }
+        }
+
+        // Root nested RelativeOffsets
+        for (auto* fdp : nestedFields) {
+            auto gn = fieldGoName(*fdp);
+            auto slot = std::string(typeName) + "Slot" + gn;
+            auto startName = safeParam(gn) + "Start";
+            fprintf(f, "\trootW.WriteRelativeOffset(%s, int(%sVTable[%s+2]))\n",
+                    startName.c_str(), typeName, slot.c_str());
+        }
+
+        fprintf(f, "\trootW.WriteToAt(rootStart)\n");
+
+        // FakeRoot object
+        fprintf(f, "\tfakeRootW := wb.GetMessageWriter(8, true)\n");
+        fprintf(f, "\tfakeRootStart := fakeRootW.FinalLocation\n");
+        fprintf(f, "\tfakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))\n");
+        fprintf(f, "\t{\n");
+        fprintf(f, "\t\tsoff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)\n");
+        fprintf(f, "\t\tvar b [4]byte\n");
+        fprintf(f, "\t\tbinary.LittleEndian.PutUint32(b[:], uint32(soff))\n");
+        fprintf(f, "\t\tfakeRootW.WriteScalar(b[:], 0)\n");
+        fprintf(f, "\t}\n");
+        fprintf(f, "\tfakeRootW.WriteToAt(fakeRootStart)\n");
+
+        // vtable_writer.writeTo
+        fprintf(f, "\tvtW.WriteTo()\n");
+
+        // Footer
+        fprintf(f, "\tfooterW := wb.GetMessageWriter(8, false)\n");
+        fprintf(f, "\tfooterW.WriteRelativeOffset(fakeRootStart, 0)\n");
+        fprintf(f, "\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], %sFileID); footerW.WriteScalar(b[:], 4) }\n", typeName);
+        fprintf(f, "\tfooterW.WriteToAt(wb.CurrentBufferSize)\n");
+
         fprintf(f, "\treturn buf\n");
         fprintf(f, "}\n\n");
     }
