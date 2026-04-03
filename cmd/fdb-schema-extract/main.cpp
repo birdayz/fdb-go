@@ -1042,14 +1042,34 @@ void extractType(const char* outDir, const char* name) {
         else
             msg.serialize(collector);
 
-        // Get authoritative vtable from ObjectWriter (when possible).
+        // Get authoritative vtable closure from C++ get_vtableset (flat_buffers.h:796).
+        // This traverses the FULL TYPE TREE via InsertVTableLambda, collecting vtables
+        // for ALL reachable types including absent Optional inner types.
+        // Previously we extracted from serialized bytes which MISSED absent Optionals.
         std::vector<std::vector<uint16_t>> closure;
         std::vector<uint16_t> rootVTable;
         if constexpr (!SkipObjectWriter && requires { T::file_identifier; }) {
+            // Use get_vtableset for the complete vtable closure.
+            struct MinimalContext {
+                MinimalContext& context() { return *this; }
+                ProtocolVersion protocolVersion() const { return currentProtocolVersion(); }
+                void addArena(Arena&) {}
+            };
+            MinimalContext ctx;
+            auto root = detail::fake_root(msg);
+            const auto* vts = detail::get_vtableset(root, ctx);
+
+            // Convert VTableSet to our closure format.
+            for (auto& [vt, off] : vts->offsets) {
+                std::vector<uint16_t> entries(vt->begin(), vt->end());
+                closure.push_back(entries);
+            }
+
+            // Root vtable from the same set (the vtable with the most entries
+            // is typically the root, but we can also extract from serialized bytes).
             ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
             wr.serialize(T::file_identifier, msg);
             auto bytes = wr.toStringRef();
-            closure = extractVTableClosure(bytes.begin(), bytes.size());
             rootVTable = extractMessageVTable(bytes.begin(), bytes.size());
         }
         auto& vt = rootVTable.empty() ? collector.vtable : rootVTable;
