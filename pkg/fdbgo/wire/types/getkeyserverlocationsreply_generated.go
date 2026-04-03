@@ -131,54 +131,67 @@ func (m *GetKeyServerLocationsReply) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
-	t := GetKeyServerLocationsReplyTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *GetKeyServerLocationsReply) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Results))
 	ps.VisitDynamicSize(len(m.ResultsTssMapping))
 	ps.VisitDynamicSize(len(m.ResultsTagMapping))
 	{ n := ps.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyServerLocationsReplyVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *GetKeyServerLocationsReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	resultsOff, _ := wb.VisitDynamicSize(m.Results)
+	resultsTssMappingOff, _ := wb.VisitDynamicSize(m.ResultsTssMapping)
+	resultsTagMappingOff, _ := wb.VisitDynamicSize(m.ResultsTagMapping)
+	selfW := wb.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := GetKeyServerLocationsReplyVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyServerLocationsReplyVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteRelativeOffset(resultsOff, int(vt[GetKeyServerLocationsReplySlotResults+2]))
+	selfW.WriteRelativeOffset(resultsTssMappingOff, int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]))
+	selfW.WriteRelativeOffset(resultsTagMappingOff, int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
+	t := GetKeyServerLocationsReplyTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
 	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
 	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
 	buf := make([]byte, totalSize)
 	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
 	vtW := wb.GetMessageWriter(len(packedVT), false)
 	vtW.WriteScalar(packedVT, 0)
-	resultsOff, _ := wb.VisitDynamicSize(m.Results)
-	resultsTssMappingOff, _ := wb.VisitDynamicSize(m.ResultsTssMapping)
-	resultsTagMappingOff, _ := wb.VisitDynamicSize(m.ResultsTagMapping)
-	rootW := wb.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(GetKeyServerLocationsReplyVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	rootW.WriteRelativeOffset(resultsOff, int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResults+2]))
-	rootW.WriteRelativeOffset(resultsTssMappingOff, int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTssMapping+2]))
-	rootW.WriteRelativeOffset(resultsTagMappingOff, int(GetKeyServerLocationsReplyVTable[GetKeyServerLocationsReplySlotResultsTagMapping+2]))
-	rootW.WriteToAt(rootStart)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyServerLocationsReplyFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

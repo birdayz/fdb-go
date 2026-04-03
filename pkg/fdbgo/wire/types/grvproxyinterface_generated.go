@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	GrvProxyInterfaceSlotProcessId = 0
@@ -87,6 +91,33 @@ func (m *GrvProxyInterface) writeDirect(dw *wire.DirectWriter) int {
 		wire.PatchRelOff(obj, int(vt[GrvProxyInterfaceSlotProcessId+1+2]), objPos, processIdOOL)
 	}
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *GrvProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasProcessId { ps.VisitDynamicSize(len(m.ProcessId)) }
+	{ n := ps.GetMessageWriter(int(GrvProxyInterfaceVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GrvProxyInterfaceVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *GrvProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var processIdOff int
+	if m.HasProcessId { processIdOff, _ = wb.VisitDynamicSize(m.ProcessId) }
+	selfW := wb.GetMessageWriter(int(GrvProxyInterfaceVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := GrvProxyInterfaceVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GrvProxyInterfaceVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	if m.Provisional { selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProvisional+2])) }
+	if m.HasProcessId {
+		selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProcessId+2]))
+		selfW.WriteRelativeOffset(processIdOff, int(vt[GrvProxyInterfaceSlotProcessId+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.

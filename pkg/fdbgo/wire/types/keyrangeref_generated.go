@@ -92,6 +92,31 @@ func (m *KeyRangeRef) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *KeyRangeRef) precomputeSize(ps *wire.PrecomputeSize) int {
+	ps.VisitDynamicSize(len(m.Begin))
+	ps.VisitDynamicSize(len(m.End))
+	{ n := ps.GetMessageWriter(int(KeyRangeRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeyRangeRefVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	beginOff, _ := wb.VisitDynamicSize(m.Begin)
+	endOff, _ := wb.VisitDynamicSize(m.End)
+	selfW := wb.GetMessageWriter(int(KeyRangeRefVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := KeyRangeRefVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(KeyRangeRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotBegin+2]))
+	selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotEnd+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
 func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
 	count, err := r.ReadVectorCount(slot)

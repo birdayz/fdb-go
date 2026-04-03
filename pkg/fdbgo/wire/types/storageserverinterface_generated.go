@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	StorageServerInterfaceSlotWatchValue = 0
@@ -99,6 +103,34 @@ func (m *StorageServerInterface) writeDirect(dw *wire.DirectWriter) int {
 		wire.PatchRelOff(obj, int(vt[StorageServerInterfaceSlotField_3+1+2]), objPos, field_3OOL)
 	}
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *StorageServerInterface) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasField_3 { ps.VisitDynamicSize(len(m.Field_3)) }
+	{ n := ps.GetMessageWriter(int(StorageServerInterfaceVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(StorageServerInterfaceVTable[1])-4, 8)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *StorageServerInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var field_3Off int
+	if m.HasField_3 { field_3Off, _ = wb.VisitDynamicSize(m.Field_3) }
+	selfW := wb.GetMessageWriter(int(StorageServerInterfaceVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := StorageServerInterfaceVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(StorageServerInterfaceVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteScalar(m.WatchValue[:], int(vt[StorageServerInterfaceSlotWatchValue+2]))
+	if m.Field_5 { selfW.WriteScalar([]byte{1}, int(vt[StorageServerInterfaceSlotField_5+2])) }
+	if m.HasField_3 {
+		selfW.WriteScalar([]byte{1}, int(vt[StorageServerInterfaceSlotField_3+2]))
+		selfW.WriteRelativeOffset(field_3Off, int(vt[StorageServerInterfaceSlotField_3+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface.

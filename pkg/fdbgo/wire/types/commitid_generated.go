@@ -128,61 +128,74 @@ func (m *CommitID) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *CommitID) MarshalFDB() []byte {
-	t := CommitIDTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *CommitID) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasMetadataVersion { ps.VisitDynamicSize(len(m.MetadataVersion)) }
 	if m.HasConflictingKRIndices { ps.VisitDynamicSize(len(m.ConflictingKRIndices)) }
 	{ n := ps.GetMessageWriter(int(CommitIDVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitIDVTable[1])-4, 8)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *CommitID) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var metadataVersionOff int
+	if m.HasMetadataVersion { metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion) }
+	var conflictingKRIndicesOff int
+	if m.HasConflictingKRIndices { conflictingKRIndicesOff, _ = wb.VisitDynamicSize(m.ConflictingKRIndices) }
+	selfW := wb.GetMessageWriter(int(CommitIDVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := CommitIDVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitIDVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[CommitIDSlotVersion+2])) }
+	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.TxnBatchId)); selfW.WriteScalar(b[:], int(vt[CommitIDSlotTxnBatchId+2])) }
+	if m.HasMetadataVersion {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitIDSlotMetadataVersion+2]))
+		selfW.WriteRelativeOffset(metadataVersionOff, int(vt[CommitIDSlotMetadataVersion+1+2]))
+	}
+	if m.HasConflictingKRIndices {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitIDSlotConflictingKRIndices+2]))
+		selfW.WriteRelativeOffset(conflictingKRIndicesOff, int(vt[CommitIDSlotConflictingKRIndices+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *CommitID) MarshalFDB() []byte {
+	t := CommitIDTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
 	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
 	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
 	buf := make([]byte, totalSize)
 	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
 	vtW := wb.GetMessageWriter(len(packedVT), false)
 	vtW.WriteScalar(packedVT, 0)
-	var metadataVersionOff int
-	if m.HasMetadataVersion { metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion) }
-	var conflictingKRIndicesOff int
-	if m.HasConflictingKRIndices { conflictingKRIndicesOff, _ = wb.VisitDynamicSize(m.ConflictingKRIndices) }
-	rootW := wb.GetMessageWriter(int(CommitIDVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(CommitIDVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); rootW.WriteScalar(b[:], int(CommitIDVTable[CommitIDSlotVersion+2])) }
-	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.TxnBatchId)); rootW.WriteScalar(b[:], int(CommitIDVTable[CommitIDSlotTxnBatchId+2])) }
-	if m.HasMetadataVersion {
-		rootW.WriteScalar([]byte{1}, int(CommitIDVTable[CommitIDSlotMetadataVersion+2]))
-		rootW.WriteRelativeOffset(metadataVersionOff, int(CommitIDVTable[CommitIDSlotMetadataVersion+1+2]))
-	}
-	if m.HasConflictingKRIndices {
-		rootW.WriteScalar([]byte{1}, int(CommitIDVTable[CommitIDSlotConflictingKRIndices+2]))
-		rootW.WriteRelativeOffset(conflictingKRIndicesOff, int(CommitIDVTable[CommitIDSlotConflictingKRIndices+1+2]))
-	}
-	rootW.WriteToAt(rootStart)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], CommitIDFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

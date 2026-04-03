@@ -221,11 +221,9 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *ClientDBInfo) MarshalFDB() []byte {
-	t := ClientDBInfoTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *ClientDBInfo) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.GrvProxies))
 	ps.VisitDynamicSize(len(m.CommitProxies))
 	if m.HasForward { ps.VisitDynamicSize(len(m.Forward)) }
@@ -233,15 +231,13 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 	if m.HasEncryptKeyProxy { ps.VisitDynamicSize(len(m.EncryptKeyProxy)) }
 	if m.HasMetaclusterName { ps.VisitDynamicSize(len(m.MetaclusterName)) }
 	{ n := ps.GetMessageWriter(int(ClientDBInfoVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ClientDBInfoVTable[1])-4, 8)+4) }
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
-	vtNoop.WriteTo(ps)
-	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
-	totalSize := ps.CurrentBufferSize
-	buf := make([]byte, totalSize)
-	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
-	vtW := wb.GetMessageWriter(len(packedVT), false)
-	vtW.WriteScalar(packedVT, 0)
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *ClientDBInfo) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	grvProxiesOff, _ := wb.VisitDynamicSize(m.GrvProxies)
 	commitProxiesOff, _ := wb.VisitDynamicSize(m.CommitProxies)
 	var forwardOff int
@@ -251,48 +247,65 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 	if m.HasEncryptKeyProxy { encryptKeyProxyOff, _ = wb.VisitDynamicSize(m.EncryptKeyProxy) }
 	var metaclusterNameOff int
 	if m.HasMetaclusterName { metaclusterNameOff, _ = wb.VisitDynamicSize(m.MetaclusterName) }
-	rootW := wb.GetMessageWriter(int(ClientDBInfoVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(ClientDBInfoVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	rootW.WriteScalar(m.Id[:], int(ClientDBInfoVTable[ClientDBInfoSlotId+2]))
-	rootW.WriteScalar(m.ClusterId[:], int(ClientDBInfoVTable[ClientDBInfoSlotClusterId+2]))
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.ClusterType)); rootW.WriteScalar(b[:], int(ClientDBInfoVTable[ClientDBInfoSlotClusterType+2])) }
-	rootW.WriteRelativeOffset(grvProxiesOff, int(ClientDBInfoVTable[ClientDBInfoSlotGrvProxies+2]))
-	rootW.WriteRelativeOffset(commitProxiesOff, int(ClientDBInfoVTable[ClientDBInfoSlotCommitProxies+2]))
+	selfW := wb.GetMessageWriter(int(ClientDBInfoVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := ClientDBInfoVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(ClientDBInfoVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteScalar(m.Id[:], int(vt[ClientDBInfoSlotId+2]))
+	selfW.WriteScalar(m.ClusterId[:], int(vt[ClientDBInfoSlotClusterId+2]))
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.ClusterType)); selfW.WriteScalar(b[:], int(vt[ClientDBInfoSlotClusterType+2])) }
+	selfW.WriteRelativeOffset(grvProxiesOff, int(vt[ClientDBInfoSlotGrvProxies+2]))
+	selfW.WriteRelativeOffset(commitProxiesOff, int(vt[ClientDBInfoSlotCommitProxies+2]))
 	if m.HasForward {
-		rootW.WriteScalar([]byte{1}, int(ClientDBInfoVTable[ClientDBInfoSlotForward+2]))
-		rootW.WriteRelativeOffset(forwardOff, int(ClientDBInfoVTable[ClientDBInfoSlotForward+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[ClientDBInfoSlotForward+2]))
+		selfW.WriteRelativeOffset(forwardOff, int(vt[ClientDBInfoSlotForward+1+2]))
 	}
-	rootW.WriteRelativeOffset(historyOff, int(ClientDBInfoVTable[ClientDBInfoSlotHistory+2]))
+	selfW.WriteRelativeOffset(historyOff, int(vt[ClientDBInfoSlotHistory+2]))
 	if m.HasEncryptKeyProxy {
-		rootW.WriteScalar([]byte{1}, int(ClientDBInfoVTable[ClientDBInfoSlotEncryptKeyProxy+2]))
-		rootW.WriteRelativeOffset(encryptKeyProxyOff, int(ClientDBInfoVTable[ClientDBInfoSlotEncryptKeyProxy+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[ClientDBInfoSlotEncryptKeyProxy+2]))
+		selfW.WriteRelativeOffset(encryptKeyProxyOff, int(vt[ClientDBInfoSlotEncryptKeyProxy+1+2]))
 	}
 	if m.HasMetaclusterName {
-		rootW.WriteScalar([]byte{1}, int(ClientDBInfoVTable[ClientDBInfoSlotMetaclusterName+2]))
-		rootW.WriteRelativeOffset(metaclusterNameOff, int(ClientDBInfoVTable[ClientDBInfoSlotMetaclusterName+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[ClientDBInfoSlotMetaclusterName+2]))
+		selfW.WriteRelativeOffset(metaclusterNameOff, int(vt[ClientDBInfoSlotMetaclusterName+1+2]))
 	}
-	rootW.WriteToAt(rootStart)
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *ClientDBInfo) MarshalFDB() []byte {
+	t := ClientDBInfoTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], ClientDBInfoFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

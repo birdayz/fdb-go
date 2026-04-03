@@ -224,120 +224,93 @@ func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *GetKeyValuesRequest) MarshalFDB() []byte {
-	t := GetKeyValuesRequestTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *GetKeyValuesRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
 	if m.HasOptions { ps.VisitDynamicSize(len(m.Options)) }
 	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
-	{ n := ps.GetMessageWriter(int(KeySelectorRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, KeySelectorRefMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(KeySelectorRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, KeySelectorRefMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(ReplyPromiseVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReplyPromiseVTable[1])-4, ReplyPromiseMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(SpanContextVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(SpanContextVTable[1])-4, SpanContextMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(TenantInfoVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(TenantInfoVTable[1])-4, TenantInfoMaxAlign)+4) }
+	m.Begin.precomputeSize(ps)
+	m.End.precomputeSize(ps)
+	m.Reply.precomputeSize(ps)
+	m.SpanContext.precomputeSize(ps)
+	m.TenantInfo.precomputeSize(ps)
 	{ n := ps.GetMessageWriter(int(GetKeyValuesRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyValuesRequestVTable[1])-4, 8)+4) }
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
-	vtNoop.WriteTo(ps)
-	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
-	totalSize := ps.CurrentBufferSize
-	buf := make([]byte, totalSize)
-	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
-	vtW := wb.GetMessageWriter(len(packedVT), false)
-	vtW.WriteScalar(packedVT, 0)
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *GetKeyValuesRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var tagsOff int
 	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
 	var optionsOff int
 	if m.HasOptions { optionsOff, _ = wb.VisitDynamicSize(m.Options) }
 	ssLatestCommitVersionsOff, _ := wb.VisitDynamicSize(m.SsLatestCommitVersions)
-	beginW := wb.GetMessageWriter(int(KeySelectorRefVTable[1]), true)
-	beginStart := beginW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(KeySelectorRefVTable) - beginStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		beginW.WriteScalar(b[:], 0)
-	}
-	beginW.WriteToAt(beginStart)
-	endW := wb.GetMessageWriter(int(KeySelectorRefVTable[1]), true)
-	endStart := endW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(KeySelectorRefVTable) - endStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		endW.WriteScalar(b[:], 0)
-	}
-	endW.WriteToAt(endStart)
-	replyW := wb.GetMessageWriter(int(ReplyPromiseVTable[1]), true)
-	replyStart := replyW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(ReplyPromiseVTable) - replyStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		replyW.WriteScalar(b[:], 0)
-	}
-	replyW.WriteToAt(replyStart)
-	spanContextW := wb.GetMessageWriter(int(SpanContextVTable[1]), true)
-	spanContextStart := spanContextW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(SpanContextVTable) - spanContextStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		spanContextW.WriteScalar(b[:], 0)
-	}
-	spanContextW.WriteToAt(spanContextStart)
-	tenantInfoW := wb.GetMessageWriter(int(TenantInfoVTable[1]), true)
-	tenantInfoStart := tenantInfoW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(TenantInfoVTable) - tenantInfoStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		tenantInfoW.WriteScalar(b[:], 0)
-	}
-	tenantInfoW.WriteToAt(tenantInfoStart)
-	rootW := wb.GetMessageWriter(int(GetKeyValuesRequestVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(GetKeyValuesRequestVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); rootW.WriteScalar(b[:], int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotVersion+2])) }
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Limit)); rootW.WriteScalar(b[:], int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotLimit+2])) }
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.LimitBytes)); rootW.WriteScalar(b[:], int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotLimitBytes+2])) }
+	beginStart := m.Begin.writeToBuffer(wb, vtableStart, tmpl)
+	endStart := m.End.writeToBuffer(wb, vtableStart, tmpl)
+	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart := m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	selfW := wb.GetMessageWriter(int(GetKeyValuesRequestVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := GetKeyValuesRequestVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyValuesRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[GetKeyValuesRequestSlotVersion+2])) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Limit)); selfW.WriteScalar(b[:], int(vt[GetKeyValuesRequestSlotLimit+2])) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.LimitBytes)); selfW.WriteScalar(b[:], int(vt[GetKeyValuesRequestSlotLimitBytes+2])) }
 	if m.HasTags {
-		rootW.WriteScalar([]byte{1}, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotTags+2]))
-		rootW.WriteRelativeOffset(tagsOff, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotTags+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesRequestSlotTags+2]))
+		selfW.WriteRelativeOffset(tagsOff, int(vt[GetKeyValuesRequestSlotTags+1+2]))
 	}
 	if m.HasOptions {
-		rootW.WriteScalar([]byte{1}, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotOptions+2]))
-		rootW.WriteRelativeOffset(optionsOff, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotOptions+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesRequestSlotOptions+2]))
+		selfW.WriteRelativeOffset(optionsOff, int(vt[GetKeyValuesRequestSlotOptions+1+2]))
 	}
-	rootW.WriteRelativeOffset(ssLatestCommitVersionsOff, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotSsLatestCommitVersions+2]))
-	rootW.WriteRelativeOffset(beginStart, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotBegin+2]))
-	rootW.WriteRelativeOffset(endStart, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotEnd+2]))
-	rootW.WriteRelativeOffset(replyStart, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotReply+2]))
-	rootW.WriteRelativeOffset(spanContextStart, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotSpanContext+2]))
-	rootW.WriteRelativeOffset(tenantInfoStart, int(GetKeyValuesRequestVTable[GetKeyValuesRequestSlotTenantInfo+2]))
-	rootW.WriteToAt(rootStart)
+	selfW.WriteRelativeOffset(ssLatestCommitVersionsOff, int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]))
+	selfW.WriteRelativeOffset(beginStart, int(vt[GetKeyValuesRequestSlotBegin+2]))
+	selfW.WriteRelativeOffset(endStart, int(vt[GetKeyValuesRequestSlotEnd+2]))
+	selfW.WriteRelativeOffset(replyStart, int(vt[GetKeyValuesRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetKeyValuesRequestSlotSpanContext+2]))
+	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetKeyValuesRequestSlotTenantInfo+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *GetKeyValuesRequest) MarshalFDB() []byte {
+	t := GetKeyValuesRequestTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyValuesRequestFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

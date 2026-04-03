@@ -134,6 +134,42 @@ func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasLockAware { ps.VisitDynamicSize(len(m.LockAware)) }
+	if m.HasField_4 { ps.VisitDynamicSize(len(m.Field_4)) }
+	{ n := ps.GetMessageWriter(int(ReadOptionsVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReadOptionsVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var lockAwareOff int
+	if m.HasLockAware { lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware) }
+	var field_4Off int
+	if m.HasField_4 { field_4Off, _ = wb.VisitDynamicSize(m.Field_4) }
+	selfW := wb.GetMessageWriter(int(ReadOptionsVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := ReadOptionsVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(ReadOptionsVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Type)); selfW.WriteScalar(b[:], int(vt[ReadOptionsSlotType+2])) }
+	if m.CacheResult { selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotCacheResult+2])) }
+	if m.Field_6 { selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_6+2])) }
+	if m.HasLockAware {
+		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotLockAware+2]))
+		selfW.WriteRelativeOffset(lockAwareOff, int(vt[ReadOptionsSlotLockAware+1+2]))
+	}
+	if m.HasField_4 {
+		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_4+2]))
+		selfW.WriteRelativeOffset(field_4Off, int(vt[ReadOptionsSlotField_4+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
 func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
 	count, err := r.ReadVectorCount(slot)

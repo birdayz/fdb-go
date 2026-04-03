@@ -96,6 +96,33 @@ func (m *TenantInfo) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *TenantInfo) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasToken { ps.VisitDynamicSize(len(m.Token)) }
+	{ n := ps.GetMessageWriter(int(TenantInfoVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(TenantInfoVTable[1])-4, 8)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *TenantInfo) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var tokenOff int
+	if m.HasToken { tokenOff, _ = wb.VisitDynamicSize(m.Token) }
+	selfW := wb.GetMessageWriter(int(TenantInfoVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := TenantInfoVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(TenantInfoVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.TenantId)); selfW.WriteScalar(b[:], int(vt[TenantInfoSlotTenantId+2])) }
+	if m.HasToken {
+		selfW.WriteScalar([]byte{1}, int(vt[TenantInfoSlotToken+2]))
+		selfW.WriteRelativeOffset(tokenOff, int(vt[TenantInfoSlotToken+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseTenantInfoVectorFromReader reads a FlatBuffers vector of TenantInfo.
 func ParseTenantInfoVectorFromReader(r *wire.Reader, slot int) []TenantInfo {
 	count, err := r.ReadVectorCount(slot)

@@ -359,6 +359,72 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
+	if len(m.ReadConflictRanges) > 0 {
+		vecSize := 4 + len(m.ReadConflictRanges)*4
+		for _, elem := range m.ReadConflictRanges {
+			vecSize = (vecSize + 3) &^ 3
+			vecSize += elem.blobSize()
+		}
+		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	}
+	if len(m.WriteConflictRanges) > 0 {
+		vecSize := 4 + len(m.WriteConflictRanges)*4
+		for _, elem := range m.WriteConflictRanges {
+			vecSize = (vecSize + 3) &^ 3
+			vecSize += elem.blobSize()
+		}
+		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	}
+	if len(m.Mutations) > 0 {
+		vecSize := 4 + len(m.Mutations)*4
+		for _, elem := range m.Mutations {
+			vecSize = (vecSize + 3) &^ 3
+			vecSize += elem.blobSize()
+		}
+		vn := ps.GetMessageWriter((vecSize + 3) &^ 3); vn.WriteTo(ps)
+	}
+	if m.HasRead_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled)) }
+	if m.HasWrite_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled)) }
+	{ n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, 8)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var readConflictRangesOff int
+	_ = readConflictRangesOff // TODO: vector-of-struct write for ReadConflictRanges
+	var writeConflictRangesOff int
+	_ = writeConflictRangesOff // TODO: vector-of-struct write for WriteConflictRanges
+	var mutationsOff int
+	_ = mutationsOff // TODO: vector-of-struct write for Mutations
+	var read_conflict_ranges_disabledOff int
+	if m.HasRead_conflict_ranges_disabled { read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled) }
+	var write_conflict_ranges_disabledOff int
+	if m.HasWrite_conflict_ranges_disabled { write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled) }
+	selfW := wb.GetMessageWriter(int(CommitTransactionRefVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := CommitTransactionRefVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2])) }
+	if m.Report_conflicting_keys { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])) }
+	if m.Lock_aware { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2])) }
+	if m.HasRead_conflict_ranges_disabled {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+2]))
+		selfW.WriteRelativeOffset(read_conflict_ranges_disabledOff, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+1+2]))
+	}
+	if m.HasWrite_conflict_ranges_disabled {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+2]))
+		selfW.WriteRelativeOffset(write_conflict_ranges_disabledOff, int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
 func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
 	count, err := r.ReadVectorCount(slot)

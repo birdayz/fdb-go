@@ -102,6 +102,32 @@ func (m *MutationRef) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *MutationRef) precomputeSize(ps *wire.PrecomputeSize) int {
+	ps.VisitDynamicSize(len(m.Param1))
+	ps.VisitDynamicSize(len(m.Param2))
+	{ n := ps.GetMessageWriter(int(MutationRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(MutationRefVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *MutationRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	param1Off, _ := wb.VisitDynamicSize(m.Param1)
+	param2Off, _ := wb.VisitDynamicSize(m.Param2)
+	selfW := wb.GetMessageWriter(int(MutationRefVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := MutationRefVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(MutationRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteScalar([]byte{byte(m.MutType)}, int(vt[MutationRefSlotMutType+2]))
+	selfW.WriteRelativeOffset(param1Off, int(vt[MutationRefSlotParam1+2]))
+	selfW.WriteRelativeOffset(param2Off, int(vt[MutationRefSlotParam2+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
 func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
 	count, err := r.ReadVectorCount(slot)

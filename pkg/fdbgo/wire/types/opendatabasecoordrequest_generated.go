@@ -206,76 +206,81 @@ func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
-	t := OpenDatabaseCoordRequestTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *OpenDatabaseCoordRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Issues))
 	ps.VisitDynamicSize(len(m.SupportedVersions))
 	ps.VisitDynamicSize(len(m.TraceLogGroup))
 	ps.VisitDynamicSize(len(m.ClusterKey))
 	ps.VisitDynamicSize(len(m.Coordinators))
 	ps.VisitDynamicSize(len(m.Hostnames))
-	{ n := ps.GetMessageWriter(int(ReplyPromiseVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReplyPromiseVTable[1])-4, ReplyPromiseMaxAlign)+4) }
+	m.Reply.precomputeSize(ps)
 	{ n := ps.GetMessageWriter(int(OpenDatabaseCoordRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(OpenDatabaseCoordRequestVTable[1])-4, 8)+4) }
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
-	vtNoop.WriteTo(ps)
-	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
-	totalSize := ps.CurrentBufferSize
-	buf := make([]byte, totalSize)
-	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
-	vtW := wb.GetMessageWriter(len(packedVT), false)
-	vtW.WriteScalar(packedVT, 0)
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *OpenDatabaseCoordRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	issuesOff, _ := wb.VisitDynamicSize(m.Issues)
 	supportedVersionsOff, _ := wb.VisitDynamicSize(m.SupportedVersions)
 	traceLogGroupOff, _ := wb.VisitDynamicSize(m.TraceLogGroup)
 	clusterKeyOff, _ := wb.VisitDynamicSize(m.ClusterKey)
 	coordinatorsOff, _ := wb.VisitDynamicSize(m.Coordinators)
 	hostnamesOff, _ := wb.VisitDynamicSize(m.Hostnames)
-	replyW := wb.GetMessageWriter(int(ReplyPromiseVTable[1]), true)
-	replyStart := replyW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(ReplyPromiseVTable) - replyStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		replyW.WriteScalar(b[:], 0)
-	}
-	replyW.WriteToAt(replyStart)
-	rootW := wb.GetMessageWriter(int(OpenDatabaseCoordRequestVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(OpenDatabaseCoordRequestVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	rootW.WriteScalar(m.KnownClientInfoID[:], int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]))
-	if m.Internal { rootW.WriteScalar([]byte{1}, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotInternal+2])) }
-	rootW.WriteRelativeOffset(issuesOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotIssues+2]))
-	rootW.WriteRelativeOffset(supportedVersionsOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotSupportedVersions+2]))
-	rootW.WriteRelativeOffset(traceLogGroupOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotTraceLogGroup+2]))
-	rootW.WriteRelativeOffset(clusterKeyOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotClusterKey+2]))
-	rootW.WriteRelativeOffset(coordinatorsOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotCoordinators+2]))
-	rootW.WriteRelativeOffset(hostnamesOff, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotHostnames+2]))
-	rootW.WriteRelativeOffset(replyStart, int(OpenDatabaseCoordRequestVTable[OpenDatabaseCoordRequestSlotReply+2]))
-	rootW.WriteToAt(rootStart)
+	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	selfW := wb.GetMessageWriter(int(OpenDatabaseCoordRequestVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := OpenDatabaseCoordRequestVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(OpenDatabaseCoordRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteScalar(m.KnownClientInfoID[:], int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]))
+	if m.Internal { selfW.WriteScalar([]byte{1}, int(vt[OpenDatabaseCoordRequestSlotInternal+2])) }
+	selfW.WriteRelativeOffset(issuesOff, int(vt[OpenDatabaseCoordRequestSlotIssues+2]))
+	selfW.WriteRelativeOffset(supportedVersionsOff, int(vt[OpenDatabaseCoordRequestSlotSupportedVersions+2]))
+	selfW.WriteRelativeOffset(traceLogGroupOff, int(vt[OpenDatabaseCoordRequestSlotTraceLogGroup+2]))
+	selfW.WriteRelativeOffset(clusterKeyOff, int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]))
+	selfW.WriteRelativeOffset(coordinatorsOff, int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]))
+	selfW.WriteRelativeOffset(hostnamesOff, int(vt[OpenDatabaseCoordRequestSlotHostnames+2]))
+	selfW.WriteRelativeOffset(replyStart, int(vt[OpenDatabaseCoordRequestSlotReply+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
+	t := OpenDatabaseCoordRequestTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], OpenDatabaseCoordRequestFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

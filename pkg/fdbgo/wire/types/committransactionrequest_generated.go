@@ -218,29 +218,25 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
-func (m *CommitTransactionRequest) MarshalFDB() []byte {
-	t := CommitTransactionRequestTemplate
-	packedVT := t.PackedVTables()
-	ps := wire.NewPrecomputeSize()
-	vtNoop := ps.GetMessageWriter(len(packedVT))
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *CommitTransactionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	if m.HasDebugID { ps.VisitDynamicSize(len(m.DebugID)) }
 	if m.HasCommitCostEstimation { ps.VisitDynamicSize(len(m.CommitCostEstimation)) }
 	if m.HasTagSet { ps.VisitDynamicSize(len(m.TagSet)) }
 	ps.VisitDynamicSize(len(m.IdempotencyId))
-	{ n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, CommitTransactionRefMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(ReplyPromiseVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReplyPromiseVTable[1])-4, ReplyPromiseMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(SpanContextVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(SpanContextVTable[1])-4, SpanContextMaxAlign)+4) }
-	{ n := ps.GetMessageWriter(int(TenantInfoVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(TenantInfoVTable[1])-4, TenantInfoMaxAlign)+4) }
+	m.Transaction.precomputeSize(ps)
+	m.Reply.precomputeSize(ps)
+	m.SpanContext.precomputeSize(ps)
+	m.TenantInfo.precomputeSize(ps)
 	{ n := ps.GetMessageWriter(int(CommitTransactionRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRequestVTable[1])-4, 4)+4) }
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
-	vtNoop.WriteTo(ps)
-	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
-	totalSize := ps.CurrentBufferSize
-	buf := make([]byte, totalSize)
-	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
-	vtW := wb.GetMessageWriter(len(packedVT), false)
-	vtW.WriteScalar(packedVT, 0)
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *CommitTransactionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var debugIDOff int
 	if m.HasDebugID { debugIDOff, _ = wb.VisitDynamicSize(m.DebugID) }
 	var commitCostEstimationOff int
@@ -248,84 +244,69 @@ func (m *CommitTransactionRequest) MarshalFDB() []byte {
 	var tagSetOff int
 	if m.HasTagSet { tagSetOff, _ = wb.VisitDynamicSize(m.TagSet) }
 	idempotencyIdOff, _ := wb.VisitDynamicSize(m.IdempotencyId)
-	transactionW := wb.GetMessageWriter(int(CommitTransactionRefVTable[1]), true)
-	transactionStart := transactionW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(CommitTransactionRefVTable) - transactionStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		transactionW.WriteScalar(b[:], 0)
-	}
-	transactionW.WriteToAt(transactionStart)
-	replyW := wb.GetMessageWriter(int(ReplyPromiseVTable[1]), true)
-	replyStart := replyW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(ReplyPromiseVTable) - replyStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		replyW.WriteScalar(b[:], 0)
-	}
-	replyW.WriteToAt(replyStart)
-	spanContextW := wb.GetMessageWriter(int(SpanContextVTable[1]), true)
-	spanContextStart := spanContextW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(SpanContextVTable) - spanContextStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		spanContextW.WriteScalar(b[:], 0)
-	}
-	spanContextW.WriteToAt(spanContextStart)
-	tenantInfoW := wb.GetMessageWriter(int(TenantInfoVTable[1]), true)
-	tenantInfoStart := tenantInfoW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(TenantInfoVTable) - tenantInfoStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		tenantInfoW.WriteScalar(b[:], 0)
-	}
-	tenantInfoW.WriteToAt(tenantInfoStart)
-	rootW := wb.GetMessageWriter(int(CommitTransactionRequestVTable[1]), true)
-	rootStart := rootW.FinalLocation
-	{
-		soff := int32(vtableStart - t.VTableOffset(CommitTransactionRequestVTable) - rootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		rootW.WriteScalar(b[:], 0)
-	}
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Flags)); rootW.WriteScalar(b[:], int(CommitTransactionRequestVTable[CommitTransactionRequestSlotFlags+2])) }
+	transactionStart := m.Transaction.writeToBuffer(wb, vtableStart, tmpl)
+	replyStart := m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart := m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart := m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	selfW := wb.GetMessageWriter(int(CommitTransactionRequestVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := CommitTransactionRequestVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Flags)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRequestSlotFlags+2])) }
 	if m.HasDebugID {
-		rootW.WriteScalar([]byte{1}, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotDebugID+2]))
-		rootW.WriteRelativeOffset(debugIDOff, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotDebugID+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRequestSlotDebugID+2]))
+		selfW.WriteRelativeOffset(debugIDOff, int(vt[CommitTransactionRequestSlotDebugID+1+2]))
 	}
 	if m.HasCommitCostEstimation {
-		rootW.WriteScalar([]byte{1}, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotCommitCostEstimation+2]))
-		rootW.WriteRelativeOffset(commitCostEstimationOff, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotCommitCostEstimation+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRequestSlotCommitCostEstimation+2]))
+		selfW.WriteRelativeOffset(commitCostEstimationOff, int(vt[CommitTransactionRequestSlotCommitCostEstimation+1+2]))
 	}
 	if m.HasTagSet {
-		rootW.WriteScalar([]byte{1}, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTagSet+2]))
-		rootW.WriteRelativeOffset(tagSetOff, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTagSet+1+2]))
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRequestSlotTagSet+2]))
+		selfW.WriteRelativeOffset(tagSetOff, int(vt[CommitTransactionRequestSlotTagSet+1+2]))
 	}
-	rootW.WriteRelativeOffset(idempotencyIdOff, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotIdempotencyId+2]))
-	rootW.WriteRelativeOffset(transactionStart, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTransaction+2]))
-	rootW.WriteRelativeOffset(replyStart, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotReply+2]))
-	rootW.WriteRelativeOffset(spanContextStart, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotSpanContext+2]))
-	rootW.WriteRelativeOffset(tenantInfoStart, int(CommitTransactionRequestVTable[CommitTransactionRequestSlotTenantInfo+2]))
-	rootW.WriteToAt(rootStart)
+	selfW.WriteRelativeOffset(idempotencyIdOff, int(vt[CommitTransactionRequestSlotIdempotencyId+2]))
+	selfW.WriteRelativeOffset(transactionStart, int(vt[CommitTransactionRequestSlotTransaction+2]))
+	selfW.WriteRelativeOffset(replyStart, int(vt[CommitTransactionRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[CommitTransactionRequestSlotSpanContext+2]))
+	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[CommitTransactionRequestSlotTenantInfo+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
+func (m *CommitTransactionRequest) MarshalFDB() []byte {
+	t := CommitTransactionRequestTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
+
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
 	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], CommitTransactionRequestFileID); footerW.WriteScalar(b[:], 4) }
-	footerW.WriteToAt(wb.CurrentBufferSize)
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

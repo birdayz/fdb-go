@@ -118,6 +118,24 @@ func (m *IPAddress) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *IPAddress) precomputeSize(ps *wire.PrecomputeSize) int {
+	{ n := ps.GetMessageWriter(int(IPAddressVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(IPAddressVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *IPAddress) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	selfW := wb.GetMessageWriter(int(IPAddressVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	{ soff := int32(vtableStart - tmpl.VTableOffset(IPAddressVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseIPAddressVectorFromReader reads a FlatBuffers vector of IPAddress.
 func ParseIPAddressVectorFromReader(r *wire.Reader, slot int) []IPAddress {
 	count, err := r.ReadVectorCount(slot)

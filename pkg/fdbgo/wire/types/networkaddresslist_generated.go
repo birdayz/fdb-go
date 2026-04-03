@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	NetworkAddressListSlotAddress = 0
@@ -83,6 +87,35 @@ func (m *NetworkAddressList) writeDirect(dw *wire.DirectWriter) int {
 	}
 	wire.PatchRelOff(obj, int(vt[NetworkAddressListSlotAddress+2]), objPos, addressPos)
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Returns end-offset of this object (C++ RelativeOffset). Same as save_helper return.
+func (m *NetworkAddressList) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasSecondaryAddress { ps.VisitDynamicSize(len(m.SecondaryAddress)) }
+	m.Address.precomputeSize(ps)
+	{ n := ps.GetMessageWriter(int(NetworkAddressListVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressListVTable[1])-4, 4)+4) }
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Must call GetMessageWriter in the SAME order as precomputeSize.
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var secondaryAddressOff int
+	if m.HasSecondaryAddress { secondaryAddressOff, _ = wb.VisitDynamicSize(m.SecondaryAddress) }
+	addressStart := m.Address.writeToBuffer(wb, vtableStart, tmpl)
+	selfW := wb.GetMessageWriter(int(NetworkAddressListVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := NetworkAddressListVTable
+	{ soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressListVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	if m.HasSecondaryAddress {
+		selfW.WriteScalar([]byte{1}, int(vt[NetworkAddressListSlotSecondaryAddress+2]))
+		selfW.WriteRelativeOffset(secondaryAddressOff, int(vt[NetworkAddressListSlotSecondaryAddress+1+2]))
+	}
+	selfW.WriteRelativeOffset(addressStart, int(vt[NetworkAddressListSlotAddress+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.
