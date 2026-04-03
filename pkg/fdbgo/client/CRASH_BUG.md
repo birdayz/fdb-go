@@ -124,19 +124,51 @@ generate an oversized or malformed response. Candidates:
    negotiation, or PING handling differs from the C client, the server might
    misparse subsequent messages.
 
+## Root cause found (2026-04-03)
+
+**The crashing frame is a CommitTransactionRequest with `ReadSnapshot=0`.**
+
+Decoded frame #92 (the last SEND before FDB segfaults):
+
+```
+ReadSnapshot: 0          ← INVALID (should be a real GRV version)
+Mutations: 0             ← empty commit
+ReadConflictRanges: 0
+WriteConflictRanges: 0
+TenantID: 0              ← should be -1 (NoTenantID)
+Flags: 0
+```
+
+A commit with `ReadSnapshot=0` and no mutations. FDB server crashes trying
+to process this — version 0 is never valid.
+
+### How this happens
+
+1. `Transact(fn)` runs `fn(tx)` which does reads (fetches GRV) + writes
+2. `tx.Commit()` succeeds — sends proper ReadSnapshot from GRV
+3. `postCommitReset()` clears `tx.readVersion` and `tx.hasReadVersion`
+4. Next `Transact(fn)` call (e.g., LOG_STACK writing stack entries):
+   - `fn(tx)` only does `tx.Set()` calls (no reads) → ReadSnapshot stays 0
+   - `tx.Commit()` sends commit with `ReadSnapshot=0` → FDB CRASH
+
+The C++ client avoids this because `commitMutations()` always has a valid
+read version — the C++ Transaction holds onto the read version future from
+the previous GRV, and commit waits on it. Our `postCommitReset()` clears it
+too aggressively.
+
+### Fix
+
+`Commit()` must call `ensureReadVersion()` before sending, just like read
+operations do. The C++ client does this implicitly — its commit path waits
+on `readVersionFuture` which was set during the transaction's first read
+or explicitly via `getReadVersion()`.
+
 ## Next steps
 
-1. **Packet capture comparison**: Run both CGo and our client with seed 6,
-   capture TCP with tcpdump, diff the wire bytes to find the first divergent
-   message.
-
-2. **Narrow down message type**: Add per-RPC stderr logging to identify which
-   exact message type (GetValue, GetKey, GetKeyValues, Commit) is the last
-   one sent before the crash.
-
-3. **Binary diff of specific request**: Once the message type is identified,
-   hex-dump both our version and the CGo version of that request and compare
-   byte-by-byte.
+1. Fix: `Commit()` calls `ensureReadVersion(ctx)` before building the request.
+2. Verify: TenantID serialization — 0 vs -1 discrepancy needs investigation.
+3. Re-run seed 6 after fix to confirm FDB no longer crashes.
+4. Wire capture framework is in place for future debugging.
 
 ## Files involved
 

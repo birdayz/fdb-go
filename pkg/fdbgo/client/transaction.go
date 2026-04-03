@@ -310,6 +310,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		return nil
 	}
 
+	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
+	// read version exists before commit, even for write-only transactions.
+	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return err
+	}
+
 	if err := tx.commit(ctx); err != nil {
 		return err
 	}
