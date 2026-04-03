@@ -1,0 +1,53 @@
+#cloud-config
+
+package_update: true
+packages:
+  - docker.io
+  - build-essential
+  - curl
+  - git
+  - jq
+
+write_files:
+  - path: /etc/docker/daemon.json
+    content: |
+      {"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
+
+runcmd:
+  # Docker
+  - systemctl enable --now docker
+  - systemctl restart docker
+
+  # FDB client
+  - curl -fsSLO "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-clients_${fdb_version}-1_amd64.deb"
+  - dpkg -i "foundationdb-clients_${fdb_version}-1_amd64.deb"
+  - rm -f "foundationdb-clients_${fdb_version}-1_amd64.deb"
+
+  # Go
+  - curl -fsSL "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" | tar xz -C /usr/local
+  - ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  - ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+  # Bazelisk
+  - curl -fsSL -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+  - chmod +x /usr/local/bin/bazelisk
+  - ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+
+  # Runner user
+  - useradd -m -s /bin/bash runner
+  - usermod -aG docker runner
+
+  # GitHub Actions runner
+  - |
+    RUNNER_VERSION=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r '.tag_name' | tr -d v)
+    RUNNER_DIR="/home/runner/actions-runner"
+    mkdir -p "$RUNNER_DIR"
+    cd "$RUNNER_DIR"
+    curl -fsSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
+    tar xzf runner.tar.gz
+    rm runner.tar.gz
+    chown -R runner:runner "$RUNNER_DIR"
+    su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace"
+    cd "$RUNNER_DIR"
+    ./svc.sh install runner
+    ./svc.sh start
