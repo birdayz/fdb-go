@@ -50,6 +50,7 @@ go_test(
         "ground_truth_test.go",
         "key_value_vector_test.go",
         "locations_marshal_test.go",
+        "reloff_debug_test.go",
     ],
     embed = [":types"],
     deps = ["//pkg/fdbgo/wire"],

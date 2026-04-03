@@ -145,9 +145,9 @@ func (m *GetValueRequest) writeBlob(buf []byte, pos int) int {
 func (m *GetValueRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.Key)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetValueRequestVTable, GetValueRequestMaxAlign)
 	return endOff
 }
@@ -161,9 +161,9 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.SsLatestCommitVersions != nil {
 		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	}
-	tenantInfoPos := m.TenantInfo.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
+	tenantInfoPos := m.TenantInfo.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetValueRequestVTable, GetValueRequestMaxAlign)
 	vt := GetValueRequestVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetValueRequestSlotVersion+2]):], uint64(m.Version))
@@ -184,9 +184,9 @@ func (m *GetValueRequest) MarshalFDB() []byte {
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.Key)
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	bodySize := int(GetValueRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

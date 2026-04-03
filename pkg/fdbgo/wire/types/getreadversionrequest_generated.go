@@ -126,8 +126,8 @@ func (m *GetReadVersionRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetReadVersionRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureRawOOL(endOff, m.Tags)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetReadVersionRequestVTable, GetReadVersionRequestMaxAlign)
 	return endOff
 }
@@ -137,8 +137,8 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Tags != nil {
 		tagsOOL = dw.WriteRawOOL(m.Tags)
 	}
-	spanContextPos := m.SpanContext.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetReadVersionRequestVTable, GetReadVersionRequestMaxAlign)
 	vt := GetReadVersionRequestVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionRequestSlotTransactionCount+2]):], m.TransactionCount)
@@ -156,8 +156,8 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	t := GetReadVersionRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureRawOOL(endOff, m.Tags)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
 	bodySize := int(GetReadVersionRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

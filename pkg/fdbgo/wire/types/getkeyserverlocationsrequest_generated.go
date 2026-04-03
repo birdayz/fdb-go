@@ -143,9 +143,9 @@ func (m *GetKeyServerLocationsRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetKeyServerLocationsRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
-	endOff = m.Tenant.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.Tenant.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetKeyServerLocationsRequestVTable, GetKeyServerLocationsRequestMaxAlign)
 	return endOff
 }
@@ -155,9 +155,9 @@ func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Begin != nil {
 		beginOOL = dw.WriteBytesOOL(m.Begin)
 	}
-	tenantPos := m.Tenant.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
+	tenantPos := m.Tenant.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetKeyServerLocationsRequestVTable, GetKeyServerLocationsRequestMaxAlign)
 	vt := GetKeyServerLocationsRequestVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyServerLocationsRequestSlotLimit+2]):], uint32(m.Limit))
@@ -178,9 +178,9 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 	t := GetKeyServerLocationsRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
-	endOff = m.Tenant.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.Tenant.measureEndOff(endOff)
 	bodySize := int(GetKeyServerLocationsRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

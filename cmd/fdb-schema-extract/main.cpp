@@ -478,16 +478,15 @@ private:
             hasBody = true;
         }
 
-        // Step 2: Nested structs in REVERSE order.
-        std::vector<const FieldDesc*> nestedFields;
+        // Step 2: Nested structs in FORWARD serialization order.
+        // C++ ObjectWriter processes fields in serialize() order, writing from end of buffer.
+        // Our DirectWriter also writes from end, so same forward order gives same layout.
         for (auto& fd : fields) {
-            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0])
-                nestedFields.push_back(&fd);
-        }
-        for (auto it = nestedFields.rbegin(); it != nestedFields.rend(); ++it) {
-            auto gn = fieldGoName(**it);
-            fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
-            hasBody = true;
+            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0]) {
+                auto gn = fieldGoName(fd);
+                fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
+                hasBody = true;
+            }
         }
 
         // Step 3: Own object.
@@ -586,9 +585,9 @@ private:
             }
         }
 
-        // Step 2: Nested structs in REVERSE order.
-        for (auto it = nestedFields.rbegin(); it != nestedFields.rend(); ++it) {
-            auto gn = fieldGoName(**it);
+        // Step 2: Nested structs in FORWARD serialization order.
+        for (auto* fdp : nestedFields) {
+            auto gn = fieldGoName(*fdp);
             auto varName = safeParam(gn) + "Pos";
             fprintf(f, "\t%s := m.%s.writeDirect(dw)\n", varName.c_str(), gn.c_str());
         }
@@ -726,15 +725,12 @@ private:
             }
         }
 
-        // Nested struct measures in REVERSE order.
-        std::vector<const FieldDesc*> nestedFields;
+        // Nested struct measures in FORWARD serialization order.
         for (auto& fd : fields) {
-            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0])
-                nestedFields.push_back(&fd);
-        }
-        for (auto it = nestedFields.rbegin(); it != nestedFields.rend(); ++it) {
-            auto gn = fieldGoName(**it);
-            fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
+            if (fd.kind == FieldKind::NestedStruct && fd.nestedGoType && fd.nestedGoType[0]) {
+                auto gn = fieldGoName(fd);
+                fprintf(f, "\tendOff = m.%s.measureEndOff(endOff)\n", gn.c_str());
+            }
         }
 
         // Layout calculation.

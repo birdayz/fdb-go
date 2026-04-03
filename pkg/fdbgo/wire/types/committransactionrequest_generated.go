@@ -160,10 +160,10 @@ func (m *CommitTransactionRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *CommitTransactionRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.IdempotencyId)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.Transaction.measureEndOff(endOff)
+	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, CommitTransactionRequestVTable, CommitTransactionRequestMaxAlign)
 	return endOff
 }
@@ -173,10 +173,10 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.IdempotencyId != nil {
 		idempotencyIdOOL = dw.WriteBytesOOL(m.IdempotencyId)
 	}
-	tenantInfoPos := m.TenantInfo.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
-	replyPos := m.Reply.writeDirect(dw)
 	transactionPos := m.Transaction.writeDirect(dw)
+	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
+	tenantInfoPos := m.TenantInfo.writeDirect(dw)
 	objPos, obj := dw.WriteObject(CommitTransactionRequestVTable, CommitTransactionRequestMaxAlign)
 	vt := CommitTransactionRequestVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[CommitTransactionRequestSlotFlags+2]):], m.Flags)
@@ -194,10 +194,10 @@ func (m *CommitTransactionRequest) MarshalFDB() []byte {
 	t := CommitTransactionRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.IdempotencyId)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.Transaction.measureEndOff(endOff)
+	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	bodySize := int(CommitTransactionRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 4 - 1) &^ (4 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4

@@ -146,10 +146,10 @@ func (m *GetKeyRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetKeyRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.Sel.measureEndOff(endOff)
+	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetKeyRequestVTable, GetKeyRequestMaxAlign)
 	return endOff
 }
@@ -159,10 +159,10 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.SsLatestCommitVersions != nil {
 		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	}
-	tenantInfoPos := m.TenantInfo.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
-	replyPos := m.Reply.writeDirect(dw)
 	selPos := m.Sel.writeDirect(dw)
+	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
+	tenantInfoPos := m.TenantInfo.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetKeyRequestVTable, GetKeyRequestMaxAlign)
 	vt := GetKeyRequestVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyRequestSlotVersion+2]):], uint64(m.Version))
@@ -180,10 +180,10 @@ func (m *GetKeyRequest) MarshalFDB() []byte {
 	t := GetKeyRequestTemplate
 	endOff := 0
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Reply.measureEndOff(endOff)
 	endOff = m.Sel.measureEndOff(endOff)
+	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	bodySize := int(GetKeyRequestVTable[1]) - 4
 	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
 	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4
