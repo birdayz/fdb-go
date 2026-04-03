@@ -45,12 +45,6 @@ variable "fdb_version" {
   default     = "7.3.46"
 }
 
-variable "go_version" {
-  description = "Go version"
-  type        = string
-  default     = "1.26.1"
-}
-
 variable "github_repo" {
   description = "GitHub repository (owner/repo)"
   type        = string
@@ -79,7 +73,6 @@ resource "hcloud_server" "runner" {
 
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     fdb_version          = var.fdb_version
-    go_version           = var.go_version
     github_repo          = var.github_repo
     github_runner_token  = var.github_runner_token
     runner_labels        = var.runner_labels

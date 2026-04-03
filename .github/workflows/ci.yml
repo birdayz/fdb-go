@@ -14,12 +14,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check go.sum integrity
-        run: go mod verify
-
       - name: Check Go formatting
         run: |
-          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*'))
+          GOFMT=$(bazelisk run @rules_go//go -- env GOROOT 2>/dev/null)/bin/gofmt
+          unformatted=$($GOFMT -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*'))
           if [ -n "$unformatted" ]; then
             echo "Unformatted files:"
             echo "$unformatted"
