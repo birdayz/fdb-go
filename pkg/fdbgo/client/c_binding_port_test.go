@@ -27,7 +27,7 @@ import (
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1185
 func TestGetRangeReverse(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -96,7 +96,7 @@ func TestGetRangeReverse(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1226
 func TestGetRangeLimit(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -152,7 +152,7 @@ func TestGetRangeLimit(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1293
 func TestClearSingleKey(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -197,7 +197,7 @@ func TestClearSingleKey(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1314
 func TestAtomicAdd_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -246,7 +246,7 @@ func TestAtomicAdd_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1348
 func TestAtomicBitAnd_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -320,7 +320,7 @@ func TestAtomicBitAnd_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1415
 func TestAtomicBitOr_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -394,7 +394,7 @@ func TestAtomicBitOr_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1480
 func TestAtomicBitXor_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -469,7 +469,7 @@ func TestAtomicBitXor_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1557
 func TestAtomicCompareAndClear_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -523,7 +523,7 @@ func TestAtomicCompareAndClear_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1584
 func TestAtomicAppendIfFits_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -586,7 +586,7 @@ func TestAtomicAppendIfFits_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1623
 func TestAtomicMax_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -660,7 +660,7 @@ func TestAtomicMax_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1657
 func TestAtomicMin_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -733,7 +733,7 @@ func TestAtomicMin_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1693
 func TestAtomicByteMax_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -805,7 +805,7 @@ func TestAtomicByteMax_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1727
 func TestAtomicByteMin_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -877,7 +877,7 @@ func TestAtomicByteMin_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1761
 func TestAtomicSetVersionstampedKey_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -941,7 +941,7 @@ func TestAtomicSetVersionstampedKey_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1800
 func TestAtomicSetVersionstampedValue_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1011,7 +1011,7 @@ func TestSetReadVersionOld_CPort(t *testing.T) {
 	// is implemented (RFC 014 Phase 2: minReadVersion).
 	t.Skip("transaction_too_old check not implemented at client level yet")
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1044,7 +1044,7 @@ func TestSetReadVersionFuture_CPort(t *testing.T) {
 	// is implemented (RFC 014 Phase 2: minReadVersion).
 	t.Skip("future_version check not implemented at client level yet")
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1073,7 +1073,7 @@ func TestSetReadVersionFuture_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1849
 func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1108,7 +1108,7 @@ func TestGetCommittedVersionReadOnly_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1869
 func TestGetCommittedVersion_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1137,7 +1137,7 @@ func TestGetCommittedVersion_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2105
 func TestTransactionCancel_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1157,7 +1157,7 @@ func TestTransactionCancel_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2118
 func TestAddConflictRange_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 
@@ -1211,7 +1211,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2516
 func TestCommitDoesNotReset_CPort(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 

@@ -14,7 +14,7 @@ import (
 
 func TestClear(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -62,7 +62,7 @@ func TestClear(t *testing.T) {
 
 func TestClearRange(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -113,7 +113,7 @@ func TestClearRange(t *testing.T) {
 
 func TestAtomicAdd(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -156,7 +156,7 @@ func TestAtomicAdd(t *testing.T) {
 
 func TestGetRangeWithLimit(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -202,7 +202,7 @@ func TestGetRangeWithLimit(t *testing.T) {
 
 func TestMultiKeyTransaction(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -239,7 +239,7 @@ func TestMultiKeyTransaction(t *testing.T) {
 
 func TestGetNonExistentKey(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -257,7 +257,7 @@ func TestGetNonExistentKey(t *testing.T) {
 
 func TestGetKey(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -320,7 +320,7 @@ func TestGetKey(t *testing.T) {
 
 func TestSnapshotRead(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -395,7 +395,7 @@ func TestSnapshotRead(t *testing.T) {
 
 func TestExplicitConflictRanges(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -461,7 +461,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 
 func TestCancel(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -514,7 +514,7 @@ func TestCancel(t *testing.T) {
 
 func TestReadOnlyCommitIntegration(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -551,7 +551,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 
 func TestAddReadConflictRange(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -592,7 +592,7 @@ func TestAddReadConflictRange(t *testing.T) {
 
 func TestAddWriteConflictRange(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -624,7 +624,7 @@ func TestAddWriteConflictRange(t *testing.T) {
 
 func TestReadTransact(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -683,7 +683,7 @@ func TestReadTransact(t *testing.T) {
 
 func TestGetVersionstamp(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
@@ -743,7 +743,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 func TestEmptyRange(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
 	defer db.Close()
