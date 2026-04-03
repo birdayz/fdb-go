@@ -18,6 +18,7 @@ go_test(
     srcs = [
         "conformance_test.go",
         "reader_bug_test.go",
+        "serializer_test.go",
         "vtable_test.go",
     ],
     data = glob(

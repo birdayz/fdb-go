@@ -1057,33 +1057,7 @@ void generateTestVectors(const char* outDir) {
         req.flags = GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY;
         req.transactionCount = 1;
         req.priority = TransactionPriority::DEFAULT;
-        // Trace PrecomputeSize: manually walk through what C++ does
-        {
-            // simulate PrecomputeSize for serializer(ar, transactionCount, flags, tags, debugID, reply, spanContext, maxVersion)
-            // transactionCount(uint32): scalar, fb_size=4 → inline in object
-            // flags(uint32): scalar, fb_size=4 → inline
-            // tags(TransactionTagMap<uint32_t>): dynamic_size → RightAlign(cbs + size + 4, 4)
-            //   tags is empty → size=0, emptyVector kicks in
-            // debugID(Optional<UID>): union_like → tag(1 byte inline) + value(UID = 16 bytes nested)
-            //   debugID is empty → nothing
-            // reply(ReplyPromise<>): nested struct → save_members recursively
-            //   ReplyPromise serializes just token (UID), objSize=20
-            //     token is UID = 2x uint64 = 16 bytes, fb_align=8
-            //     RightAlign(cbs + 20 - 4, max(4, 8)) + 4
-            // spanContext(SpanContext): nested struct → save_members recursively
-            //   SpanContext serializes traceID(UID), spanID(uint64), m_Flags(uint8), objSize=29
-            //     max align = max(4, 8, 8, 1) = 8
-            //     RightAlign(cbs + 29 - 4, 8) + 4
-            // maxVersion(int64): scalar, fb_size=8 → inline in object (but contributes to alignment)
-            //
-            // For GetReadVersionRequest itself:
-            //   objSize=37, max align = max(4, 4, 4, dynamicsize→4, union→4, nested→4, nested→4, 8) = 8
-            //   RightAlign(cbs + 37 - 4, 8) + 4
-
-            // Let me just print the C++ computed size
-            fprintf(stderr, "GetReadVersionRequest C++ buffer_size=%d (excl prefix=%d)\n",
-                    (int)bytes2.size(), totalNoPrefix);
-        }
+        // Debug blocks removed — see CRASH_BUG.md for findings
 
         comma(); emitTestVector(out, "GetReadVersionRequest_causal_risky", req);
     }
