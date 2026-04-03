@@ -190,10 +190,7 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasTagSet {
 		tagSetOOL = dw.WriteBytesOOL(m.TagSet)
 	}
-	var idempotencyIdOOL int
-	if m.IdempotencyId != nil {
-		idempotencyIdOOL = dw.WriteBytesOOL(m.IdempotencyId)
-	}
+	idempotencyIdOOL := dw.WriteBytesOOL(m.IdempotencyId)
 	transactionPos := m.Transaction.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
 	spanContextPos := m.SpanContext.writeDirect(dw)
@@ -213,9 +210,7 @@ func (m *CommitTransactionRequest) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[CommitTransactionRequestSlotTagSet+2])] = 1
 		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotTagSet+1+2]), objPos, tagSetOOL)
 	}
-	if m.IdempotencyId != nil {
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotIdempotencyId+2]), objPos, idempotencyIdOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotIdempotencyId+2]), objPos, idempotencyIdOOL)
 	wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotTransaction+2]), objPos, transactionPos)
 	wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[CommitTransactionRequestSlotSpanContext+2]), objPos, spanContextPos)

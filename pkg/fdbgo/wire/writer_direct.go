@@ -106,14 +106,21 @@ func PatchRelOff(obj []byte, fieldOff int, objPos int, targetPos int) {
 }
 
 // MeasureBytesOOL returns the end-offset contribution of a WriteBytes field.
+// C++ flat_buffers.h:518 PrecomputeSize::visitDynamicSize — ALWAYS allocates
+// at least 4 bytes (the length prefix), even for nil/empty data.
+// C++ has an emptyVector optimization (first empty field allocates 4 bytes,
+// subsequent reuse the same offset) but we always allocate for simplicity.
+// This may over-allocate by 4 bytes for types with multiple nil fields.
 func MeasureBytesOOL(endOff int, data []byte) int {
-	if data == nil {
-		return endOff
-	}
-	return endOff + (4+len(data)+3)&^3
+	size := len(data) // 0 for nil
+	// C++: RightAlign(current_buffer_size + size + 4, 4)
+	return RightAlign(endOff+size+4, 4)
 }
 
 // MeasureRawOOL returns the end-offset contribution of a WriteRawOOL field.
+// Same as MeasureBytesOOL but without length prefix (used for VectorRef pre-packed).
+// C++ visitDynamicSize always allocates space. For RawOOL with nil data, the field
+// is still visited but contributes 0 bytes (no length prefix to allocate).
 func MeasureRawOOL(endOff int, data []byte) int {
 	if data == nil {
 		return endOff
@@ -126,8 +133,15 @@ func MeasureRawOOL(endOff int, data []byte) int {
 // No alignment for nested objects — alignment only happens at the root
 // (always to 8, in MarshalFDB). The maxAlign parameter is unused but
 // kept for API compatibility.
-func MeasureObject(endOff int, vt VTable, _ int) int {
-	return endOff + int(vt[1])
+// MeasureObject computes the end-offset after writing an object.
+// C++ SaveVisitorLambda (flat_buffers.h:972):
+//   RightAlign(current_buffer_size + vtable[1] - 4, max(4, fb_align<Members>...)) + 4
+func MeasureObject(endOff int, vt VTable, maxAlign int) int {
+	if maxAlign < 4 {
+		maxAlign = 4
+	}
+	bodySize := int(vt[1]) - 4
+	return rightAlign(endOff+bodySize, maxAlign) + 4
 }
 
 // Init initializes a stack-allocated DirectWriter.

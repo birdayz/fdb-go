@@ -92,23 +92,13 @@ func (m *MutationRef) measureEndOff(endOff int) int {
 }
 
 func (m *MutationRef) writeDirect(dw *wire.DirectWriter) int {
-	var param1OOL int
-	if m.Param1 != nil {
-		param1OOL = dw.WriteBytesOOL(m.Param1)
-	}
-	var param2OOL int
-	if m.Param2 != nil {
-		param2OOL = dw.WriteBytesOOL(m.Param2)
-	}
+	param1OOL := dw.WriteBytesOOL(m.Param1)
+	param2OOL := dw.WriteBytesOOL(m.Param2)
 	objPos, obj := dw.WriteObject(MutationRefVTable, MutationRefMaxAlign)
 	vt := MutationRefVTable
 	obj[int(vt[MutationRefSlotMutType+2])] = m.MutType
-	if m.Param1 != nil {
-		wire.PatchRelOff(obj, int(vt[MutationRefSlotParam1+2]), objPos, param1OOL)
-	}
-	if m.Param2 != nil {
-		wire.PatchRelOff(obj, int(vt[MutationRefSlotParam2+2]), objPos, param2OOL)
-	}
+	wire.PatchRelOff(obj, int(vt[MutationRefSlotParam1+2]), objPos, param1OOL)
+	wire.PatchRelOff(obj, int(vt[MutationRefSlotParam2+2]), objPos, param2OOL)
 	return objPos
 }
 

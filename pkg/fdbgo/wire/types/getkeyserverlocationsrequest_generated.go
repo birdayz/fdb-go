@@ -154,10 +154,7 @@ func (m *GetKeyServerLocationsRequest) measureEndOff(endOff int) int {
 }
 
 func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
-	var beginOOL int
-	if m.Begin != nil {
-		beginOOL = dw.WriteBytesOOL(m.Begin)
-	}
+	beginOOL := dw.WriteBytesOOL(m.Begin)
 	var endOOL int
 	if m.HasEnd {
 		endOOL = dw.WriteBytesOOL(m.End)
@@ -172,9 +169,7 @@ func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetKeyServerLocationsRequestSlotReverse+2])] = 1
 	}
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]):], uint64(m.MinTenantVersion))
-	if m.Begin != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotBegin+2]), objPos, beginOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotBegin+2]), objPos, beginOOL)
 	if m.HasEnd {
 		obj[int(vt[GetKeyServerLocationsRequestSlotEnd+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotEnd+1+2]), objPos, endOOL)

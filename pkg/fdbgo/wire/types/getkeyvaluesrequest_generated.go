@@ -196,10 +196,7 @@ func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasOptions {
 		optionsOOL = dw.WriteBytesOOL(m.Options)
 	}
-	var ssLatestCommitVersionsOOL int
-	if m.SsLatestCommitVersions != nil {
-		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
-	}
+	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	beginPos := m.Begin.writeDirect(dw)
 	endPos := m.End.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
@@ -218,9 +215,7 @@ func (m *GetKeyValuesRequest) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetKeyValuesRequestSlotOptions+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotOptions+1+2]), objPos, optionsOOL)
 	}
-	if m.SsLatestCommitVersions != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotBegin+2]), objPos, beginPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotEnd+2]), objPos, endPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyValuesRequestSlotReply+2]), objPos, replyPos)

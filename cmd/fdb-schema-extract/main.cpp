@@ -544,10 +544,9 @@ private:
             auto gn = fieldGoName(*fdp);
             auto varName = safeParam(gn) + "OOL";
             if (fdp->kind == FieldKind::DynamicSize) {
-                fprintf(f, "\tvar %s int\n", varName.c_str());
-                fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
-                fprintf(f, "\t\t%s = dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
-                fprintf(f, "\t}\n");
+                // C++ always visits dynamic_size fields, even empty ones.
+                // WriteBytesOOL writes [len(4)][data][pad] — for nil, just [0x00000000].
+                fprintf(f, "\t%s := dw.WriteBytesOOL(m.%s)\n", varName.c_str(), gn.c_str());
             } else if (fdp->kind == FieldKind::VectorOfStruct) {
                 fprintf(f, "\tvar %s int\n", varName.c_str());
                 fprintf(f, "\tif len(m.%s) > 0 {\n", gn.c_str());
@@ -685,10 +684,9 @@ private:
                         slot.c_str(), varName.c_str());
                 fprintf(f, "\t}\n");
             } else {
-                fprintf(f, "\tif m.%s != nil {\n", gn.c_str());
-                fprintf(f, "\t\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
+                // DynamicSize/VectorLike: C++ always writes, always patches reloff.
+                fprintf(f, "\twire.PatchRelOff(obj, int(vt[%s+2]), objPos, %s)\n",
                         slot.c_str(), varName.c_str());
-                fprintf(f, "\t}\n");
             }
         }
 

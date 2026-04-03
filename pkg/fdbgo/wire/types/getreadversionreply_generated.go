@@ -187,10 +187,7 @@ func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
 	if m.TagThrottleInfo != nil {
 		tagThrottleInfoOOL = dw.WriteRawOOL(m.TagThrottleInfo)
 	}
-	var ssVersionVectorDeltaOOL int
-	if m.SsVersionVectorDelta != nil {
-		ssVersionVectorDeltaOOL = dw.WriteBytesOOL(m.SsVersionVectorDelta)
-	}
+	ssVersionVectorDeltaOOL := dw.WriteBytesOOL(m.SsVersionVectorDelta)
 	objPos, obj := dw.WriteObject(GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
 	vt := GetReadVersionReplyVTable
 	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionReplySlotProcessBusyTime+2]):], uint32(m.ProcessBusyTime))
@@ -211,12 +208,8 @@ func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetReadVersionReplySlotMetadataVersion+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotMetadataVersion+1+2]), objPos, metadataVersionOOL)
 	}
-	if m.TagThrottleInfo != nil {
-		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), objPos, tagThrottleInfoOOL)
-	}
-	if m.SsVersionVectorDelta != nil {
-		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), objPos, ssVersionVectorDeltaOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), objPos, tagThrottleInfoOOL)
+	wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), objPos, ssVersionVectorDeltaOOL)
 	return objPos
 }
 

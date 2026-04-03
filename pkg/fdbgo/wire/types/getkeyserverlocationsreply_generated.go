@@ -130,15 +130,9 @@ func (m *GetKeyServerLocationsReply) writeDirect(dw *wire.DirectWriter) int {
 	}
 	objPos, obj := dw.WriteObject(GetKeyServerLocationsReplyVTable, GetKeyServerLocationsReplyMaxAlign)
 	vt := GetKeyServerLocationsReplyVTable
-	if m.Results != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResults+2]), objPos, resultsOOL)
-	}
-	if m.ResultsTssMapping != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), objPos, resultsTssMappingOOL)
-	}
-	if m.ResultsTagMapping != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), objPos, resultsTagMappingOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResults+2]), objPos, resultsOOL)
+	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]), objPos, resultsTssMappingOOL)
+	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]), objPos, resultsTagMappingOOL)
 	return objPos
 }
 

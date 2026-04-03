@@ -83,22 +83,12 @@ func (m *KeyValueRef) measureEndOff(endOff int) int {
 }
 
 func (m *KeyValueRef) writeDirect(dw *wire.DirectWriter) int {
-	var keyOOL int
-	if m.Key != nil {
-		keyOOL = dw.WriteBytesOOL(m.Key)
-	}
-	var valueOOL int
-	if m.Value != nil {
-		valueOOL = dw.WriteBytesOOL(m.Value)
-	}
+	keyOOL := dw.WriteBytesOOL(m.Key)
+	valueOOL := dw.WriteBytesOOL(m.Value)
 	objPos, obj := dw.WriteObject(KeyValueRefVTable, KeyValueRefMaxAlign)
 	vt := KeyValueRefVTable
-	if m.Key != nil {
-		wire.PatchRelOff(obj, int(vt[KeyValueRefSlotKey+2]), objPos, keyOOL)
-	}
-	if m.Value != nil {
-		wire.PatchRelOff(obj, int(vt[KeyValueRefSlotValue+2]), objPos, valueOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[KeyValueRefSlotKey+2]), objPos, keyOOL)
+	wire.PatchRelOff(obj, int(vt[KeyValueRefSlotValue+2]), objPos, valueOOL)
 	return objPos
 }
 

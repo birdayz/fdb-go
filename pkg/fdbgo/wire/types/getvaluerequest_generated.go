@@ -159,10 +159,7 @@ func (m *GetValueRequest) measureEndOff(endOff int) int {
 }
 
 func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
-	var keyOOL int
-	if m.Key != nil {
-		keyOOL = dw.WriteBytesOOL(m.Key)
-	}
+	keyOOL := dw.WriteBytesOOL(m.Key)
 	var tagsOOL int
 	if m.HasTags {
 		tagsOOL = dw.WriteBytesOOL(m.Tags)
@@ -171,19 +168,14 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasOptions {
 		optionsOOL = dw.WriteBytesOOL(m.Options)
 	}
-	var ssLatestCommitVersionsOOL int
-	if m.SsLatestCommitVersions != nil {
-		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
-	}
+	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	replyPos := m.Reply.writeDirect(dw)
 	spanContextPos := m.SpanContext.writeDirect(dw)
 	tenantInfoPos := m.TenantInfo.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetValueRequestVTable, GetValueRequestMaxAlign)
 	vt := GetValueRequestVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetValueRequestSlotVersion+2]):], uint64(m.Version))
-	if m.Key != nil {
-		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotKey+2]), objPos, keyOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotKey+2]), objPos, keyOOL)
 	if m.HasTags {
 		obj[int(vt[GetValueRequestSlotTags+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotTags+1+2]), objPos, tagsOOL)
@@ -192,9 +184,7 @@ func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetValueRequestSlotOptions+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotOptions+1+2]), objPos, optionsOOL)
 	}
-	if m.SsLatestCommitVersions != nil {
-		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSpanContext+2]), objPos, spanContextPos)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotTenantInfo+2]), objPos, tenantInfoPos)

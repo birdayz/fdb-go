@@ -78,9 +78,7 @@ func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
 	keyRangePos := m.KeyRange.writeDirect(dw)
 	objPos, obj := dw.WriteObject(LocationPairVTable, LocationPairMaxAlign)
 	vt := LocationPairVTable
-	if m.Servers != nil {
-		wire.PatchRelOff(obj, int(vt[LocationPairSlotServers+2]), objPos, serversOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[LocationPairSlotServers+2]), objPos, serversOOL)
 	wire.PatchRelOff(obj, int(vt[LocationPairSlotKeyRange+2]), objPos, keyRangePos)
 	return objPos
 }

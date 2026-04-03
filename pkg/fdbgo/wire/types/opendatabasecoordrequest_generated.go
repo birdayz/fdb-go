@@ -191,14 +191,8 @@ func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.SupportedVersions != nil {
 		supportedVersionsOOL = dw.WriteRawOOL(m.SupportedVersions)
 	}
-	var traceLogGroupOOL int
-	if m.TraceLogGroup != nil {
-		traceLogGroupOOL = dw.WriteBytesOOL(m.TraceLogGroup)
-	}
-	var clusterKeyOOL int
-	if m.ClusterKey != nil {
-		clusterKeyOOL = dw.WriteBytesOOL(m.ClusterKey)
-	}
+	traceLogGroupOOL := dw.WriteBytesOOL(m.TraceLogGroup)
+	clusterKeyOOL := dw.WriteBytesOOL(m.ClusterKey)
 	var coordinatorsOOL int
 	if m.Coordinators != nil {
 		coordinatorsOOL = dw.WriteRawOOL(m.Coordinators)
@@ -214,24 +208,12 @@ func (m *OpenDatabaseCoordRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.Internal {
 		obj[int(vt[OpenDatabaseCoordRequestSlotInternal+2])] = 1
 	}
-	if m.Issues != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotIssues+2]), objPos, issuesOOL)
-	}
-	if m.SupportedVersions != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotSupportedVersions+2]), objPos, supportedVersionsOOL)
-	}
-	if m.TraceLogGroup != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotTraceLogGroup+2]), objPos, traceLogGroupOOL)
-	}
-	if m.ClusterKey != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), objPos, clusterKeyOOL)
-	}
-	if m.Coordinators != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]), objPos, coordinatorsOOL)
-	}
-	if m.Hostnames != nil {
-		wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotHostnames+2]), objPos, hostnamesOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotIssues+2]), objPos, issuesOOL)
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotSupportedVersions+2]), objPos, supportedVersionsOOL)
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotTraceLogGroup+2]), objPos, traceLogGroupOOL)
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotClusterKey+2]), objPos, clusterKeyOOL)
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotCoordinators+2]), objPos, coordinatorsOOL)
+	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotHostnames+2]), objPos, hostnamesOOL)
 	wire.PatchRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotReply+2]), objPos, replyPos)
 	return objPos
 }

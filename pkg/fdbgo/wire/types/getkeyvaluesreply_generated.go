@@ -139,10 +139,7 @@ func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasError {
 		error_OOL = dw.WriteBytesOOL(m.Error)
 	}
-	var dataOOL int
-	if m.Data != nil {
-		dataOOL = dw.WriteBytesOOL(m.Data)
-	}
+	dataOOL := dw.WriteBytesOOL(m.Data)
 	objPos, obj := dw.WriteObject(GetKeyValuesReplyVTable, GetKeyValuesReplyMaxAlign)
 	vt := GetKeyValuesReplyVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
@@ -157,9 +154,7 @@ func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetKeyValuesReplySlotError+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotError+1+2]), objPos, error_OOL)
 	}
-	if m.Data != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotData+2]), objPos, dataOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotData+2]), objPos, dataOOL)
 	return objPos
 }
 

@@ -85,19 +85,14 @@ func (m *KeySelectorRef) measureEndOff(endOff int) int {
 }
 
 func (m *KeySelectorRef) writeDirect(dw *wire.DirectWriter) int {
-	var keyOOL int
-	if m.Key != nil {
-		keyOOL = dw.WriteBytesOOL(m.Key)
-	}
+	keyOOL := dw.WriteBytesOOL(m.Key)
 	objPos, obj := dw.WriteObject(KeySelectorRefVTable, KeySelectorRefMaxAlign)
 	vt := KeySelectorRefVTable
 	if m.OrEqual {
 		obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1
 	}
 	binary.LittleEndian.PutUint32(obj[int(vt[KeySelectorRefSlotOffset+2]):], uint32(m.Offset))
-	if m.Key != nil {
-		wire.PatchRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, keyOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, keyOOL)
 	return objPos
 }
 

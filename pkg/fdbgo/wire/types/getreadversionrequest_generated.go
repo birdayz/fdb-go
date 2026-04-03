@@ -151,9 +151,7 @@ func (m *GetReadVersionRequest) writeDirect(dw *wire.DirectWriter) int {
 	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionRequestSlotTransactionCount+2]):], m.TransactionCount)
 	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionRequestSlotFlags+2]):], m.Flags)
 	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionRequestSlotMaxVersion+2]):], uint64(m.MaxVersion))
-	if m.Tags != nil {
-		wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotTags+2]), objPos, tagsOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotTags+2]), objPos, tagsOOL)
 	if m.HasDebugID {
 		obj[int(vt[GetReadVersionRequestSlotDebugID+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetReadVersionRequestSlotDebugID+1+2]), objPos, debugIDOOL)

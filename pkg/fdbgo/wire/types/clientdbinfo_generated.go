@@ -212,19 +212,13 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 	copy(obj[int(vt[ClientDBInfoSlotId+2]):], m.Id[:])
 	copy(obj[int(vt[ClientDBInfoSlotClusterId+2]):], m.ClusterId[:])
 	binary.LittleEndian.PutUint32(obj[int(vt[ClientDBInfoSlotClusterType+2]):], uint32(m.ClusterType))
-	if m.GrvProxies != nil {
-		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotGrvProxies+2]), objPos, grvProxiesOOL)
-	}
-	if m.CommitProxies != nil {
-		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotCommitProxies+2]), objPos, commitProxiesOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotGrvProxies+2]), objPos, grvProxiesOOL)
+	wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotCommitProxies+2]), objPos, commitProxiesOOL)
 	if m.HasForward {
 		obj[int(vt[ClientDBInfoSlotForward+2])] = 1
 		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotForward+1+2]), objPos, forwardOOL)
 	}
-	if m.History != nil {
-		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotHistory+2]), objPos, historyOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotHistory+2]), objPos, historyOOL)
 	if m.HasEncryptKeyProxy {
 		obj[int(vt[ClientDBInfoSlotEncryptKeyProxy+2])] = 1
 		wire.PatchRelOff(obj, int(vt[ClientDBInfoSlotEncryptKeyProxy+1+2]), objPos, encryptKeyProxyOOL)

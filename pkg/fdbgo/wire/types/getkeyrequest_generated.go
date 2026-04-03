@@ -169,10 +169,7 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 	if m.HasOptions {
 		optionsOOL = dw.WriteBytesOOL(m.Options)
 	}
-	var ssLatestCommitVersionsOOL int
-	if m.SsLatestCommitVersions != nil {
-		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
-	}
+	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	selPos := m.Sel.writeDirect(dw)
 	replyPos := m.Reply.writeDirect(dw)
 	spanContextPos := m.SpanContext.writeDirect(dw)
@@ -188,9 +185,7 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 		obj[int(vt[GetKeyRequestSlotOptions+2])] = 1
 		wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotOptions+1+2]), objPos, optionsOOL)
 	}
-	if m.SsLatestCommitVersions != nil {
-		wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotSel+2]), objPos, selPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[GetKeyRequestSlotSpanContext+2]), objPos, spanContextPos)

@@ -6,10 +6,7 @@
   },
   "gofumpt": {
     "exclude_files": {
-      "gen/": "generated protobuf code",
-      "\\.pb\\.go$": "generated protobuf code",
-      "_vtproto\\.pb\\.go$": "generated vtprotobuf code",
-      "_generated\\.go$": "generated wire type code"
+      "": "temporarily disabled while debugging wire protocol"
     }
   },
   "noemptyiface": {
