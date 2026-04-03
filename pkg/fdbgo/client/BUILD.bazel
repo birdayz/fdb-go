@@ -38,7 +38,7 @@ go_test(
         "setget_test.go",
         "tcpdump_test.go",
     ],
-    args = ["-test.parallel=8"],  # Limit parallel containers for CI
+    args = ["-test.parallel=4"],  # Limit parallel containers — CI has 7GB RAM, each FDB+socat ~200MB
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",
