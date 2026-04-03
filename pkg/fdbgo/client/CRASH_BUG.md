@@ -174,12 +174,44 @@ The codegen (RFC 013) produces a format where our reader and writer agree,
 but it does NOT match the C++ FlatBuffers layout that FDB server expects.
 The CGo client (using `libfdb_c.so`) produces the correct C++ layout.
 
-### Root cause: codegen layout divergence
+### Root cause: three codegen/runtime layout bugs
 
-The issue is in `pkg/fdbgo/wire/writer.go` / `writer_direct.go` — the
-vtable packing, object alignment, or OOL data placement differs from
-C++'s ObjectSerializer. Need byte-by-byte comparison of a simple
-`GetKeyServerLocationsRequest` between our Go output and C++ output.
+**Bug 1 (FIXED):** Nested struct serialization order was reversed.
+Our codegen emitted nested structs in reverse field order; C++ processes
+them in forward serialization order. Fixed in main.cpp `emitMeasureEndOff`,
+`emitWriteDirect`, `emitMarshalFDB`.
+
+**Bug 2 (FIXED):** Optional<T> fields were completely skipped in marshal.
+FieldKind::Optional was not handled in measureEndOff, writeDirect, or
+MarshalFDB emit paths. Fixed: presence tag + WriteBytesOOL for value.
+
+**Bug 3 (INVESTIGATING):** VTable packing size mismatch.
+Our `VTableSet.pack()` in `writer.go` produces 50 bytes for a 5-vtable
+closure, C++ produces 52 bytes. The 2-byte difference + 8-byte alignment
+causes an 8-byte total size mismatch. This is in the **generic runtime
+code**, not per-type codegen.
+
+C++ uses `packed_tables` from `VTableSet::pack()` in flat_buffers.h.
+Our Go `vTableSet.pack()` concatenates vtable entries without padding.
+C++ likely adds per-vtable alignment padding.
+
+Options:
+1. Fix our Go `VTableSet.pack()` to match C++ packing algorithm
+2. Have the C++ extractor emit pre-packed vtable bytes as constants
+   (eliminates Go reimplementation of C++ vtable packing entirely)
+
+**Bug 4 (INVESTIGATING):** CommitTransactionRequest Go output is LARGER
+than C++ (+40/+88 bytes). This may be a Vector<struct> blob sizing issue
+where our `blobSize()`/`writeBlob()` produces different padding than C++.
+
+### Ground truth test infrastructure
+
+`cmd/fdb-schema-extract/main.cpp` now emits `testdata.json` with C++
+ObjectWriter serialized bytes for 10 test vectors. Go test
+`types/ground_truth_test.go` compares MarshalFDB byte-for-byte.
+
+Current status: 3/10 match (GetKeyServerLocationsRequest variants).
+7/10 have size mismatches from bugs 3 and 4.
 
 ## Next steps
 
