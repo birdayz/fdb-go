@@ -24,7 +24,7 @@ go_library(
 
 go_test(
     name = "client_test",
-    size = "large",  # default timeout 900s; CI uses --test_timeout=3600
+    timeout = "eternal",  # eternal=900s default; CI --test_timeout overrides 4th slot
     srcs = [
         "bench_test.go",
         "c_binding_port_test.go",
