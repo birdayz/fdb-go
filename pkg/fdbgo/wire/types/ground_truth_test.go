@@ -155,6 +155,7 @@ func TestGroundTruthMarshal(t *testing.T) {
 			return (&GetReadVersionRequest{
 				Flags:            1, // FLAG_CAUSAL_READ_RISKY
 				TransactionCount: 1,
+				MaxVersion:       -1, // invalidVersion (C++ default)
 				Reply:            ReplyPromise{},
 			}).MarshalFDB()
 		},
