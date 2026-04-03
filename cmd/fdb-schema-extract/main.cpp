@@ -875,6 +875,156 @@ wait:
 }
 
 // ============================================================
+// Ground-truth test vector generation
+// ============================================================
+
+// Serialize a message using C++ ObjectWriter and emit JSON test vector.
+// This is the AUTHORITATIVE serialization — if our Go output differs,
+// our Go code is wrong.
+template <class T>
+void emitTestVector(FILE* out, const char* name, T& msg) {
+    static_assert(requires { T::file_identifier; }, "Type must have file_identifier");
+    ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
+    wr.serialize(T::file_identifier, msg);
+    auto bytes = wr.toStringRef();
+
+    // Strip 12-byte protocol version prefix if present.
+    // FDB prepends [8-byte protocolVersion][4-byte something] in IncludeVersion mode.
+    // Our Go code expects the message without this prefix (or handles it in NewReader).
+    const uint8_t* data = bytes.begin();
+    int len = bytes.size();
+
+    fprintf(out, "  {\n");
+    fprintf(out, "    \"name\": \"%s\",\n", name);
+    fprintf(out, "    \"file_id\": %u,\n", T::file_identifier);
+    fprintf(out, "    \"size\": %d,\n", len);
+    fprintf(out, "    \"hex\": \"");
+    for (int i = 0; i < len; i++)
+        fprintf(out, "%02x", data[i]);
+    fprintf(out, "\"\n");
+    fprintf(out, "  }");
+}
+
+void generateTestVectors(const char* outDir) {
+    std::string path = std::string(outDir) + "/testdata.json";
+    FILE* out = fopen(path.c_str(), "w");
+    if (!out) { perror(path.c_str()); return; }
+
+    fprintf(out, "[\n");
+    bool first = true;
+    auto comma = [&]() { if (!first) fprintf(out, ",\n"); first = false; };
+
+    // --- GetKeyServerLocationsRequest (the type that crashes FDB) ---
+    {
+        GetKeyServerLocationsRequest req;
+        req.begin = "test_key"_sr;
+        req.limit = 100;
+        req.reverse = false;
+        req.tenant.tenantId = -1;
+        req.minTenantVersion = -1;
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_basic", req);
+    }
+    {
+        GetKeyServerLocationsRequest req;
+        req.begin = "a_longer_test_key_with_more_bytes"_sr;
+        req.end = Optional<KeyRef>("end_key"_sr);
+        req.limit = 42;
+        req.reverse = true;
+        req.tenant.tenantId = -1;
+        req.minTenantVersion = -1;
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_with_end", req);
+    }
+    {
+        GetKeyServerLocationsRequest req;
+        req.begin = ""_sr;
+        req.limit = 0;
+        req.tenant.tenantId = 0;
+        req.minTenantVersion = 0;
+        comma(); emitTestVector(out, "GetKeyServerLocationsRequest_empty", req);
+    }
+
+    // --- GetValueRequest ---
+    {
+        GetValueRequest req;
+        req.key = "my_key"_sr;
+        req.version = 12345678;
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "GetValueRequest_basic", req);
+    }
+
+    // --- GetKeyRequest ---
+    {
+        GetKeyRequest req;
+        req.sel = KeySelectorRef("selector_key"_sr, true, 1);
+        req.version = 99999;
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "GetKeyRequest_basic", req);
+    }
+
+    // --- GetKeyValuesRequest ---
+    {
+        GetKeyValuesRequest req;
+        req.begin = KeySelectorRef("begin_key"_sr, true, 1);
+        req.end = KeySelectorRef("end_key"_sr, false, 0);
+        req.version = 54321;
+        req.limit = 1000;
+        req.limitBytes = 0x7fffffff;
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "GetKeyValuesRequest_basic", req);
+    }
+
+    // --- CommitTransactionRequest ---
+    {
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 42;
+        req.transaction.mutations.push_back(
+            req.arena, MutationRef(MutationRef::SetValue, "key1"_sr, "val1"_sr));
+        req.transaction.write_conflict_ranges.push_back(
+            req.arena, KeyRangeRef("key1"_sr, "key1\x00"_sr));
+        req.transaction.read_conflict_ranges.push_back(
+            req.arena, KeyRangeRef("key1"_sr, "key1\x00"_sr));
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "CommitTransactionRequest_single_set", req);
+    }
+    {
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 99999;
+        for (int i = 0; i < 3; i++) {
+            auto key = "key_" + std::to_string(i);
+            auto val = "val_" + std::to_string(i);
+            req.transaction.mutations.push_back(
+                req.arena, MutationRef(MutationRef::SetValue,
+                    KeyRef(req.arena, key), ValueRef(req.arena, val)));
+            req.transaction.write_conflict_ranges.push_back(
+                req.arena, KeyRangeRef(
+                    KeyRef(req.arena, key),
+                    KeyRef(req.arena, key + '\0')));
+        }
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "CommitTransactionRequest_three_sets", req);
+    }
+    {
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 0;
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "CommitTransactionRequest_empty", req);
+    }
+
+    // --- GetReadVersionRequest ---
+    {
+        GetReadVersionRequest req;
+        req.flags = GetReadVersionRequest::FLAG_CAUSAL_READ_RISKY;
+        req.transactionCount = 1;
+        req.priority = TransactionPriority::DEFAULT;
+        comma(); emitTestVector(out, "GetReadVersionRequest_causal_risky", req);
+    }
+
+    fprintf(out, "\n]\n");
+    fclose(out);
+    fprintf(stderr, "Test vectors → %s\n", path.c_str());
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -924,6 +1074,9 @@ int main(int argc, char** argv) {
 
     using LocationPair = std::pair<KeyRangeRef, std::vector<StorageServerInterface>>;
     extractType<LocationPair>(outDir, "LocationPair");
+
+    // Generate ground-truth test vectors for Go conformance tests.
+    generateTestVectors(outDir);
 
     fprintf(stderr, "Done.\n");
     return 0;

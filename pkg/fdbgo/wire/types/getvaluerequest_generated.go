@@ -9,20 +9,18 @@ import (
 )
 
 const (
-	GetValueRequestSlotKey                    = 0
-	GetValueRequestSlotVersion                = 1
-	GetValueRequestSlotTags                   = 2
-	GetValueRequestSlotReply                  = 4
-	GetValueRequestSlotSpanContext            = 5
-	GetValueRequestSlotTenantInfo             = 6
-	GetValueRequestSlotOptions                = 7
+	GetValueRequestSlotKey = 0
+	GetValueRequestSlotVersion = 1
+	GetValueRequestSlotTags = 2
+	GetValueRequestSlotReply = 4
+	GetValueRequestSlotSpanContext = 5
+	GetValueRequestSlotTenantInfo = 6
+	GetValueRequestSlotOptions = 7
 	GetValueRequestSlotSsLatestCommitVersions = 9
 )
 
 var GetValueRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
-
 const GetValueRequestFileID uint32 = 8454530
-
 var GetValueRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
@@ -34,20 +32,19 @@ var GetValueRequestVTableClosure = []wire.VTable{
 var GetValueRequestTemplate = wire.NewMessageTemplate(
 	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
 )
-
 const GetValueRequestMaxAlign = 8
 
 type GetValueRequest struct {
-	Key                    []byte       // slot 0
-	Version                int64        // slot 1
-	HasTags                bool         // slot 2, optional tag
-	Tags                   []byte       // slot 3, optional value
-	Reply                  ReplyPromise // slot 4, nested
-	SpanContext            SpanContext  // slot 5, nested
-	TenantInfo             TenantInfo   // slot 6, nested
-	HasOptions             bool         // slot 7, optional tag
-	Options                []byte       // slot 8, optional value
-	SsLatestCommitVersions []byte       // slot 9
+	Key []byte // slot 0
+	Version int64 // slot 1
+	HasTags bool   // slot 2, optional tag
+	Tags    []byte // slot 3, optional value
+	Reply ReplyPromise // slot 4, nested
+	SpanContext SpanContext // slot 5, nested
+	TenantInfo TenantInfo // slot 6, nested
+	HasOptions bool   // slot 7, optional tag
+	Options    []byte // slot 8, optional value
+	SsLatestCommitVersions []byte // slot 9
 }
 
 func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -81,9 +78,7 @@ func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetValueRequestSlotKey) {
 		m.Key = r.ReadBytes(GetValueRequestSlotKey)
 	}
@@ -119,12 +114,8 @@ func (m *GetValueRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Key != nil {
-		oolSize += (4 + len(m.Key) + 3) &^ 3
-	}
-	if m.SsLatestCommitVersions != nil {
-		oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3
-	}
+	if m.Key != nil { oolSize += (4 + len(m.Key) + 3) &^ 3 }
+	if m.SsLatestCommitVersions != nil { oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -218,18 +209,15 @@ func (m *GetValueRequest) MarshalFDB() []byte {
 // ParseGetValueRequestVectorFromReader reads a FlatBuffers vector of GetValueRequest.
 func ParseGetValueRequestVectorFromReader(r *wire.Reader, slot int) []GetValueRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetValueRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetValueRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

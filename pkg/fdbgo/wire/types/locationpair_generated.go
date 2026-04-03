@@ -6,16 +6,15 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
 	LocationPairSlotKeyRange = 0
-	LocationPairSlotServers  = 1
+	LocationPairSlotServers = 1
 )
 
 var LocationPairVTable = wire.VTable{8, 12, 4, 8}
-
 const LocationPairMaxAlign = 4
 
 type LocationPair struct {
 	KeyRange KeyRangeRef // slot 0, nested
-	Servers  []byte      // slot 1
+	Servers []byte // slot 1
 }
 
 func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
@@ -29,9 +28,7 @@ func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *LocationPair) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
 		m.KeyRange.UnmarshalFromReader(nr)
 	}
@@ -47,9 +44,7 @@ func (m *LocationPair) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Servers != nil {
-		oolSize += (len(m.Servers) + 3) &^ 3
-	}
+	if m.Servers != nil { oolSize += (len(m.Servers) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -93,18 +88,15 @@ func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
 // ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.
 func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) []LocationPair {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]LocationPair, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem LocationPair
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

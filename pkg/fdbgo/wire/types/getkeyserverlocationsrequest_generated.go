@@ -9,21 +9,19 @@ import (
 )
 
 const (
-	GetKeyServerLocationsRequestSlotBegin            = 0
-	GetKeyServerLocationsRequestSlotEnd              = 1
-	GetKeyServerLocationsRequestSlotLimit            = 3
-	GetKeyServerLocationsRequestSlotReverse          = 4
-	GetKeyServerLocationsRequestSlotReply            = 5
-	GetKeyServerLocationsRequestSlotSpanContext      = 6
-	GetKeyServerLocationsRequestSlotTenant           = 7
+	GetKeyServerLocationsRequestSlotBegin = 0
+	GetKeyServerLocationsRequestSlotEnd = 1
+	GetKeyServerLocationsRequestSlotLimit = 3
+	GetKeyServerLocationsRequestSlotReverse = 4
+	GetKeyServerLocationsRequestSlotReply = 5
+	GetKeyServerLocationsRequestSlotSpanContext = 6
+	GetKeyServerLocationsRequestSlotTenant = 7
 	GetKeyServerLocationsRequestSlotMinTenantVersion = 8
-	GetKeyServerLocationsRequestSlotArena            = 9
+	GetKeyServerLocationsRequestSlotArena = 9
 )
 
 var GetKeyServerLocationsRequestVTable = wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
-
 const GetKeyServerLocationsRequestFileID uint32 = 9144680
-
 var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
@@ -34,20 +32,19 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(
 	GetKeyServerLocationsRequestFileID, GetKeyServerLocationsRequestVTable, 8, GetKeyServerLocationsRequestVTableClosure,
 )
-
 const GetKeyServerLocationsRequestMaxAlign = 8
 
 type GetKeyServerLocationsRequest struct {
-	Begin            []byte       // slot 0
-	HasEnd           bool         // slot 1, optional tag
-	End              []byte       // slot 2, optional value
-	Limit            int32        // slot 3
-	Reverse          bool         // slot 4
-	Reply            ReplyPromise // slot 5, nested
-	SpanContext      SpanContext  // slot 6, nested
-	Tenant           TenantInfo   // slot 7, nested
-	MinTenantVersion int64        // slot 8
-	Arena            []byte       // slot 9
+	Begin []byte // slot 0
+	HasEnd bool   // slot 1, optional tag
+	End    []byte // slot 2, optional value
+	Limit int32 // slot 3
+	Reverse bool // slot 4
+	Reply ReplyPromise // slot 5, nested
+	SpanContext SpanContext // slot 6, nested
+	Tenant TenantInfo // slot 7, nested
+	MinTenantVersion int64 // slot 8
+	Arena []byte // slot 9
 }
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -83,9 +80,7 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
 		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
 	}
@@ -123,9 +118,7 @@ func (m *GetKeyServerLocationsRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Begin != nil {
-		oolSize += (4 + len(m.Begin) + 3) &^ 3
-	}
+	if m.Begin != nil { oolSize += (4 + len(m.Begin) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -137,9 +130,7 @@ func (m *GetKeyServerLocationsRequest) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyServerLocationsRequestSlotLimit+2]):], uint32(m.Limit))
-	if m.Reverse {
-		obj[int(vt[GetKeyServerLocationsRequestSlotReverse+2])] = 1
-	}
+	if m.Reverse { obj[int(vt[GetKeyServerLocationsRequestSlotReverse+2])] = 1 }
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]):], uint64(m.MinTenantVersion))
 	if m.Begin != nil {
 		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Begin)))
@@ -212,18 +203,15 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 // ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest.
 func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyServerLocationsRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyServerLocationsRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

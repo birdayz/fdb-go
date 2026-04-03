@@ -9,21 +9,19 @@ import (
 )
 
 const (
-	OpenDatabaseCoordRequestSlotIssues            = 0
+	OpenDatabaseCoordRequestSlotIssues = 0
 	OpenDatabaseCoordRequestSlotSupportedVersions = 1
-	OpenDatabaseCoordRequestSlotTraceLogGroup     = 2
+	OpenDatabaseCoordRequestSlotTraceLogGroup = 2
 	OpenDatabaseCoordRequestSlotKnownClientInfoID = 3
-	OpenDatabaseCoordRequestSlotClusterKey        = 4
-	OpenDatabaseCoordRequestSlotCoordinators      = 5
-	OpenDatabaseCoordRequestSlotReply             = 6
-	OpenDatabaseCoordRequestSlotHostnames         = 7
-	OpenDatabaseCoordRequestSlotInternal          = 8
+	OpenDatabaseCoordRequestSlotClusterKey = 4
+	OpenDatabaseCoordRequestSlotCoordinators = 5
+	OpenDatabaseCoordRequestSlotReply = 6
+	OpenDatabaseCoordRequestSlotHostnames = 7
+	OpenDatabaseCoordRequestSlotInternal = 8
 )
 
 var OpenDatabaseCoordRequestVTable = wire.VTable{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48}
-
 const OpenDatabaseCoordRequestFileID uint32 = 214728
-
 var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
 	{10, 13, 4, 8, 12},
 	{6, 20, 4},
@@ -36,19 +34,18 @@ var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
 var OpenDatabaseCoordRequestTemplate = wire.NewMessageTemplate(
 	OpenDatabaseCoordRequestFileID, OpenDatabaseCoordRequestVTable, 8, OpenDatabaseCoordRequestVTableClosure,
 )
-
 const OpenDatabaseCoordRequestMaxAlign = 8
 
 type OpenDatabaseCoordRequest struct {
-	Issues            []byte       // slot 0
-	SupportedVersions []byte       // slot 1
-	TraceLogGroup     []byte       // slot 2
-	KnownClientInfoID [16]byte     // slot 3
-	ClusterKey        []byte       // slot 4
-	Coordinators      []byte       // slot 5
-	Reply             ReplyPromise // slot 6, nested
-	Hostnames         []byte       // slot 7
-	Internal          bool         // slot 8
+	Issues []byte // slot 0
+	SupportedVersions []byte // slot 1
+	TraceLogGroup []byte // slot 2
+	KnownClientInfoID [16]byte // slot 3
+	ClusterKey []byte // slot 4
+	Coordinators []byte // slot 5
+	Reply ReplyPromise // slot 6, nested
+	Hostnames []byte // slot 7
+	Internal bool // slot 8
 }
 
 func (m *OpenDatabaseCoordRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -83,9 +80,7 @@ func (m *OpenDatabaseCoordRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *OpenDatabaseCoordRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(OpenDatabaseCoordRequestSlotIssues) {
 		m.Issues = r.ReadBytes(OpenDatabaseCoordRequestSlotIssues)
 	}
@@ -122,24 +117,12 @@ func (m *OpenDatabaseCoordRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Issues != nil {
-		oolSize += (len(m.Issues) + 3) &^ 3
-	}
-	if m.SupportedVersions != nil {
-		oolSize += (len(m.SupportedVersions) + 3) &^ 3
-	}
-	if m.TraceLogGroup != nil {
-		oolSize += (4 + len(m.TraceLogGroup) + 3) &^ 3
-	}
-	if m.ClusterKey != nil {
-		oolSize += (4 + len(m.ClusterKey) + 3) &^ 3
-	}
-	if m.Coordinators != nil {
-		oolSize += (len(m.Coordinators) + 3) &^ 3
-	}
-	if m.Hostnames != nil {
-		oolSize += (len(m.Hostnames) + 3) &^ 3
-	}
+	if m.Issues != nil { oolSize += (len(m.Issues) + 3) &^ 3 }
+	if m.SupportedVersions != nil { oolSize += (len(m.SupportedVersions) + 3) &^ 3 }
+	if m.TraceLogGroup != nil { oolSize += (4 + len(m.TraceLogGroup) + 3) &^ 3 }
+	if m.ClusterKey != nil { oolSize += (4 + len(m.ClusterKey) + 3) &^ 3 }
+	if m.Coordinators != nil { oolSize += (len(m.Coordinators) + 3) &^ 3 }
+	if m.Hostnames != nil { oolSize += (len(m.Hostnames) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -151,9 +134,7 @@ func (m *OpenDatabaseCoordRequest) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	copy(obj[int(vt[OpenDatabaseCoordRequestSlotKnownClientInfoID+2]):], m.KnownClientInfoID[:])
-	if m.Internal {
-		obj[int(vt[OpenDatabaseCoordRequestSlotInternal+2])] = 1
-	}
+	if m.Internal { obj[int(vt[OpenDatabaseCoordRequestSlotInternal+2])] = 1 }
 	if m.Issues != nil {
 		copy(buf[curOOL:], m.Issues)
 		wire.PatchBlobRelOff(obj, int(vt[OpenDatabaseCoordRequestSlotIssues+2]), objPos, curOOL)
@@ -287,18 +268,15 @@ func (m *OpenDatabaseCoordRequest) MarshalFDB() []byte {
 // ParseOpenDatabaseCoordRequestVectorFromReader reads a FlatBuffers vector of OpenDatabaseCoordRequest.
 func ParseOpenDatabaseCoordRequestVectorFromReader(r *wire.Reader, slot int) []OpenDatabaseCoordRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]OpenDatabaseCoordRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem OpenDatabaseCoordRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

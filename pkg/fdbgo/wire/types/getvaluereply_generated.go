@@ -11,15 +11,13 @@ import (
 
 const (
 	GetValueReplySlotPenalty = 0
-	GetValueReplySlotError   = 1
-	GetValueReplySlotValue   = 3
-	GetValueReplySlotCached  = 5
+	GetValueReplySlotError = 1
+	GetValueReplySlotValue = 3
+	GetValueReplySlotCached = 5
 )
 
 var GetValueReplyVTable = wire.VTable{16, 23, 4, 20, 12, 21, 16, 22}
-
 const GetValueReplyFileID uint32 = 1378929
-
 var GetValueReplyVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
@@ -28,16 +26,15 @@ var GetValueReplyVTableClosure = []wire.VTable{
 var GetValueReplyTemplate = wire.NewMessageTemplate(
 	GetValueReplyFileID, GetValueReplyVTable, 8, GetValueReplyVTableClosure,
 )
-
 const GetValueReplyMaxAlign = 8
 
 type GetValueReply struct {
-	Penalty  float64 // slot 0
-	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
-	HasValue bool    // slot 3, optional tag
-	Value    []byte  // slot 4, optional value
-	Cached   bool    // slot 5
+	Penalty float64 // slot 0
+	HasError bool   // slot 1, optional tag
+	Error    []byte // slot 2, optional value
+	HasValue bool   // slot 3, optional tag
+	Value    []byte // slot 4, optional value
+	Cached bool // slot 5
 }
 
 func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
@@ -59,9 +56,7 @@ func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetValueReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
 	}
@@ -96,9 +91,7 @@ func (m *GetValueReply) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	binary.LittleEndian.PutUint64(obj[int(vt[GetValueReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
-	if m.Cached {
-		obj[int(vt[GetValueReplySlotCached+2])] = 1
-	}
+	if m.Cached { obj[int(vt[GetValueReplySlotCached+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -142,18 +135,15 @@ func (m *GetValueReply) MarshalFDB() []byte {
 // ParseGetValueReplyVectorFromReader reads a FlatBuffers vector of GetValueReply.
 func ParseGetValueReplyVectorFromReader(r *wire.Reader, slot int) []GetValueReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetValueReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetValueReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

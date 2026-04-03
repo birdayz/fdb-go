@@ -11,18 +11,16 @@ import (
 
 const (
 	GetKeyValuesReplySlotPenalty = 0
-	GetKeyValuesReplySlotError   = 1
-	GetKeyValuesReplySlotData    = 3
+	GetKeyValuesReplySlotError = 1
+	GetKeyValuesReplySlotData = 3
 	GetKeyValuesReplySlotVersion = 4
-	GetKeyValuesReplySlotMore    = 5
-	GetKeyValuesReplySlotCached  = 6
-	GetKeyValuesReplySlotArena   = 7
+	GetKeyValuesReplySlotMore = 5
+	GetKeyValuesReplySlotCached = 6
+	GetKeyValuesReplySlotArena = 7
 )
 
 var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
-
 const GetKeyValuesReplyFileID uint32 = 1783066
-
 var GetKeyValuesReplyVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
@@ -31,18 +29,17 @@ var GetKeyValuesReplyVTableClosure = []wire.VTable{
 var GetKeyValuesReplyTemplate = wire.NewMessageTemplate(
 	GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, GetKeyValuesReplyVTableClosure,
 )
-
 const GetKeyValuesReplyMaxAlign = 8
 
 type GetKeyValuesReply struct {
-	Penalty  float64 // slot 0
-	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
-	Data     []byte  // slot 3
-	Version  int64   // slot 4
-	More     bool    // slot 5
-	Cached   bool    // slot 6
-	Arena    []byte  // slot 7
+	Penalty float64 // slot 0
+	HasError bool   // slot 1, optional tag
+	Error    []byte // slot 2, optional value
+	Data []byte // slot 3
+	Version int64 // slot 4
+	More bool // slot 5
+	Cached bool // slot 6
+	Arena []byte // slot 7
 }
 
 func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
@@ -72,9 +69,7 @@ func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
 	}
@@ -106,9 +101,7 @@ func (m *GetKeyValuesReply) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Data != nil {
-		oolSize += (4 + len(m.Data) + 3) &^ 3
-	}
+	if m.Data != nil { oolSize += (4 + len(m.Data) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -121,12 +114,8 @@ func (m *GetKeyValuesReply) writeBlob(buf []byte, pos int) int {
 	curOOL := oolPos
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotVersion+2]):], uint64(m.Version))
-	if m.More {
-		obj[int(vt[GetKeyValuesReplySlotMore+2])] = 1
-	}
-	if m.Cached {
-		obj[int(vt[GetKeyValuesReplySlotCached+2])] = 1
-	}
+	if m.More { obj[int(vt[GetKeyValuesReplySlotMore+2])] = 1 }
+	if m.Cached { obj[int(vt[GetKeyValuesReplySlotCached+2])] = 1 }
 	if m.Data != nil {
 		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Data)))
 		copy(buf[curOOL+4:], m.Data)
@@ -189,18 +178,15 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 // ParseGetKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetKeyValuesReply.
 func ParseGetKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyValuesReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyValuesReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -9,24 +9,22 @@ import (
 )
 
 const (
-	GetKeyValuesRequestSlotBegin                  = 0
-	GetKeyValuesRequestSlotEnd                    = 1
-	GetKeyValuesRequestSlotVersion                = 2
-	GetKeyValuesRequestSlotLimit                  = 3
-	GetKeyValuesRequestSlotLimitBytes             = 4
-	GetKeyValuesRequestSlotTags                   = 5
-	GetKeyValuesRequestSlotReply                  = 7
-	GetKeyValuesRequestSlotSpanContext            = 8
-	GetKeyValuesRequestSlotTenantInfo             = 9
-	GetKeyValuesRequestSlotOptions                = 10
+	GetKeyValuesRequestSlotBegin = 0
+	GetKeyValuesRequestSlotEnd = 1
+	GetKeyValuesRequestSlotVersion = 2
+	GetKeyValuesRequestSlotLimit = 3
+	GetKeyValuesRequestSlotLimitBytes = 4
+	GetKeyValuesRequestSlotTags = 5
+	GetKeyValuesRequestSlotReply = 7
+	GetKeyValuesRequestSlotSpanContext = 8
+	GetKeyValuesRequestSlotTenantInfo = 9
+	GetKeyValuesRequestSlotOptions = 10
 	GetKeyValuesRequestSlotSsLatestCommitVersions = 12
-	GetKeyValuesRequestSlotArena                  = 13
+	GetKeyValuesRequestSlotArena = 13
 )
 
 var GetKeyValuesRequestVTable = wire.VTable{30, 54, 12, 16, 4, 20, 24, 52, 28, 32, 36, 40, 53, 44, 48}
-
 const GetKeyValuesRequestFileID uint32 = 6795746
-
 var GetKeyValuesRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
@@ -39,24 +37,23 @@ var GetKeyValuesRequestVTableClosure = []wire.VTable{
 var GetKeyValuesRequestTemplate = wire.NewMessageTemplate(
 	GetKeyValuesRequestFileID, GetKeyValuesRequestVTable, 8, GetKeyValuesRequestVTableClosure,
 )
-
 const GetKeyValuesRequestMaxAlign = 8
 
 type GetKeyValuesRequest struct {
-	Begin                  KeySelectorRef // slot 0, nested
-	End                    KeySelectorRef // slot 1, nested
-	Version                int64          // slot 2
-	Limit                  int32          // slot 3
-	LimitBytes             int32          // slot 4
-	HasTags                bool           // slot 5, optional tag
-	Tags                   []byte         // slot 6, optional value
-	Reply                  ReplyPromise   // slot 7, nested
-	SpanContext            SpanContext    // slot 8, nested
-	TenantInfo             TenantInfo     // slot 9, nested
-	HasOptions             bool           // slot 10, optional tag
-	Options                []byte         // slot 11, optional value
-	SsLatestCommitVersions []byte         // slot 12
-	Arena                  []byte         // slot 13
+	Begin KeySelectorRef // slot 0, nested
+	End KeySelectorRef // slot 1, nested
+	Version int64 // slot 2
+	Limit int32 // slot 3
+	LimitBytes int32 // slot 4
+	HasTags bool   // slot 5, optional tag
+	Tags    []byte // slot 6, optional value
+	Reply ReplyPromise // slot 7, nested
+	SpanContext SpanContext // slot 8, nested
+	TenantInfo TenantInfo // slot 9, nested
+	HasOptions bool   // slot 10, optional tag
+	Options    []byte // slot 11, optional value
+	SsLatestCommitVersions []byte // slot 12
+	Arena []byte // slot 13
 }
 
 func (m *GetKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -102,9 +99,7 @@ func (m *GetKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(GetKeyValuesRequestSlotBegin); err == nil {
 		m.Begin.UnmarshalFromReader(nr)
 	}
@@ -152,9 +147,7 @@ func (m *GetKeyValuesRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.SsLatestCommitVersions != nil {
-		oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3
-	}
+	if m.SsLatestCommitVersions != nil { oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -245,18 +238,15 @@ func (m *GetKeyValuesRequest) MarshalFDB() []byte {
 // ParseGetKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetKeyValuesRequest.
 func ParseGetKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyValuesRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyValuesRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

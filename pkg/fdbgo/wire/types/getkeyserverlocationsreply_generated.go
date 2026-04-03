@@ -5,16 +5,14 @@ package types
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
-	GetKeyServerLocationsReplySlotResults           = 0
+	GetKeyServerLocationsReplySlotResults = 0
 	GetKeyServerLocationsReplySlotResultsTssMapping = 1
 	GetKeyServerLocationsReplySlotResultsTagMapping = 2
-	GetKeyServerLocationsReplySlotArena             = 3
+	GetKeyServerLocationsReplySlotArena = 3
 )
 
 var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
-
 const GetKeyServerLocationsReplyFileID uint32 = 10636023
-
 var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 	{8, 24, 4, 20},
 	{8, 24, 4, 20},
@@ -30,14 +28,13 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 var GetKeyServerLocationsReplyTemplate = wire.NewMessageTemplate(
 	GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, GetKeyServerLocationsReplyVTableClosure,
 )
-
 const GetKeyServerLocationsReplyMaxAlign = 4
 
 type GetKeyServerLocationsReply struct {
-	Results           []byte // slot 0
+	Results []byte // slot 0
 	ResultsTssMapping []byte // slot 1
 	ResultsTagMapping []byte // slot 2
-	Arena             []byte // slot 3
+	Arena []byte // slot 3
 }
 
 func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
@@ -57,9 +54,7 @@ func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
 		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
 	}
@@ -81,15 +76,9 @@ func (m *GetKeyServerLocationsReply) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Results != nil {
-		oolSize += (len(m.Results) + 3) &^ 3
-	}
-	if m.ResultsTssMapping != nil {
-		oolSize += (len(m.ResultsTssMapping) + 3) &^ 3
-	}
-	if m.ResultsTagMapping != nil {
-		oolSize += (len(m.ResultsTagMapping) + 3) &^ 3
-	}
+	if m.Results != nil { oolSize += (len(m.Results) + 3) &^ 3 }
+	if m.ResultsTssMapping != nil { oolSize += (len(m.ResultsTssMapping) + 3) &^ 3 }
+	if m.ResultsTagMapping != nil { oolSize += (len(m.ResultsTagMapping) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -181,18 +170,15 @@ func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 // ParseGetKeyServerLocationsReplyVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsReply.
 func ParseGetKeyServerLocationsReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyServerLocationsReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyServerLocationsReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

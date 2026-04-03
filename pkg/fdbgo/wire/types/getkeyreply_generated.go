@@ -11,15 +11,13 @@ import (
 
 const (
 	GetKeyReplySlotPenalty = 0
-	GetKeyReplySlotError   = 1
-	GetKeyReplySlotSel     = 3
-	GetKeyReplySlotCached  = 4
+	GetKeyReplySlotError = 1
+	GetKeyReplySlotSel = 3
+	GetKeyReplySlotCached = 4
 )
 
 var GetKeyReplyVTable = wire.VTable{14, 22, 4, 20, 12, 16, 21}
-
 const GetKeyReplyFileID uint32 = 11226513
-
 var GetKeyReplyVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
@@ -29,13 +27,12 @@ var GetKeyReplyVTableClosure = []wire.VTable{
 var GetKeyReplyTemplate = wire.NewMessageTemplate(
 	GetKeyReplyFileID, GetKeyReplyVTable, 8, GetKeyReplyVTableClosure,
 )
-
 const GetKeyReplyMaxAlign = 8
 
 type GetKeyReply struct {
-	Penalty  float64 // slot 0
-	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
+	Penalty float64 // slot 0
+	HasError bool   // slot 1, optional tag
+	Error    []byte // slot 2, optional value
 	// Sel: unregistered nested struct at slot 3
 	Cached bool // slot 4
 }
@@ -55,9 +52,7 @@ func (m *GetKeyReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetKeyReplySlotPenalty)
 	}
@@ -88,9 +83,7 @@ func (m *GetKeyReply) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
-	if m.Cached {
-		obj[int(vt[GetKeyReplySlotCached+2])] = 1
-	}
+	if m.Cached { obj[int(vt[GetKeyReplySlotCached+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -134,18 +127,15 @@ func (m *GetKeyReply) MarshalFDB() []byte {
 // ParseGetKeyReplyVectorFromReader reads a FlatBuffers vector of GetKeyReply.
 func ParseGetKeyReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

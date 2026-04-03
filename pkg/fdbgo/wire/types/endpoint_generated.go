@@ -6,13 +6,11 @@ import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
 	EndpointSlotAddresses = 0
-	EndpointSlotToken     = 1
+	EndpointSlotToken = 1
 )
 
 var EndpointVTable = wire.VTable{8, 24, 20, 4}
-
 const EndpointFileID uint32 = 10618805
-
 var EndpointVTableClosure = []wire.VTable{
 	{8, 24, 20, 4},
 	{8, 9, 8, 4},
@@ -23,12 +21,11 @@ var EndpointVTableClosure = []wire.VTable{
 var EndpointTemplate = wire.NewMessageTemplate(
 	EndpointFileID, EndpointVTable, 8, EndpointVTableClosure,
 )
-
 const EndpointMaxAlign = 8
 
 type Endpoint struct {
 	Addresses NetworkAddressList // slot 0, nested
-	Token     [16]byte           // slot 1
+	Token [16]byte // slot 1
 }
 
 func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
@@ -42,9 +39,7 @@ func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *Endpoint) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
 		m.Addresses.UnmarshalFromReader(nr)
 	}
@@ -115,18 +110,15 @@ func (m *Endpoint) MarshalFDB() []byte {
 // ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint.
 func ParseEndpointVectorFromReader(r *wire.Reader, slot int) []Endpoint {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]Endpoint, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem Endpoint
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

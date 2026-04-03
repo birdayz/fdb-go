@@ -10,18 +10,16 @@ import (
 
 const (
 	GetReadVersionRequestSlotTransactionCount = 0
-	GetReadVersionRequestSlotFlags            = 1
-	GetReadVersionRequestSlotTags             = 2
-	GetReadVersionRequestSlotDebugID          = 3
-	GetReadVersionRequestSlotReply            = 5
-	GetReadVersionRequestSlotSpanContext      = 6
-	GetReadVersionRequestSlotMaxVersion       = 7
+	GetReadVersionRequestSlotFlags = 1
+	GetReadVersionRequestSlotTags = 2
+	GetReadVersionRequestSlotDebugID = 3
+	GetReadVersionRequestSlotReply = 5
+	GetReadVersionRequestSlotSpanContext = 6
+	GetReadVersionRequestSlotMaxVersion = 7
 )
 
 var GetReadVersionRequestVTable = wire.VTable{20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
-
 const GetReadVersionRequestFileID uint32 = 838566
-
 var GetReadVersionRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
@@ -32,18 +30,17 @@ var GetReadVersionRequestVTableClosure = []wire.VTable{
 var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
 	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
 )
-
 const GetReadVersionRequestMaxAlign = 8
 
 type GetReadVersionRequest struct {
-	TransactionCount uint32       // slot 0
-	Flags            uint32       // slot 1
-	Tags             []byte       // slot 2
-	HasDebugID       bool         // slot 3, optional tag
-	DebugID          []byte       // slot 4, optional value
-	Reply            ReplyPromise // slot 5, nested
-	SpanContext      SpanContext  // slot 6, nested
-	MaxVersion       int64        // slot 7
+	TransactionCount uint32 // slot 0
+	Flags uint32 // slot 1
+	Tags []byte // slot 2
+	HasDebugID bool   // slot 3, optional tag
+	DebugID    []byte // slot 4, optional value
+	Reply ReplyPromise // slot 5, nested
+	SpanContext SpanContext // slot 6, nested
+	MaxVersion int64 // slot 7
 }
 
 func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -73,9 +70,7 @@ func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
 		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
 	}
@@ -107,9 +102,7 @@ func (m *GetReadVersionRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Tags != nil {
-		oolSize += (len(m.Tags) + 3) &^ 3
-	}
+	if m.Tags != nil { oolSize += (len(m.Tags) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -187,18 +180,15 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 // ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest.
 func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) []GetReadVersionRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetReadVersionRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetReadVersionRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

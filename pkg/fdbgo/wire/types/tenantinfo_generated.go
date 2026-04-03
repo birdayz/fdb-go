@@ -10,19 +10,18 @@ import (
 
 const (
 	TenantInfoSlotTenantId = 0
-	TenantInfoSlotToken    = 1
-	TenantInfoSlotArena    = 3
+	TenantInfoSlotToken = 1
+	TenantInfoSlotArena = 3
 )
 
 var TenantInfoVTable = wire.VTable{10, 17, 4, 16, 12}
-
 const TenantInfoMaxAlign = 8
 
 type TenantInfo struct {
-	TenantId int64  // slot 0
+	TenantId int64 // slot 0
 	HasToken bool   // slot 1, optional tag
 	Token    []byte // slot 2, optional value
-	Arena    []byte // slot 3
+	Arena []byte // slot 3
 }
 
 func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
@@ -40,9 +39,7 @@ func (m *TenantInfo) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *TenantInfo) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(TenantInfoSlotTenantId) {
 		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
 	}
@@ -91,18 +88,15 @@ func (m *TenantInfo) writeDirect(dw *wire.DirectWriter) int {
 // ParseTenantInfoVectorFromReader reads a FlatBuffers vector of TenantInfo.
 func ParseTenantInfoVectorFromReader(r *wire.Reader, slot int) []TenantInfo {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]TenantInfo, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem TenantInfo
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

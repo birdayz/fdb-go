@@ -5,20 +5,19 @@ package types
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
-	CommitProxyInterfaceSlotProcessId   = 0
+	CommitProxyInterfaceSlotProcessId = 0
 	CommitProxyInterfaceSlotProvisional = 2
-	CommitProxyInterfaceSlotCommit      = 3
+	CommitProxyInterfaceSlotCommit = 3
 )
 
 var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
-
 const CommitProxyInterfaceFileID uint32 = 8954922
 const CommitProxyInterfaceMaxAlign = 4
 
 type CommitProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
 	ProcessId    []byte // slot 1, optional value
-	Provisional  bool   // slot 2
+	Provisional bool // slot 2
 	// Commit: unregistered nested struct at slot 3
 }
 
@@ -34,9 +33,7 @@ func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
 		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
@@ -63,9 +60,7 @@ func (m *CommitProxyInterface) writeBlob(buf []byte, pos int) int {
 	objPos := pos + (vtBytes+3)&^3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
-	if m.Provisional {
-		obj[int(vt[CommitProxyInterfaceSlotProvisional+2])] = 1
-	}
+	if m.Provisional { obj[int(vt[CommitProxyInterfaceSlotProvisional+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -86,18 +81,15 @@ func (m *CommitProxyInterface) writeDirect(dw *wire.DirectWriter) int {
 // ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.
 func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []CommitProxyInterface {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]CommitProxyInterface, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem CommitProxyInterface
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

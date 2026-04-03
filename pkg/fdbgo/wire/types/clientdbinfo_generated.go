@@ -9,22 +9,20 @@ import (
 )
 
 const (
-	ClientDBInfoSlotGrvProxies      = 0
-	ClientDBInfoSlotCommitProxies   = 1
-	ClientDBInfoSlotId              = 2
-	ClientDBInfoSlotForward         = 3
-	ClientDBInfoSlotHistory         = 5
-	ClientDBInfoSlotTenantMode      = 6
+	ClientDBInfoSlotGrvProxies = 0
+	ClientDBInfoSlotCommitProxies = 1
+	ClientDBInfoSlotId = 2
+	ClientDBInfoSlotForward = 3
+	ClientDBInfoSlotHistory = 5
+	ClientDBInfoSlotTenantMode = 6
 	ClientDBInfoSlotEncryptKeyProxy = 7
-	ClientDBInfoSlotClusterId       = 9
-	ClientDBInfoSlotClusterType     = 10
+	ClientDBInfoSlotClusterId = 9
+	ClientDBInfoSlotClusterType = 10
 	ClientDBInfoSlotMetaclusterName = 11
 )
 
 var ClientDBInfoVTable = wire.VTable{30, 71, 36, 40, 4, 68, 44, 48, 52, 69, 56, 20, 60, 70, 64}
-
 const ClientDBInfoFileID uint32 = 5355080
-
 var ClientDBInfoVTableClosure = []wire.VTable{
 	{10, 28, 20, 4, 24},
 	{8, 16, 12, 4},
@@ -40,23 +38,22 @@ var ClientDBInfoVTableClosure = []wire.VTable{
 var ClientDBInfoTemplate = wire.NewMessageTemplate(
 	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
 )
-
 const ClientDBInfoMaxAlign = 8
 
 type ClientDBInfo struct {
-	GrvProxies    []byte   // slot 0
-	CommitProxies []byte   // slot 1
-	Id            [16]byte // slot 2
-	HasForward    bool     // slot 3, optional tag
-	Forward       []byte   // slot 4, optional value
-	History       []byte   // slot 5
+	GrvProxies []byte // slot 0
+	CommitProxies []byte // slot 1
+	Id [16]byte // slot 2
+	HasForward bool   // slot 3, optional tag
+	Forward    []byte // slot 4, optional value
+	History []byte // slot 5
 	// TenantMode: unregistered nested struct at slot 6
-	HasEncryptKeyProxy bool     // slot 7, optional tag
-	EncryptKeyProxy    []byte   // slot 8, optional value
-	ClusterId          [16]byte // slot 9
-	ClusterType        int32    // slot 10
-	HasMetaclusterName bool     // slot 11, optional tag
-	MetaclusterName    []byte   // slot 12, optional value
+	HasEncryptKeyProxy bool   // slot 7, optional tag
+	EncryptKeyProxy    []byte // slot 8, optional value
+	ClusterId [16]byte // slot 9
+	ClusterType int32 // slot 10
+	HasMetaclusterName bool   // slot 11, optional tag
+	MetaclusterName    []byte // slot 12, optional value
 }
 
 func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
@@ -94,9 +91,7 @@ func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
 		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
 	}
@@ -136,15 +131,9 @@ func (m *ClientDBInfo) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.GrvProxies != nil {
-		oolSize += (len(m.GrvProxies) + 3) &^ 3
-	}
-	if m.CommitProxies != nil {
-		oolSize += (len(m.CommitProxies) + 3) &^ 3
-	}
-	if m.History != nil {
-		oolSize += (len(m.History) + 3) &^ 3
-	}
+	if m.GrvProxies != nil { oolSize += (len(m.GrvProxies) + 3) &^ 3 }
+	if m.CommitProxies != nil { oolSize += (len(m.CommitProxies) + 3) &^ 3 }
+	if m.History != nil { oolSize += (len(m.History) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -242,18 +231,15 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 // ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo.
 func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) []ClientDBInfo {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]ClientDBInfo, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem ClientDBInfo
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

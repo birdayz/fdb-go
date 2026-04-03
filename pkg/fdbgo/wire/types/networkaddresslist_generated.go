@@ -5,18 +5,17 @@ package types
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
-	NetworkAddressListSlotAddress          = 0
+	NetworkAddressListSlotAddress = 0
 	NetworkAddressListSlotSecondaryAddress = 1
 )
 
 var NetworkAddressListVTable = wire.VTable{10, 13, 4, 12, 8}
-
 const NetworkAddressListMaxAlign = 4
 
 type NetworkAddressList struct {
-	Address             NetworkAddress // slot 0, nested
-	HasSecondaryAddress bool           // slot 1, optional tag
-	SecondaryAddress    []byte         // slot 2, optional value
+	Address NetworkAddress // slot 0, nested
+	HasSecondaryAddress bool   // slot 1, optional tag
+	SecondaryAddress    []byte // slot 2, optional value
 }
 
 func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
@@ -31,9 +30,7 @@ func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
 		m.Address.UnmarshalFromReader(nr)
 	}
@@ -80,18 +77,15 @@ func (m *NetworkAddressList) writeDirect(dw *wire.DirectWriter) int {
 // ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.
 func ParseNetworkAddressListVectorFromReader(r *wire.Reader, slot int) []NetworkAddressList {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]NetworkAddressList, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem NetworkAddressList
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

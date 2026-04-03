@@ -9,16 +9,14 @@ import (
 )
 
 const (
-	CommitIDSlotVersion              = 0
-	CommitIDSlotTxnBatchId           = 1
-	CommitIDSlotMetadataVersion      = 2
+	CommitIDSlotVersion = 0
+	CommitIDSlotTxnBatchId = 1
+	CommitIDSlotMetadataVersion = 2
 	CommitIDSlotConflictingKRIndices = 4
 )
 
 var CommitIDVTable = wire.VTable{16, 24, 4, 20, 22, 12, 23, 16}
-
 const CommitIDFileID uint32 = 14254927
-
 var CommitIDVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{16, 24, 4, 20, 22, 12, 23, 16},
@@ -26,14 +24,13 @@ var CommitIDVTableClosure = []wire.VTable{
 var CommitIDTemplate = wire.NewMessageTemplate(
 	CommitIDFileID, CommitIDVTable, 8, CommitIDVTableClosure,
 )
-
 const CommitIDMaxAlign = 8
 
 type CommitID struct {
-	Version                 int64  // slot 0
-	TxnBatchId              uint16 // slot 1
-	HasMetadataVersion      bool   // slot 2, optional tag
-	MetadataVersion         []byte // slot 3, optional value
+	Version int64 // slot 0
+	TxnBatchId uint16 // slot 1
+	HasMetadataVersion bool   // slot 2, optional tag
+	MetadataVersion    []byte // slot 3, optional value
 	HasConflictingKRIndices bool   // slot 4, optional tag
 	ConflictingKRIndices    []byte // slot 5, optional value
 }
@@ -57,9 +54,7 @@ func (m *CommitID) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitID) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(CommitIDSlotVersion) {
 		m.Version = r.ReadInt64(CommitIDSlotVersion)
 	}
@@ -136,18 +131,15 @@ func (m *CommitID) MarshalFDB() []byte {
 // ParseCommitIDVectorFromReader reads a FlatBuffers vector of CommitID.
 func ParseCommitIDVectorFromReader(r *wire.Reader, slot int) []CommitID {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]CommitID, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem CommitID
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

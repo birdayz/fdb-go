@@ -9,19 +9,18 @@ import (
 )
 
 const (
-	KeySelectorRefSlotKey     = 0
+	KeySelectorRefSlotKey = 0
 	KeySelectorRefSlotOrEqual = 1
-	KeySelectorRefSlotOffset  = 2
+	KeySelectorRefSlotOffset = 2
 )
 
 var KeySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
-
 const KeySelectorRefMaxAlign = 4
 
 type KeySelectorRef struct {
-	Key     []byte // slot 0
-	OrEqual bool   // slot 1
-	Offset  int32  // slot 2
+	Key []byte // slot 0
+	OrEqual bool // slot 1
+	Offset int32 // slot 2
 }
 
 func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
@@ -38,9 +37,7 @@ func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(KeySelectorRefSlotKey) {
 		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
 	}
@@ -59,9 +56,7 @@ func (m *KeySelectorRef) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Key != nil {
-		oolSize += (4 + len(m.Key) + 3) &^ 3
-	}
+	if m.Key != nil { oolSize += (4 + len(m.Key) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -72,9 +67,7 @@ func (m *KeySelectorRef) writeBlob(buf []byte, pos int) int {
 	objPos := pos + (vtBytes+3)&^3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
-	if m.OrEqual {
-		obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1
-	}
+	if m.OrEqual { obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1 }
 	binary.LittleEndian.PutUint32(obj[int(vt[KeySelectorRefSlotOffset+2]):], uint32(m.Offset))
 	if m.Key != nil {
 		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Key)))
@@ -111,18 +104,15 @@ func (m *KeySelectorRef) writeDirect(dw *wire.DirectWriter) int {
 // ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.
 func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) []KeySelectorRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]KeySelectorRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem KeySelectorRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -9,16 +9,14 @@ import (
 )
 
 const (
-	NetworkAddressSlotIp           = 0
-	NetworkAddressSlotPort         = 1
-	NetworkAddressSlotFlags        = 2
+	NetworkAddressSlotIp = 0
+	NetworkAddressSlotPort = 1
+	NetworkAddressSlotFlags = 2
 	NetworkAddressSlotFromHostname = 3
 )
 
 var NetworkAddressVTable = wire.VTable{12, 13, 4, 8, 10, 12}
-
 const NetworkAddressFileID uint32 = 14155727
-
 var NetworkAddressVTableClosure = []wire.VTable{
 	{8, 9, 8, 4},
 	{12, 13, 4, 8, 10, 12},
@@ -27,14 +25,13 @@ var NetworkAddressVTableClosure = []wire.VTable{
 var NetworkAddressTemplate = wire.NewMessageTemplate(
 	NetworkAddressFileID, NetworkAddressVTable, 4, NetworkAddressVTableClosure,
 )
-
 const NetworkAddressMaxAlign = 4
 
 type NetworkAddress struct {
-	Ip           IPAddress // slot 0, nested
-	Port         uint16    // slot 1
-	Flags        uint16    // slot 2
-	FromHostname bool      // slot 3
+	Ip IPAddress // slot 0, nested
+	Port uint16 // slot 1
+	Flags uint16 // slot 2
+	FromHostname bool // slot 3
 }
 
 func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
@@ -54,9 +51,7 @@ func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
 		m.Ip.UnmarshalFromReader(nr)
 	}
@@ -90,9 +85,7 @@ func (m *NetworkAddress) writeBlob(buf []byte, pos int) int {
 	curOOL := oolPos
 	binary.LittleEndian.PutUint16(obj[int(vt[NetworkAddressSlotPort+2]):], m.Port)
 	binary.LittleEndian.PutUint16(obj[int(vt[NetworkAddressSlotFlags+2]):], m.Flags)
-	if m.FromHostname {
-		obj[int(vt[NetworkAddressSlotFromHostname+2])] = 1
-	}
+	if m.FromHostname { obj[int(vt[NetworkAddressSlotFromHostname+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -141,18 +134,15 @@ func (m *NetworkAddress) MarshalFDB() []byte {
 // ParseNetworkAddressVectorFromReader reads a FlatBuffers vector of NetworkAddress.
 func ParseNetworkAddressVectorFromReader(r *wire.Reader, slot int) []NetworkAddress {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]NetworkAddress, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem NetworkAddress
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

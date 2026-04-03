@@ -9,25 +9,24 @@ import (
 )
 
 const (
-	ReadOptionsSlotType        = 0
+	ReadOptionsSlotType = 0
 	ReadOptionsSlotCacheResult = 1
-	ReadOptionsSlotLockAware   = 2
-	ReadOptionsSlotField_4     = 4
-	ReadOptionsSlotField_6     = 6
+	ReadOptionsSlotLockAware = 2
+	ReadOptionsSlotField_4 = 4
+	ReadOptionsSlotField_6 = 6
 )
 
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
-
 const ReadOptionsMaxAlign = 4
 
 type ReadOptions struct {
-	Type         int32  // slot 0
-	CacheResult  bool   // slot 1
+	Type int32 // slot 0
+	CacheResult bool // slot 1
 	HasLockAware bool   // slot 2, optional tag
 	LockAware    []byte // slot 3, optional value
-	HasField_4   bool   // slot 4, optional tag
-	Field_4      []byte // slot 5, optional value
-	Field_6      bool   // slot 6
+	HasField_4 bool   // slot 4, optional tag
+	Field_4    []byte // slot 5, optional value
+	Field_6 bool // slot 6
 }
 
 func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
@@ -52,9 +51,7 @@ func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ReadOptionsSlotType) {
 		m.Type = r.ReadInt32(ReadOptionsSlotType)
 	}
@@ -92,12 +89,8 @@ func (m *ReadOptions) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	binary.LittleEndian.PutUint32(obj[int(vt[ReadOptionsSlotType+2]):], uint32(m.Type))
-	if m.CacheResult {
-		obj[int(vt[ReadOptionsSlotCacheResult+2])] = 1
-	}
-	if m.Field_6 {
-		obj[int(vt[ReadOptionsSlotField_6+2])] = 1
-	}
+	if m.CacheResult { obj[int(vt[ReadOptionsSlotCacheResult+2])] = 1 }
+	if m.Field_6 { obj[int(vt[ReadOptionsSlotField_6+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -122,18 +115,15 @@ func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
 // ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
 func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]ReadOptions, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem ReadOptions
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

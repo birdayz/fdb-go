@@ -10,18 +10,17 @@ import (
 
 const (
 	MutationRefSlotMutType = 0
-	MutationRefSlotParam1  = 1
-	MutationRefSlotParam2  = 2
+	MutationRefSlotParam1 = 1
+	MutationRefSlotParam2 = 2
 )
 
 var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
-
 const MutationRefMaxAlign = 4
 
 type MutationRef struct {
-	MutType uint8  // slot 0
-	Param1  []byte // slot 1
-	Param2  []byte // slot 2
+	MutType uint8 // slot 0
+	Param1 []byte // slot 1
+	Param2 []byte // slot 2
 }
 
 func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
@@ -38,9 +37,7 @@ func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(MutationRefSlotMutType) {
 		m.MutType = r.ReadUint8(MutationRefSlotMutType)
 	}
@@ -59,12 +56,8 @@ func (m *MutationRef) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Param1 != nil {
-		oolSize += (4 + len(m.Param1) + 3) &^ 3
-	}
-	if m.Param2 != nil {
-		oolSize += (4 + len(m.Param2) + 3) &^ 3
-	}
+	if m.Param1 != nil { oolSize += (4 + len(m.Param1) + 3) &^ 3 }
+	if m.Param2 != nil { oolSize += (4 + len(m.Param2) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -122,18 +115,15 @@ func (m *MutationRef) writeDirect(dw *wire.DirectWriter) int {
 // ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
 func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]MutationRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem MutationRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -13,9 +13,7 @@ const (
 )
 
 var ErrorVTable = wire.VTable{6, 6, 4}
-
 const ErrorFileID uint32 = 14065384
-
 var ErrorVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
@@ -23,7 +21,6 @@ var ErrorVTableClosure = []wire.VTable{
 var ErrorTemplate = wire.NewMessageTemplate(
 	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
 )
-
 const ErrorMaxAlign = 4
 
 type Error struct {
@@ -38,9 +35,7 @@ func (m *Error) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *Error) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ErrorSlotErrorCode) {
 		m.ErrorCode = r.ReadUint16(ErrorSlotErrorCode)
 	}
@@ -104,18 +99,15 @@ func (m *Error) MarshalFDB() []byte {
 // ParseErrorVectorFromReader reads a FlatBuffers vector of Error.
 func ParseErrorVectorFromReader(r *wire.Reader, slot int) []Error {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]Error, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem Error
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

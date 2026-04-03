@@ -9,9 +9,7 @@ const (
 )
 
 var ReplyPromiseVTable = wire.VTable{6, 20, 4}
-
 const ReplyPromiseFileID uint32 = 18156145
-
 var ReplyPromiseVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
@@ -19,7 +17,6 @@ var ReplyPromiseVTableClosure = []wire.VTable{
 var ReplyPromiseTemplate = wire.NewMessageTemplate(
 	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
 )
-
 const ReplyPromiseMaxAlign = 8
 
 type ReplyPromise struct {
@@ -34,9 +31,7 @@ func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ReplyPromiseSlotToken) {
 		m.Token = r.ReadUID(ReplyPromiseSlotToken)
 	}
@@ -100,18 +95,15 @@ func (m *ReplyPromise) MarshalFDB() []byte {
 // ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise.
 func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) []ReplyPromise {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]ReplyPromise, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem ReplyPromise
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

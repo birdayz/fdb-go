@@ -10,23 +10,21 @@ import (
 )
 
 const (
-	GetReadVersionReplySlotProcessBusyTime           = 0
-	GetReadVersionReplySlotVersion                   = 1
-	GetReadVersionReplySlotLocked                    = 2
-	GetReadVersionReplySlotMetadataVersion           = 3
-	GetReadVersionReplySlotTagThrottleInfo           = 5
-	GetReadVersionReplySlotMidShardSize              = 6
-	GetReadVersionReplySlotRkDefaultThrottled        = 7
-	GetReadVersionReplySlotRkBatchThrottled          = 8
-	GetReadVersionReplySlotSsVersionVectorDelta      = 9
-	GetReadVersionReplySlotProxyId                   = 10
+	GetReadVersionReplySlotProcessBusyTime = 0
+	GetReadVersionReplySlotVersion = 1
+	GetReadVersionReplySlotLocked = 2
+	GetReadVersionReplySlotMetadataVersion = 3
+	GetReadVersionReplySlotTagThrottleInfo = 5
+	GetReadVersionReplySlotMidShardSize = 6
+	GetReadVersionReplySlotRkDefaultThrottled = 7
+	GetReadVersionReplySlotRkBatchThrottled = 8
+	GetReadVersionReplySlotSsVersionVectorDelta = 9
+	GetReadVersionReplySlotProxyId = 10
 	GetReadVersionReplySlotProxyTagThrottledDuration = 11
 )
 
 var GetReadVersionReplyVTable = wire.VTable{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36}
-
 const GetReadVersionReplyFileID uint32 = 15709388
-
 var GetReadVersionReplyVTableClosure = []wire.VTable{
 	{8, 20, 4, 12},
 	{6, 8, 4},
@@ -36,22 +34,21 @@ var GetReadVersionReplyVTableClosure = []wire.VTable{
 var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
 	GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, GetReadVersionReplyVTableClosure,
 )
-
 const GetReadVersionReplyMaxAlign = 8
 
 type GetReadVersionReply struct {
-	ProcessBusyTime           int32    // slot 0
-	Version                   int64    // slot 1
-	Locked                    bool     // slot 2
-	HasMetadataVersion        bool     // slot 3, optional tag
-	MetadataVersion           []byte   // slot 4, optional value
-	TagThrottleInfo           []byte   // slot 5
-	MidShardSize              int64    // slot 6
-	RkDefaultThrottled        bool     // slot 7
-	RkBatchThrottled          bool     // slot 8
-	SsVersionVectorDelta      []byte   // slot 9
-	ProxyId                   [16]byte // slot 10
-	ProxyTagThrottledDuration float64  // slot 11
+	ProcessBusyTime int32 // slot 0
+	Version int64 // slot 1
+	Locked bool // slot 2
+	HasMetadataVersion bool   // slot 3, optional tag
+	MetadataVersion    []byte // slot 4, optional value
+	TagThrottleInfo []byte // slot 5
+	MidShardSize int64 // slot 6
+	RkDefaultThrottled bool // slot 7
+	RkBatchThrottled bool // slot 8
+	SsVersionVectorDelta []byte // slot 9
+	ProxyId [16]byte // slot 10
+	ProxyTagThrottledDuration float64 // slot 11
 }
 
 func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
@@ -93,9 +90,7 @@ func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
 		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
 	}
@@ -139,12 +134,8 @@ func (m *GetReadVersionReply) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.TagThrottleInfo != nil {
-		oolSize += (len(m.TagThrottleInfo) + 3) &^ 3
-	}
-	if m.SsVersionVectorDelta != nil {
-		oolSize += (4 + len(m.SsVersionVectorDelta) + 3) &^ 3
-	}
+	if m.TagThrottleInfo != nil { oolSize += (len(m.TagThrottleInfo) + 3) &^ 3 }
+	if m.SsVersionVectorDelta != nil { oolSize += (4 + len(m.SsVersionVectorDelta) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -157,16 +148,10 @@ func (m *GetReadVersionReply) writeBlob(buf []byte, pos int) int {
 	curOOL := oolPos
 	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionReplySlotProcessBusyTime+2]):], uint32(m.ProcessBusyTime))
 	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotVersion+2]):], uint64(m.Version))
-	if m.Locked {
-		obj[int(vt[GetReadVersionReplySlotLocked+2])] = 1
-	}
+	if m.Locked { obj[int(vt[GetReadVersionReplySlotLocked+2])] = 1 }
 	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotMidShardSize+2]):], uint64(m.MidShardSize))
-	if m.RkDefaultThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkDefaultThrottled+2])] = 1
-	}
-	if m.RkBatchThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkBatchThrottled+2])] = 1
-	}
+	if m.RkDefaultThrottled { obj[int(vt[GetReadVersionReplySlotRkDefaultThrottled+2])] = 1 }
+	if m.RkBatchThrottled { obj[int(vt[GetReadVersionReplySlotRkBatchThrottled+2])] = 1 }
 	copy(obj[int(vt[GetReadVersionReplySlotProxyId+2]):], m.ProxyId[:])
 	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]):], math.Float64bits(m.ProxyTagThrottledDuration))
 	if m.TagThrottleInfo != nil {
@@ -251,18 +236,15 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 // ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply.
 func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) []GetReadVersionReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetReadVersionReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetReadVersionReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

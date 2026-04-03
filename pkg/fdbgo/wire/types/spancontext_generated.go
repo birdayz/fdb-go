@@ -10,18 +10,17 @@ import (
 
 const (
 	SpanContextSlotTraceID = 0
-	SpanContextSlotSpanID  = 1
-	SpanContextSlotFlags   = 2
+	SpanContextSlotSpanID = 1
+	SpanContextSlotFlags = 2
 )
 
 var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
-
 const SpanContextMaxAlign = 8
 
 type SpanContext struct {
 	TraceID [16]byte // slot 0
-	SpanID  uint64   // slot 1
-	Flags   uint8    // slot 2
+	SpanID uint64 // slot 1
+	Flags uint8 // slot 2
 }
 
 func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
@@ -38,9 +37,7 @@ func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(SpanContextSlotTraceID) {
 		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
 	}
@@ -92,18 +89,15 @@ func (m *SpanContext) writeDirect(dw *wire.DirectWriter) int {
 // ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
 func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]SpanContext, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem SpanContext
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -5,20 +5,19 @@ package types
 import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 
 const (
-	GrvProxyInterfaceSlotProcessId                = 0
-	GrvProxyInterfaceSlotProvisional              = 2
+	GrvProxyInterfaceSlotProcessId = 0
+	GrvProxyInterfaceSlotProvisional = 2
 	GrvProxyInterfaceSlotGetConsistentReadVersion = 3
 )
 
 var GrvProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
-
 const GrvProxyInterfaceFileID uint32 = 8743216
 const GrvProxyInterfaceMaxAlign = 4
 
 type GrvProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
 	ProcessId    []byte // slot 1, optional value
-	Provisional  bool   // slot 2
+	Provisional bool // slot 2
 	// GetConsistentReadVersion: unregistered nested struct at slot 3
 }
 
@@ -34,9 +33,7 @@ func (m *GrvProxyInterface) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
 		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
@@ -63,9 +60,7 @@ func (m *GrvProxyInterface) writeBlob(buf []byte, pos int) int {
 	objPos := pos + (vtBytes+3)&^3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
-	if m.Provisional {
-		obj[int(vt[GrvProxyInterfaceSlotProvisional+2])] = 1
-	}
+	if m.Provisional { obj[int(vt[GrvProxyInterfaceSlotProvisional+2])] = 1 }
 	return curOOL - pos
 }
 
@@ -86,18 +81,15 @@ func (m *GrvProxyInterface) writeDirect(dw *wire.DirectWriter) int {
 // ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.
 func ParseGrvProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []GrvProxyInterface {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GrvProxyInterface, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GrvProxyInterface
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -9,22 +9,20 @@ import (
 )
 
 const (
-	CommitTransactionRequestSlotTransaction          = 0
-	CommitTransactionRequestSlotReply                = 1
-	CommitTransactionRequestSlotFlags                = 2
-	CommitTransactionRequestSlotDebugID              = 3
+	CommitTransactionRequestSlotTransaction = 0
+	CommitTransactionRequestSlotReply = 1
+	CommitTransactionRequestSlotFlags = 2
+	CommitTransactionRequestSlotDebugID = 3
 	CommitTransactionRequestSlotCommitCostEstimation = 5
-	CommitTransactionRequestSlotTagSet               = 7
-	CommitTransactionRequestSlotSpanContext          = 9
-	CommitTransactionRequestSlotTenantInfo           = 10
-	CommitTransactionRequestSlotIdempotencyId        = 11
-	CommitTransactionRequestSlotArena                = 12
+	CommitTransactionRequestSlotTagSet = 7
+	CommitTransactionRequestSlotSpanContext = 9
+	CommitTransactionRequestSlotTenantInfo = 10
+	CommitTransactionRequestSlotIdempotencyId = 11
+	CommitTransactionRequestSlotArena = 12
 )
 
 var CommitTransactionRequestVTable = wire.VTable{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36}
-
 const CommitTransactionRequestFileID uint32 = 93948
-
 var CommitTransactionRequestVTableClosure = []wire.VTable{
 	{12, 24, 12, 4, 16, 20},
 	{8, 16, 12, 4},
@@ -40,23 +38,22 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 var CommitTransactionRequestTemplate = wire.NewMessageTemplate(
 	CommitTransactionRequestFileID, CommitTransactionRequestVTable, 4, CommitTransactionRequestVTableClosure,
 )
-
 const CommitTransactionRequestMaxAlign = 4
 
 type CommitTransactionRequest struct {
-	Transaction             CommitTransactionRef // slot 0, nested
-	Reply                   ReplyPromise         // slot 1, nested
-	Flags                   uint32               // slot 2
-	HasDebugID              bool                 // slot 3, optional tag
-	DebugID                 []byte               // slot 4, optional value
-	HasCommitCostEstimation bool                 // slot 5, optional tag
-	CommitCostEstimation    []byte               // slot 6, optional value
-	HasTagSet               bool                 // slot 7, optional tag
-	TagSet                  []byte               // slot 8, optional value
-	SpanContext             SpanContext          // slot 9, nested
-	TenantInfo              TenantInfo           // slot 10, nested
-	IdempotencyId           []byte               // slot 11
-	Arena                   []byte               // slot 12
+	Transaction CommitTransactionRef // slot 0, nested
+	Reply ReplyPromise // slot 1, nested
+	Flags uint32 // slot 2
+	HasDebugID bool   // slot 3, optional tag
+	DebugID    []byte // slot 4, optional value
+	HasCommitCostEstimation bool   // slot 5, optional tag
+	CommitCostEstimation    []byte // slot 6, optional value
+	HasTagSet bool   // slot 7, optional tag
+	TagSet    []byte // slot 8, optional value
+	SpanContext SpanContext // slot 9, nested
+	TenantInfo TenantInfo // slot 10, nested
+	IdempotencyId []byte // slot 11
+	Arena []byte // slot 12
 }
 
 func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -97,9 +94,7 @@ func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
 		m.Transaction.UnmarshalFromReader(nr)
 	}
@@ -142,9 +137,7 @@ func (m *CommitTransactionRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.IdempotencyId != nil {
-		oolSize += (4 + len(m.IdempotencyId) + 3) &^ 3
-	}
+	if m.IdempotencyId != nil { oolSize += (4 + len(m.IdempotencyId) + 3) &^ 3 }
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -227,18 +220,15 @@ func (m *CommitTransactionRequest) MarshalFDB() []byte {
 // ParseCommitTransactionRequestVectorFromReader reads a FlatBuffers vector of CommitTransactionRequest.
 func ParseCommitTransactionRequestVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]CommitTransactionRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem CommitTransactionRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

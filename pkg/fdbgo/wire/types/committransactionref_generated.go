@@ -9,31 +9,30 @@ import (
 )
 
 const (
-	CommitTransactionRefSlotReadConflictRanges             = 0
-	CommitTransactionRefSlotWriteConflictRanges            = 1
-	CommitTransactionRefSlotMutations                      = 2
-	CommitTransactionRefSlotReadSnapshot                   = 3
-	CommitTransactionRefSlotReport_conflicting_keys        = 4
-	CommitTransactionRefSlotLock_aware                     = 5
-	CommitTransactionRefSlotRead_conflict_ranges_disabled  = 6
+	CommitTransactionRefSlotReadConflictRanges = 0
+	CommitTransactionRefSlotWriteConflictRanges = 1
+	CommitTransactionRefSlotMutations = 2
+	CommitTransactionRefSlotReadSnapshot = 3
+	CommitTransactionRefSlotReport_conflicting_keys = 4
+	CommitTransactionRefSlotLock_aware = 5
+	CommitTransactionRefSlotRead_conflict_ranges_disabled = 6
 	CommitTransactionRefSlotWrite_conflict_ranges_disabled = 8
 )
 
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
-
 const CommitTransactionRefMaxAlign = 8
 
 type CommitTransactionRef struct {
-	ReadConflictRanges                []KeyRangeRef // slot 0, vector of struct
-	WriteConflictRanges               []KeyRangeRef // slot 1, vector of struct
-	Mutations                         []MutationRef // slot 2, vector of struct
-	ReadSnapshot                      int64         // slot 3
-	Report_conflicting_keys           bool          // slot 4
-	Lock_aware                        bool          // slot 5
-	HasRead_conflict_ranges_disabled  bool          // slot 6, optional tag
-	Read_conflict_ranges_disabled     []byte        // slot 7, optional value
-	HasWrite_conflict_ranges_disabled bool          // slot 8, optional tag
-	Write_conflict_ranges_disabled    []byte        // slot 9, optional value
+	ReadConflictRanges []KeyRangeRef // slot 0, vector of struct
+	WriteConflictRanges []KeyRangeRef // slot 1, vector of struct
+	Mutations []MutationRef // slot 2, vector of struct
+	ReadSnapshot int64 // slot 3
+	Report_conflicting_keys bool // slot 4
+	Lock_aware bool // slot 5
+	HasRead_conflict_ranges_disabled bool   // slot 6, optional tag
+	Read_conflict_ranges_disabled    []byte // slot 7, optional value
+	HasWrite_conflict_ranges_disabled bool   // slot 8, optional tag
+	Write_conflict_ranges_disabled    []byte // slot 9, optional value
 }
 
 func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
@@ -88,9 +87,7 @@ func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges); err == nil && count > 0 {
 		m.ReadConflictRanges = make([]KeyRangeRef, 0, count)
 		for i := 0; i < count; i++ {
@@ -182,12 +179,8 @@ func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	binary.LittleEndian.PutUint64(obj[int(vt[CommitTransactionRefSlotReadSnapshot+2]):], uint64(m.ReadSnapshot))
-	if m.Report_conflicting_keys {
-		obj[int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])] = 1
-	}
-	if m.Lock_aware {
-		obj[int(vt[CommitTransactionRefSlotLock_aware+2])] = 1
-	}
+	if m.Report_conflicting_keys { obj[int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])] = 1 }
+	if m.Lock_aware { obj[int(vt[CommitTransactionRefSlotLock_aware+2])] = 1 }
 	if len(m.ReadConflictRanges) > 0 {
 		vecStart := curOOL
 		n := len(m.ReadConflictRanges)
@@ -347,18 +340,15 @@ func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 // ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
 func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]CommitTransactionRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem CommitTransactionRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+
