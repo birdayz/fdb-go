@@ -55,32 +55,10 @@ jobs:
 
   test:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, hetzner]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup Bazelisk
-        uses: bazelbuild/setup-bazelisk@v3
-
-      - name: Cache Bazel
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/bazel
-          key: ${{ runner.os }}-bazel-test-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', '**/*.go', 'go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-bazel-test-
-          save-always: true
-
-      - name: Install FoundationDB Client
-        run: |
-          curl -fLO https://github.com/apple/foundationdb/releases/download/7.3.46/foundationdb-clients_7.3.46-1_amd64.deb
-          sudo dpkg -i foundationdb-clients_7.3.46-1_amd64.deb
-
-      - name: Expand Docker network pool
-        run: |
-          echo '{"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker
 
       - name: Run tests
         run: bazelisk test //... --test_summary=detailed
