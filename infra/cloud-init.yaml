@@ -23,14 +23,13 @@ runcmd:
   - dpkg -i "foundationdb-clients_${fdb_version}-1_amd64.deb"
   - rm -f "foundationdb-clients_${fdb_version}-1_amd64.deb"
 
-  # Buf (protobuf codegen)
-  - curl -fsSL -o /usr/local/bin/buf https://github.com/bufbuild/buf/releases/latest/download/buf-Linux-x86_64
-  - chmod +x /usr/local/bin/buf
-
-  # Bazelisk
-  - curl -fsSL -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+  # Bazelisk (pinned)
+  - curl -fsSL -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.28.1/bazelisk-linux-amd64
   - chmod +x /usr/local/bin/bazelisk
   - ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+
+  # Just (task runner, pinned)
+  - curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.48.1
 
   # Runner user
   - useradd -m -s /bin/bash runner

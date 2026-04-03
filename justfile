@@ -1,9 +1,24 @@
+BUF_VERSION := "1.67.0"
+
 default:
     @just --list
 
-# Generate protobuf code (unchanged — not in Bazel)
-generate:
-    buf generate
+# Ensure buf is installed at pinned version
+[private]
+ensure-buf:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    BUF=.tools/buf
+    if [ -x "$BUF" ] && "$BUF" --version 2>/dev/null | grep -q "{{BUF_VERSION}}"; then
+        exit 0
+    fi
+    mkdir -p .tools
+    curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
+    chmod +x "$BUF"
+
+# Generate protobuf code
+generate: ensure-buf
+    .tools/buf generate
 
 # Build all targets (includes nogo lint)
 build:

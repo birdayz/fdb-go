@@ -26,7 +26,7 @@ jobs:
 
       - name: Check generated protobuf code is up to date
         run: |
-          buf generate
+          just generate
           if ! git diff --exit-code -- 'gen/'; then
             echo "Generated protobuf code is out of date. Run 'just generate' and commit."
             exit 1

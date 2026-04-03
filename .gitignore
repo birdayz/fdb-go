@@ -48,4 +48,5 @@ bazel-bin
 bazel-out
 bazel-testlogs
 bazel-fdb-record-layer-go
+.tools/
 pkg/fdbgo/wire/types/v5/
