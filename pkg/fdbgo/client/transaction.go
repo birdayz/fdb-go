@@ -328,7 +328,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
-		// Still reset for reuse (matches C client behavior).
+		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
+		// Reset for reuse (matches C client behavior).
+		tx.hasCommitted = true
 		tx.postCommitReset()
 		return nil
 	}
