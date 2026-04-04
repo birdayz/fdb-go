@@ -1,0 +1,36 @@
+# Differential serialization fuzzer: Go MarshalFDB vs C++ ObjectWriter.
+#
+# The C++ oracle is built via build.sh (Docker, same as fdb-schema-extract).
+# The Go test uses the oracle as a subprocess.
+#
+# Workflow:
+#   1. Build oracle: ./cmd/fdb-diff-oracle/build.sh /path/to/fdb-source
+#   2. Run tests:    DIFF_ORACLE_BIN=./diff-oracle go test ./cmd/fdb-diff-oracle/...
+#   3. Fuzz:         DIFF_ORACLE_BIN=./diff-oracle go test -fuzz=FuzzGetReadVersionRequest ./cmd/fdb-diff-oracle/...
+#
+# The Bazel target below is for the Go test only. The C++ oracle binary
+# must be pre-built since it requires FDB's full cmake build environment.
+
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fdb-diff-oracle_lib",
+    srcs = ["oracle.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/cmd/fdb-diff-oracle",
+    visibility = ["//visibility:private"],
+)
+
+go_test(
+    name = "fdb-diff-oracle_test",
+    srcs = ["fuzz_test.go"],
+    embed = [":fdb-diff-oracle_lib"],
+    tags = ["manual"],
+    deps = [
+        "//pkg/fdbgo/wire/types",
+    ],
+)
+
+exports_files([
+    "main.cpp",
+    "build.sh",
+])
