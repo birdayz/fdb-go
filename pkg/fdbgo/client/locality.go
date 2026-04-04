@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"os"
 	"sync"
 	"time"
 
@@ -141,14 +140,6 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
 			body := buildGetKeyServerLocationsRequest(key, replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
-
-			// DEBUG: round-trip check
-			if os.Getenv("FDB_DEBUG_COMMIT") != "" {
-				var check types.GetKeyServerLocationsRequest
-				if err := check.UnmarshalFDB(body); err != nil {
-					fmt.Fprintf(os.Stderr, "LOCATION ROUNDTRIP FAILED: %v keyLen=%d bodyLen=%d\n", err, len(key), len(body))
-				}
-			}
 
 			if err := conn.SendFrame(locToken, body); err != nil {
 				cancelReply()
