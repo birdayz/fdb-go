@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
@@ -18,8 +19,17 @@ var oracleBinaryPath string
 func TestMain(m *testing.M) {
 	oracleBinaryPath = os.Getenv("DIFF_ORACLE_BIN")
 	if oracleBinaryPath == "" {
-		// Try a default location.
 		oracleBinaryPath = "./diff-oracle"
+	}
+	// Bazel runfiles: resolve relative path against TEST_SRCDIR.
+	if !filepath.IsAbs(oracleBinaryPath) {
+		if srcDir := os.Getenv("TEST_SRCDIR"); srcDir != "" {
+			ws := os.Getenv("TEST_WORKSPACE")
+			if ws == "" {
+				ws = "_main"
+			}
+			oracleBinaryPath = filepath.Join(srcDir, ws, oracleBinaryPath)
+		}
 	}
 	os.Exit(m.Run())
 }
