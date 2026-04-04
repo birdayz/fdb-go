@@ -11,6 +11,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+- [ ] **HIGH** — ConnectPacket `canonicalRemotePort` mismatch causes CI hang. Our Go client's ConnectPacket reports a port that doesn't match what FDB sees (Docker NAT / socat proxy / ephemeral port). FDB server asserts `pkt.canonicalRemotePort == peerAddress.port` at `FlowTransport.actor.cpp:1409`, rejects the connection. When the CGo client and Go client both connect to the same FDB (e.g., `TestGetRange` in `coordinator_test.go` — CGo writes, Go reads), the rejected Go connection poisons state and the CGo client's `Transact()` hangs in `fdb_future_block_until_ready` forever. Observed in CI run `23981658119`: `TestGetRange` stuck 56 minutes, caused 1h timeout cascade. The C client (`libfdb_c.so`) handles port reporting correctly. Fix: match C client's ConnectPacket port logic — report the actual TCP source port, not a configured one.
 - [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
 
   **Serialization bugs (all fixed):**
