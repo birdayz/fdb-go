@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -27,6 +28,7 @@ const (
 	ErrGrvProxyMemoryLimit       = 1078
 	ErrAllAlternativesFailed     = 1006 // C++: all_alternatives_failed (storage reads)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
+	ErrInvertedRange             = 2005 // C++: inverted_range (begin > end)
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -241,7 +243,12 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	// Only add read conflict if range is valid (begin <= end).
+	// C++ client validates this; inverted ranges are silently skipped for conflicts
+	// but the scan itself returns empty.
+	if bytes.Compare(begin, end) <= 0 {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	}
 
 	return tx.getRange(ctx, begin, end, limit, reverse)
 }
@@ -270,13 +277,18 @@ func (tx *Transaction) Clear(key []byte) {
 }
 
 // ClearRange deletes all keys in [begin, end).
-func (tx *Transaction) ClearRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
+func (tx *Transaction) ClearRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   begin,
 		Value: end,
 	})
 	tx.addWriteConflict(begin, end)
+	return nil
 }
 
 // Atomic performs an atomic mutation.
@@ -500,8 +512,13 @@ func (tx *Transaction) SetNextWriteNoWriteConflictRange() {
 // AddReadConflictRange adds an explicit read conflict range [begin, end).
 // If any key in this range is modified by another transaction between
 // this transaction's read version and commit, the commit will fail.
-func (tx *Transaction) AddReadConflictRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	return nil
 }
 
 // AddReadConflictKey adds a read conflict on a single key.
@@ -510,8 +527,13 @@ func (tx *Transaction) AddReadConflictKey(key []byte) {
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
-func (tx *Transaction) AddWriteConflictRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	return nil
 }
 
 // AddWriteConflictKey adds a write conflict on a single key.

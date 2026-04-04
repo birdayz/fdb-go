@@ -284,8 +284,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		end := sm.popBytes()
 		if isDatabase {
 			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
-				tx.ClearRange(begin, end)
-				return nil, nil
+				return nil, tx.ClearRange(begin, end)
 			})
 			if err != nil {
 				sm.pushError(idx, err)
@@ -293,7 +292,9 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
 			}
 		} else {
-			sm.currentTr().ClearRange(begin, end)
+			if err := sm.currentTr().ClearRange(begin, end); err != nil {
+				sm.pushError(idx, err)
+			}
 		}
 
 	case "CLEAR_RANGE_STARTS_WITH":
@@ -301,8 +302,7 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		end := strinc(prefix)
 		if isDatabase {
 			_, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
-				tx.ClearRange(prefix, end)
-				return nil, nil
+				return nil, tx.ClearRange(prefix, end)
 			})
 			if err != nil {
 				sm.pushError(idx, err)
@@ -310,7 +310,9 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 				sm.push(idx, []byte("RESULT_NOT_PRESENT"))
 			}
 		} else {
-			sm.currentTr().ClearRange(prefix, end)
+			if err := sm.currentTr().ClearRange(prefix, end); err != nil {
+				sm.pushError(idx, err)
+			}
 		}
 
 	case "ATOMIC_OP":
@@ -385,8 +387,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "READ_CONFLICT_RANGE":
 		begin := sm.popBytes()
 		end := sm.popBytes()
-		sm.currentTr().AddReadConflictRange(begin, end)
-		sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		if err := sm.currentTr().AddReadConflictRange(begin, end); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		}
 
 	case "READ_CONFLICT_KEY":
 		key := sm.popBytes()
@@ -396,8 +401,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "WRITE_CONFLICT_RANGE":
 		begin := sm.popBytes()
 		end := sm.popBytes()
-		sm.currentTr().AddWriteConflictRange(begin, end)
-		sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		if err := sm.currentTr().AddWriteConflictRange(begin, end); err != nil {
+			sm.pushError(idx, err)
+		} else {
+			sm.push(idx, []byte("SET_CONFLICT_RANGE"))
+		}
 
 	case "WRITE_CONFLICT_KEY":
 		key := sm.popBytes()

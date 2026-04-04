@@ -10,15 +10,16 @@ import (
 
 const (
 	LocationPairSlotKeyRange = 0
-	LocationPairSlotServers = 1
+	LocationPairSlotServers  = 1
 )
 
 var LocationPairVTable = wire.VTable{8, 12, 4, 8}
+
 const LocationPairMaxAlign = 4
 
 type LocationPair struct {
 	KeyRange KeyRangeRef // slot 0, nested
-	Servers []byte // slot 1
+	Servers  []byte      // slot 1
 }
 
 func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
@@ -32,7 +33,9 @@ func (m *LocationPair) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *LocationPair) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if nr, err := r.ReadNestedReader(LocationPairSlotKeyRange); err == nil {
 		m.KeyRange.UnmarshalFromReader(nr)
 	}
@@ -48,7 +51,9 @@ func (m *LocationPair) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Servers != nil { oolSize += (len(m.Servers) + 3) &^ 3 }
+	if m.Servers != nil {
+		oolSize += (len(m.Servers) + 3) &^ 3
+	}
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -90,7 +95,10 @@ func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
 func (m *LocationPair) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.KeyRange.precomputeSize(ps)
 	ps.VisitDynamicSize(len(m.Servers))
-	{ n := ps.GetMessageWriter(int(LocationPairVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(LocationPairVTable[1])-4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(int(LocationPairVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(LocationPairVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -105,7 +113,12 @@ func (m *LocationPair) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 	selfW := wb.GetMessageWriter(int(LocationPairVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := LocationPairVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(LocationPairVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(LocationPairVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteRelativeOffset(keyRangeStart, int(vt[LocationPairSlotKeyRange+2]))
 	selfW.WriteRelativeOffset(serversOff, int(vt[LocationPairSlotServers+2]))
 	selfW.WriteToAt(selfStart)
@@ -115,15 +128,18 @@ func (m *LocationPair) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 // ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.
 func ParseLocationPairVectorFromReader(r *wire.Reader, slot int) []LocationPair {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]LocationPair, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem LocationPair
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

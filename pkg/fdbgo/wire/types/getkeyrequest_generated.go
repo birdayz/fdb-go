@@ -9,19 +9,21 @@ import (
 )
 
 const (
-	GetKeyRequestSlotSel = 0
-	GetKeyRequestSlotVersion = 1
-	GetKeyRequestSlotTags = 2
-	GetKeyRequestSlotReply = 4
-	GetKeyRequestSlotSpanContext = 5
-	GetKeyRequestSlotTenantInfo = 6
-	GetKeyRequestSlotOptions = 7
+	GetKeyRequestSlotSel                    = 0
+	GetKeyRequestSlotVersion                = 1
+	GetKeyRequestSlotTags                   = 2
+	GetKeyRequestSlotReply                  = 4
+	GetKeyRequestSlotSpanContext            = 5
+	GetKeyRequestSlotTenantInfo             = 6
+	GetKeyRequestSlotOptions                = 7
 	GetKeyRequestSlotSsLatestCommitVersions = 9
-	GetKeyRequestSlotField_10 = 10
+	GetKeyRequestSlotField_10               = 10
 )
 
 var GetKeyRequestVTable = wire.VTable{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36}
+
 const GetKeyRequestFileID uint32 = 10457870
+
 var GetKeyRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
@@ -34,20 +36,21 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 var GetKeyRequestTemplate = wire.NewMessageTemplate(
 	GetKeyRequestFileID, GetKeyRequestVTable, 8, GetKeyRequestVTableClosure,
 )
+
 const GetKeyRequestMaxAlign = 8
 
 type GetKeyRequest struct {
-	Sel KeySelectorRef // slot 0, nested
-	Version int64 // slot 1
-	HasTags bool   // slot 2, optional tag
-	Tags    []byte // slot 3, optional value
-	Reply ReplyPromise // slot 4, nested
-	SpanContext SpanContext // slot 5, nested
-	TenantInfo TenantInfo // slot 6, nested
-	HasOptions bool   // slot 7, optional tag
-	Options    ReadOptions // slot 8, optional nested value
-	SsLatestCommitVersions []byte // slot 9
-	Field_10 []byte // slot 10
+	Sel                    KeySelectorRef // slot 0, nested
+	Version                int64          // slot 1
+	HasTags                bool           // slot 2, optional tag
+	Tags                   []byte         // slot 3, optional value
+	Reply                  ReplyPromise   // slot 4, nested
+	SpanContext            SpanContext    // slot 5, nested
+	TenantInfo             TenantInfo     // slot 6, nested
+	HasOptions             bool           // slot 7, optional tag
+	Options                ReadOptions    // slot 8, optional nested value
+	SsLatestCommitVersions []byte         // slot 9
+	Field_10               []byte         // slot 10
 }
 
 func (m *GetKeyRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -86,7 +89,9 @@ func (m *GetKeyRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if nr, err := r.ReadNestedReader(GetKeyRequestSlotSel); err == nil {
 		m.Sel.UnmarshalFromReader(nr)
 	}
@@ -127,7 +132,9 @@ func (m *GetKeyRequest) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.SsLatestCommitVersions != nil { oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3 }
+	if m.SsLatestCommitVersions != nil {
+		oolSize += (4 + len(m.SsLatestCommitVersions) + 3) &^ 3
+	}
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -152,7 +159,9 @@ func (m *GetKeyRequest) measureEndOff(endOff int) int {
 	if m.HasTags {
 		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
 	}
-	if m.HasOptions { endOff = m.Options.measureEndOff(endOff) }
+	if m.HasOptions {
+		endOff = m.Options.measureEndOff(endOff)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
 	endOff = m.Sel.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
@@ -200,13 +209,20 @@ func (m *GetKeyRequest) writeDirect(dw *wire.DirectWriter) int {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Sel.precomputeSize(ps)
-	if m.HasTags { ps.VisitDynamicSize(len(m.Tags)) }
+	if m.HasTags {
+		ps.VisitDynamicSize(len(m.Tags))
+	}
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
 	m.TenantInfo.precomputeSize(ps)
-	if m.HasOptions { m.Options.precomputeSize(ps) }
+	if m.HasOptions {
+		m.Options.precomputeSize(ps)
+	}
 	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
-	{ n := ps.GetMessageWriter(int(GetKeyRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyRequestVTable[1])-4, 8)+4) }
+	{
+		n := ps.GetMessageWriter(int(GetKeyRequestVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyRequestVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -222,17 +238,30 @@ func (m *GetKeyRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, t
 	var optionsOff int
 	var ssLatestCommitVersionsOff int
 	selStart = m.Sel.writeToBuffer(wb, vtableStart, tmpl)
-	if m.HasTags { tagsOff, _ = wb.VisitDynamicSize(m.Tags) }
+	if m.HasTags {
+		tagsOff, _ = wb.VisitDynamicSize(m.Tags)
+	}
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
 	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
-	if m.HasOptions { optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl) }
+	if m.HasOptions {
+		optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl)
+	}
 	ssLatestCommitVersionsOff, _ = wb.VisitDynamicSize(m.SsLatestCommitVersions)
 	selfW := wb.GetMessageWriter(int(GetKeyRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyRequestVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[GetKeyRequestSlotVersion+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GetKeyRequestVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
+		selfW.WriteScalar(b[:], int(vt[GetKeyRequestSlotVersion+2]))
+	}
 	selfW.WriteRelativeOffset(selStart, int(vt[GetKeyRequestSlotSel+2]))
 	if m.HasTags {
 		selfW.WriteScalar([]byte{1}, int(vt[GetKeyRequestSlotTags+2]))
@@ -258,10 +287,16 @@ func (m *GetKeyRequest) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -275,13 +310,22 @@ func (m *GetKeyRequest) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyRequestFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], GetKeyRequestFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -289,15 +333,18 @@ func (m *GetKeyRequest) MarshalFDB() []byte {
 // ParseGetKeyRequestVectorFromReader reads a FlatBuffers vector of GetKeyRequest.
 func ParseGetKeyRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]GetKeyRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem GetKeyRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

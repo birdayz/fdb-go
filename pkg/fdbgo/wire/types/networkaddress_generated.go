@@ -9,14 +9,16 @@ import (
 )
 
 const (
-	NetworkAddressSlotIp = 0
-	NetworkAddressSlotPort = 1
-	NetworkAddressSlotFlags = 2
+	NetworkAddressSlotIp           = 0
+	NetworkAddressSlotPort         = 1
+	NetworkAddressSlotFlags        = 2
 	NetworkAddressSlotFromHostname = 3
 )
 
 var NetworkAddressVTable = wire.VTable{12, 13, 4, 8, 10, 12}
+
 const NetworkAddressFileID uint32 = 14155727
+
 var NetworkAddressVTableClosure = []wire.VTable{
 	{8, 9, 8, 4},
 	{12, 13, 4, 8, 10, 12},
@@ -25,13 +27,14 @@ var NetworkAddressVTableClosure = []wire.VTable{
 var NetworkAddressTemplate = wire.NewMessageTemplate(
 	NetworkAddressFileID, NetworkAddressVTable, 4, NetworkAddressVTableClosure,
 )
+
 const NetworkAddressMaxAlign = 4
 
 type NetworkAddress struct {
-	Ip IPAddress // slot 0, nested
-	Port uint16 // slot 1
-	Flags uint16 // slot 2
-	FromHostname bool // slot 3
+	Ip           IPAddress // slot 0, nested
+	Port         uint16    // slot 1
+	Flags        uint16    // slot 2
+	FromHostname bool      // slot 3
 }
 
 func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
@@ -51,7 +54,9 @@ func (m *NetworkAddress) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *NetworkAddress) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if nr, err := r.ReadNestedReader(NetworkAddressSlotIp); err == nil {
 		m.Ip.UnmarshalFromReader(nr)
 	}
@@ -85,7 +90,9 @@ func (m *NetworkAddress) writeBlob(buf []byte, pos int) int {
 	curOOL := oolPos
 	binary.LittleEndian.PutUint16(obj[int(vt[NetworkAddressSlotPort+2]):], m.Port)
 	binary.LittleEndian.PutUint16(obj[int(vt[NetworkAddressSlotFlags+2]):], m.Flags)
-	if m.FromHostname { obj[int(vt[NetworkAddressSlotFromHostname+2])] = 1 }
+	if m.FromHostname {
+		obj[int(vt[NetworkAddressSlotFromHostname+2])] = 1
+	}
 	return curOOL - pos
 }
 
@@ -113,7 +120,10 @@ func (m *NetworkAddress) writeDirect(dw *wire.DirectWriter) int {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *NetworkAddress) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Ip.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(int(NetworkAddressVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressVTable[1])-4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(int(NetworkAddressVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -126,10 +136,25 @@ func (m *NetworkAddress) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, 
 	selfW := wb.GetMessageWriter(int(NetworkAddressVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := NetworkAddressVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.Port)); selfW.WriteScalar(b[:], int(vt[NetworkAddressSlotPort+2])) }
-	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.Flags)); selfW.WriteScalar(b[:], int(vt[NetworkAddressSlotFlags+2])) }
-	if m.FromHostname { selfW.WriteScalar([]byte{1}, int(vt[NetworkAddressSlotFromHostname+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(m.Port))
+		selfW.WriteScalar(b[:], int(vt[NetworkAddressSlotPort+2]))
+	}
+	{
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(m.Flags))
+		selfW.WriteScalar(b[:], int(vt[NetworkAddressSlotFlags+2]))
+	}
+	if m.FromHostname {
+		selfW.WriteScalar([]byte{1}, int(vt[NetworkAddressSlotFromHostname+2]))
+	}
 	selfW.WriteRelativeOffset(ipStart, int(vt[NetworkAddressSlotIp+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
@@ -143,10 +168,16 @@ func (m *NetworkAddress) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -160,13 +191,22 @@ func (m *NetworkAddress) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], NetworkAddressFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], NetworkAddressFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -174,15 +214,18 @@ func (m *NetworkAddress) MarshalFDB() []byte {
 // ParseNetworkAddressVectorFromReader reads a FlatBuffers vector of NetworkAddress.
 func ParseNetworkAddressVectorFromReader(r *wire.Reader, slot int) []NetworkAddress {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]NetworkAddress, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem NetworkAddress
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

@@ -139,7 +139,8 @@ func MeasureRawOOL(endOff int, data []byte) int {
 // kept for API compatibility.
 // MeasureObject computes the end-offset after writing an object.
 // C++ SaveVisitorLambda (flat_buffers.h:972):
-//   RightAlign(current_buffer_size + vtable[1] - 4, max(4, fb_align<Members>...)) + 4
+//
+//	RightAlign(current_buffer_size + vtable[1] - 4, max(4, fb_align<Members>...)) + 4
 func MeasureObject(endOff int, vt VTable, maxAlign int) int {
 	if maxAlign < 4 {
 		maxAlign = 4

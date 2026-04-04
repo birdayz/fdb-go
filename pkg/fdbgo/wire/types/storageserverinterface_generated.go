@@ -10,13 +10,14 @@ import (
 
 const (
 	StorageServerInterfaceSlotWatchValue = 0
-	StorageServerInterfaceSlotField_1 = 1
-	StorageServerInterfaceSlotField_2 = 2
-	StorageServerInterfaceSlotField_3 = 3
-	StorageServerInterfaceSlotField_5 = 5
+	StorageServerInterfaceSlotField_1    = 1
+	StorageServerInterfaceSlotField_2    = 2
+	StorageServerInterfaceSlotField_3    = 3
+	StorageServerInterfaceSlotField_5    = 5
 )
 
 var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
+
 const StorageServerInterfaceFileID uint32 = 15302073
 const StorageServerInterfaceMaxAlign = 8
 
@@ -26,7 +27,7 @@ type StorageServerInterface struct {
 	// Field_2: unregistered nested struct at slot 2
 	HasField_3 bool   // slot 3, optional tag
 	Field_3    []byte // slot 4, optional value
-	Field_5 bool // slot 5
+	Field_5    bool   // slot 5
 }
 
 func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
@@ -44,7 +45,9 @@ func (m *StorageServerInterface) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *StorageServerInterface) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(StorageServerInterfaceSlotWatchValue) {
 		m.WatchValue = r.ReadUID(StorageServerInterfaceSlotWatchValue)
 	}
@@ -75,7 +78,9 @@ func (m *StorageServerInterface) writeBlob(buf []byte, pos int) int {
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	curOOL := oolPos
 	copy(obj[int(vt[StorageServerInterfaceSlotWatchValue+2]):], m.WatchValue[:])
-	if m.Field_5 { obj[int(vt[StorageServerInterfaceSlotField_5+2])] = 1 }
+	if m.Field_5 {
+		obj[int(vt[StorageServerInterfaceSlotField_5+2])] = 1
+	}
 	return curOOL - pos
 }
 
@@ -109,8 +114,13 @@ func (m *StorageServerInterface) writeDirect(dw *wire.DirectWriter) int {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *StorageServerInterface) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasField_3 { ps.VisitDynamicSize(len(m.Field_3)) }
-	{ n := ps.GetMessageWriter(int(StorageServerInterfaceVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(StorageServerInterfaceVTable[1])-4, 8)+4) }
+	if m.HasField_3 {
+		ps.VisitDynamicSize(len(m.Field_3))
+	}
+	{
+		n := ps.GetMessageWriter(int(StorageServerInterfaceVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(StorageServerInterfaceVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -119,13 +129,22 @@ func (m *StorageServerInterface) precomputeSize(ps *wire.PrecomputeSize) int {
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *StorageServerInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var field_3Off int
-	if m.HasField_3 { field_3Off, _ = wb.VisitDynamicSize(m.Field_3) }
+	if m.HasField_3 {
+		field_3Off, _ = wb.VisitDynamicSize(m.Field_3)
+	}
 	selfW := wb.GetMessageWriter(int(StorageServerInterfaceVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := StorageServerInterfaceVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(StorageServerInterfaceVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(StorageServerInterfaceVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteScalar(m.WatchValue[:], int(vt[StorageServerInterfaceSlotWatchValue+2]))
-	if m.Field_5 { selfW.WriteScalar([]byte{1}, int(vt[StorageServerInterfaceSlotField_5+2])) }
+	if m.Field_5 {
+		selfW.WriteScalar([]byte{1}, int(vt[StorageServerInterfaceSlotField_5+2]))
+	}
 	if m.HasField_3 {
 		selfW.WriteScalar([]byte{1}, int(vt[StorageServerInterfaceSlotField_3+2]))
 		selfW.WriteRelativeOffset(field_3Off, int(vt[StorageServerInterfaceSlotField_3+1+2]))
@@ -137,15 +156,18 @@ func (m *StorageServerInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableSta
 // ParseStorageServerInterfaceVectorFromReader reads a FlatBuffers vector of StorageServerInterface.
 func ParseStorageServerInterfaceVectorFromReader(r *wire.Reader, slot int) []StorageServerInterface {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]StorageServerInterface, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem StorageServerInterface
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

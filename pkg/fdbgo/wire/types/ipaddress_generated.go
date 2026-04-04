@@ -13,10 +13,11 @@ const (
 )
 
 var IPAddressVTable = wire.VTable{8, 9, 8, 4}
+
 const IPAddressMaxAlign = 4
 
 type IPAddress struct {
-	AddrTag uint8 // slot 0, variant tag
+	AddrTag  uint8  // slot 0, variant tag
 	AddrAlt0 uint32 // tag=1
 	AddrAlt1 []byte // tag=2
 }
@@ -28,21 +29,23 @@ func (m *IPAddress) UnmarshalFromReader(r *wire.Reader) {
 		case 1:
 			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
 		case 2:
-			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr + 1, 4)
+			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
 		}
 	}
 }
 
 func (m *IPAddress) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(IPAddressSlotAddr) {
 		m.AddrTag = r.ReadUint8(IPAddressSlotAddr)
 		switch m.AddrTag {
 		case 1:
 			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
 		case 2:
-			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr + 1, 4)
+			m.AddrAlt1 = r.ReadRelOffRaw(IPAddressSlotAddr+1, 4)
 		}
 	}
 	return nil
@@ -122,7 +125,10 @@ func (m *IPAddress) writeDirect(dw *wire.DirectWriter) int {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *IPAddress) precomputeSize(ps *wire.PrecomputeSize) int {
-	{ n := ps.GetMessageWriter(int(IPAddressVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(IPAddressVTable[1])-4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(int(IPAddressVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(IPAddressVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -132,7 +138,12 @@ func (m *IPAddress) precomputeSize(ps *wire.PrecomputeSize) int {
 func (m *IPAddress) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	selfW := wb.GetMessageWriter(int(IPAddressVTable[1]), true)
 	selfStart := selfW.FinalLocation
-	{ soff := int32(vtableStart - tmpl.VTableOffset(IPAddressVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(IPAddressVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }
@@ -140,15 +151,18 @@ func (m *IPAddress) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl 
 // ParseIPAddressVectorFromReader reads a FlatBuffers vector of IPAddress.
 func ParseIPAddressVectorFromReader(r *wire.Reader, slot int) []IPAddress {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]IPAddress, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem IPAddress
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

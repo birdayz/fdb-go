@@ -10,17 +10,18 @@ import (
 
 const (
 	SpanContextSlotTraceID = 0
-	SpanContextSlotSpanID = 1
-	SpanContextSlotFlags = 2
+	SpanContextSlotSpanID  = 1
+	SpanContextSlotFlags   = 2
 )
 
 var SpanContextVTable = wire.VTable{10, 29, 4, 20, 28}
+
 const SpanContextMaxAlign = 8
 
 type SpanContext struct {
 	TraceID [16]byte // slot 0
-	SpanID uint64 // slot 1
-	Flags uint8 // slot 2
+	SpanID  uint64   // slot 1
+	Flags   uint8    // slot 2
 }
 
 func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
@@ -37,7 +38,9 @@ func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(SpanContextSlotTraceID) {
 		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
 	}
@@ -90,7 +93,10 @@ func (m *SpanContext) writeDirect(dw *wire.DirectWriter) int {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *SpanContext) precomputeSize(ps *wire.PrecomputeSize) int {
-	{ n := ps.GetMessageWriter(int(SpanContextVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(SpanContextVTable[1])-4, 8)+4) }
+	{
+		n := ps.GetMessageWriter(int(SpanContextVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(SpanContextVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -101,9 +107,18 @@ func (m *SpanContext) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	selfW := wb.GetMessageWriter(int(SpanContextVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := SpanContextVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(SpanContextVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(SpanContextVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteScalar(m.TraceID[:], int(vt[SpanContextSlotTraceID+2]))
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.SpanID)); selfW.WriteScalar(b[:], int(vt[SpanContextSlotSpanID+2])) }
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.SpanID))
+		selfW.WriteScalar(b[:], int(vt[SpanContextSlotSpanID+2]))
+	}
 	selfW.WriteScalar([]byte{byte(m.Flags)}, int(vt[SpanContextSlotFlags+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
@@ -112,15 +127,18 @@ func (m *SpanContext) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 // ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
 func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]SpanContext, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem SpanContext
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

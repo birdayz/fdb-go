@@ -17,15 +17,15 @@ const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_
 // getKey resolves a key selector via the storage server.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locCache.locate(tx.db, ctx, selectorKey)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
-		if len(servers) == 0 {
+		if len(loc.Servers) == 0 {
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		key, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, servers)
+		key, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
 		if err == nil {
 			return key, nil
 		}
@@ -103,15 +103,15 @@ func parseGetKeyReply(data []byte) ([]byte, error) {
 // for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locCache.locate(tx.db, ctx, key)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
-		if len(servers) == 0 {
+		if len(loc.Servers) == 0 {
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		val, err := tx.sendGetValue(ctx, key, servers)
+		val, err := tx.sendGetValue(ctx, key, loc.Servers)
 		if err == nil {
 			return val, nil
 		}
@@ -170,18 +170,6 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	curEnd := end
 
 	for remaining > 0 {
-		// For reverse scans, locate by end key (we scan backwards).
-		locateKey := curBegin
-		if reverse {
-			// Locate the shard containing the last key in range.
-			// Use end-1 conceptually; the shard containing end covers it.
-			locateKey = curEnd
-			if len(locateKey) > 0 {
-				locateKey = append([]byte(nil), curEnd...)
-				// Decrement to get into the right shard.
-				locateKey[len(locateKey)-1]--
-			}
-		}
 		kvs, more, err := tx.getRangeOneShard(ctx, curBegin, curEnd, remaining, reverse)
 		if err != nil {
 			return nil, false, err
@@ -229,28 +217,65 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 }
 
 // getRangeOneShard queries a single shard with wrong_shard_server retry.
+// C++ getExactRange: locates by end for reverse, clamps begin/end to shard boundaries.
 func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		servers, err := tx.db.locCache.locate(tx.db, ctx, begin)
-		if err != nil {
-			return nil, false, fmt.Errorf("locate range begin: %w", err)
+		// C++ getExactRange: locate by end for reverse, begin for forward.
+		locateKey := begin
+		if reverse && len(end) > 0 {
+			locateKey = keyBefore(end)
 		}
-		if len(servers) == 0 {
+		loc, err := tx.db.locCache.locate(tx.db, ctx, locateKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("locate range: %w", err)
+		}
+		if len(loc.Servers) == 0 {
 			return nil, false, fmt.Errorf("no storage servers for range")
 		}
 
-		kvs, more, err := tx.sendGetRange(ctx, begin, end, limit, reverse, servers)
+		// Clamp begin/end to shard boundaries.
+		// C++ getExactRange sends firstGreaterOrEqual(range.begin) / firstGreaterOrEqual(range.end).
+		clampedBegin := begin
+		clampedEnd := end
+		if loc.ShardBegin != nil && bytes.Compare(clampedBegin, loc.ShardBegin) < 0 {
+			clampedBegin = loc.ShardBegin
+		}
+		if loc.ShardEnd != nil && bytes.Compare(clampedEnd, loc.ShardEnd) > 0 {
+			clampedEnd = loc.ShardEnd
+		}
+		// If the clamped range is empty (begin >= end), this shard has no data for us.
+		if bytes.Compare(clampedBegin, clampedEnd) >= 0 {
+			return nil, false, nil
+		}
+
+		kvs, more, err := tx.sendGetRange(ctx, clampedBegin, clampedEnd, limit, reverse, loc.Servers)
 		if err == nil {
 			return kvs, more, nil
 		}
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(begin)
+			tx.db.locCache.invalidate(locateKey)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
 		return nil, false, err
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// keyBefore returns a key just before the given key for shard location purposes.
+// Decrements the last byte; for empty keys returns empty.
+func keyBefore(key []byte) []byte {
+	if len(key) == 0 {
+		return key
+	}
+	result := make([]byte, len(key))
+	copy(result, key)
+	if result[len(result)-1] > 0 {
+		result[len(result)-1]--
+	} else {
+		result = result[:len(result)-1]
+	}
+	return result
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
@@ -336,8 +361,22 @@ func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
 type KeyValue = types.KeyValueRef
 
 // emptyVersionVector is the serialized form of an empty VersionVector.
-// C++ VersionVector::getEncodedSize() = sizeof(size_t) + sizeof(Version) = 16.
-var emptyVersionVector = make([]byte, 16)
+// C++ VersionVector::getEncodedSize() for empty = sizeof(size_t) + sizeof(Version) = 16.
+// C++ encodes: [utlCount=0 (8 bytes LE)] [maxVersion=invalidVersion=-1 (8 bytes LE)]
+var emptyVersionVector = func() []byte {
+	b := make([]byte, 16)
+	// utlCount = 0 (already zero)
+	// maxVersion = invalidVersion = -1
+	b[8] = 0xFF
+	b[9] = 0xFF
+	b[10] = 0xFF
+	b[11] = 0xFF
+	b[12] = 0xFF
+	b[13] = 0xFF
+	b[14] = 0xFF
+	b[15] = 0xFF
+	return b
+}()
 
 func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetValueRequest{

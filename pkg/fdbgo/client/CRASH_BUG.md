@@ -56,18 +56,18 @@ PYTHONPATH=/tmp/bt-run python3 bindingtester/bindingtester.py \
 
 Tested with `--num-ops 100 --api-version 730 --no-threads --no-tenants`:
 
-| Seed | Instructions | Our client | CGo client |
-|------|-------------|------------|------------|
-| 1    | ~31,000     | CRASH      | not tested |
-| 2    | ~10,000     | PASS       | -          |
-| 3    | ~24,000     | PASS       | -          |
-| 5    | ~26,000     | PASS       | -          |
-| 6    | ~8,700      | CRASH      | PASS       |
-| 7    | ~26,000     | PASS       | -          |
-| 8    | ~22,000     | CRASH      | not tested |
-| 10   | ~19,000     | CRASH      | not tested |
+| Seed | Instructions | Before fix | After fix |
+|------|-------------|------------|-----------|
+| 1    | ~31,000     | CRASH      | PASS      |
+| 2    | ~10,000     | PASS       | PASS      |
+| 3    | ~24,000     | PASS       | PASS      |
+| 5    | ~26,000     | PASS       | PASS      |
+| 6    | ~8,700      | CRASH      | PASS      |
+| 7    | ~26,000     | PASS       | PASS      |
+| 8    | ~22,000     | CRASH      | PASS      |
+| 10   | ~19,000     | CRASH      | PASS      |
 
-The crash is 100% reproducible for a given seed — seed 6 crashes every attempt (5/5).
+**All 8 seeds now pass with 0 errors and FDB alive.**
 
 ## What we ruled out
 
@@ -218,21 +218,46 @@ May self-resolve when bugs 3-4 are fixed (different content changes alignment).
 ObjectWriter serialized bytes for 10 test vectors. Go test
 `types/ground_truth_test.go` compares MarshalFDB byte-for-byte.
 
-Current status: 3/10 match (GetKeyServerLocationsRequest variants).
-7/10 have size mismatches from bugs 3 and 4.
+Current status: 10/10 sizes match. Byte differences only in ReplyPromise token
+(expected — C++ test uses random tokens, Go test uses zero).
 
-## Next steps
+## RESOLVED (2026-04-04)
 
-1. Fix: `Commit()` calls `ensureReadVersion(ctx)` before building the request.
-2. Verify: TenantID serialization — 0 vs -1 discrepancy needs investigation.
-3. Re-run seed 6 after fix to confirm FDB no longer crashes.
-4. Wire capture framework is in place for future debugging.
+### Root cause: two bugs in readpath.go + missing client-side validation
+
+**Bug A — \xff\xff system keys sent to storage server:**
+`getRangeOneShard()` always located shards by `begin` key, even for reverse scans.
+When the binding tester issued a reverse range with begin=`\xff\xff`, we sent
+`\xff\xff` directly to the storage server. The server's `getShardKeyRange()`
+tried to look up `\xff\xff` in its shard map and SEGFAULTED.
+
+Fix: For reverse scans, locate by `end` key (matching C++ `getExactRange`).
+Clamp begin/end to shard boundaries before sending. Skip if empty after clamping.
+
+**Bug B — inverted ranges in commits:**
+`ClearRange()`, `AddReadConflictRange()`, `AddWriteConflictRange()`, and
+`getRangeDir()` did not validate begin <= end. The C++ client returns
+`inverted_range` (error 2005) for these cases. Without validation, inverted
+ranges were included in the commit and the server rejected the entire commit.
+
+Fix: Validate begin <= end in all conflict range operations. Return error 2005.
+Skip adding read conflict ranges for inverted ranges in `getRangeDir()`.
+
+### addr2line output from crash
+
+```
+storageserver.actor.cpp:4581 — getShardKeyRange(data, req.begin)
+  → data->shards.rangeContaining(sel.getKey()) with sel.key = \xff\xff
+  → SIGSEGV (key not in any shard)
+```
 
 ## Files involved
 
+- `pkg/fdbgo/client/readpath.go` — shard clamping, reverse scan location
+- `pkg/fdbgo/client/locality.go` — LocationResult with shard boundaries
+- `pkg/fdbgo/client/transaction.go` — inverted range validation
+- `cmd/fdb-stacktester/operations.go` — error handling for validation
 - `pkg/fdbgo/wire/types/*_generated.go` — FlatBuffers marshal/unmarshal (codegen)
 - `pkg/fdbgo/client/commitpath.go` — CommitTransactionRequest construction
-- `pkg/fdbgo/client/readpath.go` — GetValue/GetKey/GetKeyValues construction
-- `pkg/fdbgo/client/grv.go` — GetReadVersion construction
 - `pkg/fdbgo/transport/conn.go` — Frame serialization and sending
 - `cmd/fdb-stacktester/` — Binding tester stack machine

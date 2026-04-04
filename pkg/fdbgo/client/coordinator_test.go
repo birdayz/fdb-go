@@ -126,12 +126,12 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try location lookup
 	t.Log("Attempting GetKeyServerLocations...")
-	servers, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"))
+	loc, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"))
 	if locErr != nil {
 		t.Logf("Locate: %v", locErr)
 	} else {
-		t.Logf("Locate: %d servers", len(servers))
-		for i, s := range servers {
+		t.Logf("Locate: %d servers", len(loc.Servers))
+		for i, s := range loc.Servers {
 			t.Logf("  server %d: %s token=%x:%x", i, s.Address, s.Token.First, s.Token.Second)
 		}
 	}

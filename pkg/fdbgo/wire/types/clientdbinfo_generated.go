@@ -9,20 +9,22 @@ import (
 )
 
 const (
-	ClientDBInfoSlotGrvProxies = 0
-	ClientDBInfoSlotCommitProxies = 1
-	ClientDBInfoSlotId = 2
-	ClientDBInfoSlotForward = 3
-	ClientDBInfoSlotHistory = 5
-	ClientDBInfoSlotTenantMode = 6
+	ClientDBInfoSlotGrvProxies      = 0
+	ClientDBInfoSlotCommitProxies   = 1
+	ClientDBInfoSlotId              = 2
+	ClientDBInfoSlotForward         = 3
+	ClientDBInfoSlotHistory         = 5
+	ClientDBInfoSlotTenantMode      = 6
 	ClientDBInfoSlotEncryptKeyProxy = 7
-	ClientDBInfoSlotClusterId = 9
-	ClientDBInfoSlotClusterType = 10
+	ClientDBInfoSlotClusterId       = 9
+	ClientDBInfoSlotClusterType     = 10
 	ClientDBInfoSlotMetaclusterName = 11
 )
 
 var ClientDBInfoVTable = wire.VTable{30, 71, 36, 40, 4, 68, 44, 48, 52, 69, 56, 20, 60, 70, 64}
+
 const ClientDBInfoFileID uint32 = 5355080
+
 var ClientDBInfoVTableClosure = []wire.VTable{
 	{10, 28, 20, 4, 24},
 	{8, 16, 12, 4},
@@ -38,22 +40,23 @@ var ClientDBInfoVTableClosure = []wire.VTable{
 var ClientDBInfoTemplate = wire.NewMessageTemplate(
 	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
 )
+
 const ClientDBInfoMaxAlign = 8
 
 type ClientDBInfo struct {
-	GrvProxies []byte // slot 0
-	CommitProxies []byte // slot 1
-	Id [16]byte // slot 2
-	HasForward bool   // slot 3, optional tag
-	Forward    []byte // slot 4, optional value
-	History []byte // slot 5
+	GrvProxies    []byte   // slot 0
+	CommitProxies []byte   // slot 1
+	Id            [16]byte // slot 2
+	HasForward    bool     // slot 3, optional tag
+	Forward       []byte   // slot 4, optional value
+	History       []byte   // slot 5
 	// TenantMode: unregistered nested struct at slot 6
-	HasEncryptKeyProxy bool   // slot 7, optional tag
-	EncryptKeyProxy    []byte // slot 8, optional value
-	ClusterId [16]byte // slot 9
-	ClusterType int32 // slot 10
-	HasMetaclusterName bool   // slot 11, optional tag
-	MetaclusterName    []byte // slot 12, optional value
+	HasEncryptKeyProxy bool     // slot 7, optional tag
+	EncryptKeyProxy    []byte   // slot 8, optional value
+	ClusterId          [16]byte // slot 9
+	ClusterType        int32    // slot 10
+	HasMetaclusterName bool     // slot 11, optional tag
+	MetaclusterName    []byte   // slot 12, optional value
 }
 
 func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
@@ -91,7 +94,9 @@ func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
 		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
 	}
@@ -131,9 +136,15 @@ func (m *ClientDBInfo) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.GrvProxies != nil { oolSize += (len(m.GrvProxies) + 3) &^ 3 }
-	if m.CommitProxies != nil { oolSize += (len(m.CommitProxies) + 3) &^ 3 }
-	if m.History != nil { oolSize += (len(m.History) + 3) &^ 3 }
+	if m.GrvProxies != nil {
+		oolSize += (len(m.GrvProxies) + 3) &^ 3
+	}
+	if m.CommitProxies != nil {
+		oolSize += (len(m.CommitProxies) + 3) &^ 3
+	}
+	if m.History != nil {
+		oolSize += (len(m.History) + 3) &^ 3
+	}
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -227,11 +238,20 @@ func (m *ClientDBInfo) writeDirect(dw *wire.DirectWriter) int {
 func (m *ClientDBInfo) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.GrvProxies))
 	ps.VisitDynamicSize(len(m.CommitProxies))
-	if m.HasForward { ps.VisitDynamicSize(len(m.Forward)) }
+	if m.HasForward {
+		ps.VisitDynamicSize(len(m.Forward))
+	}
 	ps.VisitDynamicSize(len(m.History))
-	if m.HasEncryptKeyProxy { ps.VisitDynamicSize(len(m.EncryptKeyProxy)) }
-	if m.HasMetaclusterName { ps.VisitDynamicSize(len(m.MetaclusterName)) }
-	{ n := ps.GetMessageWriter(int(ClientDBInfoVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ClientDBInfoVTable[1])-4, 8)+4) }
+	if m.HasEncryptKeyProxy {
+		ps.VisitDynamicSize(len(m.EncryptKeyProxy))
+	}
+	if m.HasMetaclusterName {
+		ps.VisitDynamicSize(len(m.MetaclusterName))
+	}
+	{
+		n := ps.GetMessageWriter(int(ClientDBInfoVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ClientDBInfoVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -247,17 +267,32 @@ func (m *ClientDBInfo) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 	var metaclusterNameOff int
 	grvProxiesOff, _ = wb.VisitDynamicSize(m.GrvProxies)
 	commitProxiesOff, _ = wb.VisitDynamicSize(m.CommitProxies)
-	if m.HasForward { forwardOff, _ = wb.VisitDynamicSize(m.Forward) }
+	if m.HasForward {
+		forwardOff, _ = wb.VisitDynamicSize(m.Forward)
+	}
 	historyOff, _ = wb.VisitDynamicSize(m.History)
-	if m.HasEncryptKeyProxy { encryptKeyProxyOff, _ = wb.VisitDynamicSize(m.EncryptKeyProxy) }
-	if m.HasMetaclusterName { metaclusterNameOff, _ = wb.VisitDynamicSize(m.MetaclusterName) }
+	if m.HasEncryptKeyProxy {
+		encryptKeyProxyOff, _ = wb.VisitDynamicSize(m.EncryptKeyProxy)
+	}
+	if m.HasMetaclusterName {
+		metaclusterNameOff, _ = wb.VisitDynamicSize(m.MetaclusterName)
+	}
 	selfW := wb.GetMessageWriter(int(ClientDBInfoVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := ClientDBInfoVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(ClientDBInfoVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(ClientDBInfoVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteScalar(m.Id[:], int(vt[ClientDBInfoSlotId+2]))
 	selfW.WriteScalar(m.ClusterId[:], int(vt[ClientDBInfoSlotClusterId+2]))
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.ClusterType)); selfW.WriteScalar(b[:], int(vt[ClientDBInfoSlotClusterType+2])) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(m.ClusterType))
+		selfW.WriteScalar(b[:], int(vt[ClientDBInfoSlotClusterType+2]))
+	}
 	selfW.WriteRelativeOffset(grvProxiesOff, int(vt[ClientDBInfoSlotGrvProxies+2]))
 	selfW.WriteRelativeOffset(commitProxiesOff, int(vt[ClientDBInfoSlotCommitProxies+2]))
 	if m.HasForward {
@@ -285,10 +320,16 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -302,13 +343,22 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], ClientDBInfoFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], ClientDBInfoFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -316,15 +366,18 @@ func (m *ClientDBInfo) MarshalFDB() []byte {
 // ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo.
 func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) []ClientDBInfo {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]ClientDBInfo, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem ClientDBInfo
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

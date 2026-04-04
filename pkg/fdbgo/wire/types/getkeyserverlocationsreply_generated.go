@@ -9,14 +9,16 @@ import (
 )
 
 const (
-	GetKeyServerLocationsReplySlotResults = 0
+	GetKeyServerLocationsReplySlotResults           = 0
 	GetKeyServerLocationsReplySlotResultsTssMapping = 1
 	GetKeyServerLocationsReplySlotResultsTagMapping = 2
-	GetKeyServerLocationsReplySlotArena = 3
+	GetKeyServerLocationsReplySlotArena             = 3
 )
 
 var GetKeyServerLocationsReplyVTable = wire.VTable{10, 16, 4, 8, 12}
+
 const GetKeyServerLocationsReplyFileID uint32 = 10636023
+
 var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 	{8, 24, 4, 20},
 	{8, 24, 4, 20},
@@ -32,13 +34,14 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 var GetKeyServerLocationsReplyTemplate = wire.NewMessageTemplate(
 	GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, GetKeyServerLocationsReplyVTableClosure,
 )
+
 const GetKeyServerLocationsReplyMaxAlign = 4
 
 type GetKeyServerLocationsReply struct {
-	Results []byte // slot 0
+	Results           []byte // slot 0
 	ResultsTssMapping []byte // slot 1
 	ResultsTagMapping []byte // slot 2
-	Arena []byte // slot 3
+	Arena             []byte // slot 3
 }
 
 func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
@@ -58,7 +61,9 @@ func (m *GetKeyServerLocationsReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyServerLocationsReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(GetKeyServerLocationsReplySlotResults) {
 		m.Results = r.ReadBytes(GetKeyServerLocationsReplySlotResults)
 	}
@@ -80,9 +85,15 @@ func (m *GetKeyServerLocationsReply) blobSize() int {
 	objPos := (vtBytes + 3) &^ 3
 	oolPos := (objPos + int(vt[1]) + 3) &^ 3
 	oolSize := 0
-	if m.Results != nil { oolSize += (len(m.Results) + 3) &^ 3 }
-	if m.ResultsTssMapping != nil { oolSize += (len(m.ResultsTssMapping) + 3) &^ 3 }
-	if m.ResultsTagMapping != nil { oolSize += (len(m.ResultsTagMapping) + 3) &^ 3 }
+	if m.Results != nil {
+		oolSize += (len(m.Results) + 3) &^ 3
+	}
+	if m.ResultsTssMapping != nil {
+		oolSize += (len(m.ResultsTssMapping) + 3) &^ 3
+	}
+	if m.ResultsTagMapping != nil {
+		oolSize += (len(m.ResultsTagMapping) + 3) &^ 3
+	}
 	return (oolPos + oolSize + 3) &^ 3
 }
 
@@ -138,7 +149,10 @@ func (m *GetKeyServerLocationsReply) precomputeSize(ps *wire.PrecomputeSize) int
 	ps.VisitDynamicSize(len(m.Results))
 	ps.VisitDynamicSize(len(m.ResultsTssMapping))
 	ps.VisitDynamicSize(len(m.ResultsTagMapping))
-	{ n := ps.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyServerLocationsReplyVTable[1])-4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyServerLocationsReplyVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -155,7 +169,12 @@ func (m *GetKeyServerLocationsReply) writeToBuffer(wb *wire.WriteToBuffer, vtabl
 	selfW := wb.GetMessageWriter(int(GetKeyServerLocationsReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyServerLocationsReplyVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyServerLocationsReplyVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GetKeyServerLocationsReplyVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteRelativeOffset(resultsOff, int(vt[GetKeyServerLocationsReplySlotResults+2]))
 	selfW.WriteRelativeOffset(resultsTssMappingOff, int(vt[GetKeyServerLocationsReplySlotResultsTssMapping+2]))
 	selfW.WriteRelativeOffset(resultsTagMappingOff, int(vt[GetKeyServerLocationsReplySlotResultsTagMapping+2]))
@@ -171,10 +190,16 @@ func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -188,13 +213,22 @@ func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyServerLocationsReplyFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], GetKeyServerLocationsReplyFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -202,15 +236,18 @@ func (m *GetKeyServerLocationsReply) MarshalFDB() []byte {
 // ParseGetKeyServerLocationsReplyVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsReply.
 func ParseGetKeyServerLocationsReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]GetKeyServerLocationsReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem GetKeyServerLocationsReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-
