@@ -89,6 +89,41 @@ func (m *SpanContext) writeDirect(dw *wire.DirectWriter) int {
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *SpanContext) precomputeSize(ps *wire.PrecomputeSize) int {
+	{
+		n := ps.GetMessageWriter(int(SpanContextVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(SpanContextVTable[1])-4, 8)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *SpanContext) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	selfW := wb.GetMessageWriter(int(SpanContextVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := SpanContextVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(SpanContextVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	selfW.WriteScalar(m.TraceID[:], int(vt[SpanContextSlotTraceID+2]))
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.SpanID))
+		selfW.WriteScalar(b[:], int(vt[SpanContextSlotSpanID+2]))
+	}
+	selfW.WriteScalar([]byte{byte(m.Flags)}, int(vt[SpanContextSlotFlags+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 // ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
 func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
 	count, err := r.ReadVectorCount(slot)

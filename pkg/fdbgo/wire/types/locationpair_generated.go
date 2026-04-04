@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	LocationPairSlotKeyRange = 0
@@ -69,25 +73,56 @@ func (m *LocationPair) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *LocationPair) measureEndOff(endOff int) int {
-	endOff = wire.MeasureRawOOL(endOff, m.Servers)
+	endOff = wire.MeasureBytesOOL(endOff, m.Servers)
 	endOff = m.KeyRange.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, LocationPairVTable, LocationPairMaxAlign)
 	return endOff
 }
 
 func (m *LocationPair) writeDirect(dw *wire.DirectWriter) int {
-	var serversOOL int
-	if m.Servers != nil {
-		serversOOL = dw.WriteRawOOL(m.Servers)
-	}
+	serversOOL := dw.WriteBytesOOL(m.Servers)
 	keyRangePos := m.KeyRange.writeDirect(dw)
 	objPos, obj := dw.WriteObject(LocationPairVTable, LocationPairMaxAlign)
 	vt := LocationPairVTable
-	if m.Servers != nil {
-		wire.PatchRelOff(obj, int(vt[LocationPairSlotServers+2]), objPos, serversOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[LocationPairSlotServers+2]), objPos, serversOOL)
 	wire.PatchRelOff(obj, int(vt[LocationPairSlotKeyRange+2]), objPos, keyRangePos)
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *LocationPair) precomputeSize(ps *wire.PrecomputeSize) int {
+	m.KeyRange.precomputeSize(ps)
+	ps.VisitDynamicSize(len(m.Servers))
+	{
+		n := ps.GetMessageWriter(int(LocationPairVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(LocationPairVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *LocationPair) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var keyRangeStart int
+	var serversOff int
+	keyRangeStart = m.KeyRange.writeToBuffer(wb, vtableStart, tmpl)
+	serversOff, _ = wb.VisitDynamicSize(m.Servers)
+	selfW := wb.GetMessageWriter(int(LocationPairVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := LocationPairVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(LocationPairVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	selfW.WriteRelativeOffset(keyRangeStart, int(vt[LocationPairSlotKeyRange+2]))
+	selfW.WriteRelativeOffset(serversOff, int(vt[LocationPairSlotServers+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseLocationPairVectorFromReader reads a FlatBuffers vector of LocationPair.

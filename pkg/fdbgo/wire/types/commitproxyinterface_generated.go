@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	CommitProxyInterfaceSlotProcessId   = 0
@@ -12,8 +16,10 @@ const (
 
 var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
 
-const CommitProxyInterfaceFileID uint32 = 8954922
-const CommitProxyInterfaceMaxAlign = 4
+const (
+	CommitProxyInterfaceFileID   uint32 = 8954922
+	CommitProxyInterfaceMaxAlign        = 4
+)
 
 type CommitProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
@@ -70,17 +76,70 @@ func (m *CommitProxyInterface) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *CommitProxyInterface) measureEndOff(endOff int) int {
+	if m.HasProcessId {
+		endOff = wire.MeasureBytesOOL(endOff, m.ProcessId)
+	}
 	endOff = wire.MeasureObject(endOff, CommitProxyInterfaceVTable, CommitProxyInterfaceMaxAlign)
 	return endOff
 }
 
 func (m *CommitProxyInterface) writeDirect(dw *wire.DirectWriter) int {
+	var processIdOOL int
+	if m.HasProcessId {
+		processIdOOL = dw.WriteBytesOOL(m.ProcessId)
+	}
 	objPos, obj := dw.WriteObject(CommitProxyInterfaceVTable, CommitProxyInterfaceMaxAlign)
 	vt := CommitProxyInterfaceVTable
 	if m.Provisional {
 		obj[int(vt[CommitProxyInterfaceSlotProvisional+2])] = 1
 	}
+	if m.HasProcessId {
+		obj[int(vt[CommitProxyInterfaceSlotProcessId+2])] = 1
+		wire.PatchRelOff(obj, int(vt[CommitProxyInterfaceSlotProcessId+1+2]), objPos, processIdOOL)
+	}
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *CommitProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasProcessId {
+		ps.VisitDynamicSize(len(m.ProcessId))
+	}
+	{
+		n := ps.GetMessageWriter(int(CommitProxyInterfaceVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitProxyInterfaceVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *CommitProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var processIdOff int
+	if m.HasProcessId {
+		processIdOff, _ = wb.VisitDynamicSize(m.ProcessId)
+	}
+	selfW := wb.GetMessageWriter(int(CommitProxyInterfaceVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := CommitProxyInterfaceVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(CommitProxyInterfaceVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	if m.Provisional {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitProxyInterfaceSlotProvisional+2]))
+	}
+	if m.HasProcessId {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitProxyInterfaceSlotProcessId+2]))
+		selfW.WriteRelativeOffset(processIdOff, int(vt[CommitProxyInterfaceSlotProcessId+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.

@@ -92,20 +92,55 @@ func (m *KeySelectorRef) measureEndOff(endOff int) int {
 }
 
 func (m *KeySelectorRef) writeDirect(dw *wire.DirectWriter) int {
-	var keyOOL int
-	if m.Key != nil {
-		keyOOL = dw.WriteBytesOOL(m.Key)
-	}
+	keyOOL := dw.WriteBytesOOL(m.Key)
 	objPos, obj := dw.WriteObject(KeySelectorRefVTable, KeySelectorRefMaxAlign)
 	vt := KeySelectorRefVTable
 	if m.OrEqual {
 		obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1
 	}
 	binary.LittleEndian.PutUint32(obj[int(vt[KeySelectorRefSlotOffset+2]):], uint32(m.Offset))
-	if m.Key != nil {
-		wire.PatchRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, keyOOL)
-	}
+	wire.PatchRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, keyOOL)
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *KeySelectorRef) precomputeSize(ps *wire.PrecomputeSize) int {
+	ps.VisitDynamicSize(len(m.Key))
+	{
+		n := ps.GetMessageWriter(int(KeySelectorRefVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *KeySelectorRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var keyOff int
+	keyOff, _ = wb.VisitDynamicSize(m.Key)
+	selfW := wb.GetMessageWriter(int(KeySelectorRefVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := KeySelectorRefVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(KeySelectorRefVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	if m.OrEqual {
+		selfW.WriteScalar([]byte{1}, int(vt[KeySelectorRefSlotOrEqual+2]))
+	}
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(m.Offset))
+		selfW.WriteScalar(b[:], int(vt[KeySelectorRefSlotOffset+2]))
+	}
+	selfW.WriteRelativeOffset(keyOff, int(vt[KeySelectorRefSlotKey+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.

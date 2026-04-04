@@ -11,6 +11,28 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+- [ ] **HIGH** — Align location cache with C++ `getKeyRangeLocations`. Current approach locates one shard at a time via point lookup + `keyBefore` hack for reverse scans. C++ `getExactRange` (`NativeAPI.actor.cpp:4272`) calls `getKeyRangeLocations(keys, limit, reverse)` which returns ALL overlapping shards at once, then iterates them. Refactor: add `locateRange(begin, end) []LocationResult` (interval overlap query on cache), refresh on partial miss, iterate locations in `getRange`. Deletes `keyBefore`, shard clamping, multi-shard continuation loop. Less code, fewer edge cases, matches C++ exactly. See also `GetKeyServerLocationsRequest.Limit` field — we hardcode 1 today, C++ uses `CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT`.
+- [ ] **HIGH** — ConnectPacket `canonicalRemotePort` mismatch assertion in CI. FDB server asserts `pkt.canonicalRemotePort == peerAddress.port` at `FlowTransport.actor.cpp:1409`. Observed in CI run `23981658119`: `TestGetRange` stuck 56 minutes, caused 1h timeout cascade. Could not reproduce locally (`-test.count=10` passes). Likely CI-specific: resource exhaustion with many parallel testcontainer tests competing for Docker, or socat proxy port mapping inconsistency. The `TestGetRange` test uses both CGo client (writes) and Go client (reads) against the same FDB container (`coordinator_test.go:365-389`). Fix: match C client's ConnectPacket port logic — report the actual TCP source port. May also need test isolation improvements (one FDB per test, not shared).
+- [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
+
+  **Serialization bugs (all fixed):**
+  - [x] Bug 1: Nested struct serialization order reversed vs C++.
+  - [x] Bug 2: `Optional<T>` fields completely skipped in marshal path.
+  - [x] Bug 3: Empty `dynamic_size` fields allocated 0 bytes instead of 4.
+  - [x] Bug 4: Generated nil-guards skipped fields C++ always serializes.
+  - [x] Bug 5: `Optional<ReadOptions>` — extractor detects struct inner type.
+  - [x] Bug 6: `Vector<struct>` — two-pass precomputeSize/writeToBuffer.
+  - [x] Bug 7: Field serialize order + KeyRangeRef equalsKeyAfter optimization.
+
+  **Client logic bugs that crashed FDB server (all fixed):**
+  - [x] Bug A: Reverse range scan located shards by `begin` key. `\xff\xff` sent to storage server → `getShardKeyRange()` SIGSEGV. Fix: locate by `end` for reverse, clamp to shard boundaries.
+  - [x] Bug B: `ClearRange`/`Add*ConflictRange` didn't validate `begin <= end`. Inverted ranges sent to server. Fix: return error 2005 client-side.
+  - [x] Bug C: `\xff\xff` system key reads added resolver conflict ranges. Commit proxy `ASSERT(resolvers.size())` failed. Fix: skip conflict ranges for system keys.
+
+  **Ground truth sizes: 10/10 match.** Byte diffs = reply token only (expected). Binding tester: **145 seeds × 1000 ops = 0 failures, 0 FDB deaths.**
+
+  **Remaining (LOW):**
+  - [ ] C++ `emptyVector` re-use optimization missing — no test vector currently fails from this.
 - [x] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Fixed: added loop over `rt.multiTypeIndexes` matching single-type pattern. 2 regression tests. Found 2026-03-26 via 10-agent audit.
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
 - [x] **HIGH** — Missing cross-cutting test matrix. Fixed: `index_registration_matrix_test.go` with 3×7 matrix (21 specs, 1 skipped). **Found and fixed another bug**: `DeleteRecordsWhere` fully cleared multi-type indexes instead of scoping by PK prefix. Added `hasRecordTypeKeyPrefix()` helper + scoped clear for multi-type indexes with RecordTypeKey prefix, error for multi-type without. Matches Java's `canDeleteWhereForIndexOnStoredTypes`.
@@ -1710,11 +1732,38 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
 **Gold standard target:** FDB binding tester (stack machine, `bindings/bindingtester/`) — 47 core ops, language-agnostic spec. Passing this = officially conformant binding.
 
+### Wire compatibility verification
+
+**Status:** Binding tester passes 145 seeds × 1000 ops (145,000 operations, 0 failures). This covers API behavioral correctness but not byte-level wire identity.
+
+**What the binding tester covers:** GET/SET/CLEAR/GET_RANGE, atomic ops, conflict ranges, key selectors, error handling, ON_ERROR retry, versionstamp ops. Single-node Docker, single-threaded.
+
+**What it does NOT cover:**
+- Byte-level serialization identity (our bytes accepted by server ≠ identical to C client bytes)
+- Large payloads near FDB limits (100KB values, 10MB transactions)
+- All message types (no WATCH, GET_MAPPED_KEY_VALUES, tenant ops)
+- Multi-node clusters, proxy failover, shard splits
+- Concurrent connections (`--no-threads` only)
+- FDB version compatibility (only 7.3.75 tested)
+
+**Tooling to build (priority order):**
+
+- [ ] **Differential serialization fuzzer** — HIGH. For each message type, generate random field values, serialize with C++ ObjectWriter AND Go MarshalFDB, compare bytes. No FDB cluster needed. Deterministic. Extend `cmd/fdb-schema-extract` to accept field values via stdin (JSON), serialize, emit bytes. Go side does same. Fuzz loop compares. Catches: padding, alignment, field ordering, vtable packing, optional handling, vector encoding. Millions of iterations/sec.
+- [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
+- [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
+
+**Debug tooling (done):**
+- [x] `FDB_WIRE_LOG` env var captures all frames to binary file
+- [x] `cmd/fdb-wirelog-dump` decodes wire log (hex dump, per-frame)
+- [x] `cmd/fdb-binding-stress` — Go tool for multi-seed stress testing with per-seed artifact collection (FDB trace logs, docker logs, tester output, JSON report)
+- [x] FDB crash debugging playbook in `pkg/fdbgo/client/CRASH_BUG.md` (addr2line + debug symbols from GitHub releases)
+
 ### Next priorities
-1. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
-2. GetRange reverse — port C test, add reverse parameter
-3. Watch — port C tests, implement WatchValueRequest
-4. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
+1. Differential serialization fuzzer — build the C++/Go comparator
+2. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
+3. GetRange reverse — port C test, add reverse parameter
+4. Watch — port C tests, implement WatchValueRequest
+5. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
 
 ### Done
 

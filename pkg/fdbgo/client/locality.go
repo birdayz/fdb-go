@@ -38,17 +38,38 @@ type ServerInfo struct {
 	Token   transport.UID
 }
 
+// LocationResult holds the storage servers and shard key range for a locate() result.
+// C++ KeyRangeLocationInfo equivalent.
+type LocationResult struct {
+	Servers    []ServerInfo
+	ShardBegin []byte
+	ShardEnd   []byte
+}
+
 // locate finds the storage servers responsible for a key.
 // On cache miss, queries a commit proxy.
-func (lc *locationCache) locate(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
+// Returns the servers AND the shard boundaries so callers can clamp requests.
+func (lc *locationCache) locate(db *database, ctx context.Context, key []byte) (LocationResult, error) {
+	// System key space (\xff\xff prefix) is handled specially in C++ client.
+	// Don't send GetKeyServerLocationsRequest for it — clamp to normal key range.
+	if len(key) >= 2 && key[0] == 0xff && key[1] == 0xff {
+		// Use the last known storage server for system keys.
+		// This matches C++ behavior where system keys are resolved internally.
+		key = []byte{0xff}
+	}
+
 	// Check cache first.
 	lc.mu.RLock()
 	for _, entry := range lc.entries {
 		if bytes.Compare(key, entry.begin) >= 0 &&
 			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
-			servers := entry.servers
+			result := LocationResult{
+				Servers:    entry.servers,
+				ShardBegin: entry.begin,
+				ShardEnd:   entry.end,
+			}
 			lc.mu.RUnlock()
-			return servers, nil
+			return result, nil
 		}
 	}
 	lc.mu.RUnlock()
@@ -77,7 +98,7 @@ func (lc *locationCache) invalidate(key []byte) {
 // refresh queries commit proxies for the location of a key, matching C++
 // basicLoadBalance with AtMostOnce::False. Cycles all proxies with backoff.
 // Loops until success or ctx cancellation.
-func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) ([]ServerInfo, error) {
+func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) (LocationResult, error) {
 	var backoff time.Duration
 
 	for {
@@ -92,9 +113,9 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) 
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return LocationResult{}, ctx.Err()
 			case <-db.ctx.Done():
-				return nil, db.ctx.Err()
+				return LocationResult{}, db.ctx.Err()
 			}
 		}
 
@@ -102,9 +123,9 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) 
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return LocationResult{}, ctx.Err()
 			case <-db.ctx.Done():
-				return nil, db.ctx.Err()
+				return LocationResult{}, db.ctx.Err()
 			}
 		}
 
@@ -147,13 +168,17 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) 
 				}
 				lc.mu.Unlock()
 				if len(entries) > 0 {
-					return entries[0].servers, nil
+					return LocationResult{
+						Servers:    entries[0].servers,
+						ShardBegin: entries[0].begin,
+						ShardEnd:   entries[0].end,
+					}, nil
 				}
 			case <-rctx.Done():
 				rpcCancel()
 				cancelReply()
 				if ctx.Err() != nil {
-					return nil, ctx.Err()
+					return LocationResult{}, ctx.Err()
 				}
 				continue
 			}
@@ -179,7 +204,7 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		Limit:            100,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: NoTenantID},
-		MinTenantVersion: NoTenantID,
+		MinTenantVersion: -2, // C++ latestVersion = -2 (default for GetKeyServerLocationsRequest)
 	}
 	return req.MarshalFDB()
 }

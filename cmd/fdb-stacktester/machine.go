@@ -2,15 +2,24 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
-	"strings"
 	"sync"
 
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
+
+// versionstampFuture is a deferred value that resolves to a versionstamp
+// after the transaction commits. When popped from the stack, it calls
+// GetVersionstamp() to get the 10-byte versionstamp.
+type versionstampFuture struct {
+	tr *client.Transaction
+}
 
 // stackEntry is a value on the operand stack.
 type stackEntry struct {
@@ -78,17 +87,32 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 
 func (sm *StackMachine) readInstructions(ctx context.Context) ([]client.KeyValue, error) {
 	var all []client.KeyValue
-	result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
-		begin := tuple.Tuple{sm.prefix}.Pack()
-		end := append(tuple.Tuple{sm.prefix}.Pack(), 0xff)
-		kvs, _, err := tx.GetRange(ctx, begin, end, 10000)
-		return kvs, err
-	})
-	if err != nil {
-		return nil, err
+	begin := tuple.Tuple{sm.prefix}.Pack()
+	end := strinc(tuple.Tuple{sm.prefix}.Pack())
+
+	for {
+		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+			kvs, more, err := tx.GetRange(ctx, begin, end, 10000)
+			return &rangeResult{kvs: kvs, more: more}, err
+		})
+		if err != nil {
+			return nil, err
+		}
+		rr := result.(*rangeResult)
+		all = append(all, rr.kvs...)
+		if !rr.more || len(rr.kvs) == 0 {
+			break
+		}
+		// Continue from after the last key.
+		lastKey := rr.kvs[len(rr.kvs)-1].Key
+		begin = append(lastKey, 0)
 	}
-	all = result.([]client.KeyValue)
 	return all, nil
+}
+
+type rangeResult struct {
+	kvs  []client.KeyValue
+	more bool
 }
 
 func (sm *StackMachine) currentTr() *client.Transaction {
@@ -105,6 +129,23 @@ func (sm *StackMachine) pop() stackEntry {
 	n := len(sm.stack)
 	e := sm.stack[n-1]
 	sm.stack = sm.stack[:n-1]
+
+	// Resolve futures.
+	switch f := e.value.(type) {
+	case *versionstampFuture:
+		vs, err := f.tr.GetVersionstamp()
+		if err != nil {
+			// Pack error as tuple: ("ERROR", "code")
+			var fdbErr *wire.FDBError
+			code := "0"
+			if errors.As(err, &fdbErr) {
+				code = strconv.Itoa(fdbErr.Code)
+			}
+			e.value = tuple.Tuple{[]byte("ERROR"), []byte(code)}.Pack()
+		} else {
+			e.value = vs
+		}
+	}
 	return e
 }
 
@@ -115,6 +156,10 @@ func (sm *StackMachine) popBytes() []byte {
 		return v
 	case string:
 		return []byte(v)
+	case fdb.Key:
+		return []byte(v)
+	case fdb.KeyConvertible:
+		return []byte(v.FDBKey())
 	default:
 		panic(fmt.Sprintf("expected bytes, got %T", e.value))
 	}
@@ -149,44 +194,12 @@ func (sm *StackMachine) popString() string {
 func (sm *StackMachine) pushError(idx int, err error) {
 	// Pack error as tuple: ("ERROR", "code")
 	code := "0"
-	var fdbErr *fdbError
-	if e, ok := asFDBError(err); ok {
-		fdbErr = e
-		code = strconv.Itoa(fdbErr.code)
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		code = strconv.Itoa(fdbErr.Code)
 	}
 	packed := tuple.Tuple{[]byte("ERROR"), []byte(code)}.Pack()
 	sm.push(idx, packed)
-}
-
-type fdbError struct {
-	code int
-}
-
-func asFDBError(err error) (*fdbError, bool) {
-	if err == nil {
-		return nil, false
-	}
-	// Try to extract error code from our wire.FDBError
-	s := err.Error()
-	if strings.HasPrefix(s, "fdb error ") {
-		code, e := strconv.Atoi(strings.TrimPrefix(s, "fdb error "))
-		if e == nil {
-			return &fdbError{code: code}, true
-		}
-	}
-	// Walk the error chain for wrapped FDB errors
-	for _, prefix := range []string{"GRV: fdb error ", "GetValue: fdb error ", "GetKey: fdb error ", "GetKeyValues: fdb error ", "commit: fdb error "} {
-		if strings.Contains(s, "fdb error ") {
-			idx := strings.Index(s, "fdb error ")
-			rest := s[idx+len("fdb error "):]
-			code, e := strconv.Atoi(strings.Split(rest, " ")[0])
-			if e == nil {
-				return &fdbError{code: code}, true
-			}
-		}
-		_ = prefix
-	}
-	return nil, false
 }
 
 // strinc returns the next byte string after prefix (for range end).

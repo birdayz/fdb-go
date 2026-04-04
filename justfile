@@ -103,6 +103,18 @@ wire-testvecs:
 binding-test:
     bazelisk test //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_output=streamed
 
+# Binding tester stress: N seeds × M ops (report + logs → binding-stress-out/)
+binding-stress runs="100" ops="1000":
+    bazelisk run //cmd/fdb-binding-stress -- -seeds {{runs}} -ops {{ops}}
+
+# Binding tester stress for a duration (e.g. 2h, 30m)
+binding-stress-duration duration ops="1000":
+    bazelisk run //cmd/fdb-binding-stress -- -duration {{duration}} -ops {{ops}}
+
 # Run tests with coverage
 coverage:
     bazelisk coverage //...
+
+# Run a specific test with forced rebuild (no stale binary)
+test-fresh target *args:
+    bazelisk test {{target}} --cache_test_results=no {{args}}

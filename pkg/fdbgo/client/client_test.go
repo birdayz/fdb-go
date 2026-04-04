@@ -313,12 +313,13 @@ func TestReadOnlyCommit(t *testing.T) {
 	tx := db.CreateTransaction()
 
 	// No mutations → read-only → commit succeeds immediately.
+	// After commit, transaction resets for reuse (matches C client behavior).
 	err := tx.Commit(context.Background())
 	if err != nil {
 		t.Errorf("read-only commit should succeed: %v", err)
 	}
-	if tx.state != txStateCommitted {
-		t.Errorf("state: got %d, want %d", tx.state, txStateCommitted)
+	if tx.state != txStateActive {
+		t.Errorf("state: got %d, want %d (active after postCommitReset)", tx.state, txStateActive)
 	}
 }
 

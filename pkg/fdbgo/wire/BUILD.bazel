@@ -4,6 +4,7 @@ go_library(
     name = "wire",
     srcs = [
         "reader.go",
+        "serializer.go",
         "vtable.go",
         "writer.go",
         "writer_direct.go",
@@ -17,6 +18,7 @@ go_test(
     srcs = [
         "conformance_test.go",
         "reader_bug_test.go",
+        "serializer_test.go",
         "vtable_test.go",
     ],
     data = glob(

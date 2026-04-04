@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -126,12 +125,12 @@ func TestCoordinatorBootstrap(t *testing.T) {
 
 	// Try location lookup
 	t.Log("Attempting GetKeyServerLocations...")
-	servers, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"))
+	loc, locErr := db.db.locCache.locate(db.db, ctx, []byte("test_key"))
 	if locErr != nil {
 		t.Logf("Locate: %v", locErr)
 	} else {
-		t.Logf("Locate: %d servers", len(servers))
-		for i, s := range servers {
+		t.Logf("Locate: %d servers", len(loc.Servers))
+		for i, s := range loc.Servers {
 			t.Logf("  server %d: %s token=%x:%x", i, s.Address, s.Token.First, s.Token.Second)
 		}
 	}
@@ -362,27 +361,17 @@ func TestGetRange(t *testing.T) {
 		t.Logf("Commit proxy: %s", dbInfo.CommitProxies[0].Address)
 	}
 
-	// Write keys via C binding (avoids Go commit server crashes for now).
-	fdb.MustAPIVersion(720)
-	tmpFile, _ := os.CreateTemp("", "fdb-*.cluster")
-	tmpFile.WriteString(connStr)
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	cdb, cErr := fdb.OpenDatabase(tmpFile.Name())
-	if cErr != nil {
-		t.Fatalf("C binding open: %v", cErr)
-	}
-	_, err = cdb.Transact(func(tx fdb.Transaction) (any, error) {
-		tx.Set(fdb.Key("range_a"), []byte("value_a"))
-		tx.Set(fdb.Key("range_b"), []byte("value_b"))
-		tx.Set(fdb.Key("range_c"), []byte("value_c"))
+	// Write keys via Go client.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("range_a"), []byte("value_a"))
+		tx.Set([]byte("range_b"), []byte("value_b"))
+		tx.Set([]byte("range_c"), []byte("value_c"))
 		return nil, nil
 	})
 	if err != nil {
-		t.Fatalf("C binding write: %v", err)
+		t.Fatalf("write keys: %v", err)
 	}
-	t.Log("wrote 3 keys via C binding")
-	time.Sleep(1 * time.Second) // ensure version advances past the commit
+	t.Log("wrote 3 keys via Go client")
 
 	// Range read via Go client.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -526,99 +515,3 @@ func debugCoordinatorExchange(t *testing.T, ctx context.Context, cf *ClusterFile
 		}
 	}
 }
-
-// TestProbeWellKnownTokens probes different well-known token IDs on a single
-// TCP connection to find which endpoints the coordinator has registered.
-func TestProbeWellKnownTokens_WIP(t *testing.T) {
-	t.Skip("WIP: debugging coordinator bootstrap")
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	container, err := tcfdb.Run(ctx, "")
-	if err != nil {
-		t.Fatalf("start FDB container: %v", err)
-	}
-	defer container.Terminate(ctx)
-
-	connStr, err := container.ClusterFile(ctx)
-	if err != nil {
-		t.Fatalf("get cluster file: %v", err)
-	}
-	cf, err := ParseClusterString(connStr)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	addr := cf.Coordinators[0]
-
-	exitCode, _, err := container.Exec(ctx, []string{
-		"fdbcli", "--exec", "configure new single ssd; status",
-	})
-	t.Logf("fdbcli exit: %d err: %v", exitCode, err)
-	time.Sleep(3 * time.Second)
-
-	for tokenID := 2; tokenID <= 15; tokenID++ {
-		func(tid int) {
-			var d net.Dialer
-			rawConn, err := d.DialContext(ctx, "tcp", addr)
-			if err != nil {
-				t.Logf("token %d: dial failed: %v", tid, err)
-				return
-			}
-			defer rawConn.Close()
-
-			connID := uint64(0x1234567890ABCDEF + uint64(tid))
-			transport.WriteConnectPacket(rawConn, rawConn.LocalAddr(), connID)
-			if _, err := transport.ReadConnectPacket(rawConn); err != nil {
-				t.Logf("token %d: handshake failed: %v", tid, err)
-				return
-			}
-
-			replyToken := transport.NewUID()
-			body := buildOpenDatabaseCoordRequest(cf, replyToken)
-
-			destToken := transport.WellKnownToken(tid)
-			payloadLen := 16 + len(body)
-			frame := make([]byte, 4+8+payloadLen)
-			binary.LittleEndian.PutUint32(frame[0:], uint32(payloadLen))
-			binary.LittleEndian.PutUint64(frame[12:], destToken.First)
-			binary.LittleEndian.PutUint64(frame[20:], destToken.Second)
-			copy(frame[28:], body)
-			checksum := xxh3.Hash(frame[12 : 12+payloadLen])
-			binary.LittleEndian.PutUint64(frame[4:], checksum)
-
-			rawConn.Write(frame)
-
-			rawConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			resp := make([]byte, 8192)
-			n, err := rawConn.Read(resp)
-			if err != nil {
-				t.Logf("token %d: no response: %v", tid, err)
-				return
-			}
-
-			if n >= 28 {
-				respFirst := binary.LittleEndian.Uint64(resp[12:])
-				respSecond := binary.LittleEndian.Uint64(resp[20:])
-
-				if respFirst == 0xFFFFFFFFFFFFFFFF && respSecond == 1 {
-					t.Logf("token %d: PING (endpoint not found)", tid)
-				} else if respFirst == replyToken.First && respSecond == replyToken.Second {
-					t.Logf("token %d: *** REPLY *** (%d body bytes)", tid, n-28)
-					if n-28 <= 200 {
-						t.Logf("  body: %s", hex.EncodeToString(resp[28:n]))
-					}
-				} else {
-					t.Logf("token %d: resp token %016x:%016x (%d bytes)", tid, respFirst, respSecond, n)
-				}
-			} else {
-				t.Logf("token %d: short (%d bytes)", tid, n)
-			}
-		}(tokenID)
-	}
-}
-
-// Ensure xxh3 is used.
-var _ = xxh3.Hash

@@ -31,6 +31,7 @@ var GetValueRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
+
 var GetValueRequestTemplate = wire.NewMessageTemplate(
 	GetValueRequestFileID, GetValueRequestVTable, 8, GetValueRequestVTableClosure,
 )
@@ -46,7 +47,7 @@ type GetValueRequest struct {
 	SpanContext            SpanContext  // slot 5, nested
 	TenantInfo             TenantInfo   // slot 6, nested
 	HasOptions             bool         // slot 7, optional tag
-	Options                []byte       // slot 8, optional value
+	Options                ReadOptions  // slot 8, optional nested value
 	SsLatestCommitVersions []byte       // slot 9
 }
 
@@ -71,7 +72,9 @@ func (m *GetValueRequest) UnmarshalFromReader(r *wire.Reader) {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
@@ -104,7 +107,9 @@ func (m *GetValueRequest) UnmarshalFDB(data []byte) error {
 		m.TenantInfo.UnmarshalFromReader(nr)
 	}
 	if r.FieldPresent(GetValueRequestSlotOptions) && r.ReadUint8(GetValueRequestSlotOptions) > 0 {
-		m.Options = r.ReadBytes(GetValueRequestSlotOptions + 1)
+		if nr, err := r.ReadNestedReader(GetValueRequestSlotOptions + 1); err == nil {
+			m.Options.UnmarshalFromReader(nr)
+		}
 		m.HasOptions = true
 	}
 	if r.FieldPresent(GetValueRequestSlotSsLatestCommitVersions) {
@@ -153,65 +158,176 @@ func (m *GetValueRequest) writeBlob(buf []byte, pos int) int {
 
 func (m *GetValueRequest) measureEndOff(endOff int) int {
 	endOff = wire.MeasureBytesOOL(endOff, m.Key)
+	if m.HasTags {
+		endOff = wire.MeasureBytesOOL(endOff, m.Tags)
+	}
+	if m.HasOptions {
+		endOff = m.Options.measureEndOff(endOff)
+	}
 	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
 	endOff = m.Reply.measureEndOff(endOff)
+	endOff = m.SpanContext.measureEndOff(endOff)
+	endOff = m.TenantInfo.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, GetValueRequestVTable, GetValueRequestMaxAlign)
 	return endOff
 }
 
 func (m *GetValueRequest) writeDirect(dw *wire.DirectWriter) int {
-	var keyOOL int
-	if m.Key != nil {
-		keyOOL = dw.WriteBytesOOL(m.Key)
+	keyOOL := dw.WriteBytesOOL(m.Key)
+	var tagsOOL int
+	if m.HasTags {
+		tagsOOL = dw.WriteBytesOOL(m.Tags)
 	}
-	var ssLatestCommitVersionsOOL int
-	if m.SsLatestCommitVersions != nil {
-		ssLatestCommitVersionsOOL = dw.WriteBytesOOL(m.SsLatestCommitVersions)
+	var optionsOOL int
+	if m.HasOptions {
+		optionsOOL = m.Options.writeDirect(dw)
 	}
-	tenantInfoPos := m.TenantInfo.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
+	ssLatestCommitVersionsOOL := dw.WriteBytesOOL(m.SsLatestCommitVersions)
 	replyPos := m.Reply.writeDirect(dw)
+	spanContextPos := m.SpanContext.writeDirect(dw)
+	tenantInfoPos := m.TenantInfo.writeDirect(dw)
 	objPos, obj := dw.WriteObject(GetValueRequestVTable, GetValueRequestMaxAlign)
 	vt := GetValueRequestVTable
 	binary.LittleEndian.PutUint64(obj[int(vt[GetValueRequestSlotVersion+2]):], uint64(m.Version))
-	if m.Key != nil {
-		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotKey+2]), objPos, keyOOL)
+	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotKey+2]), objPos, keyOOL)
+	if m.HasTags {
+		obj[int(vt[GetValueRequestSlotTags+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotTags+1+2]), objPos, tagsOOL)
 	}
-	if m.SsLatestCommitVersions != nil {
-		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
+	if m.HasOptions {
+		obj[int(vt[GetValueRequestSlotOptions+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GetValueRequestSlotOptions+1+2]), objPos, optionsOOL)
 	}
+	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]), objPos, ssLatestCommitVersionsOOL)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotReply+2]), objPos, replyPos)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotSpanContext+2]), objPos, spanContextPos)
 	wire.PatchRelOff(obj, int(vt[GetValueRequestSlotTenantInfo+2]), objPos, tenantInfoPos)
 	return objPos
 }
 
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *GetValueRequest) precomputeSize(ps *wire.PrecomputeSize) int {
+	ps.VisitDynamicSize(len(m.Key))
+	if m.HasTags {
+		ps.VisitDynamicSize(len(m.Tags))
+	}
+	m.Reply.precomputeSize(ps)
+	m.SpanContext.precomputeSize(ps)
+	m.TenantInfo.precomputeSize(ps)
+	if m.HasOptions {
+		m.Options.precomputeSize(ps)
+	}
+	ps.VisitDynamicSize(len(m.SsLatestCommitVersions))
+	{
+		n := ps.GetMessageWriter(int(GetValueRequestVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetValueRequestVTable[1])-4, 8)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *GetValueRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var keyOff int
+	var tagsOff int
+	var replyStart int
+	var spanContextStart int
+	var tenantInfoStart int
+	var optionsOff int
+	var ssLatestCommitVersionsOff int
+	keyOff, _ = wb.VisitDynamicSize(m.Key)
+	if m.HasTags {
+		tagsOff, _ = wb.VisitDynamicSize(m.Tags)
+	}
+	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
+	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
+	tenantInfoStart = m.TenantInfo.writeToBuffer(wb, vtableStart, tmpl)
+	if m.HasOptions {
+		optionsOff = m.Options.writeToBuffer(wb, vtableStart, tmpl)
+	}
+	ssLatestCommitVersionsOff, _ = wb.VisitDynamicSize(m.SsLatestCommitVersions)
+	selfW := wb.GetMessageWriter(int(GetValueRequestVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := GetValueRequestVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GetValueRequestVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
+		selfW.WriteScalar(b[:], int(vt[GetValueRequestSlotVersion+2]))
+	}
+	selfW.WriteRelativeOffset(keyOff, int(vt[GetValueRequestSlotKey+2]))
+	if m.HasTags {
+		selfW.WriteScalar([]byte{1}, int(vt[GetValueRequestSlotTags+2]))
+		selfW.WriteRelativeOffset(tagsOff, int(vt[GetValueRequestSlotTags+1+2]))
+	}
+	selfW.WriteRelativeOffset(replyStart, int(vt[GetValueRequestSlotReply+2]))
+	selfW.WriteRelativeOffset(spanContextStart, int(vt[GetValueRequestSlotSpanContext+2]))
+	selfW.WriteRelativeOffset(tenantInfoStart, int(vt[GetValueRequestSlotTenantInfo+2]))
+	if m.HasOptions {
+		selfW.WriteScalar([]byte{1}, int(vt[GetValueRequestSlotOptions+2]))
+		selfW.WriteRelativeOffset(optionsOff, int(vt[GetValueRequestSlotOptions+1+2]))
+	}
+	selfW.WriteRelativeOffset(ssLatestCommitVersionsOff, int(vt[GetValueRequestSlotSsLatestCommitVersions+2]))
+	selfW.WriteToAt(selfStart)
+	return selfStart
+}
+
 func (m *GetValueRequest) MarshalFDB() []byte {
 	t := GetValueRequestTemplate
-	endOff := 0
-	endOff = wire.MeasureBytesOOL(endOff, m.Key)
-	endOff = wire.MeasureBytesOOL(endOff, m.SsLatestCommitVersions)
-	endOff = m.TenantInfo.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Reply.measureEndOff(endOff)
-	bodySize := int(GetValueRequestVTable[1]) - 4
-	msgObjEnd := ((endOff + bodySize + 8 - 1) &^ (8 - 1)) + 4
-	fakeRootEnd := ((msgObjEnd + 4 + 3) &^ 3) + 4
-	vtableSize := t.PackedVTablesLen()
-	vtableEnd := fakeRootEnd + vtableSize
-	totalSize := (vtableEnd + 8 + 7) &^ 7
-	vtablePos := totalSize - vtableEnd
-	fakeRootPos := totalSize - fakeRootEnd
-	msgObjPos := totalSize - msgObjEnd
-	_ = msgObjPos
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
 	buf := make([]byte, totalSize)
-	var dw wire.DirectWriter
-	dw.Init(buf, totalSize, vtablePos, t)
-	m.writeDirect(&dw)
-	t.WriteFakeRoot(buf, fakeRootPos, vtablePos, msgObjPos)
-	t.WriteVTablesAndFooter(buf, vtablePos, fakeRootPos)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// FakeRoot object
+	fakeRootW := wb.GetMessageWriter(8, true)
+	fakeRootStart := fakeRootW.FinalLocation
+	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
+	fakeRootW.WriteToAt(fakeRootStart)
+
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(fakeRootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], GetValueRequestFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
 

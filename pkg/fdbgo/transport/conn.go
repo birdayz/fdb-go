@@ -157,6 +157,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
 			destToken.First, destToken.Second, len(body))
 	}
+	LogSend(destToken, body)
 	return WriteFrame(c.conn, destToken, body, c.tls)
 }
 
@@ -242,6 +243,8 @@ func (c *Conn) readLoop() {
 			c.failAllPending(err)
 			return
 		}
+
+		LogRecv(token, body)
 
 		if c.debugFrames {
 			_, isPending := c.pending.Load(token)

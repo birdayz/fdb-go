@@ -242,6 +242,14 @@ FieldKind classifyField() {
     else return FieldKind::NestedStruct;
 }
 
+// Get the Go type name for the inner type of Optional<T>, if it's a serializable struct.
+// Returns "" (empty) for bytes/scalar Optionals (e.g. Optional<KeyRef>).
+// Returns the registered Go type name for struct Optionals (e.g. Optional<ReadOptions> → "ReadOptions").
+// Detect Optional<T> where T is a registered Go struct type.
+// Uses explicit specializations to avoid template metaprogramming issues.
+template <class T> const char* optionalInnerGoType() { return ""; }
+template <> inline const char* optionalInnerGoType<Optional<ReadOptions>>() { return "ReadOptions"; }
+
 // ============================================================
 // 4. FieldDesc + FieldCollector
 // ============================================================
@@ -305,6 +313,12 @@ private:
             } else {
                 fd.elementGoType = VectorElementGoType<T>::name();
             }
+            break;
+        case FieldKind::Optional:
+            // Check if inner type is a struct (has serialize method).
+            // C++ Optional<T> via union_like_traits: alternatives = pack<T>.
+            // If T is expect_serialize_member, it's serialized as EnsureTable<T> (nested object).
+            fd.nestedGoType = optionalInnerGoType<T>();
             break;
         default:
             break;

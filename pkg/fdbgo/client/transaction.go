@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -27,6 +28,7 @@ const (
 	ErrGrvProxyMemoryLimit       = 1078
 	ErrAllAlternativesFailed     = 1006 // C++: all_alternatives_failed (storage reads)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
+	ErrInvertedRange             = 2005 // C++: inverted_range (begin > end)
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -110,6 +112,7 @@ type Transaction struct {
 	readVersion      int64
 	hasReadVersion   bool
 	committedVersion int64
+	hasCommitted     bool // true after at least one successful commit
 	txnBatchId       uint16
 
 	mutations      []Mutation
@@ -128,6 +131,11 @@ type Transaction struct {
 	// when retryCount >= retryLimit.
 	retryLimit    int
 	hasRetryLimit bool
+
+	// nextWriteNoConflict: if true, the next mutation will NOT add a write
+	// conflict range. Auto-resets after one mutation. Matches C++
+	// FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
+	nextWriteNoConflict bool
 }
 
 // Snapshot returns a snapshot view of this transaction.
@@ -176,6 +184,11 @@ func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit
 	return s.tx.getRange(ctx, begin, end, limit, true)
 }
 
+// GetReadVersion returns the read version for this transaction via its snapshot view.
+func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
+	return s.tx.GetReadVersion(ctx)
+}
+
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	if tx.state == txStateCancelled {
 		return fmt.Errorf("transaction cancelled")
@@ -202,7 +215,11 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
+	// them internally without going through the resolver conflict map.
+	if !isSystemKey(key) {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	}
 	return tx.getValue(ctx, key)
 }
 
@@ -211,8 +228,15 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+	if !isSystemKey(selectorKey) {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
+}
+
+// isSystemKey returns true for keys with the \xff\xff prefix (FDB system key space).
+func isSystemKey(key []byte) bool {
+	return len(key) >= 2 && key[0] == 0xff && key[1] == 0xff
 }
 
 // GetRange reads a range of keys [begin, end) in forward order.
@@ -230,7 +254,12 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	// Only add read conflict if range is valid (begin <= end) and not system keys.
+	// C++ client validates inverted ranges and handles \xff\xff keys internally
+	// without adding resolver conflict ranges.
+	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) && !isSystemKey(end) {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	}
 
 	return tx.getRange(ctx, begin, end, limit, reverse)
 }
@@ -259,13 +288,18 @@ func (tx *Transaction) Clear(key []byte) {
 }
 
 // ClearRange deletes all keys in [begin, end).
-func (tx *Transaction) ClearRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
+func (tx *Transaction) ClearRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   begin,
 		Value: end,
 	})
 	tx.addWriteConflict(begin, end)
+	return nil
 }
 
 // Atomic performs an atomic mutation.
@@ -280,6 +314,10 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 }
 
 // Commit sends mutations to a commit proxy.
+// After successful commit, the transaction is automatically reset for reuse
+// (mutations and conflict ranges cleared, read version invalidated).
+// This matches the C client's behavior where fdb_transaction_set() can be
+// called after commit to start building a new transaction.
 func (tx *Transaction) Commit(ctx context.Context) error {
 	if tx.state != txStateActive {
 		return fmt.Errorf("transaction not active")
@@ -290,19 +328,34 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
-		tx.state = txStateCommitted
+		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
+		// Reset for reuse (matches C client behavior).
+		tx.hasCommitted = true
+		tx.postCommitReset()
 		return nil
+	}
+
+	// C++ tryCommit calls startTransaction(CAUSAL_READ_RISKY) to ensure a
+	// read version exists before commit, even for write-only transactions.
+	// Without this, ReadSnapshot=0 is sent which crashes the FDB server.
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return err
 	}
 
 	if err := tx.commit(ctx); err != nil {
 		return err
 	}
-	tx.state = txStateCommitted
 
 	// Feed committed version to GRV cache so subsequent reads see this write.
 	if tx.committedVersion > 0 {
 		tx.db.grvCache.update(time.Now(), tx.committedVersion)
 	}
+
+	tx.hasCommitted = true
+
+	// Auto-reset for reuse — clear mutations and conflicts but preserve
+	// committedVersion/txnBatchId for GetCommittedVersion/GetVersionstamp.
+	tx.postCommitReset()
 	return nil
 }
 
@@ -314,8 +367,8 @@ func (tx *Transaction) Cancel() {
 
 // GetCommittedVersion returns the version at which this transaction committed.
 func (tx *Transaction) GetCommittedVersion() (int64, error) {
-	if tx.state != txStateCommitted {
-		return 0, fmt.Errorf("transaction not committed")
+	if !tx.hasCommitted {
+		return 0, &wire.FDBError{Code: 2015} // used_during_commit / not yet committed
 	}
 	return tx.committedVersion, nil
 }
@@ -324,8 +377,8 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 // Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
 // Must be called after a successful Commit.
 func (tx *Transaction) GetVersionstamp() ([]byte, error) {
-	if tx.state != txStateCommitted {
-		return nil, fmt.Errorf("transaction not committed")
+	if !tx.hasCommitted {
+		return nil, &wire.FDBError{Code: 2015}
 	}
 	vs := make([]byte, 10)
 	binary.BigEndian.PutUint64(vs[0:8], uint64(tx.committedVersion))
@@ -388,6 +441,15 @@ func (tx *Transaction) OnError(err error) error {
 	}
 }
 
+// GetReadVersion returns the read version for this transaction, fetching it
+// from a GRV proxy if not already set. Matches C++ fdb_transaction_get_read_version.
+func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return 0, err
+	}
+	return tx.readVersion, nil
+}
+
 // SetReadVersion sets the read version manually.
 func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
@@ -421,6 +483,22 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 	tx.hasRetryLimit = true
 }
 
+// GetApproximateSize returns the approximate size of the transaction's mutations
+// and conflict ranges in bytes. Matches C++ fdb_transaction_get_approximate_size.
+func (tx *Transaction) GetApproximateSize() int64 {
+	var size int64
+	for _, m := range tx.mutations {
+		size += int64(len(m.Key)) + int64(len(m.Value))
+	}
+	for _, r := range tx.readConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End))
+	}
+	for _, r := range tx.writeConflicts {
+		size += int64(len(r.Begin)) + int64(len(r.End))
+	}
+	return size
+}
+
 // checkTimeout returns a timeout error if the deadline has passed.
 func (tx *Transaction) checkTimeout() error {
 	if tx.timeout > 0 && time.Now().After(tx.deadline) {
@@ -430,14 +508,30 @@ func (tx *Transaction) checkTimeout() error {
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
+	if tx.nextWriteNoConflict {
+		tx.nextWriteNoConflict = false
+		return
+	}
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+}
+
+// SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
+// conflict range. Auto-resets after one mutation. Matches C++
+// FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
+func (tx *Transaction) SetNextWriteNoWriteConflictRange() {
+	tx.nextWriteNoConflict = true
 }
 
 // AddReadConflictRange adds an explicit read conflict range [begin, end).
 // If any key in this range is modified by another transaction between
 // this transaction's read version and commit, the commit will fail.
-func (tx *Transaction) AddReadConflictRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	return nil
 }
 
 // AddReadConflictKey adds a read conflict on a single key.
@@ -446,8 +540,13 @@ func (tx *Transaction) AddReadConflictKey(key []byte) {
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
-func (tx *Transaction) AddWriteConflictRange(begin, end []byte) {
+// Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
+func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
+	if bytes.Compare(begin, end) > 0 {
+		return &wire.FDBError{Code: ErrInvertedRange}
+	}
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	return nil
 }
 
 // AddWriteConflictKey adds a write conflict on a single key.
@@ -460,11 +559,27 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 // re-applies options. The deadline is re-computed from timeout so each
 // retry gets a fresh timeout window (matches C++ where set_option is
 // re-applied on reset, restarting the timer).
+// postCommitReset clears mutation buffers and conflict ranges after a
+// successful commit, allowing the transaction to be reused. Matches the C++
+// client's tryCommit() which does `tr.transaction = CommitTransactionRef()`
+// after successful commit. Preserves committedVersion and txnBatchId for
+// GetCommittedVersion/GetVersionstamp queries.
+func (tx *Transaction) postCommitReset() {
+	tx.state = txStateActive
+	tx.hasReadVersion = false
+	tx.readVersion = 0
+	tx.mutations = tx.mutations[:0]
+	tx.readConflicts = tx.readConflicts[:0]
+	tx.writeConflicts = tx.writeConflicts[:0]
+	// committedVersion and txnBatchId preserved intentionally.
+}
+
 func (tx *Transaction) reset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false
 	tx.readVersion = 0
 	tx.committedVersion = 0
+	tx.hasCommitted = false
 	tx.txnBatchId = 0
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]

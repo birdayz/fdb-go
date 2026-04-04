@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	GrvProxyInterfaceSlotProcessId                = 0
@@ -12,8 +16,10 @@ const (
 
 var GrvProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
 
-const GrvProxyInterfaceFileID uint32 = 8743216
-const GrvProxyInterfaceMaxAlign = 4
+const (
+	GrvProxyInterfaceFileID   uint32 = 8743216
+	GrvProxyInterfaceMaxAlign        = 4
+)
 
 type GrvProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
@@ -70,17 +76,70 @@ func (m *GrvProxyInterface) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *GrvProxyInterface) measureEndOff(endOff int) int {
+	if m.HasProcessId {
+		endOff = wire.MeasureBytesOOL(endOff, m.ProcessId)
+	}
 	endOff = wire.MeasureObject(endOff, GrvProxyInterfaceVTable, GrvProxyInterfaceMaxAlign)
 	return endOff
 }
 
 func (m *GrvProxyInterface) writeDirect(dw *wire.DirectWriter) int {
+	var processIdOOL int
+	if m.HasProcessId {
+		processIdOOL = dw.WriteBytesOOL(m.ProcessId)
+	}
 	objPos, obj := dw.WriteObject(GrvProxyInterfaceVTable, GrvProxyInterfaceMaxAlign)
 	vt := GrvProxyInterfaceVTable
 	if m.Provisional {
 		obj[int(vt[GrvProxyInterfaceSlotProvisional+2])] = 1
 	}
+	if m.HasProcessId {
+		obj[int(vt[GrvProxyInterfaceSlotProcessId+2])] = 1
+		wire.PatchRelOff(obj, int(vt[GrvProxyInterfaceSlotProcessId+1+2]), objPos, processIdOOL)
+	}
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *GrvProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
+	if m.HasProcessId {
+		ps.VisitDynamicSize(len(m.ProcessId))
+	}
+	{
+		n := ps.GetMessageWriter(int(GrvProxyInterfaceVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GrvProxyInterfaceVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *GrvProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var processIdOff int
+	if m.HasProcessId {
+		processIdOff, _ = wb.VisitDynamicSize(m.ProcessId)
+	}
+	selfW := wb.GetMessageWriter(int(GrvProxyInterfaceVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := GrvProxyInterfaceVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GrvProxyInterfaceVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	if m.Provisional {
+		selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProvisional+2]))
+	}
+	if m.HasProcessId {
+		selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProcessId+2]))
+		selfW.WriteRelativeOffset(processIdOff, int(vt[GrvProxyInterfaceSlotProcessId+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.

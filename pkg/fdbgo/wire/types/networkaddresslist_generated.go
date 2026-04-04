@@ -2,7 +2,11 @@
 
 package types
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+import (
+	"encoding/binary"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
+)
 
 const (
 	NetworkAddressListSlotAddress          = 0
@@ -64,17 +68,71 @@ func (m *NetworkAddressList) writeBlob(buf []byte, pos int) int {
 }
 
 func (m *NetworkAddressList) measureEndOff(endOff int) int {
+	if m.HasSecondaryAddress {
+		endOff = wire.MeasureBytesOOL(endOff, m.SecondaryAddress)
+	}
 	endOff = m.Address.measureEndOff(endOff)
 	endOff = wire.MeasureObject(endOff, NetworkAddressListVTable, NetworkAddressListMaxAlign)
 	return endOff
 }
 
 func (m *NetworkAddressList) writeDirect(dw *wire.DirectWriter) int {
+	var secondaryAddressOOL int
+	if m.HasSecondaryAddress {
+		secondaryAddressOOL = dw.WriteBytesOOL(m.SecondaryAddress)
+	}
 	addressPos := m.Address.writeDirect(dw)
 	objPos, obj := dw.WriteObject(NetworkAddressListVTable, NetworkAddressListMaxAlign)
 	vt := NetworkAddressListVTable
+	if m.HasSecondaryAddress {
+		obj[int(vt[NetworkAddressListSlotSecondaryAddress+2])] = 1
+		wire.PatchRelOff(obj, int(vt[NetworkAddressListSlotSecondaryAddress+1+2]), objPos, secondaryAddressOOL)
+	}
 	wire.PatchRelOff(obj, int(vt[NetworkAddressListSlotAddress+2]), objPos, addressPos)
 	return objPos
+}
+
+// precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
+// Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
+// Returns end-offset of this object (C++ RelativeOffset).
+func (m *NetworkAddressList) precomputeSize(ps *wire.PrecomputeSize) int {
+	m.Address.precomputeSize(ps)
+	if m.HasSecondaryAddress {
+		ps.VisitDynamicSize(len(m.SecondaryAddress))
+	}
+	{
+		n := ps.GetMessageWriter(int(NetworkAddressListVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressListVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — C++ SaveVisitorLambda::operator() with WriteToBuffer writer.
+// Fields in SERIALIZE ORDER (same as precomputeSize, same as C++ for_each).
+// Returns selfStart (end-offset of this object) for parent's RelativeOffset.
+func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	var addressStart int
+	var secondaryAddressOff int
+	addressStart = m.Address.writeToBuffer(wb, vtableStart, tmpl)
+	if m.HasSecondaryAddress {
+		secondaryAddressOff, _ = wb.VisitDynamicSize(m.SecondaryAddress)
+	}
+	selfW := wb.GetMessageWriter(int(NetworkAddressListVTable[1]), true)
+	selfStart := selfW.FinalLocation
+	vt := NetworkAddressListVTable
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressListVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	selfW.WriteRelativeOffset(addressStart, int(vt[NetworkAddressListSlotAddress+2]))
+	if m.HasSecondaryAddress {
+		selfW.WriteScalar([]byte{1}, int(vt[NetworkAddressListSlotSecondaryAddress+2]))
+		selfW.WriteRelativeOffset(secondaryAddressOff, int(vt[NetworkAddressListSlotSecondaryAddress+1+2]))
+	}
+	selfW.WriteToAt(selfStart)
+	return selfStart
 }
 
 // ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.

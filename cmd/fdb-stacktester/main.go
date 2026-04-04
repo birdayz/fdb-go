@@ -40,7 +40,7 @@ func main() {
 		clusterFile = "/etc/foundationdb/fdb.cluster"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	db, err := client.OpenDatabase(ctx, clusterFile)
