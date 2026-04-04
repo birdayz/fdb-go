@@ -116,6 +116,7 @@ binding-stress runs="100" ops="1000":
     sed -i "s|sys.path\[:0\].*||" "$BTRUN/bindingtester/__init__.py"
     sed -i "s|import util|from bindingtester import util|" "$BTRUN/bindingtester/__init__.py"
     sed -i "s|from fdb import LATEST_API_VERSION|LATEST_API_VERSION = 730|" "$BTRUN/bindingtester/__init__.py"
+    set +e
     {
     echo "binding-stress: {{runs}} seeds × {{ops}} ops"
     echo "Started: $(date -Iseconds)"
@@ -179,6 +180,7 @@ binding-stress-duration duration ops="1000":
     sed -i "s|sys.path\[:0\].*||" "$BTRUN/bindingtester/__init__.py"
     sed -i "s|import util|from bindingtester import util|" "$BTRUN/bindingtester/__init__.py"
     sed -i "s|from fdb import LATEST_API_VERSION|LATEST_API_VERSION = 730|" "$BTRUN/bindingtester/__init__.py"
+    set +e
     DEADLINE=$(($(date +%s) + SECS))
     {
     echo "binding-stress: timed run, {{ops}} ops/seed, duration=${SECS}s"
