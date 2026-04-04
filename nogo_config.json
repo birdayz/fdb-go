@@ -38,5 +38,10 @@
     "exclude_files": {
       "_test\\.go$": "t.Fatal guards are not understood by SA5011"
     }
+  },
+  "SA9004": {
+    "exclude_files": {
+      "_generated\\.go$": "generated wire type code"
+    }
   }
 }
