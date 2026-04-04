@@ -251,6 +251,43 @@ storageserver.actor.cpp:4581 — getShardKeyRange(data, req.begin)
   → SIGSEGV (key not in any shard)
 ```
 
+## Why FDB server doesn't guard against this
+
+The storage server does not validate that incoming keys fall within its shard
+boundaries before dereferencing the shard map iterator. In `getShardKeyRange()`
+(`storageserver.actor.cpp:4499`):
+
+```cpp
+auto i = sel.isBackward() ? data->shards.rangeContainingKeyBefore(sel.getKey())
+                          : data->shards.rangeContaining(sel.getKey());
+if (!i->value()->isReadable())       // ← dereferences without bounds check
+    throw wrong_shard_server();
+ASSERT(selectorInRange(sel, i->range()));
+```
+
+`rangeContaining()` on a key outside all shards (`\xff\xff`) returns an invalid
+iterator. The code dereferences it immediately — no bounds check, no
+`wrong_shard_server` thrown. A defensive check here would prevent the crash, but
+FDB's design assumes the **C++ client is the only caller**. The wire protocol is
+an internal RPC between trusted components, not a public API. The C++ client
+guarantees keys are clamped to shard boundaries (via `getExactRange`) before they
+ever hit a storage server.
+
+Same pattern for inverted ranges: the commit proxy trusts that the client already
+validated `begin <= end` — `fdb_transaction_add_conflict_range()` and
+`fdb_transaction_clear_range_impl()` reject inverted ranges client-side so the
+server never sees them.
+
+This is a general FDB design principle: **the wire protocol is trusted**. If you
+speak it, you're expected to speak it correctly. Server-side validation is minimal
+because the only legitimate client (`libfdb_c.so`) enforces invariants before
+serialization. Our pure Go client broke that contract by sending keys and ranges
+the C++ client would never produce.
+
+This is arguably a server hardening gap — throwing `wrong_shard_server` instead
+of segfaulting would be strictly better — but it's low priority for the FDB team
+since no legitimate client triggers it.
+
 ## Files involved
 
 - `pkg/fdbgo/client/readpath.go` — shard clamping, reverse scan location
