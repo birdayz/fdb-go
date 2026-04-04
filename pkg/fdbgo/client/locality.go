@@ -240,7 +240,10 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 				hasGap = true
 				break
 			}
-			if r.ShardEnd != nil && bytes.Compare(r.ShardEnd, gapBegin) > 0 {
+			if r.ShardEnd == nil {
+				gapBegin = end // shard covers to infinity, no more gaps
+				break
+			} else if bytes.Compare(r.ShardEnd, gapBegin) > 0 {
 				gapBegin = r.ShardEnd
 			}
 		}

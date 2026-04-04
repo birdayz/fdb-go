@@ -196,7 +196,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			if bytes.Compare(shardBegin, curBegin) < 0 {
 				shardBegin = curBegin
 			}
-			if shardEnd != nil && bytes.Compare(shardEnd, curEnd) > 0 {
+			if shardEnd == nil || bytes.Compare(shardEnd, curEnd) > 0 {
 				shardEnd = curEnd
 			}
 			if bytes.Compare(shardBegin, shardEnd) >= 0 {
@@ -262,6 +262,10 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			curEnd = firstShard.ShardBegin
 		} else {
 			lastShard := locations[len(locations)-1]
+			// nil ShardEnd means shard extends to infinity — no more shards to query.
+			if lastShard.ShardEnd == nil || bytes.Compare(lastShard.ShardEnd, curEnd) >= 0 {
+				break
+			}
 			curBegin = lastShard.ShardEnd
 		}
 		if bytes.Compare(curBegin, curEnd) >= 0 {
