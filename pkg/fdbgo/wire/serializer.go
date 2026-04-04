@@ -230,60 +230,6 @@ func (wb *WriteToBuffer) VisitDynamicSize(data []byte) (int, bool) {
 	return wb.CurrentBufferSize, false
 }
 
-// SaveWithVTables — C++ save_with_vtables (flat_buffers.h:804)
-// Entry point for serializing a complete message.
-// ps must have been populated by the PrecomputeSize pass.
-// rootOffset is the RelativeOffset value from save_helper for the root object.
-// Returns the complete serialized buffer.
-func SaveWithVTables(ps *PrecomputeSize, packedVTables []byte,
-	rootOffset int, fileID uint32,
-) []byte {
-	// C++ line 818: root_writer_size = sizeof(uint32_t) + sizeof(file_identifier) = 8
-	rootWriterSize := 8
-
-	// C++ line 820: RightAlign(writer.current_buffer_size + root_writer_size, 8)
-	padding := 0
-	rootStart := RightAlign(ps.CurrentBufferSize+rootWriterSize, 8)
-	padding = rootStart - (ps.CurrentBufferSize + rootWriterSize)
-	_ = padding
-
-	totalSize := rootStart
-	buf := make([]byte, totalSize)
-
-	wb := NewWriteToBuffer(buf, 0, ps.WriteToOffsets)
-
-	// C++ line 810-811: vtable_writer
-	vtableWriter := wb.GetMessageWriter(len(packedVTables), false)
-	copy(wb.Buf[wb.BufferLength-vtableWriter.FinalLocation:], packedVTables)
-
-	// TODO: call the generated writeDirect equivalent here to populate wb
-	// For now, this is the framework — generated code fills in the fields
-
-	// C++ line 812: vtable_writer.writeTo(writer)
-	vtableWriter.WriteTo()
-	vtableStart := wb.CurrentBufferSize
-
-	_ = vtableStart
-
-	// C++ line 816-819: root_writer (FakeRoot with rootOffset + fileID)
-	rootWriter := wb.GetMessageWriter(rootWriterSize, false)
-	// Write rootOffset as RelativeOffset
-	rootWriter.WriteRelativeOffset(rootOffset, 0)
-	// Write fileID
-	var fidBytes [4]byte
-	binary.LittleEndian.PutUint32(fidBytes[:], fileID)
-	rootWriter.WriteScalar(fidBytes[:], 4)
-	// C++ line 820: rootWriter.writeTo(writer, RightAlign(..., 8))
-	rootWriter.WriteToAt(rootStart)
-
-	// C++ line 821: writer.write(&zeros, ..., padding)
-	if padding > 0 {
-		wb.WriteZeros(wb.CurrentBufferSize-rootWriterSize, padding)
-	}
-
-	return buf
-}
-
 // FakeRootVTable is the vtable for the FakeRoot wrapper object.
 // C++ uses fake_root<T> with vtable {6, 8, 4} — always the same.
 var FakeRootVTable = VTable{6, 8, 4}

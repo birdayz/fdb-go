@@ -257,7 +257,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	// Only add read conflict if range is valid (begin <= end) and not system keys.
 	// C++ client validates inverted ranges and handles \xff\xff keys internally
 	// without adding resolver conflict ranges.
-	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) {
+	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) && !isSystemKey(end) {
 		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
 	}
 

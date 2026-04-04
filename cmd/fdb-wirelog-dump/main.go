@@ -84,12 +84,12 @@ func main() {
 			fr.index, d, fr.timestamp.Format("15:04:05.000000"), fr.tokenHi, fr.tokenLo, len(fr.body))
 
 		if *showHex {
-			dumped := hex.Dump(fr.body)
-			if len(dumped) > 512 {
-				fmt.Print(dumped[:512])
-				fmt.Printf("  ... (%d more bytes)\n", len(fr.body)-256)
+			const maxBytes = 256
+			if len(fr.body) > maxBytes {
+				fmt.Print(hex.Dump(fr.body[:maxBytes]))
+				fmt.Printf("  ... (%d more bytes)\n", len(fr.body)-maxBytes)
 			} else {
-				fmt.Print(dumped)
+				fmt.Print(hex.Dump(fr.body))
 			}
 		}
 	}

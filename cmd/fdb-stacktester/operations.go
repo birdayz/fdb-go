@@ -588,9 +588,9 @@ func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
 		if len(kvs) == 0 {
 			return
 		}
-		// Not empty yet, retry via OnError with not_committed.
+		// Not empty yet, retry via OnError with not_committed for backoff sleep.
 		tr := sm.db.CreateTransaction()
-		tr.OnError(fmt.Errorf("fdb error 1020"))
+		tr.OnError(&wire.FDBError{Code: client.ErrNotCommitted})
 	}
 }
 
