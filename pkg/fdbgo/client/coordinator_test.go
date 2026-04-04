@@ -362,27 +362,17 @@ func TestGetRange(t *testing.T) {
 		t.Logf("Commit proxy: %s", dbInfo.CommitProxies[0].Address)
 	}
 
-	// Write keys via C binding (avoids Go commit server crashes for now).
-	fdb.MustAPIVersion(720)
-	tmpFile, _ := os.CreateTemp("", "fdb-*.cluster")
-	tmpFile.WriteString(connStr)
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	cdb, cErr := fdb.OpenDatabase(tmpFile.Name())
-	if cErr != nil {
-		t.Fatalf("C binding open: %v", cErr)
-	}
-	_, err = cdb.Transact(func(tx fdb.Transaction) (any, error) {
-		tx.Set(fdb.Key("range_a"), []byte("value_a"))
-		tx.Set(fdb.Key("range_b"), []byte("value_b"))
-		tx.Set(fdb.Key("range_c"), []byte("value_c"))
+	// Write keys via Go client.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("range_a"), []byte("value_a"))
+		tx.Set([]byte("range_b"), []byte("value_b"))
+		tx.Set([]byte("range_c"), []byte("value_c"))
 		return nil, nil
 	})
 	if err != nil {
-		t.Fatalf("C binding write: %v", err)
+		t.Fatalf("write keys: %v", err)
 	}
-	t.Log("wrote 3 keys via C binding")
-	time.Sleep(1 * time.Second) // ensure version advances past the commit
+	t.Log("wrote 3 keys via Go client")
 
 	// Range read via Go client.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
