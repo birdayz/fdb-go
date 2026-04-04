@@ -8,6 +8,7 @@ package types
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
@@ -37,33 +38,25 @@ var VoidReplyTemplate = wire.NewMessageTemplate(
 // VoidReply is the PING response: ErrorOr<EnsureTable<Void>> with tag=2 (success).
 type VoidReply struct{}
 
+// voidReplyBytes is the C++ ObjectWriter ground truth for ErrorOr<EnsureTable<Void>>.
+// This is a fixed 48-byte PING response (tag=2, success, no payload).
+// Hardcoded because VoidReply has no fields — the output never varies.
+// C++ ground truth verified against FDB 7.3.75.
+var voidReplyBytes = func() []byte {
+	b, _ := hex.DecodeString(
+		"200000004aad1e02" +
+			"0000000000000400" +
+			"0400060006000400" +
+			"0800090008000400" +
+			"0800000008000000" +
+			"020000001e000000")
+	return b
+}()
+
 func (m *VoidReply) MarshalFDB() []byte {
-	t := VoidReplyTemplate
-	// No OOL, one nested struct (EnsureTable<Void>).
-	endOff := wire.MeasureObject(0, ensureTableVoidVTable, 4) // nested: just soffset
-	bodySize := int(errorOrVTable[1]) - 4
-	msgObjEnd := ((endOff + bodySize + 3) &^ 3) + 4
-	vtableSize := t.PackedVTablesLen()
-	vtableEnd := msgObjEnd + vtableSize // no FakeRoot
-	totalSize := (vtableEnd + 8 + 7) &^ 7
-	vtablePos := totalSize - vtableEnd
-	msgObjPos := totalSize - msgObjEnd
-	_ = msgObjPos
-
-	buf := make([]byte, totalSize)
-	var dw wire.DirectWriter
-	dw.Init(buf, totalSize, vtablePos, t)
-
-	// Write nested EnsureTable<Void> (empty object)
-	nestedPos, _ := dw.WriteObject(ensureTableVoidVTable, 4)
-
-	// Write root ErrorOr object
-	objPos, obj := dw.WriteObject(errorOrVTable, 4)
-	obj[int(errorOrVTable[2])] = 2 // tag = 2 (success, not Error)
-	wire.PatchRelOff(obj, int(errorOrVTable[3]), objPos, nestedPos)
-
-	t.WriteRootUnionFooter(buf, vtablePos, msgObjPos)
-	return buf
+	out := make([]byte, len(voidReplyBytes))
+	copy(out, voidReplyBytes)
+	return out
 }
 
 // --- ErrorOrError = ErrorOr<Error> (error response, test helper) ---
