@@ -368,7 +368,9 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
 			for i := 0; i < n; i++ { m.ReadConflictRanges[i].precomputeSize(ps) }
-			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
 		} else { ps.VisitDynamicSize(0) }
 	}
 	{
@@ -376,7 +378,9 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
 			for i := 0; i < n; i++ { m.WriteConflictRanges[i].precomputeSize(ps) }
-			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
 		} else { ps.VisitDynamicSize(0) }
 	}
 	{
@@ -384,7 +388,9 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
 			for i := 0; i < n; i++ { m.Mutations[i].precomputeSize(ps) }
-			self.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
 		} else { ps.VisitDynamicSize(0) }
 	}
 	if m.HasRead_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled)) }
@@ -410,7 +416,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.ReadConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			readConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -425,7 +431,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.WriteConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			writeConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -440,7 +446,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.Mutations[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			mutationsOff = wb.CurrentBufferSize
 		} else {

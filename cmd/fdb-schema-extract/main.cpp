@@ -175,8 +175,13 @@ struct GoEmitterV5 {
 
         // Two-pass methods: precomputeSize + writeToBuffer.
         // These replace measureEndOff/writeDirect for the MarshalFDB path.
-        emitPrecomputeSize(typeName, fields, maxAlign);
-        emitWriteToBuffer(typeName, fields, maxAlign);
+        // Types with custom serialize logic (e.g. KeyRangeRef) provide
+        // hand-written precomputeSize/writeToBuffer in *_custom.go.
+        bool hasCustomSerialize = (strcmp(typeName, "KeyRangeRef") == 0);
+        if (!hasCustomSerialize) {
+            emitPrecomputeSize(typeName, fields, maxAlign);
+            emitWriteToBuffer(typeName, fields, maxAlign);
+        }
 
         // MarshalFDB — two-pass, top-level only.
         if (isTopLevel) {
@@ -564,7 +569,11 @@ private:
                 fprintf(f, "\t\tif n > 0 {\n");
                 fprintf(f, "\t\t\tself := ps.GetMessageWriter(n * 4)\n");
                 fprintf(f, "\t\t\tfor i := 0; i < n; i++ { m.%s[i].precomputeSize(ps) }\n", gn.c_str());
-                fprintf(f, "\t\t\tself.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+n*4, 4)+4)\n");
+                // C++ flat_buffers.h:1228: self.writeTo(writer, start - sizeof(uint32_t))
+                // start = RightAlign(cbs + len, 4) + 4. Reloff array at start-4, count at start.
+                fprintf(f, "\t\t\tstart := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4\n");
+                fprintf(f, "\t\t\tps.Write(start) // count at start (4 bytes)\n");
+                fprintf(f, "\t\t\tself.WriteToAt(ps, start - 4) // reloff array at start-4\n");
                 fprintf(f, "\t\t} else { ps.VisitDynamicSize(0) }\n");
                 fprintf(f, "\t}\n");
                 break;
@@ -656,7 +665,10 @@ private:
                 fprintf(f, "\t\t\t\telemStart := m.%s[i].writeToBuffer(wb, vtableStart, tmpl)\n", gn.c_str());
                 fprintf(f, "\t\t\t\tself.WriteRelativeOffset(elemStart, i*4)\n");
                 fprintf(f, "\t\t\t}\n");
-                fprintf(f, "\t\t\twb.WriteUint32(uint32(n), self.FinalLocation+4)\n");
+                // C++ flat_buffers.h:1227-1228: count at `start`, reloff array at `start-4`
+                // self.FinalLocation = start - 4 (from precomputeSize)
+                // Count goes at start = self.FinalLocation + 4
+                fprintf(f, "\t\t\twb.WriteUint32(uint32(n), self.FinalLocation + 4)\n");
                 fprintf(f, "\t\t\tself.WriteToAt(self.FinalLocation)\n");
                 fprintf(f, "\t\t\t%s = wb.CurrentBufferSize\n", offVar.c_str());
                 fprintf(f, "\t\t} else {\n");
