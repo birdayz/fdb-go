@@ -6,6 +6,62 @@ Our pure Go FDB client sends wire messages that crash the FDB 7.3.75 server
 with SIGSEGV. The official CGo client does not crash the server with identical
 workloads.
 
+## How to debug FDB server crashes
+
+When fdbserver crashes (SIGSEGV, assertion, etc.), the crash trace is in the
+container's XML log. The log contains a ready-made `addr2line` command — you
+just need the debug symbols binary from the GitHub release.
+
+```sh
+# 1. Copy logs from the (stopped) container
+docker cp fdb-test:/var/fdb/logs /tmp/fdb-logs
+
+# 2. Find the crash event
+grep 'Type="Crash"' /tmp/fdb-logs/trace.*.xml
+# Output includes:
+#   Trace="addr2line -e fdbserver.debug -p -C -f -i 0x338113f 0x3380d12 ..."
+
+# 3. Download debug symbols (one-time per FDB version)
+#    Find the right file at https://github.com/apple/foundationdb/releases/tag/<version>
+curl -sL "https://github.com/apple/foundationdb/releases/download/7.3.75/fdbserver.debug.x86_64.gz" \
+  -o /tmp/fdbserver.debug.x86_64.gz
+gunzip -f /tmp/fdbserver.debug.x86_64.gz
+
+# 4. Verify BuildID matches (must be identical)
+readelf -n /tmp/fdbserver.debug.x86_64 | grep 'Build ID'
+# Compare against the binary in the container:
+docker cp fdb-test:/usr/bin/fdbserver /tmp/fdbserver
+readelf -n /tmp/fdbserver | grep 'Build ID'
+
+# 5. Run the addr2line command from the crash log, using the debug binary
+addr2line -e /tmp/fdbserver.debug.x86_64 -p -C -f -i 0x338113f 0x3380d12 0x33809de 0x3380356
+# Output: function names, source files, line numbers, with inlines expanded
+```
+
+**Key points:**
+- The container binary (`/usr/bin/fdbserver`) is **stripped** — `objdump` gives
+  you nothing. You need the separate `.debug` file from GitHub releases.
+- FDB's crash log literally gives you the `addr2line` command — just replace
+  `fdbserver.debug` with the path to your downloaded debug binary.
+- Flags: `-C` demangles C++, `-f` prints function names, `-i` expands inlines.
+- FDB also logs non-crash errors at Severity="40" — grep for those too.
+  `inverted_range`, `wrong_shard_server`, etc. show up there without a crash.
+
+### Wire log capture
+
+Set `FDB_WIRE_LOG=/tmp/wirelog.bin` to capture all frames sent/received.
+Dump with `fdb-wirelog-dump`:
+
+```sh
+bazelisk build //cmd/fdb-wirelog-dump:fdb-wirelog-dump
+bazel-bin/cmd/fdb-wirelog-dump/fdb-wirelog-dump_/fdb-wirelog-dump -hex -last 10 -send-only /tmp/wirelog.bin
+```
+
+To decode a specific frame as a GetKeyValuesRequest (or other type), write a
+small Go program that reads the wirelog binary format (29-byte header per frame:
+1 dir + 8 timestamp + 16 token + 4 bodylen, then body bytes) and calls
+`UnmarshalFDB()` on the body.
+
 ## Reproduction
 
 ```sh
