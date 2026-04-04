@@ -2,32 +2,43 @@ package types
 
 // Root-union protocol types: ErrorOr<EnsureTable<Void>> and ErrorOr<Error>.
 // These are union_like_traits types serialized at the root level (no FakeRoot).
-// Layout: [footer][vtables][root_obj][nested][ool] — root_offset → root_obj directly.
+// Layout: [footer][vtables][root ErrorOr obj][nested alternative obj]
 //
-// TODO: generate these from the C++ extractor once it supports union_like_traits.
+// Uses the same two-pass PrecomputeSize/WriteToBuffer infrastructure as all
+// generated types. Only the MarshalFDB footer differs: union types point the
+// root offset directly at the ErrorOr object (no FakeRoot wrapper).
+//
+// C++ source: flow/include/flow/flow.h union_like_traits<ErrorOr<T>>,
+// flat_buffers.h save_with_vtables (union branch).
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
-// --- ErrorOr vtable: tag(uint8) at offset 8, value(RelOff) at offset 4 ---
+// --- ErrorOr vtable: tag(uint8) at slot 0 (offset 8), value(RelOff) at slot 1 (offset 4) ---
 
 var errorOrVTable = wire.VTable{8, 9, 8, 4}
 
-// --- EnsureTable<Void>: empty table, just soffset ---
+const (
+	errorOrSlotTag   = 0 // uint8: 0=NONE, 1=Error, 2=T
+	errorOrSlotValue = 1 // RelativeOffset to nested alternative
+)
+
+// --- EnsureTable<Void>: empty table, just soffset (no fields) ---
 
 var ensureTableVoidVTable = wire.VTable{4, 4}
 
-// --- VoidReply = ErrorOr<EnsureTable<Void>> (PING response) ---
+// ===================================================================
+// VoidReply = ErrorOr<EnsureTable<Void>> (PING response, tag=2)
+// ===================================================================
 
 const VoidReplyFileID uint32 = 0x021EAD4A
 
 var voidReplyVTableClosure = []wire.VTable{
 	{4, 4},       // EnsureTable<Void>
-	{6, 6, 4},    // appears in C++ vtable closure
+	{6, 6, 4},    // Error (always in closure even if unused)
 	{8, 9, 8, 4}, // ErrorOr
 }
 
@@ -35,31 +46,97 @@ var VoidReplyTemplate = wire.NewMessageTemplate(
 	VoidReplyFileID, errorOrVTable, 4, voidReplyVTableClosure,
 )
 
-// VoidReply is the PING response: ErrorOr<EnsureTable<Void>> with tag=2 (success).
 type VoidReply struct{}
 
-// voidReplyBytes is the C++ ObjectWriter ground truth for ErrorOr<EnsureTable<Void>>.
-// This is a fixed 48-byte PING response (tag=2, success, no payload).
-// Hardcoded because VoidReply has no fields — the output never varies.
-// C++ ground truth verified against FDB 7.3.75.
-var voidReplyBytes = func() []byte {
-	b, _ := hex.DecodeString(
-		"200000004aad1e02" +
-			"0000000000000400" +
-			"0400060006000400" +
-			"0800090008000400" +
-			"0800000008000000" +
-			"020000001e000000")
-	return b
-}()
-
-func (m *VoidReply) MarshalFDB() []byte {
-	out := make([]byte, len(voidReplyBytes))
-	copy(out, voidReplyBytes)
-	return out
+// precomputeSize — C++ PrecomputeSize pass.
+// Serialize order: nested EnsureTable<Void>, then root ErrorOr.
+func (m *VoidReply) precomputeSize(ps *wire.PrecomputeSize) int {
+	// Nested: EnsureTable<Void> — empty table, just soffset (4 bytes).
+	// C++ SaveVisitorLambda: current_buffer_size += vtable[1]
+	{
+		n := ps.GetMessageWriter(int(ensureTableVoidVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ensureTableVoidVTable[1])-4, 4)+4)
+	}
+	// Root: ErrorOr — soffset + reloff + tag byte (9 bytes).
+	{
+		n := ps.GetMessageWriter(int(errorOrVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(errorOrVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
 }
 
-// --- ErrorOrError = ErrorOr<Error> (error response, test helper) ---
+// writeToBuffer — C++ WriteToBuffer pass.
+func (m *VoidReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	// Nested: EnsureTable<Void> — empty, just soffset.
+	nestedW := wb.GetMessageWriter(int(ensureTableVoidVTable[1]), true)
+	nestedStart := nestedW.FinalLocation
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(ensureTableVoidVTable) - nestedStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		nestedW.WriteScalar(b[:], 0)
+	}
+	nestedW.WriteToAt(nestedStart)
+
+	// Root: ErrorOr — soffset + value reloff + tag.
+	rootW := wb.GetMessageWriter(int(errorOrVTable[1]), true)
+	rootStart := rootW.FinalLocation
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(errorOrVTable) - rootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		rootW.WriteScalar(b[:], 0)
+	}
+	rootW.WriteRelativeOffset(nestedStart, int(errorOrVTable[errorOrSlotValue+2]))
+	rootW.WriteScalar([]byte{2}, int(errorOrVTable[errorOrSlotTag+2])) // tag=2 (success)
+	rootW.WriteToAt(rootStart)
+
+	return rootStart
+}
+
+// MarshalFDB serializes VoidReply using two-pass PrecomputeSize/WriteToBuffer.
+// Union root: footer points directly to ErrorOr object (no FakeRoot).
+func (m *VoidReply) MarshalFDB() []byte {
+	t := VoidReplyTemplate
+	packedVT := t.PackedVTables()
+
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	// No FakeRoot for union types — ErrorOr IS the root.
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	// Footer: root offset + file ID (8 bytes, aligned to 8).
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
+	buf := make([]byte, totalSize)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
+
+	// Union footer: rootRelOff + fileID (no FakeRoot).
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(rootStart, 0)
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], VoidReplyFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	return buf
+}
+
+// ===================================================================
+// ErrorOrError = ErrorOr<Error> (error response, tag=1)
+// ===================================================================
 
 var errorOrErrorVTableClosure = []wire.VTable{
 	{6, 6, 4},    // Error
@@ -70,36 +147,88 @@ var ErrorOrErrorTemplate = wire.NewMessageTemplate(
 	0, errorOrVTable, 4, errorOrErrorVTableClosure,
 )
 
-// ErrorOrError wraps an FDB error code in ErrorOr<Error> wire format.
 type ErrorOrError struct {
 	ErrorCode uint16
 }
 
+// precomputeSize — nested Error + root ErrorOr.
+func (m *ErrorOrError) precomputeSize(ps *wire.PrecomputeSize) int {
+	// Nested: Error — soffset + ErrorCode (6 bytes).
+	{
+		n := ps.GetMessageWriter(int(ErrorVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ErrorVTable[1])-4, 4)+4)
+	}
+	// Root: ErrorOr — soffset + reloff + tag byte (9 bytes).
+	{
+		n := ps.GetMessageWriter(int(errorOrVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(errorOrVTable[1])-4, 4)+4)
+	}
+	return ps.CurrentBufferSize
+}
+
+// writeToBuffer — nested Error + root ErrorOr.
+func (m *ErrorOrError) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
+	// Nested: Error.
+	nestedW := wb.GetMessageWriter(int(ErrorVTable[1]), true)
+	nestedStart := nestedW.FinalLocation
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(ErrorVTable) - nestedStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		nestedW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], m.ErrorCode)
+		nestedW.WriteScalar(b[:], int(ErrorVTable[ErrorSlotErrorCode+2]))
+	}
+	nestedW.WriteToAt(nestedStart)
+
+	// Root: ErrorOr — tag=1 (Error).
+	rootW := wb.GetMessageWriter(int(errorOrVTable[1]), true)
+	rootStart := rootW.FinalLocation
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(errorOrVTable) - rootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		rootW.WriteScalar(b[:], 0)
+	}
+	rootW.WriteRelativeOffset(nestedStart, int(errorOrVTable[errorOrSlotValue+2]))
+	rootW.WriteScalar([]byte{1}, int(errorOrVTable[errorOrSlotTag+2])) // tag=1 (Error)
+	rootW.WriteToAt(rootStart)
+
+	return rootStart
+}
+
+// MarshalFDB serializes ErrorOrError using two-pass PrecomputeSize/WriteToBuffer.
+// Union root: footer points directly to ErrorOr object (no FakeRoot).
 func (m *ErrorOrError) MarshalFDB() []byte {
 	t := ErrorOrErrorTemplate
-	endOff := wire.MeasureObject(0, ErrorVTable, 4) // nested Error
-	bodySize := int(errorOrVTable[1]) - 4
-	msgObjEnd := ((endOff + bodySize + 3) &^ 3) + 4
-	vtableSize := t.PackedVTablesLen()
-	vtableEnd := msgObjEnd + vtableSize // no FakeRoot
-	totalSize := (vtableEnd + 8 + 7) &^ 7
-	vtablePos := totalSize - vtableEnd
-	msgObjPos := totalSize - msgObjEnd
-	_ = msgObjPos
+	packedVT := t.PackedVTables()
 
+	// Pass 1: PrecomputeSize
+	ps := wire.NewPrecomputeSize()
+	vtNoop := ps.GetMessageWriter(len(packedVT))
+	m.precomputeSize(ps)
+	vtNoop.WriteTo(ps)
+	vtableStart := ps.CurrentBufferSize
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
+	totalSize := ps.CurrentBufferSize
+
+	// Pass 2: WriteToBuffer
 	buf := make([]byte, totalSize)
-	var dw wire.DirectWriter
-	dw.Init(buf, totalSize, vtablePos, t)
+	wb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)
+	vtW := wb.GetMessageWriter(len(packedVT), false)
+	vtW.WriteScalar(packedVT, 0)
+	rootStart := m.writeToBuffer(wb, vtableStart, t)
 
-	// Write nested Error object
-	nestedPos, errObj := dw.WriteObject(ErrorVTable, 4)
-	binary.LittleEndian.PutUint16(errObj[int(ErrorVTable[ErrorSlotErrorCode+2]):], m.ErrorCode)
-
-	// Write root ErrorOr object
-	objPos, obj := dw.WriteObject(errorOrVTable, 4)
-	obj[int(errorOrVTable[2])] = 1 // tag = 1 (Error)
-	wire.PatchRelOff(obj, int(errorOrVTable[3]), objPos, nestedPos)
-
-	t.WriteRootUnionFooter(buf, vtablePos, msgObjPos)
+	vtW.WriteTo()
+	footerW := wb.GetMessageWriter(8, false)
+	footerW.WriteRelativeOffset(rootStart, 0)
+	// FileID = 0 for ErrorOrError (response, not a request).
+	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
