@@ -16,8 +16,10 @@ const (
 
 var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
 
-const CommitProxyInterfaceFileID uint32 = 8954922
-const CommitProxyInterfaceMaxAlign = 4
+const (
+	CommitProxyInterfaceFileID   uint32 = 8954922
+	CommitProxyInterfaceMaxAlign        = 4
+)
 
 type CommitProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag

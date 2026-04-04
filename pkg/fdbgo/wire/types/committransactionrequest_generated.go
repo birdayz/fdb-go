@@ -37,6 +37,7 @@ var CommitTransactionRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{28, 43, 4, 8, 12, 40, 16, 41, 20, 42, 24, 28, 32, 36},
 }
+
 var CommitTransactionRequestTemplate = wire.NewMessageTemplate(
 	CommitTransactionRequestFileID, CommitTransactionRequestVTable, 4, CommitTransactionRequestVTableClosure,
 )

@@ -20,6 +20,7 @@ var ErrorVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
 }
+
 var ErrorTemplate = wire.NewMessageTemplate(
 	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
 )

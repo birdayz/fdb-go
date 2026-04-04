@@ -24,6 +24,7 @@ var NetworkAddressVTableClosure = []wire.VTable{
 	{12, 13, 4, 8, 10, 12},
 	{6, 8, 4},
 }
+
 var NetworkAddressTemplate = wire.NewMessageTemplate(
 	NetworkAddressFileID, NetworkAddressVTable, 4, NetworkAddressVTableClosure,
 )

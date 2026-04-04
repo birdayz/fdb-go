@@ -20,6 +20,7 @@ var ReplyPromiseVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
 }
+
 var ReplyPromiseTemplate = wire.NewMessageTemplate(
 	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
 )

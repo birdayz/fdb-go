@@ -28,6 +28,7 @@ var GetKeyValuesReplyVTableClosure = []wire.VTable{
 	{6, 6, 4},
 	{18, 31, 4, 28, 20, 24, 12, 29, 30},
 }
+
 var GetKeyValuesReplyTemplate = wire.NewMessageTemplate(
 	GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, GetKeyValuesReplyVTableClosure,
 )

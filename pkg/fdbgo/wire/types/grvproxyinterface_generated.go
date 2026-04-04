@@ -16,8 +16,10 @@ const (
 
 var GrvProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
 
-const GrvProxyInterfaceFileID uint32 = 8743216
-const GrvProxyInterfaceMaxAlign = 4
+const (
+	GrvProxyInterfaceFileID   uint32 = 8743216
+	GrvProxyInterfaceMaxAlign        = 4
+)
 
 type GrvProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
