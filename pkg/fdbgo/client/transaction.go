@@ -215,7 +215,11 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
+	// them internally without going through the resolver conflict map.
+	if !isSystemKey(key) {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	}
 	return tx.getValue(ctx, key)
 }
 
@@ -224,8 +228,15 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+	if !isSystemKey(selectorKey) {
+		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
+}
+
+// isSystemKey returns true for keys with the \xff\xff prefix (FDB system key space).
+func isSystemKey(key []byte) bool {
+	return len(key) >= 2 && key[0] == 0xff && key[1] == 0xff
 }
 
 // GetRange reads a range of keys [begin, end) in forward order.
@@ -243,10 +254,10 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	// Only add read conflict if range is valid (begin <= end).
-	// C++ client validates this; inverted ranges are silently skipped for conflicts
-	// but the scan itself returns empty.
-	if bytes.Compare(begin, end) <= 0 {
+	// Only add read conflict if range is valid (begin <= end) and not system keys.
+	// C++ client validates inverted ranges and handles \xff\xff keys internally
+	// without adding resolver conflict ranges.
+	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) {
 		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
 	}
 
