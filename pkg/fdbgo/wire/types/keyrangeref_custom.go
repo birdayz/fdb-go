@@ -74,12 +74,18 @@ func (m *KeyRangeRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 		selfW.WriteScalar(b[:], 0)
 	}
 
-	// RelativeOffsets — note: C++ swaps begin/end in the optimized case,
-	// but the vtable slots stay the same (slot 0 = first arg, slot 1 = second arg).
-	// When optimized: slot 0 = end, slot 1 = empty.
-	// When normal: slot 0 = begin, slot 1 = end.
-	selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotBegin+2]))
-	selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotEnd+2]))
+	// C++ serializer(ar, first, second) writes first to slot 0, second to slot 1.
+	// Normal: serializer(ar, begin, end) → slot 0 = begin, slot 1 = end.
+	// Optimized: serializer(ar, end, empty) → slot 0 = end, slot 1 = empty.
+	// Our variables: when optimized, endOff = end data, beginOff = empty data.
+	if keyRangeEqualsKeyAfter(m.Begin, m.End) {
+		// Optimized: slot 0 = end (endOff), slot 1 = empty (beginOff)
+		selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotBegin+2]))
+		selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotEnd+2]))
+	} else {
+		selfW.WriteRelativeOffset(beginOff, int(vt[KeyRangeRefSlotBegin+2]))
+		selfW.WriteRelativeOffset(endOff, int(vt[KeyRangeRefSlotEnd+2]))
+	}
 
 	selfW.WriteToAt(selfStart)
 	return selfStart
