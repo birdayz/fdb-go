@@ -98,15 +98,37 @@ TODO.md                             # Tracked issues and improvements
 ## Running
 
 ```sh
-just build          # bazel build //... (includes nogo lint)
-just test           # bazel test //... (fully cached, incremental)
-just bench          # Run all benchmarks (9 benchmarks, ~50s)
-just bench-one NAME # Run specific benchmark by regex (e.g. just bench-one SaveRecord)
-just gazelle        # Regenerate BUILD files after adding/removing Go files
-just generate       # buf generate (proto codegen — not in Bazel)
-just tidy           # go mod tidy
-just clean          # bazel clean
+just build                    # bazel build //... (includes nogo lint)
+just test                     # bazel test //... (fully cached, incremental)
+just bench                    # Run all benchmarks (9 benchmarks, ~50s)
+just bench-one NAME           # Run specific benchmark by regex
+just gazelle                  # Regenerate BUILD files after adding/removing Go files
+just generate                 # buf generate (proto codegen — not in Bazel)
+just tidy                     # go mod tidy
+just clean                    # bazel clean
+just binding-stress           # Binding tester: 100 seeds × 1000 ops
+just binding-stress 50 500    # Binding tester: 50 seeds × 500 ops
+just binding-stress-duration 2h  # Binding tester: run for 2 hours
 ```
+
+### Binding tester stress (`fdb-binding-stress`)
+
+Seeded PRNG fuzz testing of the pure Go FDB client against the official FDB binding tester harness. Each seed generates a deterministic sequence of FDB operations (GET, SET, CLEAR, GET_RANGE, ATOMIC_OP, conflict ranges, etc.) with random keys/values. The harness compares our output against a Python reference client — any divergence is a bug.
+
+**How it works:** For each seed, a fresh FDB Docker container is started, the binding tester inserts instructions, our Go stacktester executes them, then results are compared. All artifacts are collected per-seed.
+
+**Output:** `binding-stress-out/<timestamp>/` containing:
+- `report.json` — machine-readable results (updated after every seed, safe to read mid-run)
+- `seed-N/tester.log` — binding tester stdout/stderr
+- `seed-N/docker.log` — FDB container logs
+- `seed-N/fdb-logs/` — FDB XML trace logs (for `addr2line` crash analysis)
+
+**Reproduce a specific seed:**
+```sh
+bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -ops 1000 -seed-start 146
+```
+
+**Debugging FDB crashes:** See `pkg/fdbgo/client/CRASH_BUG.md` for the full playbook — download debug symbols, extract `addr2line` command from FDB trace logs, resolve to source lines.
 
 - **After writing Go code, always run `just build`** to compile + nogo lint. Lint errors are build errors.
 - **Run `just test` regularly** — Bazel cache is perfect, so it only reruns what changed. Catches regressions early. Run at minimum after each feature/fix before committing.
