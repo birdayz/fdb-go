@@ -197,7 +197,184 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte) 
 	}
 }
 
+// locateRange returns all cached location entries overlapping [begin, end).
+// On cache miss for any sub-range, queries a commit proxy for the missing range.
+// C++ getKeyRangeLocations equivalent.
+func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
+	// System key space (\xff\xff prefix) is handled like locate().
+	if len(begin) >= 2 && begin[0] == 0xff && begin[1] == 0xff {
+		begin = []byte{0xff}
+	}
+	if len(end) >= 2 && end[0] == 0xff && end[1] == 0xff {
+		end = []byte{0xff, 0x00} // just past \xff
+	}
+
+	curBegin := begin
+	for {
+		var results []LocationResult
+
+		// Scan cache for all entries overlapping [curBegin, end).
+		lc.mu.RLock()
+		for _, entry := range lc.entries {
+			// Entry overlaps [curBegin, end) if entry.begin < end && entry.end > curBegin.
+			if (entry.end == nil || bytes.Compare(entry.end, curBegin) > 0) &&
+				bytes.Compare(entry.begin, end) < 0 {
+				results = append(results, LocationResult{
+					Servers:    entry.servers,
+					ShardBegin: entry.begin,
+					ShardEnd:   entry.end,
+				})
+			}
+		}
+		lc.mu.RUnlock()
+
+		// Sort by begin key.
+		sortLocationResults(results)
+
+		// Check for gaps in [curBegin, end).
+		gapBegin := curBegin
+		hasGap := false
+		for _, r := range results {
+			if bytes.Compare(r.ShardBegin, gapBegin) > 0 {
+				// There's a gap: [gapBegin, r.ShardBegin) is uncached.
+				hasGap = true
+				break
+			}
+			if r.ShardEnd != nil && bytes.Compare(r.ShardEnd, gapBegin) > 0 {
+				gapBegin = r.ShardEnd
+			}
+		}
+		if !hasGap && bytes.Compare(gapBegin, end) < 0 {
+			// Gap at the tail: [gapBegin, end) is uncached.
+			hasGap = true
+		}
+
+		if !hasGap {
+			// Fully cached. Clamp and return up to limit entries.
+			if limit > 0 && len(results) > limit {
+				results = results[:limit]
+			}
+			return results, nil
+		}
+
+		// Cache miss — refresh the missing sub-range.
+		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit)
+		if err != nil {
+			return nil, err
+		}
+		// Loop back to re-scan cache with the new entries.
+	}
+}
+
+// sortLocationResults sorts by ShardBegin ascending.
+func sortLocationResults(results []LocationResult) {
+	// Simple insertion sort — typically very few entries (< 100 shards).
+	for i := 1; i < len(results); i++ {
+		for j := i; j > 0 && bytes.Compare(results[j].ShardBegin, results[j-1].ShardBegin) < 0; j-- {
+			results[j], results[j-1] = results[j-1], results[j]
+		}
+	}
+}
+
+// refreshRange queries commit proxies for locations overlapping [begin, end).
+// Returns all location entries from the response.
+func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int) ([]locationEntry, error) {
+	var backoff time.Duration
+
+	for {
+		proxies := db.getCommitProxies()
+		if len(proxies) == 0 {
+			db.kickTopology()
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
+			}
+			select {
+			case <-time.After(backoff):
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-db.ctx.Done():
+				return nil, db.ctx.Err()
+			}
+		}
+
+		if backoff > 0 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-db.ctx.Done():
+				return nil, db.ctx.Err()
+			}
+		}
+
+		cycledAll := true
+		for _, proxy := range proxies {
+			conn, err := db.getOrDial(ctx, proxy.Address)
+			if err != nil {
+				db.handleConnError(proxy.Address)
+				continue
+			}
+
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, replyToken)
+			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
+
+			if err := conn.SendFrame(locToken, body); err != nil {
+				cancelReply()
+				db.handleConnError(proxy.Address)
+				continue
+			}
+
+			rctx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+			select {
+			case resp := <-replyCh:
+				rpcCancel()
+				if resp.Err != nil {
+					db.handleConnError(proxy.Address)
+					continue
+				}
+				entries, err := parseGetKeyServerLocationsReply(resp.Body)
+				if err != nil {
+					continue
+				}
+				lc.mu.Lock()
+				lc.entries = append(lc.entries, entries...)
+				for len(lc.entries) > lc.maxSize {
+					idx := rand.Intn(len(lc.entries))
+					lc.entries[idx] = lc.entries[len(lc.entries)-1]
+					lc.entries = lc.entries[:len(lc.entries)-1]
+				}
+				lc.mu.Unlock()
+				if len(entries) > 0 {
+					return entries, nil
+				}
+			case <-rctx.Done():
+				rpcCancel()
+				cancelReply()
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				continue
+			}
+			cycledAll = false
+		}
+
+		// All proxies failed. Kick topology, grow backoff.
+		db.kickTopology()
+		if cycledAll {
+			if backoff == 0 {
+				backoff = loadBalanceStartBackoff
+			} else {
+				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
+			}
+		}
+	}
+}
+
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
+// Single-key lookup: no End field set.
 func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []byte {
 	req := types.GetKeyServerLocationsRequest{
 		Begin:            key,
@@ -205,6 +382,21 @@ func buildGetKeyServerLocationsRequest(key []byte, replyToken transport.UID) []b
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: NoTenantID},
 		MinTenantVersion: -2, // C++ latestVersion = -2 (default for GetKeyServerLocationsRequest)
+	}
+	return req.MarshalFDB()
+}
+
+// buildGetKeyServerLocationsRangeRequest constructs the request with Begin, End, and Limit.
+// C++ getKeyRangeLocations sends both begin and end to get all overlapping shards.
+func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, replyToken transport.UID) []byte {
+	req := types.GetKeyServerLocationsRequest{
+		Begin:            begin,
+		HasEnd:           true,
+		End:              end,
+		Limit:            int32(limit),
+		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+		Tenant:           types.TenantInfo{TenantId: NoTenantID},
+		MinTenantVersion: -2,
 	}
 	return req.MarshalFDB()
 }

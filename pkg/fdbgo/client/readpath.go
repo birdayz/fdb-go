@@ -159,123 +159,117 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-// getRange reads a key range, automatically continuing across shard boundaries.
-// Each shard is queried independently; results are concatenated until limit is
-// reached or no more data exists. If reverse is true, keys are returned in
-// descending order (C++ uses negative limit for reverse scans).
+// getRange reads a key range [begin, end), fetching all overlapping shard locations
+// at once (C++ getExactRange pattern). Iterates shards in scan order, handles
+// wrong_shard_server by invalidating and re-locating.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
+
 	var allKVs []KeyValue
 	remaining := limit
 	curBegin := begin
 	curEnd := end
 
-	for remaining > 0 {
-		kvs, more, err := tx.getRangeOneShard(ctx, curBegin, curEnd, remaining, reverse)
+	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
+		// Get all shard locations for current range.
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("locate range: %w", err)
 		}
-
-		allKVs = append(allKVs, kvs...)
-		remaining -= len(kvs)
-
-		if remaining <= 0 {
-			return allKVs, more || len(kvs) > 0, nil
-		}
-
-		if len(kvs) == 0 {
+		if len(locations) == 0 {
 			return allKVs, false, nil
 		}
 
-		if !more {
-			if reverse {
-				// For reverse: advance end backwards past first key returned.
-				firstKey := kvs[len(kvs)-1].Key // last in result = smallest key
-				curEnd = firstKey
-				if bytes.Compare(curEnd, begin) <= 0 {
-					return allKVs, false, nil
-				}
-			} else {
-				lastKey := kvs[len(kvs)-1].Key
-				curBegin = append(lastKey, 0)
-				if bytes.Compare(curBegin, end) >= 0 {
-					return allKVs, false, nil
-				}
-			}
-			continue
+		// Iterate shards in scan order: forward for forward, reverse for reverse.
+		shardIdx := 0
+		if reverse {
+			shardIdx = len(locations) - 1
 		}
 
+		relocated := false
+		for shardIdx >= 0 && shardIdx < len(locations) && remaining > 0 {
+			loc := locations[shardIdx]
+
+			// Clamp shard boundaries to user's requested range.
+			shardBegin := loc.ShardBegin
+			shardEnd := loc.ShardEnd
+			if bytes.Compare(shardBegin, curBegin) < 0 {
+				shardBegin = curBegin
+			}
+			if shardEnd != nil && bytes.Compare(shardEnd, curEnd) > 0 {
+				shardEnd = curEnd
+			}
+			if bytes.Compare(shardBegin, shardEnd) >= 0 {
+				// Empty range for this shard, skip.
+				if reverse {
+					shardIdx--
+				} else {
+					shardIdx++
+				}
+				continue
+			}
+
+			kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
+			if err != nil {
+				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+					tx.db.locCache.invalidate(loc.ShardBegin)
+					time.Sleep(wrongShardRetryDelay)
+					// Adjust range for re-locate in outer loop.
+					if reverse {
+						curEnd = shardEnd
+					} else {
+						curBegin = shardBegin
+					}
+					relocated = true
+					break // break inner shard loop, re-locate in outer
+				}
+				return nil, false, err
+			}
+
+			allKVs = append(allKVs, kvs...)
+			remaining -= len(kvs)
+
+			if remaining <= 0 {
+				return allKVs, true, nil
+			}
+
+			if more {
+				// More data in this shard — adjust boundaries and re-query same shard.
+				if reverse {
+					curEnd = kvs[len(kvs)-1].Key // shrink end to smallest returned key
+				} else {
+					curBegin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0) // advance past last key
+				}
+				relocated = true
+				break // break to outer loop to re-locate with adjusted range
+			}
+
+			// Move to next shard.
+			if reverse {
+				shardIdx--
+			} else {
+				shardIdx++
+			}
+		}
+
+		if relocated {
+			continue // re-locate with adjusted curBegin/curEnd
+		}
+
+		// Exhausted all locations from this batch. Update range for next locateRange call.
 		if reverse {
-			firstKey := kvs[len(kvs)-1].Key
-			curEnd = firstKey
+			firstShard := locations[0]
+			curEnd = firstShard.ShardBegin
 		} else {
-			lastKey := kvs[len(kvs)-1].Key
-			curBegin = append(lastKey, 0)
+			lastShard := locations[len(locations)-1]
+			curBegin = lastShard.ShardEnd
+		}
+		if bytes.Compare(curBegin, curEnd) >= 0 {
+			break
 		}
 	}
 
 	return allKVs, remaining <= 0, nil
-}
-
-// getRangeOneShard queries a single shard with wrong_shard_server retry.
-// C++ getExactRange: locates by end for reverse, clamps begin/end to shard boundaries.
-func (tx *Transaction) getRangeOneShard(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		// C++ getExactRange: locate by end for reverse, begin for forward.
-		locateKey := begin
-		if reverse && len(end) > 0 {
-			locateKey = keyBefore(end)
-		}
-		loc, err := tx.db.locCache.locate(tx.db, ctx, locateKey)
-		if err != nil {
-			return nil, false, fmt.Errorf("locate range: %w", err)
-		}
-		if len(loc.Servers) == 0 {
-			return nil, false, fmt.Errorf("no storage servers for range")
-		}
-
-		// Clamp begin/end to shard boundaries.
-		// C++ getExactRange sends firstGreaterOrEqual(range.begin) / firstGreaterOrEqual(range.end).
-		clampedBegin := begin
-		clampedEnd := end
-		if loc.ShardBegin != nil && bytes.Compare(clampedBegin, loc.ShardBegin) < 0 {
-			clampedBegin = loc.ShardBegin
-		}
-		if loc.ShardEnd != nil && bytes.Compare(clampedEnd, loc.ShardEnd) > 0 {
-			clampedEnd = loc.ShardEnd
-		}
-		// If the clamped range is empty (begin >= end), this shard has no data for us.
-		if bytes.Compare(clampedBegin, clampedEnd) >= 0 {
-			return nil, false, nil
-		}
-
-		kvs, more, err := tx.sendGetRange(ctx, clampedBegin, clampedEnd, limit, reverse, loc.Servers)
-		if err == nil {
-			return kvs, more, nil
-		}
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(locateKey)
-			time.Sleep(wrongShardRetryDelay)
-			continue
-		}
-		return nil, false, err
-	}
-	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
-}
-
-// keyBefore returns a key just before the given key for shard location purposes.
-// Decrements the last byte; for empty keys returns empty.
-func keyBefore(key []byte) []byte {
-	if len(key) == 0 {
-		return key
-	}
-	result := make([]byte, len(key))
-	copy(result, key)
-	if result[len(result)-1] > 0 {
-		result[len(result)-1]--
-	} else {
-		result = result[:len(result)-1]
-	}
-	return result
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
