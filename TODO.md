@@ -11,42 +11,26 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
-- [ ] **CRITICAL** — Pure Go FDB client wire protocol crashes FDB server (SIGSEGV). Root cause: our FlatBuffers serializer (`writer_direct.go` + codegen in `main.cpp`) produces a different byte layout than C++ `ObjectWriter` (`flat_buffers.h`). CGo stacktester passes same workloads. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis. Ground truth test vectors from C++ ObjectWriter in `pkg/fdbgo/wire/types/testdata.json`. Branch: `binding-tester-conformance`.
+- [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
 
-  **Fixed (codegen + library):**
-  - [x] Bug 1: Nested struct serialization order reversed vs C++. Fixed in `main.cpp`.
-  - [x] Bug 2: `Optional<T>` fields completely skipped in marshal path. Fixed.
-  - [x] Bug 3: Empty `dynamic_size` fields allocated 0 bytes instead of 4. Fixed `MeasureBytesOOL`/`MeasureRawOOL` in `writer_direct.go`.
-  - [x] Bug 4: Generated nil-guards skipped fields C++ always serializes. Fixed codegen `main.cpp` — removed nil-guards on DynamicSize/VectorLike writes.
+  **Serialization bugs (all fixed):**
+  - [x] Bug 1: Nested struct serialization order reversed vs C++.
+  - [x] Bug 2: `Optional<T>` fields completely skipped in marshal path.
+  - [x] Bug 3: Empty `dynamic_size` fields allocated 0 bytes instead of 4.
+  - [x] Bug 4: Generated nil-guards skipped fields C++ always serializes.
+  - [x] Bug 5: `Optional<ReadOptions>` — extractor detects struct inner type.
+  - [x] Bug 6: `Vector<struct>` — two-pass precomputeSize/writeToBuffer.
+  - [x] Bug 7: Field serialize order + KeyRangeRef equalsKeyAfter optimization.
 
-  **Status: 6/10 ground truth byte-identical layout. 4/10 wrong size.** Branch `binding-tester-conformance` (24 commits).
+  **Client logic bugs that crashed FDB server (all fixed):**
+  - [x] Bug A: Reverse range scan located shards by `begin` key. `\xff\xff` sent to storage server → `getShardKeyRange()` SIGSEGV. Fix: locate by `end` for reverse, clamp to shard boundaries.
+  - [x] Bug B: `ClearRange`/`Add*ConflictRange` didn't validate `begin <= end`. Inverted ranges sent to server. Fix: return error 2005 client-side.
+  - [x] Bug C: `\xff\xff` system key reads added resolver conflict ranges. Commit proxy `ASSERT(resolvers.size())` failed. Fix: skip conflict ranges for system keys.
 
-  Ground truth table (`pkg/fdbgo/wire/types/testdata.json` from C++ ObjectWriter):
+  **Ground truth sizes: 10/10 match.** Byte diffs = reply token only (expected). Binding tester: **145 seeds × 1000 ops = 0 failures, 0 FDB deaths.**
 
-  | # | Type | Go | C++ | Status |
-  |---|------|-----|-----|--------|
-  | 1 | GetKeyServerLocationsRequest_basic | 208 | 208 | **CORRECT** (13 diffs = reply token) |
-  | 2 | GetKeyServerLocationsRequest_with_end | 248 | 248 | **CORRECT** |
-  | 3 | GetKeyServerLocationsRequest_empty | 200 | 200 | **CORRECT** |
-  | 4 | GetValueRequest_basic | 248 | 248 | **CORRECT** (43 diffs = reply token + VersionVector data) |
-  | 5 | GetKeyRequest_basic | 264 | 272 | **WRONG -8** |
-  | 6 | GetKeyValuesRequest_basic | 320 | 328 | **WRONG -8** |
-  | 7 | CommitTransactionRequest_single_set | 432 | 416 | **WRONG +16** |
-  | 8 | CommitTransactionRequest_three_sets | 568 | 536 | **WRONG +32** |
-  | 9 | CommitTransactionRequest_empty | 312 | 312 | **CORRECT** |
-  | 10 | GetReadVersionRequest | 168 | 168 | **CORRECT** |
-
-  **Fixed:**
-  - [x] Bug 5: `Optional<ReadOptions>` — extractor now detects struct inner type via `optionalInnerGoType<T>()`. Emits `ReadOptions` Go type + `ReadNestedReader` unmarshal. `precomputeSize`/`writeToBuffer` recurse into nested type.
-  - [x] Bug 6 (partial): `Vector<struct>` — two-pass `precomputeSize`/`writeToBuffer` for vector elements (recursive, not self-contained blobs). Reduced +40→+16 per mutation.
-
-  **Remaining (CRITICAL — blocks all pure Go client use):**
-  **Status: 10/10 ground truth SIZE MATCH. FDB still crashes on seed 6 — remaining DATA byte differences.**
-
-  - [x] Bug 7: Vector\<struct\> layout — fixed by processing fields in serialize order + KeyRangeRef equalsKeyAfter optimization.
-  - [ ] Bug 8: **FDB crashes despite correct sizes.** 10/10 test vectors match C++ size. Remaining byte differences: reply token (16 bytes), VersionVector encoding (data content), KeyRangeRef field swap verification. One of these data differences causes FDB to misparse a field and crash. Need byte-by-byte comparison of CommitTransactionRequest bytes against C++ ground truth to find which field value is wrong.
-  - [ ] Bug 9 (LOW): **C++ `emptyVector` re-use optimization missing.** Consistent across ALL types: C++ vtable region has 6 leading zero bytes before vtable data. Our packed data starts immediately with no pad. 6-byte diff → 8-byte total after 8-byte alignment. This is the LAST remaining serializer issue — causes CommitTransactionRequest +8 (single_set) and contributes to +32 (three_sets). Other types: already correct because the 6-byte pad + alignment doesn't change total size for types with content size that already rounds to 8. Root cause: C++ `save_with_vtables` PrecomputeSize positions the vtable `Noop.writeTo` at `cbs + vtable_size`, but the actual buffer position may include implicit padding from the `WriteToBuffer` pass. Our MarshalFDB doesn't account for this gap.
-  - [ ] Bug 8 (LOW): **C++ `emptyVector` re-use optimization missing.** No test vector currently fails from this.
+  **Remaining (LOW):**
+  - [ ] C++ `emptyVector` re-use optimization missing — no test vector currently fails from this.
 - [x] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Fixed: added loop over `rt.multiTypeIndexes` matching single-type pattern. 2 regression tests. Found 2026-03-26 via 10-agent audit.
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
 - [x] **HIGH** — Missing cross-cutting test matrix. Fixed: `index_registration_matrix_test.go` with 3×7 matrix (21 specs, 1 skipped). **Found and fixed another bug**: `DeleteRecordsWhere` fully cleared multi-type indexes instead of scoping by PK prefix. Added `hasRecordTypeKeyPrefix()` helper + scoped clear for multi-type indexes with RecordTypeKey prefix, error for multi-type without. Matches Java's `canDeleteWhereForIndexOnStoredTypes`.
@@ -1746,11 +1730,38 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
 **Gold standard target:** FDB binding tester (stack machine, `bindings/bindingtester/`) — 47 core ops, language-agnostic spec. Passing this = officially conformant binding.
 
+### Wire compatibility verification
+
+**Status:** Binding tester passes 145 seeds × 1000 ops (145,000 operations, 0 failures). This covers API behavioral correctness but not byte-level wire identity.
+
+**What the binding tester covers:** GET/SET/CLEAR/GET_RANGE, atomic ops, conflict ranges, key selectors, error handling, ON_ERROR retry, versionstamp ops. Single-node Docker, single-threaded.
+
+**What it does NOT cover:**
+- Byte-level serialization identity (our bytes accepted by server ≠ identical to C client bytes)
+- Large payloads near FDB limits (100KB values, 10MB transactions)
+- All message types (no WATCH, GET_MAPPED_KEY_VALUES, tenant ops)
+- Multi-node clusters, proxy failover, shard splits
+- Concurrent connections (`--no-threads` only)
+- FDB version compatibility (only 7.3.75 tested)
+
+**Tooling to build (priority order):**
+
+- [ ] **Differential serialization fuzzer** — HIGH. For each message type, generate random field values, serialize with C++ ObjectWriter AND Go MarshalFDB, compare bytes. No FDB cluster needed. Deterministic. Extend `cmd/fdb-schema-extract` to accept field values via stdin (JSON), serialize, emit bytes. Go side does same. Fuzz loop compares. Catches: padding, alignment, field ordering, vtable packing, optional handling, vector encoding. Millions of iterations/sec.
+- [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
+- [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
+
+**Debug tooling (done):**
+- [x] `FDB_WIRE_LOG` env var captures all frames to binary file
+- [x] `cmd/fdb-wirelog-dump` decodes wire log (hex dump, per-frame)
+- [x] `cmd/fdb-binding-stress` — Go tool for multi-seed stress testing with per-seed artifact collection (FDB trace logs, docker logs, tester output, JSON report)
+- [x] FDB crash debugging playbook in `pkg/fdbgo/client/CRASH_BUG.md` (addr2line + debug symbols from GitHub releases)
+
 ### Next priorities
-1. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
-2. GetRange reverse — port C test, add reverse parameter
-3. Watch — port C tests, implement WatchValueRequest
-4. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
+1. Differential serialization fuzzer — build the C++/Go comparator
+2. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
+3. GetRange reverse — port C test, add reverse parameter
+4. Watch — port C tests, implement WatchValueRequest
+5. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
 
 ### Done
 
