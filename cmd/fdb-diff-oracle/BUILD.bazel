@@ -15,7 +15,7 @@ genrule(
     name = "diff_oracle_bin",
     srcs = [
         "//cmd/fdb-schema-extract:fdb_cmake_build",
-        "main.cpp",
+        "cpp/main.cpp",
     ],
     outs = ["diff-oracle"],
     cmd = """
@@ -86,5 +86,5 @@ go_test(
 )
 
 exports_files([
-    "main.cpp",
+    "cpp/main.cpp",
 ])
