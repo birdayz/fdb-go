@@ -77,8 +77,8 @@ func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 	f := &futureByteSlice{}
 	f.init()
 	go func() {
+		defer close(f.done)
 		f.val, f.err = fn()
-		close(f.done)
 	}()
 	return f
 }
@@ -118,8 +118,8 @@ func newFutureNil(fn func() error) FutureNil {
 	f := &futureNil{}
 	f.init()
 	go func() {
+		defer close(f.done)
 		f.err = fn()
-		close(f.done)
 	}()
 	return f
 }
@@ -163,8 +163,8 @@ func newFutureKey(fn func() (Key, error)) FutureKey {
 	f := &futureKey{}
 	f.init()
 	go func() {
+		defer close(f.done)
 		f.val, f.err = fn()
-		close(f.done)
 	}()
 	return f
 }
@@ -208,8 +208,8 @@ func newFutureInt64(fn func() (int64, error)) FutureInt64 {
 	f := &futureInt64{}
 	f.init()
 	go func() {
+		defer close(f.done)
 		f.val, f.err = fn()
-		close(f.done)
 	}()
 	return f
 }

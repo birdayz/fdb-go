@@ -30,7 +30,10 @@ func (rr RangeResult) doRange() ([]client.KeyValue, error) {
 	}
 	limit := rr.options.Limit
 	if limit == 0 {
-		limit = math.MaxInt32 // Apple API: 0 means unlimited
+		// Apple API: Limit=0 means unlimited. The underlying client uses
+		// limit>0 as a loop condition, so we pass MaxInt32 (matching the
+		// FDB wire protocol's 32-bit limit field).
+		limit = math.MaxInt32
 	}
 
 	if rr.snapshot {
