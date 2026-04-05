@@ -1,13 +1,3 @@
-# Auto PR review is disabled due to unfixable permission_denials in
-# anthropics/claude-code-action@v1. The code-review plugin and direct
-# prompts both fail to post comments (tools blocked by SDK policy).
-# See: https://github.com/anthropics/claude-code-action/issues/944
-#
-# Use @claude in PR comments instead — that works via claude.yml.
-#
-# Keeping this file so the workflow exists on master (required for
-# branch workflow validation when re-enabling).
-
 name: Claude Code Review
 
 on:
@@ -15,23 +5,36 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  claude-review:
-    if: false  # Disabled — see comment above
+  review:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      issues: write
       id-token: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Run Claude Code Review
-        uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: "Review this PR"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Please review this pull request with a focus on:
+            - Code quality and best practices
+            - Potential bugs or issues
+            - Security implications
+            - Performance considerations
+
+            Note: The PR branch is already checked out in the current working directory.
+
+            Use `gh pr comment` for top-level feedback.
+            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to highlight specific code issues.
+            Only post GitHub comments - don't submit review text as messages.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
