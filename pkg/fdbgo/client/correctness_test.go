@@ -341,7 +341,7 @@ func TestSnapshotRead(t *testing.T) {
 	// With snapshot read: tx1 should succeed (no read conflict range).
 
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx1.SetReadVersion(rv)
 
 	// Snapshot read — no conflict range added.
@@ -372,7 +372,7 @@ func TestSnapshotRead(t *testing.T) {
 
 	// Verify: now do a regular read that WOULD conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx3.SetReadVersion(rv3)
 
 	// Regular read — adds conflict range.
@@ -412,7 +412,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddReadConflictKey: tx1 adds explicit read conflict (no actual read),
 	// tx2 writes the same key. tx1 should conflict on commit.
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictKey([]byte("ecr_key"))
 	tx1.Set([]byte("ecr_other"), []byte("unrelated"))
@@ -435,7 +435,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddWriteConflictKey: tx3 adds explicit write conflict on a key
 	// that tx4 also writes. tx4 reads it first, so tx4 should conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx3.SetReadVersion(rv3)
 
 	tx4 := db.CreateTransaction()
@@ -568,7 +568,7 @@ func TestAddReadConflictRange(t *testing.T) {
 
 	// tx1: add read conflict range [rcr_a, rcr_d) — covers a, b, c.
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictRange([]byte("rcr_a"), []byte("rcr_d"))
 	tx1.Set([]byte("rcr_unrelated"), []byte("x"))
@@ -599,7 +599,7 @@ func TestAddWriteConflictRange(t *testing.T) {
 
 	// tx1 reads a key in the range [wcr_a, wcr_d).
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx1.SetReadVersion(rv)
 	_, _ = tx1.Get(ctx, []byte("wcr_b")) // adds read conflict for wcr_b
 	tx1.Set([]byte("wcr_b"), []byte("from_tx1"))
@@ -690,7 +690,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a transaction and get the versionstamp.
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a second transaction — its versionstamp should be greater.
 	tx2 := db.CreateTransaction()
-	rv2, _ := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv2, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, 8<<24)
 	tx2.SetReadVersion(rv2)
 	tx2.Set([]byte("vs_key2"), []byte("val2"))
 	if err := tx2.Commit(ctx); err != nil {
