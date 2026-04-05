@@ -174,6 +174,10 @@ func (m *CommitTransactionRef) blobSize() int {
 	return (oolPos + oolSize + 3) &^ 3
 }
 
+// writeBlob is DEAD CODE — MarshalFDB uses precomputeSize+writeToBuffer instead.
+// WARNING: contains the same empty-vector-reloff bug that was fixed in writeToBuffer
+// (if len(...) > 0 guards skip reloffs for empty vectors). Do not revive without
+// applying the same fix.
 func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
 	vt := CommitTransactionRefVTable
 	obj := wire.WriteBlobVTable(buf, pos, vt)
@@ -268,6 +272,8 @@ func (m *CommitTransactionRef) measureEndOff(endOff int) int {
 	return endOff
 }
 
+// writeDirect is DEAD CODE — MarshalFDB uses precomputeSize+writeToBuffer instead.
+// WARNING: contains the same empty-vector-reloff bug as writeBlob.
 func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
 	var readConflictRangesOOL int
 	if len(m.ReadConflictRanges) > 0 {

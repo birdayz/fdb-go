@@ -1425,83 +1425,6 @@ func TestDiffEndpoint(t *testing.T) {
 
 // --- Comparison helpers ---
 
-// compareBytes compares Go and C++ serialized FDB FlatBuffers output.
-//
-// VTable pack ordering differs between Go and C++ (C++ uses std::set<VTable*>
-// which sorts by pointer address — non-deterministic across binaries). This is
-// harmless: FDB's deserializer follows soffsets, doesn't care about vtable
-// position. But it means raw byte comparison always fails in the vtable region.
-//
-// Strategy: compare structurally by extracting the object data region (after
-// vtables) and verifying field values match.
-func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
-	t.Helper()
-
-	if len(goBytes) != len(cppBytes) {
-		t.Errorf("%s: SIZE MISMATCH Go=%d C++=%d", typeName, len(goBytes), len(cppBytes))
-		dumpHex(t, goBytes, cppBytes, typeName)
-		return
-	}
-
-	// Bytes 0-3: root offset (must match — same structure)
-	// Bytes 4-7: file ID (must match)
-	if len(goBytes) < 8 {
-		t.Errorf("%s: Go output too short (%d bytes) for header", typeName, len(goBytes))
-		return
-	}
-	if !bytes.Equal(goBytes[:8], cppBytes[:8]) {
-		t.Errorf("%s: footer differs: Go=%s C++=%s", typeName,
-			hex.EncodeToString(goBytes[:8]), hex.EncodeToString(cppBytes[:8]))
-		return
-	}
-
-	// Find the root object position. Root offset is at byte 0 (LE uint32).
-	rootOff := int(binary.LittleEndian.Uint32(goBytes[:4]))
-
-	// Compare the object+OOL region, skipping soffset bytes.
-	objectRegionGo := goBytes[rootOff:]
-	objectRegionCpp := cppBytes[rootOff:]
-
-	divergences := 0
-	for i := 0; i < len(objectRegionGo); i++ {
-		if objectRegionGo[i] != objectRegionCpp[i] {
-			divergences++
-		}
-	}
-
-	if divergences == 0 {
-		return
-	}
-
-	t.Logf("%s: %d divergent bytes in object region [%d:%d] (expected: soffset diffs only)",
-		typeName, divergences, rootOff, len(goBytes))
-
-	shown := 0
-	for i := 0; i < len(objectRegionGo) && shown < 16; i++ {
-		if objectRegionGo[i] != objectRegionCpp[i] {
-			t.Logf("  offset %d (buf[%d]): Go=0x%02x C++=0x%02x",
-				i, rootOff+i, objectRegionGo[i], objectRegionCpp[i])
-			shown++
-		}
-	}
-
-	// Vtable pack ordering (C++ std::set<VTable*> pointer sort) causes soffset
-	// differences at EVERY object start AND at vector element reloffs that reference
-	// positions relative to vtable-affected objects. For types with many nested
-	// objects (e.g. CommitTransactionRequest with 16 mutations × 3 fields each),
-	// this can produce dozens of divergent bytes — all harmless.
-	// Use a generous threshold proportional to buffer size.
-	maxExpectedDivergences := (len(goBytes) / 8) + 10
-	if divergences <= maxExpectedDivergences {
-		t.Logf("%s: %d byte divergences in object region — likely soffset diffs from vtable ordering (harmless)",
-			typeName, divergences)
-	} else {
-		t.Errorf("%s: %d byte divergences in object region — too many for soffset-only diffs, likely a real bug",
-			typeName, divergences)
-		dumpHex(t, goBytes, cppBytes, typeName)
-	}
-}
-
 // compareBytesStructural compares Go and C++ FDB serialized output by
 // unmarshaling both with Go's reader and comparing the resulting structs.
 //
@@ -1561,7 +1484,9 @@ func unmarshalNetworkAddress(data []byte) (types.NetworkAddress, error) {
 
 func equalNetworkAddress(a, b types.NetworkAddress) bool {
 	// NOTE: IPAddress variant payload is not written by Go's MarshalFDB (known bug
-	// in generated writeToBuffer for variant types). Skip IP comparison.
+	// in generated writeToBuffer for variant types). The missing variant data shifts
+	// field positions, so Ip AND Flags decode differently between Go and C++ bytes.
+	// Only Port and FromHostname are at positions unaffected by the IP size divergence.
 	return a.Port == b.Port && a.FromHostname == b.FromHostname
 }
 
