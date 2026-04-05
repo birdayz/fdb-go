@@ -171,8 +171,12 @@ func NewOracle(binaryPath string) (*Oracle, error) {
 
 // Close shuts down the oracle subprocess.
 func (o *Oracle) Close() error {
-	o.stdin.Close()
-	return o.cmd.Wait()
+	stdinErr := o.stdin.Close()
+	waitErr := o.cmd.Wait()
+	if waitErr != nil {
+		return waitErr
+	}
+	return stdinErr
 }
 
 // writeBytes writes a length-prefixed byte slice (4-byte LE length + data).

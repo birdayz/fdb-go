@@ -193,6 +193,11 @@ void zeroReplyToken(std::vector<uint8_t>& buf, ReplyPromise<T>& rp) {
     memcpy(token + 8, &second, 8);
 
     // Scan for the token bytes in the buffer and zero them.
+    // NOTE: This linear scan could theoretically match fuzz-generated payload
+    // data that happens to equal the random 16-byte token (probability 2^-128).
+    // A structural approach (computing the offset from the vtable) would be
+    // more correct but requires per-type vtable knowledge. The scan is safe
+    // in practice because the token is runtime-random, not fuzz-controlled.
     if (buf.size() < 16) return;
     for (size_t i = 0; i <= buf.size() - 16; i++) {
         if (memcmp(buf.data() + i, token, 16) == 0) {
