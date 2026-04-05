@@ -24,6 +24,9 @@ genrule(
         MAIN_CPP=$$(realpath $(location cpp/main.cpp))
         TMPOUT=$$(mktemp -d)
         chmod 777 "$$TMPOUT"
+        # NOTE: Using :latest for build reproducibility is acceptable here because
+        # Bazel caches the genrule output (the compiled binary), not the Docker image.
+        # The binary only changes when main.cpp or FDB source changes.
         IMAGE="foundationdb/build:rockylinux9-latest"
 
         docker run --rm \

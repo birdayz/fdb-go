@@ -11,39 +11,35 @@ import (
 
 const (
 	GetKeyValuesReplySlotPenalty = 0
-	GetKeyValuesReplySlotError   = 1
-	GetKeyValuesReplySlotData    = 3
+	GetKeyValuesReplySlotError = 1
+	GetKeyValuesReplySlotData = 3
 	GetKeyValuesReplySlotVersion = 4
-	GetKeyValuesReplySlotMore    = 5
-	GetKeyValuesReplySlotCached  = 6
-	GetKeyValuesReplySlotArena   = 7
+	GetKeyValuesReplySlotMore = 5
+	GetKeyValuesReplySlotCached = 6
+	GetKeyValuesReplySlotArena = 7
 )
 
 var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
-
 const GetKeyValuesReplyFileID uint32 = 1783066
-
 var GetKeyValuesReplyVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
 	{18, 31, 4, 28, 20, 24, 12, 29, 30},
 }
-
 var GetKeyValuesReplyTemplate = wire.NewMessageTemplate(
 	GetKeyValuesReplyFileID, GetKeyValuesReplyVTable, 8, GetKeyValuesReplyVTableClosure,
 )
-
 const GetKeyValuesReplyMaxAlign = 8
 
 type GetKeyValuesReply struct {
-	Penalty  float64 // slot 0
-	HasError bool    // slot 1, optional tag
-	Error    []byte  // slot 2, optional value
-	Data     []byte  // slot 3
-	Version  int64   // slot 4
-	More     bool    // slot 5
-	Cached   bool    // slot 6
-	Arena    []byte  // slot 7
+	Penalty float64 // slot 0
+	HasError bool   // slot 1, optional tag
+	Error    []byte // slot 2, optional value
+	Data []byte // slot 3
+	Version int64 // slot 4
+	More bool // slot 5
+	Cached bool // slot 6
+	Arena []byte // slot 7
 }
 
 func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
@@ -73,9 +69,7 @@ func (m *GetKeyValuesReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyValuesReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetKeyValuesReplySlotPenalty)
 	}
@@ -101,87 +95,13 @@ func (m *GetKeyValuesReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetKeyValuesReply) blobSize() int {
-	vt := GetKeyValuesReplyVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.Data != nil {
-		oolSize += (4 + len(m.Data) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *GetKeyValuesReply) writeBlob(buf []byte, pos int) int {
-	vt := GetKeyValuesReplyVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotVersion+2]):], uint64(m.Version))
-	if m.More {
-		obj[int(vt[GetKeyValuesReplySlotMore+2])] = 1
-	}
-	if m.Cached {
-		obj[int(vt[GetKeyValuesReplySlotCached+2])] = 1
-	}
-	if m.Data != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Data)))
-		copy(buf[curOOL+4:], m.Data)
-		wire.PatchBlobRelOff(obj, int(vt[GetKeyValuesReplySlotData+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Data) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *GetKeyValuesReply) measureEndOff(endOff int) int {
-	if m.HasError {
-		endOff = wire.MeasureBytesOOL(endOff, m.Error)
-	}
-	endOff = wire.MeasureBytesOOL(endOff, m.Data)
-	endOff = wire.MeasureObject(endOff, GetKeyValuesReplyVTable, GetKeyValuesReplyMaxAlign)
-	return endOff
-}
-
-func (m *GetKeyValuesReply) writeDirect(dw *wire.DirectWriter) int {
-	var error_OOL int
-	if m.HasError {
-		error_OOL = dw.WriteBytesOOL(m.Error)
-	}
-	dataOOL := dw.WriteBytesOOL(m.Data)
-	objPos, obj := dw.WriteObject(GetKeyValuesReplyVTable, GetKeyValuesReplyMaxAlign)
-	vt := GetKeyValuesReplyVTable
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotPenalty+2]):], math.Float64bits(m.Penalty))
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyValuesReplySlotVersion+2]):], uint64(m.Version))
-	if m.More {
-		obj[int(vt[GetKeyValuesReplySlotMore+2])] = 1
-	}
-	if m.Cached {
-		obj[int(vt[GetKeyValuesReplySlotCached+2])] = 1
-	}
-	if m.HasError {
-		obj[int(vt[GetKeyValuesReplySlotError+2])] = 1
-		wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotError+1+2]), objPos, error_OOL)
-	}
-	wire.PatchRelOff(obj, int(vt[GetKeyValuesReplySlotData+2]), objPos, dataOOL)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyValuesReply) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasError {
-		ps.VisitDynamicSize(len(m.Error))
-	}
+	if m.HasError { ps.VisitDynamicSize(len(m.Error)) }
 	ps.VisitDynamicSize(len(m.Data))
-	{
-		n := ps.GetMessageWriter(int(GetKeyValuesReplyVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyValuesReplyVTable[1])-4, 8)+4)
-	}
+	{ n := ps.GetMessageWriter(int(GetKeyValuesReplyVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyValuesReplyVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -191,35 +111,16 @@ func (m *GetKeyValuesReply) precomputeSize(ps *wire.PrecomputeSize) int {
 func (m *GetKeyValuesReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var error_Off int
 	var dataOff int
-	if m.HasError {
-		error_Off, _ = wb.VisitDynamicSize(m.Error)
-	}
+	if m.HasError { error_Off, _ = wb.VisitDynamicSize(m.Error) }
 	dataOff, _ = wb.VisitDynamicSize(m.Data)
 	selfW := wb.GetMessageWriter(int(GetKeyValuesReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyValuesReplyVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(GetKeyValuesReplyVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], math.Float64bits(m.Penalty))
-		selfW.WriteScalar(b[:], int(vt[GetKeyValuesReplySlotPenalty+2]))
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
-		selfW.WriteScalar(b[:], int(vt[GetKeyValuesReplySlotVersion+2]))
-	}
-	if m.More {
-		selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesReplySlotMore+2]))
-	}
-	if m.Cached {
-		selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesReplySlotCached+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyValuesReplyVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], math.Float64bits(m.Penalty)); selfW.WriteScalar(b[:], int(vt[GetKeyValuesReplySlotPenalty+2])) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[GetKeyValuesReplySlotVersion+2])) }
+	if m.More { selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesReplySlotMore+2])) }
+	if m.Cached { selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesReplySlotCached+2])) }
 	if m.HasError {
 		selfW.WriteScalar([]byte{1}, int(vt[GetKeyValuesReplySlotError+2]))
 		selfW.WriteRelativeOffset(error_Off, int(vt[GetKeyValuesReplySlotError+1+2]))
@@ -237,16 +138,10 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -260,22 +155,13 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], GetKeyValuesReplyFileID)
-		footerW.WriteScalar(b[:], 4)
-	}
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyValuesReplyFileID); footerW.WriteScalar(b[:], 4) }
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -283,18 +169,15 @@ func (m *GetKeyValuesReply) MarshalFDB() []byte {
 // ParseGetKeyValuesReplyVectorFromReader reads a FlatBuffers vector of GetKeyValuesReply.
 func ParseGetKeyValuesReplyVectorFromReader(r *wire.Reader, slot int) []GetKeyValuesReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyValuesReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyValuesReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

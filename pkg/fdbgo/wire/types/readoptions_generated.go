@@ -9,25 +9,24 @@ import (
 )
 
 const (
-	ReadOptionsSlotType        = 0
+	ReadOptionsSlotType = 0
 	ReadOptionsSlotCacheResult = 1
-	ReadOptionsSlotLockAware   = 2
-	ReadOptionsSlotField_4     = 4
-	ReadOptionsSlotField_6     = 6
+	ReadOptionsSlotLockAware = 2
+	ReadOptionsSlotField_4 = 4
+	ReadOptionsSlotField_6 = 6
 )
 
 var ReadOptionsVTable = wire.VTable{18, 20, 4, 16, 17, 8, 18, 12, 19}
-
 const ReadOptionsMaxAlign = 4
 
 type ReadOptions struct {
-	Type         int32  // slot 0
-	CacheResult  bool   // slot 1
+	Type int32 // slot 0
+	CacheResult bool // slot 1
 	HasLockAware bool   // slot 2, optional tag
 	LockAware    []byte // slot 3, optional value
-	HasField_4   bool   // slot 4, optional tag
-	Field_4      []byte // slot 5, optional value
-	Field_6      bool   // slot 6
+	HasField_4 bool   // slot 4, optional tag
+	Field_4    []byte // slot 5, optional value
+	Field_6 bool // slot 6
 }
 
 func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
@@ -52,9 +51,7 @@ func (m *ReadOptions) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ReadOptionsSlotType) {
 		m.Type = r.ReadInt32(ReadOptionsSlotType)
 	}
@@ -75,86 +72,13 @@ func (m *ReadOptions) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *ReadOptions) blobSize() int {
-	vt := ReadOptionsVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *ReadOptions) writeBlob(buf []byte, pos int) int {
-	vt := ReadOptionsVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint32(obj[int(vt[ReadOptionsSlotType+2]):], uint32(m.Type))
-	if m.CacheResult {
-		obj[int(vt[ReadOptionsSlotCacheResult+2])] = 1
-	}
-	if m.Field_6 {
-		obj[int(vt[ReadOptionsSlotField_6+2])] = 1
-	}
-	return curOOL - pos
-}
-
-func (m *ReadOptions) measureEndOff(endOff int) int {
-	if m.HasLockAware {
-		endOff = wire.MeasureBytesOOL(endOff, m.LockAware)
-	}
-	if m.HasField_4 {
-		endOff = wire.MeasureBytesOOL(endOff, m.Field_4)
-	}
-	endOff = wire.MeasureObject(endOff, ReadOptionsVTable, ReadOptionsMaxAlign)
-	return endOff
-}
-
-func (m *ReadOptions) writeDirect(dw *wire.DirectWriter) int {
-	var lockAwareOOL int
-	if m.HasLockAware {
-		lockAwareOOL = dw.WriteBytesOOL(m.LockAware)
-	}
-	var field_4OOL int
-	if m.HasField_4 {
-		field_4OOL = dw.WriteBytesOOL(m.Field_4)
-	}
-	objPos, obj := dw.WriteObject(ReadOptionsVTable, ReadOptionsMaxAlign)
-	vt := ReadOptionsVTable
-	binary.LittleEndian.PutUint32(obj[int(vt[ReadOptionsSlotType+2]):], uint32(m.Type))
-	if m.CacheResult {
-		obj[int(vt[ReadOptionsSlotCacheResult+2])] = 1
-	}
-	if m.Field_6 {
-		obj[int(vt[ReadOptionsSlotField_6+2])] = 1
-	}
-	if m.HasLockAware {
-		obj[int(vt[ReadOptionsSlotLockAware+2])] = 1
-		wire.PatchRelOff(obj, int(vt[ReadOptionsSlotLockAware+1+2]), objPos, lockAwareOOL)
-	}
-	if m.HasField_4 {
-		obj[int(vt[ReadOptionsSlotField_4+2])] = 1
-		wire.PatchRelOff(obj, int(vt[ReadOptionsSlotField_4+1+2]), objPos, field_4OOL)
-	}
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasLockAware {
-		ps.VisitDynamicSize(len(m.LockAware))
-	}
-	if m.HasField_4 {
-		ps.VisitDynamicSize(len(m.Field_4))
-	}
-	{
-		n := ps.GetMessageWriter(int(ReadOptionsVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReadOptionsVTable[1])-4, 4)+4)
-	}
+	if m.HasLockAware { ps.VisitDynamicSize(len(m.LockAware)) }
+	if m.HasField_4 { ps.VisitDynamicSize(len(m.Field_4)) }
+	{ n := ps.GetMessageWriter(int(ReadOptionsVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReadOptionsVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -164,32 +88,15 @@ func (m *ReadOptions) precomputeSize(ps *wire.PrecomputeSize) int {
 func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var lockAwareOff int
 	var field_4Off int
-	if m.HasLockAware {
-		lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware)
-	}
-	if m.HasField_4 {
-		field_4Off, _ = wb.VisitDynamicSize(m.Field_4)
-	}
+	if m.HasLockAware { lockAwareOff, _ = wb.VisitDynamicSize(m.LockAware) }
+	if m.HasField_4 { field_4Off, _ = wb.VisitDynamicSize(m.Field_4) }
 	selfW := wb.GetMessageWriter(int(ReadOptionsVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := ReadOptionsVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(ReadOptionsVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(m.Type))
-		selfW.WriteScalar(b[:], int(vt[ReadOptionsSlotType+2]))
-	}
-	if m.CacheResult {
-		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotCacheResult+2]))
-	}
-	if m.Field_6 {
-		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_6+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(ReadOptionsVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Type)); selfW.WriteScalar(b[:], int(vt[ReadOptionsSlotType+2])) }
+	if m.CacheResult { selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotCacheResult+2])) }
+	if m.Field_6 { selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotField_6+2])) }
 	if m.HasLockAware {
 		selfW.WriteScalar([]byte{1}, int(vt[ReadOptionsSlotLockAware+2]))
 		selfW.WriteRelativeOffset(lockAwareOff, int(vt[ReadOptionsSlotLockAware+1+2]))
@@ -205,18 +112,15 @@ func (m *ReadOptions) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 // ParseReadOptionsVectorFromReader reads a FlatBuffers vector of ReadOptions.
 func ParseReadOptionsVectorFromReader(r *wire.Reader, slot int) []ReadOptions {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]ReadOptions, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem ReadOptions
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

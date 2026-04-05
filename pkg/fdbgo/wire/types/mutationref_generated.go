@@ -10,18 +10,17 @@ import (
 
 const (
 	MutationRefSlotMutType = 0
-	MutationRefSlotParam1  = 1
-	MutationRefSlotParam2  = 2
+	MutationRefSlotParam1 = 1
+	MutationRefSlotParam2 = 2
 )
 
 var MutationRefVTable = wire.VTable{10, 13, 12, 4, 8}
-
 const MutationRefMaxAlign = 4
 
 type MutationRef struct {
-	MutType uint8  // slot 0
-	Param1  []byte // slot 1
-	Param2  []byte // slot 2
+	MutType uint8 // slot 0
+	Param1 []byte // slot 1
+	Param2 []byte // slot 2
 }
 
 func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
@@ -38,9 +37,7 @@ func (m *MutationRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(MutationRefSlotMutType) {
 		m.MutType = r.ReadUint8(MutationRefSlotMutType)
 	}
@@ -53,72 +50,13 @@ func (m *MutationRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *MutationRef) blobSize() int {
-	vt := MutationRefVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.Param1 != nil {
-		oolSize += (4 + len(m.Param1) + 3) &^ 3
-	}
-	if m.Param2 != nil {
-		oolSize += (4 + len(m.Param2) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *MutationRef) writeBlob(buf []byte, pos int) int {
-	vt := MutationRefVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	obj[int(vt[MutationRefSlotMutType+2])] = m.MutType
-	if m.Param1 != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Param1)))
-		copy(buf[curOOL+4:], m.Param1)
-		wire.PatchBlobRelOff(obj, int(vt[MutationRefSlotParam1+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Param1) + 3) &^ 3
-	}
-	if m.Param2 != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Param2)))
-		copy(buf[curOOL+4:], m.Param2)
-		wire.PatchBlobRelOff(obj, int(vt[MutationRefSlotParam2+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Param2) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *MutationRef) measureEndOff(endOff int) int {
-	endOff = wire.MeasureBytesOOL(endOff, m.Param1)
-	endOff = wire.MeasureBytesOOL(endOff, m.Param2)
-	endOff = wire.MeasureObject(endOff, MutationRefVTable, MutationRefMaxAlign)
-	return endOff
-}
-
-func (m *MutationRef) writeDirect(dw *wire.DirectWriter) int {
-	param1OOL := dw.WriteBytesOOL(m.Param1)
-	param2OOL := dw.WriteBytesOOL(m.Param2)
-	objPos, obj := dw.WriteObject(MutationRefVTable, MutationRefMaxAlign)
-	vt := MutationRefVTable
-	obj[int(vt[MutationRefSlotMutType+2])] = m.MutType
-	wire.PatchRelOff(obj, int(vt[MutationRefSlotParam1+2]), objPos, param1OOL)
-	wire.PatchRelOff(obj, int(vt[MutationRefSlotParam2+2]), objPos, param2OOL)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *MutationRef) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Param1))
 	ps.VisitDynamicSize(len(m.Param2))
-	{
-		n := ps.GetMessageWriter(int(MutationRefVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(MutationRefVTable[1])-4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(int(MutationRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(MutationRefVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -133,12 +71,7 @@ func (m *MutationRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	selfW := wb.GetMessageWriter(int(MutationRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := MutationRefVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(MutationRefVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(MutationRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
 	selfW.WriteScalar([]byte{byte(m.MutType)}, int(vt[MutationRefSlotMutType+2]))
 	selfW.WriteRelativeOffset(param1Off, int(vt[MutationRefSlotParam1+2]))
 	selfW.WriteRelativeOffset(param2Off, int(vt[MutationRefSlotParam2+2]))
@@ -149,18 +82,15 @@ func (m *MutationRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 // ParseMutationRefVectorFromReader reads a FlatBuffers vector of MutationRef.
 func ParseMutationRefVectorFromReader(r *wire.Reader, slot int) []MutationRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]MutationRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem MutationRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

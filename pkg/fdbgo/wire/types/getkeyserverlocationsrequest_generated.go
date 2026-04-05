@@ -9,21 +9,19 @@ import (
 )
 
 const (
-	GetKeyServerLocationsRequestSlotBegin            = 0
-	GetKeyServerLocationsRequestSlotEnd              = 1
-	GetKeyServerLocationsRequestSlotLimit            = 3
-	GetKeyServerLocationsRequestSlotReverse          = 4
-	GetKeyServerLocationsRequestSlotReply            = 5
-	GetKeyServerLocationsRequestSlotSpanContext      = 6
-	GetKeyServerLocationsRequestSlotTenant           = 7
+	GetKeyServerLocationsRequestSlotBegin = 0
+	GetKeyServerLocationsRequestSlotEnd = 1
+	GetKeyServerLocationsRequestSlotLimit = 3
+	GetKeyServerLocationsRequestSlotReverse = 4
+	GetKeyServerLocationsRequestSlotReply = 5
+	GetKeyServerLocationsRequestSlotSpanContext = 6
+	GetKeyServerLocationsRequestSlotTenant = 7
 	GetKeyServerLocationsRequestSlotMinTenantVersion = 8
-	GetKeyServerLocationsRequestSlotArena            = 9
+	GetKeyServerLocationsRequestSlotArena = 9
 )
 
 var GetKeyServerLocationsRequestVTable = wire.VTable{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4}
-
 const GetKeyServerLocationsRequestFileID uint32 = 9144680
-
 var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
@@ -31,24 +29,22 @@ var GetKeyServerLocationsRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{22, 38, 12, 36, 16, 20, 37, 24, 28, 32, 4},
 }
-
 var GetKeyServerLocationsRequestTemplate = wire.NewMessageTemplate(
 	GetKeyServerLocationsRequestFileID, GetKeyServerLocationsRequestVTable, 8, GetKeyServerLocationsRequestVTableClosure,
 )
-
 const GetKeyServerLocationsRequestMaxAlign = 8
 
 type GetKeyServerLocationsRequest struct {
-	Begin            []byte       // slot 0
-	HasEnd           bool         // slot 1, optional tag
-	End              []byte       // slot 2, optional value
-	Limit            int32        // slot 3
-	Reverse          bool         // slot 4
-	Reply            ReplyPromise // slot 5, nested
-	SpanContext      SpanContext  // slot 6, nested
-	Tenant           TenantInfo   // slot 7, nested
-	MinTenantVersion int64        // slot 8
-	Arena            []byte       // slot 9
+	Begin []byte // slot 0
+	HasEnd bool   // slot 1, optional tag
+	End    []byte // slot 2, optional value
+	Limit int32 // slot 3
+	Reverse bool // slot 4
+	Reply ReplyPromise // slot 5, nested
+	SpanContext SpanContext // slot 6, nested
+	Tenant TenantInfo // slot 7, nested
+	MinTenantVersion int64 // slot 8
+	Arena []byte // slot 9
 }
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -84,9 +80,7 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetKeyServerLocationsRequestSlotBegin) {
 		m.Begin = r.ReadBytes(GetKeyServerLocationsRequestSlotBegin)
 	}
@@ -118,93 +112,16 @@ func (m *GetKeyServerLocationsRequest) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetKeyServerLocationsRequest) blobSize() int {
-	vt := GetKeyServerLocationsRequestVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.Begin != nil {
-		oolSize += (4 + len(m.Begin) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *GetKeyServerLocationsRequest) writeBlob(buf []byte, pos int) int {
-	vt := GetKeyServerLocationsRequestVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyServerLocationsRequestSlotLimit+2]):], uint32(m.Limit))
-	if m.Reverse {
-		obj[int(vt[GetKeyServerLocationsRequestSlotReverse+2])] = 1
-	}
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]):], uint64(m.MinTenantVersion))
-	if m.Begin != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Begin)))
-		copy(buf[curOOL+4:], m.Begin)
-		wire.PatchBlobRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotBegin+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Begin) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *GetKeyServerLocationsRequest) measureEndOff(endOff int) int {
-	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
-	if m.HasEnd {
-		endOff = wire.MeasureBytesOOL(endOff, m.End)
-	}
-	endOff = m.Reply.measureEndOff(endOff)
-	endOff = m.SpanContext.measureEndOff(endOff)
-	endOff = m.Tenant.measureEndOff(endOff)
-	endOff = wire.MeasureObject(endOff, GetKeyServerLocationsRequestVTable, GetKeyServerLocationsRequestMaxAlign)
-	return endOff
-}
-
-func (m *GetKeyServerLocationsRequest) writeDirect(dw *wire.DirectWriter) int {
-	beginOOL := dw.WriteBytesOOL(m.Begin)
-	var endOOL int
-	if m.HasEnd {
-		endOOL = dw.WriteBytesOOL(m.End)
-	}
-	replyPos := m.Reply.writeDirect(dw)
-	spanContextPos := m.SpanContext.writeDirect(dw)
-	tenantPos := m.Tenant.writeDirect(dw)
-	objPos, obj := dw.WriteObject(GetKeyServerLocationsRequestVTable, GetKeyServerLocationsRequestMaxAlign)
-	vt := GetKeyServerLocationsRequestVTable
-	binary.LittleEndian.PutUint32(obj[int(vt[GetKeyServerLocationsRequestSlotLimit+2]):], uint32(m.Limit))
-	if m.Reverse {
-		obj[int(vt[GetKeyServerLocationsRequestSlotReverse+2])] = 1
-	}
-	binary.LittleEndian.PutUint64(obj[int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]):], uint64(m.MinTenantVersion))
-	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotBegin+2]), objPos, beginOOL)
-	if m.HasEnd {
-		obj[int(vt[GetKeyServerLocationsRequestSlotEnd+2])] = 1
-		wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotEnd+1+2]), objPos, endOOL)
-	}
-	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotReply+2]), objPos, replyPos)
-	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotSpanContext+2]), objPos, spanContextPos)
-	wire.PatchRelOff(obj, int(vt[GetKeyServerLocationsRequestSlotTenant+2]), objPos, tenantPos)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetKeyServerLocationsRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Begin))
-	if m.HasEnd {
-		ps.VisitDynamicSize(len(m.End))
-	}
+	if m.HasEnd { ps.VisitDynamicSize(len(m.End)) }
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
 	m.Tenant.precomputeSize(ps)
-	{
-		n := ps.GetMessageWriter(int(GetKeyServerLocationsRequestVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyServerLocationsRequestVTable[1])-4, 8)+4)
-	}
+	{ n := ps.GetMessageWriter(int(GetKeyServerLocationsRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetKeyServerLocationsRequestVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -218,34 +135,17 @@ func (m *GetKeyServerLocationsRequest) writeToBuffer(wb *wire.WriteToBuffer, vta
 	var spanContextStart int
 	var tenantStart int
 	beginOff, _ = wb.VisitDynamicSize(m.Begin)
-	if m.HasEnd {
-		endOff, _ = wb.VisitDynamicSize(m.End)
-	}
+	if m.HasEnd { endOff, _ = wb.VisitDynamicSize(m.End) }
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
 	tenantStart = m.Tenant.writeToBuffer(wb, vtableStart, tmpl)
 	selfW := wb.GetMessageWriter(int(GetKeyServerLocationsRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetKeyServerLocationsRequestVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(GetKeyServerLocationsRequestVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(m.Limit))
-		selfW.WriteScalar(b[:], int(vt[GetKeyServerLocationsRequestSlotLimit+2]))
-	}
-	if m.Reverse {
-		selfW.WriteScalar([]byte{1}, int(vt[GetKeyServerLocationsRequestSlotReverse+2]))
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(m.MinTenantVersion))
-		selfW.WriteScalar(b[:], int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GetKeyServerLocationsRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Limit)); selfW.WriteScalar(b[:], int(vt[GetKeyServerLocationsRequestSlotLimit+2])) }
+	if m.Reverse { selfW.WriteScalar([]byte{1}, int(vt[GetKeyServerLocationsRequestSlotReverse+2])) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.MinTenantVersion)); selfW.WriteScalar(b[:], int(vt[GetKeyServerLocationsRequestSlotMinTenantVersion+2])) }
 	selfW.WriteRelativeOffset(beginOff, int(vt[GetKeyServerLocationsRequestSlotBegin+2]))
 	if m.HasEnd {
 		selfW.WriteScalar([]byte{1}, int(vt[GetKeyServerLocationsRequestSlotEnd+2]))
@@ -266,16 +166,10 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -289,22 +183,13 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], GetKeyServerLocationsRequestFileID)
-		footerW.WriteScalar(b[:], 4)
-	}
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetKeyServerLocationsRequestFileID); footerW.WriteScalar(b[:], 4) }
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -312,18 +197,15 @@ func (m *GetKeyServerLocationsRequest) MarshalFDB() []byte {
 // ParseGetKeyServerLocationsRequestVectorFromReader reads a FlatBuffers vector of GetKeyServerLocationsRequest.
 func ParseGetKeyServerLocationsRequestVectorFromReader(r *wire.Reader, slot int) []GetKeyServerLocationsRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetKeyServerLocationsRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetKeyServerLocationsRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

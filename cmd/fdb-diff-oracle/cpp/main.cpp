@@ -33,6 +33,9 @@
 #include <vector>
 #include <unistd.h>
 
+static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+    "diff-oracle assumes little-endian byte order for binary protocol");
+
 // Message type enum — must match Go's typeXxx constants.
 enum MsgType : uint8_t {
     TYPE_GET_READ_VERSION_REQUEST = 0,

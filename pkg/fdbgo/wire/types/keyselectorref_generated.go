@@ -9,19 +9,18 @@ import (
 )
 
 const (
-	KeySelectorRefSlotKey     = 0
+	KeySelectorRefSlotKey = 0
 	KeySelectorRefSlotOrEqual = 1
-	KeySelectorRefSlotOffset  = 2
+	KeySelectorRefSlotOffset = 2
 )
 
 var KeySelectorRefVTable = wire.VTable{10, 13, 4, 12, 8}
-
 const KeySelectorRefMaxAlign = 4
 
 type KeySelectorRef struct {
-	Key     []byte // slot 0
-	OrEqual bool   // slot 1
-	Offset  int32  // slot 2
+	Key []byte // slot 0
+	OrEqual bool // slot 1
+	Offset int32 // slot 2
 }
 
 func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
@@ -38,9 +37,7 @@ func (m *KeySelectorRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(KeySelectorRefSlotKey) {
 		m.Key = r.ReadBytes(KeySelectorRefSlotKey)
 	}
@@ -53,65 +50,12 @@ func (m *KeySelectorRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *KeySelectorRef) blobSize() int {
-	vt := KeySelectorRefVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.Key != nil {
-		oolSize += (4 + len(m.Key) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *KeySelectorRef) writeBlob(buf []byte, pos int) int {
-	vt := KeySelectorRefVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	if m.OrEqual {
-		obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1
-	}
-	binary.LittleEndian.PutUint32(obj[int(vt[KeySelectorRefSlotOffset+2]):], uint32(m.Offset))
-	if m.Key != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Key)))
-		copy(buf[curOOL+4:], m.Key)
-		wire.PatchBlobRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Key) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *KeySelectorRef) measureEndOff(endOff int) int {
-	endOff = wire.MeasureBytesOOL(endOff, m.Key)
-	endOff = wire.MeasureObject(endOff, KeySelectorRefVTable, KeySelectorRefMaxAlign)
-	return endOff
-}
-
-func (m *KeySelectorRef) writeDirect(dw *wire.DirectWriter) int {
-	keyOOL := dw.WriteBytesOOL(m.Key)
-	objPos, obj := dw.WriteObject(KeySelectorRefVTable, KeySelectorRefMaxAlign)
-	vt := KeySelectorRefVTable
-	if m.OrEqual {
-		obj[int(vt[KeySelectorRefSlotOrEqual+2])] = 1
-	}
-	binary.LittleEndian.PutUint32(obj[int(vt[KeySelectorRefSlotOffset+2]):], uint32(m.Offset))
-	wire.PatchRelOff(obj, int(vt[KeySelectorRefSlotKey+2]), objPos, keyOOL)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *KeySelectorRef) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Key))
-	{
-		n := ps.GetMessageWriter(int(KeySelectorRefVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(int(KeySelectorRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(KeySelectorRefVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -124,20 +68,9 @@ func (m *KeySelectorRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, 
 	selfW := wb.GetMessageWriter(int(KeySelectorRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := KeySelectorRefVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(KeySelectorRefVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	if m.OrEqual {
-		selfW.WriteScalar([]byte{1}, int(vt[KeySelectorRefSlotOrEqual+2]))
-	}
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(m.Offset))
-		selfW.WriteScalar(b[:], int(vt[KeySelectorRefSlotOffset+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(KeySelectorRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	if m.OrEqual { selfW.WriteScalar([]byte{1}, int(vt[KeySelectorRefSlotOrEqual+2])) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Offset)); selfW.WriteScalar(b[:], int(vt[KeySelectorRefSlotOffset+2])) }
 	selfW.WriteRelativeOffset(keyOff, int(vt[KeySelectorRefSlotKey+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
@@ -146,18 +79,15 @@ func (m *KeySelectorRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, 
 // ParseKeySelectorRefVectorFromReader reads a FlatBuffers vector of KeySelectorRef.
 func ParseKeySelectorRefVectorFromReader(r *wire.Reader, slot int) []KeySelectorRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]KeySelectorRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem KeySelectorRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

@@ -35,11 +35,13 @@ jobs:
                         FuzzGetKeyValuesRequest FuzzGetKeyServerLocationsRequest \
                         FuzzCommitTransactionRequest FuzzCommitID FuzzNetworkAddress FuzzReplyPromise; do
             echo "=== $target (10m) ==="
-            if ! timeout 610 env DIFF_ORACLE_BIN="$ORACLE" go test \
-                -fuzz="$target" -fuzztime=10m ./cmd/fdb-diff-oracle/ 2>&1 | tail -3; then
-              echo "FAIL: $target"
+            OUTPUT=$(timeout 610 env DIFF_ORACLE_BIN="$ORACLE" go test \
+                -fuzz="$target" -fuzztime=10m ./cmd/fdb-diff-oracle/ 2>&1) || {
+              echo "FAIL: $target (exit code $?)"
+              echo "$OUTPUT"
               FAILED=1
-            fi
+            }
+            echo "$OUTPUT" | tail -3
             echo ""
           done
           exit $FAILED

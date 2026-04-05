@@ -10,16 +10,15 @@ import (
 
 const (
 	KeyRangeRefSlotBegin = 0
-	KeyRangeRefSlotEnd   = 1
+	KeyRangeRefSlotEnd = 1
 )
 
 var KeyRangeRefVTable = wire.VTable{8, 12, 4, 8}
-
 const KeyRangeRefMaxAlign = 4
 
 type KeyRangeRef struct {
 	Begin []byte // slot 0
-	End   []byte // slot 1
+	End []byte // slot 1
 }
 
 func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
@@ -33,9 +32,7 @@ func (m *KeyRangeRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(KeyRangeRefSlotBegin) {
 		m.Begin = r.ReadBytes(KeyRangeRefSlotBegin)
 	}
@@ -45,72 +42,14 @@ func (m *KeyRangeRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *KeyRangeRef) blobSize() int {
-	vt := KeyRangeRefVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.Begin != nil {
-		oolSize += (4 + len(m.Begin) + 3) &^ 3
-	}
-	if m.End != nil {
-		oolSize += (4 + len(m.End) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *KeyRangeRef) writeBlob(buf []byte, pos int) int {
-	vt := KeyRangeRefVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	if m.Begin != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.Begin)))
-		copy(buf[curOOL+4:], m.Begin)
-		wire.PatchBlobRelOff(obj, int(vt[KeyRangeRefSlotBegin+2]), objPos, curOOL)
-		curOOL += (4 + len(m.Begin) + 3) &^ 3
-	}
-	if m.End != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.End)))
-		copy(buf[curOOL+4:], m.End)
-		wire.PatchBlobRelOff(obj, int(vt[KeyRangeRefSlotEnd+2]), objPos, curOOL)
-		curOOL += (4 + len(m.End) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *KeyRangeRef) measureEndOff(endOff int) int {
-	endOff = wire.MeasureBytesOOL(endOff, m.Begin)
-	endOff = wire.MeasureBytesOOL(endOff, m.End)
-	endOff = wire.MeasureObject(endOff, KeyRangeRefVTable, KeyRangeRefMaxAlign)
-	return endOff
-}
-
-func (m *KeyRangeRef) writeDirect(dw *wire.DirectWriter) int {
-	beginOOL := dw.WriteBytesOOL(m.Begin)
-	endOOL := dw.WriteBytesOOL(m.End)
-	objPos, obj := dw.WriteObject(KeyRangeRefVTable, KeyRangeRefMaxAlign)
-	vt := KeyRangeRefVTable
-	wire.PatchRelOff(obj, int(vt[KeyRangeRefSlotBegin+2]), objPos, beginOOL)
-	wire.PatchRelOff(obj, int(vt[KeyRangeRefSlotEnd+2]), objPos, endOOL)
-	return objPos
-}
-
 // ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
 func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]KeyRangeRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem KeyRangeRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
@@ -121,42 +60,31 @@ func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
 // ParseKeyRangeRefStringVector decodes a VectorRef<KeyRangeRef, VecSerStrategy::String>.
 // Each element's DynamicSize fields are inline: [len(4)][data] per field.
 func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
-	if len(data) < 4 {
-		return nil
-	}
+	if len(data) < 4 { return nil }
 	count := binary.LittleEndian.Uint32(data[0:4])
-	if count == 0 {
-		return nil
-	}
+	if count == 0 { return nil }
 	pos := 4
 	result := make([]KeyRangeRef, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var elem KeyRangeRef
-		if pos+4 > len(data) {
-			break
-		}
+		if pos+4 > len(data) { break }
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
-			}
-			elem.Begin = data[pos : pos+n : pos+n]
+			if n < 0 || pos+n > len(data) { break }
+			elem.Begin = data[pos:pos+n:pos+n]
 			pos += n
 		}
-		if pos+4 > len(data) {
-			break
-		}
+		if pos+4 > len(data) { break }
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
-			}
-			elem.End = data[pos : pos+n : pos+n]
+			if n < 0 || pos+n > len(data) { break }
+			elem.End = data[pos:pos+n:pos+n]
 			pos += n
 		}
 		result = append(result, elem)
 	}
 	return result
 }
+

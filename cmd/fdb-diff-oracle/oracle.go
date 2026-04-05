@@ -172,11 +172,15 @@ func NewOracle(binaryPath string) (*Oracle, error) {
 // Close shuts down the oracle subprocess.
 func (o *Oracle) Close() error {
 	stdinErr := o.stdin.Close()
+	stdoutErr := o.stdout.Close()
 	waitErr := o.cmd.Wait()
 	if waitErr != nil {
 		return waitErr
 	}
-	return stdinErr
+	if stdinErr != nil {
+		return stdinErr
+	}
+	return stdoutErr
 }
 
 // writeBytes writes a length-prefixed byte slice (4-byte LE length + data).
@@ -258,7 +262,7 @@ func (o *Oracle) readResponse() ([]byte, error) {
 	}
 	n := binary.LittleEndian.Uint32(lenBuf[:])
 	if n == 0 {
-		return nil, nil // error response
+		return nil, fmt.Errorf("oracle returned error response (length=0)")
 	}
 	if n > 10*1024*1024 {
 		return nil, fmt.Errorf("response too large: %d bytes", n)
