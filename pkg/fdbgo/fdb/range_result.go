@@ -2,7 +2,6 @@ package fdb
 
 import (
 	"math"
-	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
@@ -23,42 +22,42 @@ func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) Rang
 	return RangeResult{tx: tx, r: r, options: options, snapshot: true}
 }
 
-func (rr RangeResult) doRange() ([]client.KeyValue, error) {
-	begin, end, err := resolveRange(rr.tx, rr.r)
-	if err != nil {
-		return nil, err
-	}
-	limit := rr.options.Limit
+// effectiveLimit returns the limit to use for a range read.
+// Apple API: Limit=0 means unlimited.
+func effectiveLimit(limit int) int {
 	if limit == 0 {
-		// Apple API: Limit=0 means unlimited. The underlying client uses
-		// limit>0 as a loop condition, so we pass MaxInt32 (matching the
-		// FDB wire protocol's 32-bit limit field).
-		limit = math.MaxInt32
+		return math.MaxInt32
 	}
+	return limit
+}
 
+func (rr RangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
 	if rr.snapshot {
 		snap := rr.tx.inner.Snapshot()
 		if rr.options.Reverse {
-			kvs, _, err := snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
-			return kvs, err
+			return snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
 		}
-		kvs, _, err := snap.GetRange(rr.tx.ctx, begin, end, limit)
-		return kvs, err
+		return snap.GetRange(rr.tx.ctx, begin, end, limit)
 	}
 	if rr.options.Reverse {
-		kvs, _, err := rr.tx.inner.GetRangeReverse(rr.tx.ctx, begin, end, limit)
-		return kvs, err
+		return rr.tx.inner.GetRangeReverse(rr.tx.ctx, begin, end, limit)
 	}
-	kvs, _, err := rr.tx.inner.GetRange(rr.tx.ctx, begin, end, limit)
-	return kvs, err
+	return rr.tx.inner.GetRange(rr.tx.ctx, begin, end, limit)
 }
 
 // GetSliceWithError returns all key-value pairs in the range as a slice.
-// WARNING: loads all results into memory in a single round-trip. For large
-// ranges without a Limit, this may exceed FDB's 5-second transaction limit
-// or cause OOM. Set RangeOptions.Limit for large scans.
+// Always fetches all results regardless of streaming mode.
+//
+// WARNING: This eagerly loads all matching key-value pairs into memory.
+// For large ranges this can cause excessive memory usage. Prefer
+// Iterator() for streaming large result sets.
 func (rr RangeResult) GetSliceWithError() ([]KeyValue, error) {
-	kvs, err := rr.doRange()
+	begin, end, err := resolveRange(rr.tx, rr.r)
+	if err != nil {
+		return nil, convertError(err)
+	}
+	limit := effectiveLimit(rr.options.Limit)
+	kvs, _, err := rr.doRangeWithLimit(begin, end, limit)
 	if err != nil {
 		return nil, convertError(err)
 	}
@@ -78,45 +77,141 @@ func (rr RangeResult) GetSliceOrPanic() []KeyValue {
 	return s
 }
 
-// Iterator returns a RangeIterator for streaming through the results.
+// Iterator returns a RangeIterator for streaming through results.
+// The iterator fetches data in batches according to the StreamingMode.
 func (rr RangeResult) Iterator() *RangeIterator {
-	return &RangeIterator{rr: rr, index: -1}
+	begin, end, err := resolveRange(rr.tx, rr.r)
+	if err != nil {
+		return &RangeIterator{err: convertError(err)}
+	}
+	return &RangeIterator{
+		rr:        rr,
+		begin:     begin,
+		end:       end,
+		remaining: effectiveLimit(rr.options.Limit),
+		iteration: 1,
+		index:     -1,
+	}
+}
+
+// batchSize returns the number of rows to fetch for a given streaming mode
+// and iteration number. Matches the C client's behavior:
+//   - WANT_ALL: fetch everything
+//   - EXACT: fetch exact limit
+//   - ITERATOR: start small, double each iteration
+//   - SMALL/MEDIUM/LARGE/SERIAL: fixed sizes
+func batchSize(mode StreamingMode, iteration int, remaining int) int {
+	switch mode {
+	case StreamingModeWantAll:
+		return remaining
+	case StreamingModeExact:
+		return remaining
+	case StreamingModeIterator:
+		// C client: starts at ~256 bytes (~2 KVs), doubles each iteration.
+		// We use row count since our client doesn't support limitBytes yet.
+		base := 2
+		for i := 1; i < iteration && base < remaining; i++ {
+			base *= 2
+		}
+		if base > remaining {
+			return remaining
+		}
+		return base
+	case StreamingModeSmall:
+		return min(10, remaining)
+	case StreamingModeMedium:
+		return min(100, remaining)
+	case StreamingModeLarge:
+		return min(1000, remaining)
+	case StreamingModeSerial:
+		return min(500, remaining)
+	default:
+		return remaining
+	}
 }
 
 // RangeIterator returns key-value pairs one at a time from a range read.
-// Call Advance() before each Get().
-//
-// NOTE: This implementation eagerly loads all results on the first Advance()
-// call. StreamingMode is accepted for API compatibility but does not affect
-// fetching behavior. For large ranges, set an explicit Limit to avoid OOM.
-// Lazy paging with streaming mode support is implemented in a later PR.
+// Fetches data lazily in batches based on the StreamingMode.
+// Call Advance() before each Get(). Get() is idempotent — it returns the
+// current element without advancing. Only Advance() moves forward.
 type RangeIterator struct {
-	rr RangeResult
+	rr        RangeResult
+	begin     []byte
+	end       []byte
+	remaining int
+	iteration int
 
-	once  sync.Once
-	kvs   []KeyValue
-	err   error
-	pos   int // next position to advance to
-	index int // current element (set by Advance)
+	kvs       []KeyValue
+	err       error
+	pos       int
+	index     int // position returned by Get(); set by Advance()
+	fetched   bool
+	exhausted bool
 }
 
-// Advance moves the cursor forward and returns true if there is a value
-// available via Get(). Matches Apple binding: Advance() moves, Get() reads
-// the current element without advancing.
+// Advance moves to the next key-value pair. Returns true if there is a
+// value available via Get(), false at end of iteration or on error.
 func (ri *RangeIterator) Advance() bool {
-	ri.once.Do(func() {
-		ri.kvs, ri.err = ri.rr.GetSliceWithError()
-	})
-	if ri.err != nil || ri.pos >= len(ri.kvs) {
+	if ri.err != nil {
 		return false
 	}
-	ri.index = ri.pos
-	ri.pos++
+
+	// If we still have buffered results, consume the next one.
+	if ri.pos < len(ri.kvs) {
+		ri.index = ri.pos
+		ri.pos++
+		return true
+	}
+
+	// No more buffered results. If the previous batch was the last, we're done.
+	if ri.exhausted || ri.remaining <= 0 {
+		return false
+	}
+
+	// Fetch the next batch.
+	batch := batchSize(ri.rr.options.Mode, ri.iteration, ri.remaining)
+	ri.iteration++
+
+	kvs, more, err := ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
+	if err != nil {
+		ri.err = convertError(err)
+		return false
+	}
+
+	if len(kvs) == 0 {
+		ri.exhausted = true
+		return false
+	}
+
+	// Convert to fdb.KeyValue.
+	ri.kvs = make([]KeyValue, len(kvs))
+	for i, kv := range kvs {
+		ri.kvs[i] = KeyValue{Key: Key(kv.Key), Value: kv.Value}
+	}
+	ri.index = 0
+	ri.pos = 1
+	ri.remaining -= len(ri.kvs)
+	ri.fetched = true
+
+	// Update the scan boundary for the next batch.
+	lastKey := ri.kvs[len(ri.kvs)-1].Key
+	if ri.rr.options.Reverse {
+		// Next batch: end at the last key we received (exclusive).
+		ri.end = []byte(lastKey)
+	} else {
+		// Next batch: begin after the last key we received.
+		ri.begin = append([]byte(lastKey), 0)
+	}
+
+	if !more || len(kvs) < batch {
+		ri.exhausted = true
+	}
+
 	return true
 }
 
-// Get returns the current key-value pair. Idempotent — multiple calls
-// after a single Advance() return the same element.
+// Get returns the current key-value pair. Get is idempotent — calling it
+// multiple times without Advance() returns the same element.
 func (ri *RangeIterator) Get() (KeyValue, error) {
 	if ri.err != nil {
 		return KeyValue{}, ri.err
@@ -136,40 +231,50 @@ func (ri *RangeIterator) MustGet() KeyValue {
 	return kv
 }
 
-// resolveRange extracts begin/end byte slices from a Range.
-// For ExactRange, uses keys directly. For SelectorRange, resolves
-// key selectors via GetKey if they have non-trivial OrEqual/Offset.
+// isTrivialSelector returns true when the selector is FirstGreaterOrEqual
+// (OrEqual=true, Offset=1) — the only form that can be resolved by just
+// extracting the key bytes.
+func isTrivialSelector(ks KeySelector) bool {
+	return ks.OrEqual && ks.Offset == 1
+}
+
+// resolveSelector resolves a key selector to raw bytes. Trivial selectors
+// (FirstGreaterOrEqual) are resolved locally; all others require a GetKey
+// round-trip to the database.
+func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
+	if isTrivialSelector(ks) {
+		return ks.Key.FDBKey(), nil
+	}
+	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
+}
+
+// resolveRange extracts begin/end byte slices from a Range. For ExactRange
+// the keys are used directly. For non-trivial key selectors (anything other
+// than FirstGreaterOrEqual) the selector is resolved via GetKey.
 func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
 	if er, ok := r.(ExactRange); ok {
 		b, e := er.FDBRangeKeys()
 		return b.FDBKey(), e.FDBKey(), nil
 	}
 	bs, es := r.FDBRangeKeySelectors()
-	bks := bs.FDBKeySelector()
-	eks := es.FDBKeySelector()
-
-	// FirstGreaterOrEqual(k) is the trivial case (OrEqual=true, Offset=1).
-	// Anything else requires a GetKey round-trip to resolve.
-	beginKey, err := resolveSelector(tx, bks)
+	begin, err = resolveSelector(tx, bs.FDBKeySelector())
 	if err != nil {
 		return nil, nil, err
 	}
-	endKey, err := resolveSelector(tx, eks)
+	end, err = resolveSelector(tx, es.FDBKeySelector())
 	if err != nil {
 		return nil, nil, err
 	}
-	return beginKey, endKey, nil
+	return begin, end, nil
 }
 
-func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
-	if ks.OrEqual && ks.Offset == 1 {
-		// FirstGreaterOrEqual — trivial, no round-trip needed.
-		return ks.Key.FDBKey(), nil
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	// Non-trivial selector — resolve via GetKey.
-	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
-	if err != nil {
-		return nil, err
-	}
-	return k, nil
+	return b
 }
