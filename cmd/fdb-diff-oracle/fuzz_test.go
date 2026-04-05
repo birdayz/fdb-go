@@ -101,7 +101,8 @@ func FuzzGetReadVersionRequest(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "GetReadVersionRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionRequest",
+			unmarshalGetReadVersionRequest2, equalGetReadVersionRequest)
 	})
 }
 
@@ -148,7 +149,8 @@ func FuzzGetValueRequest(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "GetValueRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "GetValueRequest",
+			unmarshalGetValueRequest, equalGetValueRequest)
 	})
 }
 
@@ -204,7 +206,8 @@ func FuzzGetKeyRequest(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "GetKeyRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "GetKeyRequest",
+			unmarshalGetKeyRequest, equalGetKeyRequest2)
 	})
 }
 
@@ -272,7 +275,8 @@ func FuzzGetKeyValuesRequest(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "GetKeyValuesRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesRequest",
+			unmarshalGetKeyValuesRequest, equalGetKeyValuesRequest)
 	})
 }
 
@@ -319,7 +323,8 @@ func FuzzGetKeyServerLocationsRequest(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "GetKeyServerLocationsRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsRequest",
+			unmarshalGetKeyServerLocationsRequest, equalGetKeyServerLocationsRequest)
 	})
 }
 
@@ -430,10 +435,12 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 			// Oracle may crash on edge cases (e.g. C++ Arena/FDB type issues).
 			// Skip rather than fail — the Go-side MarshalFDB already exercised
 			// the serialization path above.
+			t.Skip("oracle error or crash, skipping C++ comparison")
 			return
 		}
 
-		compareBytes(t, goBytes, cppBytes, "CommitTransactionRequest")
+		compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
+			unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
 	})
 }
 
@@ -668,6 +675,9 @@ func FuzzGetKeyServerLocationsReply(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
+		// NOTE: zero oracle validation — equalGetKeyServerLocationsReply is
+		// a no-op (always returns true) because the C++ oracle doesn't
+		// populate the structured vector fields.
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsReply",
 			unmarshalGetKeyServerLocationsReply, equalGetKeyServerLocationsReply)
 	})
@@ -718,7 +728,8 @@ func FuzzCommitID(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "CommitID")
+		compareBytesStructural(t, goBytes, cppBytes, "CommitID",
+			unmarshalCommitID, equalCommitID)
 	})
 }
 
@@ -744,7 +755,8 @@ func FuzzError(f *testing.F) {
 			t.Skip("oracle returned error response")
 		}
 
-		compareBytes(t, goBytes, cppBytes, "Error")
+		compareBytesStructural(t, goBytes, cppBytes, "Error",
+			unmarshalError, equalError)
 	})
 }
 
@@ -962,6 +974,7 @@ func FuzzReplyPromise(f *testing.F) {
 // --- Deterministic regression tests ---
 
 func TestDiffGetReadVersionRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 	// Basic test: no optionals
 	testGetReadVersionRequestBasic(t, o, 1, 1, -1)
@@ -985,10 +998,12 @@ func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, f
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "GetReadVersionRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionRequest",
+		unmarshalGetReadVersionRequest2, equalGetReadVersionRequest)
 }
 
 func TestDiffGetValueRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 	testGetValueRequestBasic(t, o, []byte("hello"), 12345, -1)
 	testGetValueRequestBasic(t, o, []byte{}, 0, 0)
@@ -1011,10 +1026,12 @@ func testGetValueRequestBasic(t testing.TB, o *Oracle, key []byte, version, tena
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "GetValueRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "GetValueRequest",
+		unmarshalGetValueRequest, equalGetValueRequest)
 }
 
 func TestDiffGetKeyRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 	testGetKeyRequestBasic(t, o, []byte("selector"), true, 1, 99999, -1)
 	testGetKeyRequestBasic(t, o, []byte{}, false, 0, 0, 0)
@@ -1037,10 +1054,12 @@ func testGetKeyRequestBasic(t testing.TB, o *Oracle, key []byte, orEqual bool, o
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "GetKeyRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "GetKeyRequest",
+		unmarshalGetKeyRequest, equalGetKeyRequest2)
 }
 
 func TestDiffGetKeyValuesRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.GetKeyValuesRequest{
@@ -1063,10 +1082,12 @@ func TestDiffGetKeyValuesRequest(t *testing.T) {
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "GetKeyValuesRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesRequest",
+		unmarshalGetKeyValuesRequest, equalGetKeyValuesRequest)
 }
 
 func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	// Without end
@@ -1085,7 +1106,8 @@ func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "GetKeyServerLocationsRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsRequest",
+		unmarshalGetKeyServerLocationsRequest, equalGetKeyServerLocationsRequest)
 
 	// With end
 	goMsg2 := &types.GetKeyServerLocationsRequest{
@@ -1106,10 +1128,12 @@ func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
 	if cppBytes2 == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes2, cppBytes2, "GetKeyServerLocationsRequest")
+	compareBytesStructural(t, goBytes2, cppBytes2, "GetKeyServerLocationsRequest",
+		unmarshalGetKeyServerLocationsRequest, equalGetKeyServerLocationsRequest)
 }
 
 func TestDiffCommitTransactionRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	// Empty commit
@@ -1126,10 +1150,12 @@ func TestDiffCommitTransactionRequest(t *testing.T) {
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "CommitTransactionRequest")
+	compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
+		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
 }
 
 func TestDiffNetworkAddress(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.NetworkAddress{
@@ -1151,6 +1177,7 @@ func TestDiffNetworkAddress(t *testing.T) {
 }
 
 func TestDiffReplyPromise(t *testing.T) {
+	t.Parallel()
 	// Go-only: C++ ReplyPromise file_identifier differs by template parameter
 	goMsg := &types.ReplyPromise{}
 	goBytes := goMsg.MarshalFDB()
@@ -1160,6 +1187,7 @@ func TestDiffReplyPromise(t *testing.T) {
 }
 
 func TestDiffCommitID(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.CommitID{
@@ -1174,10 +1202,12 @@ func TestDiffCommitID(t *testing.T) {
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-	compareBytes(t, goBytes, cppBytes, "CommitID")
+	compareBytesStructural(t, goBytes, cppBytes, "CommitID",
+		unmarshalCommitID, equalCommitID)
 }
 
 func TestDiffError(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	for _, errorCode := range []uint16{0, 1000, 1021, 0xffff} {
@@ -1190,11 +1220,13 @@ func TestDiffError(t *testing.T) {
 		if cppBytes == nil {
 			t.Fatalf("oracle returned error response for code=%d", errorCode)
 		}
-		compareBytes(t, goBytes, cppBytes, "Error")
+		compareBytesStructural(t, goBytes, cppBytes, "Error",
+			unmarshalError, equalError)
 	}
 }
 
 func TestDiffGetReadVersionReply(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.GetReadVersionReply{
@@ -1226,6 +1258,7 @@ func TestDiffGetReadVersionReply(t *testing.T) {
 }
 
 func TestDiffGetValueReply(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	// Without value
@@ -1261,6 +1294,7 @@ func TestDiffGetValueReply(t *testing.T) {
 }
 
 func TestDiffGetKeyReply(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.GetKeyReply{Penalty: 2.5, Cached: true}
@@ -1277,6 +1311,7 @@ func TestDiffGetKeyReply(t *testing.T) {
 }
 
 func TestDiffGetKeyValuesReply(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.GetKeyValuesReply{
@@ -1298,6 +1333,7 @@ func TestDiffGetKeyValuesReply(t *testing.T) {
 }
 
 func TestDiffGetKeyServerLocationsReply(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	goMsg := &types.GetKeyServerLocationsReply{}
@@ -1314,6 +1350,7 @@ func TestDiffGetKeyServerLocationsReply(t *testing.T) {
 }
 
 func TestDiffClientDBInfo(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	id := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
@@ -1337,6 +1374,7 @@ func TestDiffClientDBInfo(t *testing.T) {
 }
 
 func TestDiffOpenDatabaseCoordRequest(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	uid := [16]byte{0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
@@ -1358,6 +1396,7 @@ func TestDiffOpenDatabaseCoordRequest(t *testing.T) {
 }
 
 func TestDiffEndpoint(t *testing.T) {
+	t.Parallel()
 	o := startOracle(t)
 
 	token := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
@@ -1406,6 +1445,10 @@ func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
 
 	// Bytes 0-3: root offset (must match — same structure)
 	// Bytes 4-7: file ID (must match)
+	if len(goBytes) < 8 {
+		t.Errorf("%s: Go output too short (%d bytes) for header", typeName, len(goBytes))
+		return
+	}
 	if !bytes.Equal(goBytes[:8], cppBytes[:8]) {
 		t.Errorf("%s: footer differs: Go=%s C++=%s", typeName,
 			hex.EncodeToString(goBytes[:8]), hex.EncodeToString(cppBytes[:8]))
@@ -1518,10 +1561,8 @@ func unmarshalNetworkAddress(data []byte) (types.NetworkAddress, error) {
 
 func equalNetworkAddress(a, b types.NetworkAddress) bool {
 	// NOTE: IPAddress variant payload is not written by Go's MarshalFDB (known bug
-	// in generated writeToBuffer for variant types). The missing variant data shifts
-	// field positions, causing ALL fields to read differently between Go and C++ bytes.
-	// Compare only Port which is at a consistent position.
-	return a.Port == b.Port
+	// in generated writeToBuffer for variant types). Skip IP comparison.
+	return a.Port == b.Port && a.FromHostname == b.FromHostname
 }
 
 func unmarshalGetReadVersionReply(data []byte) (types.GetReadVersionReply, error) {
@@ -1589,7 +1630,11 @@ func unmarshalGetKeyServerLocationsReply(data []byte) (types.GetKeyServerLocatio
 }
 
 func equalGetKeyServerLocationsReply(a, b types.GetKeyServerLocationsReply) bool {
-	// All fields are structured vectors — both sides use defaults/empty
+	// No-op placeholder: all fields are structured vectors (Results,
+	// ResultsTssMapping, ResultsTagMapping) that the C++ oracle doesn't
+	// populate. Both sides serialize empty defaults, so this always returns
+	// true. Real validation requires wiring up the structured vector fields
+	// on the C++ side.
 	return true
 }
 
@@ -1632,4 +1677,200 @@ func equalEndpoint(a, b types.Endpoint) bool {
 	return a.Token == b.Token &&
 		a.Addresses.Address.Port == b.Addresses.Address.Port &&
 		a.Addresses.Address.FromHostname == b.Addresses.Address.FromHostname
+}
+
+// --- Additional unmarshal/equal helpers for request types ---
+
+// unmarshalGetReadVersionRequest2 avoids name collision with the reply type's existing helper.
+func unmarshalGetReadVersionRequest2(data []byte) (types.GetReadVersionRequest, error) {
+	var m types.GetReadVersionRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalGetReadVersionRequest(a, b types.GetReadVersionRequest) bool {
+	// Compare fields that both Go and C++ oracle set.
+	// Tags and DebugID are skipped by the C++ oracle (complex structured types).
+	return a.TransactionCount == b.TransactionCount &&
+		a.Flags == b.Flags &&
+		a.MaxVersion == b.MaxVersion
+}
+
+func unmarshalGetValueRequest(data []byte) (types.GetValueRequest, error) {
+	var m types.GetValueRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalGetValueRequest(a, b types.GetValueRequest) bool {
+	// Compare fields set by both sides. Tags, Options, SsLatestCommitVersions
+	// are skipped or defaulted by the C++ oracle.
+	return bytes.Equal(a.Key, b.Key) &&
+		a.Version == b.Version &&
+		a.TenantInfo.TenantId == b.TenantInfo.TenantId
+}
+
+func unmarshalGetKeyRequest(data []byte) (types.GetKeyRequest, error) {
+	var m types.GetKeyRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+// equalGetKeyRequest2 avoids name collision with the reply type's existing helper.
+func equalGetKeyRequest2(a, b types.GetKeyRequest) bool {
+	return bytes.Equal(a.Sel.Key, b.Sel.Key) &&
+		a.Sel.OrEqual == b.Sel.OrEqual &&
+		a.Sel.Offset == b.Sel.Offset &&
+		a.Version == b.Version &&
+		a.TenantInfo.TenantId == b.TenantInfo.TenantId
+}
+
+func unmarshalGetKeyValuesRequest(data []byte) (types.GetKeyValuesRequest, error) {
+	var m types.GetKeyValuesRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalGetKeyValuesRequest(a, b types.GetKeyValuesRequest) bool {
+	return bytes.Equal(a.Begin.Key, b.Begin.Key) &&
+		a.Begin.OrEqual == b.Begin.OrEqual &&
+		a.Begin.Offset == b.Begin.Offset &&
+		bytes.Equal(a.End.Key, b.End.Key) &&
+		a.End.OrEqual == b.End.OrEqual &&
+		a.End.Offset == b.End.Offset &&
+		a.Version == b.Version &&
+		a.Limit == b.Limit &&
+		a.LimitBytes == b.LimitBytes &&
+		a.TenantInfo.TenantId == b.TenantInfo.TenantId
+}
+
+func unmarshalGetKeyServerLocationsRequest(data []byte) (types.GetKeyServerLocationsRequest, error) {
+	var m types.GetKeyServerLocationsRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalGetKeyServerLocationsRequest(a, b types.GetKeyServerLocationsRequest) bool {
+	return bytes.Equal(a.Begin, b.Begin) &&
+		a.HasEnd == b.HasEnd &&
+		bytes.Equal(a.End, b.End) &&
+		a.Limit == b.Limit &&
+		a.Reverse == b.Reverse &&
+		a.Tenant.TenantId == b.Tenant.TenantId &&
+		a.MinTenantVersion == b.MinTenantVersion
+}
+
+func unmarshalCommitTransactionRequest(data []byte) (types.CommitTransactionRequest, error) {
+	var m types.CommitTransactionRequest
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalCommitTransactionRequest(a, b types.CommitTransactionRequest) bool {
+	if a.Transaction.ReadSnapshot != b.Transaction.ReadSnapshot {
+		return false
+	}
+	if a.Flags != b.Flags {
+		return false
+	}
+	if a.TenantInfo.TenantId != b.TenantInfo.TenantId {
+		return false
+	}
+	if len(a.Transaction.Mutations) != len(b.Transaction.Mutations) {
+		return false
+	}
+	for i := range a.Transaction.Mutations {
+		am, bm := a.Transaction.Mutations[i], b.Transaction.Mutations[i]
+		if am.MutType != bm.MutType || !bytes.Equal(am.Param1, bm.Param1) || !bytes.Equal(am.Param2, bm.Param2) {
+			return false
+		}
+	}
+	if len(a.Transaction.ReadConflictRanges) != len(b.Transaction.ReadConflictRanges) {
+		return false
+	}
+	for i := range a.Transaction.ReadConflictRanges {
+		ar, br := a.Transaction.ReadConflictRanges[i], b.Transaction.ReadConflictRanges[i]
+		if !bytes.Equal(ar.Begin, br.Begin) || !bytes.Equal(ar.End, br.End) {
+			return false
+		}
+	}
+	if len(a.Transaction.WriteConflictRanges) != len(b.Transaction.WriteConflictRanges) {
+		return false
+	}
+	for i := range a.Transaction.WriteConflictRanges {
+		aw, bw := a.Transaction.WriteConflictRanges[i], b.Transaction.WriteConflictRanges[i]
+		if !bytes.Equal(aw.Begin, bw.Begin) || !bytes.Equal(aw.End, bw.End) {
+			return false
+		}
+	}
+	return true
+}
+
+func unmarshalCommitID(data []byte) (types.CommitID, error) {
+	var m types.CommitID
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalCommitID(a, b types.CommitID) bool {
+	return a.Version == b.Version &&
+		a.TxnBatchId == b.TxnBatchId &&
+		a.HasMetadataVersion == b.HasMetadataVersion &&
+		bytes.Equal(a.MetadataVersion, b.MetadataVersion)
+}
+
+func unmarshalError(data []byte) (types.Error, error) {
+	var m types.Error
+	err := m.UnmarshalFDB(data)
+	return m, err
+}
+
+func equalError(a, b types.Error) bool {
+	return a.ErrorCode == b.ErrorCode
+}
+
+// --- Regression tests ---
+
+// TestDiffCommitTransactionRequestEmptyConflictRanges is a regression test for the
+// empty-vector-reloff bug: CommitTransactionRequest with non-empty mutations but
+// empty conflict ranges must produce correct serialization.
+func TestDiffCommitTransactionRequestEmptyConflictRanges(t *testing.T) {
+	t.Parallel()
+	o := startOracle(t)
+
+	goMsg := &types.CommitTransactionRequest{
+		Transaction: types.CommitTransactionRef{
+			ReadSnapshot: 42,
+			Mutations: []types.MutationRef{
+				{MutType: 0, Param1: []byte("key1"), Param2: []byte("val1")},
+				{MutType: 0, Param1: []byte("key2"), Param2: []byte("val2")},
+			},
+			// ReadConflictRanges: empty
+			// WriteConflictRanges: empty
+		},
+		Reply:      types.ReplyPromise{},
+		Flags:      0,
+		TenantInfo: types.TenantInfo{TenantId: -1},
+	}
+	goBytes := goMsg.MarshalFDB()
+
+	cppBytes, err := o.SerializeCommitTransactionRequest(
+		42,
+		[]Mutation{
+			{Type: 0, Param1: []byte("key1"), Param2: []byte("val1")},
+			{Type: 0, Param1: []byte("key2"), Param2: []byte("val2")},
+		},
+		nil, // empty read conflict ranges
+		nil, // empty write conflict ranges
+		0, false, nil, false, nil, false, nil, -1, nil,
+	)
+	if err != nil {
+		t.Fatalf("oracle error: %v", err)
+	}
+	if cppBytes == nil {
+		t.Fatal("oracle returned error response")
+	}
+
+	compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
+		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
 }

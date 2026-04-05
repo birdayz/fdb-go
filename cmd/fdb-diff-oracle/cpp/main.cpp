@@ -86,7 +86,10 @@ static bool readU32(uint32_t& v) {
 }
 
 static bool readI32(int32_t& v) {
-    return readU32(*(uint32_t*)&v);
+    uint32_t u;
+    if (!readU32(u)) return false;
+    memcpy(&v, &u, sizeof(v));
+    return true;
 }
 
 static bool readU64(uint64_t& v) {
@@ -97,11 +100,17 @@ static bool readU64(uint64_t& v) {
 }
 
 static bool readI64(int64_t& v) {
-    return readU64(*(uint64_t*)&v);
+    uint64_t u;
+    if (!readU64(u)) return false;
+    memcpy(&v, &u, sizeof(v));
+    return true;
 }
 
 static bool readF64(double& v) {
-    return readU64(*(uint64_t*)&v);
+    uint64_t u;
+    if (!readU64(u)) return false;
+    memcpy(&v, &u, sizeof(v));
+    return true;
 }
 
 static bool readBool(bool& v) {
