@@ -435,13 +435,11 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 		cppBytes, err := o.SerializeCommitTransactionRequest(
 			readSnapshot, mutations, readCRs, writeCRs,
 			flags, false, nil, false, nil, false, nil, tenantId, nil)
-		if err != nil || cppBytes == nil {
+		if err != nil {
 			// Oracle may crash or return errors on edge cases (e.g. C++ type
 			// construction failures). Log the error so skip rate is visible in
 			// fuzz output, then skip — Go-side MarshalFDB already exercised above.
-			if err != nil {
-				t.Logf("oracle error (skipping comparison): %v", err)
-			}
+			t.Logf("oracle error (skipping comparison): %v", err)
 			t.Skip("oracle unavailable for this input, skipping C++ comparison")
 		}
 
@@ -1540,21 +1538,6 @@ func equalGetKeyValuesReply(a, b types.GetKeyValuesReply) bool {
 		a.Version == b.Version &&
 		a.More == b.More &&
 		a.Cached == b.Cached
-}
-
-func unmarshalGetKeyServerLocationsReply(data []byte) (types.GetKeyServerLocationsReply, error) {
-	var m types.GetKeyServerLocationsReply
-	err := m.UnmarshalFDB(data)
-	return m, err
-}
-
-func equalGetKeyServerLocationsReply(a, b types.GetKeyServerLocationsReply) bool {
-	// No-op placeholder: all fields are structured vectors (Results,
-	// ResultsTssMapping, ResultsTagMapping) that the C++ oracle doesn't
-	// populate. Both sides serialize empty defaults, so this always returns
-	// true. Real validation requires wiring up the structured vector fields
-	// on the C++ side.
-	return true
 }
 
 func unmarshalClientDBInfo(data []byte) (types.ClientDBInfo, error) {
