@@ -66,6 +66,10 @@ func (o TransactionOptions) SetLockAware() error {
 	return nil
 }
 
+// SetReadLockAware allows reads on locked databases. In FDB, both
+// lock_aware and read_lock_aware set CommitTransactionRef.lock_aware
+// on the wire. The C binding distinguishes them client-side (lock_aware
+// allows commits too), but the wire field is the same.
 func (o TransactionOptions) SetReadLockAware() error {
 	o.tx.inner.SetLockAware(true)
 	return nil
