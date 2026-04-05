@@ -1,0 +1,62 @@
+name: Nightly Fuzz
+
+on:
+  schedule:
+    # 3:17 AM UTC daily (off-minute to avoid fleet congestion)
+    - cron: '17 3 * * *'
+  workflow_dispatch: # manual trigger
+
+jobs:
+  diff-fuzz:
+    name: Differential Serialization Fuzzer
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build C++ oracle
+        run: bazelisk build //cmd/fdb-diff-oracle:diff_oracle_bin
+
+      - name: Build Go fuzz test
+        run: bazelisk build //cmd/fdb-diff-oracle:fdb-diff-oracle_test
+
+      - name: Run deterministic tests
+        run: |
+          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
+          DIFF_ORACLE_BIN="$ORACLE" go test -run=TestDiff -v -count=1 ./cmd/fdb-diff-oracle/
+
+      - name: Fuzz oracle-compared types (10min each)
+        run: |
+          ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
+          FAILED=0
+          for target in FuzzGetReadVersionRequest FuzzGetValueRequest FuzzGetKeyRequest \
+                        FuzzGetKeyValuesRequest FuzzGetKeyServerLocationsRequest \
+                        FuzzCommitTransactionRequest FuzzCommitID FuzzNetworkAddress FuzzReplyPromise; do
+            echo "=== $target (10m) ==="
+            OUTPUT=$(timeout 610 env DIFF_ORACLE_BIN="$ORACLE" go test \
+                -fuzz="$target" -fuzztime=10m ./cmd/fdb-diff-oracle/ 2>&1) || {
+              echo "FAIL: $target (exit code $?)"
+              echo "$OUTPUT"
+              FAILED=1
+            }
+            echo "$OUTPUT" | tail -3
+            echo ""
+          done
+          exit $FAILED
+
+  binding-stress:
+    name: Binding Tester Stress (50 seeds)
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build
+        run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester
+
+      - name: Run 50 seeds × 1000 ops
+        run: bazelisk run //cmd/fdb-binding-stress -- -seeds 50 -ops 1000

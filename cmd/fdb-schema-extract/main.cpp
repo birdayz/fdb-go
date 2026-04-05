@@ -163,18 +163,10 @@ struct GoEmitterV5 {
         emitReads(typeName, fields, "r");
         fprintf(f, "\treturn nil\n}\n\n");
 
-        // blobSize + writeBlob (for VectorOfStruct support — emitted for all types).
-        emitBlobSize(typeName, fields);
-        emitWriteBlob(typeName, fields);
-
-        // measureEndOff (legacy, kept for compatibility).
-        emitMeasureEndOff(typeName, fields);
-
-        // writeDirect (legacy, kept for compatibility).
-        emitWriteDirect(typeName, fields);
-
         // Two-pass methods: precomputeSize + writeToBuffer.
-        // These replace measureEndOff/writeDirect for the MarshalFDB path.
+        // NOTE: blobSize/writeBlob/measureEndOff/writeDirect removed — they were
+        // dead code (MarshalFDB uses precomputeSize+writeToBuffer exclusively) and
+        // contained the empty-vector-reloff bug.
         // Types with custom serialize logic (e.g. KeyRangeRef) provide
         // hand-written precomputeSize/writeToBuffer in *_custom.go.
         bool hasCustomSerialize = (strcmp(typeName, "KeyRangeRef") == 0);

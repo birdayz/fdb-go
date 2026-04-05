@@ -9,31 +9,30 @@ import (
 )
 
 const (
-	CommitTransactionRefSlotReadConflictRanges             = 0
-	CommitTransactionRefSlotWriteConflictRanges            = 1
-	CommitTransactionRefSlotMutations                      = 2
-	CommitTransactionRefSlotReadSnapshot                   = 3
-	CommitTransactionRefSlotReport_conflicting_keys        = 4
-	CommitTransactionRefSlotLock_aware                     = 5
-	CommitTransactionRefSlotRead_conflict_ranges_disabled  = 6
+	CommitTransactionRefSlotReadConflictRanges = 0
+	CommitTransactionRefSlotWriteConflictRanges = 1
+	CommitTransactionRefSlotMutations = 2
+	CommitTransactionRefSlotReadSnapshot = 3
+	CommitTransactionRefSlotReport_conflicting_keys = 4
+	CommitTransactionRefSlotLock_aware = 5
+	CommitTransactionRefSlotRead_conflict_ranges_disabled = 6
 	CommitTransactionRefSlotWrite_conflict_ranges_disabled = 8
 )
 
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
-
 const CommitTransactionRefMaxAlign = 8
 
 type CommitTransactionRef struct {
-	ReadConflictRanges                []KeyRangeRef // slot 0, vector of struct
-	WriteConflictRanges               []KeyRangeRef // slot 1, vector of struct
-	Mutations                         []MutationRef // slot 2, vector of struct
-	ReadSnapshot                      int64         // slot 3
-	Report_conflicting_keys           bool          // slot 4
-	Lock_aware                        bool          // slot 5
-	HasRead_conflict_ranges_disabled  bool          // slot 6, optional tag
-	Read_conflict_ranges_disabled     []byte        // slot 7, optional value
-	HasWrite_conflict_ranges_disabled bool          // slot 8, optional tag
-	Write_conflict_ranges_disabled    []byte        // slot 9, optional value
+	ReadConflictRanges []KeyRangeRef // slot 0, vector of struct
+	WriteConflictRanges []KeyRangeRef // slot 1, vector of struct
+	Mutations []MutationRef // slot 2, vector of struct
+	ReadSnapshot int64 // slot 3
+	Report_conflicting_keys bool // slot 4
+	Lock_aware bool // slot 5
+	HasRead_conflict_ranges_disabled bool   // slot 6, optional tag
+	Read_conflict_ranges_disabled    []byte // slot 7, optional value
+	HasWrite_conflict_ranges_disabled bool   // slot 8, optional tag
+	Write_conflict_ranges_disabled    []byte // slot 9, optional value
 }
 
 func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
@@ -88,9 +87,7 @@ func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges); err == nil && count > 0 {
 		m.ReadConflictRanges = make([]KeyRangeRef, 0, count)
 		for i := 0; i < count; i++ {
@@ -141,231 +138,6 @@ func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *CommitTransactionRef) blobSize() int {
-	vt := CommitTransactionRefVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if len(m.ReadConflictRanges) > 0 {
-		vecSize := 4 + len(m.ReadConflictRanges)*4
-		for _, elem := range m.ReadConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		oolSize += (vecSize + 3) &^ 3
-	}
-	if len(m.WriteConflictRanges) > 0 {
-		vecSize := 4 + len(m.WriteConflictRanges)*4
-		for _, elem := range m.WriteConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		oolSize += (vecSize + 3) &^ 3
-	}
-	if len(m.Mutations) > 0 {
-		vecSize := 4 + len(m.Mutations)*4
-		for _, elem := range m.Mutations {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		oolSize += (vecSize + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *CommitTransactionRef) writeBlob(buf []byte, pos int) int {
-	vt := CommitTransactionRefVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint64(obj[int(vt[CommitTransactionRefSlotReadSnapshot+2]):], uint64(m.ReadSnapshot))
-	if m.Report_conflicting_keys {
-		obj[int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])] = 1
-	}
-	if m.Lock_aware {
-		obj[int(vt[CommitTransactionRefSlotLock_aware+2])] = 1
-	}
-	if len(m.ReadConflictRanges) > 0 {
-		vecStart := curOOL
-		n := len(m.ReadConflictRanges)
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(n))
-		blobPos := curOOL + 4 + n*4
-		for i, elem := range m.ReadConflictRanges {
-			blobPos = (blobPos + 3) &^ 3
-			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
-			blobPos += elem.writeBlob(buf, blobPos)
-		}
-		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotReadConflictRanges+2]), objPos, vecStart)
-		curOOL = (blobPos + 3) &^ 3
-	}
-	if len(m.WriteConflictRanges) > 0 {
-		vecStart := curOOL
-		n := len(m.WriteConflictRanges)
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(n))
-		blobPos := curOOL + 4 + n*4
-		for i, elem := range m.WriteConflictRanges {
-			blobPos = (blobPos + 3) &^ 3
-			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
-			blobPos += elem.writeBlob(buf, blobPos)
-		}
-		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]), objPos, vecStart)
-		curOOL = (blobPos + 3) &^ 3
-	}
-	if len(m.Mutations) > 0 {
-		vecStart := curOOL
-		n := len(m.Mutations)
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(n))
-		blobPos := curOOL + 4 + n*4
-		for i, elem := range m.Mutations {
-			blobPos = (blobPos + 3) &^ 3
-			objInBlob := (len(MutationRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(buf[curOOL+4+i*4:], uint32(blobPos+objInBlob-(curOOL+4+i*4)))
-			blobPos += elem.writeBlob(buf, blobPos)
-		}
-		wire.PatchBlobRelOff(obj, int(vt[CommitTransactionRefSlotMutations+2]), objPos, vecStart)
-		curOOL = (blobPos + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *CommitTransactionRef) measureEndOff(endOff int) int {
-	if len(m.ReadConflictRanges) > 0 {
-		vecSize := 4 + len(m.ReadConflictRanges)*4
-		for _, elem := range m.ReadConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		endOff += (vecSize + 3) &^ 3
-	}
-	if len(m.WriteConflictRanges) > 0 {
-		vecSize := 4 + len(m.WriteConflictRanges)*4
-		for _, elem := range m.WriteConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		endOff += (vecSize + 3) &^ 3
-	}
-	if len(m.Mutations) > 0 {
-		vecSize := 4 + len(m.Mutations)*4
-		for _, elem := range m.Mutations {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		endOff += (vecSize + 3) &^ 3
-	}
-	if m.HasRead_conflict_ranges_disabled {
-		endOff = wire.MeasureBytesOOL(endOff, m.Read_conflict_ranges_disabled)
-	}
-	if m.HasWrite_conflict_ranges_disabled {
-		endOff = wire.MeasureBytesOOL(endOff, m.Write_conflict_ranges_disabled)
-	}
-	endOff = wire.MeasureObject(endOff, CommitTransactionRefVTable, CommitTransactionRefMaxAlign)
-	return endOff
-}
-
-func (m *CommitTransactionRef) writeDirect(dw *wire.DirectWriter) int {
-	var readConflictRangesOOL int
-	if len(m.ReadConflictRanges) > 0 {
-		vecSize := 4 + len(m.ReadConflictRanges)*4
-		for _, elem := range m.ReadConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vecSize = (vecSize + 3) &^ 3
-		var vecBuf []byte
-		readConflictRangesOOL, vecBuf = dw.ReserveRawOOL(vecSize)
-		n := len(m.ReadConflictRanges)
-		binary.LittleEndian.PutUint32(vecBuf, uint32(n))
-		blobOff := 4 + n*4
-		for i, elem := range m.ReadConflictRanges {
-			blobOff = (blobOff + 3) &^ 3
-			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
-			blobOff += elem.writeBlob(vecBuf, blobOff)
-		}
-	}
-	var writeConflictRangesOOL int
-	if len(m.WriteConflictRanges) > 0 {
-		vecSize := 4 + len(m.WriteConflictRanges)*4
-		for _, elem := range m.WriteConflictRanges {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vecSize = (vecSize + 3) &^ 3
-		var vecBuf []byte
-		writeConflictRangesOOL, vecBuf = dw.ReserveRawOOL(vecSize)
-		n := len(m.WriteConflictRanges)
-		binary.LittleEndian.PutUint32(vecBuf, uint32(n))
-		blobOff := 4 + n*4
-		for i, elem := range m.WriteConflictRanges {
-			blobOff = (blobOff + 3) &^ 3
-			objInBlob := (len(KeyRangeRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
-			blobOff += elem.writeBlob(vecBuf, blobOff)
-		}
-	}
-	var mutationsOOL int
-	if len(m.Mutations) > 0 {
-		vecSize := 4 + len(m.Mutations)*4
-		for _, elem := range m.Mutations {
-			vecSize = (vecSize + 3) &^ 3
-			vecSize += elem.blobSize()
-		}
-		vecSize = (vecSize + 3) &^ 3
-		var vecBuf []byte
-		mutationsOOL, vecBuf = dw.ReserveRawOOL(vecSize)
-		n := len(m.Mutations)
-		binary.LittleEndian.PutUint32(vecBuf, uint32(n))
-		blobOff := 4 + n*4
-		for i, elem := range m.Mutations {
-			blobOff = (blobOff + 3) &^ 3
-			objInBlob := (len(MutationRefVTable)*2 + 3) &^ 3
-			binary.LittleEndian.PutUint32(vecBuf[4+i*4:], uint32(blobOff+objInBlob-(4+i*4)))
-			blobOff += elem.writeBlob(vecBuf, blobOff)
-		}
-	}
-	var read_conflict_ranges_disabledOOL int
-	if m.HasRead_conflict_ranges_disabled {
-		read_conflict_ranges_disabledOOL = dw.WriteBytesOOL(m.Read_conflict_ranges_disabled)
-	}
-	var write_conflict_ranges_disabledOOL int
-	if m.HasWrite_conflict_ranges_disabled {
-		write_conflict_ranges_disabledOOL = dw.WriteBytesOOL(m.Write_conflict_ranges_disabled)
-	}
-	objPos, obj := dw.WriteObject(CommitTransactionRefVTable, CommitTransactionRefMaxAlign)
-	vt := CommitTransactionRefVTable
-	binary.LittleEndian.PutUint64(obj[int(vt[CommitTransactionRefSlotReadSnapshot+2]):], uint64(m.ReadSnapshot))
-	if m.Report_conflicting_keys {
-		obj[int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])] = 1
-	}
-	if m.Lock_aware {
-		obj[int(vt[CommitTransactionRefSlotLock_aware+2])] = 1
-	}
-	if len(m.ReadConflictRanges) > 0 {
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotReadConflictRanges+2]), objPos, readConflictRangesOOL)
-	}
-	if len(m.WriteConflictRanges) > 0 {
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotWriteConflictRanges+2]), objPos, writeConflictRangesOOL)
-	}
-	if len(m.Mutations) > 0 {
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotMutations+2]), objPos, mutationsOOL)
-	}
-	if m.HasRead_conflict_ranges_disabled {
-		obj[int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+2])] = 1
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotRead_conflict_ranges_disabled+1+2]), objPos, read_conflict_ranges_disabledOOL)
-	}
-	if m.HasWrite_conflict_ranges_disabled {
-		obj[int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+2])] = 1
-		wire.PatchRelOff(obj, int(vt[CommitTransactionRefSlotWrite_conflict_ranges_disabled+1+2]), objPos, write_conflict_ranges_disabledOOL)
-	}
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
@@ -374,54 +146,35 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		n := len(m.ReadConflictRanges)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ {
-				m.ReadConflictRanges[i].precomputeSize(ps)
-			}
+			for i := 0; i < n; i++ { m.ReadConflictRanges[i].precomputeSize(ps) }
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start)             // count at start (4 bytes)
-			self.WriteToAt(ps, start-4) // reloff array at start-4
-		} else {
-			ps.VisitDynamicSize(0)
-		}
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
+		} else { ps.VisitDynamicSize(0) }
 	}
 	{
 		n := len(m.WriteConflictRanges)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ {
-				m.WriteConflictRanges[i].precomputeSize(ps)
-			}
+			for i := 0; i < n; i++ { m.WriteConflictRanges[i].precomputeSize(ps) }
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start)             // count at start (4 bytes)
-			self.WriteToAt(ps, start-4) // reloff array at start-4
-		} else {
-			ps.VisitDynamicSize(0)
-		}
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
+		} else { ps.VisitDynamicSize(0) }
 	}
 	{
 		n := len(m.Mutations)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ {
-				m.Mutations[i].precomputeSize(ps)
-			}
+			for i := 0; i < n; i++ { m.Mutations[i].precomputeSize(ps) }
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start)             // count at start (4 bytes)
-			self.WriteToAt(ps, start-4) // reloff array at start-4
-		} else {
-			ps.VisitDynamicSize(0)
-		}
+			ps.Write(start) // count at start (4 bytes)
+			self.WriteToAt(ps, start - 4) // reloff array at start-4
+		} else { ps.VisitDynamicSize(0) }
 	}
-	if m.HasRead_conflict_ranges_disabled {
-		ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled))
-	}
-	if m.HasWrite_conflict_ranges_disabled {
-		ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled))
-	}
-	{
-		n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, 8)+4)
-	}
+	if m.HasRead_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled)) }
+	if m.HasWrite_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled)) }
+	{ n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -442,7 +195,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.ReadConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			readConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -457,7 +210,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.WriteConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			writeConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -472,39 +225,22 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.Mutations[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
 			self.WriteToAt(self.FinalLocation)
 			mutationsOff = wb.CurrentBufferSize
 		} else {
 			mutationsOff, _ = wb.VisitDynamicSize(nil)
 		}
 	}
-	if m.HasRead_conflict_ranges_disabled {
-		read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled)
-	}
-	if m.HasWrite_conflict_ranges_disabled {
-		write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled)
-	}
+	if m.HasRead_conflict_ranges_disabled { read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled) }
+	if m.HasWrite_conflict_ranges_disabled { write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled) }
 	selfW := wb.GetMessageWriter(int(CommitTransactionRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := CommitTransactionRefVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRefVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot))
-		selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2]))
-	}
-	if m.Report_conflicting_keys {
-		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2]))
-	}
-	if m.Lock_aware {
-		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2])) }
+	if m.Report_conflicting_keys { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])) }
+	if m.Lock_aware { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2])) }
 	if len(m.ReadConflictRanges) > 0 {
 		selfW.WriteRelativeOffset(readConflictRangesOff, int(vt[CommitTransactionRefSlotReadConflictRanges+2]))
 	}
@@ -529,18 +265,15 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 // ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
 func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]CommitTransactionRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem CommitTransactionRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

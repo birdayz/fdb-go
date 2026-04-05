@@ -10,49 +10,45 @@ import (
 )
 
 const (
-	GetReadVersionReplySlotProcessBusyTime           = 0
-	GetReadVersionReplySlotVersion                   = 1
-	GetReadVersionReplySlotLocked                    = 2
-	GetReadVersionReplySlotMetadataVersion           = 3
-	GetReadVersionReplySlotTagThrottleInfo           = 5
-	GetReadVersionReplySlotMidShardSize              = 6
-	GetReadVersionReplySlotRkDefaultThrottled        = 7
-	GetReadVersionReplySlotRkBatchThrottled          = 8
-	GetReadVersionReplySlotSsVersionVectorDelta      = 9
-	GetReadVersionReplySlotProxyId                   = 10
+	GetReadVersionReplySlotProcessBusyTime = 0
+	GetReadVersionReplySlotVersion = 1
+	GetReadVersionReplySlotLocked = 2
+	GetReadVersionReplySlotMetadataVersion = 3
+	GetReadVersionReplySlotTagThrottleInfo = 5
+	GetReadVersionReplySlotMidShardSize = 6
+	GetReadVersionReplySlotRkDefaultThrottled = 7
+	GetReadVersionReplySlotRkBatchThrottled = 8
+	GetReadVersionReplySlotSsVersionVectorDelta = 9
+	GetReadVersionReplySlotProxyId = 10
 	GetReadVersionReplySlotProxyTagThrottledDuration = 11
 )
 
 var GetReadVersionReplyVTable = wire.VTable{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36}
-
 const GetReadVersionReplyFileID uint32 = 15709388
-
 var GetReadVersionReplyVTableClosure = []wire.VTable{
 	{8, 20, 4, 12},
 	{6, 8, 4},
 	{8, 12, 4, 8},
 	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
 }
-
 var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
 	GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, GetReadVersionReplyVTableClosure,
 )
-
 const GetReadVersionReplyMaxAlign = 8
 
 type GetReadVersionReply struct {
-	ProcessBusyTime           int32    // slot 0
-	Version                   int64    // slot 1
-	Locked                    bool     // slot 2
-	HasMetadataVersion        bool     // slot 3, optional tag
-	MetadataVersion           []byte   // slot 4, optional value
-	TagThrottleInfo           []byte   // slot 5
-	MidShardSize              int64    // slot 6
-	RkDefaultThrottled        bool     // slot 7
-	RkBatchThrottled          bool     // slot 8
-	SsVersionVectorDelta      []byte   // slot 9
-	ProxyId                   [16]byte // slot 10
-	ProxyTagThrottledDuration float64  // slot 11
+	ProcessBusyTime int32 // slot 0
+	Version int64 // slot 1
+	Locked bool // slot 2
+	HasMetadataVersion bool   // slot 3, optional tag
+	MetadataVersion    []byte // slot 4, optional value
+	TagThrottleInfo []byte // slot 5
+	MidShardSize int64 // slot 6
+	RkDefaultThrottled bool // slot 7
+	RkBatchThrottled bool // slot 8
+	SsVersionVectorDelta []byte // slot 9
+	ProxyId [16]byte // slot 10
+	ProxyTagThrottledDuration float64 // slot 11
 }
 
 func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
@@ -94,9 +90,7 @@ func (m *GetReadVersionReply) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(GetReadVersionReplySlotProcessBusyTime) {
 		m.ProcessBusyTime = r.ReadInt32(GetReadVersionReplySlotProcessBusyTime)
 	}
@@ -134,111 +128,14 @@ func (m *GetReadVersionReply) UnmarshalFDB(data []byte) error {
 	return nil
 }
 
-func (m *GetReadVersionReply) blobSize() int {
-	vt := GetReadVersionReplyVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	if m.TagThrottleInfo != nil {
-		oolSize += (len(m.TagThrottleInfo) + 3) &^ 3
-	}
-	if m.SsVersionVectorDelta != nil {
-		oolSize += (4 + len(m.SsVersionVectorDelta) + 3) &^ 3
-	}
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *GetReadVersionReply) writeBlob(buf []byte, pos int) int {
-	vt := GetReadVersionReplyVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionReplySlotProcessBusyTime+2]):], uint32(m.ProcessBusyTime))
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotVersion+2]):], uint64(m.Version))
-	if m.Locked {
-		obj[int(vt[GetReadVersionReplySlotLocked+2])] = 1
-	}
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotMidShardSize+2]):], uint64(m.MidShardSize))
-	if m.RkDefaultThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkDefaultThrottled+2])] = 1
-	}
-	if m.RkBatchThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkBatchThrottled+2])] = 1
-	}
-	copy(obj[int(vt[GetReadVersionReplySlotProxyId+2]):], m.ProxyId[:])
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]):], math.Float64bits(m.ProxyTagThrottledDuration))
-	if m.TagThrottleInfo != nil {
-		copy(buf[curOOL:], m.TagThrottleInfo)
-		wire.PatchBlobRelOff(obj, int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), objPos, curOOL)
-		curOOL += (len(m.TagThrottleInfo) + 3) &^ 3
-	}
-	if m.SsVersionVectorDelta != nil {
-		binary.LittleEndian.PutUint32(buf[curOOL:], uint32(len(m.SsVersionVectorDelta)))
-		copy(buf[curOOL+4:], m.SsVersionVectorDelta)
-		wire.PatchBlobRelOff(obj, int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), objPos, curOOL)
-		curOOL += (4 + len(m.SsVersionVectorDelta) + 3) &^ 3
-	}
-	return curOOL - pos
-}
-
-func (m *GetReadVersionReply) measureEndOff(endOff int) int {
-	if m.HasMetadataVersion {
-		endOff = wire.MeasureBytesOOL(endOff, m.MetadataVersion)
-	}
-	endOff = wire.MeasureBytesOOL(endOff, m.TagThrottleInfo)
-	endOff = wire.MeasureBytesOOL(endOff, m.SsVersionVectorDelta)
-	endOff = wire.MeasureObject(endOff, GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
-	return endOff
-}
-
-func (m *GetReadVersionReply) writeDirect(dw *wire.DirectWriter) int {
-	var metadataVersionOOL int
-	if m.HasMetadataVersion {
-		metadataVersionOOL = dw.WriteBytesOOL(m.MetadataVersion)
-	}
-	tagThrottleInfoOOL := dw.WriteBytesOOL(m.TagThrottleInfo)
-	ssVersionVectorDeltaOOL := dw.WriteBytesOOL(m.SsVersionVectorDelta)
-	objPos, obj := dw.WriteObject(GetReadVersionReplyVTable, GetReadVersionReplyMaxAlign)
-	vt := GetReadVersionReplyVTable
-	binary.LittleEndian.PutUint32(obj[int(vt[GetReadVersionReplySlotProcessBusyTime+2]):], uint32(m.ProcessBusyTime))
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotVersion+2]):], uint64(m.Version))
-	if m.Locked {
-		obj[int(vt[GetReadVersionReplySlotLocked+2])] = 1
-	}
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotMidShardSize+2]):], uint64(m.MidShardSize))
-	if m.RkDefaultThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkDefaultThrottled+2])] = 1
-	}
-	if m.RkBatchThrottled {
-		obj[int(vt[GetReadVersionReplySlotRkBatchThrottled+2])] = 1
-	}
-	copy(obj[int(vt[GetReadVersionReplySlotProxyId+2]):], m.ProxyId[:])
-	binary.LittleEndian.PutUint64(obj[int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]):], math.Float64bits(m.ProxyTagThrottledDuration))
-	if m.HasMetadataVersion {
-		obj[int(vt[GetReadVersionReplySlotMetadataVersion+2])] = 1
-		wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotMetadataVersion+1+2]), objPos, metadataVersionOOL)
-	}
-	wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotTagThrottleInfo+2]), objPos, tagThrottleInfoOOL)
-	wire.PatchRelOff(obj, int(vt[GetReadVersionReplySlotSsVersionVectorDelta+2]), objPos, ssVersionVectorDeltaOOL)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetReadVersionReply) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasMetadataVersion {
-		ps.VisitDynamicSize(len(m.MetadataVersion))
-	}
+	if m.HasMetadataVersion { ps.VisitDynamicSize(len(m.MetadataVersion)) }
 	ps.VisitDynamicSize(len(m.TagThrottleInfo))
 	ps.VisitDynamicSize(len(m.SsVersionVectorDelta))
-	{
-		n := ps.GetMessageWriter(int(GetReadVersionReplyVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetReadVersionReplyVTable[1])-4, 8)+4)
-	}
+	{ n := ps.GetMessageWriter(int(GetReadVersionReplyVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetReadVersionReplyVTable[1])-4, 8)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -249,50 +146,21 @@ func (m *GetReadVersionReply) writeToBuffer(wb *wire.WriteToBuffer, vtableStart 
 	var metadataVersionOff int
 	var tagThrottleInfoOff int
 	var ssVersionVectorDeltaOff int
-	if m.HasMetadataVersion {
-		metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion)
-	}
+	if m.HasMetadataVersion { metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion) }
 	tagThrottleInfoOff, _ = wb.VisitDynamicSize(m.TagThrottleInfo)
 	ssVersionVectorDeltaOff, _ = wb.VisitDynamicSize(m.SsVersionVectorDelta)
 	selfW := wb.GetMessageWriter(int(GetReadVersionReplyVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetReadVersionReplyVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(GetReadVersionReplyVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(m.ProcessBusyTime))
-		selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotProcessBusyTime+2]))
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(m.Version))
-		selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotVersion+2]))
-	}
-	if m.Locked {
-		selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotLocked+2]))
-	}
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], uint64(m.MidShardSize))
-		selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotMidShardSize+2]))
-	}
-	if m.RkDefaultThrottled {
-		selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotRkDefaultThrottled+2]))
-	}
-	if m.RkBatchThrottled {
-		selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotRkBatchThrottled+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(GetReadVersionReplyVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.ProcessBusyTime)); selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotProcessBusyTime+2])) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.Version)); selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotVersion+2])) }
+	if m.Locked { selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotLocked+2])) }
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.MidShardSize)); selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotMidShardSize+2])) }
+	if m.RkDefaultThrottled { selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotRkDefaultThrottled+2])) }
+	if m.RkBatchThrottled { selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotRkBatchThrottled+2])) }
 	selfW.WriteScalar(m.ProxyId[:], int(vt[GetReadVersionReplySlotProxyId+2]))
-	{
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], math.Float64bits(m.ProxyTagThrottledDuration))
-		selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2]))
-	}
+	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], math.Float64bits(m.ProxyTagThrottledDuration)); selfW.WriteScalar(b[:], int(vt[GetReadVersionReplySlotProxyTagThrottledDuration+2])) }
 	if m.HasMetadataVersion {
 		selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionReplySlotMetadataVersion+2]))
 		selfW.WriteRelativeOffset(metadataVersionOff, int(vt[GetReadVersionReplySlotMetadataVersion+1+2]))
@@ -311,16 +179,10 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -334,22 +196,13 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], GetReadVersionReplyFileID)
-		footerW.WriteScalar(b[:], 4)
-	}
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetReadVersionReplyFileID); footerW.WriteScalar(b[:], 4) }
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -357,18 +210,15 @@ func (m *GetReadVersionReply) MarshalFDB() []byte {
 // ParseGetReadVersionReplyVectorFromReader reads a FlatBuffers vector of GetReadVersionReply.
 func ParseGetReadVersionReplyVectorFromReader(r *wire.Reader, slot int) []GetReadVersionReply {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]GetReadVersionReply, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem GetReadVersionReply
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+

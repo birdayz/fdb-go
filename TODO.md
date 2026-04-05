@@ -1748,7 +1748,18 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
 **Tooling to build (priority order):**
 
-- [ ] **Differential serialization fuzzer** — HIGH. For each message type, generate random field values, serialize with C++ ObjectWriter AND Go MarshalFDB, compare bytes. No FDB cluster needed. Deterministic. Extend `cmd/fdb-schema-extract` to accept field values via stdin (JSON), serialize, emit bytes. Go side does same. Fuzz loop compares. Catches: padding, alignment, field ordering, vtable packing, optional handling, vector encoding. Millions of iterations/sec.
+- [x] **Differential serialization fuzzer** — DONE. `cmd/fdb-diff-oracle/`: C++ oracle (ObjectWriter) + Go fuzz test. 18 message types, 17 oracle-compared + 1 Go-only (ReplyPromise). 600M+ executions at 10min/target. Branch: `diff-serialization-fuzzer`, PR #7.
+
+  **Bugs found and fixed:**
+  - [x] Empty vector-of-struct reloff bug: `CommitTransactionRef.writeToBuffer` guarded `WriteRelativeOffset` with `if len(...) > 0`, skipping reloffs for empty vectors. C++ always writes reloffs to empty-vector sentinels. Fixed by removing guards.
+
+  **Known divergences (harmless):**
+  - VTable pack ordering: C++ `std::set<VTable*>` sorts by pointer address (non-deterministic across binaries). Causes soffset differences at every object start. FDB deserializer is order-agnostic — follows soffsets, doesn't care about vtable position.
+
+  **Remaining issues found by fuzzer (not yet fixed):**
+  - [ ] **IPAddress variant serialization**: Go's `MarshalFDB` for `IPAddress` doesn't write the variant tag/payload in the `writeToBuffer` path. `NetworkAddress` and `Endpoint` serialize without IP data. Low priority — we never construct NetworkAddress/Endpoint for sending, only parse them from server responses.
+  - [ ] **Codegen: stop emitting dead DirectWriter methods**: The C++ extractor emits `blobSize`, `writeBlob`, `measureEndOff`, `writeDirect` methods that are never called (MarshalFDB uses `precomputeSize`+`writeToBuffer` exclusively). The `CommitTransactionRef` versions still contain the empty-vector-reloff bug. Fix the generator to stop emitting these methods — they add ~230 lines of buggy dead code per type.
+  - ~~Arena field missing from codegen~~ — FALSE ALARM. `scalar_traits<Arena>::size = 0`, save is a no-op. Arena is FDB's zero-copy memory management: on deserialize, `context.addArena(arena)` transfers buffer ownership so `StringRef` fields can point into raw received bytes without copying. On serialize, Arena contributes zero bytes. Our codegen correctly skips it.
 - [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
 - [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
 
@@ -1759,7 +1770,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] FDB crash debugging playbook in `pkg/fdbgo/client/CRASH_BUG.md` (addr2line + debug symbols from GitHub releases)
 
 ### Next priorities
-1. Differential serialization fuzzer — build the C++/Go comparator
+1. ~~Differential serialization fuzzer~~ — DONE (PR #7)
 2. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
 3. GetRange reverse — port C test, add reverse parameter
 4. Watch — port C tests, implement WatchValueRequest

@@ -13,18 +13,14 @@ const (
 )
 
 var ErrorVTable = wire.VTable{6, 6, 4}
-
 const ErrorFileID uint32 = 14065384
-
 var ErrorVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{6, 6, 4},
 }
-
 var ErrorTemplate = wire.NewMessageTemplate(
 	ErrorFileID, ErrorVTable, 4, ErrorVTableClosure,
 )
-
 const ErrorMaxAlign = 4
 
 type Error struct {
@@ -39,55 +35,18 @@ func (m *Error) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *Error) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	if r.FieldPresent(ErrorSlotErrorCode) {
 		m.ErrorCode = r.ReadUint16(ErrorSlotErrorCode)
 	}
 	return nil
 }
 
-func (m *Error) blobSize() int {
-	vt := ErrorVTable
-	vtBytes := len(vt) * 2
-	objPos := (vtBytes + 3) &^ 3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	oolSize := 0
-	return (oolPos + oolSize + 3) &^ 3
-}
-
-func (m *Error) writeBlob(buf []byte, pos int) int {
-	vt := ErrorVTable
-	obj := wire.WriteBlobVTable(buf, pos, vt)
-	vtBytes := len(vt) * 2
-	objPos := pos + (vtBytes+3)&^3
-	oolPos := (objPos + int(vt[1]) + 3) &^ 3
-	curOOL := oolPos
-	binary.LittleEndian.PutUint16(obj[int(vt[ErrorSlotErrorCode+2]):], m.ErrorCode)
-	return curOOL - pos
-}
-
-func (m *Error) measureEndOff(endOff int) int {
-	endOff = wire.MeasureObject(endOff, ErrorVTable, ErrorMaxAlign)
-	return endOff
-}
-
-func (m *Error) writeDirect(dw *wire.DirectWriter) int {
-	objPos, obj := dw.WriteObject(ErrorVTable, ErrorMaxAlign)
-	vt := ErrorVTable
-	binary.LittleEndian.PutUint16(obj[int(vt[ErrorSlotErrorCode+2]):], m.ErrorCode)
-	return objPos
-}
-
 // precomputeSize — C++ SaveVisitorLambda::operator() with PrecomputeSize writer.
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *Error) precomputeSize(ps *wire.PrecomputeSize) int {
-	{
-		n := ps.GetMessageWriter(int(ErrorVTable[1]))
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ErrorVTable[1])-4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(int(ErrorVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ErrorVTable[1])-4, 4)+4) }
 	return ps.CurrentBufferSize
 }
 
@@ -98,17 +57,8 @@ func (m *Error) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wir
 	selfW := wb.GetMessageWriter(int(ErrorVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := ErrorVTable
-	{
-		soff := int32(vtableStart - tmpl.VTableOffset(ErrorVTable) - selfStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		selfW.WriteScalar(b[:], 0)
-	}
-	{
-		var b [2]byte
-		binary.LittleEndian.PutUint16(b[:], uint16(m.ErrorCode))
-		selfW.WriteScalar(b[:], int(vt[ErrorSlotErrorCode+2]))
-	}
+	{ soff := int32(vtableStart - tmpl.VTableOffset(ErrorVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{ var b [2]byte; binary.LittleEndian.PutUint16(b[:], uint16(m.ErrorCode)); selfW.WriteScalar(b[:], int(vt[ErrorSlotErrorCode+2])) }
 	selfW.WriteToAt(selfStart)
 	return selfStart
 }
@@ -121,16 +71,10 @@ func (m *Error) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{
-		n := ps.GetMessageWriter(8)
-		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
-	}
+	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -144,22 +88,13 @@ func (m *Error) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{
-		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(soff))
-		fakeRootW.WriteScalar(b[:], 0)
-	}
+	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], ErrorFileID)
-		footerW.WriteScalar(b[:], 4)
-	}
+	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], ErrorFileID); footerW.WriteScalar(b[:], 4) }
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -167,18 +102,15 @@ func (m *Error) MarshalFDB() []byte {
 // ParseErrorVectorFromReader reads a FlatBuffers vector of Error.
 func ParseErrorVectorFromReader(r *wire.Reader, slot int) []Error {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
-	}
+	if err != nil || count == 0 { return nil }
 	result := make([]Error, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil {
-			continue
-		}
+		if err != nil { continue }
 		var elem Error
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
+
