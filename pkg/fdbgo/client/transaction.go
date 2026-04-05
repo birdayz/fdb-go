@@ -579,7 +579,7 @@ func (tx *Transaction) SetSizeLimit(bytes int64) {
 	tx.sizeLimit = bytes
 }
 
-// GRVFlags returns the Flags field for GetReadVersionRequest.
+// grvFlags returns the Flags field for GetReadVersionRequest.
 // Encodes priority and option flags into the uint32 bitmask.
 func (tx *Transaction) grvFlags() uint32 {
 	var flags uint32
