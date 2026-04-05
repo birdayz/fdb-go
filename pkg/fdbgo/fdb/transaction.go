@@ -71,16 +71,20 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 }
 
 // GetVersionstamp returns the versionstamp which was used by any
-// versionstamp operations in this transaction. The future is ready
-// after a successful Commit.
+// versionstamp operations in this transaction.
+//
+// Must be called after a successful Commit(). The Apple binding allows
+// calling before commit (the future blocks until commit); that behavior
+// is implemented in a later PR via a commitDone channel. In this base
+// implementation, calling before commit returns error 2015.
 func (tr Transaction) GetVersionstamp() FutureKey {
-	return newFutureKey(func() (Key, error) {
+	return newReadyFutureKey(func() (Key, error) {
 		vs, err := tr.t.inner.GetVersionstamp()
 		if err != nil {
 			return nil, convertError(err)
 		}
 		return Key(vs), nil
-	})
+	}())
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
@@ -116,9 +120,11 @@ func (tr Transaction) Clear(key KeyConvertible) {
 }
 
 // ClearRange removes all keys k such that begin <= k < end.
+// The Apple binding's ClearRange is void (no return value). The
+// underlying client returns inverted_range (2005) if begin > end;
+// we suppress this to match the Apple API contract.
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
-	// ClearRange in client returns error for inverted range; Apple API ignores it.
 	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
 }
 

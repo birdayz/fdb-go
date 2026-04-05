@@ -54,6 +54,9 @@ func (rr RangeResult) doRange() ([]client.KeyValue, error) {
 }
 
 // GetSliceWithError returns all key-value pairs in the range as a slice.
+// WARNING: loads all results into memory in a single round-trip. For large
+// ranges without a Limit, this may exceed FDB's 5-second transaction limit
+// or cause OOM. Set RangeOptions.Limit for large scans.
 func (rr RangeResult) GetSliceWithError() ([]KeyValue, error) {
 	kvs, err := rr.doRange()
 	if err != nil {

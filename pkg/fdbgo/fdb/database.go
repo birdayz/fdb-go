@@ -51,7 +51,11 @@ type Database struct {
 }
 
 // OpenDatabase opens a connection using the specified cluster file path.
+// APIVersion must have been called first.
 func OpenDatabase(clusterFile string) (Database, error) {
+	if apiVersion.Load() == 0 {
+		return Database{}, Error{Code: 2200} // api_version_unset
+	}
 	ctx := context.Background()
 	db, err := client.OpenDatabase(ctx, clusterFile)
 	if err != nil {
