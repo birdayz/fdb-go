@@ -222,7 +222,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		return err
 	}
 	if !tx.hasReadVersion {
-		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx, tx.GRVFlags())
+		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx, tx.grvFlags())
 		if err != nil {
 			return err
 		}
@@ -574,7 +574,7 @@ func (tx *Transaction) SetSizeLimit(bytes int64) {
 
 // GRVFlags returns the Flags field for GetReadVersionRequest.
 // Encodes priority and option flags into the uint32 bitmask.
-func (tx *Transaction) GRVFlags() uint32 {
+func (tx *Transaction) grvFlags() uint32 {
 	var flags uint32
 	// C++ priority encoding.
 	switch tx.priority {
