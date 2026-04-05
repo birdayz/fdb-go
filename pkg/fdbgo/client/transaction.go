@@ -136,7 +136,29 @@ type Transaction struct {
 	// conflict range. Auto-resets after one mutation. Matches C++
 	// FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
 	nextWriteNoConflict bool
+
+	// Transaction priority. Encoded in GRV request Flags field.
+	priority TransactionPriority
+
+	// causalReadRisky: if true, FLAG_CAUSAL_READ_RISKY is set in GRV Flags.
+	causalReadRisky bool
+
+	// lockAware: if true, lock_aware field is set in CommitTransactionRef.
+	lockAware bool
+
+	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
+	sizeLimit int64
 }
+
+// TransactionPriority controls the GRV request priority.
+// C++ GetReadVersionRequest::Flags encoding.
+type TransactionPriority int
+
+const (
+	PriorityDefault         TransactionPriority = iota // 8 << 24
+	PriorityBatch                                      // 1 << 24
+	PrioritySystemImmediate                            // 15 << 24
+)
 
 // Snapshot returns a snapshot view of this transaction.
 // Snapshot reads do not add read conflict ranges, so they don't cause
@@ -200,7 +222,7 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		return err
 	}
 	if !tx.hasReadVersion {
-		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx)
+		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx, tx.GRVFlags())
 		if err != nil {
 			return err
 		}
@@ -324,6 +346,11 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
+	}
+
+	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
+	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
+		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
@@ -520,6 +547,48 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 // FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
 func (tx *Transaction) SetNextWriteNoWriteConflictRange() {
 	tx.nextWriteNoConflict = true
+}
+
+// SetPriority sets the transaction priority for GRV requests.
+func (tx *Transaction) SetPriority(p TransactionPriority) {
+	tx.priority = p
+}
+
+// SetCausalReadRisky sets the causal-read-risky flag.
+// When set, the read version may not reflect the latest committed writes.
+func (tx *Transaction) SetCausalReadRisky(v bool) {
+	tx.causalReadRisky = v
+}
+
+// SetLockAware sets the lock-aware flag on the commit request.
+func (tx *Transaction) SetLockAware(v bool) {
+	tx.lockAware = v
+}
+
+// SetSizeLimit sets the maximum transaction size in bytes.
+// If the transaction exceeds this size, commit returns an error.
+// A value of 0 disables the limit.
+func (tx *Transaction) SetSizeLimit(bytes int64) {
+	tx.sizeLimit = bytes
+}
+
+// GRVFlags returns the Flags field for GetReadVersionRequest.
+// Encodes priority and option flags into the uint32 bitmask.
+func (tx *Transaction) GRVFlags() uint32 {
+	var flags uint32
+	// C++ priority encoding.
+	switch tx.priority {
+	case PriorityBatch:
+		flags |= 1 << 24
+	case PrioritySystemImmediate:
+		flags |= 15 << 24
+	default: // PriorityDefault
+		flags |= 8 << 24
+	}
+	if tx.causalReadRisky {
+		flags |= 1 // FLAG_CAUSAL_READ_RISKY
+	}
+	return flags
 }
 
 // AddReadConflictRange adds an explicit read conflict range [begin, end).

@@ -103,6 +103,7 @@ type grvBatcher struct {
 
 type grvRequest struct {
 	reply chan grvResult
+	flags uint32 // GRV Flags from the requesting transaction
 }
 
 type grvResult struct {
@@ -111,7 +112,7 @@ type grvResult struct {
 }
 
 // getReadVersion returns a read version, using the cache if fresh.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context) (int64, error) {
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
 	if v, ok := db.grvCache.tryCache(); ok {
 		// Start background refresher on first cache hit.
@@ -123,7 +124,7 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context) (int64, e
 	}
 
 	// Slow path: batch request to proxy.
-	req := grvRequest{reply: make(chan grvResult, 1)}
+	req := grvRequest{reply: make(chan grvResult, 1), flags: flags}
 
 	b.mu.Lock()
 	b.pending = append(b.pending, req)
@@ -158,8 +159,16 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
+	// Use the highest priority from the batch (highest Flags wins).
+	var flags uint32
+	for _, r := range batch {
+		if r.flags > flags {
+			flags = r.flags
+		}
+	}
+
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx)
+	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags)
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -214,7 +223,8 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			if needsRefresh {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx)
+				// Background refresher uses default priority (8 << 24).
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, 8<<24)
 				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)
@@ -245,7 +255,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
 	var backoff time.Duration
 	numAttempts := 0
 
@@ -283,7 +293,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version 
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetReadVersionRequest(replyToken)
+			body := buildGetReadVersionRequest(replyToken, flags)
 
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
 				cancelReply()
@@ -325,9 +335,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version 
 	}
 }
 
-func buildGetReadVersionRequest(replyToken transport.UID) []byte {
+func buildGetReadVersionRequest(replyToken transport.UID, flags uint32) []byte {
 	req := types.GetReadVersionRequest{
 		TransactionCount: 1,
+		Flags:            flags,
 		MaxVersion:       -1,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 	}
