@@ -159,13 +159,18 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
-	// Use the highest priority from the batch (highest Flags wins).
-	var flags uint32
+	// Merge flags: take max priority (bits 24-31) and OR all option
+	// flags (bits 0-23). This ensures causal_read_risky from a lower-
+	// priority request isn't shadowed by a higher-priority one.
+	const priorityMask = 0xFF000000
+	var priorityBits, optionBits uint32
 	for _, r := range batch {
-		if r.flags > flags {
-			flags = r.flags
+		if r.flags&priorityMask > priorityBits {
+			priorityBits = r.flags & priorityMask
 		}
+		optionBits |= r.flags &^ priorityMask
 	}
+	flags := priorityBits | optionBits
 
 	requestTime := time.Now()
 	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags)

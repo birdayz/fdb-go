@@ -77,6 +77,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 			WriteConflictRanges: writeCRs,
 			Mutations:           mutations,
 			ReadSnapshot:        tx.readVersion,
+			Lock_aware:          tx.lockAware,
 		},
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo: types.TenantInfo{TenantId: NoTenantID},
