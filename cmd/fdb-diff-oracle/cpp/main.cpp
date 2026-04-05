@@ -538,8 +538,9 @@ static bool handleGetValueReply() {
     GetValueReply rep;
     rep.penalty = penalty;
     if (hasError) {
-        // Error is ErrorOr<Optional<Value>> type, complex
-        // Skip for now
+        uint16_t code = 0;
+        if (error.size() >= 2) memcpy(&code, error.data(), 2);
+        rep.error = Error(code);
     }
     if (hasValue) {
         rep.value = Value(StringRef((uint8_t*)value.data(), value.size()));
@@ -565,7 +566,11 @@ static bool handleGetKeyReply() {
 
     GetKeyReply rep;
     rep.penalty = penalty;
-    // Error: Optional<Error> complex type, skip
+    if (hasError) {
+        uint16_t code = 0;
+        if (error.size() >= 2) memcpy(&code, error.data(), 2);
+        rep.error = Error(code);
+    }
     rep.cached = cached;
 
     auto buf = serializeMessage(rep);
@@ -593,8 +598,15 @@ static bool handleGetKeyValuesReply() {
 
     GetKeyValuesReply rep;
     rep.penalty = penalty;
-    // Error: Optional<Error> complex, skip
-    // Data: VectorRef<KeyValueRef> complex, skip
+    if (hasError) {
+        uint16_t code = 0;
+        if (error.size() >= 2) memcpy(&code, error.data(), 2);
+        rep.error = Error(code);
+    }
+    // Data: VectorRef<KeyValueRef, VecSerStrategy::String> — complex nested type.
+    // We pass through the raw bytes from Go but can't construct the C++ type.
+    // The Go side treats it as []byte, which matches the VecSerStrategy::String
+    // serialization (raw byte blob). Leave empty for now.
     rep.version = version;
     rep.more = more;
     rep.cached = cached;
