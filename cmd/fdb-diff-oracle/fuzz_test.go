@@ -436,7 +436,6 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 			// Skip rather than fail — the Go-side MarshalFDB already exercised
 			// the serialization path above.
 			t.Skip("oracle error or crash, skipping C++ comparison")
-			return
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
@@ -648,40 +647,11 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 }
 
 // 11. GetKeyServerLocationsReply
-func FuzzGetKeyServerLocationsReply(f *testing.F) {
-	f.Add([]byte{0, 0, 0})
-
-	o := startOracle(f)
-	f.Fuzz(func(t *testing.T, data []byte) {
-		r := &fuzzReader{data: data}
-		results := r.bytes()
-		resultsTssMapping := r.bytes()
-		resultsTagMapping := r.bytes()
-
-		// C++ oracle uses empty defaults for all structured vector fields.
-		// Skip fuzz-generated blob values on both sides for comparison.
-		_ = results
-		_ = resultsTssMapping
-		_ = resultsTagMapping
-
-		goMsg := &types.GetKeyServerLocationsReply{}
-		goBytes := goMsg.MarshalFDB()
-
-		cppBytes, err := o.SerializeGetKeyServerLocationsReply(nil, nil, nil)
-		if err != nil {
-			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
-
-		// NOTE: zero oracle validation — equalGetKeyServerLocationsReply is
-		// a no-op (always returns true) because the C++ oracle doesn't
-		// populate the structured vector fields.
-		compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsReply",
-			unmarshalGetKeyServerLocationsReply, equalGetKeyServerLocationsReply)
-	})
-}
+// FuzzGetKeyServerLocationsReply is intentionally omitted — all fields are deeply
+// nested structured vectors (vector<pair<KeyRangeRef, vector<StorageServerInterface>>>)
+// that neither the C++ oracle nor Go side can populate without deep type support.
+// The deterministic TestDiffGetKeyServerLocationsReply covers the empty-message case.
+// Re-add when the oracle supports structured vector construction.
 
 // 12. CommitID
 func FuzzCommitID(f *testing.F) {
