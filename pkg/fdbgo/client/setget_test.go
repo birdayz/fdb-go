@@ -233,9 +233,9 @@ func openTestDB(t *testing.T, ctx context.Context) *Database {
 		connectCF.InternalKey += a
 	}
 
-	db, err := openDatabaseFromConfig(setupCtx, connectCF, nil)
+	db, err := OpenDatabaseFromConfig(setupCtx, connectCF, nil)
 	if err != nil {
-		t.Fatalf("openDatabaseFromConfig: %v", err)
+		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 

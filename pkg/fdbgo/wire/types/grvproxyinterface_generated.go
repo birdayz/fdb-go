@@ -9,19 +9,20 @@ import (
 )
 
 const (
-	GrvProxyInterfaceSlotProcessId = 0
-	GrvProxyInterfaceSlotProvisional = 2
+	GrvProxyInterfaceSlotProcessId                = 0
+	GrvProxyInterfaceSlotProvisional              = 2
 	GrvProxyInterfaceSlotGetConsistentReadVersion = 3
 )
 
 var GrvProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
+
 const GrvProxyInterfaceFileID uint32 = 8743216
 const GrvProxyInterfaceMaxAlign = 4
 
 type GrvProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
 	ProcessId    []byte // slot 1, optional value
-	Provisional bool // slot 2
+	Provisional  bool   // slot 2
 	// GetConsistentReadVersion: unregistered nested struct at slot 3
 }
 
@@ -37,7 +38,9 @@ func (m *GrvProxyInterface) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
 		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
@@ -52,8 +55,13 @@ func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GrvProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasProcessId { ps.VisitDynamicSize(len(m.ProcessId)) }
-	{ n := ps.GetMessageWriter(int(GrvProxyInterfaceVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GrvProxyInterfaceVTable[1])-4, 4)+4) }
+	if m.HasProcessId {
+		ps.VisitDynamicSize(len(m.ProcessId))
+	}
+	{
+		n := ps.GetMessageWriter(int(GrvProxyInterfaceVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GrvProxyInterfaceVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -62,12 +70,21 @@ func (m *GrvProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *GrvProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var processIdOff int
-	if m.HasProcessId { processIdOff, _ = wb.VisitDynamicSize(m.ProcessId) }
+	if m.HasProcessId {
+		processIdOff, _ = wb.VisitDynamicSize(m.ProcessId)
+	}
 	selfW := wb.GetMessageWriter(int(GrvProxyInterfaceVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GrvProxyInterfaceVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(GrvProxyInterfaceVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	if m.Provisional { selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProvisional+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GrvProxyInterfaceVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	if m.Provisional {
+		selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProvisional+2]))
+	}
 	if m.HasProcessId {
 		selfW.WriteScalar([]byte{1}, int(vt[GrvProxyInterfaceSlotProcessId+2]))
 		selfW.WriteRelativeOffset(processIdOff, int(vt[GrvProxyInterfaceSlotProcessId+1+2]))
@@ -79,15 +96,18 @@ func (m *GrvProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart in
 // ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.
 func ParseGrvProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []GrvProxyInterface {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]GrvProxyInterface, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem GrvProxyInterface
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

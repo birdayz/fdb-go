@@ -13,7 +13,9 @@ const (
 )
 
 var ReplyPromiseVTable = wire.VTable{6, 20, 4}
+
 const ReplyPromiseFileID uint32 = 18156145
+
 var ReplyPromiseVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
@@ -21,6 +23,7 @@ var ReplyPromiseVTableClosure = []wire.VTable{
 var ReplyPromiseTemplate = wire.NewMessageTemplate(
 	ReplyPromiseFileID, ReplyPromiseVTable, 8, ReplyPromiseVTableClosure,
 )
+
 const ReplyPromiseMaxAlign = 8
 
 type ReplyPromise struct {
@@ -35,7 +38,9 @@ func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(ReplyPromiseSlotToken) {
 		m.Token = r.ReadUID(ReplyPromiseSlotToken)
 	}
@@ -46,7 +51,10 @@ func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *ReplyPromise) precomputeSize(ps *wire.PrecomputeSize) int {
-	{ n := ps.GetMessageWriter(int(ReplyPromiseVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReplyPromiseVTable[1])-4, 8)+4) }
+	{
+		n := ps.GetMessageWriter(int(ReplyPromiseVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(ReplyPromiseVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -57,7 +65,12 @@ func (m *ReplyPromise) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tm
 	selfW := wb.GetMessageWriter(int(ReplyPromiseVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := ReplyPromiseVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(ReplyPromiseVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(ReplyPromiseVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteScalar(m.Token[:], int(vt[ReplyPromiseSlotToken+2]))
 	selfW.WriteToAt(selfStart)
 	return selfStart
@@ -71,10 +84,16 @@ func (m *ReplyPromise) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -88,13 +107,22 @@ func (m *ReplyPromise) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], ReplyPromiseFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], ReplyPromiseFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -102,15 +130,18 @@ func (m *ReplyPromise) MarshalFDB() []byte {
 // ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise.
 func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) []ReplyPromise {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]ReplyPromise, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem ReplyPromise
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

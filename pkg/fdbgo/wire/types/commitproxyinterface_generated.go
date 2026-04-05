@@ -9,19 +9,20 @@ import (
 )
 
 const (
-	CommitProxyInterfaceSlotProcessId = 0
+	CommitProxyInterfaceSlotProcessId   = 0
 	CommitProxyInterfaceSlotProvisional = 2
-	CommitProxyInterfaceSlotCommit = 3
+	CommitProxyInterfaceSlotCommit      = 3
 )
 
 var CommitProxyInterfaceVTable = wire.VTable{12, 14, 12, 4, 13, 8}
+
 const CommitProxyInterfaceFileID uint32 = 8954922
 const CommitProxyInterfaceMaxAlign = 4
 
 type CommitProxyInterface struct {
 	HasProcessId bool   // slot 0, optional tag
 	ProcessId    []byte // slot 1, optional value
-	Provisional bool // slot 2
+	Provisional  bool   // slot 2
 	// Commit: unregistered nested struct at slot 3
 }
 
@@ -37,7 +38,9 @@ func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
 		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
@@ -52,8 +55,13 @@ func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 // Fields processed in SERIALIZE ORDER (same as C++ for_each over members).
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *CommitProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
-	if m.HasProcessId { ps.VisitDynamicSize(len(m.ProcessId)) }
-	{ n := ps.GetMessageWriter(int(CommitProxyInterfaceVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitProxyInterfaceVTable[1])-4, 4)+4) }
+	if m.HasProcessId {
+		ps.VisitDynamicSize(len(m.ProcessId))
+	}
+	{
+		n := ps.GetMessageWriter(int(CommitProxyInterfaceVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitProxyInterfaceVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -62,12 +70,21 @@ func (m *CommitProxyInterface) precomputeSize(ps *wire.PrecomputeSize) int {
 // Returns selfStart (end-offset of this object) for parent's RelativeOffset.
 func (m *CommitProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *wire.MessageTemplate) int {
 	var processIdOff int
-	if m.HasProcessId { processIdOff, _ = wb.VisitDynamicSize(m.ProcessId) }
+	if m.HasProcessId {
+		processIdOff, _ = wb.VisitDynamicSize(m.ProcessId)
+	}
 	selfW := wb.GetMessageWriter(int(CommitProxyInterfaceVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := CommitProxyInterfaceVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitProxyInterfaceVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	if m.Provisional { selfW.WriteScalar([]byte{1}, int(vt[CommitProxyInterfaceSlotProvisional+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(CommitProxyInterfaceVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	if m.Provisional {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitProxyInterfaceSlotProvisional+2]))
+	}
 	if m.HasProcessId {
 		selfW.WriteScalar([]byte{1}, int(vt[CommitProxyInterfaceSlotProcessId+2]))
 		selfW.WriteRelativeOffset(processIdOff, int(vt[CommitProxyInterfaceSlotProcessId+1+2]))
@@ -79,15 +96,18 @@ func (m *CommitProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 // ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.
 func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []CommitProxyInterface {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]CommitProxyInterface, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem CommitProxyInterface
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-
