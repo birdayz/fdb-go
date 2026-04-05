@@ -41,8 +41,13 @@ func (o TransactionOptions) SetCausalReadRisky() error {
 }
 
 func (o TransactionOptions) SetReadYourWritesDisable() error {
-	// No-op: our client always does read-your-writes at the FDB server level.
-	// The C client's RYW cache is an optimization we don't implement.
+	// No-op: the pure Go client has no client-side read-your-writes cache.
+	// In the C binding, RYW is a client-side write buffer that lets reads
+	// within the same transaction see pending writes without a server
+	// round-trip. Disabling RYW tells the C client to skip its local cache.
+	// Since we have no local write cache, this is a no-op. Note: reads in
+	// our client do NOT see the transaction's own pending writes (they
+	// always go to the server which only sees committed data).
 	return nil
 }
 

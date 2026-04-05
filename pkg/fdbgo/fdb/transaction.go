@@ -143,7 +143,7 @@ func (tr Transaction) And(key KeyConvertible, param []byte) {
 }
 
 func (tr Transaction) BitAnd(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutAndV2, key.FDBKey(), param)
+	tr.t.inner.Atomic(client.MutAnd, key.FDBKey(), param)
 }
 
 func (tr Transaction) Or(key KeyConvertible, param []byte) {
@@ -269,7 +269,11 @@ func (tr Transaction) ListTenants() ([]Key, error) {
 
 // LocalityGetAddressesForKey is not yet implemented.
 func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	return &futureStringSlice{futureBase: futureBase{done: make(chan struct{})}}
+	f := &futureStringSlice{}
+	f.init()
+	f.err = Error{Code: 2000}
+	close(f.done)
+	return f
 }
 
 // Transact implements Transactor for composability.

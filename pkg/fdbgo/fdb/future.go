@@ -13,10 +13,9 @@ type Future interface {
 // All read operations (Get, GetRange, etc.) start a goroutine and store
 // the result in the future. Get() blocks until the goroutine completes.
 type futureBase struct {
-	once  sync.Once
-	done  chan struct{}
-	err   error
-	ready bool
+	once sync.Once
+	done chan struct{}
+	err  error
 }
 
 func (f *futureBase) init() {

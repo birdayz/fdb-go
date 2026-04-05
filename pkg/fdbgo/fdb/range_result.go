@@ -23,7 +23,10 @@ func newSnapshotRangeResult(tx *transaction, r Range, options RangeOptions) Rang
 }
 
 func (rr RangeResult) doRange() ([]client.KeyValue, error) {
-	begin, end := resolveRange(rr.r)
+	begin, end, err := resolveRange(rr.tx, rr.r)
+	if err != nil {
+		return nil, err
+	}
 	limit := rr.options.Limit
 	if limit == 0 {
 		limit = 1<<31 - 1 // Apple API: 0 means unlimited
@@ -121,11 +124,39 @@ func (ri *RangeIterator) MustGet() KeyValue {
 }
 
 // resolveRange extracts begin/end byte slices from a Range.
-func resolveRange(r Range) (begin, end []byte) {
+// For ExactRange, uses keys directly. For SelectorRange, resolves
+// key selectors via GetKey if they have non-trivial OrEqual/Offset.
+func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
 	if er, ok := r.(ExactRange); ok {
 		b, e := er.FDBRangeKeys()
-		return b.FDBKey(), e.FDBKey()
+		return b.FDBKey(), e.FDBKey(), nil
 	}
 	bs, es := r.FDBRangeKeySelectors()
-	return bs.FDBKeySelector().Key.FDBKey(), es.FDBKeySelector().Key.FDBKey()
+	bks := bs.FDBKeySelector()
+	eks := es.FDBKeySelector()
+
+	// FirstGreaterOrEqual(k) is the trivial case (OrEqual=true, Offset=1).
+	// Anything else requires a GetKey round-trip to resolve.
+	beginKey, err := resolveSelector(tx, bks)
+	if err != nil {
+		return nil, nil, err
+	}
+	endKey, err := resolveSelector(tx, eks)
+	if err != nil {
+		return nil, nil, err
+	}
+	return beginKey, endKey, nil
+}
+
+func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
+	if ks.OrEqual && ks.Offset == 1 {
+		// FirstGreaterOrEqual — trivial, no round-trip needed.
+		return ks.Key.FDBKey(), nil
+	}
+	// Non-trivial selector — resolve via GetKey.
+	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+	if err != nil {
+		return nil, err
+	}
+	return k, nil
 }
