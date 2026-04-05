@@ -14,6 +14,17 @@
 //	    tr.Set(fdb.Key("hello"), []byte("world"))
 //	    return tr.Get(fdb.Key("foo")).MustGet(), nil
 //	})
+//
+// Known behavioral differences from the Apple C binding:
+//   - No read-your-writes cache: reads within a transaction always go to the
+//     server and will NOT see the transaction's own uncommitted writes. The C
+//     binding maintains a client-side write buffer for this. Code that relies
+//     on reading back its own writes within the same transaction will behave
+//     differently.
+//   - Error messages: Error.Error() returns "FoundationDB error: <code>" rather
+//     than the human-readable description from libfdb_c. Use Error.Code for
+//     programmatic matching.
+//   - Future.Cancel() is a no-op — the underlying operation runs to completion.
 package fdb
 
 import (

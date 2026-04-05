@@ -79,6 +79,11 @@ func (rr RangeResult) Iterator() *RangeIterator {
 
 // RangeIterator returns key-value pairs one at a time from a range read.
 // Call Advance() before each Get().
+//
+// NOTE: This implementation eagerly loads all results on the first Advance()
+// call. StreamingMode is accepted for API compatibility but does not affect
+// fetching behavior. For large ranges, set an explicit Limit to avoid OOM.
+// Lazy paging with streaming mode support is implemented in a later PR.
 type RangeIterator struct {
 	rr RangeResult
 

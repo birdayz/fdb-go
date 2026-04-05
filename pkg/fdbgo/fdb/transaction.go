@@ -220,9 +220,11 @@ func (tr Transaction) SetReadVersion(version int64) {
 }
 
 // Reset resets the transaction to its initial state.
-// NOT safe to call concurrently with other Transaction methods —
-// callers must ensure no other goroutine is using this transaction
-// during Reset. This matches Apple binding semantics.
+// NOT safe to call concurrently with other Transaction methods.
+// Callers must drain all pending futures before calling Reset —
+// in-flight goroutines from Get/GetRange/Commit access tr.t.inner
+// and will race with Reset. This matches Apple binding semantics
+// where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
 }
