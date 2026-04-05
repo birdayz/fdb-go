@@ -277,3 +277,12 @@ func (f *futureStringSlice) MustGet() []string {
 	}
 	return val
 }
+
+func newReadyFutureStringSlice(val []string, err error) FutureStringSlice {
+	f := &futureStringSlice{}
+	f.init()
+	f.val = val
+	f.err = err
+	close(f.done)
+	return f
+}

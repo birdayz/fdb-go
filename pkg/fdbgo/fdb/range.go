@@ -87,29 +87,31 @@ type StreamingMode int
 const (
 	// StreamingModeWantAll transfers all data in as few server requests as
 	// possible. Recommended for small reads within a transaction.
-	StreamingModeWantAll StreamingMode = -1
-
-	// StreamingModeIterator provides a good balance for typical iteration.
-	StreamingModeIterator StreamingMode = 0
+	// Value matches Apple binding: fdb_c_options.g.go.
+	StreamingModeWantAll StreamingMode = -2
 
 	// StreamingModeExact transfers data in one batch, sized to the exact
 	// Limit specified. A Limit must be specified.
-	StreamingModeExact StreamingMode = 1
+	StreamingModeExact StreamingMode = -1
+
+	// StreamingModeIterator provides a good balance for typical iteration.
+	// This is the default (zero value).
+	StreamingModeIterator StreamingMode = 0
 
 	// StreamingModeSmall hints that only a few key-value pairs are expected.
-	StreamingModeSmall StreamingMode = 2
+	StreamingModeSmall StreamingMode = 1
 
 	// StreamingModeMedium hints that a moderate number of key-value pairs
 	// are expected.
-	StreamingModeMedium StreamingMode = 3
+	StreamingModeMedium StreamingMode = 2
 
 	// StreamingModeLarge hints that a large number of key-value pairs are
 	// expected.
-	StreamingModeLarge StreamingMode = 4
+	StreamingModeLarge StreamingMode = 3
 
 	// StreamingModeSerial transfers data in large batches, useful when the
 	// client is processing each result before requesting more.
-	StreamingModeSerial StreamingMode = 5
+	StreamingModeSerial StreamingMode = 4
 )
 
 // RangeOptions specify how a database range read operation is carried out.

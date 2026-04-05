@@ -1,6 +1,7 @@
 package fdb
 
 import (
+	"math"
 	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
@@ -29,7 +30,7 @@ func (rr RangeResult) doRange() ([]client.KeyValue, error) {
 	}
 	limit := rr.options.Limit
 	if limit == 0 {
-		limit = 1<<31 - 1 // Apple API: 0 means unlimited
+		limit = math.MaxInt32 // Apple API: 0 means unlimited
 	}
 
 	if rr.snapshot {
@@ -73,7 +74,7 @@ func (rr RangeResult) GetSliceOrPanic() []KeyValue {
 
 // Iterator returns a RangeIterator for streaming through the results.
 func (rr RangeResult) Iterator() *RangeIterator {
-	return &RangeIterator{rr: rr}
+	return &RangeIterator{rr: rr, index: -1}
 }
 
 // RangeIterator returns key-value pairs one at a time from a range read.
@@ -81,15 +82,16 @@ func (rr RangeResult) Iterator() *RangeIterator {
 type RangeIterator struct {
 	rr RangeResult
 
-	once sync.Once
-	kvs  []KeyValue
-	err  error
-	pos  int
+	once  sync.Once
+	kvs   []KeyValue
+	err   error
+	pos   int // next position to advance to
+	index int // current element (set by Advance)
 }
 
-// Advance moves to the next key-value pair. Returns true if there is a
-// value available via Get(), false if the iteration is complete or an
-// error occurred.
+// Advance moves the cursor forward and returns true if there is a value
+// available via Get(). Matches Apple binding: Advance() moves, Get() reads
+// the current element without advancing.
 func (ri *RangeIterator) Advance() bool {
 	ri.once.Do(func() {
 		ri.kvs, ri.err = ri.rr.GetSliceWithError()
@@ -97,21 +99,21 @@ func (ri *RangeIterator) Advance() bool {
 	if ri.err != nil || ri.pos >= len(ri.kvs) {
 		return false
 	}
+	ri.index = ri.pos
+	ri.pos++
 	return true
 }
 
-// Get returns the current key-value pair. Must be called after Advance()
-// returns true.
+// Get returns the current key-value pair. Idempotent — multiple calls
+// after a single Advance() return the same element.
 func (ri *RangeIterator) Get() (KeyValue, error) {
 	if ri.err != nil {
 		return KeyValue{}, ri.err
 	}
-	if ri.pos >= len(ri.kvs) {
+	if ri.index < 0 || ri.index >= len(ri.kvs) {
 		return KeyValue{}, Error{Code: 2000}
 	}
-	kv := ri.kvs[ri.pos]
-	ri.pos++
-	return kv, nil
+	return ri.kvs[ri.index], nil
 }
 
 // MustGet returns the current key-value pair or panics.

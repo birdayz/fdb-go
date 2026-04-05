@@ -199,13 +199,14 @@ func (tr Transaction) Cancel() {
 	tr.t.inner.Cancel()
 }
 
-// OnError determines whether an error is retryable.
+// OnError determines whether an error is retryable. The returned FutureNil
+// includes the retry delay — the delay runs when Get() is called, not when
+// OnError() is called. This matches Apple binding semantics.
 func (tr Transaction) OnError(e Error) FutureNil {
-	err := tr.t.inner.OnError(&wire.FDBError{Code: e.Code})
-	if err != nil {
-		return newReadyFutureNil(convertError(err))
-	}
-	return newReadyFutureNil(nil)
+	return newFutureNil(func() error {
+		err := tr.t.inner.OnError(&wire.FDBError{Code: e.Code})
+		return convertError(err)
+	})
 }
 
 // Options returns a TransactionOptions handle.
@@ -219,8 +220,10 @@ func (tr Transaction) SetReadVersion(version int64) {
 }
 
 // Reset resets the transaction to its initial state.
+// NOT safe to call concurrently with other Transaction methods —
+// callers must ensure no other goroutine is using this transaction
+// during Reset. This matches Apple binding semantics.
 func (tr Transaction) Reset() {
-	// Create a fresh inner transaction on the same database.
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
 }
 
@@ -269,11 +272,7 @@ func (tr Transaction) ListTenants() ([]Key, error) {
 
 // LocalityGetAddressesForKey is not yet implemented.
 func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	f := &futureStringSlice{}
-	f.init()
-	f.err = Error{Code: 2000}
-	close(f.done)
-	return f
+	return newReadyFutureStringSlice(nil, Error{Code: 2000})
 }
 
 // Transact implements Transactor for composability.
