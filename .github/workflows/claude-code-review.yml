@@ -1,3 +1,13 @@
+# Auto PR review is disabled due to unfixable permission_denials in
+# anthropics/claude-code-action@v1. The code-review plugin and direct
+# prompts both fail to post comments (tools blocked by SDK policy).
+# See: https://github.com/anthropics/claude-code-action/issues/944
+#
+# Use @claude in PR comments instead — that works via claude.yml.
+#
+# Keeping this file so the workflow exists on master (required for
+# branch workflow validation when re-enabling).
+
 name: Claude Code Review
 
 on:
@@ -6,6 +16,7 @@ on:
 
 jobs:
   claude-review:
+    if: false  # Disabled — see comment above
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,12 +31,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Claude Code Review
-        id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Review the PR diff for this pull request. Post a review comment on the PR with your findings.
-            Focus on bugs, correctness issues, and important design concerns. Skip style nits.
-            Use `gh pr diff ${{ github.event.pull_request.number }}` to get the diff.
-            Post your review as a PR comment using `gh pr comment ${{ github.event.pull_request.number }}`.
+          prompt: "Review this PR"
