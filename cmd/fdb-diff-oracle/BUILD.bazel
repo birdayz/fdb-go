@@ -21,7 +21,7 @@ genrule(
     cmd = """
         set -e
         BUILD_TAR=$$(realpath $(location //cmd/fdb-schema-extract:fdb_cmake_build))
-        MAIN_CPP=$$(realpath $(location main.cpp))
+        MAIN_CPP=$$(realpath $(location cpp/main.cpp))
         TMPOUT=$$(mktemp -d)
         chmod 777 "$$TMPOUT"
         IMAGE="foundationdb/build:rockylinux9-latest"

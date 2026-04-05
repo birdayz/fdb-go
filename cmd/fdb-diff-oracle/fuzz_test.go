@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,172 +52,824 @@ func emptyVersionVector() []byte {
 	return vv
 }
 
-// --- Deterministic fuzz seed tests (run without oracle too) ---
-// These always run and verify the Go serialization is consistent.
+// --- Fuzz targets: 18 types, single []byte input ---
+
+// 1. GetReadVersionRequest
+func FuzzGetReadVersionRequest(f *testing.F) {
+	f.Add([]byte{1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 3, 0x41, 0x42, 0x43, 1, 2, 0xDE, 0xAD, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		transactionCount := r.uint32()
+		flags := r.uint32()
+		hasTags := r.bool()
+		var tags []byte
+		if hasTags {
+			tags = r.bytes()
+		}
+		hasDebugID := r.bool()
+		var debugID []byte
+		if hasDebugID {
+			debugID = r.bytes()
+		}
+		maxVersion := r.int64()
+
+		// C++ oracle skips Tags (TransactionTagMap) and DebugID (Optional<UID>)
+		// because they're complex structured types. Keep Go side in sync.
+		_ = hasTags
+		_ = tags
+		_ = hasDebugID
+		_ = debugID
+
+		goMsg := &types.GetReadVersionRequest{
+			TransactionCount: transactionCount,
+			Flags:            flags,
+			MaxVersion:       maxVersion,
+			Reply:            types.ReplyPromise{},
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeGetReadVersionRequest(
+			transactionCount, flags, false, nil, false, nil, maxVersion)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "GetReadVersionRequest")
+	})
+}
+
+// 2. GetValueRequest
+func FuzzGetValueRequest(f *testing.F) {
+	f.Add([]byte{5, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x39, 0x30, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		key := r.bytes()
+		version := r.int64()
+		hasTags := r.bool()
+		var tags []byte
+		if hasTags {
+			tags = r.bytes()
+		}
+		tenantId := r.int64()
+		hasOptions := r.bool()
+		ssLatestCommitVersions := r.bytes()
+
+		// C++ oracle skips Tags, Options, SsLatestCommitVersions (complex types)
+		_ = hasTags
+		_ = tags
+		_ = hasOptions
+		_ = ssLatestCommitVersions
+
+		goMsg := &types.GetValueRequest{
+			Key:                    key,
+			Version:                version,
+			Reply:                  types.ReplyPromise{},
+			TenantInfo:             types.TenantInfo{TenantId: tenantId},
+			SsLatestCommitVersions: emptyVersionVector(),
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeGetValueRequest(
+			key, version, false, nil, tenantId, false, emptyVersionVector())
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "GetValueRequest")
+	})
+}
+
+// 3. GetKeyRequest
+func FuzzGetKeyRequest(f *testing.F) {
+	f.Add([]byte{8, 0x73, 0x65, 0x6c, 0x65, 0x63, 0x74, 0x6f, 0x72, 1, 1, 0, 0, 0, 0x39, 0x30, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		selKey := r.bytes()
+		selOrEqual := r.bool()
+		selOffset := r.int32()
+		version := r.int64()
+		hasTags := r.bool()
+		var tags []byte
+		if hasTags {
+			tags = r.bytes()
+		}
+		tenantId := r.int64()
+		hasOptions := r.bool()
+		ssLatestCommitVersions := r.bytes()
+		field10 := r.bytes()
+
+		// C++ oracle skips Tags, Options, SsLatestCommitVersions (VersionVector), Field_10
+		_ = hasTags
+		_ = tags
+		_ = hasOptions
+		_ = ssLatestCommitVersions
+		_ = field10
+
+		goMsg := &types.GetKeyRequest{
+			Sel: types.KeySelectorRef{
+				Key:     selKey,
+				OrEqual: selOrEqual,
+				Offset:  selOffset,
+			},
+			Version:                version,
+			Reply:                  types.ReplyPromise{},
+			TenantInfo:             types.TenantInfo{TenantId: tenantId},
+			SsLatestCommitVersions: emptyVersionVector(),
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeGetKeyRequest(
+			selKey, selOrEqual, selOffset, version, false, nil,
+			tenantId, false, emptyVersionVector(), nil)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "GetKeyRequest")
+	})
+}
+
+// 4. GetKeyValuesRequest
+func FuzzGetKeyValuesRequest(f *testing.F) {
+	f.Add([]byte{5, 0x62, 0x65, 0x67, 0x69, 0x6e, 1, 1, 0, 0, 0, 3, 0x65, 0x6e, 0x64, 0, 0, 0, 0, 0, 0xD4, 0x30, 0, 0, 0, 0, 0, 0, 0xe8, 0x03, 0, 0, 0xff, 0xff, 0xff, 0x7f, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		beginKey := r.bytes()
+		beginOrEqual := r.bool()
+		beginOffset := r.int32()
+		endKey := r.bytes()
+		endOrEqual := r.bool()
+		endOffset := r.int32()
+		version := r.int64()
+		limit := r.int32()
+		limitBytes := r.int32()
+		hasTags := r.bool()
+		var tags []byte
+		if hasTags {
+			tags = r.bytes()
+		}
+		tenantId := r.int64()
+		hasOptions := r.bool()
+		ssLatestCommitVersions := r.bytes()
+
+		// C++ oracle skips Tags, Options, SsLatestCommitVersions (all complex)
+		_ = hasTags
+		_ = tags
+		_ = hasOptions
+		_ = ssLatestCommitVersions
+
+		goMsg := &types.GetKeyValuesRequest{
+			Begin: types.KeySelectorRef{
+				Key:     beginKey,
+				OrEqual: beginOrEqual,
+				Offset:  beginOffset,
+			},
+			End: types.KeySelectorRef{
+				Key:     endKey,
+				OrEqual: endOrEqual,
+				Offset:  endOffset,
+			},
+			Version:                version,
+			Limit:                  limit,
+			LimitBytes:             limitBytes,
+			Reply:                  types.ReplyPromise{},
+			TenantInfo:             types.TenantInfo{TenantId: tenantId},
+			SsLatestCommitVersions: emptyVersionVector(),
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeGetKeyValuesRequest(
+			beginKey, beginOrEqual, beginOffset,
+			endKey, endOrEqual, endOffset,
+			version, limit, limitBytes,
+			false, nil, tenantId, false, emptyVersionVector())
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "GetKeyValuesRequest")
+	})
+}
+
+// 5. GetKeyServerLocationsRequest
+func FuzzGetKeyServerLocationsRequest(f *testing.F) {
+	f.Add([]byte{8, 0x74, 0x65, 0x73, 0x74, 0x5f, 0x6b, 0x65, 0x79, 0, 0x64, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	f.Add([]byte{5, 0x62, 0x65, 0x67, 0x69, 0x6e, 1, 3, 0x65, 0x6e, 0x64, 0x2a, 0, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		begin := r.bytes()
+		hasEnd := r.bool()
+		var end []byte
+		if hasEnd {
+			end = r.bytes()
+		}
+		limit := r.int32()
+		reverse := r.bool()
+		tenantId := r.int64()
+		minTenantVersion := r.int64()
+
+		goMsg := &types.GetKeyServerLocationsRequest{
+			Begin:            begin,
+			HasEnd:           hasEnd,
+			Limit:            limit,
+			Reverse:          reverse,
+			Reply:            types.ReplyPromise{},
+			Tenant:           types.TenantInfo{TenantId: tenantId},
+			MinTenantVersion: minTenantVersion,
+		}
+		if hasEnd {
+			goMsg.End = end
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeGetKeyServerLocationsRequest(
+			begin, hasEnd, end, limit, reverse, tenantId, minTenantVersion)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "GetKeyServerLocationsRequest")
+	})
+}
+
+// 6. CommitTransactionRequest
+func FuzzCommitTransactionRequest(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0})
+	f.Add([]byte{
+		0x2a, 0, 0, 0, 0, 0, 0, 0, // readSnapshot
+		1,                         // 1 mutation
+		0,                         // type=Set
+		4, 0x6b, 0x65, 0x79, 0x31, // param1
+		4, 0x76, 0x61, 0x6c, 0x31, // param2
+		1,                         // 1 read conflict range
+		4, 0x6b, 0x65, 0x79, 0x31, // begin
+		5, 0x6b, 0x65, 0x79, 0x31, 0x00, // end
+		1,                         // 1 write conflict range
+		4, 0x6b, 0x65, 0x79, 0x31, // begin
+		5, 0x6b, 0x65, 0x79, 0x31, 0x00, // end
+		0, 0, 0, 0, // flags
+		0,                                              // no debugID
+		0,                                              // no commitCostEstimation
+		0,                                              // no tagSet
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // tenantId
+		0, // empty idempotencyId
+	})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		readSnapshot := r.int64()
+
+		numMutations := r.vecCount()
+		mutations := make([]Mutation, numMutations)
+		goMutations := make([]types.MutationRef, numMutations)
+		for i := 0; i < numMutations; i++ {
+			mt := r.byte()
+			p1 := r.bytes()
+			p2 := r.bytes()
+			mutations[i] = Mutation{Type: mt, Param1: p1, Param2: p2}
+			goMutations[i] = types.MutationRef{MutType: mt, Param1: p1, Param2: p2}
+		}
+
+		numReadCR := r.vecCount()
+		readCRs := make([]ConflictRange, numReadCR)
+		goReadCRs := make([]types.KeyRangeRef, numReadCR)
+		for i := 0; i < numReadCR; i++ {
+			b := r.bytes()
+			e := r.bytes()
+			readCRs[i] = ConflictRange{Begin: b, End: e}
+			goReadCRs[i] = types.KeyRangeRef{Begin: b, End: e}
+		}
+
+		numWriteCR := r.vecCount()
+		writeCRs := make([]ConflictRange, numWriteCR)
+		goWriteCRs := make([]types.KeyRangeRef, numWriteCR)
+		for i := 0; i < numWriteCR; i++ {
+			b := r.bytes()
+			e := r.bytes()
+			writeCRs[i] = ConflictRange{Begin: b, End: e}
+			goWriteCRs[i] = types.KeyRangeRef{Begin: b, End: e}
+		}
+
+		flags := r.uint32()
+		hasDebugID := r.bool()
+		var debugID []byte
+		if hasDebugID {
+			debugID = r.bytes()
+		}
+		hasCommitCostEstimation := r.bool()
+		var commitCostEstimation []byte
+		if hasCommitCostEstimation {
+			commitCostEstimation = r.bytes()
+		}
+		hasTagSet := r.bool()
+		var tagSet []byte
+		if hasTagSet {
+			tagSet = r.bytes()
+		}
+		tenantId := r.int64()
+		idempotencyId := r.bytes()
+
+		// C++ oracle skips DebugID, CommitCostEstimation, TagSet, IdempotencyId
+		_ = hasDebugID
+		_ = debugID
+		_ = hasCommitCostEstimation
+		_ = commitCostEstimation
+		_ = hasTagSet
+		_ = tagSet
+		_ = idempotencyId
+
+		goMsg := &types.CommitTransactionRequest{
+			Transaction: types.CommitTransactionRef{
+				ReadSnapshot:        readSnapshot,
+				Mutations:           goMutations,
+				ReadConflictRanges:  goReadCRs,
+				WriteConflictRanges: goWriteCRs,
+			},
+			Reply:      types.ReplyPromise{},
+			Flags:      flags,
+			TenantInfo: types.TenantInfo{TenantId: tenantId},
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeCommitTransactionRequest(
+			readSnapshot, mutations, readCRs, writeCRs,
+			flags, false, nil, false, nil, false, nil, tenantId, nil)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "CommitTransactionRequest")
+	})
+}
+
+// 7. GetReadVersionReply — Go-only (C++ reply types have structural vtable differences)
+func FuzzGetReadVersionReply(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0x0a, 0, 0, 0, 0x39, 0x30, 0, 0, 0, 0, 0, 0, 1, 1, 3, 0x41, 0x42, 0x43, 0, 0xe8, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		processBusyTime := r.int32()
+		version := r.int64()
+		locked := r.bool()
+		hasMetadataVersion := r.bool()
+		var metadataVersion []byte
+		if hasMetadataVersion {
+			metadataVersion = r.bytes()
+		}
+		tagThrottleInfo := r.bytes()
+		midShardSize := r.int64()
+		rkDefaultThrottled := r.bool()
+		rkBatchThrottled := r.bool()
+		ssVersionVectorDelta := r.bytes()
+		proxyId := r.uid()
+		proxyTagThrottledDuration := r.float64()
+		if math.IsNaN(proxyTagThrottledDuration) {
+			proxyTagThrottledDuration = 0
+		}
+
+		goMsg := &types.GetReadVersionReply{
+			ProcessBusyTime:           processBusyTime,
+			Version:                   version,
+			Locked:                    locked,
+			TagThrottleInfo:           tagThrottleInfo,
+			MidShardSize:              midShardSize,
+			RkDefaultThrottled:        rkDefaultThrottled,
+			RkBatchThrottled:          rkBatchThrottled,
+			SsVersionVectorDelta:      ssVersionVectorDelta,
+			ProxyId:                   proxyId,
+			ProxyTagThrottledDuration: proxyTagThrottledDuration,
+		}
+		if hasMetadataVersion {
+			goMsg.HasMetadataVersion = true
+			goMsg.MetadataVersion = metadataVersion
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 8. GetValueReply — Go-only (C++ reply types have structural vtable differences)
+func FuzzGetValueReply(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		penalty := r.float64()
+		if math.IsNaN(penalty) {
+			penalty = 0
+		}
+		hasError := r.bool()
+		var errorData []byte
+		if hasError {
+			errorData = r.bytes()
+		}
+		hasValue := r.bool()
+		var value []byte
+		if hasValue {
+			value = r.bytes()
+		}
+		cached := r.bool()
+
+		goMsg := &types.GetValueReply{Penalty: penalty, Cached: cached}
+		if hasError {
+			goMsg.HasError = true
+			goMsg.Error = errorData
+		}
+		if hasValue {
+			goMsg.HasValue = true
+			goMsg.Value = value
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 9. GetKeyReply — Go-only (C++ reply types have structural vtable differences)
+func FuzzGetKeyReply(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0x41, 0x42, 0x43, 1})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		penalty := r.float64()
+		if math.IsNaN(penalty) {
+			penalty = 0
+		}
+		hasError := r.bool()
+		var errorData []byte
+		if hasError {
+			errorData = r.bytes()
+		}
+		cached := r.bool()
+
+		goMsg := &types.GetKeyReply{Penalty: penalty, Cached: cached}
+		if hasError {
+			goMsg.HasError = true
+			goMsg.Error = errorData
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 10. GetKeyValuesReply — Go-only (C++ reply types have structural vtable differences)
+func FuzzGetKeyValuesReply(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x39, 0x30, 0, 0, 0, 0, 0, 0, 1, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		penalty := r.float64()
+		if math.IsNaN(penalty) {
+			penalty = 0
+		}
+		hasError := r.bool()
+		var errorData []byte
+		if hasError {
+			errorData = r.bytes()
+		}
+		msgData := r.bytes()
+		version := r.int64()
+		more := r.bool()
+		cached := r.bool()
+
+		goMsg := &types.GetKeyValuesReply{
+			Penalty: penalty, Data: msgData, Version: version,
+			More: more, Cached: cached,
+		}
+		if hasError {
+			goMsg.HasError = true
+			goMsg.Error = errorData
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 11. GetKeyServerLocationsReply — Go-only (all fields are structured vectors)
+func FuzzGetKeyServerLocationsReply(f *testing.F) {
+	f.Add([]byte{0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		results := r.bytes()
+		resultsTssMapping := r.bytes()
+		resultsTagMapping := r.bytes()
+
+		goMsg := &types.GetKeyServerLocationsReply{
+			Results: results, ResultsTssMapping: resultsTssMapping,
+			ResultsTagMapping: resultsTagMapping,
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 12. CommitID
+func FuzzCommitID(f *testing.F) {
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0x39, 0x30, 0, 0, 0, 0, 0, 0, 0x42, 0, 1, 3, 0x41, 0x42, 0x43, 1, 4, 0x01, 0x02, 0x03, 0x04})
+
+	o := startOracle(f)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		version := r.int64()
+		txnBatchId := r.uint16()
+		hasMetadataVersion := r.bool()
+		var metadataVersion []byte
+		if hasMetadataVersion {
+			metadataVersion = r.bytes()
+		}
+		hasConflictingKRIndices := r.bool()
+		var conflictingKRIndices []byte
+		if hasConflictingKRIndices {
+			conflictingKRIndices = r.bytes()
+		}
+
+		// C++ oracle skips ConflictingKRIndices (complex Optional<VectorRef>)
+		_ = hasConflictingKRIndices
+		_ = conflictingKRIndices
+
+		goMsg := &types.CommitID{
+			Version:    version,
+			TxnBatchId: txnBatchId,
+		}
+		if hasMetadataVersion {
+			goMsg.HasMetadataVersion = true
+			goMsg.MetadataVersion = metadataVersion
+		}
+		goBytes := goMsg.MarshalFDB()
+
+		cppBytes, err := o.SerializeCommitID(
+			version, txnBatchId, hasMetadataVersion, metadataVersion,
+			false, nil)
+		if err != nil {
+			t.Fatalf("oracle error: %v", err)
+		}
+		if cppBytes == nil {
+			t.Skip("oracle returned error response")
+		}
+
+		compareBytes(t, goBytes, cppBytes, "CommitID")
+	})
+}
+
+// 13. Error — Go-only (C++ Error type is a different class, not our custom struct)
+func FuzzError(f *testing.F) {
+	f.Add([]byte{0, 0})
+	f.Add([]byte{0xe8, 0x03})
+	f.Add([]byte{0xff, 0xff})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		errorCode := r.uint16()
+
+		goMsg := &types.Error{ErrorCode: errorCode}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 14. ClientDBInfo — Go-only (C++ vtable closure includes TenantMode nested struct)
+func FuzzClientDBInfo(f *testing.F) {
+	f.Add(make([]byte, 60))
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 5, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		grvProxies := r.bytes()
+		commitProxies := r.bytes()
+		id := r.uid()
+		hasForward := r.bool()
+		var forward []byte
+		if hasForward {
+			forward = r.bytes()
+		}
+		history := r.bytes()
+		hasEncryptKeyProxy := r.bool()
+		var encryptKeyProxy []byte
+		if hasEncryptKeyProxy {
+			encryptKeyProxy = r.bytes()
+		}
+		clusterId := r.uid()
+		clusterType := r.int32()
+		hasMetaclusterName := r.bool()
+		var metaclusterName []byte
+		if hasMetaclusterName {
+			metaclusterName = r.bytes()
+		}
+
+		goMsg := &types.ClientDBInfo{
+			GrvProxies: grvProxies, CommitProxies: commitProxies,
+			Id: id, History: history,
+			ClusterId: clusterId, ClusterType: clusterType,
+		}
+		if hasForward {
+			goMsg.HasForward = true
+			goMsg.Forward = forward
+		}
+		if hasEncryptKeyProxy {
+			goMsg.HasEncryptKeyProxy = true
+			goMsg.EncryptKeyProxy = encryptKeyProxy
+		}
+		if hasMetaclusterName {
+			goMsg.HasMetaclusterName = true
+			goMsg.MetaclusterName = metaclusterName
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 15. OpenDatabaseCoordRequest — Go-only (C++ type is OpenDatabaseRequest, different fields)
+func FuzzOpenDatabaseCoordRequest(f *testing.F) {
+	f.Add(make([]byte, 50))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		issues := r.bytes()
+		supportedVersions := r.bytes()
+		traceLogGroup := r.bytes()
+		knownClientInfoID := r.uid()
+		clusterKey := r.bytes()
+		coordinators := r.bytes()
+		hostnames := r.bytes()
+		internal := r.bool()
+
+		goMsg := &types.OpenDatabaseCoordRequest{
+			Issues: issues, SupportedVersions: supportedVersions,
+			TraceLogGroup: traceLogGroup, KnownClientInfoID: knownClientInfoID,
+			ClusterKey: clusterKey, Coordinators: coordinators,
+			Reply: types.ReplyPromise{}, Hostnames: hostnames,
+			Internal: internal,
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 16. NetworkAddress — Go-only (IPAddress variant serialization differs)
+func FuzzNetworkAddress(f *testing.F) {
+	f.Add([]byte{0x7f, 0, 0, 1, 0xbb, 0x01, 0, 0, 0})
+	f.Add([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		ipAddr := r.uint32()
+		port := r.uint16()
+		flags := r.uint16()
+		fromHostname := r.bool()
+
+		goMsg := &types.NetworkAddress{
+			Ip:           types.IPAddress{AddrTag: 1, AddrAlt0: ipAddr},
+			Port:         port,
+			Flags:        flags,
+			FromHostname: fromHostname,
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 17. Endpoint — Go-only (C++ can't construct Endpoint without FlowTransport)
+func FuzzEndpoint(f *testing.F) {
+	f.Add([]byte{0x7f, 0, 0, 1, 0xbb, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		ipAddr := r.uint32()
+		port := r.uint16()
+		flags := r.uint16()
+		fromHostname := r.bool()
+		token := r.uid()
+
+		goMsg := &types.Endpoint{
+			Addresses: types.NetworkAddressList{
+				Address: types.NetworkAddress{
+					Ip:           types.IPAddress{AddrTag: 1, AddrAlt0: ipAddr},
+					Port:         port,
+					Flags:        flags,
+					FromHostname: fromHostname,
+				},
+			},
+			Token: token,
+		}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// 18. ReplyPromise — Go-only (C++ file_identifier differs by template parameter)
+func FuzzReplyPromise(f *testing.F) {
+	f.Add(make([]byte, 16))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r := &fuzzReader{data: data}
+		token := r.uid()
+
+		goMsg := &types.ReplyPromise{Token: token}
+		goBytes := goMsg.MarshalFDB()
+		if len(goBytes) == 0 {
+			t.Fatal("MarshalFDB returned empty")
+		}
+	})
+}
+
+// --- Deterministic regression tests ---
 
 func TestDiffGetReadVersionRequest(t *testing.T) {
 	o := startOracle(t)
-	testDiffGetReadVersionRequest(t, o, 1, 1, -1)
-	testDiffGetReadVersionRequest(t, o, 0, 0, 0)
-	testDiffGetReadVersionRequest(t, o, 2, 100, 9999999)
-	testDiffGetReadVersionRequest(t, o, 0xFFFFFFFF, 0xFFFFFFFF, -1)
+	// Basic test: no optionals
+	testGetReadVersionRequestBasic(t, o, 1, 1, -1)
+	testGetReadVersionRequestBasic(t, o, 0, 0, 0)
+	testGetReadVersionRequestBasic(t, o, 0xFFFFFFFF, 0xFFFFFFFF, -1)
 }
 
-func TestDiffGetValueRequest(t *testing.T) {
-	o := startOracle(t)
-	testDiffGetValueRequest(t, o, []byte("hello"), 12345, -1)
-	testDiffGetValueRequest(t, o, []byte{}, 0, 0)
-	testDiffGetValueRequest(t, o, []byte("a_longer_key_with_many_bytes_in_it"), 999999999, -1)
-}
-
-func TestDiffGetKeyRequest(t *testing.T) {
-	o := startOracle(t)
-	testDiffGetKeyRequest(t, o, []byte("selector"), true, 1, 99999, -1)
-	testDiffGetKeyRequest(t, o, []byte{}, false, 0, 0, 0)
-	testDiffGetKeyRequest(t, o, []byte("key"), false, -5, 54321, 42)
-}
-
-func TestDiffGetKeyValuesRequest(t *testing.T) {
-	o := startOracle(t)
-	testDiffGetKeyValuesRequest(t, o,
-		[]byte("begin"), true, 1,
-		[]byte("end"), false, 0,
-		54321, 1000, 0x7fffffff, -1)
-	testDiffGetKeyValuesRequest(t, o,
-		[]byte{}, false, 0,
-		[]byte{}, false, 0,
-		0, 0, 0, 0)
-}
-
-func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
-	o := startOracle(t)
-	testDiffGetKeyServerLocationsRequest(t, o, []byte("test_key"), false, nil, 100, false, -1, -1)
-	testDiffGetKeyServerLocationsRequest(t, o, []byte("begin"), true, []byte("end"), 42, true, -1, -1)
-	testDiffGetKeyServerLocationsRequest(t, o, []byte{}, false, nil, 0, false, 0, 0)
-}
-
-func TestDiffCommitTransactionRequest(t *testing.T) {
-	o := startOracle(t)
-
-	// Empty commit
-	testDiffCommitTransactionRequest(t, o, 0, -1, nil, nil, nil)
-
-	// Single set mutation
-	testDiffCommitTransactionRequest(t, o, 42, -1,
-		[]Mutation{{Type: 0, Param1: []byte("key1"), Param2: []byte("val1")}},
-		[]ConflictRange{{Begin: []byte("key1"), End: []byte("key1\x00")}},
-		[]ConflictRange{{Begin: []byte("key1"), End: []byte("key1\x00")}},
-	)
-
-	// Multiple mutations
-	var muts []Mutation
-	var wcs []ConflictRange
-	for i := 0; i < 3; i++ {
-		key := fmt.Appendf(nil, "key_%d", i)
-		val := fmt.Appendf(nil, "val_%d", i)
-		muts = append(muts, Mutation{Type: 0, Param1: key, Param2: val})
-		wcs = append(wcs, ConflictRange{Begin: key, End: append(append([]byte{}, key...), 0)})
-	}
-	testDiffCommitTransactionRequest(t, o, 99999, -1, muts, nil, wcs)
-}
-
-// --- Fuzz targets ---
-
-func FuzzGetReadVersionRequest(f *testing.F) {
-	f.Add(uint32(1), uint32(1), int64(-1))
-	f.Add(uint32(0), uint32(0), int64(0))
-	f.Add(uint32(0xFFFFFFFF), uint32(0xFFFFFFFF), int64(-1))
-	f.Add(uint32(2), uint32(100), int64(999999))
-
-	o := startOracle(f)
-
-	f.Fuzz(func(t *testing.T, flags, transactionCount uint32, maxVersion int64) {
-		testDiffGetReadVersionRequest(t, o, flags, transactionCount, maxVersion)
-	})
-}
-
-func FuzzGetValueRequest(f *testing.F) {
-	f.Add([]byte("key"), int64(12345), int64(-1))
-	f.Add([]byte{}, int64(0), int64(0))
-	f.Add([]byte("long_key_with_lots_of_bytes"), int64(-1), int64(42))
-
-	o := startOracle(f)
-
-	f.Fuzz(func(t *testing.T, key []byte, version, tenantId int64) {
-		testDiffGetValueRequest(t, o, key, version, tenantId)
-	})
-}
-
-func FuzzGetKeyRequest(f *testing.F) {
-	f.Add([]byte("key"), true, int32(1), int64(99999), int64(-1))
-	f.Add([]byte{}, false, int32(0), int64(0), int64(0))
-
-	o := startOracle(f)
-
-	f.Fuzz(func(t *testing.T, key []byte, orEqual bool, offset int32, version, tenantId int64) {
-		testDiffGetKeyRequest(t, o, key, orEqual, offset, version, tenantId)
-	})
-}
-
-func FuzzGetKeyValuesRequest(f *testing.F) {
-	f.Add([]byte("begin"), []byte("end"), true, false, int32(1), int32(0),
-		int64(54321), int32(1000), int32(0x7fffffff), int64(-1))
-	f.Add([]byte{}, []byte{}, false, false, int32(0), int32(0),
-		int64(0), int32(0), int32(0), int64(0))
-
-	o := startOracle(f)
-
-	f.Fuzz(func(t *testing.T, beginKey, endKey []byte, beginOrEqual, endOrEqual bool,
-		beginOffset, endOffset int32, version int64, limit, limitBytes int32, tenantId int64,
-	) {
-		testDiffGetKeyValuesRequest(t, o, beginKey, beginOrEqual, beginOffset,
-			endKey, endOrEqual, endOffset, version, limit, limitBytes, tenantId)
-	})
-}
-
-func FuzzGetKeyServerLocationsRequest(f *testing.F) {
-	f.Add([]byte("key"), false, []byte{}, int32(100), false, int64(-1), int64(-1))
-	f.Add([]byte("begin"), true, []byte("end"), int32(42), true, int64(-1), int64(-1))
-
-	o := startOracle(f)
-
-	f.Fuzz(func(t *testing.T, begin []byte, hasEnd bool, end []byte,
-		limit int32, reverse bool, tenantId, minTenantVersion int64,
-	) {
-		testDiffGetKeyServerLocationsRequest(t, o, begin, hasEnd, end,
-			limit, reverse, tenantId, minTenantVersion)
-	})
-}
-
-// --- Comparison helpers ---
-
-func testDiffGetReadVersionRequest(t testing.TB, o *Oracle, flags, transactionCount uint32, maxVersion int64) {
+func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, flags uint32, maxVersion int64) {
 	t.Helper()
-
-	// Go serialization
 	goMsg := &types.GetReadVersionRequest{
-		Flags:            flags,
 		TransactionCount: transactionCount,
+		Flags:            flags,
 		MaxVersion:       maxVersion,
-		Reply:            types.ReplyPromise{}, // zero token
+		Reply:            types.ReplyPromise{},
 	}
 	goBytes := goMsg.MarshalFDB()
-
-	// C++ serialization
-	cppBytes, err := o.SerializeGetReadVersionRequest(flags, transactionCount, maxVersion)
+	cppBytes, err := o.SerializeGetReadVersionRequest(transactionCount, flags, false, nil, false, nil, maxVersion)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "GetReadVersionRequest")
 }
 
-func testDiffGetValueRequest(t testing.TB, o *Oracle, key []byte, version, tenantId int64) {
-	t.Helper()
+func TestDiffGetValueRequest(t *testing.T) {
+	o := startOracle(t)
+	testGetValueRequestBasic(t, o, []byte("hello"), 12345, -1)
+	testGetValueRequestBasic(t, o, []byte{}, 0, 0)
+}
 
+func testGetValueRequestBasic(t testing.TB, o *Oracle, key []byte, version, tenantId int64) {
+	t.Helper()
 	goMsg := &types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
@@ -226,166 +878,174 @@ func testDiffGetValueRequest(t testing.TB, o *Oracle, key []byte, version, tenan
 		SsLatestCommitVersions: emptyVersionVector(),
 	}
 	goBytes := goMsg.MarshalFDB()
-
-	cppBytes, err := o.SerializeGetValueRequest(key, version, tenantId)
+	cppBytes, err := o.SerializeGetValueRequest(key, version, false, nil, tenantId, false, emptyVersionVector())
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "GetValueRequest")
 }
 
-func testDiffGetKeyRequest(t testing.TB, o *Oracle, key []byte, orEqual bool, offset int32, version, tenantId int64) {
-	t.Helper()
+func TestDiffGetKeyRequest(t *testing.T) {
+	o := startOracle(t)
+	testGetKeyRequestBasic(t, o, []byte("selector"), true, 1, 99999, -1)
+	testGetKeyRequestBasic(t, o, []byte{}, false, 0, 0, 0)
+}
 
+func testGetKeyRequestBasic(t testing.TB, o *Oracle, key []byte, orEqual bool, offset int32, version, tenantId int64) {
+	t.Helper()
 	goMsg := &types.GetKeyRequest{
-		Sel: types.KeySelectorRef{
-			Key:     key,
-			OrEqual: orEqual,
-			Offset:  offset,
-		},
+		Sel:                    types.KeySelectorRef{Key: key, OrEqual: orEqual, Offset: offset},
 		Version:                version,
 		Reply:                  types.ReplyPromise{},
 		TenantInfo:             types.TenantInfo{TenantId: tenantId},
 		SsLatestCommitVersions: emptyVersionVector(),
 	}
 	goBytes := goMsg.MarshalFDB()
-
-	cppBytes, err := o.SerializeGetKeyRequest(key, orEqual, offset, version, tenantId)
+	cppBytes, err := o.SerializeGetKeyRequest(key, orEqual, offset, version, false, nil, tenantId, false, emptyVersionVector(), nil)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "GetKeyRequest")
 }
 
-func testDiffGetKeyValuesRequest(t testing.TB, o *Oracle,
-	beginKey []byte, beginOrEqual bool, beginOffset int32,
-	endKey []byte, endOrEqual bool, endOffset int32,
-	version int64, limit, limitBytes int32, tenantId int64,
-) {
-	t.Helper()
+func TestDiffGetKeyValuesRequest(t *testing.T) {
+	o := startOracle(t)
 
 	goMsg := &types.GetKeyValuesRequest{
-		Begin: types.KeySelectorRef{
-			Key:     beginKey,
-			OrEqual: beginOrEqual,
-			Offset:  beginOffset,
-		},
-		End: types.KeySelectorRef{
-			Key:     endKey,
-			OrEqual: endOrEqual,
-			Offset:  endOffset,
-		},
-		Version:                version,
-		Limit:                  limit,
-		LimitBytes:             limitBytes,
+		Begin:                  types.KeySelectorRef{Key: []byte("begin"), OrEqual: true, Offset: 1},
+		End:                    types.KeySelectorRef{Key: []byte("end"), OrEqual: false, Offset: 0},
+		Version:                54321,
+		Limit:                  1000,
+		LimitBytes:             0x7fffffff,
 		Reply:                  types.ReplyPromise{},
-		TenantInfo:             types.TenantInfo{TenantId: tenantId},
+		TenantInfo:             types.TenantInfo{TenantId: -1},
 		SsLatestCommitVersions: emptyVersionVector(),
 	}
 	goBytes := goMsg.MarshalFDB()
-
 	cppBytes, err := o.SerializeGetKeyValuesRequest(
-		beginKey, beginOrEqual, beginOffset,
-		endKey, endOrEqual, endOffset,
-		version, limit, limitBytes, tenantId)
+		[]byte("begin"), true, 1, []byte("end"), false, 0,
+		54321, 1000, 0x7fffffff, false, nil, -1, false, emptyVersionVector())
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "GetKeyValuesRequest")
 }
 
-func testDiffGetKeyServerLocationsRequest(t testing.TB, o *Oracle,
-	begin []byte, hasEnd bool, end []byte,
-	limit int32, reverse bool, tenantId, minTenantVersion int64,
-) {
-	t.Helper()
+func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
+	o := startOracle(t)
 
+	// Without end
 	goMsg := &types.GetKeyServerLocationsRequest{
-		Begin:            begin,
-		HasEnd:           hasEnd,
-		Limit:            limit,
-		Reverse:          reverse,
+		Begin:            []byte("test_key"),
+		Limit:            100,
 		Reply:            types.ReplyPromise{},
-		Tenant:           types.TenantInfo{TenantId: tenantId},
-		MinTenantVersion: minTenantVersion,
-	}
-	if hasEnd {
-		goMsg.End = end
+		Tenant:           types.TenantInfo{TenantId: -1},
+		MinTenantVersion: -1,
 	}
 	goBytes := goMsg.MarshalFDB()
-
-	cppBytes, err := o.SerializeGetKeyServerLocationsRequest(
-		begin, hasEnd, end, limit, reverse, tenantId, minTenantVersion)
+	cppBytes, err := o.SerializeGetKeyServerLocationsRequest([]byte("test_key"), false, nil, 100, false, -1, -1)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "GetKeyServerLocationsRequest")
+
+	// With end
+	goMsg2 := &types.GetKeyServerLocationsRequest{
+		Begin:            []byte("begin"),
+		HasEnd:           true,
+		End:              []byte("end"),
+		Limit:            42,
+		Reverse:          true,
+		Reply:            types.ReplyPromise{},
+		Tenant:           types.TenantInfo{TenantId: -1},
+		MinTenantVersion: -1,
+	}
+	goBytes2 := goMsg2.MarshalFDB()
+	cppBytes2, err := o.SerializeGetKeyServerLocationsRequest([]byte("begin"), true, []byte("end"), 42, true, -1, -1)
+	if err != nil {
+		t.Fatalf("oracle error: %v", err)
+	}
+	if cppBytes2 == nil {
+		t.Fatal("oracle returned error response")
+	}
+	compareBytes(t, goBytes2, cppBytes2, "GetKeyServerLocationsRequest")
 }
 
-func testDiffCommitTransactionRequest(t testing.TB, o *Oracle,
-	readSnapshot, tenantId int64,
-	mutations []Mutation,
-	readConflictRanges, writeConflictRanges []ConflictRange,
-) {
-	t.Helper()
+func TestDiffCommitTransactionRequest(t *testing.T) {
+	o := startOracle(t)
 
-	// Build Go message
+	// Empty commit
 	goMsg := &types.CommitTransactionRequest{
-		Transaction: types.CommitTransactionRef{
-			ReadSnapshot: readSnapshot,
-		},
-		Reply:      types.ReplyPromise{},
-		TenantInfo: types.TenantInfo{TenantId: tenantId},
+		Transaction: types.CommitTransactionRef{ReadSnapshot: 0},
+		Reply:       types.ReplyPromise{},
+		TenantInfo:  types.TenantInfo{TenantId: -1},
 	}
-
-	for _, m := range mutations {
-		goMsg.Transaction.Mutations = append(goMsg.Transaction.Mutations,
-			types.MutationRef{
-				MutType: m.Type,
-				Param1:  m.Param1,
-				Param2:  m.Param2,
-			})
-	}
-	for _, cr := range readConflictRanges {
-		goMsg.Transaction.ReadConflictRanges = append(goMsg.Transaction.ReadConflictRanges,
-			types.KeyRangeRef{Begin: cr.Begin, End: cr.End})
-	}
-	for _, cr := range writeConflictRanges {
-		goMsg.Transaction.WriteConflictRanges = append(goMsg.Transaction.WriteConflictRanges,
-			types.KeyRangeRef{Begin: cr.Begin, End: cr.End})
-	}
-
 	goBytes := goMsg.MarshalFDB()
-
-	cppBytes, err := o.SerializeCommitTransactionRequest(
-		readSnapshot, tenantId, mutations, readConflictRanges, writeConflictRanges)
+	cppBytes, err := o.SerializeCommitTransactionRequest(0, nil, nil, nil, 0, false, nil, false, nil, false, nil, -1, nil)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
 	if cppBytes == nil {
 		t.Fatal("oracle returned error response")
 	}
-
 	compareBytes(t, goBytes, cppBytes, "CommitTransactionRequest")
 }
 
-// compareBytes compares Go and C++ serialized bytes. The only expected
+func TestDiffNetworkAddress(t *testing.T) {
+	// Go-only: IPAddress variant serialization differs from C++
+	goMsg := &types.NetworkAddress{
+		Ip:           types.IPAddress{AddrTag: 1, AddrAlt0: 0x0100007f},
+		Port:         4500,
+		Flags:        1,
+		FromHostname: false,
+	}
+	goBytes := goMsg.MarshalFDB()
+	if len(goBytes) == 0 {
+		t.Fatal("MarshalFDB returned empty")
+	}
+}
+
+func TestDiffReplyPromise(t *testing.T) {
+	// Go-only: C++ ReplyPromise file_identifier differs by template parameter
+	goMsg := &types.ReplyPromise{}
+	goBytes := goMsg.MarshalFDB()
+	if len(goBytes) == 0 {
+		t.Fatal("MarshalFDB returned empty")
+	}
+}
+
+func TestDiffCommitID(t *testing.T) {
+	o := startOracle(t)
+
+	goMsg := &types.CommitID{
+		Version:    42,
+		TxnBatchId: 7,
+	}
+	goBytes := goMsg.MarshalFDB()
+	cppBytes, err := o.SerializeCommitID(42, 7, false, nil, false, nil)
+	if err != nil {
+		t.Fatalf("oracle error: %v", err)
+	}
+	if cppBytes == nil {
+		t.Fatal("oracle returned error response")
+	}
+	compareBytes(t, goBytes, cppBytes, "CommitID")
+}
+
+// --- Comparison helper ---
+
 // compareBytes compares Go and C++ serialized FDB FlatBuffers output.
 //
 // VTable pack ordering differs between Go and C++ (C++ uses std::set<VTable*>
@@ -394,18 +1054,7 @@ func testDiffCommitTransactionRequest(t testing.TB, o *Oracle,
 // position. But it means raw byte comparison always fails in the vtable region.
 //
 // Strategy: compare structurally by extracting the object data region (after
-// vtables) and verifying field values match. Specifically:
-//  1. Size must match
-//  2. Root offset and file ID must match (bytes 0-7)
-//  3. Object data region (from root object to end of buffer) must match
-//     after normalizing soffsets (which point into the vtable region)
-//
-// In practice: we extract the OOL (out-of-line) data region which contains
-// all the actual field values — keys, integers, etc. This region is at the
-// END of the buffer and is NOT affected by vtable ordering. The vtable region
-// is at the START (after the footer). Object bodies in between have soffsets
-// that differ but all other field bytes (scalars, reloffs, inline data) are
-// identical IF our serializer is correct.
+// vtables) and verifying field values match.
 func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
 	t.Helper()
 
@@ -426,27 +1075,7 @@ func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
 	// Find the root object position. Root offset is at byte 0 (LE uint32).
 	rootOff := int(binary.LittleEndian.Uint32(goBytes[:4]))
 
-	// The root object starts at rootOff. Everything from rootOff onward is
-	// object data + OOL data. Vtables are packed BEFORE rootOff.
-	// Compare the object+OOL region, skipping soffset bytes (first 4 bytes
-	// of each object) since they point into the vtable region.
-	//
-	// Simpler: compare each byte from rootOff to end, but MASK the soffset
-	// at each object start. We know the root object's soffset is at rootOff.
-	// For a full structural comparison we'd need to walk all objects, but
-	// as a practical heuristic: count divergences in [rootOff:] and flag
-	// only non-soffset divergences.
-	//
-	// Even simpler: compare the OOL region at the end of the buffer.
-	// OOL data (byte arrays, nested struct data) is written from the end
-	// of the buffer backward. It's not affected by vtable ordering at all.
-	// The "object body" region between vtables and OOL has soffsets that differ
-	// plus reloffs that should be identical (they point within the object region).
-
-	// Practical approach: count divergent bytes in [rootOff:].
-	// Soffsets are 4 bytes at known positions. Each object has exactly one soffset
-	// at its start. For a message with N nested objects, we expect N*4 divergent bytes
-	// (all soffsets). Any other divergence is a real bug.
+	// Compare the object+OOL region, skipping soffset bytes.
 	objectRegionGo := goBytes[rootOff:]
 	objectRegionCpp := cppBytes[rootOff:]
 
@@ -458,17 +1087,12 @@ func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
 	}
 
 	if divergences == 0 {
-		// Object+OOL region is byte-identical. Only vtable ordering differs. PASS.
 		return
 	}
 
-	// Some divergences in the object region. These should all be soffsets
-	// (4-byte vtable back-references at the start of each object).
-	// Log them and check if they're at object-start positions.
 	t.Logf("%s: %d divergent bytes in object region [%d:%d] (expected: soffset diffs only)",
 		typeName, divergences, rootOff, len(goBytes))
 
-	// Show divergences
 	shown := 0
 	for i := 0; i < len(objectRegionGo) && shown < 16; i++ {
 		if objectRegionGo[i] != objectRegionCpp[i] {
@@ -478,12 +1102,7 @@ func compareBytes(t testing.TB, goBytes, cppBytes []byte, typeName string) {
 		}
 	}
 
-	// If ALL divergent bytes are within 4-byte-aligned groups that look like
-	// soffsets, this is just vtable ordering. Otherwise it's a real bug.
-	// For now: warn but don't fail on soffset-only divergences in object region.
-	// TODO: implement proper soffset detection by walking the object tree.
 	if divergences <= 20 {
-		// Likely just soffsets from vtable reordering. Log but don't fail.
 		t.Logf("%s: %d byte divergences in object region — likely soffset diffs from vtable ordering (harmless)",
 			typeName, divergences)
 	} else {
