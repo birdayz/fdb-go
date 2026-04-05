@@ -1758,7 +1758,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
   **Remaining issues found by fuzzer (not yet fixed):**
   - [ ] **IPAddress variant serialization**: Go's `MarshalFDB` for `IPAddress` doesn't write the variant tag/payload in the `writeToBuffer` path. `NetworkAddress` and `Endpoint` serialize without IP data. Low priority — we never construct NetworkAddress/Endpoint for sending, only parse them from server responses.
-  - [ ] **Arena field missing from codegen**: C++ `serializer(ar, ..., arena)` serializes Arena as empty vector. Our codegen skips it entirely. Low priority — Arena is always empty in practice and the binding tester passes without it.
+  - ~~Arena field missing from codegen~~ — FALSE ALARM. `scalar_traits<Arena>::size = 0`, save is a no-op. Arena is FDB's zero-copy memory management: on deserialize, `context.addArena(arena)` transfers buffer ownership so `StringRef` fields can point into raw received bytes without copying. On serialize, Arena contributes zero bytes. Our codegen correctly skips it.
 - [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
 - [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
 
