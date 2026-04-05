@@ -155,9 +155,16 @@ type Transaction struct {
 type TransactionPriority int
 
 const (
-	PriorityDefault         TransactionPriority = iota // 8 << 24
-	PriorityBatch                                      // 1 << 24
-	PrioritySystemImmediate                            // 15 << 24
+	PriorityDefault TransactionPriority = iota
+	PriorityBatch
+	PrioritySystemImmediate
+)
+
+// GRV Flags priority encoding — C++ GetReadVersionRequest enum values.
+const (
+	grvPriorityDefault         uint32 = 8 << 24  // PRIORITY_DEFAULT
+	grvPriorityBatch           uint32 = 1 << 24  // PRIORITY_BATCH
+	grvPrioritySystemImmediate uint32 = 15 << 24 // PRIORITY_SYSTEM_IMMEDIATE
 )
 
 // Snapshot returns a snapshot view of this transaction.
@@ -576,14 +583,13 @@ func (tx *Transaction) SetSizeLimit(bytes int64) {
 // Encodes priority and option flags into the uint32 bitmask.
 func (tx *Transaction) grvFlags() uint32 {
 	var flags uint32
-	// C++ priority encoding.
 	switch tx.priority {
 	case PriorityBatch:
-		flags |= 1 << 24
+		flags |= grvPriorityBatch
 	case PrioritySystemImmediate:
-		flags |= 15 << 24
-	default: // PriorityDefault
-		flags |= 8 << 24
+		flags |= grvPrioritySystemImmediate
+	default:
+		flags |= grvPriorityDefault
 	}
 	if tx.causalReadRisky {
 		flags |= 1 // FLAG_CAUSAL_READ_RISKY
