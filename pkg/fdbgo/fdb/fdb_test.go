@@ -2,6 +2,7 @@ package fdb_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -195,35 +196,116 @@ func TestIterator(t *testing.T) {
 	db := openTestDB(t)
 
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("iter-1"), []byte("a"))
-		tr.Set(fdb.Key("iter-2"), []byte("b"))
-		tr.Set(fdb.Key("iter-3"), []byte("c"))
+		for i := 0; i < 20; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("iter-%02d", i)), []byte(fmt.Sprintf("val-%02d", i)))
+		}
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}, fdb.RangeOptions{})
-		iter := rr.Iterator()
-		var keys []string
-		for iter.Advance() {
-			kv, err := iter.Get()
+	// Test each streaming mode returns correct results.
+	modes := []struct {
+		name string
+		mode fdb.StreamingMode
+	}{
+		{"WantAll", fdb.StreamingModeWantAll},
+		{"Iterator", fdb.StreamingModeIterator},
+		{"Exact", fdb.StreamingModeExact},
+		{"Small", fdb.StreamingModeSmall},
+		{"Medium", fdb.StreamingModeMedium},
+		{"Large", fdb.StreamingModeLarge},
+		{"Serial", fdb.StreamingModeSerial},
+	}
+
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+				kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+				opts := fdb.RangeOptions{Mode: m.mode}
+				if m.mode == fdb.StreamingModeExact {
+					opts.Limit = 20 // EXACT requires a limit
+				}
+				rr := tr.GetRange(kr, opts)
+				iter := rr.Iterator()
+				var keys []string
+				for iter.Advance() {
+					kv, err := iter.Get()
+					if err != nil {
+						return nil, err
+					}
+					keys = append(keys, string(kv.Key))
+				}
+				return keys, nil
+			})
 			if err != nil {
-				return nil, err
+				t.Fatalf("Iterator(%s): %v", m.name, err)
 			}
-			keys = append(keys, string(kv.Key))
+			keys := result.([]string)
+			if len(keys) != 20 {
+				t.Fatalf("iterator(%s): got %d keys, want 20", m.name, len(keys))
+			}
+			// Verify order.
+			if keys[0] != "iter-00" || keys[19] != "iter-19" {
+				t.Fatalf("iterator(%s): wrong order: first=%q last=%q", m.name, keys[0], keys[19])
+			}
+		})
+	}
+
+	// Test iterator with limit.
+	t.Run("WithLimit", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+			rr := tr.GetRange(kr, fdb.RangeOptions{Limit: 5, Mode: fdb.StreamingModeIterator})
+			iter := rr.Iterator()
+			var keys []string
+			for iter.Advance() {
+				kv, err := iter.Get()
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, string(kv.Key))
+			}
+			return keys, nil
+		})
+		if err != nil {
+			t.Fatalf("Iterator(WithLimit): %v", err)
 		}
-		return keys, nil
+		keys := result.([]string)
+		if len(keys) != 5 {
+			t.Fatalf("iterator(WithLimit): got %d keys, want 5", len(keys))
+		}
 	})
-	if err != nil {
-		t.Fatalf("Iterator: %v", err)
-	}
-	keys := result.([]string)
-	if len(keys) != 3 {
-		t.Fatalf("iterator: got %d keys, want 3", len(keys))
-	}
+
+	// Test reverse iterator.
+	t.Run("Reverse", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+			rr := tr.GetRange(kr, fdb.RangeOptions{Reverse: true, Mode: fdb.StreamingModeSmall})
+			iter := rr.Iterator()
+			var keys []string
+			for iter.Advance() {
+				kv, err := iter.Get()
+				if err != nil {
+					return nil, err
+				}
+				keys = append(keys, string(kv.Key))
+			}
+			return keys, nil
+		})
+		if err != nil {
+			t.Fatalf("Iterator(Reverse): %v", err)
+		}
+		keys := result.([]string)
+		if len(keys) != 20 {
+			t.Fatalf("iterator(Reverse): got %d keys, want 20", len(keys))
+		}
+		// First should be last key (reverse order).
+		if keys[0] != "iter-19" || keys[19] != "iter-00" {
+			t.Fatalf("iterator(Reverse): wrong order: first=%q last=%q", keys[0], keys[19])
+		}
+	})
 }
 
 func TestAtomicOps(t *testing.T) {
