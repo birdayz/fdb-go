@@ -173,7 +173,7 @@ func (b *grvBatcher) flush(db *database) {
 	flags := priorityBits | optionBits
 
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags)
+	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -229,7 +229,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 				// Background refresher uses default priority (8 << 24).
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault)
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
 				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)
@@ -260,7 +260,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
 	var backoff time.Duration
 	numAttempts := 0
 
@@ -298,7 +298,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetReadVersionRequest(replyToken, flags)
+			body := buildGetReadVersionRequest(replyToken, flags, txnCount)
 
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
 				cancelReply()
@@ -340,9 +340,9 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 	}
 }
 
-func buildGetReadVersionRequest(replyToken transport.UID, flags uint32) []byte {
+func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount uint32) []byte {
 	req := types.GetReadVersionRequest{
-		TransactionCount: 1,
+		TransactionCount: txnCount,
 		Flags:            flags,
 		MaxVersion:       -1,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
