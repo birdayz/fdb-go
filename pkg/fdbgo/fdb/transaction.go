@@ -13,6 +13,10 @@ type transaction struct {
 	inner *client.Transaction
 	db    Database
 	ctx   context.Context
+
+	// commitDone is closed after a successful commit.
+	// Used by GetVersionstamp to defer resolution until post-commit.
+	commitDone chan struct{}
 }
 
 // Transaction is a handle to a FoundationDB transaction.
@@ -71,20 +75,21 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 }
 
 // GetVersionstamp returns the versionstamp which was used by any
-// versionstamp operations in this transaction.
-//
-// Must be called after a successful Commit(). The Apple binding allows
-// calling before commit (the future blocks until commit); that behavior
-// is implemented in a later PR via a commitDone channel. In this base
-// implementation, calling before commit returns error 2015.
+// versionstamp operations in this transaction. The returned FutureKey
+// blocks until the transaction has been committed, matching Apple's API
+// where GetVersionstamp() can be called before Commit().
 func (tr Transaction) GetVersionstamp() FutureKey {
-	return newReadyFutureKey(func() (Key, error) {
+	return newFutureKey(func() (Key, error) {
+		// Wait for commit to complete.
+		if tr.t.commitDone != nil {
+			<-tr.t.commitDone
+		}
 		vs, err := tr.t.inner.GetVersionstamp()
 		if err != nil {
 			return nil, convertError(err)
 		}
 		return Key(vs), nil
-	}())
+	})
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
@@ -194,9 +199,20 @@ func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 
 // Commit commits the transaction. The returned FutureNil becomes ready
 // when the commit has been acknowledged by the cluster.
+// After successful commit, any pending GetVersionstamp() futures resolve.
 func (tr Transaction) Commit() FutureNil {
 	return newFutureNil(func() error {
-		return convertError(tr.t.inner.Commit(tr.t.ctx))
+		err := convertError(tr.t.inner.Commit(tr.t.ctx))
+		// Signal versionstamp futures regardless of success/failure.
+		if tr.t.commitDone != nil {
+			select {
+			case <-tr.t.commitDone:
+				// Already closed (shouldn't happen but defensive).
+			default:
+				close(tr.t.commitDone)
+			}
+		}
+		return err
 	})
 }
 

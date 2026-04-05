@@ -529,6 +529,7 @@ func TestVersionstamp(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	// Test post-commit GetVersionstamp (classic usage).
 	tr, err := db.CreateTransaction()
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
@@ -540,10 +541,38 @@ func TestVersionstamp(t *testing.T) {
 
 	vs, err := tr.GetVersionstamp().Get()
 	if err != nil {
-		t.Fatalf("GetVersionstamp: %v", err)
+		t.Fatalf("GetVersionstamp (post-commit): %v", err)
 	}
 	if len(vs) != 10 {
 		t.Fatalf("versionstamp should be 10 bytes, got %d", len(vs))
+	}
+
+	// Test deferred GetVersionstamp — call BEFORE commit, resolve AFTER.
+	// This is the Apple binding's documented usage pattern.
+	tr2, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	tr2.Set(fdb.Key("vs-key2"), []byte("vs-val2"))
+
+	// Get the future before committing.
+	vsFuture := tr2.GetVersionstamp()
+	if vsFuture.IsReady() {
+		t.Fatal("versionstamp future should not be ready before commit")
+	}
+
+	// Commit.
+	if err := tr2.Commit().Get(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Now the future should resolve.
+	vs2, err := vsFuture.Get()
+	if err != nil {
+		t.Fatalf("GetVersionstamp (deferred): %v", err)
+	}
+	if len(vs2) != 10 {
+		t.Fatalf("deferred versionstamp should be 10 bytes, got %d", len(vs2))
 	}
 }
 
