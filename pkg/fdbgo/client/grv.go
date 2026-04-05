@@ -229,7 +229,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 				// Background refresher uses default priority (8 << 24).
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, 8<<24)
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault)
 				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)

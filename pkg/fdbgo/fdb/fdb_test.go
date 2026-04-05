@@ -598,13 +598,13 @@ func TestTransactionOptions(t *testing.T) {
 	if err := tr.Options().SetPriorityBatch(); err != nil {
 		t.Fatalf("SetPriorityBatch: %v", err)
 	}
-	tr.Set(fdb.Key("opt-key"), []byte("opt-val"))
+	tr.Set(fdb.Key(t.Name()+"/opt-key"), []byte("opt-val"))
 	if err := tr.Commit().Get(); err != nil {
 		t.Fatalf("Commit with batch priority: %v", err)
 	}
 	// Verify the write landed
 	result, err := db.Transact(func(tr2 fdb.Transaction) (any, error) {
-		return tr2.Get(fdb.Key("opt-key")).MustGet(), nil
+		return tr2.Get(fdb.Key(t.Name() + "/opt-key")).MustGet(), nil
 	})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -621,7 +621,7 @@ func TestTransactionOptions(t *testing.T) {
 	if err := tr2.Options().SetPrioritySystemImmediate(); err != nil {
 		t.Fatalf("SetPrioritySystemImmediate: %v", err)
 	}
-	tr2.Set(fdb.Key("opt-key2"), []byte("opt-val2"))
+	tr2.Set(fdb.Key(t.Name()+"/opt-key2"), []byte("opt-val2"))
 	if err := tr2.Commit().Get(); err != nil {
 		t.Fatalf("Commit with system immediate priority: %v", err)
 	}
@@ -634,7 +634,7 @@ func TestTransactionOptions(t *testing.T) {
 	if err := tr3.Options().SetCausalReadRisky(); err != nil {
 		t.Fatalf("SetCausalReadRisky: %v", err)
 	}
-	val := tr3.Get(fdb.Key("opt-key2")).MustGet()
+	val := tr3.Get(fdb.Key(t.Name() + "/opt-key2")).MustGet()
 	if string(val) != "opt-val2" {
 		t.Fatalf("causal read risky: got %q, want %q", val, "opt-val2")
 	}
@@ -653,7 +653,7 @@ func TestSizeLimit(t *testing.T) {
 		t.Fatalf("SetSizeLimit: %v", err)
 	}
 	// Write more data than the limit
-	tr.Set(fdb.Key("big-key-exceeding-size-limit"), []byte("big-value-exceeding-size-limit"))
+	tr.Set(fdb.Key(t.Name()+"/big-key"), []byte("big-value-exceeding-size-limit"))
 	err = tr.Commit().Get()
 	if err == nil {
 		t.Fatal("expected error from size limit, got nil")
