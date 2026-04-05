@@ -19,6 +19,7 @@
 #include "fdbclient/CommitProxyInterface.h"
 #include "fdbclient/GrvProxyInterface.h"
 #include "fdbclient/ClusterInterface.h"
+#include "fdbclient/CoordinationInterface.h"
 #include "fdbclient/FDBTypes.h"
 #include "fdbrpc/FlowTransport.h"
 #include "fdbrpc/TenantInfo.h"
@@ -637,15 +638,9 @@ static bool handleError() {
     if (!readU16(errorCode)) return false;
 
     Error err = Error::fromCode(errorCode);
-    // Error in C++ FDB is different from our Error type.
-    // The Go Error type is our custom struct with just ErrorCode field.
-    // We need to serialize it like any other FDB message.
-    // Actually Error here maps to the FDB error reply type, not the flow Error class.
-    // Let's check what the Go side expects...
-    // The Go type is types.Error{ErrorCode uint16} with ErrorFileID.
-    // In C++ this would be mapped to ErrorOr's error serialization format.
-    // For simplicity, skip this — the types don't map cleanly.
-    writeErrorResponse();
+
+    auto buf = serializeMessage(err);
+    writeResponse(buf.data(), buf.size());
     return true;
 }
 
@@ -712,11 +707,10 @@ static bool handleOpenDatabaseRequest() {
     if (!readBytes(hostnames)) return false;
     if (!readBool(internal)) return false;
 
-    OpenDatabaseRequest req;
+    OpenDatabaseCoordRequest req;
     req.knownClientInfoID = knownClientInfoID;
-    // traceLogGroup, clusterKey, internal: field names differ between versions
-    // issues, supportedVersions, coordinators, hostnames: structured vectors
-    // Just test with knownClientInfoID (UID) which is reliably available
+    req.internal = internal;
+    // issues, supportedVersions, coordinators, hostnames: structured vectors, skip
 
     auto buf = serializeMessage(req);
     zeroReplyToken(buf, req.reply);
@@ -754,10 +748,14 @@ static bool handleEndpoint() {
     if (!readBool(fromHostname)) return false;
     if (!readUID(token)) return false;
 
-    // Construct a simple Endpoint with one address and the given token.
-    // This is tricky because C++ Endpoint is constructed via FlowTransport.
-    // Skip detailed Endpoint construction, just test scaffolding.
-    writeErrorResponse();
+    // Construct Endpoint by setting fields directly (avoids choosePrimaryAddress
+    // which depends on g_network local address TLS state).
+    Endpoint ep;
+    ep.addresses.address = NetworkAddress(IPAddress(ipAddr), port, flags, fromHostname);
+    ep.token = token;
+
+    auto buf = serializeMessage(ep);
+    writeResponse(buf.data(), buf.size());
     return true;
 }
 
