@@ -93,10 +93,15 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // return error 2015 (used_during_commit).
 func (tr Transaction) GetVersionstamp() FutureKey {
 	inner := tr.t.inner
-	commitDone := tr.t.commitDone
+	t := tr.t
 	return newFutureKey(func() (Key, error) {
 		// Block until commit completes (or has already completed).
-		<-commitDone
+		<-t.commitDone
+		// If commit failed, return the commit error (not a confusing
+		// versionstamp-specific error).
+		if t.commitErr != nil {
+			return nil, t.commitErr
+		}
 		vs, err := inner.GetVersionstamp()
 		if err != nil {
 			return nil, convertError(err)
@@ -227,9 +232,15 @@ func (tr Transaction) Commit() FutureNil {
 	})
 }
 
-// Cancel cancels the transaction.
+// Cancel cancels the transaction. Also unblocks any pending
+// GetVersionstamp() futures.
 func (tr Transaction) Cancel() {
 	tr.t.inner.Cancel()
+	select {
+	case <-tr.t.commitDone:
+	default:
+		close(tr.t.commitDone)
+	}
 }
 
 // OnError determines whether an error is retryable. The returned FutureNil
@@ -261,10 +272,17 @@ func (tr Transaction) SetReadVersion(version int64) {
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
 	old := tr.t.inner
+	oldDone := tr.t.commitDone
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
 	tr.t.commitDone = make(chan struct{})
 	tr.t.commitErr = nil
 	old.Cancel()
+	// Unblock any goroutines from GetVersionstamp() calls made before Reset.
+	select {
+	case <-oldDone:
+	default:
+		close(oldDone)
+	}
 }
 
 // AddReadConflictRange adds a read conflict range.

@@ -137,13 +137,22 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 		// unconvertError converts Error → *wire.FDBError for retry loop.
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
+		cd := make(chan struct{})
 		tr := Transaction{t: &transaction{
 			inner:      tx,
 			db:         db,
 			ctx:        db.d.ctx,
-			commitDone: make(chan struct{}),
+			commitDone: cd,
 		}}
-		return f(tr)
+		r, e = f(tr)
+		// Commit is driven by the retry wrapper (not tr.Commit()),
+		// so close commitDone to unblock any GetVersionstamp() futures.
+		select {
+		case <-cd:
+		default:
+			close(cd)
+		}
+		return r, e
 	})
 	if err != nil {
 		return nil, convertError(err)
@@ -157,10 +166,12 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tr := Transaction{t: &transaction{
-			inner:      tx,
-			db:         db,
-			ctx:        db.d.ctx,
-			commitDone: make(chan struct{}),
+			inner: tx,
+			db:    db,
+			ctx:   db.d.ctx,
+			// No commitDone — read transactions never commit.
+			// GetVersionstamp() on a nil channel blocks forever,
+			// which is correct (it's meaningless on a read-only tx).
 		}}
 		return f(tr)
 	})
