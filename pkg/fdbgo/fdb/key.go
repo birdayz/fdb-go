@@ -63,6 +63,8 @@ func Printable(b []byte) string {
 	for _, c := range b {
 		if c >= 32 && c < 127 && c != '\\' {
 			buf = append(buf, c)
+		} else if c == '\\' {
+			buf = append(buf, '\\', '\\') // Apple: backslash → \\
 		} else {
 			buf = append(buf, '\\', 'x')
 			buf = append(buf, hex.EncodeToString([]byte{c})...)
@@ -91,5 +93,7 @@ func PrefixRange(prefix []byte) (KeyRange, error) {
 	if err != nil {
 		return KeyRange{}, err
 	}
-	return KeyRange{Begin: Key(prefix), End: Key(end)}, nil
+	begin := make([]byte, len(prefix))
+	copy(begin, prefix)
+	return KeyRange{Begin: Key(begin), End: Key(end)}, nil
 }

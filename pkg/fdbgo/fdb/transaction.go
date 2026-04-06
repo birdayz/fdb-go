@@ -29,7 +29,8 @@ type Transaction struct {
 // key does not exist. The read is performed asynchronously.
 func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	return newFutureByteSlice(func() ([]byte, error) {
-		return tr.t.inner.Get(tr.t.ctx, key.FDBKey())
+		v, err := tr.t.inner.Get(tr.t.ctx, key.FDBKey())
+		return v, convertError(err)
 	})
 }
 
@@ -38,7 +39,7 @@ func (tr Transaction) GetKey(sel Selectable) FutureKey {
 	ks := sel.FDBKeySelector()
 	return newFutureKey(func() (Key, error) {
 		k, err := tr.t.inner.GetKey(tr.t.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
-		return Key(k), err
+		return Key(k), convertError(err)
 	})
 }
 
@@ -51,7 +52,8 @@ func (tr Transaction) GetRange(r Range, options RangeOptions) RangeResult {
 // GetReadVersion returns the read version used by this transaction.
 func (tr Transaction) GetReadVersion() FutureInt64 {
 	return newFutureInt64(func() (int64, error) {
-		return tr.t.inner.GetReadVersion(tr.t.ctx)
+		v, err := tr.t.inner.GetReadVersion(tr.t.ctx)
+		return v, convertError(err)
 	})
 }
 
@@ -282,13 +284,29 @@ func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringS
 }
 
 // Transact implements Transactor for composability.
-func (tr Transaction) Transact(f func(Transaction) (any, error)) (any, error) {
+// Catches Error panics from MustGet() and returns them as errors,
+// matching the Apple binding's panicToError recovery.
+func (tr Transaction) Transact(f func(Transaction) (any, error)) (r any, e error) {
+	defer panicToError(&e)
 	return f(tr)
 }
 
 // ReadTransact implements ReadTransactor for composability.
-func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
+func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any, e error) {
+	defer panicToError(&e)
 	return f(tr)
+}
+
+// panicToError catches Error panics and converts them to returned errors.
+// Matches the Apple binding's panicToError used in Transact/ReadTransact.
+func panicToError(e *error) {
+	if r := recover(); r != nil {
+		if err, ok := r.(Error); ok {
+			*e = err
+		} else {
+			panic(r) // re-panic non-Error panics
+		}
+	}
 }
 
 // convertError converts a client error to an fdb.Error if applicable.

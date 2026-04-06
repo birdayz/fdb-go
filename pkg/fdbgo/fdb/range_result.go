@@ -170,7 +170,10 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 		// FirstGreaterThan(k) = FirstGreaterOrEqual(k + \x00).
 		// Resolve client-side to avoid unnecessary GetKey round-trip.
 		key := ks.Key.FDBKey()
-		return append(key, 0), nil
+		// Copy to avoid mutating caller's backing array.
+		out := make([]byte, len(key)+1)
+		copy(out, key)
+		return out, nil
 	}
 	// Non-trivial selector — resolve via GetKey.
 	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
