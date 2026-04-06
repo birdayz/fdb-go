@@ -373,8 +373,9 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 // CreateTransaction creates a new transaction.
 func (d *Database) CreateTransaction() *Transaction {
 	return &Transaction{
-		db:    d.db,
-		state: txStateActive,
+		db:       d.db,
+		state:    txStateActive,
+		tenantId: NoTenantID,
 	}
 }
 

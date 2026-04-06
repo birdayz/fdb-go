@@ -17,7 +17,7 @@ const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_
 // getKey resolves a key selector via the storage server.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -55,7 +55,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			},
 			Version:                tx.readVersion,
 			Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
+			TenantInfo:             types.TenantInfo{TenantId: tx.tenantId},
 			SsLatestCommitVersions: emptyVersionVector,
 		}
 		if tx.lockAware || tx.readLockAware {
@@ -107,7 +107,7 @@ func parseGetKeyReply(data []byte) ([]byte, error) {
 // for handling by the Transact retry loop.
 func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error) {
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, err := tx.db.locCache.locate(tx.db, ctx, key)
+		loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
 		}
@@ -139,7 +139,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, replyToken, server.Token)
+		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			cancelReply()
 			tx.db.handleConnError(server.Address)
@@ -176,7 +176,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range.
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit)
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, tx.tenantId)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range: %w", err)
 		}
@@ -293,7 +293,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, replyToken, server.Token)
+		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			cancelReply()
@@ -330,7 +330,7 @@ func isAllAlternativesFailed(err error) bool {
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetKeyValuesRequest{
 		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -338,7 +338,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 		Limit:                  limit,
 		LimitBytes:             UnlimitedBytes,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		TenantInfo:             types.TenantInfo{TenantId: -1},
+		TenantInfo:             types.TenantInfo{TenantId: tenantId},
 		SsLatestCommitVersions: emptyVersionVector,
 	}
 	if lockAware {
@@ -384,12 +384,12 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-func buildGetValueRequest(key []byte, version int64, lockAware bool, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
+		TenantInfo:             types.TenantInfo{TenantId: tenantId},
 		SsLatestCommitVersions: emptyVersionVector,
 	}
 	if lockAware {

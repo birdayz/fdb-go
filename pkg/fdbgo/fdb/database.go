@@ -178,11 +178,21 @@ func (db Database) Options() DatabaseOptions {
 	return DatabaseOptions{}
 }
 
-// Tenant operations (stubs).
+// Tenant operations.
 
 // OpenTenant opens a named tenant on this database.
+// Resolves the tenant name to an ID via the FDB special key space.
+// Not yet implemented — use OpenTenantById for direct ID-based access.
 func (db Database) OpenTenant(_ KeyConvertible) (Tenant, error) {
+	// TODO: resolve name→ID via \xff\xff/management/tenant/map/<name>
 	return Tenant{}, errNotSupported
+}
+
+// OpenTenantById opens a tenant by its numeric ID. All operations on the
+// returned Tenant are scoped to the tenant's key space. The caller is
+// responsible for ensuring the tenant ID is valid.
+func (db Database) OpenTenantById(id int64) Tenant {
+	return Tenant{db: db, tenantId: id}
 }
 
 func (db Database) CreateTenant(_ KeyConvertible) error {

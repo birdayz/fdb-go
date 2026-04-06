@@ -34,7 +34,7 @@ func TestNilShardEndLocateRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}

@@ -122,6 +122,10 @@ type Transaction struct {
 	retryCount int
 	backoff    time.Duration
 
+	// tenantId: if not NoTenantID (-1), all operations are scoped to this
+	// tenant's key space. Set via SetTenantId() before any reads/commits.
+	tenantId int64
+
 	// Timeout: if non-zero, operations fail with ErrTransactionTimedOut
 	// after this duration from transaction creation (or last reset).
 	timeout  time.Duration
@@ -595,6 +599,18 @@ func (tx *Transaction) SetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
 }
 
+// SetTenantId sets the tenant for this transaction. All operations will
+// be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
+func (tx *Transaction) SetTenantId(id int64) {
+	tx.tenantId = id
+}
+
+// TenantId returns the current tenant ID for this transaction.
+// Returns NoTenantID (-1) if no tenant is set.
+func (tx *Transaction) TenantId() int64 {
+	return tx.tenantId
+}
+
 // grvFlags returns the Flags field for GetReadVersionRequest.
 // Encodes priority and option flags into the uint32 bitmask.
 func (tx *Transaction) grvFlags() uint32 {
@@ -681,7 +697,7 @@ func (tx *Transaction) reset() {
 	}
 	// Preserved across reset (match C++ option re-application on retry):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit.
+	// lockAware, readLockAware, sizeLimit, tenantId.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
