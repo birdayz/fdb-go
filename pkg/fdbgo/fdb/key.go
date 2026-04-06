@@ -25,10 +25,6 @@
 //     than the human-readable description from libfdb_c. Use Error.Code for
 //     programmatic matching.
 //   - Future.Cancel() is a no-op — the underlying operation runs to completion.
-//   - GetVersionstamp() spawns a goroutine that calls the underlying method
-//     immediately. The Apple binding lets you call GetVersionstamp() before
-//     Commit() and the future blocks until commit completes; ours returns
-//     error 2015 (used_during_commit) if commit has not yet occurred.
 //   - No per-transaction context.Context: matching the Apple binding, methods
 //     like Get/GetRange do not accept a context parameter. Use SetTimeout for
 //     deadlines, or call Cancel() from another goroutine for cancellation.

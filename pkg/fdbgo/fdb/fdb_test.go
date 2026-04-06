@@ -549,6 +549,39 @@ func TestVersionstamp(t *testing.T) {
 	}
 }
 
+func TestDeferredVersionstamp(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	tr.Set(fdb.Key(t.Name()+"/key"), []byte("val"))
+
+	// Call GetVersionstamp BEFORE Commit — future should block until commit.
+	vsFut := tr.GetVersionstamp()
+
+	// Verify future is not ready yet (commit hasn't happened).
+	if vsFut.IsReady() {
+		t.Fatal("GetVersionstamp future should not be ready before commit")
+	}
+
+	// Now commit.
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Future should resolve with the versionstamp.
+	vs, err := vsFut.Get()
+	if err != nil {
+		t.Fatalf("deferred GetVersionstamp: %v", err)
+	}
+	if len(vs) != 10 {
+		t.Fatalf("versionstamp should be 10 bytes, got %d", len(vs))
+	}
+}
+
 func TestFutureParallelism(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

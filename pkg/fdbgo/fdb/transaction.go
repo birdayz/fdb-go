@@ -13,6 +13,12 @@ type transaction struct {
 	inner *client.Transaction
 	db    Database
 	ctx   context.Context
+
+	// commitDone is closed after Commit completes (success or failure).
+	// GetVersionstamp() blocks on this channel to match Apple binding
+	// semantics where the future resolves after commit.
+	commitDone chan struct{}
+	commitErr  error
 }
 
 // Transaction is a handle to a FoundationDB transaction.
@@ -81,16 +87,34 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // GetVersionstamp returns the versionstamp which was used by any
 // versionstamp operations in this transaction.
 //
-// Must be called after a successful Commit(). The Apple binding allows
-// calling before commit (the future blocks until commit); that behavior
-// is implemented in a later PR via a commitDone channel. In this base
-// implementation, calling before commit returns error 2015 (used_during_commit).
+// Can be called before or after Commit(). If called before, the returned
+// future blocks until commit completes — matching the Apple binding's
+// deferred versionstamp pattern.
+//
+// Only supported on transactions created via CreateTransaction() with
+// explicit Commit(). Transactions from Transact()/ReadTransact() return
+// error 2015 (used_during_commit) because commit is managed internally.
 func (tr Transaction) GetVersionstamp() FutureKey {
-	vs, err := tr.t.inner.GetVersionstamp()
-	if err != nil {
-		return newReadyFutureKey(nil, convertError(err))
+	if tr.t.commitDone == nil {
+		// Transact/ReadTransact manage commit internally — we can't
+		// defer the versionstamp read. Use CreateTransaction() instead.
+		return newReadyFutureKey(nil, Error{Code: 2015})
 	}
-	return newReadyFutureKey(Key(vs), nil)
+	inner := tr.t.inner
+	t := tr.t
+	return newFutureKey(func() (Key, error) {
+		// Block until commit completes (or has already completed).
+		<-t.commitDone
+		// If commit failed, return the commit error.
+		if t.commitErr != nil {
+			return nil, t.commitErr
+		}
+		vs, err := inner.GetVersionstamp()
+		if err != nil {
+			return nil, convertError(err)
+		}
+		return Key(vs), nil
+	})
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
@@ -202,17 +226,36 @@ func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 }
 
 // Commit commits the transaction. The returned FutureNil becomes ready
-// when the commit has been acknowledged by the cluster.
+// when the commit has been acknowledged by the cluster. Also unblocks
+// any pending GetVersionstamp() futures.
 func (tr Transaction) Commit() FutureNil {
 	inner, ctx := tr.t.inner, tr.t.ctx
+	t := tr.t
 	return newFutureNil(func() error {
-		return convertError(inner.Commit(ctx))
+		err := convertError(inner.Commit(ctx))
+		t.commitErr = err
+		if t.commitDone != nil {
+			select {
+			case <-t.commitDone:
+			default:
+				close(t.commitDone)
+			}
+		}
+		return err
 	})
 }
 
-// Cancel cancels the transaction.
+// Cancel cancels the transaction. Also unblocks any pending
+// GetVersionstamp() futures.
 func (tr Transaction) Cancel() {
 	tr.t.inner.Cancel()
+	if tr.t.commitDone != nil {
+		select {
+		case <-tr.t.commitDone:
+		default:
+			close(tr.t.commitDone)
+		}
+	}
 }
 
 // OnError determines whether an error is retryable. The returned FutureNil
@@ -244,8 +287,19 @@ func (tr Transaction) SetReadVersion(version int64) {
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
 	old := tr.t.inner
+	oldDone := tr.t.commitDone
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
+	tr.t.commitDone = make(chan struct{})
+	tr.t.commitErr = nil
 	old.Cancel()
+	// Unblock any goroutines from GetVersionstamp() calls made before Reset.
+	if oldDone != nil {
+		select {
+		case <-oldDone:
+		default:
+			close(oldDone)
+		}
+	}
 }
 
 // AddReadConflictRange adds a read conflict range.

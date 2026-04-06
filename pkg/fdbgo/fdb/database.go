@@ -122,9 +122,10 @@ func (db Database) Close() {
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
 	return Transaction{t: &transaction{
-		inner: tx,
-		db:    db,
-		ctx:   db.d.ctx,
+		inner:      tx,
+		db:         db,
+		ctx:        db.d.ctx,
+		commitDone: make(chan struct{}),
 	}}, nil
 }
 
@@ -140,6 +141,9 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 			inner: tx,
 			db:    db,
 			ctx:   db.d.ctx,
+			// No commitDone — commit is driven by the retry wrapper after
+			// this closure returns, so we can't signal completion here.
+			// GetVersionstamp() returns an error when commitDone is nil.
 		}}
 		return f(tr)
 	})
@@ -158,6 +162,8 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 			inner: tx,
 			db:    db,
 			ctx:   db.d.ctx,
+			// No commitDone — read transactions never commit.
+			// GetVersionstamp() returns error 2015 when commitDone is nil.
 		}}
 		return f(tr)
 	})
