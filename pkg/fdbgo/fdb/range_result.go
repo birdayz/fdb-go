@@ -109,10 +109,7 @@ func batchSize(mode StreamingMode, iteration int, remaining int) int {
 	case StreamingModeIterator:
 		// C client: starts at ~256 bytes (~2 KVs), doubles each iteration.
 		// We use row count since our client doesn't support limitBytes yet.
-		base := 2
-		for i := 1; i < iteration && base < remaining; i++ {
-			base *= 2
-		}
+		base := 2 << (iteration - 1) // 2, 4, 8, 16, ...
 		if base > remaining {
 			return remaining
 		}
@@ -145,7 +142,6 @@ type RangeIterator struct {
 	err       error
 	pos       int
 	index     int // position returned by Get(); set by Advance()
-	fetched   bool
 	exhausted bool
 }
 
@@ -191,7 +187,6 @@ func (ri *RangeIterator) Advance() bool {
 	ri.index = 0
 	ri.pos = 1
 	ri.remaining -= len(ri.kvs)
-	ri.fetched = true
 
 	// Update the scan boundary for the next batch.
 	lastKey := ri.kvs[len(ri.kvs)-1].Key
@@ -283,11 +278,4 @@ func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
 		return nil, nil, err
 	}
 	return begin, end, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
