@@ -329,7 +329,8 @@ func unconvertError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if fdbErr, ok := err.(Error); ok {
+	var fdbErr Error
+	if errors.As(err, &fdbErr) {
 		return &wire.FDBError{Code: fdbErr.Code}
 	}
 	return err
