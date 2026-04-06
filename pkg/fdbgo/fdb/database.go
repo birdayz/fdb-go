@@ -163,8 +163,7 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 			db:    db,
 			ctx:   db.d.ctx,
 			// No commitDone — read transactions never commit.
-			// GetVersionstamp() on a nil channel blocks forever,
-			// which is correct (it's meaningless on a read-only tx).
+			// GetVersionstamp() returns error 2015 when commitDone is nil.
 		}}
 		return f(tr)
 	})

@@ -243,10 +243,12 @@ func (tr Transaction) Commit() FutureNil {
 // GetVersionstamp() futures.
 func (tr Transaction) Cancel() {
 	tr.t.inner.Cancel()
-	select {
-	case <-tr.t.commitDone:
-	default:
-		close(tr.t.commitDone)
+	if tr.t.commitDone != nil {
+		select {
+		case <-tr.t.commitDone:
+		default:
+			close(tr.t.commitDone)
+		}
 	}
 }
 
@@ -285,10 +287,12 @@ func (tr Transaction) Reset() {
 	tr.t.commitErr = nil
 	old.Cancel()
 	// Unblock any goroutines from GetVersionstamp() calls made before Reset.
-	select {
-	case <-oldDone:
-	default:
-		close(oldDone)
+	if oldDone != nil {
+		select {
+		case <-oldDone:
+		default:
+			close(oldDone)
+		}
 	}
 }
 
