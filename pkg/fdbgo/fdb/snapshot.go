@@ -43,11 +43,11 @@ func (sn Snapshot) Snapshot() Snapshot {
 }
 
 func (sn Snapshot) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, Error{Code: 2000})
+	return newReadyFutureInt64(0, Error{Code: 2051})
 }
 
 func (sn Snapshot) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, Error{Code: 2000})
+	return newReadyFutureKeyArray(nil, Error{Code: 2051})
 }
 
 func (sn Snapshot) Options() TransactionOptions {

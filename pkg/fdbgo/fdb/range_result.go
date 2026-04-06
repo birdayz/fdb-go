@@ -163,8 +163,14 @@ func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
 
 func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 	if ks.OrEqual && ks.Offset == 1 {
-		// FirstGreaterOrEqual — trivial, no round-trip needed.
+		// FirstGreaterOrEqual(k) — trivial, no round-trip needed.
 		return ks.Key.FDBKey(), nil
+	}
+	if !ks.OrEqual && ks.Offset == 1 {
+		// FirstGreaterThan(k) = FirstGreaterOrEqual(k + \x00).
+		// Resolve client-side to avoid unnecessary GetKey round-trip.
+		key := ks.Key.FDBKey()
+		return append(key, 0), nil
 	}
 	// Non-trivial selector — resolve via GetKey.
 	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))

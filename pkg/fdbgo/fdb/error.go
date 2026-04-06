@@ -29,6 +29,7 @@ var errorDescriptions = map[int]string{
 	1051: "batch_transaction_throttled",
 	1062: "wrong_shard_server",
 	2000: "operation_failed",
+	2051: "operation_not_supported",
 	2005: "inverted_range",
 	2015: "used_during_commit",
 	2101: "transaction_too_large",

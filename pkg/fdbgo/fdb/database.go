@@ -24,13 +24,13 @@ func APIVersion(version int) error {
 	if version < 510 {
 		return Error{Code: 2201} // api_version_not_supported
 	}
-	// Reject re-set with a different version (matches Apple C binding).
-	if cur := apiVersion.Load(); cur != 0 && cur != int32(version) {
-		return Error{Code: 2201}
+	v := int32(version)
+	// Atomic set-if-unset. Reject re-set with a different version.
+	if !apiVersion.CompareAndSwap(0, v) {
+		if apiVersion.Load() != v {
+			return Error{Code: 2201}
+		}
 	}
-	// No upper bound — the pure Go client does not enforce version-specific
-	// behavior differences. Tested with FDB 7.3 (API version 730).
-	apiVersion.Store(int32(version))
 	return nil
 }
 
@@ -73,7 +73,7 @@ func OpenDatabase(clusterFile string) (Database, error) {
 // OpenWithConnectionString opens a connection using a cluster connection string.
 func OpenWithConnectionString(_ string) (Database, error) {
 	// TODO: connection string support
-	return Database{}, Error{Code: 2000} // not yet implemented
+	return Database{}, Error{Code: 2051} // not yet implemented
 }
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
@@ -163,32 +163,32 @@ func (db Database) Options() DatabaseOptions {
 
 // OpenTenant opens a named tenant on this database.
 func (db Database) OpenTenant(_ KeyConvertible) (Tenant, error) {
-	return Tenant{}, Error{Code: 2000}
+	return Tenant{}, Error{Code: 2051}
 }
 
 func (db Database) CreateTenant(_ KeyConvertible) error {
-	return Error{Code: 2000}
+	return Error{Code: 2051}
 }
 
 func (db Database) DeleteTenant(_ KeyConvertible) error {
-	return Error{Code: 2000}
+	return Error{Code: 2051}
 }
 
 func (db Database) ListTenants() ([]Key, error) {
-	return nil, Error{Code: 2000}
+	return nil, Error{Code: 2051}
 }
 
 // GetClientStatus is not yet implemented.
 func (db Database) GetClientStatus() ([]byte, error) {
-	return nil, Error{Code: 2000}
+	return nil, Error{Code: 2051}
 }
 
 // LocalityGetBoundaryKeys is not yet implemented.
 func (db Database) LocalityGetBoundaryKeys(_ ExactRange, _ int, _ int64) ([]Key, error) {
-	return nil, Error{Code: 2000}
+	return nil, Error{Code: 2051}
 }
 
 // RebootWorker is not yet implemented.
 func (db Database) RebootWorker(_ string, _ bool, _ int) error {
-	return Error{Code: 2000}
+	return Error{Code: 2051}
 }

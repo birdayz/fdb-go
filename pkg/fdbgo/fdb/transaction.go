@@ -93,13 +93,13 @@ func (tr Transaction) GetApproximateSize() FutureInt64 {
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of
 // the key range. Not yet implemented in the pure Go client.
 func (tr Transaction) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, Error{Code: 2000}) // operation_failed
+	return newReadyFutureInt64(0, Error{Code: 2051}) // operation_failed
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
 // Not yet implemented in the pure Go client.
 func (tr Transaction) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, Error{Code: 2000}) // operation_failed
+	return newReadyFutureKeyArray(nil, Error{Code: 2051}) // operation_failed
 }
 
 // Snapshot returns a Snapshot view of this transaction.
@@ -259,26 +259,26 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 
 // Watch is not yet implemented.
 func (tr Transaction) Watch(_ KeyConvertible) FutureNil {
-	return newReadyFutureNil(Error{Code: 2000})
+	return newReadyFutureNil(Error{Code: 2051})
 }
 
 // Tenant operations (stubs).
 
 func (tr Transaction) CreateTenant(_ KeyConvertible) error {
-	return Error{Code: 2000}
+	return Error{Code: 2051}
 }
 
 func (tr Transaction) DeleteTenant(_ KeyConvertible) error {
-	return Error{Code: 2000}
+	return Error{Code: 2051}
 }
 
 func (tr Transaction) ListTenants() ([]Key, error) {
-	return nil, Error{Code: 2000}
+	return nil, Error{Code: 2051}
 }
 
 // LocalityGetAddressesForKey is not yet implemented.
 func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	return newReadyFutureStringSlice(nil, Error{Code: 2000})
+	return newReadyFutureStringSlice(nil, Error{Code: 2051})
 }
 
 // Transact implements Transactor for composability.
