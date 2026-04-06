@@ -45,6 +45,17 @@ func (rr RangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.K
 	return rr.tx.inner.GetRange(rr.tx.ctx, begin, end, limit)
 }
 
+// doRangeSnapshot always uses snapshot reads (no conflict ranges added).
+// Used by the iterator for batches after the first — C++ records the full
+// conflict range once at getRange() call time, then fetches lazily.
+func (rr RangeResult) doRangeSnapshot(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
+	snap := rr.tx.inner.Snapshot()
+	if rr.options.Reverse {
+		return snap.GetRangeReverse(rr.tx.ctx, begin, end, limit)
+	}
+	return snap.GetRange(rr.tx.ctx, begin, end, limit)
+}
+
 // GetSliceWithError returns all key-value pairs in the range as a slice.
 // Always fetches all results regardless of streaming mode.
 //
@@ -85,12 +96,13 @@ func (rr RangeResult) Iterator() *RangeIterator {
 		return &RangeIterator{err: convertError(err)}
 	}
 	return &RangeIterator{
-		rr:        rr,
-		begin:     begin,
-		end:       end,
-		remaining: effectiveLimit(rr.options.Limit),
-		iteration: 1,
-		index:     -1,
+		rr:         rr,
+		begin:      begin,
+		end:        end,
+		remaining:  effectiveLimit(rr.options.Limit),
+		iteration:  1,
+		firstBatch: true,
+		index:      -1,
 	}
 }
 
@@ -138,11 +150,12 @@ type RangeIterator struct {
 	remaining int
 	iteration int
 
-	kvs       []KeyValue
-	err       error
-	pos       int
-	index     int // position returned by Get(); set by Advance()
-	exhausted bool
+	kvs        []KeyValue
+	err        error
+	pos        int
+	index      int // position returned by Get(); set by Advance()
+	exhausted  bool
+	firstBatch bool
 }
 
 // Advance moves to the next key-value pair. Returns true if there is a
@@ -164,11 +177,20 @@ func (ri *RangeIterator) Advance() bool {
 		return false
 	}
 
-	// Fetch the next batch.
+	// Fetch the next batch. First uses normal read (adds conflict range).
+	// Subsequent use snapshot (no redundant conflicts) — matches C++.
 	batch := batchSize(ri.rr.options.Mode, ri.iteration, ri.remaining)
 	ri.iteration++
 
-	kvs, more, err := ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
+	var kvs []client.KeyValue
+	var more bool
+	var err error
+	if ri.firstBatch {
+		ri.firstBatch = false
+		kvs, more, err = ri.rr.doRangeWithLimit(ri.begin, ri.end, batch)
+	} else {
+		kvs, more, err = ri.rr.doRangeSnapshot(ri.begin, ri.end, batch)
+	}
 	if err != nil {
 		ri.err = convertError(err)
 		return false
