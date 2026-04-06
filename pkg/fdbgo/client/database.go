@@ -123,6 +123,9 @@ type database struct {
 	// Location cache. C++: CoalescedKeyRangeMap<Reference<LocationInfo>>.
 	locCache locationCache
 
+	// Per-endpoint health tracking. Wakes GRV backoff on recovery.
+	failMon *failureMonitor
+
 	// GRV cache + batcher. C++: cachedReadVersion, versionBatcher.
 	grvCache   grvCache
 	grvBatcher grvBatcher
@@ -173,12 +176,25 @@ func (db *database) getCommitProxies() []ProxyInfo {
 }
 
 func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn, error) {
+	conn, dialed, err := db.getOrDialConn(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	if dialed {
+		db.failMon.markAlive(addr)
+	}
+	return conn, nil
+}
+
+// getOrDialConn returns a pooled or freshly-dialed connection.
+// dialed is true when a new TCP connection was established (cache miss).
+func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *transport.Conn, dialed bool, err error) {
 	db.connMu.Lock()
 	defer db.connMu.Unlock()
 
-	if conn, ok := db.connPool[addr]; ok {
-		if !conn.IsClosed() {
-			return conn, nil
+	if c, ok := db.connPool[addr]; ok {
+		if !c.IsClosed() {
+			return c, false, nil
 		}
 		delete(db.connPool, addr)
 	}
@@ -188,12 +204,12 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 	// In single-node clusters, all FDB processes share one address, so we can
 	// reuse the coordinator connection for proxy/storage requests.
 	_, targetPort, _ := net.SplitHostPort(addr)
-	for existingAddr, conn := range db.connPool {
-		if !conn.IsClosed() {
+	for existingAddr, c := range db.connPool {
+		if !c.IsClosed() {
 			_, existingPort, _ := net.SplitHostPort(existingAddr)
 			if existingPort == targetPort {
-				db.connPool[addr] = conn // cache under new key too
-				return conn, nil
+				db.connPool[addr] = c // cache under new key too
+				return c, false, nil
 			}
 		}
 	}
@@ -201,26 +217,26 @@ func (db *database) getOrDial(ctx context.Context, addr string) (*transport.Conn
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
-	conn, err := transport.DialWith(dialCtx, addr, false, db.dialFn)
-	if err != nil {
+	c, dialErr := transport.DialWith(dialCtx, addr, false, db.dialFn)
+	if dialErr != nil {
 		// Fallback: if the internal address failed (e.g., Docker networking),
 		// try the coordinator address with the same port.
 		if len(db.clusterFile.Coordinators) > 0 {
 			_, coordPort, _ := net.SplitHostPort(db.clusterFile.Coordinators[0])
 			if targetPort == coordPort {
 				coordAddr := db.clusterFile.Coordinators[0]
-				conn, err = transport.DialWith(dialCtx, coordAddr, false, db.dialFn)
-				if err == nil {
-					db.connPool[addr] = conn
-					return conn, nil
+				c, dialErr = transport.DialWith(dialCtx, coordAddr, false, db.dialFn)
+				if dialErr == nil {
+					db.connPool[addr] = c
+					return c, true, nil
 				}
 			}
 		}
-		return nil, err
+		return nil, false, dialErr
 	}
 
-	db.connPool[addr] = conn
-	return conn, nil
+	db.connPool[addr] = c
+	return c, true, nil
 }
 
 // bootstrap connects to coordinators and fetches initial cluster topology.
@@ -278,6 +294,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		connected:    make(chan struct{}),
 		ctx:          bgCtx,
 		cancel:       cancel,
+		failMon:      newFailureMonitor(),
 		locCache: locationCache{
 			maxSize: 600_000,
 		},

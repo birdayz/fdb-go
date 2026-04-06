@@ -280,19 +280,17 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
 			}
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
+			case <-db.failMon.waitForRecovery():
+				timer.Stop()
+				backoff = 0
+				continue
 			case <-ctx.Done():
-				return 0, false, false, ctx.Err()
-			}
-		}
-
-		if backoff > 0 {
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
+				timer.Stop()
 				return 0, false, false, ctx.Err()
 			}
 		}
@@ -324,6 +322,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 					numAttempts++
 					continue
 				}
+				db.failMon.markAlive(proxy.Address)
 				return parseGetReadVersionReply(resp.Body)
 			case <-rpcCtx.Done():
 				rpcCancel()
@@ -331,6 +330,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				if ctx.Err() != nil {
 					return 0, false, false, ctx.Err()
 				}
+				db.failMon.markFailed(proxy.Address)
 				numAttempts++
 				continue
 			}
@@ -345,6 +345,19 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 		}
 		numAttempts = 0
+
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-db.failMon.waitForRecovery():
+				timer.Stop()
+				backoff = 0
+			case <-ctx.Done():
+				timer.Stop()
+				return 0, false, false, ctx.Err()
+			}
+		}
 	}
 }
 
