@@ -24,6 +24,10 @@ func APIVersion(version int) error {
 	if version < 510 {
 		return Error{Code: 2201} // api_version_not_supported
 	}
+	// Reject re-set with a different version (matches Apple C binding).
+	if cur := apiVersion.Load(); cur != 0 && cur != int32(version) {
+		return Error{Code: 2201}
+	}
 	// No upper bound — the pure Go client does not enforce version-specific
 	// behavior differences. Tested with FDB 7.3 (API version 730).
 	apiVersion.Store(int32(version))
