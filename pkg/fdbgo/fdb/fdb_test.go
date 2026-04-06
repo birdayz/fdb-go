@@ -15,6 +15,7 @@ import (
 // openTestDB starts an FDB testcontainer and returns a facade Database.
 func openTestDB(t *testing.T) fdb.Database {
 	t.Helper()
+	fdb.MustAPIVersion(730)
 
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer setupCancel()

@@ -80,6 +80,9 @@ func OpenWithConnectionString(_ string) (Database, error) {
 // The provided ctx is used only for the initial bootstrap (coordinator
 // connection). The Database uses context.Background() for ongoing operations.
 func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile) (Database, error) {
+	if apiVersion.Load() == 0 {
+		return Database{}, Error{Code: 2200} // api_version_unset
+	}
 	db, err := client.OpenDatabaseFromConfig(ctx, cf, nil)
 	if err != nil {
 		return Database{}, err

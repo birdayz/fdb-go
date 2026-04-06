@@ -122,7 +122,7 @@ func (ri *RangeIterator) Get() (KeyValue, error) {
 		return KeyValue{}, ri.err
 	}
 	if ri.index < 0 || ri.index >= len(ri.kvs) {
-		return KeyValue{}, Error{Code: 2000}
+		return KeyValue{}, Error{Code: 2051} // programmer error: Get() before Advance()
 	}
 	return ri.kvs[ri.index], nil
 }
