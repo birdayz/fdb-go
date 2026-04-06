@@ -122,7 +122,7 @@ func batchSize(mode StreamingMode, iteration int, remaining int) int {
 		// C client: starts at ~256 bytes (~2 KVs), doubles each iteration.
 		// We use row count since our client doesn't support limitBytes yet.
 		base := 2 << (iteration - 1) // 2, 4, 8, 16, ...
-		if base > remaining {
+		if base <= 0 || base > remaining {
 			return remaining
 		}
 		return base
@@ -214,7 +214,7 @@ func (ri *RangeIterator) Advance() bool {
 	lastKey := ri.kvs[len(ri.kvs)-1].Key
 	if ri.rr.options.Reverse {
 		// Next batch: end at the last key we received (exclusive).
-		ri.end = []byte(lastKey)
+		ri.end = append([]byte(nil), lastKey...)
 	} else {
 		// Next batch: begin after the last key we received.
 		ri.begin = append([]byte(lastKey), 0)

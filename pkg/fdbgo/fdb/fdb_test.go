@@ -196,9 +196,10 @@ func TestIterator(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	prefix := t.Name() + "/data/"
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 		for i := 0; i < 20; i++ {
-			tr.Set(fdb.Key(fmt.Sprintf("iter-%02d", i)), []byte(fmt.Sprintf("val-%02d", i)))
+			tr.Set(fdb.Key(fmt.Sprintf("%skey-%02d", prefix, i)), []byte(fmt.Sprintf("val-%02d", i)))
 		}
 		return nil, nil
 	})
@@ -223,7 +224,7 @@ func TestIterator(t *testing.T) {
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
 			result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-				kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+				kr := fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}
 				opts := fdb.RangeOptions{Mode: m.mode}
 				if m.mode == fdb.StreamingModeExact {
 					opts.Limit = 20 // EXACT requires a limit
@@ -248,7 +249,7 @@ func TestIterator(t *testing.T) {
 				t.Fatalf("iterator(%s): got %d keys, want 20", m.name, len(keys))
 			}
 			// Verify order.
-			if keys[0] != "iter-00" || keys[19] != "iter-19" {
+			if keys[0] != prefix+"key-00" || keys[19] != prefix+"key-19" {
 				t.Fatalf("iterator(%s): wrong order: first=%q last=%q", m.name, keys[0], keys[19])
 			}
 		})
@@ -257,7 +258,7 @@ func TestIterator(t *testing.T) {
 	// Test iterator with limit.
 	t.Run("WithLimit", func(t *testing.T) {
 		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+			kr := fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}
 			rr := tr.GetRange(kr, fdb.RangeOptions{Limit: 5, Mode: fdb.StreamingModeIterator})
 			iter := rr.Iterator()
 			var keys []string
@@ -282,7 +283,7 @@ func TestIterator(t *testing.T) {
 	// Test reverse iterator.
 	t.Run("Reverse", func(t *testing.T) {
 		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			kr := fdb.KeyRange{Begin: fdb.Key("iter-"), End: fdb.Key("iter-\xff")}
+			kr := fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}
 			rr := tr.GetRange(kr, fdb.RangeOptions{Reverse: true, Mode: fdb.StreamingModeSmall})
 			iter := rr.Iterator()
 			var keys []string
@@ -303,7 +304,7 @@ func TestIterator(t *testing.T) {
 			t.Fatalf("iterator(Reverse): got %d keys, want 20", len(keys))
 		}
 		// First should be last key (reverse order).
-		if keys[0] != "iter-19" || keys[19] != "iter-00" {
+		if keys[0] != prefix+"key-19" || keys[19] != prefix+"key-00" {
 			t.Fatalf("iterator(Reverse): wrong order: first=%q last=%q", keys[0], keys[19])
 		}
 	})
