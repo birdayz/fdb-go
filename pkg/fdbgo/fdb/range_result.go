@@ -87,9 +87,14 @@ func (rr RangeResult) Iterator() *RangeIterator {
 // Call Advance() before each Get().
 //
 // NOTE: This implementation eagerly loads all results on the first Advance()
-// call. StreamingMode is accepted for API compatibility but does not affect
-// fetching behavior. For large ranges, set an explicit Limit to avoid OOM.
-// Lazy paging with streaming mode support is implemented in a later PR.
+// call via sync.Once. StreamingMode is accepted for API compatibility but
+// does not affect fetching behavior. For large ranges, set an explicit Limit
+// to avoid OOM.
+//
+// Because sync.Once permanently caches the result (including errors), a failed
+// range read (e.g. transaction expired) makes the iterator permanently errored
+// with no recovery path — callers must create a new transaction. Adding lazy
+// paging requires replacing the once field, not just changing doRange.
 type RangeIterator struct {
 	rr RangeResult
 
@@ -164,7 +169,11 @@ func resolveRange(tx *transaction, r Range) (begin, end []byte, err error) {
 func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 	if ks.OrEqual && ks.Offset == 1 {
 		// FirstGreaterOrEqual(k) — trivial, no round-trip needed.
-		return ks.Key.FDBKey(), nil
+		// Defensive copy to avoid sharing caller's backing array.
+		key := ks.Key.FDBKey()
+		out := make([]byte, len(key))
+		copy(out, key)
+		return out, nil
 	}
 	if !ks.OrEqual && ks.Offset == 1 {
 		// FirstGreaterThan(k) = FirstGreaterOrEqual(k + \x00).

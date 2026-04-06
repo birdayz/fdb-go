@@ -83,13 +83,11 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // is implemented in a later PR via a commitDone channel. In this base
 // implementation, calling before commit returns error 2015 (used_during_commit).
 func (tr Transaction) GetVersionstamp() FutureKey {
-	return newFutureKey(func() (Key, error) {
-		vs, err := tr.t.inner.GetVersionstamp()
-		if err != nil {
-			return nil, convertError(err)
-		}
-		return Key(vs), nil
-	})
+	vs, err := tr.t.inner.GetVersionstamp()
+	if err != nil {
+		return newReadyFutureKey(nil, convertError(err))
+	}
+	return newReadyFutureKey(Key(vs), nil)
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
@@ -125,12 +123,22 @@ func (tr Transaction) Clear(key KeyConvertible) {
 }
 
 // ClearRange removes all keys k such that begin <= k < end.
-// The Apple binding's ClearRange is void (no return value). The
-// underlying client returns inverted_range (2005) if begin > end;
-// we suppress this to match the Apple API contract.
+// The Apple binding's ClearRange is void because mutations are buffered
+// locally with no I/O. Our pure Go client validates begin <= end and
+// returns inverted_range (2005) on violation — we suppress only that
+// specific error to match the Apple API contract.
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
-	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
+	err := tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
+	if err != nil {
+		var fdbErr Error
+		if errors.As(convertError(err), &fdbErr) && fdbErr.Code == 2005 {
+			return // inverted_range — suppress to match Apple void API
+		}
+		// Unexpected error — should not happen with current client, but
+		// don't silently swallow if client internals change.
+		panic("fdb.ClearRange: unexpected error: " + err.Error())
+	}
 }
 
 // SetVersionstampedKey sets a key with an embedded incomplete versionstamp.

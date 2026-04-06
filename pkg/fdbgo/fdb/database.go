@@ -7,6 +7,9 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
 
+// apiVersion is set-once, matching the Apple binding's global-init model
+// (fdb_select_api_version_impl). Once set, it can never be changed or unset.
+// This is intentional — FDB's API versioning is a process-wide guarantee.
 var apiVersion atomic.Int32
 
 // MustAPIVersion is a convenience function equivalent to APIVersion that
