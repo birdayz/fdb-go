@@ -575,3 +575,119 @@ func TestMustGetPanicRecovery(t *testing.T) {
 		t.Fatalf("expected at least 2 attempts, got %d", attempt)
 	}
 }
+
+func TestTransactionOptions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Test SetTimeout: should work (already client-side, just verify no panic)
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if err := tr.Options().SetTimeout(5000); err != nil {
+		t.Fatalf("SetTimeout: %v", err)
+	}
+
+	// Test SetRetryLimit
+	if err := tr.Options().SetRetryLimit(3); err != nil {
+		t.Fatalf("SetRetryLimit: %v", err)
+	}
+
+	// Test SetPriorityBatch — should send GRV with PRIORITY_BATCH flags
+	if err := tr.Options().SetPriorityBatch(); err != nil {
+		t.Fatalf("SetPriorityBatch: %v", err)
+	}
+	tr.Set(fdb.Key(t.Name()+"/opt-key"), []byte("opt-val"))
+	if err := tr.Commit().Get(); err != nil {
+		t.Fatalf("Commit with batch priority: %v", err)
+	}
+	// Verify the write landed
+	result, err := db.Transact(func(tr2 fdb.Transaction) (any, error) {
+		return tr2.Get(fdb.Key(t.Name() + "/opt-key")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(result.([]byte)) != "opt-val" {
+		t.Fatalf("got %q, want %q", result, "opt-val")
+	}
+
+	// Test SetPrioritySystemImmediate
+	tr2, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if err := tr2.Options().SetPrioritySystemImmediate(); err != nil {
+		t.Fatalf("SetPrioritySystemImmediate: %v", err)
+	}
+	tr2.Set(fdb.Key(t.Name()+"/opt-key2"), []byte("opt-val2"))
+	if err := tr2.Commit().Get(); err != nil {
+		t.Fatalf("Commit with system immediate priority: %v", err)
+	}
+
+	// Test SetCausalReadRisky
+	tr3, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if err := tr3.Options().SetCausalReadRisky(); err != nil {
+		t.Fatalf("SetCausalReadRisky: %v", err)
+	}
+	val := tr3.Get(fdb.Key(t.Name() + "/opt-key2")).MustGet()
+	if string(val) != "opt-val2" {
+		// Note: this test only verifies the flag does not break reads.
+		// Wire-level verification would require packet inspection.
+		t.Fatalf("causal read risky: got %q, want %q", val, "opt-val2")
+	}
+
+	// Test SetLockAware — verify write + commit succeeds with flag set.
+	tr4, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if err := tr4.Options().SetLockAware(); err != nil {
+		t.Fatalf("SetLockAware: %v", err)
+	}
+	tr4.Set(fdb.Key(t.Name()+"/lock-aware-key"), []byte("lock-aware-val"))
+	if err := tr4.Commit().Get(); err != nil {
+		t.Fatalf("Commit with lock-aware: %v", err)
+	}
+	result2, err := db.Transact(func(rtx fdb.Transaction) (any, error) {
+		return rtx.Get(fdb.Key(t.Name() + "/lock-aware-key")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(result2.([]byte)) != "lock-aware-val" {
+		t.Fatalf("lock-aware: got %q, want %q", result2, "lock-aware-val")
+	}
+}
+
+func TestSizeLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	// Set a tiny size limit
+	if err := tr.Options().SetSizeLimit(10); err != nil {
+		t.Fatalf("SetSizeLimit: %v", err)
+	}
+	// Write more data than the limit
+	tr.Set(fdb.Key(t.Name()+"/big-key"), []byte("big-value-exceeding-size-limit"))
+	err = tr.Commit().Get()
+	if err == nil {
+		t.Fatal("expected error from size limit, got nil")
+	}
+	// Should get transaction_too_large (2101)
+	fdbErr, ok := err.(fdb.Error)
+	if !ok {
+		t.Fatalf("expected fdb.Error, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2101 {
+		t.Fatalf("expected error code 2101 (transaction_too_large), got %d", fdbErr.Code)
+	}
+}

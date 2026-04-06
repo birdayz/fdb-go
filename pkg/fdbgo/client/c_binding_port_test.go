@@ -1165,7 +1165,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 
 	// tx1 gets a read version (establishes its snapshot).
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -1219,7 +1219,7 @@ func TestCommitDoesNotReset_CPort(t *testing.T) {
 
 	// tx1: set and commit.
 	tx1 := db.CreateTransaction()
-	rv1, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv1, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV for tx1: %v", err)
 	}
