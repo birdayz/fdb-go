@@ -124,7 +124,12 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
-	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (any, error) {
+	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+		// Order matters: unconvertError runs AFTER panicToError (LIFO).
+		// panicToError catches Error panics → sets e = Error{...}.
+		// unconvertError converts Error → *wire.FDBError for retry loop.
+		defer func() { e = unconvertError(e) }()
+		defer panicToError(&e)
 		tr := Transaction{t: &transaction{
 			inner: tx,
 			db:    db,
@@ -140,7 +145,9 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 
 // ReadTransact runs a read-only transactional function with automatic retry.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
-	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (any, error) {
+	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+		defer func() { e = unconvertError(e) }()
+		defer panicToError(&e)
 		tr := Transaction{t: &transaction{
 			inner: tx,
 			db:    db,

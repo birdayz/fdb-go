@@ -320,3 +320,17 @@ func convertError(err error) error {
 	}
 	return err
 }
+
+// unconvertError converts fdb.Error back to *wire.FDBError so the
+// client retry loop (OnError) can recognize it via errors.As.
+// Without this, retryable errors from Get().Get() inside Transact
+// escape the retry loop because OnError sees fdb.Error (not *wire.FDBError).
+func unconvertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if fdbErr, ok := err.(Error); ok {
+		return &wire.FDBError{Code: fdbErr.Code}
+	}
+	return err
+}

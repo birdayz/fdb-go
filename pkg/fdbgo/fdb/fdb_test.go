@@ -520,3 +520,57 @@ func TestSetVersionstampedKey(t *testing.T) {
 		t.Fatalf("SetVersionstampedKey: %v", err)
 	}
 }
+
+// TestRetryLoopErrorConversion reproduces a critical bug: convertError
+// turns *wire.FDBError into fdb.Error inside futures, but the client's
+// OnError only recognizes *wire.FDBError via errors.As. So retryable
+// errors returned from the user closure escape the retry loop.
+func TestRetryLoopErrorConversion(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Simulate: user closure returns fdb.Error{Code: 1020} (not_committed).
+	// This is retryable. Transact MUST retry, not propagate.
+	attempt := 0
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		attempt++
+		if attempt == 1 {
+			// Return a retryable fdb.Error — the type the user sees from Get().Get().
+			return nil, fdb.Error{Code: 1020} // not_committed
+		}
+		// Second attempt succeeds.
+		tr.Set(fdb.Key("retry-conv-key"), []byte("ok"))
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("Transact should have retried fdb.Error{1020}, got: %v", err)
+	}
+	if attempt < 2 {
+		t.Fatalf("expected at least 2 attempts (retry), got %d", attempt)
+	}
+}
+
+// TestMustGetPanicRecovery verifies that MustGet() panics inside
+// Database.Transact are caught and fed into the retry loop, not
+// propagated as process crashes.
+func TestMustGetPanicRecovery(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	attempt := 0
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		attempt++
+		if attempt == 1 {
+			// Simulate MustGet() panic with a retryable error.
+			panic(fdb.Error{Code: 1020}) // not_committed
+		}
+		tr.Set(fdb.Key("panic-recovery-key"), []byte("ok"))
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("Transact should have recovered panic and retried, got: %v", err)
+	}
+	if attempt < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempt)
+	}
+}
