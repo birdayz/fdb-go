@@ -16,6 +16,10 @@ func (e Error) Error() string {
 	return fmt.Sprintf("FoundationDB error: %d", e.Code)
 }
 
+// errNotSupported is returned by stubs for operations not yet implemented
+// in the pure Go client.
+var errNotSupported = Error{Code: 2051}
+
 // Common FDB error code descriptions.
 var errorDescriptions = map[int]string{
 	1007: "transaction_too_old",

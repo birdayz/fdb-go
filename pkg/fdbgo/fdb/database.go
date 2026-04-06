@@ -73,7 +73,7 @@ func OpenDatabase(clusterFile string) (Database, error) {
 // OpenWithConnectionString opens a connection using a cluster connection string.
 func OpenWithConnectionString(_ string) (Database, error) {
 	// TODO: connection string support
-	return Database{}, Error{Code: 2051} // not yet implemented
+	return Database{}, errNotSupported
 }
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
@@ -173,32 +173,32 @@ func (db Database) Options() DatabaseOptions {
 
 // OpenTenant opens a named tenant on this database.
 func (db Database) OpenTenant(_ KeyConvertible) (Tenant, error) {
-	return Tenant{}, Error{Code: 2051}
+	return Tenant{}, errNotSupported
 }
 
 func (db Database) CreateTenant(_ KeyConvertible) error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (db Database) DeleteTenant(_ KeyConvertible) error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (db Database) ListTenants() ([]Key, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 // GetClientStatus is not yet implemented.
 func (db Database) GetClientStatus() ([]byte, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 // LocalityGetBoundaryKeys is not yet implemented.
 func (db Database) LocalityGetBoundaryKeys(_ ExactRange, _ int, _ int64) ([]Key, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 // RebootWorker is not yet implemented.
 func (db Database) RebootWorker(_ string, _ bool, _ int) error {
-	return Error{Code: 2051}
+	return errNotSupported
 }

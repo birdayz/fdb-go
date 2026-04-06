@@ -7,13 +7,13 @@ type Tenant struct {
 }
 
 func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 func (t Tenant) CreateTransaction() (Transaction, error) {
-	return Transaction{}, Error{Code: 2051}
+	return Transaction{}, errNotSupported
 }

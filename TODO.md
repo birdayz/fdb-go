@@ -1687,6 +1687,10 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 **Overall: ~37/47 Transaction methods = ~79% API surface.**
 **By usage weight: ~98%+ of real application needs covered.**
 
+### Known API gaps in `pkg/fdbgo/fdb/` facade
+
+- [ ] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support.
+
 ### Way of working
 
 **C code is the source of truth for the client.** Development is test-driven from the C binding tests:

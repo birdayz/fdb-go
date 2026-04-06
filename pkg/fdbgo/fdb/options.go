@@ -52,11 +52,11 @@ func (o TransactionOptions) SetReadYourWritesDisable() error {
 }
 
 func (o TransactionOptions) SetAccessSystemKeys() error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (o TransactionOptions) SetReadSystemKeys() error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (o TransactionOptions) SetLockAware() error {

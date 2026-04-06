@@ -16,7 +16,10 @@ type transaction struct {
 }
 
 // Transaction is a handle to a FoundationDB transaction.
-// Transaction is safe for concurrent use by multiple goroutines.
+// Individual methods (Get, Set, Commit, etc.) are safe for concurrent use
+// by multiple goroutines. However, Reset() is NOT concurrent-safe — callers
+// must drain all pending futures before calling Reset, as in-flight
+// goroutines hold references to the internal transaction handle.
 //
 // In the Apple binding, Transaction is a concrete struct with value
 // receiver methods. We match this by making Transaction a struct that
@@ -97,13 +100,13 @@ func (tr Transaction) GetApproximateSize() FutureInt64 {
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of
 // the key range. Not yet implemented in the pure Go client.
 func (tr Transaction) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, Error{Code: 2051}) // operation_not_supported
+	return newReadyFutureInt64(0, errNotSupported)
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
 // Not yet implemented in the pure Go client.
 func (tr Transaction) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, Error{Code: 2051}) // operation_not_supported
+	return newReadyFutureKeyArray(nil, errNotSupported)
 }
 
 // Snapshot returns a Snapshot view of this transaction.
@@ -265,26 +268,26 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 
 // Watch is not yet implemented.
 func (tr Transaction) Watch(_ KeyConvertible) FutureNil {
-	return newReadyFutureNil(Error{Code: 2051})
+	return newReadyFutureNil(errNotSupported)
 }
 
 // Tenant operations (stubs).
 
 func (tr Transaction) CreateTenant(_ KeyConvertible) error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (tr Transaction) DeleteTenant(_ KeyConvertible) error {
-	return Error{Code: 2051}
+	return errNotSupported
 }
 
 func (tr Transaction) ListTenants() ([]Key, error) {
-	return nil, Error{Code: 2051}
+	return nil, errNotSupported
 }
 
 // LocalityGetAddressesForKey is not yet implemented.
 func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	return newReadyFutureStringSlice(nil, Error{Code: 2051})
+	return newReadyFutureStringSlice(nil, errNotSupported)
 }
 
 // Transact implements Transactor for composability.
