@@ -18,8 +18,9 @@ func TestNilShardEndLocateRange(t *testing.T) {
 		maxSize: 1000,
 		entries: []locationEntry{
 			{
-				begin: []byte(""),
-				end:   nil, // shard extends to infinity
+				tenantId: NoTenantID,
+				begin:    []byte(""),
+				end:      nil, // shard extends to infinity
 				servers: []ServerInfo{
 					{Address: "127.0.0.1:4500"},
 				},
@@ -56,14 +57,16 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 		maxSize: 1000,
 		entries: []locationEntry{
 			{
-				begin:   []byte(""),
-				end:     []byte("m"),
-				servers: []ServerInfo{{Address: "127.0.0.1:4500"}},
+				tenantId: NoTenantID,
+				begin:    []byte(""),
+				end:      []byte("m"),
+				servers:  []ServerInfo{{Address: "127.0.0.1:4500"}},
 			},
 			{
-				begin:   []byte("m"),
-				end:     nil, // last shard extends to infinity
-				servers: []ServerInfo{{Address: "127.0.0.1:4501"}},
+				tenantId: NoTenantID,
+				begin:    []byte("m"),
+				end:      nil, // last shard extends to infinity
+				servers:  []ServerInfo{{Address: "127.0.0.1:4501"}},
 			},
 		},
 	}

@@ -30,7 +30,7 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 			return key, nil
 		}
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(selectorKey)
+			tx.db.locCache.invalidate(selectorKey, tx.tenantId)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
@@ -121,7 +121,7 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(key)
+			tx.db.locCache.invalidate(key, tx.tenantId)
 			time.Sleep(wrongShardRetryDelay)
 			continue
 		}
@@ -216,7 +216,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
 			if err != nil {
 				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-					tx.db.locCache.invalidate(loc.ShardBegin)
+					tx.db.locCache.invalidate(loc.ShardBegin, tx.tenantId)
 					time.Sleep(wrongShardRetryDelay)
 					// Adjust range for re-locate in outer loop.
 					if reverse {

@@ -27,9 +27,10 @@ type locationCache struct {
 }
 
 type locationEntry struct {
-	begin   []byte
-	end     []byte
-	servers []ServerInfo
+	tenantId int64
+	begin    []byte
+	end      []byte
+	servers  []ServerInfo
 }
 
 // ServerInfo holds a storage server's address and endpoint token.
@@ -58,10 +59,11 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 		key = []byte{0xff}
 	}
 
-	// Check cache first.
+	// Check cache first. Entries are keyed by (tenantId, key range).
 	lc.mu.RLock()
 	for _, entry := range lc.entries {
-		if bytes.Compare(key, entry.begin) >= 0 &&
+		if entry.tenantId == tenantId &&
+			bytes.Compare(key, entry.begin) >= 0 &&
 			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
 			result := LocationResult{
 				Servers:    entry.servers,
@@ -78,15 +80,16 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 	return lc.refresh(db, ctx, key, tenantId)
 }
 
-// invalidate removes cached entries containing the given key.
+// invalidate removes cached entries containing the given key for the given tenant.
 // Called on wrong_shard_server errors.
-func (lc *locationCache) invalidate(key []byte) {
+func (lc *locationCache) invalidate(key []byte, tenantId int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
 	filtered := lc.entries[:0]
 	for _, entry := range lc.entries {
-		if bytes.Compare(key, entry.begin) >= 0 &&
+		if entry.tenantId == tenantId &&
+			bytes.Compare(key, entry.begin) >= 0 &&
 			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
 			continue // remove this entry
 		}
@@ -159,6 +162,9 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, 
 				if err != nil {
 					continue
 				}
+				for i := range entries {
+					entries[i].tenantId = tenantId
+				}
 				lc.mu.Lock()
 				lc.entries = append(lc.entries, entries...)
 				for len(lc.entries) > lc.maxSize {
@@ -217,7 +223,8 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 		lc.mu.RLock()
 		for _, entry := range lc.entries {
 			// Entry overlaps [curBegin, end) if entry.begin < end && entry.end > curBegin.
-			if (entry.end == nil || bytes.Compare(entry.end, curBegin) > 0) &&
+			if entry.tenantId == tenantId &&
+				(entry.end == nil || bytes.Compare(entry.end, curBegin) > 0) &&
 				bytes.Compare(entry.begin, end) < 0 {
 				results = append(results, LocationResult{
 					Servers:    entry.servers,
@@ -341,6 +348,9 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 				entries, err := parseGetKeyServerLocationsReply(resp.Body)
 				if err != nil {
 					continue
+				}
+				for i := range entries {
+					entries[i].tenantId = tenantId
 				}
 				lc.mu.Lock()
 				lc.entries = append(lc.entries, entries...)
