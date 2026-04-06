@@ -198,7 +198,7 @@ func (ri *RangeIterator) Advance() bool {
 		ri.begin = append([]byte(lastKey), 0)
 	}
 
-	if !more || len(kvs) < batch {
+	if !more {
 		ri.exhausted = true
 	}
 
