@@ -89,16 +89,23 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 //
 // Can be called before or after Commit(). If called before, the returned
 // future blocks until commit completes — matching the Apple binding's
-// deferred versionstamp pattern. Read-only transactions (no mutations)
-// return error 2015 (used_during_commit).
+// deferred versionstamp pattern.
+//
+// Only supported on transactions created via CreateTransaction() with
+// explicit Commit(). Transactions from Transact()/ReadTransact() return
+// error 2015 (used_during_commit) because commit is managed internally.
 func (tr Transaction) GetVersionstamp() FutureKey {
+	if tr.t.commitDone == nil {
+		// Transact/ReadTransact manage commit internally — we can't
+		// defer the versionstamp read. Use CreateTransaction() instead.
+		return newReadyFutureKey(nil, Error{Code: 2015})
+	}
 	inner := tr.t.inner
 	t := tr.t
 	return newFutureKey(func() (Key, error) {
 		// Block until commit completes (or has already completed).
 		<-t.commitDone
-		// If commit failed, return the commit error (not a confusing
-		// versionstamp-specific error).
+		// If commit failed, return the commit error.
 		if t.commitErr != nil {
 			return nil, t.commitErr
 		}
