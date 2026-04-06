@@ -31,17 +31,19 @@ type Transaction struct {
 // Get returns the value associated with the specified key, or nil if the
 // key does not exist. The read is performed asynchronously.
 func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
+	inner, ctx := tr.t.inner, tr.t.ctx
 	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := tr.t.inner.Get(tr.t.ctx, key.FDBKey())
+		v, err := inner.Get(ctx, key.FDBKey())
 		return v, convertError(err)
 	})
 }
 
 // GetKey returns the key referenced by the given key selector.
 func (tr Transaction) GetKey(sel Selectable) FutureKey {
+	inner, ctx := tr.t.inner, tr.t.ctx
 	ks := sel.FDBKeySelector()
 	return newFutureKey(func() (Key, error) {
-		k, err := tr.t.inner.GetKey(tr.t.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }
@@ -54,8 +56,9 @@ func (tr Transaction) GetRange(r Range, options RangeOptions) RangeResult {
 
 // GetReadVersion returns the read version used by this transaction.
 func (tr Transaction) GetReadVersion() FutureInt64 {
+	inner, ctx := tr.t.inner, tr.t.ctx
 	return newFutureInt64(func() (int64, error) {
-		v, err := tr.t.inner.GetReadVersion(tr.t.ctx)
+		v, err := inner.GetReadVersion(ctx)
 		return v, convertError(err)
 	})
 }
@@ -125,20 +128,13 @@ func (tr Transaction) Clear(key KeyConvertible) {
 // ClearRange removes all keys k such that begin <= k < end.
 // The Apple binding's ClearRange is void because mutations are buffered
 // locally with no I/O. Our pure Go client validates begin <= end and
-// returns inverted_range (2005) on violation — we suppress only that
-// specific error to match the Apple API contract.
+// returns inverted_range (2005) on violation. We suppress all errors to
+// match the Apple void API contract. Today the only possible error is
+// inverted_range; if the client adds new error paths, this should be
+// revisited (see client.Transaction.ClearRange).
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
-	err := tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
-	if err != nil {
-		var fdbErr Error
-		if errors.As(convertError(err), &fdbErr) && fdbErr.Code == 2005 {
-			return // inverted_range — suppress to match Apple void API
-		}
-		// Unexpected error — should not happen with current client, but
-		// don't silently swallow if client internals change.
-		panic("fdb.ClearRange: unexpected error: " + err.Error())
-	}
+	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())
 }
 
 // SetVersionstampedKey sets a key with an embedded incomplete versionstamp.
@@ -208,8 +204,9 @@ func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 // Commit commits the transaction. The returned FutureNil becomes ready
 // when the commit has been acknowledged by the cluster.
 func (tr Transaction) Commit() FutureNil {
+	inner, ctx := tr.t.inner, tr.t.ctx
 	return newFutureNil(func() error {
-		return convertError(tr.t.inner.Commit(tr.t.ctx))
+		return convertError(inner.Commit(ctx))
 	})
 }
 
@@ -222,8 +219,9 @@ func (tr Transaction) Cancel() {
 // includes the retry delay — the delay runs when Get() is called, not when
 // OnError() is called. This matches Apple binding semantics.
 func (tr Transaction) OnError(e Error) FutureNil {
+	inner := tr.t.inner
 	return newFutureNil(func() error {
-		err := tr.t.inner.OnError(&wire.FDBError{Code: e.Code})
+		err := inner.OnError(&wire.FDBError{Code: e.Code})
 		return convertError(err)
 	})
 }

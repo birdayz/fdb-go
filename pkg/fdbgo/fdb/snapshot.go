@@ -11,16 +11,18 @@ type Snapshot struct {
 }
 
 func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
+	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := sn.s.tx.inner.Snapshot().Get(sn.s.tx.ctx, key.FDBKey())
+		v, err := inner.Snapshot().Get(ctx, key.FDBKey())
 		return v, convertError(err)
 	})
 }
 
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
+	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
 	return newFutureKey(func() (Key, error) {
-		k, err := sn.s.tx.inner.Snapshot().GetKey(sn.s.tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.Snapshot().GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }
@@ -30,8 +32,9 @@ func (sn Snapshot) GetRange(r Range, options RangeOptions) RangeResult {
 }
 
 func (sn Snapshot) GetReadVersion() FutureInt64 {
+	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	return newFutureInt64(func() (int64, error) {
-		v, err := sn.s.tx.inner.Snapshot().GetReadVersion(sn.s.tx.ctx)
+		v, err := inner.Snapshot().GetReadVersion(ctx)
 		return v, convertError(err)
 	})
 }
