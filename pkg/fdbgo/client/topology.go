@@ -55,8 +55,8 @@ func (db *database) refreshTopology() {
 	}
 }
 
-// handleConnError evicts a dead connection from the pool.
-// Caller is responsible for kicking topology if the dead connection was to a proxy.
+// handleConnError evicts a dead connection from the pool and marks the
+// endpoint as failed so the failure monitor can wake backoff sleeps on recovery.
 func (db *database) handleConnError(addr string) {
 	db.connMu.Lock()
 	if c, ok := db.connPool[addr]; ok {
@@ -64,6 +64,7 @@ func (db *database) handleConnError(addr string) {
 		delete(db.connPool, addr)
 	}
 	db.connMu.Unlock()
+	db.failMon.markFailed(addr)
 }
 
 // dbInfoEqual returns true if two DBInfo have identical proxy lists.

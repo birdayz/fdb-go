@@ -270,7 +270,6 @@ const (
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
 	var backoff time.Duration
-	numAttempts := 0
 
 	for {
 		// Re-read proxy list each cycle — topology may have refreshed.
@@ -280,19 +279,17 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
 			}
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
+			case <-db.failMon.waitForRecovery():
+				timer.Stop()
+				backoff = 0
+				continue
 			case <-ctx.Done():
-				return 0, false, false, ctx.Err()
-			}
-		}
-
-		if backoff > 0 {
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
+				timer.Stop()
 				return 0, false, false, ctx.Err()
 			}
 		}
@@ -301,7 +298,6 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
 				db.handleConnError(proxy.Address)
-				numAttempts++
 				continue
 			}
 
@@ -311,7 +307,6 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
 				cancelReply()
 				db.handleConnError(proxy.Address)
-				numAttempts++
 				continue
 			}
 
@@ -321,9 +316,9 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				rpcCancel()
 				if resp.Err != nil {
 					db.handleConnError(proxy.Address)
-					numAttempts++
 					continue
 				}
+				db.failMon.markAlive(proxy.Address)
 				return parseGetReadVersionReply(resp.Body)
 			case <-rpcCtx.Done():
 				rpcCancel()
@@ -331,20 +326,29 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				if ctx.Err() != nil {
 					return 0, false, false, ctx.Err()
 				}
-				numAttempts++
+				db.failMon.markFailed(proxy.Address)
 				continue
 			}
 		}
 
+		// All proxies exhausted — backoff with recovery wakeup.
 		db.kickTopology()
-		if numAttempts >= len(proxies) {
-			if backoff == 0 {
-				backoff = loadBalanceStartBackoff
-			} else {
-				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
-			}
+		if backoff == 0 {
+			backoff = loadBalanceStartBackoff
+		} else {
+			backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 		}
-		numAttempts = 0
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-db.failMon.waitForRecovery():
+			timer.Stop()
+			backoff = 0
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, false, false, ctx.Err()
+		}
 	}
 }
 
