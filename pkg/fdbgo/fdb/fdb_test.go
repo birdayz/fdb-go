@@ -640,6 +640,28 @@ func TestTransactionOptions(t *testing.T) {
 		// Wire-level verification would require packet inspection.
 		t.Fatalf("causal read risky: got %q, want %q", val, "opt-val2")
 	}
+
+	// Test SetLockAware — verify write + commit succeeds with flag set.
+	tr4, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+	if err := tr4.Options().SetLockAware(); err != nil {
+		t.Fatalf("SetLockAware: %v", err)
+	}
+	tr4.Set(fdb.Key(t.Name()+"/lock-aware-key"), []byte("lock-aware-val"))
+	if err := tr4.Commit().Get(); err != nil {
+		t.Fatalf("Commit with lock-aware: %v", err)
+	}
+	result2, err := db.Transact(func(rtx fdb.Transaction) (any, error) {
+		return rtx.Get(fdb.Key(t.Name() + "/lock-aware-key")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(result2.([]byte)) != "lock-aware-val" {
+		t.Fatalf("lock-aware: got %q, want %q", result2, "lock-aware-val")
+	}
 }
 
 func TestSizeLimit(t *testing.T) {
