@@ -234,7 +234,13 @@ func (tr Transaction) Commit() FutureNil {
 	return newFutureNil(func() error {
 		err := convertError(inner.Commit(ctx))
 		t.commitErr = err
-		close(t.commitDone)
+		if t.commitDone != nil {
+			select {
+			case <-t.commitDone:
+			default:
+				close(t.commitDone)
+			}
+		}
 		return err
 	})
 }
