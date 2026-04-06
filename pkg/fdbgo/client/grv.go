@@ -103,6 +103,7 @@ type grvBatcher struct {
 
 type grvRequest struct {
 	reply chan grvResult
+	flags uint32 // GRV Flags from the requesting transaction
 }
 
 type grvResult struct {
@@ -111,19 +112,25 @@ type grvResult struct {
 }
 
 // getReadVersion returns a read version, using the cache if fresh.
-func (b *grvBatcher) getReadVersion(db *database, ctx context.Context) (int64, error) {
+func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
-	if v, ok := db.grvCache.tryCache(); ok {
-		// Start background refresher on first cache hit.
-		b.refreshOnce.Do(func() {
-			db.wg.Add(1)
-			go b.backgroundRefresher(db)
-		})
-		return v, nil
+	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
+	// Note: it still enters the batcher and waits up to batchTime (~1ms).
+	// C++ avoids this with per-priority batchers; a future improvement.
+	isImmediate := flags&grvPriorityMask == grvPrioritySystemImmediate
+	if !isImmediate {
+		if v, ok := db.grvCache.tryCache(); ok {
+			// Start background refresher on first cache hit.
+			b.refreshOnce.Do(func() {
+				db.wg.Add(1)
+				go b.backgroundRefresher(db)
+			})
+			return v, nil
+		}
 	}
 
 	// Slow path: batch request to proxy.
-	req := grvRequest{reply: make(chan grvResult, 1)}
+	req := grvRequest{reply: make(chan grvResult, 1), flags: flags}
 
 	b.mu.Lock()
 	b.pending = append(b.pending, req)
@@ -158,8 +165,23 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
+	// Merge flags: take MAX priority (bits 24-31) and OR all option
+	// flags (bits 0-23). MAX means SYSTEM_IMMEDIATE elevates the batch
+	// (acceptable, flush windows are bounded ~1ms), but also means DEFAULT
+	// elevates BATCH — defeating ratekeeper throttling of low-priority work.
+	// The C++ client avoids this with separate batchers per priority level;
+	// that's the correct long-term fix.
+	var priorityBits, optionBits uint32
+	for _, r := range batch {
+		if p := r.flags & grvPriorityMask; p > priorityBits {
+			priorityBits = p
+		}
+		optionBits |= r.flags &^ grvPriorityMask
+	}
+	flags := priorityBits | optionBits
+
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx)
+	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -214,7 +236,8 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 			if needsRefresh {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx)
+				// Background refresher uses default priority (8 << 24).
+				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
 				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)
@@ -245,7 +268,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
 	var backoff time.Duration
 	numAttempts := 0
 
@@ -283,7 +306,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version 
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetReadVersionRequest(replyToken)
+			body := buildGetReadVersionRequest(replyToken, flags, txnCount)
 
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
 				cancelReply()
@@ -325,9 +348,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context) (version 
 	}
 }
 
-func buildGetReadVersionRequest(replyToken transport.UID) []byte {
+func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount uint32) []byte {
 	req := types.GetReadVersionRequest{
-		TransactionCount: 1,
+		TransactionCount: txnCount,
+		Flags:            flags,
 		MaxVersion:       -1,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 	}

@@ -1,5 +1,7 @@
 package fdb
 
+import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+
 // TransactionOptions is a handle for setting options that affect a
 // Transaction. Obtained via Transaction.Options().
 type TransactionOptions struct {
@@ -17,12 +19,12 @@ func (o TransactionOptions) SetRetryLimit(retries int64) error {
 }
 
 func (o TransactionOptions) SetPriorityBatch() error {
-	// TODO: wire-level priority support in GRV request
+	o.tx.inner.SetPriority(client.PriorityBatch)
 	return nil
 }
 
 func (o TransactionOptions) SetPrioritySystemImmediate() error {
-	// TODO: wire-level priority support in GRV request
+	o.tx.inner.SetPriority(client.PrioritySystemImmediate)
 	return nil
 }
 
@@ -36,7 +38,7 @@ func (o TransactionOptions) SetNextWriteNoWriteConflictRange() error {
 }
 
 func (o TransactionOptions) SetCausalReadRisky() error {
-	// TODO: causal read risky flag in GRV request
+	o.tx.inner.SetCausalReadRisky(true)
 	return nil
 }
 
@@ -60,10 +62,16 @@ func (o TransactionOptions) SetReadSystemKeys() error {
 }
 
 func (o TransactionOptions) SetLockAware() error {
+	o.tx.inner.SetLockAware(true)
 	return nil
 }
 
+// SetReadLockAware allows reads on locked databases. Unlike SetLockAware,
+// this does NOT set lock_aware on the commit path — in C++ FDB,
+// read_lock_aware only bypasses the locked-database check for reads,
+// not commits.
 func (o TransactionOptions) SetReadLockAware() error {
+	o.tx.inner.SetReadLockAware(true)
 	return nil
 }
 
@@ -75,8 +83,8 @@ func (o TransactionOptions) SetTransactionLoggingEnable(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetSizeLimit(_ int64) error {
-	// TODO: enforce transaction size limit client-side
+func (o TransactionOptions) SetSizeLimit(limit int64) error {
+	o.tx.inner.SetSizeLimit(limit)
 	return nil
 }
 

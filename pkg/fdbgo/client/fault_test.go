@@ -166,7 +166,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// Manual commit with fault: ADD 5, then kill connection.
 	tx := db.CreateTransaction()
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 
 	// Pre-fetch read version so no GRV request during the fault window.
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx)
+	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
