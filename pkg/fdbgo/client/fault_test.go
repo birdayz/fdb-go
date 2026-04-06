@@ -76,7 +76,7 @@ func (d *faultDialer) disarm() {
 // bootstrapping the connection against the provided context.
 func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) *Database {
 	t.Helper()
-	db, err := openDatabaseFromConfig(ctx, cf, dialFn)
+	db, err := OpenDatabaseFromConfig(ctx, cf, dialFn)
 	if err != nil {
 		t.Fatalf("newTestDatabase: %v", err)
 	}

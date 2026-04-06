@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fdb",
+    srcs = [
+        "check.go",
+        "database.go",
+        "error.go",
+        "future.go",
+        "interfaces.go",
+        "key.go",
+        "options.go",
+        "range.go",
+        "range_result.go",
+        "snapshot.go",
+        "tenant.go",
+        "transaction.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/wire",
+    ],
+)
+
+go_test(
+    name = "fdb_test",
+    srcs = ["fdb_test.go"],
+    deps = [
+        ":fdb",
+        "//pkg/fdbgo/client",
+        "//pkg/testcontainers/foundationdb",
+    ],
+)

@@ -10,11 +10,13 @@ import (
 
 const (
 	EndpointSlotAddresses = 0
-	EndpointSlotToken = 1
+	EndpointSlotToken     = 1
 )
 
 var EndpointVTable = wire.VTable{8, 24, 20, 4}
+
 const EndpointFileID uint32 = 10618805
+
 var EndpointVTableClosure = []wire.VTable{
 	{8, 24, 20, 4},
 	{8, 9, 8, 4},
@@ -25,11 +27,12 @@ var EndpointVTableClosure = []wire.VTable{
 var EndpointTemplate = wire.NewMessageTemplate(
 	EndpointFileID, EndpointVTable, 8, EndpointVTableClosure,
 )
+
 const EndpointMaxAlign = 8
 
 type Endpoint struct {
 	Addresses NetworkAddressList // slot 0, nested
-	Token [16]byte // slot 1
+	Token     [16]byte           // slot 1
 }
 
 func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
@@ -43,7 +46,9 @@ func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *Endpoint) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
 		m.Addresses.UnmarshalFromReader(nr)
 	}
@@ -58,7 +63,10 @@ func (m *Endpoint) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *Endpoint) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Addresses.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(int(EndpointVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(EndpointVTable[1])-4, 8)+4) }
+	{
+		n := ps.GetMessageWriter(int(EndpointVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(EndpointVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -71,7 +79,12 @@ func (m *Endpoint) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *
 	selfW := wb.GetMessageWriter(int(EndpointVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := EndpointVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(EndpointVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(EndpointVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteScalar(m.Token[:], int(vt[EndpointSlotToken+2]))
 	selfW.WriteRelativeOffset(addressesStart, int(vt[EndpointSlotAddresses+2]))
 	selfW.WriteToAt(selfStart)
@@ -86,10 +99,16 @@ func (m *Endpoint) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -103,13 +122,22 @@ func (m *Endpoint) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], EndpointFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], EndpointFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -117,15 +145,18 @@ func (m *Endpoint) MarshalFDB() []byte {
 // ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint.
 func ParseEndpointVectorFromReader(r *wire.Reader, slot int) []Endpoint {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]Endpoint, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem Endpoint
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

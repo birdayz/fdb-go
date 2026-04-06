@@ -9,17 +9,18 @@ import (
 )
 
 const (
-	NetworkAddressListSlotAddress = 0
+	NetworkAddressListSlotAddress          = 0
 	NetworkAddressListSlotSecondaryAddress = 1
 )
 
 var NetworkAddressListVTable = wire.VTable{10, 13, 4, 12, 8}
+
 const NetworkAddressListMaxAlign = 4
 
 type NetworkAddressList struct {
-	Address NetworkAddress // slot 0, nested
-	HasSecondaryAddress bool   // slot 1, optional tag
-	SecondaryAddress    []byte // slot 2, optional value
+	Address             NetworkAddress // slot 0, nested
+	HasSecondaryAddress bool           // slot 1, optional tag
+	SecondaryAddress    []byte         // slot 2, optional value
 }
 
 func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
@@ -34,7 +35,9 @@ func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
 		m.Address.UnmarshalFromReader(nr)
 	}
@@ -50,8 +53,13 @@ func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *NetworkAddressList) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Address.precomputeSize(ps)
-	if m.HasSecondaryAddress { ps.VisitDynamicSize(len(m.SecondaryAddress)) }
-	{ n := ps.GetMessageWriter(int(NetworkAddressListVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressListVTable[1])-4, 4)+4) }
+	if m.HasSecondaryAddress {
+		ps.VisitDynamicSize(len(m.SecondaryAddress))
+	}
+	{
+		n := ps.GetMessageWriter(int(NetworkAddressListVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(NetworkAddressListVTable[1])-4, 4)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -62,11 +70,18 @@ func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart i
 	var addressStart int
 	var secondaryAddressOff int
 	addressStart = m.Address.writeToBuffer(wb, vtableStart, tmpl)
-	if m.HasSecondaryAddress { secondaryAddressOff, _ = wb.VisitDynamicSize(m.SecondaryAddress) }
+	if m.HasSecondaryAddress {
+		secondaryAddressOff, _ = wb.VisitDynamicSize(m.SecondaryAddress)
+	}
 	selfW := wb.GetMessageWriter(int(NetworkAddressListVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := NetworkAddressListVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressListVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(NetworkAddressListVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
 	selfW.WriteRelativeOffset(addressStart, int(vt[NetworkAddressListSlotAddress+2]))
 	if m.HasSecondaryAddress {
 		selfW.WriteScalar([]byte{1}, int(vt[NetworkAddressListSlotSecondaryAddress+2]))
@@ -79,15 +94,18 @@ func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart i
 // ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.
 func ParseNetworkAddressListVectorFromReader(r *wire.Reader, slot int) []NetworkAddressList {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]NetworkAddressList, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem NetworkAddressList
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

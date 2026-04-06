@@ -263,12 +263,12 @@ func OpenDatabase(ctx context.Context, clusterFilePath string) (*Database, error
 		return nil, err
 	}
 
-	return openDatabaseFromConfig(ctx, cf, nil)
+	return OpenDatabaseFromConfig(ctx, cf, nil)
 }
 
-// openDatabaseFromConfig creates and bootstraps a Database from a ClusterFile.
+// OpenDatabaseFromConfig creates and bootstraps a Database from a ClusterFile.
 // dialFn may be nil for default dialing.
-func openDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) (*Database, error) {
+func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) (*Database, error) {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
 		clusterFile:  cf,
