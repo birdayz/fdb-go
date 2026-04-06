@@ -48,4 +48,13 @@ runcmd:
     su - runner -c "cd $RUNNER_DIR && ./config.sh --unattended --url https://github.com/${github_repo} --token ${github_runner_token} --name gh-runner-fdb --labels ${runner_labels} --replace"
     cd "$RUNNER_DIR"
     ./svc.sh install runner
+    # svc.sh generates a unit with no Restart= directive — add one so OOM kills don't leave the runner dead
+    SVC_NAME=$(basename /etc/systemd/system/actions.runner.*.service .service)
+    mkdir -p "/etc/systemd/system/$${SVC_NAME}.service.d"
+    cat > "/etc/systemd/system/$${SVC_NAME}.service.d/restart.conf" <<'CONF'
+[Service]
+Restart=always
+RestartSec=5
+CONF
+    systemctl daemon-reload
     ./svc.sh start

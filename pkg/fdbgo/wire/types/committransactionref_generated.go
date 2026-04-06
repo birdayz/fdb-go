@@ -9,30 +9,31 @@ import (
 )
 
 const (
-	CommitTransactionRefSlotReadConflictRanges = 0
-	CommitTransactionRefSlotWriteConflictRanges = 1
-	CommitTransactionRefSlotMutations = 2
-	CommitTransactionRefSlotReadSnapshot = 3
-	CommitTransactionRefSlotReport_conflicting_keys = 4
-	CommitTransactionRefSlotLock_aware = 5
-	CommitTransactionRefSlotRead_conflict_ranges_disabled = 6
+	CommitTransactionRefSlotReadConflictRanges             = 0
+	CommitTransactionRefSlotWriteConflictRanges            = 1
+	CommitTransactionRefSlotMutations                      = 2
+	CommitTransactionRefSlotReadSnapshot                   = 3
+	CommitTransactionRefSlotReport_conflicting_keys        = 4
+	CommitTransactionRefSlotLock_aware                     = 5
+	CommitTransactionRefSlotRead_conflict_ranges_disabled  = 6
 	CommitTransactionRefSlotWrite_conflict_ranges_disabled = 8
 )
 
 var CommitTransactionRefVTable = wire.VTable{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28}
+
 const CommitTransactionRefMaxAlign = 8
 
 type CommitTransactionRef struct {
-	ReadConflictRanges []KeyRangeRef // slot 0, vector of struct
-	WriteConflictRanges []KeyRangeRef // slot 1, vector of struct
-	Mutations []MutationRef // slot 2, vector of struct
-	ReadSnapshot int64 // slot 3
-	Report_conflicting_keys bool // slot 4
-	Lock_aware bool // slot 5
-	HasRead_conflict_ranges_disabled bool   // slot 6, optional tag
-	Read_conflict_ranges_disabled    []byte // slot 7, optional value
-	HasWrite_conflict_ranges_disabled bool   // slot 8, optional tag
-	Write_conflict_ranges_disabled    []byte // slot 9, optional value
+	ReadConflictRanges                []KeyRangeRef // slot 0, vector of struct
+	WriteConflictRanges               []KeyRangeRef // slot 1, vector of struct
+	Mutations                         []MutationRef // slot 2, vector of struct
+	ReadSnapshot                      int64         // slot 3
+	Report_conflicting_keys           bool          // slot 4
+	Lock_aware                        bool          // slot 5
+	HasRead_conflict_ranges_disabled  bool          // slot 6, optional tag
+	Read_conflict_ranges_disabled     []byte        // slot 7, optional value
+	HasWrite_conflict_ranges_disabled bool          // slot 8, optional tag
+	Write_conflict_ranges_disabled    []byte        // slot 9, optional value
 }
 
 func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
@@ -87,7 +88,9 @@ func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges); err == nil && count > 0 {
 		m.ReadConflictRanges = make([]KeyRangeRef, 0, count)
 		for i := 0; i < count; i++ {
@@ -146,35 +149,54 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		n := len(m.ReadConflictRanges)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ { m.ReadConflictRanges[i].precomputeSize(ps) }
+			for i := 0; i < n; i++ {
+				m.ReadConflictRanges[i].precomputeSize(ps)
+			}
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start) // count at start (4 bytes)
-			self.WriteToAt(ps, start - 4) // reloff array at start-4
-		} else { ps.VisitDynamicSize(0) }
+			ps.Write(start)             // count at start (4 bytes)
+			self.WriteToAt(ps, start-4) // reloff array at start-4
+		} else {
+			ps.VisitDynamicSize(0)
+		}
 	}
 	{
 		n := len(m.WriteConflictRanges)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ { m.WriteConflictRanges[i].precomputeSize(ps) }
+			for i := 0; i < n; i++ {
+				m.WriteConflictRanges[i].precomputeSize(ps)
+			}
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start) // count at start (4 bytes)
-			self.WriteToAt(ps, start - 4) // reloff array at start-4
-		} else { ps.VisitDynamicSize(0) }
+			ps.Write(start)             // count at start (4 bytes)
+			self.WriteToAt(ps, start-4) // reloff array at start-4
+		} else {
+			ps.VisitDynamicSize(0)
+		}
 	}
 	{
 		n := len(m.Mutations)
 		if n > 0 {
 			self := ps.GetMessageWriter(n * 4)
-			for i := 0; i < n; i++ { m.Mutations[i].precomputeSize(ps) }
+			for i := 0; i < n; i++ {
+				m.Mutations[i].precomputeSize(ps)
+			}
 			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
-			ps.Write(start) // count at start (4 bytes)
-			self.WriteToAt(ps, start - 4) // reloff array at start-4
-		} else { ps.VisitDynamicSize(0) }
+			ps.Write(start)             // count at start (4 bytes)
+			self.WriteToAt(ps, start-4) // reloff array at start-4
+		} else {
+			ps.VisitDynamicSize(0)
+		}
 	}
-	if m.HasRead_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled)) }
-	if m.HasWrite_conflict_ranges_disabled { ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled)) }
-	{ n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, 8)+4) }
+	if m.HasRead_conflict_ranges_disabled {
+		ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled))
+	}
+	if m.HasWrite_conflict_ranges_disabled {
+		ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled))
+	}
+	{
+		n := ps.GetMessageWriter(int(CommitTransactionRefVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(CommitTransactionRefVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -195,7 +217,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.ReadConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
 			self.WriteToAt(self.FinalLocation)
 			readConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -210,7 +232,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.WriteConflictRanges[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
 			self.WriteToAt(self.FinalLocation)
 			writeConflictRangesOff = wb.CurrentBufferSize
 		} else {
@@ -225,22 +247,39 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 				elemStart := m.Mutations[i].writeToBuffer(wb, vtableStart, tmpl)
 				self.WriteRelativeOffset(elemStart, i*4)
 			}
-			wb.WriteUint32(uint32(n), self.FinalLocation + 4)
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
 			self.WriteToAt(self.FinalLocation)
 			mutationsOff = wb.CurrentBufferSize
 		} else {
 			mutationsOff, _ = wb.VisitDynamicSize(nil)
 		}
 	}
-	if m.HasRead_conflict_ranges_disabled { read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled) }
-	if m.HasWrite_conflict_ranges_disabled { write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled) }
+	if m.HasRead_conflict_ranges_disabled {
+		read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled)
+	}
+	if m.HasWrite_conflict_ranges_disabled {
+		write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled)
+	}
 	selfW := wb.GetMessageWriter(int(CommitTransactionRefVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := CommitTransactionRefVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRefVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot)); selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2])) }
-	if m.Report_conflicting_keys { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2])) }
-	if m.Lock_aware { selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(CommitTransactionRefVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.ReadSnapshot))
+		selfW.WriteScalar(b[:], int(vt[CommitTransactionRefSlotReadSnapshot+2]))
+	}
+	if m.Report_conflicting_keys {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotReport_conflicting_keys+2]))
+	}
+	if m.Lock_aware {
+		selfW.WriteScalar([]byte{1}, int(vt[CommitTransactionRefSlotLock_aware+2]))
+	}
 	if len(m.ReadConflictRanges) > 0 {
 		selfW.WriteRelativeOffset(readConflictRangesOff, int(vt[CommitTransactionRefSlotReadConflictRanges+2]))
 	}
@@ -265,15 +304,18 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 // ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
 func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]CommitTransactionRef, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem CommitTransactionRef
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-

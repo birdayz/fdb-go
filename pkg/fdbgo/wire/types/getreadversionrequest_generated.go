@@ -10,16 +10,18 @@ import (
 
 const (
 	GetReadVersionRequestSlotTransactionCount = 0
-	GetReadVersionRequestSlotFlags = 1
-	GetReadVersionRequestSlotTags = 2
-	GetReadVersionRequestSlotDebugID = 3
-	GetReadVersionRequestSlotReply = 5
-	GetReadVersionRequestSlotSpanContext = 6
-	GetReadVersionRequestSlotMaxVersion = 7
+	GetReadVersionRequestSlotFlags            = 1
+	GetReadVersionRequestSlotTags             = 2
+	GetReadVersionRequestSlotDebugID          = 3
+	GetReadVersionRequestSlotReply            = 5
+	GetReadVersionRequestSlotSpanContext      = 6
+	GetReadVersionRequestSlotMaxVersion       = 7
 )
 
 var GetReadVersionRequestVTable = wire.VTable{20, 37, 12, 16, 20, 36, 24, 28, 32, 4}
+
 const GetReadVersionRequestFileID uint32 = 838566
+
 var GetReadVersionRequestVTableClosure = []wire.VTable{
 	{6, 20, 4},
 	{6, 8, 4},
@@ -30,17 +32,18 @@ var GetReadVersionRequestVTableClosure = []wire.VTable{
 var GetReadVersionRequestTemplate = wire.NewMessageTemplate(
 	GetReadVersionRequestFileID, GetReadVersionRequestVTable, 8, GetReadVersionRequestVTableClosure,
 )
+
 const GetReadVersionRequestMaxAlign = 8
 
 type GetReadVersionRequest struct {
-	TransactionCount uint32 // slot 0
-	Flags uint32 // slot 1
-	Tags []byte // slot 2
-	HasDebugID bool   // slot 3, optional tag
-	DebugID    []byte // slot 4, optional value
-	Reply ReplyPromise // slot 5, nested
-	SpanContext SpanContext // slot 6, nested
-	MaxVersion int64 // slot 7
+	TransactionCount uint32       // slot 0
+	Flags            uint32       // slot 1
+	Tags             []byte       // slot 2
+	HasDebugID       bool         // slot 3, optional tag
+	DebugID          []byte       // slot 4, optional value
+	Reply            ReplyPromise // slot 5, nested
+	SpanContext      SpanContext  // slot 6, nested
+	MaxVersion       int64        // slot 7
 }
 
 func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
@@ -70,7 +73,9 @@ func (m *GetReadVersionRequest) UnmarshalFromReader(r *wire.Reader) {
 
 func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 	r, err := wire.NewReader(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if r.FieldPresent(GetReadVersionRequestSlotTransactionCount) {
 		m.TransactionCount = r.ReadUint32(GetReadVersionRequestSlotTransactionCount)
 	}
@@ -101,10 +106,15 @@ func (m *GetReadVersionRequest) UnmarshalFDB(data []byte) error {
 // Returns end-offset of this object (C++ RelativeOffset).
 func (m *GetReadVersionRequest) precomputeSize(ps *wire.PrecomputeSize) int {
 	ps.VisitDynamicSize(len(m.Tags))
-	if m.HasDebugID { ps.VisitDynamicSize(len(m.DebugID)) }
+	if m.HasDebugID {
+		ps.VisitDynamicSize(len(m.DebugID))
+	}
 	m.Reply.precomputeSize(ps)
 	m.SpanContext.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(int(GetReadVersionRequestVTable[1])); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetReadVersionRequestVTable[1])-4, 8)+4) }
+	{
+		n := ps.GetMessageWriter(int(GetReadVersionRequestVTable[1]))
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+int(GetReadVersionRequestVTable[1])-4, 8)+4)
+	}
 	return ps.CurrentBufferSize
 }
 
@@ -117,16 +127,35 @@ func (m *GetReadVersionRequest) writeToBuffer(wb *wire.WriteToBuffer, vtableStar
 	var replyStart int
 	var spanContextStart int
 	tagsOff, _ = wb.VisitDynamicSize(m.Tags)
-	if m.HasDebugID { debugIDOff, _ = wb.VisitDynamicSize(m.DebugID) }
+	if m.HasDebugID {
+		debugIDOff, _ = wb.VisitDynamicSize(m.DebugID)
+	}
 	replyStart = m.Reply.writeToBuffer(wb, vtableStart, tmpl)
 	spanContextStart = m.SpanContext.writeToBuffer(wb, vtableStart, tmpl)
 	selfW := wb.GetMessageWriter(int(GetReadVersionRequestVTable[1]), true)
 	selfStart := selfW.FinalLocation
 	vt := GetReadVersionRequestVTable
-	{ soff := int32(vtableStart - tmpl.VTableOffset(GetReadVersionRequestVTable) - selfStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); selfW.WriteScalar(b[:], 0) }
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.TransactionCount)); selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotTransactionCount+2])) }
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(m.Flags)); selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotFlags+2])) }
-	{ var b [8]byte; binary.LittleEndian.PutUint64(b[:], uint64(m.MaxVersion)); selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotMaxVersion+2])) }
+	{
+		soff := int32(vtableStart - tmpl.VTableOffset(GetReadVersionRequestVTable) - selfStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		selfW.WriteScalar(b[:], 0)
+	}
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(m.TransactionCount))
+		selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotTransactionCount+2]))
+	}
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(m.Flags))
+		selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotFlags+2]))
+	}
+	{
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], uint64(m.MaxVersion))
+		selfW.WriteScalar(b[:], int(vt[GetReadVersionRequestSlotMaxVersion+2]))
+	}
 	selfW.WriteRelativeOffset(tagsOff, int(vt[GetReadVersionRequestSlotTags+2]))
 	if m.HasDebugID {
 		selfW.WriteScalar([]byte{1}, int(vt[GetReadVersionRequestSlotDebugID+2]))
@@ -146,10 +175,16 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	ps := wire.NewPrecomputeSize()
 	vtNoop := ps.GetMessageWriter(len(packedVT))
 	m.precomputeSize(ps)
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4)
+	}
 	vtNoop.WriteTo(ps)
 	vtableStart := ps.CurrentBufferSize
-	{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }
+	{
+		n := ps.GetMessageWriter(8)
+		n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8))
+	}
 	totalSize := ps.CurrentBufferSize
 
 	// Pass 2: WriteToBuffer
@@ -163,13 +198,22 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 	fakeRootW := wb.GetMessageWriter(8, true)
 	fakeRootStart := fakeRootW.FinalLocation
 	fakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))
-	{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }
+	{
+		soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(soff))
+		fakeRootW.WriteScalar(b[:], 0)
+	}
 	fakeRootW.WriteToAt(fakeRootStart)
 
 	vtW.WriteTo()
 	footerW := wb.GetMessageWriter(8, false)
 	footerW.WriteRelativeOffset(fakeRootStart, 0)
-	{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], GetReadVersionRequestFileID); footerW.WriteScalar(b[:], 4) }
+	{
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], GetReadVersionRequestFileID)
+		footerW.WriteScalar(b[:], 4)
+	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
 	return buf
 }
@@ -177,15 +221,18 @@ func (m *GetReadVersionRequest) MarshalFDB() []byte {
 // ParseGetReadVersionRequestVectorFromReader reads a FlatBuffers vector of GetReadVersionRequest.
 func ParseGetReadVersionRequestVectorFromReader(r *wire.Reader, slot int) []GetReadVersionRequest {
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 { return nil }
+	if err != nil || count == 0 {
+		return nil
+	}
 	result := make([]GetReadVersionRequest, 0, count)
 	for i := 0; i < count; i++ {
 		elemR, err := r.ReadVectorElementReader(slot, i)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var elem GetReadVersionRequest
 		elem.UnmarshalFromReader(elemR)
 		result = append(result, elem)
 	}
 	return result
 }
-
