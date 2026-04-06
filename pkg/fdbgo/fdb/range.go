@@ -120,6 +120,7 @@ type RangeOptions struct {
 	Limit int
 
 	// Mode sets the streaming mode of the range read.
+	// Ignored by the pure Go client (all reads use exact mode internally).
 	Mode StreamingMode
 
 	// Reverse indicates that the read should be performed in reverse

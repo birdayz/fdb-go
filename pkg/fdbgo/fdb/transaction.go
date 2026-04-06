@@ -80,11 +80,13 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // is implemented in a later PR via a commitDone channel. In this base
 // implementation, calling before commit returns error 2015 (used_during_commit).
 func (tr Transaction) GetVersionstamp() FutureKey {
-	vs, err := tr.t.inner.GetVersionstamp()
-	if err != nil {
-		return newReadyFutureKey(nil, convertError(err))
-	}
-	return newReadyFutureKey(Key(vs), nil)
+	return newFutureKey(func() (Key, error) {
+		vs, err := tr.t.inner.GetVersionstamp()
+		if err != nil {
+			return nil, convertError(err)
+		}
+		return Key(vs), nil
+	})
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
@@ -232,7 +234,9 @@ func (tr Transaction) SetReadVersion(version int64) {
 // and will race with Reset. This matches Apple binding semantics
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
+	old := tr.t.inner
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
+	old.Cancel()
 }
 
 // AddReadConflictRange adds a read conflict range.
@@ -297,14 +301,16 @@ func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any,
 	return f(tr)
 }
 
-// panicToError catches Error panics and converts them to returned errors.
-// Matches the Apple binding's panicToError used in Transact/ReadTransact.
+// panicToError catches error panics and converts them to returned errors.
+// Apple's binding only catches fdb.Error (since the C client only produces
+// those), but our pure Go client can surface arbitrary errors (network,
+// context, etc.) via MustGet(), so we catch the full error interface.
 func panicToError(e *error) {
 	if r := recover(); r != nil {
-		if err, ok := r.(Error); ok {
+		if err, ok := r.(error); ok {
 			*e = err
 		} else {
-			panic(r) // re-panic non-Error panics
+			panic(r) // re-panic non-error panics
 		}
 	}
 }

@@ -219,3 +219,23 @@ func (o TransactionOptions) SetExpensiveClearCostEstimationEnable() error {
 
 // DatabaseOptions is a handle for setting options that affect a Database.
 type DatabaseOptions struct{}
+
+func (o DatabaseOptions) SetLocationCacheSize(_ int64) error                     { return nil }
+func (o DatabaseOptions) SetMaxWatches(_ int64) error                            { return nil }
+func (o DatabaseOptions) SetDatacenterId(_ string) error                         { return nil }
+func (o DatabaseOptions) SetMachineId(_ string) error                            { return nil }
+func (o DatabaseOptions) SetSnapshotRywEnable() error                            { return nil }
+func (o DatabaseOptions) SetSnapshotRywDisable() error                           { return nil }
+func (o DatabaseOptions) SetTransactionTimeout(_ int64) error                    { return nil }
+func (o DatabaseOptions) SetTransactionRetryLimit(_ int64) error                 { return nil }
+func (o DatabaseOptions) SetTransactionMaxRetryDelay(_ int64) error              { return nil }
+func (o DatabaseOptions) SetTransactionSizeLimit(_ int64) error                  { return nil }
+func (o DatabaseOptions) SetTransactionCausalReadRisky() error                   { return nil }
+func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error      { return nil }
+func (o DatabaseOptions) SetTransactionReportConflictingKeys() error             { return nil }
+func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error              { return nil }
+func (o DatabaseOptions) SetTransactionBypassUnreadable() error                  { return nil }
+func (o DatabaseOptions) SetTransactionIncludePortInAddress() error              { return nil }
+func (o DatabaseOptions) SetTransactionUsedDuringCommitProtectionDisable() error { return nil }
+func (o DatabaseOptions) SetUseConfigDatabase() error                            { return nil }
+func (o DatabaseOptions) SetTestCausalReadRisky(_ int64) error                   { return nil }
