@@ -143,8 +143,12 @@ type Transaction struct {
 	// causalReadRisky: if true, FLAG_CAUSAL_READ_RISKY is set in GRV Flags.
 	causalReadRisky bool
 
-	// lockAware: if true, lock_aware field is set in CommitTransactionRef.
-	lockAware bool
+	// lockAware: if true, lock_aware is set on both reads and commits.
+	// readLockAware: if true, lock_aware is set on reads only (not commits).
+	// C++: req.options.lockAware = tr->options.lockAware || tr->options.readLockAware
+	//      tr.lock_aware = tr->options.lockAware  (commit path — no readLockAware)
+	lockAware     bool
+	readLockAware bool
 
 	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
 	sizeLimit int64
@@ -521,7 +525,10 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 }
 
 // GetApproximateSize returns the approximate size of the transaction's mutations
-// and conflict ranges in bytes. Matches C++ fdb_transaction_get_approximate_size.
+// and conflict ranges in bytes. Note: does not include per-mutation framing
+// overhead (~40 bytes/mutation in C++), so slightly underestimates near the
+// SetSizeLimit threshold. A transaction passing this check could still be
+// rejected server-side.
 func (tx *Transaction) GetApproximateSize() int64 {
 	var size int64
 	for _, m := range tx.mutations {
@@ -573,6 +580,12 @@ func (tx *Transaction) SetCausalReadRisky(v bool) {
 // SetLockAware sets the lock-aware flag on the commit request.
 func (tx *Transaction) SetLockAware(v bool) {
 	tx.lockAware = v
+}
+
+// SetReadLockAware allows reads on locked databases without granting
+// commit access. C++: options.readLockAware — only affects read path.
+func (tx *Transaction) SetReadLockAware(v bool) {
+	tx.readLockAware = v
 }
 
 // SetSizeLimit sets the maximum transaction size in bytes.
@@ -666,7 +679,9 @@ func (tx *Transaction) reset() {
 	if tx.timeout > 0 {
 		tx.deadline = time.Now().Add(tx.timeout)
 	}
-	// retryCount, backoff, timeout, and retryLimit are preserved.
+	// Preserved across reset (match C++ option re-application on retry):
+	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
+	// lockAware, readLockAware, sizeLimit.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows

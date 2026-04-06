@@ -69,9 +69,9 @@ func (o TransactionOptions) SetLockAware() error {
 // SetReadLockAware allows reads on locked databases. Unlike SetLockAware,
 // this does NOT set lock_aware on the commit path — in C++ FDB,
 // read_lock_aware only bypasses the locked-database check for reads,
-// not commits. Since our client doesn't enforce the read-side lock check
-// client-side, this is currently a no-op.
+// not commits.
 func (o TransactionOptions) SetReadLockAware() error {
+	o.tx.inner.SetReadLockAware(true)
 	return nil
 }
 
@@ -83,8 +83,8 @@ func (o TransactionOptions) SetTransactionLoggingEnable(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetSizeLimit(bytes int64) error {
-	o.tx.inner.SetSizeLimit(bytes)
+func (o TransactionOptions) SetSizeLimit(limit int64) error {
+	o.tx.inner.SetSizeLimit(limit)
 	return nil
 }
 

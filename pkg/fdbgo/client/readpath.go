@@ -58,7 +58,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
 			SsLatestCommitVersions: emptyVersionVector,
 		}
-		if tx.lockAware {
+		if tx.lockAware || tx.readLockAware {
 			req.HasOptions = true
 			req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 		}
@@ -139,7 +139,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware, replyToken, server.Token)
+		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, replyToken, server.Token)
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			cancelReply()
 			tx.db.handleConnError(server.Address)
@@ -293,7 +293,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware, replyToken, server.Token)
+		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			cancelReply()
