@@ -25,6 +25,10 @@
 //     than the human-readable description from libfdb_c. Use Error.Code for
 //     programmatic matching.
 //   - Future.Cancel() is a no-op — the underlying operation runs to completion.
+//   - No per-transaction context.Context: matching the Apple binding, methods
+//     like Get/GetRange do not accept a context parameter. Use SetTimeout for
+//     deadlines, or call Cancel() from another goroutine for cancellation.
+//     context.Background() is used internally for all operations.
 package fdb
 
 import (
