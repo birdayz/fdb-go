@@ -114,13 +114,17 @@ type grvResult struct {
 // getReadVersion returns a read version, using the cache if fresh.
 func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
-	if v, ok := db.grvCache.tryCache(); ok {
-		// Start background refresher on first cache hit.
-		b.refreshOnce.Do(func() {
-			db.wg.Add(1)
-			go b.backgroundRefresher(db)
-		})
-		return v, nil
+	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
+	isImmediate := flags&0xFF000000 == grvPrioritySystemImmediate
+	if !isImmediate {
+		if v, ok := db.grvCache.tryCache(); ok {
+			// Start background refresher on first cache hit.
+			b.refreshOnce.Do(func() {
+				db.wg.Add(1)
+				go b.backgroundRefresher(db)
+			})
+			return v, nil
+		}
 	}
 
 	// Slow path: batch request to proxy.
@@ -159,14 +163,16 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
-	// Merge flags: take max priority (bits 24-31) and OR all option
-	// flags (bits 0-23). This ensures causal_read_risky from a lower-
-	// priority request isn't shadowed by a higher-priority one.
+	// Merge flags: take MIN priority (bits 24-31) and OR all option
+	// flags (bits 0-23). Min priority prevents SYSTEM_IMMEDIATE from
+	// escalating BATCH requests — matches C++ which uses separate
+	// batchers per priority level.
 	const priorityMask = 0xFF000000
-	var priorityBits, optionBits uint32
+	priorityBits := uint32(0xFFFFFFFF) // start at max, take min
+	var optionBits uint32
 	for _, r := range batch {
-		if r.flags&priorityMask > priorityBits {
-			priorityBits = r.flags & priorityMask
+		if p := r.flags & priorityMask; p < priorityBits {
+			priorityBits = p
 		}
 		optionBits |= r.flags &^ priorityMask
 	}
