@@ -636,6 +636,8 @@ func TestTransactionOptions(t *testing.T) {
 	}
 	val := tr3.Get(fdb.Key(t.Name() + "/opt-key2")).MustGet()
 	if string(val) != "opt-val2" {
+		// Note: this test only verifies the flag does not break reads.
+		// Wire-level verification would require packet inspection.
 		t.Fatalf("causal read risky: got %q, want %q", val, "opt-val2")
 	}
 }
