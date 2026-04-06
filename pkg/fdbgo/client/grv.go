@@ -163,15 +163,15 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
-	// Merge flags: take MIN priority (bits 24-31) and OR all option
-	// flags (bits 0-23). Min priority prevents SYSTEM_IMMEDIATE from
-	// escalating BATCH requests — matches C++ which uses separate
-	// batchers per priority level.
+	// Merge flags: take MAX priority (bits 24-31) and OR all option
+	// flags (bits 0-23). MAX is the safe default — SYSTEM_IMMEDIATE
+	// elevates the batch, which is acceptable since flush windows are
+	// bounded (~1ms). The C++ client uses separate batchers per priority
+	// level to avoid this entirely; that's a future improvement.
 	const priorityMask = 0xFF000000
-	priorityBits := uint32(0xFFFFFFFF) // start at max, take min
-	var optionBits uint32
+	var priorityBits, optionBits uint32
 	for _, r := range batch {
-		if p := r.flags & priorityMask; p < priorityBits {
+		if p := r.flags & priorityMask; p > priorityBits {
 			priorityBits = p
 		}
 		optionBits |= r.flags &^ priorityMask
