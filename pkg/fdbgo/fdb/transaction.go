@@ -95,13 +95,13 @@ func (tr Transaction) GetApproximateSize() FutureInt64 {
 // GetEstimatedRangeSizeBytes returns an estimate of the byte size of
 // the key range. Not yet implemented in the pure Go client.
 func (tr Transaction) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, Error{Code: 2051}) // operation_failed
+	return newReadyFutureInt64(0, Error{Code: 2051}) // operation_not_supported
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
 // Not yet implemented in the pure Go client.
 func (tr Transaction) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, Error{Code: 2051}) // operation_failed
+	return newReadyFutureKeyArray(nil, Error{Code: 2051}) // operation_not_supported
 }
 
 // Snapshot returns a Snapshot view of this transaction.
