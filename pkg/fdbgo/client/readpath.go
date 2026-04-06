@@ -58,6 +58,10 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
 			SsLatestCommitVersions: emptyVersionVector,
 		}
+		if tx.lockAware {
+			req.HasOptions = true
+			req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
+		}
 		reqData := req.MarshalFDB()
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
@@ -135,7 +139,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetValueRequest(key, tx.readVersion, replyToken, server.Token)
+		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware, replyToken, server.Token)
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			cancelReply()
 			tx.db.handleConnError(server.Address)
@@ -289,7 +293,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, replyToken, server.Token)
+		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			cancelReply()
@@ -326,7 +330,7 @@ func isAllAlternativesFailed(err error) bool {
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetKeyValuesRequest{
 		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -336,6 +340,10 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, rep
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:             types.TenantInfo{TenantId: -1},
 		SsLatestCommitVersions: emptyVersionVector,
+	}
+	if lockAware {
+		req.HasOptions = true
+		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 	}
 	return req.MarshalFDB()
 }
@@ -376,13 +384,17 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-func buildGetValueRequest(key []byte, version int64, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, replyToken transport.UID, _ transport.UID) []byte {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:             types.TenantInfo{TenantId: NoTenantID},
 		SsLatestCommitVersions: emptyVersionVector,
+	}
+	if lockAware {
+		req.HasOptions = true
+		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 	}
 	return req.MarshalFDB()
 }

@@ -166,6 +166,7 @@ const (
 	grvPriorityBatch           uint32 = 1 << 24  // PRIORITY_BATCH
 	grvPrioritySystemImmediate uint32 = 15 << 24 // PRIORITY_SYSTEM_IMMEDIATE
 	grvFlagCausalReadRisky     uint32 = 1        // FLAG_CAUSAL_READ_RISKY
+	grvPriorityMask            uint32 = 0xFF000000
 )
 
 // Snapshot returns a snapshot view of this transaction.
@@ -577,8 +578,8 @@ func (tx *Transaction) SetLockAware(v bool) {
 // SetSizeLimit sets the maximum transaction size in bytes.
 // If the transaction exceeds this size, commit returns an error.
 // A value of 0 disables the limit.
-func (tx *Transaction) SetSizeLimit(bytes int64) {
-	tx.sizeLimit = bytes
+func (tx *Transaction) SetSizeLimit(limit int64) {
+	tx.sizeLimit = limit
 }
 
 // grvFlags returns the Flags field for GetReadVersionRequest.

@@ -115,7 +115,9 @@ type grvResult struct {
 func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
 	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
-	isImmediate := flags&0xFF000000 == grvPrioritySystemImmediate
+	// Note: it still enters the batcher and waits up to batchTime (~1ms).
+	// C++ avoids this with per-priority batchers; a future improvement.
+	isImmediate := flags&grvPriorityMask == grvPrioritySystemImmediate
 	if !isImmediate {
 		if v, ok := db.grvCache.tryCache(); ok {
 			// Start background refresher on first cache hit.
@@ -164,17 +166,17 @@ func (b *grvBatcher) flush(db *database) {
 	defer batchCancel()
 
 	// Merge flags: take MAX priority (bits 24-31) and OR all option
-	// flags (bits 0-23). MAX is the safe default — SYSTEM_IMMEDIATE
-	// elevates the batch, which is acceptable since flush windows are
-	// bounded (~1ms). The C++ client uses separate batchers per priority
-	// level to avoid this entirely; that's a future improvement.
-	const priorityMask = 0xFF000000
+	// flags (bits 0-23). MAX means SYSTEM_IMMEDIATE elevates the batch
+	// (acceptable, flush windows are bounded ~1ms), but also means DEFAULT
+	// elevates BATCH — defeating ratekeeper throttling of low-priority work.
+	// The C++ client avoids this with separate batchers per priority level;
+	// that's the correct long-term fix.
 	var priorityBits, optionBits uint32
 	for _, r := range batch {
-		if p := r.flags & priorityMask; p > priorityBits {
+		if p := r.flags & grvPriorityMask; p > priorityBits {
 			priorityBits = p
 		}
-		optionBits |= r.flags &^ priorityMask
+		optionBits |= r.flags &^ grvPriorityMask
 	}
 	flags := priorityBits | optionBits
 
