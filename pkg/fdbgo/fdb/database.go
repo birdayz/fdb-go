@@ -122,9 +122,10 @@ func (db Database) Close() {
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
 	return Transaction{t: &transaction{
-		inner: tx,
-		db:    db,
-		ctx:   db.d.ctx,
+		inner:      tx,
+		db:         db,
+		ctx:        db.d.ctx,
+		commitDone: make(chan struct{}),
 	}}, nil
 }
 
@@ -137,9 +138,10 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tr := Transaction{t: &transaction{
-			inner: tx,
-			db:    db,
-			ctx:   db.d.ctx,
+			inner:      tx,
+			db:         db,
+			ctx:        db.d.ctx,
+			commitDone: make(chan struct{}),
 		}}
 		return f(tr)
 	})
@@ -155,9 +157,10 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tr := Transaction{t: &transaction{
-			inner: tx,
-			db:    db,
-			ctx:   db.d.ctx,
+			inner:      tx,
+			db:         db,
+			ctx:        db.d.ctx,
+			commitDone: make(chan struct{}),
 		}}
 		return f(tr)
 	})
