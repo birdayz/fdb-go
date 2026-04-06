@@ -249,6 +249,7 @@ func (tr Transaction) SetReadVersion(version int64) {
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
 	tr.t.inner = tr.t.db.d.inner.CreateTransaction()
+	tr.t.commitDone = make(chan struct{})
 }
 
 // AddReadConflictRange adds a read conflict range.

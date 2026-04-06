@@ -119,15 +119,26 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+	var lastCommitDone chan struct{}
 	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (any, error) {
+		lastCommitDone = make(chan struct{})
 		tr := Transaction{t: &transaction{
 			inner:      tx,
 			db:         db,
 			ctx:        db.d.ctx,
-			commitDone: make(chan struct{}),
+			commitDone: lastCommitDone,
 		}}
 		return f(tr)
 	})
+	// Signal versionstamp futures — inner.Transact commits internally,
+	// so our Commit() wrapper never runs. Close commitDone here.
+	if lastCommitDone != nil {
+		select {
+		case <-lastCommitDone:
+		default:
+			close(lastCommitDone)
+		}
+	}
 	if err != nil {
 		return nil, convertError(err)
 	}
