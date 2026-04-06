@@ -165,6 +165,7 @@ const (
 	grvPriorityDefault         uint32 = 8 << 24  // PRIORITY_DEFAULT
 	grvPriorityBatch           uint32 = 1 << 24  // PRIORITY_BATCH
 	grvPrioritySystemImmediate uint32 = 15 << 24 // PRIORITY_SYSTEM_IMMEDIATE
+	grvFlagCausalReadRisky     uint32 = 1        // FLAG_CAUSAL_READ_RISKY
 )
 
 // Snapshot returns a snapshot view of this transaction.
@@ -357,6 +358,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 
 	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
 	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
+		tx.state = txStateErrored
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
@@ -592,7 +594,7 @@ func (tx *Transaction) grvFlags() uint32 {
 		flags |= grvPriorityDefault
 	}
 	if tx.causalReadRisky {
-		flags |= 1 // FLAG_CAUSAL_READ_RISKY
+		flags |= grvFlagCausalReadRisky
 	}
 	return flags
 }
