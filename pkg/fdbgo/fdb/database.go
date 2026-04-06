@@ -21,9 +21,11 @@ func MustAPIVersion(version int) {
 // FDB API version to use. The pure Go client supports a broad range of
 // API versions but does not enforce version-specific behavior differences.
 func APIVersion(version int) error {
-	if version < 510 || version > 740 {
+	if version < 510 {
 		return Error{Code: 2201} // api_version_not_supported
 	}
+	// No upper bound — the pure Go client does not enforce version-specific
+	// behavior differences. Tested with FDB 7.3 (API version 730).
 	apiVersion.Store(int32(version))
 	return nil
 }

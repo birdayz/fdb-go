@@ -76,15 +76,13 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // Must be called after a successful Commit(). The Apple binding allows
 // calling before commit (the future blocks until commit); that behavior
 // is implemented in a later PR via a commitDone channel. In this base
-// implementation, calling before commit returns error 2015.
+// implementation, calling before commit returns error 2015 (used_during_commit).
 func (tr Transaction) GetVersionstamp() FutureKey {
-	return newReadyFutureKey(func() (Key, error) {
-		vs, err := tr.t.inner.GetVersionstamp()
-		if err != nil {
-			return nil, convertError(err)
-		}
-		return Key(vs), nil
-	}())
+	vs, err := tr.t.inner.GetVersionstamp()
+	if err != nil {
+		return newReadyFutureKey(nil, convertError(err))
+	}
+	return newReadyFutureKey(Key(vs), nil)
 }
 
 // GetApproximateSize returns the approximate transaction size so far.
