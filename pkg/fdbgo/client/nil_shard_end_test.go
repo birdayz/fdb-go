@@ -18,8 +18,9 @@ func TestNilShardEndLocateRange(t *testing.T) {
 		maxSize: 1000,
 		entries: []locationEntry{
 			{
-				begin: []byte(""),
-				end:   nil, // shard extends to infinity
+				tenantId: NoTenantID,
+				begin:    []byte(""),
+				end:      nil, // shard extends to infinity
 				servers: []ServerInfo{
 					{Address: "127.0.0.1:4500"},
 				},
@@ -34,7 +35,7 @@ func TestNilShardEndLocateRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
@@ -56,14 +57,16 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 		maxSize: 1000,
 		entries: []locationEntry{
 			{
-				begin:   []byte(""),
-				end:     []byte("m"),
-				servers: []ServerInfo{{Address: "127.0.0.1:4500"}},
+				tenantId: NoTenantID,
+				begin:    []byte(""),
+				end:      []byte("m"),
+				servers:  []ServerInfo{{Address: "127.0.0.1:4500"}},
 			},
 			{
-				begin:   []byte("m"),
-				end:     nil, // last shard extends to infinity
-				servers: []ServerInfo{{Address: "127.0.0.1:4501"}},
+				tenantId: NoTenantID,
+				begin:    []byte("m"),
+				end:      nil, // last shard extends to infinity
+				servers:  []ServerInfo{{Address: "127.0.0.1:4501"}},
 			},
 		},
 	}
@@ -71,7 +74,7 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}

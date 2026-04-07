@@ -1,19 +1,64 @@
 package fdb
 
+import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+
 // Tenant is a handle to a FoundationDB tenant.
-// Tenant operations are not yet implemented in the pure Go client.
+// Operations on a Tenant are scoped to the tenant's key space.
 type Tenant struct {
-	db Database
+	db       Database
+	tenantId int64
 }
 
+// Transact runs a transactional function with automatic retry, scoped to
+// this tenant's key space. Matches Database.Transact but sets the tenant ID
+// on the underlying transaction.
 func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
-	return nil, errNotSupported
+	result, err := t.db.d.inner.Transact(t.db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+		defer func() { e = unconvertError(e) }()
+		defer panicToError(&e)
+		tx.SetTenantId(t.tenantId)
+		tr := Transaction{t: &transaction{
+			inner: tx,
+			db:    t.db,
+			ctx:   t.db.d.ctx,
+		}}
+		return f(tr)
+	})
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return result, nil
 }
 
+// ReadTransact runs a read-only transactional function with automatic retry,
+// scoped to this tenant's key space.
 func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
-	return nil, errNotSupported
+	result, err := t.db.d.inner.ReadTransact(t.db.d.ctx, func(tx *client.Transaction) (r any, e error) {
+		defer func() { e = unconvertError(e) }()
+		defer panicToError(&e)
+		tx.SetTenantId(t.tenantId)
+		tr := Transaction{t: &transaction{
+			inner: tx,
+			db:    t.db,
+			ctx:   t.db.d.ctx,
+		}}
+		return f(tr)
+	})
+	if err != nil {
+		return nil, convertError(err)
+	}
+	return result, nil
 }
 
+// CreateTransaction creates a new Transaction scoped to this tenant's
+// key space.
 func (t Tenant) CreateTransaction() (Transaction, error) {
-	return Transaction{}, errNotSupported
+	tx := t.db.d.inner.CreateTransaction()
+	tx.SetTenantId(t.tenantId)
+	return Transaction{t: &transaction{
+		inner:      tx,
+		db:         t.db,
+		ctx:        t.db.d.ctx,
+		commitDone: make(chan struct{}),
+	}}, nil
 }

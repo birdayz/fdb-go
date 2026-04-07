@@ -1689,7 +1689,10 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 
 ### Known API gaps in `pkg/fdbgo/fdb/` facade
 
-- [ ] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support.
+- [ ] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 in review)
+- [ ] **HIGH** — Tenant support: thread tenantId through wire requests, tenant CRUD via special key space, name→ID resolution, `Tenant.Transact/CreateTransaction`. (PR #14 closed — restarting fresh)
+- [ ] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. (PR #15 closed — needs fresh implementation)
+- [ ] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen. (PR #16 closed — needs fresh implementation)
 
 ### Way of working
 

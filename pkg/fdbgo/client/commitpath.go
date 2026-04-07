@@ -80,7 +80,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 			Lock_aware:          tx.lockAware,
 		},
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		TenantInfo: types.TenantInfo{TenantId: NoTenantID},
+		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 	}
 	return req.MarshalFDB()
 }
