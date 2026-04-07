@@ -81,7 +81,7 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 }
 
 // invalidate removes cached entries containing the given key for the given tenant.
-// Called on wrong_shard_server errors.
+// Called on wrong_shard_server errors for point lookups.
 func (lc *locationCache) invalidate(key []byte, tenantId int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
@@ -92,6 +92,27 @@ func (lc *locationCache) invalidate(key []byte, tenantId int64) {
 			bytes.Compare(key, entry.begin) >= 0 &&
 			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
 			continue // remove this entry
+		}
+		filtered = append(filtered, entry)
+	}
+	lc.entries = filtered
+}
+
+// invalidateRange removes all cached entries overlapping [begin, end) for the given tenant.
+// C++ DatabaseContext::invalidateCache(KeyRangeRef) uses intersectingRanges to clear
+// all stale entries after wrong_shard_server during range reads.
+// Note: end must not be nil (callers always pass concrete byte slices).
+func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+
+	filtered := lc.entries[:0]
+	for _, entry := range lc.entries {
+		// Entry overlaps [begin, end) if entry.begin < end && entry.end > begin.
+		if entry.tenantId == tenantId &&
+			bytes.Compare(entry.begin, end) < 0 &&
+			(entry.end == nil || bytes.Compare(entry.end, begin) > 0) {
+			continue // remove overlapping entry
 		}
 		filtered = append(filtered, entry)
 	}
@@ -205,8 +226,9 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, 
 
 // locateRange returns all cached location entries overlapping [begin, end).
 // On cache miss for any sub-range, queries a commit proxy for the missing range.
-// C++ getKeyRangeLocations equivalent.
-func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int, tenantId int64) ([]LocationResult, error) {
+// C++ getKeyRangeLocations equivalent. The reverse parameter is forwarded to the
+// commit proxy so it returns shards in the right order for the scan direction.
+func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled like locate().
 	if len(begin) >= 2 && begin[0] == 0xff && begin[1] == 0xff {
 		begin = []byte{0xff}
@@ -260,7 +282,16 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 		}
 
 		if !hasGap {
-			// Fully cached. Clamp and return up to limit entries.
+			// Return in scan order: C++ getKeyRangeLocations returns shards
+			// end→begin for reverse scans so locations[0] is nearest end.
+			// Our cache always sorts ascending, so reverse first, then clamp.
+			// Reversing before limit ensures we keep the shards nearest the
+			// scan start (nearest end for reverse, nearest begin for forward).
+			if reverse {
+				for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+					results[i], results[j] = results[j], results[i]
+				}
+			}
 			if limit > 0 && len(results) > limit {
 				results = results[:limit]
 			}
@@ -268,7 +299,7 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 		}
 
 		// Cache miss — refresh the missing sub-range.
-		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit, tenantId)
+		_, err := lc.refreshRange(db, ctx, gapBegin, end, limit, reverse, tenantId)
 		if err != nil {
 			return nil, err
 		}
@@ -288,7 +319,7 @@ func sortLocationResults(results []LocationResult) {
 
 // refreshRange queries commit proxies for locations overlapping [begin, end).
 // Returns all location entries from the response.
-func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, tenantId int64) ([]locationEntry, error) {
+func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]locationEntry, error) {
 	var backoff time.Duration
 
 	for {
@@ -328,7 +359,7 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, tenantId, replyToken)
+			body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 			if err := conn.SendFrame(locToken, body); err != nil {
@@ -399,14 +430,17 @@ func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, replyToken tr
 	return req.MarshalFDB()
 }
 
-// buildGetKeyServerLocationsRangeRequest constructs the request with Begin, End, and Limit.
+// buildGetKeyServerLocationsRangeRequest constructs the request with Begin, End, Limit, and Reverse.
 // C++ getKeyRangeLocations sends both begin and end to get all overlapping shards.
-func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, tenantId int64, replyToken transport.UID) []byte {
+// The reverse flag tells the commit proxy to return shards from end→begin order,
+// matching C++ NativeAPI.actor.cpp:2241.
+func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, reverse bool, tenantId int64, replyToken transport.UID) []byte {
 	req := types.GetKeyServerLocationsRequest{
 		Begin:            begin,
 		HasEnd:           true,
 		End:              end,
 		Limit:            int32(limit),
+		Reverse:          reverse,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: tenantId},
 		MinTenantVersion: -2,

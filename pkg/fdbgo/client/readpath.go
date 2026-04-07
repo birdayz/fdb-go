@@ -164,8 +164,10 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 }
 
 // getRange reads a key range [begin, end), fetching all overlapping shard locations
-// at once (C++ getExactRange pattern). Iterates shards in scan order, handles
-// wrong_shard_server by invalidating and re-locating.
+// at once and iterating them in scan order. Matches C++ getExactRange in
+// NativeAPI.actor.cpp: re-queries same shard on more=true (no re-locate),
+// invalidates entire remaining range on wrong_shard_server, and passes reverse
+// to getKeyRangeLocations so the proxy returns shards in the right order.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
 
@@ -175,8 +177,9 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 	curEnd := end
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
-		// Get all shard locations for current range.
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, tx.tenantId)
+		// Get all shard locations for current range. C++ getKeyRangeLocations
+		// receives the reverse flag so the proxy returns shards in scan order.
+		locations, err := tx.db.locCache.locateRange(tx.db, ctx, curBegin, curEnd, getRangeShardLimit, reverse, tx.tenantId)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate range: %w", err)
 		}
@@ -184,15 +187,11 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 			return allKVs, false, nil
 		}
 
-		// Iterate shards in scan order: forward for forward, reverse for reverse.
-		shardIdx := 0
-		if reverse {
-			shardIdx = len(locations) - 1
-		}
-
+		// C++ getExactRange iterates shard=0,1,2,... linearly. With reverse=true
+		// on the request, locations[0] is already the shard nearest end.
 		relocated := false
-		for shardIdx >= 0 && shardIdx < len(locations) && remaining > 0 {
-			loc := locations[shardIdx]
+		for shard := 0; shard < len(locations) && remaining > 0; shard++ {
+			loc := locations[shard]
 
 			// Clamp shard boundaries to user's requested range.
 			shardBegin := loc.ShardBegin
@@ -204,55 +203,67 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 				shardEnd = curEnd
 			}
 			if bytes.Compare(shardBegin, shardEnd) >= 0 {
-				// Empty range for this shard, skip.
-				if reverse {
-					shardIdx--
-				} else {
-					shardIdx++
-				}
-				continue
+				continue // empty range for this shard
 			}
 
-			kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
-			if err != nil {
-				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-					tx.db.locCache.invalidate(loc.ShardBegin, tx.tenantId)
-					time.Sleep(wrongShardRetryDelay)
-					// Adjust range for re-locate in outer loop.
-					if reverse {
-						curEnd = shardEnd
-					} else {
-						curBegin = shardBegin
+			// Inner loop: re-query same shard while more=true (C++ stays on same
+			// shard index, mutates locations[shard].range in-place).
+			for remaining > 0 {
+				kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
+				if err != nil {
+					if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+						// C++ invalidates the entire remaining range, not just one key.
+						// This handles shard splits that affect multiple adjacent entries.
+						if reverse {
+							tx.db.locCache.invalidateRange(curBegin, shardEnd, tx.tenantId)
+							curEnd = shardEnd
+						} else {
+							tx.db.locCache.invalidateRange(shardBegin, curEnd, tx.tenantId)
+							curBegin = shardBegin
+						}
+						time.Sleep(wrongShardRetryDelay)
+						relocated = true
+						break // break to outer loop for re-locate
 					}
-					relocated = true
-					break // break inner shard loop, re-locate in outer
+					return nil, false, err
 				}
-				return nil, false, err
-			}
 
-			allKVs = append(allKVs, kvs...)
-			remaining -= len(kvs)
+				allKVs = append(allKVs, kvs...)
+				remaining -= len(kvs)
 
-			if remaining <= 0 {
-				return allKVs, true, nil
-			}
+				if remaining <= 0 {
+					return allKVs, true, nil
+				}
 
-			if more {
-				// More data in this shard — adjust boundaries and re-query same shard.
+				// C++ "fix more" heuristic (NativeAPI.actor.cpp:2331-2333):
+				// If reverse scan's last returned key equals shard begin, the
+				// shard is exhausted regardless of what more says.
+				if more && reverse && len(kvs) > 0 &&
+					bytes.Equal(kvs[len(kvs)-1].Key, shardBegin) {
+					more = false
+				}
+
+				if !more {
+					break // move to next shard
+				}
+
+				// C++ ASSERT: more=true with zero rows is impossible.
+				// Guard against infinite loop on misbehaving storage server.
+				if len(kvs) == 0 {
+					break
+				}
+
+				// Narrow range and re-query same shard (C++ mutates
+				// locations[shard].range in-place, lines 2349-2354).
 				if reverse {
-					curEnd = kvs[len(kvs)-1].Key // shrink end to smallest returned key
+					shardEnd = kvs[len(kvs)-1].Key // [shardBegin, smallestReturnedKey)
 				} else {
-					curBegin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0) // advance past last key
+					shardBegin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0) // keyAfter(lastKey)
 				}
-				relocated = true
-				break // break to outer loop to re-locate with adjusted range
 			}
 
-			// Move to next shard.
-			if reverse {
-				shardIdx--
-			} else {
-				shardIdx++
+			if relocated {
+				break
 			}
 		}
 
@@ -262,11 +273,13 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 		// Exhausted all locations from this batch. Update range for next locateRange call.
 		if reverse {
-			firstShard := locations[0]
+			firstShard := locations[len(locations)-1]
+			if bytes.Compare(firstShard.ShardBegin, curBegin) <= 0 {
+				break // first shard covers our begin, done
+			}
 			curEnd = firstShard.ShardBegin
 		} else {
 			lastShard := locations[len(locations)-1]
-			// nil ShardEnd means shard extends to infinity — no more shards to query.
 			if lastShard.ShardEnd == nil || bytes.Compare(lastShard.ShardEnd, curEnd) >= 0 {
 				break
 			}

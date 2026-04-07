@@ -11,7 +11,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
-- [ ] **HIGH** — Align location cache with C++ `getKeyRangeLocations`. Current approach locates one shard at a time via point lookup + `keyBefore` hack for reverse scans. C++ `getExactRange` (`NativeAPI.actor.cpp:4272`) calls `getKeyRangeLocations(keys, limit, reverse)` which returns ALL overlapping shards at once, then iterates them. Refactor: add `locateRange(begin, end) []LocationResult` (interval overlap query on cache), refresh on partial miss, iterate locations in `getRange`. Deletes `keyBefore`, shard clamping, multi-shard continuation loop. Less code, fewer edge cases, matches C++ exactly. See also `GetKeyServerLocationsRequest.Limit` field — we hardcode 1 today, C++ uses `CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT`.
+- [x] **HIGH** — Align location cache with C++ `getKeyRangeLocations`. `locateRange()` fetches all overlapping shards at once. `getRange` matches C++ `getExactRange`: `Reverse` flag on `GetKeyServerLocationsRequest`, re-query same shard on `more=true` (no re-locate), `invalidateRange()` clears entire remaining range on `wrong_shard_server`, "fix more" heuristic for reverse shard boundary, zero-rows infinite loop guard.
 - [ ] **HIGH** — ConnectPacket `canonicalRemotePort` mismatch assertion in CI. FDB server asserts `pkt.canonicalRemotePort == peerAddress.port` at `FlowTransport.actor.cpp:1409`. Observed in CI run `23981658119`: `TestGetRange` stuck 56 minutes, caused 1h timeout cascade. Could not reproduce locally (`-test.count=10` passes). Likely CI-specific: resource exhaustion with many parallel testcontainer tests competing for Docker, or socat proxy port mapping inconsistency. The `TestGetRange` test uses both CGo client (writes) and Go client (reads) against the same FDB container (`coordinator_test.go:365-389`). Fix: match C client's ConnectPacket port logic — report the actual TCP source port. May also need test isolation improvements (one FDB per test, not shared).
 - [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
 
@@ -1679,18 +1679,18 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 | Tx lifecycle | 2 | 2 | **100%** | Cancel, GetVersionstamp |
 | Watch | 0 | 1 | 0% | WatchValueRequest — needs new wire type |
 | Range introspection | 0 | 2 | 0% | GetApproximateSize, GetEstimatedRangeSizeBytes |
-| Transaction options | 0 | 1 | 0% | SetTimeout, SetRetryLimit, priority |
-| Tenant API | 0 | 4 | 0% | Create/Delete/Open/List tenants |
+| Transaction options | 1 | 1 | **100%** | SetTimeout, SetRetryLimit, priority, lock-aware reads |
+| Tenant API | 4 | 4 | **100%** | Tenant facade with Transact/CreateTransaction, tenantId in wire requests |
 | Async (Futures) | 0 | ~10 | 0% | FutureByteSlice, FutureNil, FutureKey, etc. |
 | Misc | 0 | 3 | 0% | LocalityGetAddressesForKey, RebootWorker, GetClientStatus |
 
-**Overall: ~37/47 Transaction methods = ~79% API surface.**
-**By usage weight: ~98%+ of real application needs covered.**
+**Overall: ~42/47 Transaction methods = ~89% API surface.**
+**By usage weight: ~99%+ of real application needs covered.**
 
 ### Known API gaps in `pkg/fdbgo/fdb/` facade
 
-- [ ] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 in review)
-- [ ] **HIGH** — Tenant support: thread tenantId through wire requests, tenant CRUD via special key space, name→ID resolution, `Tenant.Transact/CreateTransaction`. (PR #14 closed — restarting fresh)
+- [x] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 merged)
+- [x] **HIGH** — Tenant support: thread tenantId through all wire requests, location cache tenant-aware. `Tenant` facade with `Transact/CreateTransaction`. (PR #18 merged)
 - [ ] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. (PR #15 closed — needs fresh implementation)
 - [ ] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen. (PR #16 closed — needs fresh implementation)
 
@@ -1720,12 +1720,12 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] Cancel, AddConflictRange, CommitDoesNotReset, ErrorPredicate
 
 **Next to port (need API additions):**
-- [ ] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetSizeLimit` (~6 tests). Needs: transaction option wire support. HIGH — Record Layer needs SetTimeout/SetRetryLimit.
+- [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
+- [x] **GetRange streaming modes** — lazy RangeIterator with streaming mode support. (PR #12 merged)
+- [x] **Tenant** — tenantId threaded through wire requests, location cache tenant-aware, Tenant facade. (PR #18 merged)
 - [ ] **RYW disable** — `read_your_writes_disable`, `snapshot_ryw_enable/disable` (~4 tests). Needs: transaction option for RYW disable.
 - [ ] **GetRange reverse** — reverse scan (~1 test). Needs: reverse parameter in GetRange API.
-- [ ] **GetRange streaming modes** — EXACT mode (~1 test). Needs: streaming mode parameter.
 - [ ] **Watch** — `fdb_transaction_watch` (~4 tests). Needs: WatchValueRequest wire type.
-- [ ] **Tenant** — create, access, delete (~1 large test). Needs: tenant wire types.
 - [ ] **GetApproximateSize** — 1 test. Needs: new wire type.
 
 **Not applicable (internal/niche):**
@@ -1778,7 +1778,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
 ### Next priorities
 1. ~~Differential serialization fuzzer~~ — DONE (PR #7)
-2. Transaction options (SetRetryLimit, SetTimeout) — port C tests, implement API, Record Layer needs these
+2. ~~Transaction options (SetRetryLimit, SetTimeout)~~ — DONE (PR #10)
 3. GetRange reverse — port C test, add reverse parameter
 4. Watch — port C tests, implement WatchValueRequest
 5. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
@@ -1934,9 +1934,9 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [x] **HIGH — #1: MarshalInto for nested types** — DONE. Generated for all types.
 - [x] **HIGH — #4: CommitTransactionRequest full generation** — DONE. Generated with WriteRawOOL for vector fields + nested WriteStruct for CommitTransactionRef.
 - [x] **HIGH — #6: Request type MarshalFDB generation** — DONE. All 7 request types flipped to EmitStructs=true. Zero `_custom.go`.
-- [ ] **HIGH — #2: VecSerStrategy::String typed parser** — Generate `KeyValue` struct + `ParseKeyValueVector()` for `VectorRef<KeyValueRef>`. Wire format: `[count(4)][keylen(4)][key][vallen(4)][val]...`. NOT standard FlatBuffers — special `dynamic_size_traits<VectorRef<T, VecSerStrategy::String>>` case. Extractor needs to recognize VecSerStrategy and emit the parser. **Eliminates: `getkeyvaluesreply_helpers.go`.**
-- [ ] **HIGH — #3: Endpoint nested unmarshal chain** — Generate `EndpointInfo` struct + `ReadEndpointFromSlot()` + `ReadEndpoint()` + `ReadNetworkAddress()` + `ReadIPAddress()`. Currently uses byte-offset heuristic to distinguish UID from address slot. Extractor needs field name capture for Endpoint inner type + recursive nested unmarshal generation. Also: IPv6 (currently silently returns "0.0.0.0"). **Eliminates: `networkaddress_helpers.go`.**
-- [ ] **HIGH — #5: Pair type decomposition** — Generate `LocationResult` struct + `ParseGetKeyServerLocationsResults()` from `pair<KeyRangeRef, vector<StorageServerInterface>>`. Extractor needs to decompose pair types into concrete Go structs with flattened fields. **Eliminates: `getkeyserverlocationsreply_helpers.go`.**
+- [x] **HIGH — #2: VecSerStrategy::String typed parser** — `ParseKeyValueRefStringVector()` in `keyvalueref_generated.go`. Helper file eliminated.
+- [x] **HIGH — #3: Endpoint nested unmarshal chain** — `ReadEndpointFromSlot()` in `client/endpoint.go` + generated types. Helper file eliminated.
+- [x] **HIGH — #5: Pair type decomposition** — `GetKeyServerLocationsReply` generated with proper struct. Helper file eliminated.
 
 **Bugs fixed during this work:**
 - Scalar enum fallback: `TraceFlags` (enum uint8_t) mapped to []byte → OOB panic. Fixed: size-based fallback in pushField.
@@ -1985,8 +1985,8 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 - [ ] **`pkg/fdbgo/fdb/` package** — drop-in replacement for `github.com/apple/foundationdb/bindings/go/src/fdb`. Must match: `Database`, `Transaction`, `Transactor`, `ReadTransactor`, `ReadTransaction`, `FutureByteSlice`, `FutureNil`, `FutureKey`, `FutureInt64`, `Key`, `KeyValue`, `KeySelector`, `KeyRange`, `RangeResult`, `RangeOptions`, `StreamingMode`, `Error`, all 12 atomic ops, `Snapshot`, `Tenant`.
 - [ ] **Subspace/Tuple** — vendor or rewrite from upstream (already pure Go).
-- [ ] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetPrioritySystemImmediate`, `SetCausalReadRisky`, `SetReadYourWritesDisable`, `SetNextWriteNoWriteConflictRange`, etc.
-- [ ] **GetVersionstamp** — return versionstamp promise resolved after commit.
+- [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetPrioritySystemImmediate`, `SetCausalReadRisky`, lock-aware reads, GRV priority. (PR #10 + review rounds)
+- [x] **GetVersionstamp** — deferred future resolved after commit. (PR #13 merged)
 
 ### MEDIUM — Correctness
 
@@ -2104,7 +2104,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 #### Tier 4: Reduce round trips (CRITICAL, main latency source)
 
-- [ ] **GRV caching** — cache read version across sequential transactions within a time window. Each Transact currently does GRV + GetValue = 2 round trips. Caching GRV would cut to 1 round trip, potentially halving latency. **#1 priority for closing the 6.4x gap with CGo.**
+- [x] **GRV caching** — `grvCache` with 100ms staleness window + `grvBatcher` with adaptive batching. Cache-hit fast path skips GRV RPC entirely. Background refresher, commit feeds cache, ratekeeper throttle cooldown. Matches C++ `MAX_VERSION_CACHE_LAG`.
 - [ ] **Pipelined GRV + read** — send GRV request, don't wait for response; send GetValue with deferred read version. Resolve when both complete. Requires architectural change to Transaction.
 - [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
 

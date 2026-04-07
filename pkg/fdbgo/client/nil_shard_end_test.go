@@ -35,7 +35,7 @@ func TestNilShardEndLocateRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
@@ -74,12 +74,129 @@ func TestNilShardEndLocateRangePartialCoverage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, NoTenantID)
+	results, err := lc.locateRange(nil, ctx, []byte("a"), []byte("z"), 100, false, NoTenantID)
 	if err != nil {
 		t.Fatalf("locateRange returned error: %v", err)
 	}
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+}
+
+// TestInvalidateRange verifies the overlap predicate in invalidateRange.
+func TestInvalidateRange(t *testing.T) {
+	t.Parallel()
+
+	makeCache := func() *locationCache {
+		return &locationCache{
+			maxSize: 1000,
+			entries: []locationEntry{
+				{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
+				{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
+				{tenantId: NoTenantID, begin: []byte("g"), end: []byte("k"), servers: []ServerInfo{{Address: "s3"}}},
+				{tenantId: NoTenantID, begin: []byte("k"), end: nil, servers: []ServerInfo{{Address: "s4"}}},        // nil end = infinity
+				{tenantId: 42, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "s5-tenant"}}}, // different tenant
+			},
+		}
+	}
+
+	t.Run("overlapping middle", func(t *testing.T) {
+		t.Parallel()
+		lc := makeCache()
+		lc.invalidateRange([]byte("c"), []byte("h"), NoTenantID)
+		// [a,d) overlaps (c>=a, d>c). [d,g) overlaps (d<h, g>c). [g,k) overlaps (g<h, k>c).
+		// Removes 3, keeps [k,∞) + tenant-42 = 2.
+		if len(lc.entries) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(lc.entries))
+		}
+	})
+
+	t.Run("overlapping nil-end entry", func(t *testing.T) {
+		t.Parallel()
+		lc := makeCache()
+		lc.invalidateRange([]byte("m"), []byte("z"), NoTenantID)
+		// Should remove [k,∞) which overlaps [m,z), keep [a,d), [d,g), [g,k), tenant-42
+		if len(lc.entries) != 4 {
+			t.Fatalf("expected 4 entries, got %d", len(lc.entries))
+		}
+	})
+
+	t.Run("disjoint range removes nothing", func(t *testing.T) {
+		t.Parallel()
+		lc := makeCache()
+		lc.invalidateRange([]byte("0"), []byte("a"), NoTenantID) // before all entries
+		if len(lc.entries) != 5 {
+			t.Fatalf("expected 5 entries, got %d", len(lc.entries))
+		}
+	})
+
+	t.Run("tenant isolation", func(t *testing.T) {
+		t.Parallel()
+		lc := makeCache()
+		lc.invalidateRange([]byte("a"), []byte("z"), 42) // only tenant 42
+		if len(lc.entries) != 4 {
+			t.Fatalf("expected 4 entries (tenant 42 removed), got %d", len(lc.entries))
+		}
+	})
+
+	t.Run("full range clears all for tenant", func(t *testing.T) {
+		t.Parallel()
+		lc := makeCache()
+		lc.invalidateRange([]byte(""), []byte{0xff}, NoTenantID)
+		// All NoTenantID entries removed, tenant-42 survives
+		if len(lc.entries) != 1 {
+			t.Fatalf("expected 1 entry (tenant-42 only), got %d", len(lc.entries))
+		}
+	})
+
+	t.Run("empty cache", func(t *testing.T) {
+		t.Parallel()
+		lc := &locationCache{maxSize: 1000}
+		lc.invalidateRange([]byte("a"), []byte("z"), NoTenantID) // no panic
+		if len(lc.entries) != 0 {
+			t.Fatalf("expected 0 entries, got %d", len(lc.entries))
+		}
+	})
+}
+
+// TestLocateRangeReverseOrder verifies that locateRange returns shards in
+// reverse order (end→begin) when reverse=true.
+func TestLocateRangeReverseOrder(t *testing.T) {
+	t.Parallel()
+
+	lc := &locationCache{
+		maxSize: 1000,
+		entries: []locationEntry{
+			{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
+			{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
+			{tenantId: NoTenantID, begin: []byte("g"), end: []byte("k"), servers: []ServerInfo{{Address: "s3"}}},
+		},
+	}
+
+	ctx := context.Background()
+
+	// Forward: should be sorted ascending [a,d), [d,g), [g,k).
+	fwd, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, false, NoTenantID)
+	if err != nil {
+		t.Fatalf("forward locateRange: %v", err)
+	}
+	if len(fwd) != 3 {
+		t.Fatalf("forward: expected 3, got %d", len(fwd))
+	}
+	if !bytes.Equal(fwd[0].ShardBegin, []byte("a")) || !bytes.Equal(fwd[2].ShardBegin, []byte("g")) {
+		t.Fatalf("forward order wrong: [0].begin=%q [2].begin=%q", fwd[0].ShardBegin, fwd[2].ShardBegin)
+	}
+
+	// Reverse: should be [g,k), [d,g), [a,d) — locations[0] nearest end.
+	rev, err := lc.locateRange(nil, ctx, []byte("a"), []byte("k"), 100, true, NoTenantID)
+	if err != nil {
+		t.Fatalf("reverse locateRange: %v", err)
+	}
+	if len(rev) != 3 {
+		t.Fatalf("reverse: expected 3, got %d", len(rev))
+	}
+	if !bytes.Equal(rev[0].ShardBegin, []byte("g")) || !bytes.Equal(rev[2].ShardBegin, []byte("a")) {
+		t.Fatalf("reverse order wrong: [0].begin=%q [2].begin=%q", rev[0].ShardBegin, rev[2].ShardBegin)
 	}
 }
 
