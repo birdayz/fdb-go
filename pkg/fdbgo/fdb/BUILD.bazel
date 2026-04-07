@@ -26,7 +26,10 @@ go_library(
 
 go_test(
     name = "fdb_test",
-    srcs = ["fdb_test.go"],
+    srcs = [
+        "fdb_test.go",
+        "ryw_test.go",
+    ],
     deps = [
         ":fdb",
         "//pkg/fdbgo/client",

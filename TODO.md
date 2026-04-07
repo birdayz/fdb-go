@@ -2105,7 +2105,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 #### Tier 4: Reduce round trips (CRITICAL, main latency source)
 
 - [x] **GRV caching** — `grvCache` with 100ms staleness window + `grvBatcher` with adaptive batching. Cache-hit fast path skips GRV RPC entirely. Background refresher, commit feeds cache, ratekeeper throttle cooldown. Matches C++ `MAX_VERSION_CACHE_LAG`.
-- [ ] **Pipelined GRV + read** — send GRV request, don't wait for response; send GetValue with deferred read version. Resolve when both complete. Requires architectural change to Transaction.
+- ~~**Pipelined GRV + read**~~ — NOT FEASIBLE. Wire protocol requires Version (int64) at marshal time. Storage server uses `req.version` immediately for `waitForVersion()`. No sentinel, no deferred resolution. C++ doesn't pipeline either — `getValue` blocks on `wait(trState->startTransaction())` before sending read.
 - [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
 
 #### Tier 5: Generated code improvements (HIGH, scales with data size)

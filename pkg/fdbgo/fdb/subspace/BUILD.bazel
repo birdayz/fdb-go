@@ -1,0 +1,12 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "subspace",
+    srcs = ["subspace.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)

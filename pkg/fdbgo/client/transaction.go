@@ -164,6 +164,11 @@ type Transaction struct {
 
 	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
 	sizeLimit int64
+
+	// ryw: read-your-writes cache. Intercepts reads and merges with pending
+	// writes so that Get/GetRange within the same transaction see Set/Clear
+	// mutations that haven't been committed yet.
+	ryw rywCache
 }
 
 // TransactionPriority controls the GRV request priority.
@@ -200,11 +205,12 @@ type Snapshot struct {
 }
 
 // Get reads a key without adding a read conflict range.
+// Snapshot reads still go through the RYW cache so pending writes are visible.
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
-	return s.tx.getValue(ctx, key)
+	return s.tx.ryw.get(ctx, key, s.tx.getValue)
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
@@ -216,19 +222,21 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 }
 
 // GetRange reads a range without adding a read conflict range.
+// Snapshot reads still go through the RYW cache so pending writes are visible.
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	return s.tx.getRange(ctx, begin, end, limit, false)
+	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
+// Snapshot reads still go through the RYW cache so pending writes are visible.
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
-	return s.tx.getRange(ctx, begin, end, limit, true)
+	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
 }
 
 // GetReadVersion returns the read version for this transaction via its snapshot view.
@@ -267,7 +275,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if !isSystemKey(key) {
 		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
 	}
-	return tx.getValue(ctx, key)
+	return tx.ryw.get(ctx, key, tx.getValue)
 }
 
 // GetKey resolves a key selector to the actual key in the database.
@@ -308,7 +316,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
 	}
 
-	return tx.getRange(ctx, begin, end, limit, reverse)
+	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
 }
 
 // Set writes a key-value pair.
@@ -319,6 +327,7 @@ func (tx *Transaction) Set(key, value []byte) {
 		Value: value,
 	})
 	tx.addWriteConflict(key, append(key, 0))
+	tx.ryw.set(key, value)
 }
 
 // Clear deletes a key.
@@ -332,6 +341,7 @@ func (tx *Transaction) Clear(key []byte) {
 		Value: end,
 	})
 	tx.addWriteConflict(key, end)
+	tx.ryw.clear(key)
 }
 
 // ClearRange deletes all keys in [begin, end).
@@ -346,6 +356,7 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 		Value: end,
 	})
 	tx.addWriteConflict(begin, end)
+	tx.ryw.clearRange(begin, end)
 	return nil
 }
 
@@ -358,6 +369,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	})
 	// Atomic ops add write conflict but NOT read conflict.
 	tx.addWriteConflict(key, append(key, 0))
+	tx.ryw.atomic(op, key, operand)
 }
 
 // Commit sends mutations to a commit proxy.
@@ -686,6 +698,7 @@ func (tx *Transaction) postCommitReset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.ryw.reset()
 	// committedVersion and txnBatchId preserved intentionally.
 }
 
@@ -699,6 +712,7 @@ func (tx *Transaction) reset() {
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.ryw.reset()
 	// Re-compute deadline from timeout (matches C++ option re-application).
 	if tx.timeout > 0 {
 		tx.deadline = time.Now().Add(tx.timeout)
