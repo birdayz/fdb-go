@@ -44,16 +44,20 @@ clean:
 tidy:
     go mod tidy
 
-# Format Go source files
+# Format Go source files using Bazel-managed gofumpt (same version as nogo linter)
 fmt:
-    gofmt -w $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*')
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
-# Note: interface{} → any is enforced by nogo (noemptyiface analyzer)
+# Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted=$(gofmt -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*'))
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"

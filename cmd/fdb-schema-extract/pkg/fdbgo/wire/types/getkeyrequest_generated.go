@@ -33,6 +33,7 @@ var GetKeyRequestVTableClosure = []wire.VTable{
 	{10, 29, 4, 20, 28},
 	{24, 42, 12, 4, 40, 16, 20, 24, 28, 41, 32, 36},
 }
+
 var GetKeyRequestTemplate = wire.NewMessageTemplate(
 	GetKeyRequestFileID, GetKeyRequestVTable, 8, GetKeyRequestVTableClosure,
 )

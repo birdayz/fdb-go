@@ -47,8 +47,12 @@ func (sn Snapshot) Snapshot() Snapshot {
 	return sn
 }
 
-func (sn Snapshot) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, errNotSupported)
+func (sn Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
+	return newFutureInt64(func() (int64, error) {
+		begin, end := r.FDBRangeKeys()
+		v, err := sn.s.tx.inner.GetEstimatedRangeSizeBytes(sn.s.tx.ctx, begin.FDBKey(), end.FDBKey())
+		return v, convertError(err)
+	})
 }
 
 func (sn Snapshot) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {

@@ -31,6 +31,7 @@ var GetKeyServerLocationsReplyVTableClosure = []wire.VTable{
 	{10, 13, 4, 12, 8},
 	{10, 16, 4, 8, 12},
 }
+
 var GetKeyServerLocationsReplyTemplate = wire.NewMessageTemplate(
 	GetKeyServerLocationsReplyFileID, GetKeyServerLocationsReplyVTable, 4, GetKeyServerLocationsReplyVTableClosure,
 )

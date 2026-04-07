@@ -14,8 +14,10 @@ const (
 
 var StorageServerInterfaceVTable = wire.VTable{16, 34, 4, 20, 24, 32, 28, 33}
 
-const StorageServerInterfaceFileID uint32 = 15302073
-const StorageServerInterfaceMaxAlign = 8
+const (
+	StorageServerInterfaceFileID   uint32 = 15302073
+	StorageServerInterfaceMaxAlign        = 8
+)
 
 type StorageServerInterface struct {
 	WatchValue [16]byte // slot 0

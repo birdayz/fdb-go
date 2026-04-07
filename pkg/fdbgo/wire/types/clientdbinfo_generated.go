@@ -37,6 +37,7 @@ var ClientDBInfoVTableClosure = []wire.VTable{
 	{10, 13, 12, 4, 8},
 	{10, 13, 4, 12, 8},
 }
+
 var ClientDBInfoTemplate = wire.NewMessageTemplate(
 	ClientDBInfoFileID, ClientDBInfoVTable, 8, ClientDBInfoVTableClosure,
 )

@@ -33,6 +33,7 @@ var GetReadVersionReplyVTableClosure = []wire.VTable{
 	{8, 12, 4, 8},
 	{28, 64, 44, 20, 60, 61, 48, 52, 28, 62, 63, 56, 4, 36},
 }
+
 var GetReadVersionReplyTemplate = wire.NewMessageTemplate(
 	GetReadVersionReplyFileID, GetReadVersionReplyVTable, 8, GetReadVersionReplyVTableClosure,
 )

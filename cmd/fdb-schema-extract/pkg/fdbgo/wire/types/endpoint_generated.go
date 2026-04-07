@@ -20,6 +20,7 @@ var EndpointVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{10, 13, 4, 12, 8},
 }
+
 var EndpointTemplate = wire.NewMessageTemplate(
 	EndpointFileID, EndpointVTable, 8, EndpointVTableClosure,
 )

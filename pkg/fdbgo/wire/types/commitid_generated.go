@@ -23,6 +23,7 @@ var CommitIDVTableClosure = []wire.VTable{
 	{6, 8, 4},
 	{16, 24, 4, 20, 22, 12, 23, 16},
 }
+
 var CommitIDTemplate = wire.NewMessageTemplate(
 	CommitIDFileID, CommitIDVTable, 8, CommitIDVTableClosure,
 )

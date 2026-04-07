@@ -48,12 +48,20 @@ const (
 )
 
 // Endpoint indices from C++ interface definitions.
-// StorageServerInterface: getValue=0, getKey=1, getKeyValues=2, ...
-// CommitProxyInterface: commit=0, ..., getKeyServerLocations=2, ...
+// Indices are relative to each interface's base token via getAdjustedEndpoint().
+//
+// StorageServerInterface (base = server token):
+//
+//	getValue=0, getKey=1, getKeyValues=2, getShardState=3, waitMetrics=4
+//
+// CommitProxyInterface (base = proxy token):
+//
+//	commit=0, ..., getKeyServerLocations=2
 const (
 	EndpointGetValue              = 0 // StorageServerInterface::getValue
 	EndpointGetKey                = 1 // StorageServerInterface::getKey
 	EndpointGetKeyValues          = 2 // StorageServerInterface::getKeyValues
+	EndpointWaitMetrics           = 4 // StorageServerInterface::waitMetrics
 	EndpointGetKeyServerLocations = 2 // CommitProxyInterface::getKeyServerLocations
 )
 

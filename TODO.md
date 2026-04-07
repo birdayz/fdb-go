@@ -1723,8 +1723,8 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
 - [x] **GetRange streaming modes** — lazy RangeIterator with streaming mode support. (PR #12 merged)
 - [x] **Tenant** — tenantId threaded through wire requests, location cache tenant-aware, Tenant facade. (PR #18 merged)
-- [ ] **RYW disable** — `read_your_writes_disable`, `snapshot_ryw_enable/disable` (~4 tests). Needs: transaction option for RYW disable.
-- [ ] **GetRange reverse** — reverse scan (~1 test). Needs: reverse parameter in GetRange API.
+- [x] **RYW disable** — `SetReadYourWritesDisable()` intentional no-op (Go client has no client-side write cache).
+- [x] **GetRange reverse** — full implementation with `RangeOptions{Reverse: true}`, integration tests.
 - [ ] **Watch** — `fdb_transaction_watch` (~4 tests). Needs: WatchValueRequest wire type.
 - [ ] **GetApproximateSize** — 1 test. Needs: new wire type.
 
@@ -1779,7 +1779,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 ### Next priorities
 1. ~~Differential serialization fuzzer~~ — DONE (PR #7)
 2. ~~Transaction options (SetRetryLimit, SetTimeout)~~ — DONE (PR #10)
-3. GetRange reverse — port C test, add reverse parameter
+3. ~~GetRange reverse~~ — DONE
 4. Watch — port C tests, implement WatchValueRequest
 5. Public API package (`pkg/fdbgo/fdb/`) — drop-in replacement surface
 
@@ -1983,8 +1983,8 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 ### HIGH — Public API
 
-- [ ] **`pkg/fdbgo/fdb/` package** — drop-in replacement for `github.com/apple/foundationdb/bindings/go/src/fdb`. Must match: `Database`, `Transaction`, `Transactor`, `ReadTransactor`, `ReadTransaction`, `FutureByteSlice`, `FutureNil`, `FutureKey`, `FutureInt64`, `Key`, `KeyValue`, `KeySelector`, `KeyRange`, `RangeResult`, `RangeOptions`, `StreamingMode`, `Error`, all 12 atomic ops, `Snapshot`, `Tenant`.
-- [ ] **Subspace/Tuple** — vendor or rewrite from upstream (already pure Go).
+- [x] **`pkg/fdbgo/fdb/` package** — drop-in replacement API surface: `Database`, `Transaction`, `Transactor`, `ReadTransactor`, `ReadTransaction`, `FutureByteSlice`, `FutureNil`, `FutureKey`, `Key`, `KeyValue`, `KeySelector`, `KeyRange`, `RangeResult`, `RangeOptions`, `StreamingMode`, `Error`, atomic ops, `Snapshot`, `Tenant`. 14 files, 20+ integration tests.
+- [x] **Subspace/Tuple** — using upstream `apple/foundationdb/bindings/go` (pure Go, no CGo needed).
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, `SetPrioritySystemImmediate`, `SetCausalReadRisky`, lock-aware reads, GRV priority. (PR #10 + review rounds)
 - [x] **GetVersionstamp** — deferred future resolved after commit. (PR #13 merged)
 

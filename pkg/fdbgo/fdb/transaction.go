@@ -122,10 +122,13 @@ func (tr Transaction) GetApproximateSize() FutureInt64 {
 	return newReadyFutureInt64(tr.t.inner.GetApproximateSize(), nil)
 }
 
-// GetEstimatedRangeSizeBytes returns an estimate of the byte size of
-// the key range. Not yet implemented in the pure Go client.
-func (tr Transaction) GetEstimatedRangeSizeBytes(_ ExactRange) FutureInt64 {
-	return newReadyFutureInt64(0, errNotSupported)
+// GetEstimatedRangeSizeBytes returns an estimate of the byte size of the key range.
+func (tr Transaction) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
+	return newFutureInt64(func() (int64, error) {
+		begin, end := r.FDBRangeKeys()
+		v, err := tr.t.inner.GetEstimatedRangeSizeBytes(tr.t.ctx, begin.FDBKey(), end.FDBKey())
+		return v, convertError(err)
+	})
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.

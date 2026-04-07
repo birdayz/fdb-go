@@ -10,6 +10,7 @@ go_library(
         "failure_monitor.go",
         "grv.go",
         "locality.go",
+        "metrics.go",
         "readpath.go",
         "topology.go",
         "transaction.go",

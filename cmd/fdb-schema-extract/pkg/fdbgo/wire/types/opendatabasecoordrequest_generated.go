@@ -33,6 +33,7 @@ var OpenDatabaseCoordRequestVTableClosure = []wire.VTable{
 	{22, 49, 20, 24, 28, 4, 32, 36, 40, 44, 48},
 	{10, 16, 4, 8, 12},
 }
+
 var OpenDatabaseCoordRequestTemplate = wire.NewMessageTemplate(
 	OpenDatabaseCoordRequestFileID, OpenDatabaseCoordRequestVTable, 8, OpenDatabaseCoordRequestVTableClosure,
 )

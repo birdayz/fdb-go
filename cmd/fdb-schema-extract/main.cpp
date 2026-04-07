@@ -1358,6 +1358,8 @@ int main(int argc, char** argv) {
     extractType<KeyRangeRef>(outDir, "KeyRangeRef");
     extractType<CommitTransactionRef>(outDir, "CommitTransactionRef");
     extractType<ReadOptions>(outDir, "ReadOptions");
+    extractType<StorageMetrics>(outDir, "StorageMetrics");
+    extractType<WaitMetricsRequest>(outDir, "WaitMetricsRequest");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
 
