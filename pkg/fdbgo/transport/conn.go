@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -24,7 +25,8 @@ import (
 type Conn struct {
 	conn   net.Conn
 	tls    bool
-	mu     sync.Mutex // protects writes only
+	mu     sync.Mutex // protects writes to wbuf
+	wbuf   *bufio.Writer
 	ctx    context.Context
 	cancel context.CancelFunc
 	loopWG sync.WaitGroup // tracks readLoop goroutine
@@ -67,10 +69,18 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 
+	// Disable Nagle's algorithm. FDB sends many small frames (Get/Set requests)
+	// that must reach the server without 40ms coalescing delay.
+	// C++ FlowTransport sets TCP_NODELAY on all connections.
+	if tc, ok := netConn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
 		conn:   netConn,
 		tls:    tls,
+		wbuf:   bufio.NewWriterSize(netConn, 64*1024),
 		ctx:    connCtx,
 		cancel: cancel,
 	}
@@ -148,8 +158,7 @@ func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
 	return token, ch, cancel
 }
 
-// SendFrame writes a raw frame to the connection. The destToken is the
-// remote endpoint token placed in the frame header. The body is sent as-is.
+// SendFrame writes a raw frame to the connection's write buffer and flushes.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,7 +167,27 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
-	return WriteFrame(c.conn, destToken, body, c.tls)
+	if err := WriteFrame(c.wbuf, destToken, body, c.tls); err != nil {
+		return err
+	}
+	return c.wbuf.Flush()
+}
+
+// SendFrameDeferred writes a raw frame to the write buffer WITHOUT flushing.
+// The caller MUST call Flush() when done sending a batch.
+// Used for pipelining: send N frames, then flush once.
+func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	LogSend(destToken, body)
+	return WriteFrame(c.wbuf, destToken, body, c.tls)
+}
+
+// Flush flushes the write buffer to the TCP connection.
+func (c *Conn) Flush() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.wbuf.Flush()
 }
 
 // SendAndWait sends a request and blocks until the response arrives.

@@ -38,10 +38,19 @@ type Transaction struct {
 // key does not exist. The read is performed asynchronously.
 func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	inner, ctx := tr.t.inner, tr.t.ctx
-	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := inner.Get(ctx, key.FDBKey())
-		return v, convertError(err)
-	})
+	// Pipelined: send the request synchronously (no goroutine), return a future
+	// backed by the reply channel. This enables true pipelining — N Gets send N
+	// frames immediately, then N future.Get() calls collect responses.
+	val, pending, err := inner.GetPipelined(ctx, key.FDBKey())
+	if err != nil {
+		return newReadyFutureByteSlice(nil, convertError(err))
+	}
+	if pending == nil {
+		// RYW cache hit or cleared key.
+		return newReadyFutureByteSlice(val, nil)
+	}
+	// Server request in flight — future resolves when response arrives.
+	return newPendingFutureByteSlice(pending)
 }
 
 // GetKey returns the key referenced by the given key selector.

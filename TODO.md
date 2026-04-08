@@ -1714,7 +1714,15 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 ##### CRITICAL — CI blockers (3 failures in CI run)
 
-- [ ] **HIGH — HNSW 500-vector test timeout** — Performance issue, not a hang. Investigation confirmed: every RPC has a 5s timeout that fires correctly, every future goroutine completes, no operation is permanently stuck. The goroutine dump catches a goroutine mid-5s-wait. The test times out because 500 vector inserts generate thousands of FDB operations (neighbor lookups, layer preloads, edge list reads) and the cumulative time exceeds the 120s test timeout with the pure Go client. Added `maxRelocateRetries=5` to prevent infinite retry in `getRange`. Fix: reduce vector count, increase test timeout, or optimize HNSW batch reads.
+- [x] **HIGH — HNSW 500-vector test timeout — FIXED** — Root cause: batched `Get` calls (N futures pipelined) were 36x slower than CGo because each goroutine did a full send+wait round-trip sequentially. Fix: `GetPipelined` sends the request frame synchronously (no goroutine), defers TCP flush; `PendingGet.Resolve()` flushes once then waits. All N frames go to the write buffer before any flush, so they reach the server in one TCP write. Result: batch-10 latency 11ms → 1.3ms (8.5x improvement). 500-vector test: timeout → passes in 21s. Also added `TCP_NODELAY`, `bufio.Writer` on connection, `maxRelocateRetries=5`.
+- [ ] **MEDIUM — Pure Go client pipelining: remaining 3-4x gap vs CGo** — Batch-10: Go 1.3ms vs CGo 316µs (4.1x). Three known causes:
+  1. We do N separate `bufio.Flush()` → `Write()` syscalls per batch; CGo's C client uses a single `writev` scatter-gather syscall for all N frames
+  2. CGo's C client uses the FDB network thread which is optimized for batch processing (single-threaded event loop, zero-copy serialization)
+  3. Goroutine scheduling overhead for N resolve goroutines (one per pipelined Get)
+  Potential fixes:
+  - **(a) Dedicated flush goroutine (C++ connectionWriter port)** — Since goroutines are cooperatively scheduled (same model as Flow coroutines), we can replicate C++ `connectionWriter` exactly: `SendFrame` writes to buffer + signals a channel (no flush). A dedicated goroutine receives the signal, sleeps 10-20µs (C++ `MIN_COALESCE_DELAY`/`MAX_COALESCE_DELAY`), then flushes everything accumulated. All senders that yielded during the coalesce window get batched into one `write()` syscall. This is the architecturally correct approach — same design as C++.
+  - (b) Use `net.Buffers` (writev) for scatter-gather I/O — send multiple frames in one syscall without copying into a contiguous buffer.
+  - (c) Avoid goroutines for resolve — use a select-loop multiplexer instead of one goroutine per pipelined Get.
 - [x] **HIGH — Tenant CRUD via system keys** — Full 1:1 port of C++ `TenantAPI::createTenantTransaction` / `deleteTenantTransaction`. All codec formats match C++: TenantIdCodec (raw 8-byte BE), TupleCodec<int64_t> (nameIndex, lastTenantId), BinaryCodec (count), ObjectCodec+IncludeVersion (tenantMap), SetVersionstampedValue (lastModification). All checks: `checkTenantMode`, prefix emptiness (create → `tenant_prefix_allocator_conflict`, delete → `tenant_not_empty`), count validation (`cluster_no_capacity`, MAX=1M), name validation (no `\xff` prefix). `applyTenantPrefix` on commit (8-byte BE prefix on mutations/conflict ranges). Test: `TestTenantCRUD` covers create, list, open, read/write through tenant, duplicate create, non-empty delete, clear+delete, double delete.
 - [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
 - [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
@@ -1725,7 +1733,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 ##### A) Record layer integration tests
 - [x] 2305/2309 pass, 0 fail
 - [x] OnlineIndexer limit=1 — PASSES (6s). Was never broken, only timed out when run alongside hanging 500-vector test.
-- [ ] VectorIndex "medium-scale search with 500 vectors" — FDB container crashes/OOM during test. HNSW graph with 500 vectors overwhelms single-node testcontainer memory. Needs investigation: is this our client or a test infra issue? Try with more container memory.
+- [x] VectorIndex "medium-scale search with 500 vectors" — FIXED. Was 36x slower than CGo due to missing request pipelining. `GetPipelined` + deferred flush fix brought it from timeout to 21s.
 - [ ] million_record — tagged `manual`, never runs in CI.
 
 ##### B) Conformance tests

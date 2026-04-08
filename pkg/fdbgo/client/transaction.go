@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
@@ -281,6 +282,96 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 		tx.addReadConflict(key, keyAfterBytes(key))
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
+}
+
+// GetPipelined sends a GetValue request and returns a PendingGet that can be
+// resolved later. This enables true pipelining: send N requests without
+// waiting, then collect all N responses. Matches C++ client pipelining.
+//
+// Returns (nil, nil, nil) for RYW cache hits (value is returned in val).
+// Returns (nil, pending, nil) for server requests (call pending.Resolve() to get value).
+// Returns (nil, nil, err) for errors during send.
+func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte, pending *PendingGet, err error) {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, nil, err
+	}
+	if !isSystemKey(key) {
+		tx.addReadConflict(key, keyAfterBytes(key))
+	}
+
+	// Check RYW cache.
+	tx.ryw.mu.Lock()
+	if entry, ok := tx.ryw.writes[string(key)]; ok {
+		if !entry.hasAtomics {
+			v := entry.value
+			tx.ryw.mu.Unlock()
+			return v, nil, nil
+		}
+		// Has atomics — need server roundtrip, fall through.
+	}
+	isClr := tx.ryw.isClearedLocked(key)
+	tx.ryw.mu.Unlock()
+	if isClr {
+		return nil, nil, nil
+	}
+
+	// Locate shard.
+	loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	if locErr != nil {
+		return nil, nil, fmt.Errorf("locate key: %w", locErr)
+	}
+	if len(loc.Servers) == 0 {
+		return nil, nil, fmt.Errorf("no storage servers for key")
+	}
+
+	// Send request without waiting for response.
+	for _, server := range loc.Servers {
+		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
+		if dialErr != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
+			cancelReply()
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		rctx, rcancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: rctx, cancel: rcancel}, nil
+	}
+	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// PendingGet represents a GetValue request that has been sent but not yet resolved.
+type PendingGet struct {
+	replyCh     <-chan transport.Response
+	cancelReply func()
+	conn        *transport.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	flushed     bool
+}
+
+// Resolve blocks until the response arrives or timeout.
+// Flushes the write buffer on first call to ensure the request reaches the server.
+func (p *PendingGet) Resolve() ([]byte, error) {
+	if !p.flushed {
+		p.flushed = true
+		p.conn.Flush()
+	}
+	defer p.cancel()
+	select {
+	case resp := <-p.replyCh:
+		if resp.Err != nil {
+			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		}
+		return parseGetValueReply(resp.Body)
+	case <-p.ctx.Done():
+		p.cancelReply()
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	}
 }
 
 // GetKey resolves a key selector to the actual key in the database.

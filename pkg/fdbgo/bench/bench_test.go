@@ -210,6 +210,99 @@ func BenchmarkGetRange(b *testing.B) {
 	}
 }
 
+// BenchmarkBatchGet simulates the HNSW pattern: fire N Gets in parallel
+// within one transaction, then resolve all futures.
+func BenchmarkBatchGet(b *testing.B) {
+	// Seed batch data
+	goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 50; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("bench_batch_%04d", i)), make([]byte, 200))
+		}
+		return nil, nil
+	})
+
+	for _, n := range []int{1, 10, 50} {
+		b.Run(fmt.Sprintf("Go/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+					futures := make([]gofdb.FutureByteSlice, n)
+					for j := 0; j < n; j++ {
+						futures[j] = tx.Get(gofdb.Key(fmt.Sprintf("bench_batch_%04d", j)))
+					}
+					for _, f := range futures {
+						f.MustGet()
+					}
+					return nil, nil
+				})
+			}
+		})
+		b.Run(fmt.Sprintf("Go-serial/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+					for j := 0; j < n; j++ {
+						tx.Get(gofdb.Key(fmt.Sprintf("bench_batch_%04d", j))).MustGet()
+					}
+					return nil, nil
+				})
+			}
+		})
+		b.Run(fmt.Sprintf("CGo/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+					futures := make([]cgofdb.FutureByteSlice, n)
+					for j := 0; j < n; j++ {
+						futures[j] = tx.Get(cgofdb.Key(fmt.Sprintf("bench_batch_%04d", j)))
+					}
+					for _, f := range futures {
+						f.MustGet()
+					}
+					return nil, nil
+				})
+			}
+		})
+	}
+}
+
+// BenchmarkPipelinedGet measures pipelining: fire all Gets first, then resolve.
+// Same pattern as BenchmarkBatchGet but uses ReadTransact (no commit).
+func BenchmarkPipelinedGet(b *testing.B) {
+	for _, n := range []int{1, 10, 50} {
+		b.Run(fmt.Sprintf("Go/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+					futures := make([]gofdb.FutureByteSlice, n)
+					for j := 0; j < n; j++ {
+						futures[j] = tx.Get(gofdb.Key(fmt.Sprintf("bench_batch_%04d", j)))
+					}
+					for _, f := range futures {
+						f.MustGet()
+					}
+					return nil, nil
+				})
+			}
+		})
+		b.Run(fmt.Sprintf("CGo/%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+					futures := make([]cgofdb.FutureByteSlice, n)
+					for j := 0; j < n; j++ {
+						futures[j] = tx.Get(cgofdb.Key(fmt.Sprintf("bench_batch_%04d", j)))
+					}
+					for _, f := range futures {
+						f.MustGet()
+					}
+					return nil, nil
+				})
+			}
+		})
+	}
+}
+
 func BenchmarkRYW(b *testing.B) {
 	b.Run("Go", func(b *testing.B) {
 		b.ReportAllocs()
