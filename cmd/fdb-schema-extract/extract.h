@@ -10,6 +10,7 @@
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/GlobalConfig.h"
 #include "fdbrpc/FlowTransport.h"
+#include "fdbclient/Tenant.h"
 #include "fdbrpc/TenantInfo.h"
 #include "flow/serialize.h"
 #include "flow/TLSConfig.actor.h"
@@ -50,6 +51,7 @@ REGISTER_GO_TYPE(MutationRef, "MutationRef");
 REGISTER_GO_TYPE(CommitTransactionRef, "CommitTransactionRef");
 REGISTER_GO_TYPE(ReadOptions, "ReadOptions");
 REGISTER_GO_TYPE(StorageMetrics, "StorageMetrics");
+REGISTER_GO_TYPE(TenantMapEntry, "TenantMapEntry");
 REGISTER_GO_TYPE(SplitRangeReply, "SplitRangeReply");
 REGISTER_GO_TYPE(NetworkAddress, "NetworkAddress");
 REGISTER_GO_TYPE(NetworkAddressList, "NetworkAddressList");
@@ -115,6 +117,7 @@ REGISTER_FIELD_NAMES(KeySelectorRef, "key", "orEqual", "offset");
 REGISTER_FIELD_NAMES(SpanContext, "traceID", "spanID", "flags");
 REGISTER_FIELD_NAMES(ReadOptions, "type", "cacheResult", "lockAware");
 REGISTER_FIELD_NAMES(StorageMetrics, "bytes", "bytesWrittenPerKSecond", "iosPerKSecond", "bytesReadPerKSecond", "opsReadPerKSecond");
+REGISTER_FIELD_NAMES(TenantMapEntry, "id", "tenantName", "tenantLockState", "tenantLockId", "tenantGroup", "configurationSequenceNum");
 REGISTER_FIELD_NAMES(WaitMetricsRequest, "keys", "min", "max", "reply", "tenantInfo", "minVersion");
 REGISTER_FIELD_NAMES(SplitRangeRequest, "keys", "chunkSize", "reply", "tenantInfo");
 REGISTER_FIELD_NAMES(SplitRangeReply, "splitPoints");

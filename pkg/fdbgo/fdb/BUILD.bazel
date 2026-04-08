@@ -14,6 +14,7 @@ go_library(
         "range_result.go",
         "snapshot.go",
         "tenant.go",
+        "tenant_crud.go",
         "transaction.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb",
@@ -21,6 +22,7 @@ go_library(
     deps = [
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/wire",
+        "//pkg/fdbgo/wire/types",
     ],
 )
 

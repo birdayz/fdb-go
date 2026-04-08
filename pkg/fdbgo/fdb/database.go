@@ -2,8 +2,8 @@ package fdb
 
 import (
 	"context"
-	"encoding/json"
 	"sync/atomic"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
@@ -66,7 +66,10 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	ctx := context.Background()
+	// 30s deadline for initial bootstrap — coordinator may return
+	// failed_to_progress (1216) during cluster recovery.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	db, err := client.OpenDatabase(ctx, clusterFile)
 	if err != nil {
 		return Database{}, err
@@ -193,39 +196,22 @@ func (db Database) Options() DatabaseOptions {
 // OpenTenant opens a named tenant on this database.
 // Resolves the tenant name to an ID via the FDB special key space.
 // Not yet implemented — use OpenTenantById for direct ID-based access.
-// OpenTenant opens a tenant by name. Resolves the name to a tenant ID via
-// the special key space, then returns a Tenant scoped to that ID.
+// OpenTenant opens a tenant by name. Reads the tenant ID from the system
+// key name index (\xff/tenant/nameIndex/<name>).
 func (db Database) OpenTenant(name KeyConvertible) (Tenant, error) {
 	tenantName := name.FDBKey()
 	if len(tenantName) == 0 || tenantName[0] == 0xff {
 		return Tenant{}, errTenantInvalid
 	}
-	// Read tenant entry to get the ID. The value is a JSON blob with "id" field.
-	// For now, use tenant-by-name which the wire protocol supports via tenantId=-1
-	// and the server resolves the name. This matches the CGo binding's OpenTenant
-	// which calls fdb_database_open_tenant (C-level name resolution).
-	//
-	// Our pure Go client's Tenant uses tenantId in wire requests. We need the
-	// numeric ID. Read it from the special key space.
 	var tenantId int64
 	_, err := db.Transact(func(tr Transaction) (any, error) {
-		key := append(Key(tenantMapKey), tenantName...)
-		val, err := tr.Get(key).Get()
-		if err != nil {
-			return nil, err
-		}
-		if val == nil {
-			return nil, errTenantNotFound
-		}
-		// The value is a JSON blob like {"id":123,...}. Extract the ID.
-		tenantId = parseTenantId(val)
-		return nil, nil
+		tr.Options().SetLockAware()
+		var err error
+		tenantId, err = openTenantInternal(tr, tenantName)
+		return nil, err
 	})
 	if err != nil {
 		return Tenant{}, err
-	}
-	if tenantId == 0 {
-		return Tenant{}, errTenantNotFound
 	}
 	return Tenant{db: db, tenantId: tenantId}, nil
 }
@@ -237,47 +223,36 @@ func (db Database) OpenTenantById(id int64) Tenant {
 	return Tenant{db: db, tenantId: id}
 }
 
-// CreateTenant creates a new tenant via the special key space (\xff\xff/management/tenant/map/).
-// NOTE: Not yet functional — requires special key space routing which is not yet implemented
-// in the pure Go client. Use fdbcli or the Apple CGo binding for tenant management.
+// CreateTenant creates a new tenant. Writes to system keys (\xff/tenant/*)
+// matching C++ TenantAPI::createTenantTransaction.
 func (db Database) CreateTenant(name KeyConvertible) error {
 	_, err := db.Transact(func(tr Transaction) (any, error) {
-		return nil, tr.CreateTenant(name)
+		tr.Options().SetLockAware()
+		_, err := createTenantInternal(tr, name.FDBKey())
+		return nil, err
 	})
 	return err
 }
 
-// DeleteTenant deletes a tenant via the special key space.
-// NOTE: Same limitation as CreateTenant — requires special key space support.
+// DeleteTenant deletes a tenant. Writes to system keys (\xff/tenant/*).
 func (db Database) DeleteTenant(name KeyConvertible) error {
 	_, err := db.Transact(func(tr Transaction) (any, error) {
-		return nil, tr.DeleteTenant(name)
+		tr.Options().SetLockAware()
+		return nil, deleteTenantInternal(tr, name.FDBKey())
 	})
 	return err
 }
 
-// ListTenants lists all tenants via the special key space.
-// NOTE: Same limitation as CreateTenant — requires special key space support.
+// ListTenants lists all tenants by scanning the name index.
 func (db Database) ListTenants() ([]Key, error) {
 	result, err := db.Transact(func(tr Transaction) (any, error) {
-		return tr.ListTenants()
+		tr.Options().SetLockAware()
+		return listTenantsInternal(tr)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return result.([]Key), nil
-}
-
-// parseTenantId extracts the "id" field from the tenant JSON blob.
-// Format: {"id":123,"name":"...","prefix":"...",...}
-func parseTenantId(val []byte) int64 {
-	var entry struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(val, &entry); err != nil {
-		return 0
-	}
-	return entry.ID
 }
 
 // GetClientStatus is not yet implemented.

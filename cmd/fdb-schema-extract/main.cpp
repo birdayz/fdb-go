@@ -1362,6 +1362,7 @@ int main(int argc, char** argv) {
     extractType<WaitMetricsRequest>(outDir, "WaitMetricsRequest");
     extractType<SplitRangeRequest>(outDir, "SplitRangeRequest");
     extractType<SplitRangeReply>(outDir, "SplitRangeReply");
+    extractType<TenantMapEntry>(outDir, "TenantMapEntry");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
 

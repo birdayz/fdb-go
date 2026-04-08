@@ -294,65 +294,6 @@ func (tr Transaction) SetReadVersion(version int64) {
 	tr.t.inner.SetReadVersion(version)
 }
 
-// tenantMapKey is the special key space prefix for tenant management.
-// Matches Apple Go binding and C++ TenantManagement.
-const tenantMapKey = "\xff\xff/management/tenant/map/"
-
-// CreateTenant creates a new tenant in the cluster.
-// The tenant name must not be empty or start with \xff.
-// Matches Apple Go binding: writes to special key space \xff\xff/management/tenant/map/<name>.
-func (tr Transaction) CreateTenant(name KeyConvertible) error {
-	tenantName := name.FDBKey()
-	if len(tenantName) == 0 || tenantName[0] == 0xff {
-		return errTenantInvalid
-	}
-	key := append(Key(tenantMapKey), tenantName...)
-	val, err := tr.Get(key).Get()
-	if err != nil {
-		return err
-	}
-	if val != nil {
-		return errTenantExists
-	}
-	tr.Set(key, nil)
-	return nil
-}
-
-// DeleteTenant deletes an existing tenant in the cluster.
-func (tr Transaction) DeleteTenant(name KeyConvertible) error {
-	tenantName := name.FDBKey()
-	if len(tenantName) == 0 || tenantName[0] == 0xff {
-		return errTenantInvalid
-	}
-	key := append(Key(tenantMapKey), tenantName...)
-	val, err := tr.Get(key).Get()
-	if err != nil {
-		return err
-	}
-	if val == nil {
-		return errTenantNotFound
-	}
-	tr.Clear(key)
-	return nil
-}
-
-// ListTenants lists all existing tenants in the cluster.
-func (tr Transaction) ListTenants() ([]Key, error) {
-	kr, err := PrefixRange(Key(tenantMapKey))
-	if err != nil {
-		return nil, err
-	}
-	rawTenants, err := tr.GetRange(kr, RangeOptions{}).GetSliceWithError()
-	if err != nil {
-		return nil, err
-	}
-	tenants := make([]Key, len(rawTenants))
-	for i, rt := range rawTenants {
-		tenants[i] = rt.Key[len(tenantMapKey):]
-	}
-	return tenants, nil
-}
-
 // Reset resets the transaction to its initial state.
 // NOT safe to call concurrently with other Transaction methods.
 // Callers must drain all pending futures before calling Reset —

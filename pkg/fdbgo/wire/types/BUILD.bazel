@@ -42,6 +42,7 @@ go_library(
         "storagemetrics_generated.go",
         "storageserverinterface_generated.go",
         "tenantinfo_generated.go",
+        "tenantmapentry_generated.go",
         "waitmetricsrequest_generated.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types",

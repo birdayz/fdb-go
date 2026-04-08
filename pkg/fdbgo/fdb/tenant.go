@@ -13,17 +13,30 @@ type Tenant struct {
 // this tenant's key space. Matches Database.Transact but sets the tenant ID
 // on the underlying transaction.
 func (t Tenant) Transact(f func(Transaction) (any, error)) (any, error) {
+	var lastTx *transaction
 	result, err := t.db.d.inner.Transact(t.db.d.ctx, func(tx *client.Transaction) (r any, e error) {
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tx.SetTenantId(t.tenantId)
-		tr := Transaction{t: &transaction{
-			inner: tx,
-			db:    t.db,
-			ctx:   t.db.d.ctx,
-		}}
-		return f(tr)
+		txn := &transaction{
+			inner:      tx,
+			db:         t.db,
+			ctx:        t.db.d.ctx,
+			commitDone: make(chan struct{}),
+		}
+		lastTx = txn
+		return f(Transaction{t: txn})
 	})
+	if lastTx != nil && lastTx.commitDone != nil {
+		select {
+		case <-lastTx.commitDone:
+		default:
+			if err != nil {
+				lastTx.commitErr = convertError(err)
+			}
+			close(lastTx.commitDone)
+		}
+	}
 	if err != nil {
 		return nil, convertError(err)
 	}
