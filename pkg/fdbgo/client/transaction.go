@@ -273,7 +273,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+		tx.addReadConflict(key, keyAfterBytes(key))
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
 }
@@ -284,7 +284,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		return nil, err
 	}
 	if !isSystemKey(selectorKey) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+		tx.addReadConflict(selectorKey, keyAfterBytes(selectorKey))
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
@@ -313,7 +313,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	// C++ client validates inverted ranges and handles \xff\xff keys internally
 	// without adding resolver conflict ranges.
 	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) && !isSystemKey(end) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+		tx.addReadConflict(begin, end)
 	}
 
 	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
@@ -326,7 +326,7 @@ func (tx *Transaction) Set(key, value []byte) {
 		Key:   key,
 		Value: value,
 	})
-	tx.addWriteConflict(key, append(key, 0))
+	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.set(key, value)
 }
 
@@ -368,7 +368,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 		Value: operand,
 	})
 	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflict(key, append(key, 0))
+	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.atomic(op, key, operand)
 }
 
@@ -575,12 +575,35 @@ func (tx *Transaction) checkTimeout() error {
 	return nil
 }
 
+// keyAfterBytes returns a copy of key with \x00 appended.
+// Always allocates — safe for storing in conflict ranges.
+func keyAfterBytes(key []byte) []byte {
+	r := make([]byte, len(key)+1)
+	copy(r, key)
+	return r
+}
+
+// addReadConflict adds a read conflict range with defensive copies.
+func (tx *Transaction) addReadConflict(begin, end []byte) {
+	b := make([]byte, len(begin))
+	copy(b, begin)
+	e := make([]byte, len(end))
+	copy(e, end)
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: b, End: e})
+}
+
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	// Defensive copy: callers use append(key, 0) which may alias the key slice.
+	// Without a copy, later mutations on the same backing array corrupt the range.
+	b := make([]byte, len(begin))
+	copy(b, begin)
+	e := make([]byte, len(end))
+	copy(e, end)
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: b, End: e})
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
