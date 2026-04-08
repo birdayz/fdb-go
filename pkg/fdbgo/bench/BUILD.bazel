@@ -4,9 +4,9 @@ go_test(
     name = "bench_test",
     srcs = ["bench_test.go"],
     deps = [
+        "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/testcontainers/foundationdb",
-        "//pkg/testcontainers/foundationdb/gofdbhelper",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
     ],
 )

@@ -241,25 +241,40 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 
 // bootstrap connects to coordinators and fetches initial cluster topology.
 func (db *database) bootstrap(ctx context.Context) error {
-	var lastErr error
-	for _, addr := range db.clusterFile.Coordinators {
-		conn, err := db.getOrDial(ctx, addr)
-		if err != nil {
-			lastErr = err
-			continue
+	// C++ monitorLeaderInternal retries coordinator connections with backoff.
+	// The coordinator may return transient errors like failed_to_progress (1216)
+	// during cluster recovery after configuration changes.
+	backoff := 500 * time.Millisecond
+	for {
+		var lastErr error
+		for _, addr := range db.clusterFile.Coordinators {
+			conn, err := db.getOrDial(ctx, addr)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			dbInfo, err := db.openDatabaseCoord(ctx, conn, addr)
+			if err != nil {
+				lastErr = fmt.Errorf("coordinator %s: %w", addr, err)
+				continue
+			}
+
+			db.dbInfo.Store(dbInfo)
+			close(db.connected)
+			return nil
 		}
 
-		dbInfo, err := db.openDatabaseCoord(ctx, conn, addr)
-		if err != nil {
-			lastErr = fmt.Errorf("coordinator %s: %w", addr, err)
-			continue
+		// Retry on transient coordinator errors (e.g., failed_to_progress 1216).
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("failed to connect to any coordinator: %w", lastErr)
+		case <-time.After(backoff):
+			if backoff < 5*time.Second {
+				backoff *= 2
+			}
 		}
-
-		db.dbInfo.Store(dbInfo)
-		close(db.connected)
-		return nil
 	}
-	return fmt.Errorf("failed to connect to any coordinator: %w", lastErr)
 }
 
 // Database is the public API entry point.
