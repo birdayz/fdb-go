@@ -68,7 +68,7 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	}
 	// 30s deadline for initial bootstrap — coordinator may return
 	// failed_to_progress (1216) during cluster recovery.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	db, err := client.OpenDatabase(ctx, clusterFile)
 	if err != nil {
