@@ -275,6 +275,27 @@ func (c *Container) ClusterFile(ctx context.Context) (string, error) {
 	return fmt.Sprintf("docker:docker@%s:%s", host, port.Port()), nil
 }
 
+// ClusterFilePath writes the cluster file to a temp file and returns the path.
+// The caller can pass this directly to fdb.OpenDatabase(path).
+// The file is cleaned up when the container is terminated.
+func (c *Container) ClusterFilePath(ctx context.Context) (string, error) {
+	content, err := c.ClusterFile(ctx)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp("", "fdb_cluster_*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create temp cluster file: %w", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write cluster file: %w", err)
+	}
+	f.Close()
+	return f.Name(), nil
+}
+
 // NetworkName returns the Docker network name this container is on.
 // Use this to attach other containers to the same network.
 func (c *Container) NetworkName() string {

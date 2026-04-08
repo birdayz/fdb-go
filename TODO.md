@@ -1712,6 +1712,12 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 #### Remaining work — marathon to all-green
 
+##### CRITICAL — CI blockers (3 failures in CI run)
+
+- [ ] **CRITICAL — HNSW "node not found"** — `hnsw insert: load neighbor (120) at layer 1 for reverse connection: hnsw: node not found at layer 1`. A previously committed node returns nil on read. NOT a performance issue — correctness bug. RYW cache may be returning nil for a key that falls in a cleared range from a different operation in the same tx. Or GRV cache returning stale version. Needs exact trace of the read path for node 120's key.
+- [ ] **CRITICAL — `bootstrap()` hangs forever** — `gofdbhelper.OpenDatabase` calls `bootstrap()` which retries forever on `failed_to_progress` (1216). The retry loop has no deadline when called with `context.Background()`. Affects: `foundationdb_test` (TIMEOUT 300s), `conformance_test` (TIMEOUT 900s). Fix: add max retry count or derive deadline from the provided context.
+- [ ] **CRITICAL — Conformance `SetupTenantEnvironment` hangs** — same root cause as bootstrap hang. `gofdbhelper.OpenDatabase` called per-spec in `BeforeEach`, each call retries bootstrap forever. Fix: same as above.
+
 ##### A) Record layer integration tests
 - [x] 2305/2309 pass, 0 fail
 - [x] OnlineIndexer limit=1 — PASSES (6s). Was never broken, only timed out when run alongside hanging 500-vector test.

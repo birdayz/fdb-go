@@ -10,7 +10,6 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 )
 
 // TestEnvironment encapsulates everything needed for a conformance test
@@ -41,7 +40,7 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 	}
 
 	// Get pure Go FDB database connection
-	db, err := gofdbhelper.OpenDatabase(ctx, container)
+	db, err := openGoDatabase(ctx, container)
 	if err != nil {
 		_ = container.Terminate(ctx)
 		return nil, fmt.Errorf("failed to get database connection: %w", err)
@@ -101,13 +100,13 @@ type TenantEnvironment struct {
 // This reuses the provided container and creates an FDB tenant for isolation
 func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Container, tenantName string) (*TenantEnvironment, error) {
 	// Get pure Go database for tenant creation
-	db, err := gofdbhelper.OpenDatabase(ctx, container)
+	db, err := openGoDatabase(ctx, container)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get database: %w", err)
 	}
 
 	// Create tenant via fdbcli and open with pure Go client
-	tenant, err := gofdbhelper.CreateTenant(ctx, container, db, tenantName)
+	tenant, err := createGoTenant(db, tenantName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tenant: %w", err)
 	}
@@ -118,14 +117,14 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 	// Create metadata
 	metaData, err := createOrderMetaData()
 	if err != nil {
-		_ = gofdbhelper.DeleteTenant(db, tenantName)
+		_ = db.DeleteTenant(gofdb.Key(tenantName))
 		return nil, fmt.Errorf("failed to create metadata: %w", err)
 	}
 
 	// Get cluster file
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		_ = gofdbhelper.DeleteTenant(db, tenantName)
+		_ = db.DeleteTenant(gofdb.Key(tenantName))
 		return nil, fmt.Errorf("failed to get cluster file: %w", err)
 	}
 
@@ -146,9 +145,25 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 // Cleanup deletes the tenant (not the container)
 func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
 	if env.DB != (gofdb.Database{}) && env.TenantName != "" {
-		return gofdbhelper.DeleteTenant(env.DB, env.TenantName)
+		return env.DB.DeleteTenant(gofdb.Key(env.TenantName))
 	}
 	return nil
+}
+
+func openGoDatabase(ctx context.Context, container *foundationdbtc.Container) (gofdb.Database, error) {
+	path, err := container.ClusterFilePath(ctx)
+	if err != nil {
+		return gofdb.Database{}, err
+	}
+	gofdb.MustAPIVersion(730)
+	return gofdb.OpenDatabase(path)
+}
+
+func createGoTenant(db gofdb.Database, name string) (gofdb.Tenant, error) {
+	if err := db.CreateTenant(gofdb.Key(name)); err != nil {
+		return gofdb.Tenant{}, err
+	}
+	return db.OpenTenant(gofdb.Key(name))
 }
 
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema

@@ -11,9 +11,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -43,10 +43,14 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	// Test socat proxy setup
 	t.Logf("Testing FoundationDB with socat proxy...")
 
-	// Get pure Go FDB database connection (no CGo required)
-	db, err := gofdbhelper.OpenDatabase(ctx, container)
+	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
-		t.Fatalf("Failed to get Go FDB database: %v", err)
+		t.Fatal(err)
+	}
+	gofdb.MustAPIVersion(730)
+	db, err := gofdb.OpenDatabase(path)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer db.Close()
 

@@ -6,7 +6,6 @@ import (
 
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
-	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 )
 
 func TestFoundationDBDatabaseConnection(t *testing.T) {
@@ -18,23 +17,27 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	}
 	defer container.Terminate(ctx)
 
-	err = container.InitializeDatabase(ctx)
+	if err := container.InitializeDatabase(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
-		t.Fatalf("Failed to initialize database: %v", err)
+		t.Fatal(err)
 	}
 
 	gofdb.MustAPIVersion(730)
-	db, err := gofdbhelper.OpenDatabase(ctx, container)
+	db, err := gofdb.OpenDatabase(path)
 	if err != nil {
-		t.Fatalf("Failed to open database: %v", err)
+		t.Fatal(err)
 	}
 	defer db.Close()
 
 	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
 		tr.Get(gofdb.Key("test_key")).MustGet()
-		return "success", nil
+		return nil, nil
 	})
 	if err != nil {
-		t.Fatalf("Failed to execute transaction: %v", err)
+		t.Fatal(err)
 	}
 }
