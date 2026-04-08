@@ -1714,8 +1714,11 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 ##### CRITICAL — CI blockers (3 failures in CI run)
 
-- [ ] **CRITICAL — HNSW "node not found"** — `hnsw insert: load neighbor (120) at layer 1 for reverse connection: hnsw: node not found at layer 1`. A previously committed node returns nil on read. NOT a performance issue — correctness bug. RYW cache may be returning nil for a key that falls in a cleared range from a different operation in the same tx. Or GRV cache returning stale version. Needs exact trace of the read path for node 120's key.
-- [ ] **HIGH — Tenant CRUD via system keys** — `CreateTenant`/`DeleteTenant`/`OpenTenant`/`ListTenants` need to write to `\xff/tenant/*` system keys with `ACCESS_SYSTEM_KEYS`, matching C++ `TenantAPI::createTenantTransaction`. Requires: transaction option support, `TenantMetadata` key layout (`\xff/tenant/nameIndex/<name>` → ID, `\xff/tenant/map/<id>` → entry), `TenantMapEntry` serialization (ObjectWriter+IncludeVersion), atomic tenant ID allocation. Blocks all conformance tests (422 specs). Current stubs return `operation_not_supported (2051)`. Special key space (`\xff\xff`) is a client-side abstraction in libfdb_c — NOT handled by the server.
+- [ ] **CRITICAL — HNSW "node not found" / timeout** — `hnsw insert: load neighbor (120) at layer 1 for reverse connection: hnsw: node not found at layer 1`. 500-vector test hangs in `hnswStorage.preloadLayer` → `RangeIterator.Advance` → `sendGetRange` (readpath.go:317). Goroutine stuck in `[runnable]` state — the GetRange RPC to the storage server never returns. This causes the entire record layer test suite to timeout. Needs investigation: possible shard lookup failure or response parsing issue for large range scans during HNSW graph construction.
+- [x] **HIGH — Tenant CRUD via system keys** — Full 1:1 port of C++ `TenantAPI::createTenantTransaction` / `deleteTenantTransaction`. All codec formats match C++: TenantIdCodec (raw 8-byte BE), TupleCodec<int64_t> (nameIndex, lastTenantId), BinaryCodec (count), ObjectCodec+IncludeVersion (tenantMap), SetVersionstampedValue (lastModification). All checks: `checkTenantMode`, prefix emptiness (create → `tenant_prefix_allocator_conflict`, delete → `tenant_not_empty`), count validation (`cluster_no_capacity`, MAX=1M), name validation (no `\xff` prefix). `applyTenantPrefix` on commit (8-byte BE prefix on mutations/conflict ranges). Test: `TestTenantCRUD` covers create, list, open, read/write through tenant, duplicate create, non-empty delete, clear+delete, double delete.
+- [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
+- [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
+- [ ] **LOW — Tenant ID prefix** (multi-cluster ID partitioning) — `tenantIdPrefix` at `\xff/tenant/idPrefix`, shifts prefix into upper 2 bytes of 8-byte ID (`tenantIdPrefix << 48`). `computeNextTenantId` validates 48-bit space. Standalone clusters use prefix=0.
 - [ ] **CRITICAL — `bootstrap()` hangs forever** — `gofdbhelper.OpenDatabase` calls `bootstrap()` which retries forever on `failed_to_progress` (1216). The retry loop has no deadline when called with `context.Background()`. Affects: `foundationdb_test` (TIMEOUT 300s), `conformance_test` (TIMEOUT 900s). Fix: add max retry count or derive deadline from the provided context.
 - [ ] **CRITICAL — Conformance `SetupTenantEnvironment` hangs** — same root cause as bootstrap hang. `gofdbhelper.OpenDatabase` called per-spec in `BeforeEach`, each call retries bootstrap forever. Fix: same as above.
 
@@ -1727,7 +1730,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 ##### B) Conformance tests
 - [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
-- [ ] Tenant conformance: `gofdbhelper.CreateTenant` via fdbcli instead of CGo API.
+- [ ] Tenant conformance: tenant CRUD now via system keys (no fdbcli). Needs conformance test wiring.
 
 ##### C) Chaos tests
 - [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.

@@ -10,7 +10,7 @@ import (
 )
 
 // openTestDBWithTenants starts a container with tenant_mode=optional_experimental.
-func openTestDBWithTenants(t *testing.T) fdb.Database {
+func openTestDBWithTenants(t *testing.T) (fdb.Database, *tcfdb.Container) {
 	t.Helper()
 	fdb.MustAPIVersion(730)
 
@@ -21,9 +21,7 @@ func openTestDBWithTenants(t *testing.T) fdb.Database {
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(context.Background()) })
 
-	// Initialize with tenant mode
 	err = container.InitializeDatabase(ctx)
 	if err != nil {
 		t.Fatalf("init db: %v", err)
@@ -39,27 +37,17 @@ func openTestDBWithTenants(t *testing.T) fdb.Database {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return db
+	return db, container
 }
 
 func TestTenantCRUD(t *testing.T) {
 	t.Parallel()
-	db := openTestDBWithTenants(t)
+	db, _ := openTestDBWithTenants(t)
 
 	name := fdb.Key("test-tenant-crud")
 
-	// First verify system key reads work
-	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		v, err := tr.Get(fdb.Key("\xff/tenant/count")).Get()
-		t.Logf("system key read: val=%v err=%v", v, err)
-		return nil, err
-	})
-	if err != nil {
-		t.Fatalf("system key read: %v", err)
-	}
-
 	// Create
-	err = db.CreateTenant(name)
+	err := db.CreateTenant(name)
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
@@ -110,7 +98,22 @@ func TestTenantCRUD(t *testing.T) {
 		t.Fatal("expected error on duplicate CreateTenant")
 	}
 
-	// Delete
+	// Delete with data should fail (tenant_not_empty)
+	err = db.DeleteTenant(name)
+	if err == nil {
+		t.Fatal("expected tenant_not_empty error")
+	}
+
+	// Clear tenant data first
+	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("clear tenant data: %v", err)
+	}
+
+	// Now delete should succeed
 	err = db.DeleteTenant(name)
 	if err != nil {
 		t.Fatalf("DeleteTenant: %v", err)

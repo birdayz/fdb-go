@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -53,6 +55,9 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	}
 }
 
+// metadataVersionKey is \xff/metadataVersion — the only key exempt from tenant prefix.
+var metadataVersionKey = []byte("\xff/metadataVersion")
+
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
@@ -69,6 +74,36 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 	writeCRs := make([]types.KeyRangeRef, len(tx.writeConflicts))
 	for i, kr := range tx.writeConflicts {
 		writeCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
+	}
+
+	// C++ applyTenantPrefix: when a tenant is set, prepend 8-byte big-endian tenant ID
+	// to all mutation keys, read/write conflict range keys. Skip metadataVersionKey.
+	if tx.tenantId >= 0 {
+		var prefix [8]byte
+		binary.BigEndian.PutUint64(prefix[:], uint64(tx.tenantId))
+		for i := range mutations {
+			m := &mutations[i]
+			if !bytes.Equal(m.Param1, metadataVersionKey) {
+				m.Param1 = append(prefix[:], m.Param1...)
+				if m.MutType == uint8(MutClearRange) {
+					m.Param2 = append(prefix[:], m.Param2...)
+				}
+			}
+		}
+		for i := range readCRs {
+			cr := &readCRs[i]
+			if !bytes.Equal(cr.Begin, metadataVersionKey) {
+				cr.Begin = append(prefix[:], cr.Begin...)
+				cr.End = append(prefix[:], cr.End...)
+			}
+		}
+		for i := range writeCRs {
+			cr := &writeCRs[i]
+			if !bytes.Equal(cr.Begin, metadataVersionKey) {
+				cr.Begin = append(prefix[:], cr.Begin...)
+				cr.End = append(prefix[:], cr.End...)
+			}
+		}
 	}
 
 	// C++ CommitTransactionRequest flags (CommitProxyInterface.h):
@@ -91,6 +126,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 	}
+
 	return req.MarshalFDB()
 }
 
