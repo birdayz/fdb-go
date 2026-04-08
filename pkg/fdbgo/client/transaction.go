@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -123,6 +124,10 @@ type Transaction struct {
 	hasCommitted     bool // true after at least one successful commit
 	txnBatchId       uint16
 
+	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
+	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
+	// use goroutines, so concurrent Get/Set calls on the same transaction race.
+	conflictMu     sync.Mutex
 	mutations      []Mutation
 	readConflicts  []KeyRange
 	writeConflicts []KeyRange
@@ -321,11 +326,13 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 
 // Set writes a key-value pair.
 func (tx *Transaction) Set(key, value []byte) {
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutSetValue,
 		Key:   key,
 		Value: value,
 	})
+	tx.conflictMu.Unlock()
 	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.set(key, value)
 }
@@ -335,11 +342,13 @@ func (tx *Transaction) Clear(key []byte) {
 	end := make([]byte, len(key)+1)
 	copy(end, key)
 	end[len(key)] = 0
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   key,
 		Value: end,
 	})
+	tx.conflictMu.Unlock()
 	tx.addWriteConflict(key, end)
 	tx.ryw.clear(key)
 }
@@ -350,11 +359,13 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   begin,
 		Value: end,
 	})
+	tx.conflictMu.Unlock()
 	tx.addWriteConflict(begin, end)
 	tx.ryw.clearRange(begin, end)
 	return nil
@@ -362,11 +373,13 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 
 // Atomic performs an atomic mutation.
 func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  op,
 		Key:   key,
 		Value: operand,
 	})
+	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
 	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.atomic(op, key, operand)
@@ -575,6 +588,11 @@ func (tx *Transaction) checkTimeout() error {
 	return nil
 }
 
+// addConflictMu protects readConflicts/writeConflicts from concurrent append.
+// The Apple C binding uses a single-threaded actor model so doesn't need this.
+// Our Go futures use goroutines, so concurrent Get/Set calls on the same
+// transaction race on the conflict slices.
+
 // keyAfterBytes returns a copy of key with \x00 appended.
 // Always allocates — safe for storing in conflict ranges.
 func keyAfterBytes(key []byte) []byte {
@@ -589,7 +607,9 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 	copy(b, begin)
 	e := make([]byte, len(end))
 	copy(e, end)
+	tx.conflictMu.Lock()
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: b, End: e})
+	tx.conflictMu.Unlock()
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
@@ -603,7 +623,9 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	copy(b, begin)
 	e := make([]byte, len(end))
 	copy(e, end)
+	tx.conflictMu.Lock()
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: b, End: e})
+	tx.conflictMu.Unlock()
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
