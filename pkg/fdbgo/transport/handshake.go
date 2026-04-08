@@ -99,20 +99,21 @@ func (p *ConnectPacket) IsIPv6() bool {
 
 // WriteConnectPacket sends a ConnectPacket to the connection.
 func WriteConnectPacket(w io.Writer, localAddr net.Addr, connectionID uint64) error {
+	// C++ Peer::prependConnectPacket sends the client's LISTENING port in
+	// canonicalRemotePort (from transport->localAddresses). For a pure client
+	// with no listen socket, C++ sends port=0 and ip=0 (the "mixed TLS" else
+	// branch at FlowTransport.actor.cpp:1072).
+	//
+	// The server asserts canonicalRemotePort == peerAddress.port for outgoing
+	// connections. Sending the TCP source port (random ephemeral) causes an
+	// assertion failure that crashes FDB through socat proxies.
+	//
+	// Send 0 to match C++ pure-client behavior.
 	pkt := ConnectPacket{
-		ProtocolVersion: ProtocolVersion73,
-		ConnectionID:    connectionID,
-	}
-
-	// Set canonical address from local addr.
-	if tcpAddr, ok := localAddr.(*net.TCPAddr); ok {
-		pkt.CanonicalRemotePort = uint16(tcpAddr.Port)
-		if ip4 := tcpAddr.IP.To4(); ip4 != nil {
-			pkt.CanonicalRemoteIP4 = binary.BigEndian.Uint32(ip4)
-		} else if ip6 := tcpAddr.IP.To16(); ip6 != nil {
-			pkt.Flags = FlagIPv6
-			copy(pkt.CanonicalRemoteIP6[:], ip6)
-		}
+		ProtocolVersion:     ProtocolVersion73,
+		ConnectionID:        connectionID,
+		CanonicalRemotePort: 0,
+		CanonicalRemoteIP4:  0,
 	}
 
 	_, err := w.Write(pkt.Marshal())

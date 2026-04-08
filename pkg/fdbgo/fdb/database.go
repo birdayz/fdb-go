@@ -131,22 +131,31 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		// Order matters: unconvertError runs AFTER panicToError (LIFO).
-		// panicToError catches Error panics → sets e = Error{...}.
-		// unconvertError converts Error → *wire.FDBError for retry loop.
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
-		tr := Transaction{t: &transaction{
-			inner: tx,
-			db:    db,
-			ctx:   db.d.ctx,
-			// No commitDone — commit is driven by the retry wrapper after
-			// this closure returns, so we can't signal completion here.
-			// GetVersionstamp() returns an error when commitDone is nil.
-		}}
-		return f(tr)
+		t := &transaction{
+			inner:      tx,
+			db:         db,
+			ctx:        db.d.ctx,
+			commitDone: make(chan struct{}),
+		}
+		lastTx = t
+		return f(Transaction{t: t})
 	})
+	// Signal commitDone — client.Transact auto-committed after the closure
+	// returned. Any GetVersionstamp goroutine blocked on commitDone will unblock.
+	if lastTx != nil && lastTx.commitDone != nil {
+		select {
+		case <-lastTx.commitDone:
+		default:
+			if err != nil {
+				lastTx.commitErr = convertError(err)
+			}
+			close(lastTx.commitDone)
+		}
+	}
 	if err != nil {
 		return nil, convertError(err)
 	}

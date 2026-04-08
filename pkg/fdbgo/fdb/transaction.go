@@ -132,9 +132,19 @@ func (tr Transaction) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
-// Not yet implemented in the pure Go client.
-func (tr Transaction) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, errNotSupported)
+func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	return newFutureKeyArray(func() ([]Key, error) {
+		begin, end := r.FDBRangeKeys()
+		points, err := tr.t.inner.GetRangeSplitPoints(tr.t.ctx, begin.FDBKey(), end.FDBKey(), chunkSize)
+		if err != nil {
+			return nil, convertError(err)
+		}
+		keys := make([]Key, len(points))
+		for i, p := range points {
+			keys[i] = Key(p)
+		}
+		return keys, nil
+	})
 }
 
 // Snapshot returns a Snapshot view of this transaction.
@@ -181,11 +191,12 @@ func (tr Transaction) Add(key KeyConvertible, param []byte) {
 }
 
 func (tr Transaction) And(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutAnd, key.FDBKey(), param)
+	// C++ ReadYourWritesTransaction::atomicOp upgrades And → AndV2 for API >= 510.
+	tr.t.inner.Atomic(client.MutAndV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) BitAnd(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutAnd, key.FDBKey(), param)
+	tr.t.inner.Atomic(client.MutAndV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) Or(key KeyConvertible, param []byte) {
@@ -209,7 +220,8 @@ func (tr Transaction) Max(key KeyConvertible, param []byte) {
 }
 
 func (tr Transaction) Min(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutMin, key.FDBKey(), param)
+	// C++ ReadYourWritesTransaction::atomicOp upgrades Min → MinV2 for API >= 510.
+	tr.t.inner.Atomic(client.MutMinV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) ByteMax(key KeyConvertible, param []byte) {

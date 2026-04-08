@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/testcontainers/testcontainers-go"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,11 +43,12 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	// Test socat proxy setup
 	t.Logf("Testing FoundationDB with socat proxy...")
 
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
+	// Get pure Go FDB database connection (no CGo required)
+	db, err := gofdbhelper.OpenDatabase(ctx, container)
 	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
+		t.Fatalf("Failed to get Go FDB database: %v", err)
 	}
+	defer db.Close()
 
 	recordDB := recordlayer.NewFDBDatabase(db)
 

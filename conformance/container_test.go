@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 )
 
 // TestEnvironment encapsulates everything needed for a conformance test
@@ -38,8 +39,8 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
+	// Get pure Go FDB database connection
+	db, err := gofdbhelper.OpenDatabase(ctx, container)
 	if err != nil {
 		_ = container.Terminate(ctx)
 		return nil, fmt.Errorf("failed to get database connection: %w", err)
@@ -97,8 +98,14 @@ type TenantEnvironment struct {
 // SetupTenantEnvironment creates a tenant-isolated test environment
 // This reuses the provided container and creates an FDB tenant for isolation
 func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Container, tenantName string) (*TenantEnvironment, error) {
-	// Create tenant
-	tenant, err := container.CreateTenant(ctx, tenantName)
+	// Get pure Go database for tenant creation
+	db, err := gofdbhelper.OpenDatabase(ctx, container)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database: %w", err)
+	}
+
+	// Create tenant via fdbcli and open with pure Go client
+	tenant, err := gofdbhelper.CreateTenant(ctx, container, db, tenantName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tenant: %w", err)
 	}

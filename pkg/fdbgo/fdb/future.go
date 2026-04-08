@@ -249,6 +249,16 @@ func newReadyFutureKeyArray(val []Key, err error) FutureKeyArray {
 	return f
 }
 
+func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
+	f := &futureKeyArray{}
+	f.init()
+	go func() {
+		f.val, f.err = fn()
+		close(f.done)
+	}()
+	return f
+}
+
 // FutureStringSlice represents the asynchronous result of a function that
 // returns a slice of strings.
 type FutureStringSlice interface {

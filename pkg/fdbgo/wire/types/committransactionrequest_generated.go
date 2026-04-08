@@ -26,11 +26,11 @@ var CommitTransactionRequestVTable = wire.VTable{28, 43, 4, 8, 12, 40, 16, 41, 2
 const CommitTransactionRequestFileID uint32 = 93948
 
 var CommitTransactionRequestVTableClosure = []wire.VTable{
-	{12, 24, 12, 4, 16, 20},
 	{8, 16, 12, 4},
 	{6, 20, 4},
 	{10, 17, 4, 16, 12},
 	{6, 8, 4},
+	{12, 24, 12, 4, 16, 20},
 	{24, 36, 12, 16, 20, 4, 32, 33, 34, 24, 35, 28},
 	{8, 12, 4, 8},
 	{10, 13, 12, 4, 8},

@@ -17,8 +17,8 @@ var ErrorVTable = wire.VTable{6, 6, 4}
 const ErrorFileID uint32 = 14065384
 
 var ErrorVTableClosure = []wire.VTable{
-	{6, 8, 4},
 	{6, 6, 4},
+	{6, 8, 4},
 }
 
 var ErrorTemplate = wire.NewMessageTemplate(

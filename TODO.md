@@ -1692,7 +1692,45 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 - [x] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 merged)
 - [x] **HIGH** — Tenant support: thread tenantId through all wire requests, location cache tenant-aware. `Tenant` facade with `Transact/CreateTransaction`. (PR #18 merged)
 - [ ] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. (PR #15 closed — needs fresh implementation)
-- [ ] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen. (PR #16 closed — needs fresh implementation)
+- [x] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen.
+
+### Record layer integration with pure Go client
+
+**Status: 2305/2309 record layer tests pass (0 fail, 4 skip performance-only).**
+
+Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/fdb`. Tuple and subspace vendored at `pkg/fdbgo/fdb/tuple/` and `pkg/fdbgo/fdb/subspace/`.
+
+#### Done
+- [x] **CRITICAL — ConnectPacket canonicalRemotePort** — was sending TCP source port (random ephemeral), causing FDB server assertion crash through socat proxy. C++ pure clients send port=0. Fixed: `CanonicalRemotePort: 0`. Root cause of ALL test hangs.
+- [x] **RYW cache** — `ryw.go`: Set/Clear/ClearRange/Atomic tracking, Get/GetRange interception with merge, thread-safe (sync.Mutex). Fixed 770→0 failures.
+- [x] **RYW atomic ops** — all mirror C++ Atomic.h exactly: doAdd, doAnd(V2), doOr, doXor, doMax, doMin(V2), doByteMax, doByteMin, doAppendIfFits, doCompareAndClear.
+- [x] **API version upgrade** — Min→MinV2, And→AndV2 for API >= 510 (C++ atomicOp).
+- [x] **GetVersionstamp in Transact()** — `commitDone` channel initialized, closed after auto-commit.
+- [x] **Empty value Set** — `make([]byte, len(value))` instead of `append(nil, value...)`.
+- [x] **StreamingMode constants** — fixed all values to match Apple binding.
+- [x] **GetRangeSplitPoints** — SplitRangeRequest/Reply wire types generated, endpoint 12.
+
+#### Remaining work — marathon to all-green
+
+##### A) Record layer integration tests
+- [x] 2305/2309 pass, 0 fail
+- [ ] 4 skipped (performance): VectorIndex 500 vectors, HNSW medium-scale, OnlineIndexer limit=1, million_record. Need connection pipelining or parallel reads to close the latency gap vs CGo.
+
+##### B) Conformance tests
+- [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
+- [ ] Tenant conformance: `gofdbhelper.CreateTenant` via fdbcli instead of CGo API.
+
+##### C) Chaos tests
+- [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.
+- [ ] Chaos tests may timeout with pure Go client (slower per-transaction). Monitor.
+
+##### D) fdbgo unit tests
+- [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
+
+#### Architecture
+- `gofdbhelper` package provides `OpenDatabase`/`CreateTenant` without import cycle.
+- `just test` uses `--local_test_jobs=1` to prevent Docker resource exhaustion.
+- `just fmt`/`just lint` use Bazel-managed gofumpt.
 
 ### Way of working
 

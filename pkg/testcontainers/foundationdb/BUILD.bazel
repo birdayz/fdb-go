@@ -33,10 +33,11 @@ go_test(
     embed = [":foundationdb"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb/gofdbhelper",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//proto",
     ],

@@ -23,17 +23,17 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
         "@org_golang_google_protobuf//proto",
     ],
 )
 
 go_test(
     name = "chaos_test",
-    size = "large",
+    size = "enormous",
     srcs = [
         "chaos_bitmap_test.go",
         "chaos_covering_test.go",
@@ -55,11 +55,11 @@ go_test(
     embed = [":chaos"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/subspace",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
         "@org_golang_google_protobuf//proto",
     ],
 )

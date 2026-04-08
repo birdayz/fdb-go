@@ -50,6 +50,7 @@ REGISTER_GO_TYPE(MutationRef, "MutationRef");
 REGISTER_GO_TYPE(CommitTransactionRef, "CommitTransactionRef");
 REGISTER_GO_TYPE(ReadOptions, "ReadOptions");
 REGISTER_GO_TYPE(StorageMetrics, "StorageMetrics");
+REGISTER_GO_TYPE(SplitRangeReply, "SplitRangeReply");
 REGISTER_GO_TYPE(NetworkAddress, "NetworkAddress");
 REGISTER_GO_TYPE(NetworkAddressList, "NetworkAddressList");
 REGISTER_GO_TYPE(IPAddress, "IPAddress");
@@ -65,6 +66,7 @@ REGISTER_GO_TYPE(ReplyPromise<CommitID>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<Void>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<CachedSerialization<ClientDBInfo>>, "ReplyPromise");
 REGISTER_GO_TYPE(ReplyPromise<StorageMetrics>, "ReplyPromise");
+REGISTER_GO_TYPE(ReplyPromise<SplitRangeReply>, "ReplyPromise");
 
 // ============================================================
 // 2. FieldNames — explicit per-type, indexed by field position
@@ -114,6 +116,8 @@ REGISTER_FIELD_NAMES(SpanContext, "traceID", "spanID", "flags");
 REGISTER_FIELD_NAMES(ReadOptions, "type", "cacheResult", "lockAware");
 REGISTER_FIELD_NAMES(StorageMetrics, "bytes", "bytesWrittenPerKSecond", "iosPerKSecond", "bytesReadPerKSecond", "opsReadPerKSecond");
 REGISTER_FIELD_NAMES(WaitMetricsRequest, "keys", "min", "max", "reply", "tenantInfo", "minVersion");
+REGISTER_FIELD_NAMES(SplitRangeRequest, "keys", "chunkSize", "reply", "tenantInfo");
+REGISTER_FIELD_NAMES(SplitRangeReply, "splitPoints");
 REGISTER_FIELD_NAMES(ClientDBInfo, "grvProxies", "commitProxies", "id", "forward", "history", "tenantMode", "encryptKeyProxy", "clusterId", "clusterType", "metaclusterName");
 REGISTER_FIELD_NAMES(GrvProxyInterface, "processId", "provisional", "getConsistentReadVersion");
 REGISTER_FIELD_NAMES(CommitProxyInterface, "processId", "provisional", "commit");

@@ -117,6 +117,94 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
+const EndpointGetRangeSplitPoints = 12 // StorageServerInterface::getRangeSplitPoints
+
+// GetRangeSplitPoints returns suggested split points for the given key range.
+// Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
+func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+		loc, err := tx.db.locCache.locate(tx.db, ctx, begin, tx.tenantId)
+		if err != nil {
+			return nil, fmt.Errorf("locate for split points: %w", err)
+		}
+		if len(loc.Servers) == 0 {
+			return nil, fmt.Errorf("no storage servers for key")
+		}
+
+		points, err := tx.sendSplitRange(ctx, begin, end, chunkSize, loc.Servers)
+		if err == nil {
+			return points, nil
+		}
+		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+			tx.db.locCache.invalidate(begin, tx.tenantId)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		// operation_failed (4) = endpoint not supported (e.g., old FDB version).
+		// Return empty split points — the data fits in one shard.
+		if isOperationFailed(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
+	for _, server := range servers {
+		conn, err := tx.db.getOrDial(ctx, server.Address)
+		if err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		req := types.SplitRangeRequest{
+			Keys:       types.KeyRangeRef{Begin: begin, End: end},
+			ChunkSize:  chunkSize,
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+		}
+		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
+		if err := conn.SendFrame(srToken, req.MarshalFDB()); err != nil {
+			cancelReply()
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+		select {
+		case resp := <-replyCh:
+			cancel()
+			if resp.Err != nil {
+				tx.db.handleConnError(server.Address)
+				continue
+			}
+			return parseSplitRangeReply(resp.Body)
+		case <-rctx.Done():
+			cancel()
+			cancelReply()
+			continue
+		}
+	}
+	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func parseSplitRangeReply(data []byte) ([][]byte, error) {
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		return nil, fmt.Errorf("SplitRange: %w", err)
+	}
+	var reply types.SplitRangeReply
+	if err := reply.UnmarshalFDB(data); err != nil {
+		return nil, fmt.Errorf("unmarshal SplitRangeReply: %w", err)
+	}
+	// SplitPoints is a serialized VectorRef<KeyRef> (VecSerStrategy::String).
+	return types.ParseKeyRefStringVector(reply.SplitPoints), nil
+}
+
+func isOperationFailed(err error) bool {
+	var fdbErr *wire.FDBError
+	return errors.As(err, &fdbErr) && fdbErr.Code == 4
+}
+
 // parseWaitMetricsReply parses the ErrorOr-wrapped StorageMetrics reply.
 func parseWaitMetricsReply(data []byte) (int64, error) {
 	if _, err := wire.ReadErrorOr(data); err != nil {

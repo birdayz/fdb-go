@@ -1360,6 +1360,8 @@ int main(int argc, char** argv) {
     extractType<ReadOptions>(outDir, "ReadOptions");
     extractType<StorageMetrics>(outDir, "StorageMetrics");
     extractType<WaitMetricsRequest>(outDir, "WaitMetricsRequest");
+    extractType<SplitRangeRequest>(outDir, "SplitRangeRequest");
+    extractType<SplitRangeReply>(outDir, "SplitRangeReply");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
 
