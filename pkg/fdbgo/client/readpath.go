@@ -170,11 +170,13 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 // to getKeyRangeLocations so the proxy returns shards in the right order.
 func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	const getRangeShardLimit = 100 // C++ CLIENT_KNOBS->GET_RANGE_SHARD_LIMIT
+	const maxRelocateRetries = 5   // Bound retry loop; C++ relies on transaction timeout (default 5s)
 
 	var allKVs []KeyValue
 	remaining := limit
 	curBegin := begin
 	curEnd := end
+	relocateRetries := 0
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Get all shard locations for current range. C++ getKeyRangeLocations
@@ -212,6 +214,10 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 				kvs, more, err := tx.sendGetRange(ctx, shardBegin, shardEnd, remaining, reverse, loc.Servers)
 				if err != nil {
 					if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+						relocateRetries++
+						if relocateRetries > maxRelocateRetries {
+							return nil, false, fmt.Errorf("getRange: exceeded %d relocate retries: %w", maxRelocateRetries, err)
+						}
 						// C++ invalidates the entire remaining range, not just one key.
 						// This handles shard splits that affect multiple adjacent entries.
 						if reverse {
