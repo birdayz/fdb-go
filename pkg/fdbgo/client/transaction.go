@@ -686,7 +686,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 
 // AddReadConflictKey adds a read conflict on a single key.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	tx.addReadConflict(key, keyAfterBytes(key))
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
@@ -695,13 +695,13 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	tx.addWriteConflict(begin, end)
 	return nil
 }
 
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	tx.addWriteConflict(key, keyAfterBytes(key))
 }
 
 // reset clears transaction state for retry, preserving retryCount, backoff,
