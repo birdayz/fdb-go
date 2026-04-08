@@ -3,6 +3,8 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -106,7 +108,7 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 	}
 
 	// Create tenant via fdbcli and open with pure Go client
-	tenant, err := createGoTenant(db, tenantName)
+	tenant, err := createGoTenant(ctx, container, db, tenantName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tenant: %w", err)
 	}
@@ -117,14 +119,14 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 	// Create metadata
 	metaData, err := createOrderMetaData()
 	if err != nil {
-		_ = db.DeleteTenant(gofdb.Key(tenantName))
+		_, _, _ = container.Exec(ctx, []string{"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", tenantName)})
 		return nil, fmt.Errorf("failed to create metadata: %w", err)
 	}
 
 	// Get cluster file
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		_ = db.DeleteTenant(gofdb.Key(tenantName))
+		_, _, _ = container.Exec(ctx, []string{"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", tenantName)})
 		return nil, fmt.Errorf("failed to get cluster file: %w", err)
 	}
 
@@ -144,8 +146,16 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 
 // Cleanup deletes the tenant (not the container)
 func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
-	if env.DB != (gofdb.Database{}) && env.TenantName != "" {
-		return env.DB.DeleteTenant(gofdb.Key(env.TenantName))
+	if env.Container != nil && env.TenantName != "" {
+		exitCode, _, err := env.Container.Exec(ctx, []string{
+			"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", env.TenantName),
+		})
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("fdbcli deletetenant exit %d", exitCode)
+		}
 	}
 	return nil
 }
@@ -159,11 +169,44 @@ func openGoDatabase(ctx context.Context, container *foundationdbtc.Container) (g
 	return gofdb.OpenDatabase(path)
 }
 
-func createGoTenant(db gofdb.Database, name string) (gofdb.Tenant, error) {
-	if err := db.CreateTenant(gofdb.Key(name)); err != nil {
-		return gofdb.Tenant{}, err
+func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
+	// Create tenant via fdbcli — the special key space (\xff\xff) requires
+	// client-side routing that our pure Go client doesn't yet support.
+	exitCode, output, err := container.Exec(ctx, []string{
+		"/usr/bin/fdbcli", "--exec", fmt.Sprintf("createtenant %s", name),
+	})
+	if err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("fdbcli createtenant: %w", err)
 	}
-	return db.OpenTenant(gofdb.Key(name))
+	outputBytes, _ := io.ReadAll(output)
+	if exitCode != 0 {
+		return gofdb.Tenant{}, fmt.Errorf("fdbcli createtenant exit %d: %s", exitCode, outputBytes)
+	}
+
+	// Get tenant ID via fdbcli gettenant (returns JSON with "id" field).
+	exitCode, output, err = container.Exec(ctx, []string{
+		"/usr/bin/fdbcli", "--exec", fmt.Sprintf("gettenant %s", name),
+	})
+	if err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("fdbcli gettenant: %w", err)
+	}
+	outputBytes, _ = io.ReadAll(output)
+	if exitCode != 0 {
+		return gofdb.Tenant{}, fmt.Errorf("fdbcli gettenant exit %d: %s", exitCode, outputBytes)
+	}
+
+	// Parse "id" from fdbcli output. Docker exec prepends binary stream headers,
+	// so we search for "id:" anywhere in the output.
+	var tenantId int64
+	outStr := string(outputBytes)
+	if idx := strings.Index(outStr, "id:"); idx >= 0 {
+		fmt.Sscanf(outStr[idx:], "id: %d", &tenantId)
+	}
+	if tenantId == 0 {
+		return gofdb.Tenant{}, fmt.Errorf("could not parse tenant id from: %s", outputBytes)
+	}
+
+	return db.OpenTenantById(tenantId), nil
 }
 
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema

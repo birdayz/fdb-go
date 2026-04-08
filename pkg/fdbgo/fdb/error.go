@@ -18,7 +18,12 @@ func (e Error) Error() string {
 
 // errNotSupported is returned by stubs for operations not yet implemented
 // in the pure Go client.
-var errNotSupported = Error{Code: 2051}
+var (
+	errNotSupported   = Error{Code: 2051}
+	errTenantNotFound = Error{Code: 2131}
+	errTenantExists   = Error{Code: 2132}
+	errTenantInvalid  = Error{Code: 2134}
+)
 
 // Common FDB error code descriptions.
 var errorDescriptions = map[int]string{
@@ -38,6 +43,8 @@ var errorDescriptions = map[int]string{
 	2015: "used_during_commit",
 	2101: "transaction_too_large",
 	2131: "tenant_not_found",
+	2132: "tenant_already_exists",
+	2134: "invalid_tenant_name",
 	2200: "api_version_unset",
 	2201: "api_version_not_supported",
 }
