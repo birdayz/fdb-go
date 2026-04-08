@@ -1714,7 +1714,9 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 ##### A) Record layer integration tests
 - [x] 2305/2309 pass, 0 fail
-- [ ] 4 skipped (performance): VectorIndex 500 vectors, HNSW medium-scale, OnlineIndexer limit=1, million_record. Need connection pipelining or parallel reads to close the latency gap vs CGo.
+- [x] OnlineIndexer limit=1 — PASSES (6s). Was never broken, only timed out when run alongside hanging 500-vector test.
+- [ ] VectorIndex "medium-scale search with 500 vectors" — FDB container crashes/OOM during test. HNSW graph with 500 vectors overwhelms single-node testcontainer memory. Needs investigation: is this our client or a test infra issue? Try with more container memory.
+- [ ] million_record — tagged `manual`, never runs in CI.
 
 ##### B) Conformance tests
 - [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
