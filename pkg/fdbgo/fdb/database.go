@@ -66,14 +66,16 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	// 30s deadline for initial bootstrap — coordinator may return
-	// failed_to_progress (1216) during cluster recovery.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	db, err := client.OpenDatabase(ctx, clusterFile)
+	// Use a temporary timeout for bootstrap only. The database's long-lived
+	// context must NOT be the bootstrap context (which we cancel after connect).
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer bootstrapCancel()
+	db, err := client.OpenDatabase(bootstrapCtx, clusterFile)
 	if err != nil {
 		return Database{}, err
 	}
+	// Long-lived context for the database — not the bootstrap timeout.
+	ctx := context.Background()
 	return Database{d: &internalDB{inner: db, ctx: ctx}}, nil
 }
 

@@ -71,6 +71,14 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		writeCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
 	}
 
+	// C++ CommitTransactionRequest flags (CommitProxyInterface.h):
+	//   FLAG_IS_LOCK_AWARE = 0x1 — allows system key writes through resolver
+	//   FLAG_FIRST_IN_BATCH = 0x2
+	//   FLAG_BYPASS_STORAGE_QUOTA = 0x4
+	var flags uint32
+	if tx.lockAware {
+		flags |= 0x1 // FLAG_IS_LOCK_AWARE
+	}
 	req := types.CommitTransactionRequest{
 		Transaction: types.CommitTransactionRef{
 			ReadConflictRanges:  readCRs,
@@ -79,6 +87,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 			ReadSnapshot:        tx.readVersion,
 			Lock_aware:          tx.lockAware,
 		},
+		Flags:      flags,
 		Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 	}
