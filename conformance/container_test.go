@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -88,6 +89,7 @@ func (env *TestEnvironment) Cleanup(ctx context.Context) error {
 // and provides isolation via FDB tenants
 type TenantEnvironment struct {
 	Container   *foundationdbtc.Container
+	DB          gofdb.Database
 	RecordDB    *recordlayer.FDBDatabase
 	MetaData    *recordlayer.RecordMetaData
 	Keyspace    subspace.Subspace
@@ -116,14 +118,14 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 	// Create metadata
 	metaData, err := createOrderMetaData()
 	if err != nil {
-		_ = container.DeleteTenant(ctx, tenantName)
+		_ = gofdbhelper.DeleteTenant(db, tenantName)
 		return nil, fmt.Errorf("failed to create metadata: %w", err)
 	}
 
 	// Get cluster file
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		_ = container.DeleteTenant(ctx, tenantName)
+		_ = gofdbhelper.DeleteTenant(db, tenantName)
 		return nil, fmt.Errorf("failed to get cluster file: %w", err)
 	}
 
@@ -132,6 +134,7 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 
 	return &TenantEnvironment{
 		Container:   container,
+		DB:          db,
 		RecordDB:    recordDB,
 		MetaData:    metaData,
 		Keyspace:    keyspace,
@@ -142,8 +145,8 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 
 // Cleanup deletes the tenant (not the container)
 func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
-	if env.Container != nil && env.TenantName != "" {
-		return env.Container.DeleteTenant(ctx, env.TenantName)
+	if env.DB != (gofdb.Database{}) && env.TenantName != "" {
+		return gofdbhelper.DeleteTenant(env.DB, env.TenantName)
 	}
 	return nil
 }

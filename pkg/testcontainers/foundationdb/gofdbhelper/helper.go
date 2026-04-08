@@ -82,3 +82,8 @@ func CreateTenant(ctx context.Context, c *tc.Container, db gofdb.Database, name 
 	}
 	return tenant, nil
 }
+
+// DeleteTenant deletes a tenant via the database client.
+func DeleteTenant(db gofdb.Database, name string) error {
+	return db.DeleteTenant(gofdb.Key(name))
+}

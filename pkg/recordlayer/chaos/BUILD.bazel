@@ -34,7 +34,6 @@ go_library(
 go_test(
     name = "chaos_test",
     size = "enormous",
-    args = ["-test.parallel=1"],  # Pure Go client has concurrent tx bug; chaos tests are for fault injection, not concurrency
     srcs = [
         "chaos_bitmap_test.go",
         "chaos_covering_test.go",
@@ -53,6 +52,7 @@ go_test(
         "race_test.go",
         "random_test.go",
     ],
+    args = ["-test.parallel=1"],  # Pure Go client has concurrent tx bug; chaos tests are for fault injection, not concurrency
     embed = [":chaos"],
     deps = [
         "//gen",

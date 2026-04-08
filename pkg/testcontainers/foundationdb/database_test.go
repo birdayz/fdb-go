@@ -1,49 +1,40 @@
-package foundationdb
+package foundationdb_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb/gofdbhelper"
 )
 
 func TestFoundationDBDatabaseConnection(t *testing.T) {
 	ctx := context.Background()
 
-	container, err := Run(ctx, "",
-		WithDatabase("database_connection_test"),
-		WithAPIVersion(720),
-	)
+	container, err := foundationdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			t.Logf("Failed to terminate container: %v", err)
-		}
-	}()
+	defer container.Terminate(ctx)
 
-	// Initialize database
 	err = container.InitializeDatabase(ctx)
 	if err != nil {
 		t.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	// Get database connection
-	db, err := container.GetFDBDatabase(ctx)
+	gofdb.MustAPIVersion(730)
+	db, err := gofdbhelper.OpenDatabase(ctx, container)
 	if err != nil {
-		t.Fatalf("Failed to get FDB database: %v", err)
+		t.Fatalf("Failed to open database: %v", err)
 	}
+	defer db.Close()
 
-	// Try a simple transaction
-	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-		// Just do a simple get operation
-		tr.Get(fdb.Key("test_key")).MustGet()
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Get(gofdb.Key("test_key")).MustGet()
 		return "success", nil
 	})
 	if err != nil {
 		t.Fatalf("Failed to execute transaction: %v", err)
 	}
-
-	t.Log("Successfully connected to FoundationDB and executed a transaction")
 }

@@ -15,10 +15,8 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/socat"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -40,23 +38,18 @@ func fdbVersion() string {
 	return "7.3.75" // fallback for non-Bazel runs
 }
 
-var (
-	apiVersionOnce  sync.Once
-	apiVersionMutex sync.RWMutex
-	apiVersionSet   int
-)
-
-// Container represents a FoundationDB container instance with socat proxy
+// Container represents a FoundationDB container instance with socat proxy.
+// Use ClusterFile() to get the connection string, then open your own client:
+//
+//	clusterFile, _ := container.ClusterFile(ctx)
+//	// Pure Go: gofdb.OpenDatabase(writeToFile(clusterFile))
+//	// Apple CGo: applefdb.OpenDatabase(writeToFile(clusterFile))
 type Container struct {
 	testcontainers.Container
-	socatContainer  testcontainers.Container
-	network         *testcontainers.DockerNetwork
-	config          Config
-	tempClusterFile string
-	externalPort    int
-	cachedDB        fdb.Database
-	dbInitialized   bool
-	dbMutex         sync.Mutex
+	socatContainer testcontainers.Container
+	network        *testcontainers.DockerNetwork
+	config         Config
+	externalPort   int
 }
 
 // Config holds the configuration for the FoundationDB container
@@ -362,140 +355,9 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 	return nil
 }
 
-// GetFDBDatabase returns a ready-to-use FDB database connection for record layer
-// This method caches the database connection - calling it multiple times returns the same connection
-func (c *Container) GetFDBDatabase(ctx context.Context) (fdb.Database, error) {
-	c.dbMutex.Lock()
-	defer c.dbMutex.Unlock()
-
-	// Return cached database if already initialized
-	if c.dbInitialized {
-		return c.cachedDB, nil
-	}
-
-	// Get cluster file content from container
-	clusterFile, err := c.ClusterFile(ctx)
-	if err != nil {
-		var empty fdb.Database
-		return empty, fmt.Errorf("failed to get cluster file: %w", err)
-	}
-
-	// Create temporary cluster file
-	tmpFile, err := os.CreateTemp("", "fdb_cluster_*.txt")
-	if err != nil {
-		var empty fdb.Database
-		return empty, fmt.Errorf("failed to create temp cluster file: %w", err)
-	}
-
-	if _, err := io.WriteString(tmpFile, clusterFile); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpFile.Name())
-		var empty fdb.Database
-		return empty, fmt.Errorf("failed to write cluster file: %w", err)
-	}
-	_ = tmpFile.Close()
-
-	// Initialize FDB API version (only once per process)
-	apiVersionOnce.Do(func() {
-		fdb.MustAPIVersion(c.APIVersion())
-		apiVersionMutex.Lock()
-		apiVersionSet = c.APIVersion()
-		apiVersionMutex.Unlock()
-	})
-
-	// Verify API version matches (in case different containers request different versions)
-	apiVersionMutex.RLock()
-	currentVersion := apiVersionSet
-	apiVersionMutex.RUnlock()
-
-	if currentVersion != c.APIVersion() {
-		_ = os.Remove(tmpFile.Name())
-		var empty fdb.Database
-		return empty, fmt.Errorf("FDB API version mismatch: already set to %d, requested %d (can only set once per process)", currentVersion, c.APIVersion())
-	}
-
-	db, err := fdb.OpenDatabase(tmpFile.Name())
-	if err != nil {
-		_ = os.Remove(tmpFile.Name())
-		var empty fdb.Database
-		return empty, fmt.Errorf("failed to open FDB database: %w", err)
-	}
-
-	// Store the temp file path for cleanup
-	c.tempClusterFile = tmpFile.Name()
-
-	// Cache the database connection
-	c.cachedDB = db
-	c.dbInitialized = true
-
-	return db, nil
-}
-
-// CreateTenant creates an FDB tenant for test isolation
-// The tenant provides a completely isolated keyspace within the same database
-// Returns a Tenant handle that can be used with FDBDatabase
-func (c *Container) CreateTenant(ctx context.Context, name string) (fdb.Tenant, error) {
-	// Ensure database is initialized
-	c.dbMutex.Lock()
-	if !c.dbInitialized {
-		c.dbMutex.Unlock()
-		return fdb.Tenant{}, fmt.Errorf("database not initialized, call GetFDBDatabase first")
-	}
-	db := c.cachedDB
-	c.dbMutex.Unlock()
-
-	// Create tenant using FDB API
-	tenantKey := fdb.Key(name)
-	err := db.CreateTenant(tenantKey)
-	if err != nil {
-		return fdb.Tenant{}, fmt.Errorf("failed to create tenant %q: %w", name, err)
-	}
-
-	// Open and return tenant handle
-	tenant, err := db.OpenTenant(tenantKey)
-	if err != nil {
-		// Try to clean up the tenant we just created
-		_ = db.DeleteTenant(tenantKey)
-		return fdb.Tenant{}, fmt.Errorf("failed to open tenant %q: %w", name, err)
-	}
-
-	return tenant, nil
-}
-
-// DeleteTenant deletes an FDB tenant and all its data
-// This provides atomic cleanup of all tenant data
-func (c *Container) DeleteTenant(ctx context.Context, name string) error {
-	c.dbMutex.Lock()
-	if !c.dbInitialized {
-		c.dbMutex.Unlock()
-		return nil // Nothing to clean up
-	}
-	db := c.cachedDB
-	c.dbMutex.Unlock()
-
-	tenantKey := fdb.Key(name)
-	err := db.DeleteTenant(tenantKey)
-	if err != nil {
-		return fmt.Errorf("failed to delete tenant %q: %w", name, err)
-	}
-
-	return nil
-}
-
-// Terminate terminates both containers, cleans up network and temporary files
+// Terminate terminates both containers and cleans up the network.
 func (c *Container) Terminate(ctx context.Context) error {
 	var errs []error
-
-	// Clean up temporary files first (protected by mutex)
-	c.dbMutex.Lock()
-	if c.tempClusterFile != "" {
-		if err := os.Remove(c.tempClusterFile); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, fmt.Errorf("remove cluster file: %w", err))
-		}
-		c.tempClusterFile = ""
-	}
-	c.dbInitialized = false
-	c.dbMutex.Unlock()
 
 	// Terminate FoundationDB container
 	if err := c.Container.Terminate(ctx); err != nil {

@@ -14,7 +14,6 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb",
     visibility = ["//visibility:public"],
     deps = [
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//network",
         "@com_github_testcontainers_testcontainers_go//wait",
@@ -33,11 +32,11 @@ go_test(
     embed = [":foundationdb"],
     deps = [
         "//gen",
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb/gofdbhelper",
-        "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//proto",
     ],

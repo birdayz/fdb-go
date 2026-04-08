@@ -29,9 +29,7 @@ var _ = BeforeSuite(func() {
 	err = sharedContainer.InitializeDatabase(suiteCtx)
 	Expect(err).NotTo(HaveOccurred())
 
-	// Ensure database is ready
-	_, err = sharedContainer.GetFDBDatabase(suiteCtx)
-	Expect(err).NotTo(HaveOccurred())
+	// Database is ready after InitializeDatabase succeeds.
 
 	GinkgoWriter.Println("✅ Shared FDB container ready")
 })
