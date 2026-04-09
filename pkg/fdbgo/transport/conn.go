@@ -11,11 +11,17 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
 )
+
+// replyChanPool pools chan Response to reduce allocations.
+// Each PrepareReply/Send allocates one; readLoop returns it after dispatch.
+var replyChanPool = sync.Pool{New: func() any { return make(chan Response, 1) }}
+
+// errChanPool pools chan error for SendFrame/Flush synchronization.
+var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 
 // Conn is a multiplexed FDB connection. Multiple concurrent requests
 // share one TCP connection, matched by endpoint tokens.
@@ -26,12 +32,12 @@ import (
 type Conn struct {
 	conn     net.Conn
 	tls      bool
-	mu       sync.Mutex // protects writes to wbuf
-	wbuf     *bufio.Writer
-	hasDirty atomic.Bool // true when wbuf has unflushed data
+	wbuf     *bufio.Writer // owned exclusively by writeLoop
+	hasDirty atomic.Bool   // true when wbuf has unflushed data
+	writeCh  chan writeReq // channel-based write loop for coalescing
 	ctx      context.Context
 	cancel   context.CancelFunc
-	loopWG   sync.WaitGroup // tracks readLoop goroutine
+	loopWG   sync.WaitGroup // tracks readLoop + writeLoop goroutines
 
 	pending sync.Map       // UID → chan Response
 	peerPkt *ConnectPacket // peer's connect packet
@@ -39,6 +45,13 @@ type Conn struct {
 	// Debug tracing (set before first use).
 	debugFrames bool
 	debugWriter io.Writer
+}
+
+// writeReq is a frame queued for the write loop.
+type writeReq struct {
+	token UID
+	body  []byte
+	errCh chan<- error // nil = fire-and-forget (deferred writes)
 }
 
 // Response is a received message from the peer.
@@ -80,11 +93,12 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
-		conn:   netConn,
-		tls:    tls,
-		wbuf:   bufio.NewWriterSize(netConn, 64*1024),
-		ctx:    connCtx,
-		cancel: cancel,
+		conn:    netConn,
+		tls:     tls,
+		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
+		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
+		ctx:     connCtx,
+		cancel:  cancel,
 	}
 
 	// Exchange ConnectPackets.
@@ -117,9 +131,10 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 		c.debugWriter = os.Stderr
 	}
 
-	// Start read loop.
-	c.loopWG.Add(1)
+	// Start read and write loops.
+	c.loopWG.Add(2)
 	go c.readLoop()
+	go c.writeLoop()
 
 	return c, nil
 }
@@ -129,15 +144,12 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 // The replyToken is a fresh token for routing the response back.
 func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan Response, err error) {
 	replyToken = NewUID()
-	ch := make(chan Response, 1)
+	ch := getReplyChannel()
 	c.pending.Store(replyToken, ch)
 
-	c.mu.Lock()
-	err = WriteFrame(c.conn, destToken, body, c.tls)
-	c.mu.Unlock()
-
-	if err != nil {
+	if err = c.SendFrame(destToken, body); err != nil {
 		c.pending.Delete(replyToken)
+		putReplyChannel(ch)
 		return UID{}, nil, fmt.Errorf("write frame: %w", err)
 	}
 
@@ -154,57 +166,146 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // so it's safe to call cancel() even after a successful response.
 func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
 	token := NewUID()
-	ch := make(chan Response, 1)
+	ch := getReplyChannel()
 	c.pending.Store(token, ch)
-	cancel := func() { c.pending.Delete(token) }
+	cancel := func() {
+		if _, loaded := c.pending.LoadAndDelete(token); loaded {
+			putReplyChannel(ch)
+		}
+	}
 	return token, ch, cancel
 }
 
-// SendFrame writes a raw frame to the connection's write buffer and flushes.
+// getReplyChannel gets a reply channel from the pool.
+func getReplyChannel() chan Response {
+	return replyChanPool.Get().(chan Response)
+}
+
+// putReplyChannel returns a reply channel to the pool after draining it.
+func putReplyChannel(ch chan Response) {
+	// Drain any buffered value (shouldn't normally happen).
+	select {
+	case <-ch:
+	default:
+	}
+	replyChanPool.Put(ch)
+}
+
+// SendFrame writes a raw frame and flushes. Blocks until the frame is written
+// to the TCP socket (or returns error). For single-frame RPCs where we
+// immediately wait for the response.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
-	c.mu.Lock()
 	if c.debugFrames {
 		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
-	if err := WriteFrame(c.wbuf, destToken, body, c.tls); err != nil {
-		c.mu.Unlock()
-		return err
+	errCh := errChanPool.Get().(chan error)
+	select {
+	case c.writeCh <- writeReq{token: destToken, body: body, errCh: errCh}:
+	case <-c.ctx.Done():
+		errChanPool.Put(errCh)
+		return fmt.Errorf("connection closed")
 	}
-	err := c.wbuf.Flush()
-	c.hasDirty.Store(false)
-	c.mu.Unlock()
+	err := <-errCh
+	errChanPool.Put(errCh)
 	return err
 }
 
-// SendFrameDeferred writes a raw frame to the write buffer WITHOUT flushing.
-// The caller MUST call Flush() when done sending a batch.
-// Used for pipelining: send N frames, then flush once.
+// SendFrameDeferred writes a raw frame WITHOUT waiting for flush.
+// The write loop will flush it with the next batch. Used for pipelining:
+// send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	LogSend(destToken, body)
-	err := WriteFrame(c.wbuf, destToken, body, c.tls)
-	if err == nil {
-		c.hasDirty.Store(true)
+	c.hasDirty.Store(true) // mark dirty so Flush() knows to synchronize
+	select {
+	case c.writeCh <- writeReq{token: destToken, body: body}:
+		return nil
+	case <-c.ctx.Done():
+		return fmt.Errorf("connection closed")
 	}
-	return err
 }
 
-// Flush flushes the write buffer to the TCP connection.
-// Fast path: if no deferred frames are pending, skip the mutex entirely.
-// This is critical for batch-N patterns where N PendingGet.Resolve() calls
-// each call Flush(), but only the first has data to send.
+// Flush ensures all pending frames are flushed to the TCP socket.
+// For the write-loop architecture, this sends a synchronous flush marker
+// through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
 	if !c.hasDirty.Load() {
 		return nil
 	}
-	c.mu.Lock()
-	err := c.wbuf.Flush()
+	errCh := errChanPool.Get().(chan error)
+	select {
+	case c.writeCh <- writeReq{errCh: errCh}: // empty token+body = flush-only request
+	case <-c.ctx.Done():
+		errChanPool.Put(errCh)
+		return fmt.Errorf("connection closed")
+	}
+	err := <-errCh
 	c.hasDirty.Store(false)
-	c.mu.Unlock()
+	errChanPool.Put(errCh)
 	return err
+}
+
+// writeLoop is the dedicated write goroutine. It reads frames from writeCh,
+// writes them to the buffered writer, and flushes. Natural batching: after
+// processing the first frame, it drains all other queued frames before
+// flushing — so N concurrent SendFrame/SendFrameDeferred calls result in
+// one flush (one write() syscall).
+//
+// This matches C++ FlowTransport's connectionWriter actor which yields to
+// let senders enqueue, then flushes everything at once.
+func (c *Conn) writeLoop() {
+	defer c.loopWG.Done()
+
+	// Collect errCh channels that need notification after flush.
+	var errChans []chan<- error
+
+	for {
+		// Wait for first frame.
+		var req writeReq
+		select {
+		case req = <-c.writeCh:
+		case <-c.ctx.Done():
+			return
+		}
+
+		// Process first frame.
+		var writeErr error
+		if req.token != (UID{}) || req.body != nil {
+			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.tls)
+		}
+		if req.errCh != nil {
+			errChans = append(errChans, req.errCh)
+		}
+
+		// Drain all queued frames without blocking (natural coalescing).
+		draining := true
+		for draining && writeErr == nil {
+			select {
+			case req = <-c.writeCh:
+				if req.token != (UID{}) || req.body != nil {
+					writeErr = WriteFrame(c.wbuf, req.token, req.body, c.tls)
+				}
+				if req.errCh != nil {
+					errChans = append(errChans, req.errCh)
+				}
+			default:
+				draining = false
+			}
+		}
+
+		// Flush all accumulated frames in one syscall.
+		if writeErr == nil {
+			writeErr = c.wbuf.Flush()
+		}
+		c.hasDirty.Store(false)
+
+		// Notify all waiting senders.
+		for _, ch := range errChans {
+			ch <- writeErr
+		}
+		errChans = errChans[:0]
+	}
 }
 
 // SendAndWait sends a request and blocks until the response arrives.
@@ -308,6 +409,12 @@ func (c *Conn) readLoop() {
 		if val, ok := c.pending.LoadAndDelete(token); ok {
 			ch := val.(chan Response)
 			ch <- Response{Body: body}
+			// NOTE: We do NOT return ch to pool here because the consumer
+			// goroutine still holds a <-chan reference and will read from it.
+			// The channel is effectively transferred to the consumer; it
+			// becomes eligible for GC after the consumer reads and discards.
+			// To pool: consumer must call putReplyChannel after reading.
+			// For now, only pool on cancel (PrepareReply cancel func).
 		}
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
@@ -343,11 +450,12 @@ func (c *Conn) handlePing(body []byte) {
 
 	replyBody := buildVoidReply()
 
-	c.mu.Lock()
-	c.conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-	_ = WriteFrame(c.conn, replyToken, replyBody, c.tls)
-	c.conn.SetWriteDeadline(time.Time{}) // clear
-	c.mu.Unlock()
+	// Send ping reply through the write loop. Fire-and-forget (no errCh).
+	select {
+	case c.writeCh <- writeReq{token: replyToken, body: replyBody}:
+	default:
+		// Write channel full — drop ping reply. Server will retry.
+	}
 }
 
 // extractPingReplyToken extracts the reply UID from a PingRequest FlatBuffers body.
@@ -404,17 +512,37 @@ func buildVoidReply() []byte {
 	return (&types.VoidReply{}).MarshalFDB()
 }
 
-// NewUID generates a random 128-bit UID for endpoint tokens.
-func NewUID() UID {
-	var buf [16]byte
+// fastRNG is a per-goroutine fast PRNG for UID generation.
+// Uses SplitMix64 (same as java.util.SplittableRandom). Seeded from crypto/rand.
+// Reply tokens only need uniqueness within a connection, not crypto security.
+var fastRNGState atomic.Uint64
+
+func init() {
+	var buf [8]byte
 	rand.Read(buf[:])
+	fastRNGState.Store(binary.LittleEndian.Uint64(buf[:]))
+}
+
+// splitmix64 is a fast 64-bit PRNG. Period: 2^64.
+func splitmix64() uint64 {
+	// Atomic add gives each caller a unique state progression.
+	s := fastRNGState.Add(0x9e3779b97f4a7c15)
+	s = (s ^ (s >> 30)) * 0xbf58476d1ce4e5b9
+	s = (s ^ (s >> 27)) * 0x94d049bb133111eb
+	return s ^ (s >> 31)
+}
+
+// NewUID generates a random 128-bit UID for endpoint tokens.
+// Uses a fast non-crypto PRNG — UIDs are for reply routing, not security.
+func NewUID() UID {
 	return UID{
-		First:  binary.LittleEndian.Uint64(buf[0:8]),
-		Second: binary.LittleEndian.Uint64(buf[8:16]),
+		First:  splitmix64(),
+		Second: splitmix64(),
 	}
 }
 
 func newConnectionID() uint64 {
+	// Connection IDs use crypto/rand for true uniqueness across processes.
 	var buf [8]byte
 	rand.Read(buf[:])
 	return binary.LittleEndian.Uint64(buf[:])
