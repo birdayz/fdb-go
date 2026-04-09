@@ -69,20 +69,16 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetKeyReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		return parseGetKeyReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -145,20 +141,16 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetValueReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		return parseGetValueReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -319,20 +311,16 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetKeyValuesReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		return parseGetKeyValuesReply(resp.Body)
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }

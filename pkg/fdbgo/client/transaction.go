@@ -351,8 +351,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, rcancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: rctx, cancel: rcancel}, nil
+		timer := getTimer(DefaultRPCTimeout)
+		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -363,7 +363,7 @@ type PendingGet struct {
 	cancelReply func()
 	conn        *transport.Conn
 	ctx         context.Context
-	cancel      context.CancelFunc
+	timer       *time.Timer
 	flushed     bool
 }
 
@@ -374,13 +374,16 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		p.flushed = true
 		p.conn.Flush()
 	}
-	defer p.cancel()
+	defer putTimer(p.timer)
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
 			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 		}
 		return parseGetValueReply(resp.Body)
+	case <-p.timer.C:
+		p.cancelReply()
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	case <-p.ctx.Done():
 		p.cancelReply()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}

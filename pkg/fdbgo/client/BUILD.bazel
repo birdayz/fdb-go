@@ -12,6 +12,7 @@ go_library(
         "locality.go",
         "metrics.go",
         "readpath.go",
+        "rpc.go",
         "ryw.go",
         "topology.go",
         "transaction.go",

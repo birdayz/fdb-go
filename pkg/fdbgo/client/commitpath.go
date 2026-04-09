@@ -38,21 +38,17 @@ func (tx *Transaction) commit(ctx context.Context) error {
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-replyCh:
-		if resp.Err != nil {
-			tx.db.handleConnError(proxy.Address)
-			tx.db.kickTopology()
-			return &wire.FDBError{Code: ErrCommitUnknownResult}
-		}
-		return tx.parseCommitReply(resp.Body)
-	case <-rctx.Done():
+	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	if err != nil {
 		cancelReply()
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
+	if resp.Err != nil {
+		tx.db.handleConnError(proxy.Address)
+		tx.db.kickTopology()
+		return &wire.FDBError{Code: ErrCommitUnknownResult}
+	}
+	return tx.parseCommitReply(resp.Body)
 }
 
 // metadataVersionKey is \xff/metadataVersion — the only key exempt from tenant prefix.

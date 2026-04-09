@@ -330,18 +330,8 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			}
 
-			rpcCtx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-			select {
-			case resp := <-replyCh:
-				rpcCancel()
-				if resp.Err != nil {
-					db.handleConnError(proxy.Address)
-					continue
-				}
-				db.failMon.markAlive(proxy.Address)
-				return parseGetReadVersionReply(resp.Body)
-			case <-rpcCtx.Done():
-				rpcCancel()
+			resp, rpcErr := waitReply(replyCh, ctx, DefaultRPCTimeout)
+			if rpcErr != nil {
 				cancelReply()
 				if ctx.Err() != nil {
 					return 0, false, false, ctx.Err()
@@ -349,6 +339,12 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				db.failMon.markFailed(proxy.Address)
 				continue
 			}
+			if resp.Err != nil {
+				db.handleConnError(proxy.Address)
+				continue
+			}
+			db.failMon.markAlive(proxy.Address)
+			return parseGetReadVersionReply(resp.Body)
 		}
 
 		// All proxies exhausted — backoff with recovery wakeup.
