@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -23,13 +24,14 @@ import (
 // If the server kills the connection, readLoop cancels the context
 // and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
-	conn   net.Conn
-	tls    bool
-	mu     sync.Mutex // protects writes to wbuf
-	wbuf   *bufio.Writer
-	ctx    context.Context
-	cancel context.CancelFunc
-	loopWG sync.WaitGroup // tracks readLoop goroutine
+	conn     net.Conn
+	tls      bool
+	mu       sync.Mutex // protects writes to wbuf
+	wbuf     *bufio.Writer
+	hasDirty atomic.Bool // true when wbuf has unflushed data
+	ctx      context.Context
+	cancel   context.CancelFunc
+	loopWG   sync.WaitGroup // tracks readLoop goroutine
 
 	pending sync.Map       // UID → chan Response
 	peerPkt *ConnectPacket // peer's connect packet
@@ -161,16 +163,19 @@ func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
 // SendFrame writes a raw frame to the connection's write buffer and flushes.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.debugFrames {
 		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
 	if err := WriteFrame(c.wbuf, destToken, body, c.tls); err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	return c.wbuf.Flush()
+	err := c.wbuf.Flush()
+	c.hasDirty.Store(false)
+	c.mu.Unlock()
+	return err
 }
 
 // SendFrameDeferred writes a raw frame to the write buffer WITHOUT flushing.
@@ -180,14 +185,26 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	LogSend(destToken, body)
-	return WriteFrame(c.wbuf, destToken, body, c.tls)
+	err := WriteFrame(c.wbuf, destToken, body, c.tls)
+	if err == nil {
+		c.hasDirty.Store(true)
+	}
+	return err
 }
 
 // Flush flushes the write buffer to the TCP connection.
+// Fast path: if no deferred frames are pending, skip the mutex entirely.
+// This is critical for batch-N patterns where N PendingGet.Resolve() calls
+// each call Flush(), but only the first has data to send.
 func (c *Conn) Flush() error {
+	if !c.hasDirty.Load() {
+		return nil
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.wbuf.Flush()
+	err := c.wbuf.Flush()
+	c.hasDirty.Store(false)
+	c.mu.Unlock()
+	return err
 }
 
 // SendAndWait sends a request and blocks until the response arrives.

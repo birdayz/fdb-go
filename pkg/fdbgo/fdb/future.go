@@ -1,6 +1,10 @@
 package fdb
 
-import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+import (
+	"sync"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+)
 
 // Future represents a value (or error) available at some later time.
 type Future interface {
@@ -86,19 +90,54 @@ func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 }
 
 // newPendingFutureByteSlice creates a future backed by a PendingGet.
-// No goroutine is spawned — the request was already sent. Get() blocks
-// until the server response arrives on the reply channel.
+// No goroutine is spawned. Resolve() is called lazily on first Get()/MustGet().
+//
+// This is critical for pipelining: N tx.Get() calls write N frames to the
+// buffer via SendFrameDeferred. If we spawned a goroutine per Get, it would
+// race to call Flush() before all N frames are queued, defeating batching.
+// With lazy resolve, the first MustGet() flushes all N frames at once.
 func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
-	f := &futureByteSlice{}
-	f.init()
-	go func() {
-		defer close(f.done)
-		var err error
-		f.val, err = pending.Resolve()
-		f.err = convertError(err)
-	}()
-	return f
+	return &pendingFutureByteSlice{pending: pending}
 }
+
+// pendingFutureByteSlice resolves lazily — no goroutine, no channel.
+// Matches C++ client where futures are resolved by the network thread
+// and Get() blocks on the result directly.
+type pendingFutureByteSlice struct {
+	pending  *client.PendingGet
+	once     sync.Once
+	val      []byte
+	err      error
+	resolved bool
+}
+
+func (f *pendingFutureByteSlice) resolve() {
+	f.once.Do(func() {
+		var err error
+		f.val, err = f.pending.Resolve()
+		f.err = convertError(err)
+		f.resolved = true
+	})
+}
+
+func (f *pendingFutureByteSlice) Get() ([]byte, error) {
+	f.resolve()
+	return f.val, f.err
+}
+
+func (f *pendingFutureByteSlice) MustGet() []byte {
+	val, err := f.Get()
+	if err != nil {
+		panic(err)
+	}
+	return val
+}
+
+func (f *pendingFutureByteSlice) BlockUntilReady() { f.resolve() }
+
+func (f *pendingFutureByteSlice) IsReady() bool { return f.resolved }
+
+func (f *pendingFutureByteSlice) Cancel() {}
 
 // FutureNil represents the asynchronous result of a function that has no
 // return value.
