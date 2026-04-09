@@ -2108,9 +2108,26 @@ Every client feature must be tested against a real FDB testcontainer (not mocks,
 
 Our Go `Database` is split across `Database`, `GRVBatcher`, `LocationCache`, and `Cluster` — each with independent state. C++ has a single `DatabaseContext` that owns ALL per-database state: GRV cache, batcher, location cache, proxy list, connection pool, throttle tracking, background actors. Our split architecture creates friction every time we port C++ behavior — cross-component state sharing requires manual wiring that would be trivial in a unified struct. Examples: GRV cache update after commit, cache invalidation on reconnect, topology monitoring feeding proxy list + location cache + GRV cache simultaneously. Refactor `Database` to be the single owner, matching C++ `DatabaseContext` structure.
 
-### CRITICAL — Performance: close the 6.4x gap with CGo client
+### ~~CRITICAL~~ RESOLVED — Performance: close the 6.4x gap with CGo client
 
-**Baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
+**nightshift-1 results** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-10):
+- Pure Go GetValue: **175,465 ns/op**, 1,842 B/op, 26 allocs/op
+- CGo GetValue: **205,243 ns/op**, 394 B/op, 14 allocs/op
+- **Go is 17% FASTER than CGo** on single Get. From 6.4x slower to faster.
+- Go wins on 8/11 benchmarks (Get, GetRange, PipelinedGet/1-10, BatchGet/1-10)
+- CGo leads on Set (17%), BatchGet/50 (54%), and RYW (15%) — all write-heavy
+
+**Optimizations applied** (nightshift-1 branch):
+- Write coalescing: dedicated writeLoop goroutine, channel-based frame coalescing
+- Buffer pooling: sync.Pool for WriteFrame buffers, reply/error channels
+- Fast UID generation: SplitMix64 PRNG replacing crypto/rand
+- Sorted location cache: O(log N) binary search replacing O(N) linear scan
+- Per-priority GRV batchers: isolated DEFAULT/BATCH/SYSTEM_IMMEDIATE
+- Pooled timers: replaced context.WithTimeout per RPC with sync.Pool'd time.Timer
+- QueueModel load balancing: latency EMA + inflight tracking for server selection
+- Proxy round-robin: atomic counter for GRV/commit proxy distribution
+
+**Previous baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
 - Pure Go GetValue: **1,350,000 ns/op**, 5,490 B/op, 78 allocs/op
 - CGo (libfdb_c) GetValue: **210,000 ns/op**, 383 B/op, 13 allocs/op
 - Wire unmarshal alone: 58 ns/op (0.004% of total — NOT the bottleneck)
