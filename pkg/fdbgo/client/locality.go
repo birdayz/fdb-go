@@ -622,7 +622,7 @@ func buildGetKeyServerLocationsRequest(key []byte, tenantId int64, replyToken tr
 		Limit:            100,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: tenantId},
-		MinTenantVersion: -2, // C++ latestVersion = -2 (default for GetKeyServerLocationsRequest)
+		MinTenantVersion: LatestVersion,
 	}
 	return req.MarshalFDB()
 }
@@ -640,7 +640,7 @@ func buildGetKeyServerLocationsRangeRequest(begin, end []byte, limit int, revers
 		Reverse:          reverse,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		Tenant:           types.TenantInfo{TenantId: tenantId},
-		MinTenantVersion: -2,
+		MinTenantVersion: LatestVersion,
 	}
 	return req.MarshalFDB()
 }
@@ -682,7 +682,10 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 			if err != nil {
 				continue
 			}
-			ep, err := ReadEndpointFromSlot(ssR, 2)
+			// Slot 2 = getKeyValues RequestStream in StorageServerInterface.
+			// We read any endpoint to get the base token; slot 2 is the most
+			// reliably present in all FDB versions.
+			ep, err := ReadEndpointFromSlot(ssR, types.StorageServerInterfaceSlotField_2)
 			if err != nil || !endpointValid(&ep) {
 				nf := ssR.VTableLength() - 2
 				for s := 0; s < nf; s++ {

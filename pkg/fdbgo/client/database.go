@@ -262,7 +262,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 		case <-ctx.Done():
 			return fmt.Errorf("failed to connect to any coordinator: %w", err)
 		case <-time.After(backoff):
-			if backoff < 5*time.Second {
+			if backoff < BootstrapMaxBackoff {
 				backoff *= 2
 			}
 		}

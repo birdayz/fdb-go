@@ -37,6 +37,7 @@ const (
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
 	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard
 	ErrRangeLocked               = 1242 // transaction_rejected_range_locked
+	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
@@ -47,7 +48,15 @@ const (
 	NoTenantID           int64 = -1
 	UnlimitedBytes       int32 = 0x7FFFFFFF
 	DefaultRPCTimeout          = 5 * time.Second
+	CoordinatorTimeout         = 30 * time.Second // OpenDatabaseCoordRequest + GRV batch context
+	BootstrapMaxBackoff        = 5 * time.Second  // bootstrap retry backoff cap
 	MaxWrongShardRetries       = 5
+)
+
+// C++ version constants from flow/flow.h.
+const (
+	LatestVersion  int64 = -2 // C++ latestVersion — used in GetKeyServerLocationsRequest.MinTenantVersion
+	InvalidVersion int64 = -1 // C++ invalidVersion — used in GetReadVersionRequest.MaxVersion
 )
 
 // Backoff constants — match C++ CLIENT_KNOBS.
@@ -61,19 +70,31 @@ const (
 // Endpoint indices from C++ interface definitions.
 // Indices are relative to each interface's base token via getAdjustedEndpoint().
 //
-// StorageServerInterface (base = server token):
+// StorageServerInterface (StorageServerInterface.h):
 //
-//	getValue=0, getKey=1, getKeyValues=2, getShardState=3, waitMetrics=4
+//	getValue=0, getKey=1, getKeyValues=2, getShardState=3, waitMetrics=4,
+//	splitMetrics=5, getStorageMetrics=6, waitFailure=7, getQueuingMetrics=8,
+//	getKeyValueStoreType=9, watchValue=10, getReadHotRanges=11,
+//	getRangeSplitPoints=12, getKeyValuesStream=13
 //
-// CommitProxyInterface (base = proxy token):
+// CommitProxyInterface (CommitProxyInterface.h):
 //
 //	commit=0, ..., getKeyServerLocations=2
 const (
 	EndpointGetValue              = 0  // StorageServerInterface::getValue
 	EndpointGetKey                = 1  // StorageServerInterface::getKey
 	EndpointGetKeyValues          = 2  // StorageServerInterface::getKeyValues
+	EndpointGetShardState         = 3  // StorageServerInterface::getShardState
 	EndpointWaitMetrics           = 4  // StorageServerInterface::waitMetrics
+	EndpointSplitMetrics          = 5  // StorageServerInterface::splitMetrics
+	EndpointGetStorageMetrics     = 6  // StorageServerInterface::getStorageMetrics
+	EndpointWaitFailure           = 7  // StorageServerInterface::waitFailure
+	EndpointGetQueuingMetrics     = 8  // StorageServerInterface::getQueuingMetrics
+	EndpointGetKeyValueStoreType  = 9  // StorageServerInterface::getKeyValueStoreType
 	EndpointWatchValue            = 10 // StorageServerInterface::watchValue
+	EndpointGetReadHotRanges      = 11 // StorageServerInterface::getReadHotRanges
+	EndpointGetRangeSplitPoints   = 12 // StorageServerInterface::getRangeSplitPoints
+	EndpointGetKeyValuesStream    = 13 // StorageServerInterface::getKeyValuesStream
 	EndpointGetKeyServerLocations = 2  // CommitProxyInterface::getKeyServerLocations
 )
 

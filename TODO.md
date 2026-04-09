@@ -2040,16 +2040,22 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [ ] `network_types.go` — IPv6 completely ignored (silent wrong address)
 
 **Hardcoded endpoint indices (StorageServerInterface/CommitProxyInterface method positions):**
-- [ ] `readpath.go` — `getAdjustedEndpoint(token, 2)` for getKeyValues
-- [ ] `locality.go` — inline getAdjustedEndpoint with magic `2` for getKeyServerLocations
-- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply
+- [x] `readpath.go` — already uses `EndpointGetKey`/`EndpointGetKeyValues`/`EndpointWatchValue`
+- [x] `locality.go` — already uses `EndpointGetKeyServerLocations` for getAdjustedEndpoint
+- [x] `locality.go` — `ReadEndpointFromSlot(ssR, 2)` → `StorageServerInterfaceSlotField_2`
+- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply (heuristic, acceptable)
 
 **Magic numbers → named constants:**
-- [ ] `-1` for no-tenant (6+ occurrences) → `const NoTenantID int64 = -1`
-- [ ] `5*time.Second` timeout (5 occurrences) → package-level constant
-- [ ] `0x7FFFFFFF` limitBytes → `const UnlimitedBytes`
-- [ ] `5` retry limit → named constant
-- [ ] `coordinator.go` — dead `slotOffset` parameter, misleading comment
+- [x] `-1` for no-tenant → already `NoTenantID int64 = -1`, no bare `-1` tenant uses remain
+- [x] `5*time.Second` timeout → `DefaultRPCTimeout`; bootstrap cap → `BootstrapMaxBackoff`
+- [x] `0x7FFFFFFF` limitBytes → already `UnlimitedBytes`, used everywhere
+- [x] `5` retry limit → already `MaxWrongShardRetries`
+- [x] `coordinator.go` — `slotOffset` already removed; `30s` timeout → `CoordinatorTimeout`
+- [x] `MinTenantVersion: -2` → `LatestVersion`; `MaxVersion: -1` → `InvalidVersion`
+- [x] `fdbErr.Code == 4` → `ErrOperationFailed`
+- [x] `ReadEndpointFromSlot(ssR, 2)` → `StorageServerInterfaceSlotField_2`
+- [x] Full StorageServerInterface endpoint enum (0-13) in transaction.go
+- [x] `EndpointGetRangeSplitPoints` moved from metrics.go to transaction.go with all other endpoints
 
 ### HIGH — Remaining client features
 

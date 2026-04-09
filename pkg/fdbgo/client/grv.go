@@ -189,7 +189,7 @@ func (b *grvBatcher) flush(db *database) {
 	// the future. Our equivalent: context with timeout. If all callers
 	// have given up (their ctx expired), this ensures the batcher
 	// goroutine doesn't hang forever.
-	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
+	batchCtx, batchCancel := context.WithTimeout(db.ctx, CoordinatorTimeout)
 	defer batchCancel()
 
 	// Each batcher has a fixed priority. OR all option flags (bits 0-23)
@@ -375,7 +375,7 @@ func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount
 	req := types.GetReadVersionRequest{
 		TransactionCount: txnCount,
 		Flags:            flags,
-		MaxVersion:       -1,
+		MaxVersion:       InvalidVersion,
 		Reply:            types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 	}
 	return req.MarshalFDB()
