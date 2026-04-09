@@ -92,6 +92,19 @@ func TestTenantCRUD(t *testing.T) {
 		t.Fatalf("got %q, want %q", result, "tenant-value")
 	}
 
+	// GetRange through tenant
+	rangeResult, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{Limit: 10})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("tenant GetRange: %v", err)
+	}
+	kvs := rangeResult.([]fdb.KeyValue)
+	if len(kvs) != 1 || string(kvs[0].Key) != "tenant-key" {
+		t.Fatalf("tenant GetRange: got %d keys, want 1 (tenant-key)", len(kvs))
+	}
+
 	// Duplicate create should fail
 	err = db.CreateTenant(name)
 	if err == nil {

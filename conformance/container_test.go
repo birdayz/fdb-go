@@ -3,8 +3,6 @@ package conformance_test
 import (
 	"context"
 	"fmt"
-	"io"
-	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -101,11 +99,8 @@ type TenantEnvironment struct {
 // SetupTenantEnvironment creates a tenant-isolated test environment
 // This reuses the provided container and creates an FDB tenant for isolation
 func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Container, tenantName string) (*TenantEnvironment, error) {
-	// Get pure Go database for tenant creation
-	db, err := openGoDatabase(ctx, container)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database: %w", err)
-	}
+	// Reuse the shared database connection (opened once in BeforeSuite).
+	db := sharedDB
 
 	// Create tenant via fdbcli and open with pure Go client
 	tenant, err := createGoTenant(ctx, container, db, tenantName)
@@ -145,17 +140,18 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 }
 
 // Cleanup deletes the tenant (not the container)
-func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
-	if env.Container != nil && env.TenantName != "" {
-		exitCode, _, err := env.Container.Exec(ctx, []string{
-			"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", env.TenantName),
-		})
-		if err != nil {
-			return err
+func (env *TenantEnvironment) Cleanup(_ context.Context) error {
+	if env.TenantName != "" {
+		// Open tenant and clear all data first (tenant_not_empty check on delete).
+		tenant, err := env.DB.OpenTenant(gofdb.Key(env.TenantName))
+		if err == nil {
+			_, _ = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+				tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(""), End: gofdb.Key("\xff")})
+				return nil, nil
+			})
 		}
-		if exitCode != 0 {
-			return fmt.Errorf("fdbcli deletetenant exit %d", exitCode)
-		}
+		// Delete tenant via native API. Ignore errors — best-effort cleanup.
+		_ = env.DB.DeleteTenant(gofdb.Key(env.TenantName))
 	}
 	return nil
 }
@@ -169,44 +165,33 @@ func openGoDatabase(ctx context.Context, container *foundationdbtc.Container) (g
 	return gofdb.OpenDatabase(path)
 }
 
-func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
-	// Create tenant via fdbcli — the special key space (\xff\xff) requires
-	// client-side routing that our pure Go client doesn't yet support.
-	exitCode, output, err := container.Exec(ctx, []string{
-		"/usr/bin/fdbcli", "--exec", fmt.Sprintf("createtenant %s", name),
+func createGoTenant(_ context.Context, _ *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
+	// Create tenant via native system key CRUD (no fdbcli).
+	if err := db.CreateTenant(gofdb.Key(name)); err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("create tenant %q: %w", name, err)
+	}
+
+	// Verify tenant works by doing a simple operation through it.
+	tenant, err := db.OpenTenant(gofdb.Key(name))
+	if err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("open tenant %q: %w", name, err)
+	}
+
+	// Smoke test: write + read through the tenant. Use Set+Get (point ops)
+	// to verify tenant mapping works. GetRange hangs — known issue under investigation.
+	_, err = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(gofdb.Key("_init"), []byte("1"))
+		v := tr.Get(gofdb.Key("_init")).MustGet()
+		if string(v) != "1" {
+			return nil, fmt.Errorf("smoke test: got %q, want %q", v, "1")
+		}
+		return nil, nil
 	})
 	if err != nil {
-		return gofdb.Tenant{}, fmt.Errorf("fdbcli createtenant: %w", err)
-	}
-	outputBytes, _ := io.ReadAll(output)
-	if exitCode != 0 {
-		return gofdb.Tenant{}, fmt.Errorf("fdbcli createtenant exit %d: %s", exitCode, outputBytes)
+		return gofdb.Tenant{}, fmt.Errorf("tenant %q smoke test: %w", name, err)
 	}
 
-	// Get tenant ID via fdbcli gettenant (returns JSON with "id" field).
-	exitCode, output, err = container.Exec(ctx, []string{
-		"/usr/bin/fdbcli", "--exec", fmt.Sprintf("gettenant %s", name),
-	})
-	if err != nil {
-		return gofdb.Tenant{}, fmt.Errorf("fdbcli gettenant: %w", err)
-	}
-	outputBytes, _ = io.ReadAll(output)
-	if exitCode != 0 {
-		return gofdb.Tenant{}, fmt.Errorf("fdbcli gettenant exit %d: %s", exitCode, outputBytes)
-	}
-
-	// Parse "id" from fdbcli output. Docker exec prepends binary stream headers,
-	// so we search for "id:" anywhere in the output.
-	var tenantId int64
-	outStr := string(outputBytes)
-	if idx := strings.Index(outStr, "id:"); idx >= 0 {
-		fmt.Sscanf(outStr[idx:], "id: %d", &tenantId)
-	}
-	if tenantId == 0 {
-		return gofdb.Tenant{}, fmt.Errorf("could not parse tenant id from: %s", outputBytes)
-	}
-
-	return db.OpenTenantById(tenantId), nil
+	return tenant, nil
 }
 
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema
