@@ -87,6 +87,16 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 				m.Param1 = append(prefix[:], m.Param1...)
 				if m.MutType == uint8(MutClearRange) {
 					m.Param2 = append(prefix[:], m.Param2...)
+				} else if m.MutType == uint8(MutSetVersionstampedKey) {
+					// The last 4 bytes of the key are a LE uint32 offset where the
+					// versionstamp should be placed. After prepending the tenant
+					// prefix, the offset must be adjusted by the prefix length.
+					// Matches C++ applyTenantPrefix (NativeAPI.actor.cpp:6533-6536).
+					if len(m.Param1) >= 4 {
+						off := binary.LittleEndian.Uint32(m.Param1[len(m.Param1)-4:])
+						off += 8 // tenant prefix is 8 bytes
+						binary.LittleEndian.PutUint32(m.Param1[len(m.Param1)-4:], off)
+					}
 				}
 			}
 		}
