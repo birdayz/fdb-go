@@ -15,6 +15,10 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
 
+// ErrNeedFullRYW is returned by GetPipelined when the key has pending atomics
+// that require a server read + merge through the full ryw.get() path.
+var ErrNeedFullRYW = errors.New("need full RYW path")
+
 // FDB error codes.
 const (
 	ErrNotCommitted              = 1020
@@ -307,7 +311,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.ryw.mu.Unlock()
 			return v, nil, nil
 		}
-		// Has atomics — need server roundtrip, fall through.
+		// Has atomics — need full ryw.get() to merge server value with atomics.
+		tx.ryw.mu.Unlock()
+		return nil, nil, ErrNeedFullRYW
 	}
 	isClr := tx.ryw.isClearedLocked(key)
 	tx.ryw.mu.Unlock()
