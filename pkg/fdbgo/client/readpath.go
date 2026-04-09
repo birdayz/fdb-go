@@ -40,7 +40,11 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 }
 
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
-	for _, server := range servers {
+	// Pick the least-loaded server, then fall back to remaining on failure.
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -64,20 +68,28 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		}
 		reqData := req.MarshalFDB()
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
 		return parseGetKeyReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -128,7 +140,10 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
-	for _, server := range servers {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -136,20 +151,28 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(server.Token, body); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
 		return parseGetValueReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -297,7 +320,10 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	if reverse {
 		wireLimit = -wireLimit
 	}
-	for _, server := range servers {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -306,20 +332,28 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(gkvToken, body); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
 		return parseGetKeyValuesReply(resp.Body)
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -469,7 +503,10 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 }
 
 func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers []ServerInfo) error {
-	for _, server := range servers {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -488,7 +525,12 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		}
 		reqData := req.MarshalFDB()
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(watchToken, reqData); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -497,11 +539,14 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		select {
 		case resp := <-replyCh:
 			if resp.Err != nil {
+				tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 				tx.db.handleConnError(server.Address)
 				continue
 			}
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
 			return parseWatchValueReply(resp.Body)
 		case <-ctx.Done():
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			return ctx.Err()
 		}

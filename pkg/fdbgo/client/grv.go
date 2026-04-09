@@ -314,7 +314,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 		}
 
-		for _, proxy := range proxies {
+		// Start from a round-robin offset to distribute load across proxies.
+		startIdx := db.proxyRR.nextGRV(len(proxies))
+		for i := 0; i < len(proxies); i++ {
+			proxy := proxies[(startIdx+i)%len(proxies)]
 			conn, err := db.getOrDial(ctx, proxy.Address)
 			if err != nil {
 				db.handleConnError(proxy.Address)

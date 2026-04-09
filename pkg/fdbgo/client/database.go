@@ -126,6 +126,10 @@ type database struct {
 	// Per-endpoint health tracking. Wakes GRV backoff on recovery.
 	failMon *failureMonitor
 
+	// Load balancing: QueueModel for storage servers, round-robin for proxies.
+	queueModel *QueueModel
+	proxyRR    proxyRoundRobin
+
 	// GRV cache + per-priority batchers. C++: cachedReadVersion, versionBatcher.
 	// One batcher per priority level: [BATCH, DEFAULT, SYSTEM_IMMEDIATE].
 	grvCache    grvCache
@@ -139,23 +143,24 @@ type database struct {
 	wg        sync.WaitGroup
 }
 
-// GetGRVProxy returns a GRV proxy address for read version requests.
+// getGRVProxy returns a GRV proxy address using round-robin selection.
 func (db *database) getGRVProxy() (*ProxyInfo, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.GRVProxies) == 0 {
 		return nil, fmt.Errorf("no GRV proxies available")
 	}
-	// Simple round-robin (TODO: proper load balancing).
-	return &info.GRVProxies[0], nil
+	idx := db.proxyRR.nextGRV(len(info.GRVProxies))
+	return &info.GRVProxies[idx], nil
 }
 
-// getCommitProxy returns a commit proxy address.
+// getCommitProxy returns a commit proxy address using round-robin selection.
 func (db *database) getCommitProxy() (*ProxyInfo, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.CommitProxies) == 0 {
 		return nil, fmt.Errorf("no commit proxies available")
 	}
-	return &info.CommitProxies[0], nil
+	idx := db.proxyRR.nextCommit(len(info.CommitProxies))
+	return &info.CommitProxies[idx], nil
 }
 
 // getGRVProxies returns all GRV proxies from the current topology.
@@ -344,6 +349,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		ctx:          bgCtx,
 		cancel:       cancel,
 		failMon:      newFailureMonitor(),
+		queueModel:   newQueueModel(),
 		locCache: locationCache{
 			maxSize: 600_000,
 		},
