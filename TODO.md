@@ -1715,14 +1715,29 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 ##### CRITICAL — CI blockers (3 failures in CI run)
 
 - [x] **HIGH — HNSW 500-vector test timeout — FIXED** — Root cause: batched `Get` calls (N futures pipelined) were 36x slower than CGo because each goroutine did a full send+wait round-trip sequentially. Fix: `GetPipelined` sends the request frame synchronously (no goroutine), defers TCP flush; `PendingGet.Resolve()` flushes once then waits. All N frames go to the write buffer before any flush, so they reach the server in one TCP write. Result: batch-10 latency 11ms → 1.3ms (8.5x improvement). 500-vector test: timeout → passes in 21s. Also added `TCP_NODELAY`, `bufio.Writer` on connection, `maxRelocateRetries=5`.
-- [ ] **MEDIUM — Pure Go client pipelining: remaining 3-4x gap vs CGo** — Batch-10: Go 1.3ms vs CGo 316µs (4.1x). Three known causes:
-  1. We do N separate `bufio.Flush()` → `Write()` syscalls per batch; CGo's C client uses a single `writev` scatter-gather syscall for all N frames
-  2. CGo's C client uses the FDB network thread which is optimized for batch processing (single-threaded event loop, zero-copy serialization)
-  3. Goroutine scheduling overhead for N resolve goroutines (one per pipelined Get)
-  Potential fixes:
-  - **(a) Dedicated flush goroutine (C++ connectionWriter port)** — Since goroutines are cooperatively scheduled (same model as Flow coroutines), we can replicate C++ `connectionWriter` exactly: `SendFrame` writes to buffer + signals a channel (no flush). A dedicated goroutine receives the signal, sleeps 10-20µs (C++ `MIN_COALESCE_DELAY`/`MAX_COALESCE_DELAY`), then flushes everything accumulated. All senders that yielded during the coalesce window get batched into one `write()` syscall. This is the architecturally correct approach — same design as C++.
-  - (b) Use `net.Buffers` (writev) for scatter-gather I/O — send multiple frames in one syscall without copying into a contiguous buffer.
-  - (c) Avoid goroutines for resolve — use a select-loop multiplexer instead of one goroutine per pipelined Get.
+- [ ] **MEDIUM — Pure Go client: remaining 3-4x perf gap vs CGo** — Batch-10 Get: Go 1.3ms vs CGo 316µs (4.1x). 5-agent review identified these optimization targets:
+
+  **Write coalescing (conn.go) — main cause of gap:**
+  - [ ] **(a) Dedicated flush goroutine (C++ connectionWriter port)** — `SendFrame` writes to buffer + signals channel (no flush). Dedicated goroutine sleeps 10-20µs (C++ `MIN_COALESCE_DELAY`/`MAX_COALESCE_DELAY`), then flushes all accumulated frames in one `write()` syscall. Goroutines are cooperatively scheduled (same model as Flow coroutines) so identical architecture works. Currently: N write syscalls per batch. Target: 1.
+  - [ ] **(b) `net.Buffers` (writev)** — scatter-gather I/O to send multiple frames in one syscall without contiguous buffer copy.
+
+  **Location cache (locality.go) — O(N) linear scan:**
+  - [ ] **(c) Replace flat slice with interval tree** — `locate()` scans all 600K-max entries linearly. C++ uses KeyRangeMap (O(log N)). Replace with B-tree or interval tree (`github.com/google/btree`).
+  - [ ] **(d) LRU eviction** — current random eviction (`rand.Intn`) evicts hot entries. C++ uses LRU.
+  - [ ] **(e) invalidateRange in-place deletion** — currently copies entire slice.
+
+  **GRV batcher (grv.go):**
+  - [ ] **(f) Per-priority batchers** — single batcher for all priorities. SYSTEM_IMMEDIATE elevates the whole batch. C++ uses separate batchers (DEFAULT, BATCH, SYSTEM_IMMEDIATE).
+  - [ ] **(g) Non-blocking flush** — `flush()` holds mutex during RPC (~200µs), blocking all new GRV requests. C++ uses non-blocking queue.
+
+  **Get pipelining (transaction.go, future.go):**
+  - [ ] **(h) Eliminate goroutine per PendingGet** — `newPendingFutureByteSlice` spawns goroutine just to call `Resolve()`. Inline into `BlockUntilReady` directly.
+  - [ ] **(i) Batch `locate()` for multi-shard Gets** — 10 Gets to different shards = 10 serial proxy RPCs. C++ batches location lookups in one `GetKeyServerLocations`.
+  - [ ] **(j) RYW Set→Clear gap** — `GetPipelined` checks `hasAtomics` but not cleared-after-set. Key in `cleared` ranges falls through to stale server read.
+
+  **applyTenantPrefix (commitpath.go):**
+  - [ ] **(k) Pre-allocate prefixed keys** — `append(prefix[:], m.Param1...)` allocates per mutation. C++ arena-allocates once. 100 mutations = 100 allocs vs 1.
+  - [ ] **(l) Intern metadataVersionKey** — `bytes.Equal` (18 bytes) on every mutation. C++ uses pointer comparison.
 - [x] **HIGH — Tenant CRUD via system keys** — Full 1:1 port of C++ `TenantAPI::createTenantTransaction` / `deleteTenantTransaction`. All codec formats match C++: TenantIdCodec (raw 8-byte BE), TupleCodec<int64_t> (nameIndex, lastTenantId), BinaryCodec (count), ObjectCodec+IncludeVersion (tenantMap), SetVersionstampedValue (lastModification). All checks: `checkTenantMode`, prefix emptiness (create → `tenant_prefix_allocator_conflict`, delete → `tenant_not_empty`), count validation (`cluster_no_capacity`, MAX=1M), name validation (no `\xff` prefix). `applyTenantPrefix` on commit (8-byte BE prefix on mutations/conflict ranges). Test: `TestTenantCRUD` covers create, list, open, read/write through tenant, duplicate create, non-empty delete, clear+delete, double delete.
 - [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
 - [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
