@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -738,6 +739,122 @@ func TestGetVersionstamp(t *testing.T) {
 	_, err = tx3.GetVersionstamp()
 	if err == nil {
 		t.Error("GetVersionstamp before commit should fail")
+	}
+}
+
+func TestWatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("watch_test_key")
+
+	// Set initial value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("initial set: %v", err)
+	}
+
+	// Start watching in a goroutine.
+	watchDone := make(chan error, 1)
+	go func() {
+		_, werr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.Watch(ctx, key)
+		})
+		watchDone <- werr
+	}()
+
+	// Give the watch time to register, then change the key.
+	time.Sleep(500 * time.Millisecond)
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("changed"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("change set: %v", err)
+	}
+
+	// Watch should resolve.
+	select {
+	case err := <-watchDone:
+		if err != nil {
+			t.Fatalf("watch error: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch did not resolve within 30 seconds")
+	}
+}
+
+func TestGetEstimatedRangeSizeBytes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed some data so the range is non-empty.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 100; i++ {
+			k := []byte(fmt.Sprintf("est_%04d", i))
+			tx.Set(k, bytes.Repeat([]byte("x"), 1000))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetEstimatedRangeSizeBytes should not error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetEstimatedRangeSizeBytes(ctx, []byte("est_"), []byte("est_~"))
+	})
+	if err != nil {
+		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
+	}
+	size := result.(int64)
+	t.Logf("estimated range size: %d bytes", size)
+	// The exact value is non-deterministic, but it should be non-negative.
+	if size < 0 {
+		t.Fatalf("expected non-negative size, got %d", size)
+	}
+}
+
+func TestGetRangeSplitPoints(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed some data.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 100; i++ {
+			k := []byte(fmt.Sprintf("split_%04d", i))
+			tx.Set(k, bytes.Repeat([]byte("y"), 1000))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetRangeSplitPoints should not error. With small data the result
+	// may be nil/empty (everything fits in one chunk), which is fine.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetRangeSplitPoints(ctx, []byte("split_"), []byte("split_~"), 50000)
+	})
+	if err != nil {
+		t.Fatalf("GetRangeSplitPoints: %v", err)
+	}
+	points := result.([][]byte)
+	t.Logf("split points: %d", len(points))
+	for i, p := range points {
+		t.Logf("  split[%d]: %q", i, p)
 	}
 }
 
