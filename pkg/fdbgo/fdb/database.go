@@ -193,6 +193,13 @@ func (db Database) Options() DatabaseOptions {
 	return DatabaseOptions{}
 }
 
+// InvalidateGRVCache forces the next transaction to fetch a fresh read version
+// from the GRV proxy instead of using the cached version. Use after external
+// writes (e.g., from a Java conformance server) to ensure Go reads see them.
+func (db Database) InvalidateGRVCache() {
+	db.d.inner.InvalidateGRVCache()
+}
+
 // Tenant operations.
 
 // OpenTenant opens a named tenant on this database.

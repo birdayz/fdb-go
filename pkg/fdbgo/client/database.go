@@ -394,6 +394,12 @@ func (d *Database) CreateTransaction() *Transaction {
 	}
 }
 
+// InvalidateGRVCache resets the GRV cache so the next transaction fetches
+// a fresh read version from the GRV proxy. Use after external writes.
+func (d *Database) InvalidateGRVCache() {
+	d.db.grvCache.version.Store(0)
+}
+
 // Close shuts down the database connection. Idempotent.
 // Cancels background goroutines, waits for them to exit, closes all connections.
 func (d *Database) Close() error {

@@ -171,11 +171,12 @@ func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db
 		return gofdb.Tenant{}, fmt.Errorf("create tenant %q: %w", name, err)
 	}
 
-	// Verify tenant works by doing a simple operation through it.
+	// Open tenant — this reads the tenant ID from system keys.
 	tenant, err := db.OpenTenant(gofdb.Key(name))
 	if err != nil {
 		return gofdb.Tenant{}, fmt.Errorf("open tenant %q: %w", name, err)
 	}
+	fmt.Printf("[TENANT] %s → id=%d\n", name, tenant.ID())
 
 	// Smoke test: write + read through the tenant. Use Set+Get (point ops)
 	// to verify tenant mapping works. GetRange hangs — known issue under investigation.

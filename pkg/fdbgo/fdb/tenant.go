@@ -9,6 +9,9 @@ type Tenant struct {
 	tenantId int64
 }
 
+// ID returns the numeric tenant ID.
+func (t Tenant) ID() int64 { return t.tenantId }
+
 // Transact runs a transactional function with automatic retry, scoped to
 // this tenant's key space. Matches Database.Transact but sets the tenant ID
 // on the underlying transaction.

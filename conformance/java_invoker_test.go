@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -253,6 +254,13 @@ func (j *JavaInvoker) InvokeAs(ctx context.Context, stepName string, params map[
 	raw, err := j.Invoke(ctx, stepName, params)
 	if err != nil {
 		return err
+	}
+
+	// After a Java step completes (which may have committed data), invalidate
+	// Go's GRV cache. Without this, the 100ms cache can serve stale versions
+	// that predate Java's commit → Go reads miss Java's writes.
+	if sharedDB != (gofdb.Database{}) {
+		sharedDB.InvalidateGRVCache()
 	}
 
 	if result != nil && len(raw) > 0 && string(raw) != "null" && string(raw) != `""` {
