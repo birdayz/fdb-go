@@ -126,9 +126,10 @@ type database struct {
 	// Per-endpoint health tracking. Wakes GRV backoff on recovery.
 	failMon *failureMonitor
 
-	// GRV cache + batcher. C++: cachedReadVersion, versionBatcher.
-	grvCache   grvCache
-	grvBatcher grvBatcher
+	// GRV cache + per-priority batchers. C++: cachedReadVersion, versionBatcher.
+	// One batcher per priority level: [BATCH, DEFAULT, SYSTEM_IMMEDIATE].
+	grvCache    grvCache
+	grvBatchers [3]*grvBatcher
 
 	// Lifecycle.
 	ctx       context.Context
@@ -346,8 +347,10 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		locCache: locationCache{
 			maxSize: 600_000,
 		},
-		grvBatcher: grvBatcher{
-			batchTime: 1 * time.Millisecond,
+		grvBatchers: [3]*grvBatcher{
+			grvBatcherBatch:           {batchTime: 1 * time.Millisecond, priority: grvPriorityBatch},
+			grvBatcherDefault:         {batchTime: 1 * time.Millisecond, priority: grvPriorityDefault},
+			grvBatcherSystemImmediate: {batchTime: 1 * time.Millisecond, priority: grvPrioritySystemImmediate},
 		},
 	}
 

@@ -225,6 +225,20 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	waitStrategy := wait.ForLog("FDBD joined cluster").WithStartupTimeout(30 * time.Second)
 	err = waitStrategy.WaitUntilReady(ctx, container)
 	if err != nil {
+		// Capture container logs before cleanup for diagnostics.
+		logCtx, logCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		logs, logErr := container.Logs(logCtx)
+		logCancel()
+		if logErr == nil && logs != nil {
+			logBytes, _ := io.ReadAll(logs)
+			if len(logBytes) > 4000 {
+				logBytes = logBytes[len(logBytes)-4000:]
+			}
+			_ = container.Terminate(ctx)
+			_ = socatContainer.Terminate(ctx)
+			_ = nw.Remove(ctx)
+			return nil, fmt.Errorf("wait for FDB: %w\n--- container logs (last 4000 bytes) ---\n%s", err, string(logBytes))
+		}
 		_ = container.Terminate(ctx)
 		_ = socatContainer.Terminate(ctx)
 		_ = nw.Remove(ctx)

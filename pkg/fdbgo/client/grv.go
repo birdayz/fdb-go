@@ -89,15 +89,40 @@ func (c *grvCache) invalidate() {
 	c.lastTime.Store(0)
 }
 
-// grvBatcher batches concurrent GetReadVersion calls.
+// grvBatcherIndex maps GRV priority bits to a batcher array index.
+// C++ uses separate batchers for BATCH, DEFAULT, and SYSTEM_IMMEDIATE.
+const (
+	grvBatcherBatch           = 0
+	grvBatcherDefault         = 1
+	grvBatcherSystemImmediate = 2
+)
+
+// grvBatcherIndex returns the array index for the given priority flags.
+func grvBatcherIndex(flags uint32) int {
+	switch flags & grvPriorityMask {
+	case grvPriorityBatch:
+		return grvBatcherBatch
+	case grvPrioritySystemImmediate:
+		return grvBatcherSystemImmediate
+	default:
+		return grvBatcherDefault
+	}
+}
+
+// grvBatcher batches concurrent GetReadVersion calls for a single priority.
 // C++: DatabaseContext::VersionBatcher + readVersionBatcher actor.
+//
+// Each priority level (BATCH, DEFAULT, SYSTEM_IMMEDIATE) has its own batcher,
+// so requests at different priorities never mix — matching C++ behavior.
 //
 // Methods receive *database as argument — no stored back-pointer.
 type grvBatcher struct {
-	mu          sync.Mutex
-	pending     []grvRequest
-	batchTime   time.Duration
-	timer       *time.Timer
+	mu        sync.Mutex
+	pending   []grvRequest
+	batchTime time.Duration
+	timer     *time.Timer
+	priority  uint32 // fixed priority bits for this batcher
+
 	refreshOnce sync.Once
 }
 
@@ -115,9 +140,7 @@ type grvResult struct {
 func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uint32) (int64, error) {
 	// Fast path: serve from cache if fresh and not throttled.
 	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
-	// Note: it still enters the batcher and waits up to batchTime (~1ms).
-	// C++ avoids this with per-priority batchers; a future improvement.
-	isImmediate := flags&grvPriorityMask == grvPrioritySystemImmediate
+	isImmediate := b.priority == grvPrioritySystemImmediate
 	if !isImmediate {
 		if v, ok := db.grvCache.tryCache(); ok {
 			// Start background refresher on first cache hit.
@@ -148,6 +171,10 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 }
 
 // flush sends the batched GRV request and updates the cache.
+//
+// Lock is held only to pop the pending slice; the RPC executes without
+// holding mu, so new requests can queue (and start a new timer) while
+// the RPC is in flight.
 func (b *grvBatcher) flush(db *database) {
 	b.mu.Lock()
 	batch := b.pending
@@ -165,20 +192,13 @@ func (b *grvBatcher) flush(db *database) {
 	batchCtx, batchCancel := context.WithTimeout(db.ctx, 30*time.Second)
 	defer batchCancel()
 
-	// Merge flags: take MAX priority (bits 24-31) and OR all option
-	// flags (bits 0-23). MAX means SYSTEM_IMMEDIATE elevates the batch
-	// (acceptable, flush windows are bounded ~1ms), but also means DEFAULT
-	// elevates BATCH — defeating ratekeeper throttling of low-priority work.
-	// The C++ client avoids this with separate batchers per priority level;
-	// that's the correct long-term fix.
-	var priorityBits, optionBits uint32
+	// Each batcher has a fixed priority. OR all option flags (bits 0-23)
+	// from requests in this batch.
+	var optionBits uint32
 	for _, r := range batch {
-		if p := r.flags & grvPriorityMask; p > priorityBits {
-			priorityBits = p
-		}
 		optionBits |= r.flags &^ grvPriorityMask
 	}
-	flags := priorityBits | optionBits
+	flags := b.priority | optionBits
 
 	requestTime := time.Now()
 	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))

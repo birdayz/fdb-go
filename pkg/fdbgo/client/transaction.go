@@ -270,7 +270,8 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		return err
 	}
 	if !tx.hasReadVersion {
-		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx, tx.grvFlags())
+		flags := tx.grvFlags()
+		rv, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		if err != nil {
 			return err
 		}
