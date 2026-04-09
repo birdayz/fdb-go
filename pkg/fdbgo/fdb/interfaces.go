@@ -28,3 +28,49 @@ type ReadTransaction interface {
 
 	ReadTransactor
 }
+
+// WritableTransaction extends ReadTransaction with write operations.
+// Only Transaction satisfies this (not Snapshot).
+type WritableTransaction interface {
+	ReadTransaction
+
+	// Mutations
+	Set(key KeyConvertible, value []byte)
+	Clear(key KeyConvertible)
+	ClearRange(er ExactRange)
+
+	// Atomic mutations
+	Add(key KeyConvertible, param []byte)
+	And(key KeyConvertible, param []byte)
+	BitAnd(key KeyConvertible, param []byte)
+	Or(key KeyConvertible, param []byte)
+	BitOr(key KeyConvertible, param []byte)
+	Xor(key KeyConvertible, param []byte)
+	BitXor(key KeyConvertible, param []byte)
+	Max(key KeyConvertible, param []byte)
+	Min(key KeyConvertible, param []byte)
+	ByteMax(key KeyConvertible, param []byte)
+	ByteMin(key KeyConvertible, param []byte)
+	AppendIfFits(key KeyConvertible, param []byte)
+	CompareAndClear(key KeyConvertible, param []byte)
+	SetVersionstampedKey(key KeyConvertible, param []byte)
+	SetVersionstampedValue(key KeyConvertible, param []byte)
+
+	// Conflict ranges
+	AddReadConflictRange(er ExactRange) error
+	AddReadConflictKey(key KeyConvertible) error
+	AddWriteConflictRange(er ExactRange) error
+	AddWriteConflictKey(key KeyConvertible) error
+
+	// Transaction lifecycle
+	Commit() FutureNil
+	Cancel()
+	Reset()
+	OnError(e Error) FutureNil
+	SetReadVersion(version int64)
+
+	// Post-commit
+	GetCommittedVersion() (int64, error)
+	GetVersionstamp() FutureKey
+	GetApproximateSize() FutureInt64
+}
