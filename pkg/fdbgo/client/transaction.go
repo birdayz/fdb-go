@@ -69,11 +69,12 @@ const (
 //
 //	commit=0, ..., getKeyServerLocations=2
 const (
-	EndpointGetValue              = 0 // StorageServerInterface::getValue
-	EndpointGetKey                = 1 // StorageServerInterface::getKey
-	EndpointGetKeyValues          = 2 // StorageServerInterface::getKeyValues
-	EndpointWaitMetrics           = 4 // StorageServerInterface::waitMetrics
-	EndpointGetKeyServerLocations = 2 // CommitProxyInterface::getKeyServerLocations
+	EndpointGetValue              = 0  // StorageServerInterface::getValue
+	EndpointGetKey                = 1  // StorageServerInterface::getKey
+	EndpointGetKeyValues          = 2  // StorageServerInterface::getKeyValues
+	EndpointWaitMetrics           = 4  // StorageServerInterface::waitMetrics
+	EndpointWatchValue            = 10 // StorageServerInterface::watchValue
+	EndpointGetKeyServerLocations = 2  // CommitProxyInterface::getKeyServerLocations
 )
 
 type txState int

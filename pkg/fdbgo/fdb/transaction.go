@@ -356,9 +356,13 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 	return nil
 }
 
-// Watch is not yet implemented.
-func (tr Transaction) Watch(_ KeyConvertible) FutureNil {
-	return newReadyFutureNil(errNotSupported)
+// Watch returns a future that becomes ready when the value associated with the
+// given key changes. The watch is a long-poll to the storage server.
+func (tr Transaction) Watch(key KeyConvertible) FutureNil {
+	inner, ctx := tr.t.inner, tr.t.ctx
+	return newFutureNil(func() error {
+		return convertError(inner.Watch(ctx, key.FDBKey()))
+	})
 }
 
 // LocalityGetAddressesForKey is not yet implemented.

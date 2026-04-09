@@ -433,6 +433,102 @@ func parseGetValueReply(data []byte) ([]byte, error) {
 	return reply.Value, nil
 }
 
+// Watch watches a key for changes. The server holds the connection open until
+// the watched key's value changes from the version observed by this transaction.
+// Returns nil when the key has changed, or an error on failure.
+//
+// Matches C++ NativeAPI.actor.cpp watchValueMap/watchValue flow: locate storage
+// server, send WatchValueRequest with current read version, long-poll for
+// WatchValueReply. Retries on wrong_shard_server with cache invalidation.
+//
+// The watch is a long-poll: there is no short timeout. The context's deadline
+// (if any) controls the maximum wait time.
+func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return err
+	}
+	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
+	tx.AddReadConflictKey(key)
+
+	// Read current value so we can send it with the watch request.
+	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
+	val, err := tx.ryw.get(ctx, key, tx.getValue)
+	if err != nil {
+		return err
+	}
+
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+		loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+		if locErr != nil {
+			return fmt.Errorf("locate key: %w", locErr)
+		}
+		if len(loc.Servers) == 0 {
+			return fmt.Errorf("no storage servers for key")
+		}
+
+		watchErr := tx.sendWatch(ctx, key, val, loc.Servers)
+		if watchErr == nil {
+			return nil
+		}
+		if isWrongShardServer(watchErr) || isAllAlternativesFailed(watchErr) {
+			tx.db.locCache.invalidate(key, tx.tenantId)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		return watchErr
+	}
+	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers []ServerInfo) error {
+	for _, server := range servers {
+		conn, err := tx.db.getOrDial(ctx, server.Address)
+		if err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		req := types.WatchValueRequest{
+			Key:        key,
+			Version:    tx.readVersion,
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+		}
+		if value != nil {
+			req.HasValue = true
+			req.Value = value
+		}
+		reqData := req.MarshalFDB()
+		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
+		if err := conn.SendFrame(watchToken, reqData); err != nil {
+			cancelReply()
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		// Long-poll: no short timeout. Use the caller's context deadline.
+		select {
+		case resp := <-replyCh:
+			if resp.Err != nil {
+				tx.db.handleConnError(server.Address)
+				continue
+			}
+			return parseWatchValueReply(resp.Body)
+		case <-ctx.Done():
+			cancelReply()
+			return ctx.Err()
+		}
+	}
+	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func parseWatchValueReply(data []byte) error {
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		return fmt.Errorf("WatchValue: %w", err)
+	}
+	// Reply parsed successfully — key has changed.
+	return nil
+}
+
 // getAdjustedEndpoint computes the endpoint token for interface method at given index.
 // C++ Endpoint::getAdjustedEndpoint(n): first += (n << 32), second.lower32 += n.
 func getAdjustedEndpoint(base transport.UID, index int) transport.UID {
