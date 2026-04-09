@@ -49,27 +49,20 @@ func (db *database) kickTopology() {
 	}
 }
 
-// refreshTopology tries each coordinator to fetch fresh ClientDBInfo.
+// refreshTopology races all coordinators in parallel to fetch fresh ClientDBInfo.
 // On success, atomically swaps dbInfo if proxies changed.
 func (db *database) refreshTopology() {
-	for _, addr := range db.clusterFile.Coordinators {
-		conn, err := db.getOrDial(db.ctx, addr)
-		if err != nil {
-			continue
-		}
-		newInfo, err := db.openDatabaseCoord(db.ctx, conn, addr)
-		if err != nil {
-			continue
-		}
-		old := db.dbInfo.Load()
-		if old != nil && dbInfoEqual(old, newInfo) {
-			return // no change
-		}
-		// ORDER MATTERS: bump generation BEFORE swapping dbInfo.
-		db.proxiesGen.Add(1)
-		db.dbInfo.Store(newInfo)
+	newInfo, err := db.tryAllCoordinators(db.ctx)
+	if err != nil {
 		return
 	}
+	old := db.dbInfo.Load()
+	if old != nil && dbInfoEqual(old, newInfo) {
+		return // no change
+	}
+	// ORDER MATTERS: bump generation BEFORE swapping dbInfo.
+	db.proxiesGen.Add(1)
+	db.dbInfo.Store(newInfo)
 }
 
 // handleConnError evicts a dead connection from the pool and marks the

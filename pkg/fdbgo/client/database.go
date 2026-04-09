@@ -240,41 +240,74 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 }
 
 // bootstrap connects to coordinators and fetches initial cluster topology.
+// Tries all coordinators in parallel — first success wins. Retries with
+// backoff on transient errors (e.g., failed_to_progress 1216).
 func (db *database) bootstrap(ctx context.Context) error {
-	// C++ monitorLeaderInternal retries coordinator connections with backoff.
-	// The coordinator may return transient errors like failed_to_progress (1216)
-	// during cluster recovery after configuration changes.
 	backoff := 500 * time.Millisecond
 	for {
-		var lastErr error
-		for _, addr := range db.clusterFile.Coordinators {
-			conn, err := db.getOrDial(ctx, addr)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			dbInfo, err := db.openDatabaseCoord(ctx, conn, addr)
-			if err != nil {
-				lastErr = fmt.Errorf("coordinator %s: %w", addr, err)
-				continue
-			}
-
-			db.dbInfo.Store(dbInfo)
+		info, err := db.tryAllCoordinators(ctx)
+		if err == nil {
+			db.dbInfo.Store(info)
 			close(db.connected)
 			return nil
 		}
 
-		// Retry on transient coordinator errors (e.g., failed_to_progress 1216).
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("failed to connect to any coordinator: %w", lastErr)
+			return fmt.Errorf("failed to connect to any coordinator: %w", err)
 		case <-time.After(backoff):
 			if backoff < 5*time.Second {
 				backoff *= 2
 			}
 		}
 	}
+}
+
+// tryAllCoordinators races all coordinators in parallel, returning the first
+// successful response. Matches C++ quorum(ok,1) pattern.
+func (db *database) tryAllCoordinators(ctx context.Context) (*DBInfo, error) {
+	if len(db.clusterFile.Coordinators) == 1 {
+		// Fast path: single coordinator, no goroutine overhead.
+		return db.tryOneCoordinator(ctx, db.clusterFile.Coordinators[0])
+	}
+
+	type result struct {
+		info *DBInfo
+		err  error
+	}
+	ch := make(chan result, len(db.clusterFile.Coordinators))
+	raceCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, addr := range db.clusterFile.Coordinators {
+		go func(addr string) {
+			info, err := db.tryOneCoordinator(raceCtx, addr)
+			ch <- result{info, err}
+		}(addr)
+	}
+
+	var lastErr error
+	for range db.clusterFile.Coordinators {
+		r := <-ch
+		if r.err == nil {
+			cancel() // cancel remaining attempts
+			return r.info, nil
+		}
+		lastErr = r.err
+	}
+	return nil, lastErr
+}
+
+func (db *database) tryOneCoordinator(ctx context.Context, addr string) (*DBInfo, error) {
+	conn, err := db.getOrDial(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	info, err := db.openDatabaseCoord(ctx, conn, addr)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator %s: %w", addr, err)
+	}
+	return info, nil
 }
 
 // Database is the public API entry point.
