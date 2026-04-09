@@ -111,60 +111,90 @@ func (r *Reader) FieldPresent(vtableSlot int) bool {
 // ReadInt8 reads an int8 from the given vtable slot.
 func (r *Reader) ReadInt8(vtableSlot int) int8 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+1 > len(r.object) {
+		return 0
+	}
 	return int8(r.object[off])
 }
 
 // ReadUint8 reads a uint8 from the given vtable slot.
 func (r *Reader) ReadUint8(vtableSlot int) uint8 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+1 > len(r.object) {
+		return 0
+	}
 	return r.object[off]
 }
 
 // ReadInt16 reads an int16 from the given vtable slot.
 func (r *Reader) ReadInt16(vtableSlot int) int16 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+2 > len(r.object) {
+		return 0
+	}
 	return int16(binary.LittleEndian.Uint16(r.object[off:]))
 }
 
 // ReadUint16 reads a uint16 from the given vtable slot.
 func (r *Reader) ReadUint16(vtableSlot int) uint16 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+2 > len(r.object) {
+		return 0
+	}
 	return binary.LittleEndian.Uint16(r.object[off:])
 }
 
 // ReadInt32 reads an int32 from the given vtable slot.
 func (r *Reader) ReadInt32(vtableSlot int) int32 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+4 > len(r.object) {
+		return 0
+	}
 	return int32(binary.LittleEndian.Uint32(r.object[off:]))
 }
 
 // ReadUint32 reads a uint32 from the given vtable slot.
 func (r *Reader) ReadUint32(vtableSlot int) uint32 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+4 > len(r.object) {
+		return 0
+	}
 	return binary.LittleEndian.Uint32(r.object[off:])
 }
 
 // ReadInt64 reads an int64 from the given vtable slot.
 func (r *Reader) ReadInt64(vtableSlot int) int64 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+8 > len(r.object) {
+		return 0
+	}
 	return int64(binary.LittleEndian.Uint64(r.object[off:]))
 }
 
 // ReadUint64 reads a uint64 from the given vtable slot.
 func (r *Reader) ReadUint64(vtableSlot int) uint64 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+8 > len(r.object) {
+		return 0
+	}
 	return binary.LittleEndian.Uint64(r.object[off:])
 }
 
 // ReadFloat64 reads a float64 from the given vtable slot (LE IEEE754).
 func (r *Reader) ReadFloat64(vtableSlot int) float64 {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+8 > len(r.object) {
+		return 0
+	}
 	return math.Float64frombits(binary.LittleEndian.Uint64(r.object[off:]))
 }
 
 // ReadBool reads a bool from the given vtable slot.
 func (r *Reader) ReadBool(vtableSlot int) bool {
 	off := r.fieldOffset(vtableSlot)
+	if off < 4 || off+1 > len(r.object) {
+		return false
+	}
 	return r.object[off] != 0
 }
 
