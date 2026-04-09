@@ -4,19 +4,36 @@ import (
 	"time"
 )
 
+const (
+	topologySteadyInterval = 5 * time.Second        // background poll when idle
+	topologyRapidInterval  = 200 * time.Millisecond // fast retry after a kick
+	topologyRapidBurst     = 10                     // rapid refreshes before reverting
+)
+
 // topologyMonitor periodically refreshes the cluster topology from coordinators.
-// Also responds to kicks from RPC failures (e.g., broken proxy connections).
-// Matches C++ monitorClientDBInfoChange in NativeAPI.actor.cpp.
+// After an RPC-failure kick, switches to rapid polling for fast recovery before
+// reverting to steady-state interval. The C++ client uses long-poll to the
+// cluster controller; we approximate with kick-triggered bursts since we talk
+// directly to coordinators.
 func (db *database) topologyMonitor() {
 	defer db.wg.Done()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(topologySteadyInterval)
 	defer ticker.Stop()
+	rapidLeft := 0
 	for {
 		select {
 		case <-ticker.C:
 			db.refreshTopology()
+			if rapidLeft > 0 {
+				rapidLeft--
+				if rapidLeft == 0 {
+					ticker.Reset(topologySteadyInterval)
+				}
+			}
 		case <-db.topologyKick:
 			db.refreshTopology()
+			rapidLeft = topologyRapidBurst
+			ticker.Reset(topologyRapidInterval)
 		case <-db.ctx.Done():
 			return
 		}
