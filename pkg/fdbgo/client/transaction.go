@@ -457,9 +457,14 @@ func (tx *Transaction) Clear(key []byte) {
 
 // ClearRange deletes all keys in [begin, end).
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
+// Zero-width ranges (begin == end) are silently ignored, matching C++.
 func (tx *Transaction) ClearRange(begin, end []byte) error {
-	if bytes.Compare(begin, end) > 0 {
+	cmp := bytes.Compare(begin, end)
+	if cmp > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
+	}
+	if cmp == 0 {
+		return nil // C++ ignores zero-width ClearRange.
 	}
 	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
