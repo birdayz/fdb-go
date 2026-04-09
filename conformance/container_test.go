@@ -165,7 +165,7 @@ func openGoDatabase(ctx context.Context, container *foundationdbtc.Container) (g
 	return gofdb.OpenDatabase(path)
 }
 
-func createGoTenant(_ context.Context, _ *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
+func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
 	// Create tenant via native system key CRUD (no fdbcli).
 	if err := db.CreateTenant(gofdb.Key(name)); err != nil {
 		return gofdb.Tenant{}, fmt.Errorf("create tenant %q: %w", name, err)

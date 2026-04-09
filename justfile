@@ -24,10 +24,9 @@ generate: ensure-buf
 build:
     bazelisk build //...
 
-# Test all targets. --local_test_jobs=1 prevents Docker resource exhaustion
-# from multiple testcontainer-based tests running in parallel.
+# Test all targets.
 test:
-    bazelisk test //... --local_test_jobs=1
+    bazelisk test //...
 
 # Run conformance server
 run-conformance-server:

@@ -51,6 +51,54 @@ func tuplePackInt64(v int64) []byte {
 	return buf
 }
 
+// tuplePackBytes encodes a byte string in FDB tuple format.
+// FDB tuple encoding: 0x01 + escaped bytes + 0x00.
+// Escaping: each 0x00 in data → 0x00 0xFF.
+func tuplePackBytes(data []byte) []byte {
+	// Count null bytes for size estimation.
+	nulls := 0
+	for _, b := range data {
+		if b == 0x00 {
+			nulls++
+		}
+	}
+	buf := make([]byte, 0, 1+len(data)+nulls+1)
+	buf = append(buf, 0x01) // bytes type code
+	for _, b := range data {
+		buf = append(buf, b)
+		if b == 0x00 {
+			buf = append(buf, 0xFF)
+		}
+	}
+	buf = append(buf, 0x00) // null terminator
+	return buf
+}
+
+// tupleUnpackBytes decodes a byte string from FDB tuple format.
+// Expects: 0x01 + escaped bytes + 0x00.
+func tupleUnpackBytes(data []byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x01 {
+		return nil, fmt.Errorf("tupleUnpackBytes: expected type code 0x01, got 0x%02X", data[0])
+	}
+	// Unescape: 0x00 0xFF → 0x00.
+	var result []byte
+	i := 1
+	for i < len(data) {
+		if data[i] == 0x00 {
+			if i+1 < len(data) && data[i+1] == 0xFF {
+				result = append(result, 0x00)
+				i += 2
+			} else {
+				break // null terminator
+			}
+		} else {
+			result = append(result, data[i])
+			i++
+		}
+	}
+	return result, nil
+}
+
 // tupleUnpackInt64 decodes an int64 from FDB tuple format.
 // Expects 9 bytes: 0x1C prefix + 8-byte big-endian uint64.
 func tupleUnpackInt64(data []byte) (int64, error) {
@@ -144,7 +192,7 @@ func createTenantInternal(tr Transaction, name []byte) (int64, error) {
 
 	// Check if tenant already exists via nameIndex.
 	// C++: tryGetTenantTransaction → if present, return (existingEntry, false).
-	nameIdxKey := Key(tenantNameIndexKey + string(name))
+	nameIdxKey := append(Key(tenantNameIndexKey), tuplePackBytes(name)...)
 	existing, err := tr.Get(nameIdxKey).Get()
 	if err != nil {
 		return 0, fmt.Errorf("check tenant exists: %w", err)
@@ -236,7 +284,7 @@ func deleteTenantInternal(tr Transaction, name []byte) error {
 	}
 
 	// Look up tenant ID from nameIndex: TupleCodec<int64_t>.
-	nameIdxKey := Key(tenantNameIndexKey + string(name))
+	nameIdxKey := append(Key(tenantNameIndexKey), tuplePackBytes(name)...)
 	idVal, err := tr.Get(nameIdxKey).Get()
 	if err != nil {
 		return fmt.Errorf("read tenant nameIndex: %w", err)
@@ -291,16 +339,22 @@ func listTenantsInternal(tr Transaction) ([]Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := make([]Key, len(kvs))
-	for i, kv := range kvs {
-		names[i] = kv.Key[len(tenantNameIndexKey):]
+	names := make([]Key, 0, len(kvs))
+	for _, kv := range kvs {
+		// Key suffix is tuple-encoded bytes: 0x01 + escaped name + 0x00.
+		suffix := kv.Key[len(tenantNameIndexKey):]
+		name, err := tupleUnpackBytes(suffix)
+		if err != nil {
+			continue // skip malformed entries
+		}
+		names = append(names, Key(name))
 	}
 	return names, nil
 }
 
 // openTenantInternal looks up tenant ID from nameIndex: TupleCodec<int64_t>.
 func openTenantInternal(tr Transaction, name []byte) (int64, error) {
-	nameIdxKey := Key(tenantNameIndexKey + string(name))
+	nameIdxKey := append(Key(tenantNameIndexKey), tuplePackBytes(name)...)
 	idVal, err := tr.Get(nameIdxKey).Get()
 	if err != nil {
 		return 0, fmt.Errorf("read tenant nameIndex: %w", err)
