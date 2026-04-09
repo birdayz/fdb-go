@@ -274,6 +274,22 @@ func TestCommitTransactionRequestMarshalFooter(t *testing.T) {
 				TenantInfo: TenantInfo{TenantId: 0},
 			},
 		},
+		{
+			name: "3 system key mutations (tenant CRUD repro)",
+			req: CommitTransactionRequest{
+				Transaction: CommitTransactionRef{
+					ReadSnapshot: 70000,
+					Mutations: []MutationRef{
+						{MutType: 0, Param1: []byte("\xff/tenant/lastId"), Param2: []byte{3, 0, 0, 0, 0, 0, 0, 0}},
+						{MutType: 0, Param1: []byte("\xff/tenant/map/\x1c\x00\x00\x00\x00\x00\x00\x00\x03"), Param2: []byte("test")},
+						{MutType: 0, Param1: []byte("\xff/tenant/nameIndex/test-tenant-crud"), Param2: []byte{3, 0, 0, 0, 0, 0, 0, 0}},
+					},
+				},
+				Flags:      1, // FLAG_IS_LOCK_AWARE
+				Reply:      ReplyPromise{Token: [16]byte{0xde, 0xad}},
+				TenantInfo: TenantInfo{TenantId: -1},
+			},
+		},
 	}
 
 	for _, tc := range cases {

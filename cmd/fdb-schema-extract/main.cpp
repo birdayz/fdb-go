@@ -1307,6 +1307,28 @@ void generateTestVectors(const char* outDir) {
         req.tenantInfo.tenantId = -1;
         comma(); emitTestVector(out, "CommitTransactionRequest_empty", req);
     }
+    {
+        // 3 system key mutations + lock_aware — matches tenant CRUD pattern
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 70000;
+        req.flags = CommitTransactionRequest::FLAG_IS_LOCK_AWARE;
+        req.transaction.lock_aware = true;
+        std::string lastId = std::string("\xff/tenant/lastId", 16);
+        std::string mapKey = std::string("\xff/tenant/map/\x1c\x00\x00\x00\x00\x00\x00\x00\x03", 24);
+        std::string nameIdx = std::string("\xff/tenant/nameIndex/test-tenant-crud", 35);
+        uint8_t idVal[8] = {3,0,0,0,0,0,0,0};
+        req.transaction.mutations.push_back(
+            req.arena, MutationRef(MutationRef::SetValue,
+                KeyRef(req.arena, lastId), ValueRef(req.arena, StringRef(idVal, 8))));
+        req.transaction.mutations.push_back(
+            req.arena, MutationRef(MutationRef::SetValue,
+                KeyRef(req.arena, mapKey), ValueRef(req.arena, "test"_sr)));
+        req.transaction.mutations.push_back(
+            req.arena, MutationRef(MutationRef::SetValue,
+                KeyRef(req.arena, nameIdx), ValueRef(req.arena, StringRef(idVal, 8))));
+        req.tenantInfo.tenantId = -1;
+        comma(); emitTestVector(out, "CommitTransactionRequest_3_system_keys", req);
+    }
 
     // --- GetReadVersionRequest ---
     {
@@ -1360,6 +1382,9 @@ int main(int argc, char** argv) {
     extractType<ReadOptions>(outDir, "ReadOptions");
     extractType<StorageMetrics>(outDir, "StorageMetrics");
     extractType<WaitMetricsRequest>(outDir, "WaitMetricsRequest");
+    extractType<SplitRangeRequest>(outDir, "SplitRangeRequest");
+    extractType<SplitRangeReply>(outDir, "SplitRangeReply");
+    extractType<TenantMapEntry>(outDir, "TenantMapEntry");
     extractType<Error>(outDir, "Error");
     extractType<KeyValueRef>(outDir, "KeyValueRef");
 

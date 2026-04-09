@@ -48,10 +48,21 @@ Use `--ginkgo.focus=<regex>` to target a specific `Describe`/`It` block. Multipl
 
 **Update TODO.md** as work completes — mark items `[x]` with a short note of what was done.
 
+## Wire types — MUST use the generator
+
+**CRITICAL: Never hand-write wire type structs in `pkg/fdbgo/wire/types/`.** All FDB wire types (request/reply structs) MUST be generated via the C++ schema extractor:
+
+1. Register the type in `cmd/fdb-schema-extract/extract.h` (`REGISTER_GO_TYPE`, `REGISTER_FIELD_NAMES`)
+2. Add `extractType<T>(outDir, "Name")` in `cmd/fdb-schema-extract/main.cpp`
+3. Run `just generate-wire-types` → produces `*_generated.go` files
+4. Run `just gazelle` to update BUILD files
+
+The only exception is `keyrangeref_custom.go` which overrides serialization for the `equalsKeyAfter` optimization (documented, matches C++ exactly). All other wire types are generated.
+
 ## Stack
 
 - **Language**: Go (see go.mod for version)
-- **Database**: FoundationDB via `github.com/apple/foundationdb/bindings/go`
+- **Database**: FoundationDB via pure Go client (`pkg/fdbgo/fdb`) or Apple CGo binding
 - **Serialization**: Protocol Buffers (Apple's original proto definitions)
 - **Proto codegen**: buf — use `just generate` to regenerate
 - **Build system**: Bazel 9 (via bazelisk), MODULE.bazel + gazelle for BUILD files

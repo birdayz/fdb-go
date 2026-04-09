@@ -1,8 +1,8 @@
 package recordlayer
 
 import (
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 )
 
 // IndexingRangeSet wraps a RangeSet scoped to a specific index's build progress.

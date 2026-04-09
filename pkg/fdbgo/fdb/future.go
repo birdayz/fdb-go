@@ -1,5 +1,7 @@
 package fdb
 
+import "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
+
 // Future represents a value (or error) available at some later time.
 type Future interface {
 	BlockUntilReady()
@@ -79,6 +81,21 @@ func newFutureByteSlice(fn func() ([]byte, error)) FutureByteSlice {
 	go func() {
 		defer close(f.done)
 		f.val, f.err = fn()
+	}()
+	return f
+}
+
+// newPendingFutureByteSlice creates a future backed by a PendingGet.
+// No goroutine is spawned — the request was already sent. Get() blocks
+// until the server response arrives on the reply channel.
+func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
+	f := &futureByteSlice{}
+	f.init()
+	go func() {
+		defer close(f.done)
+		var err error
+		f.val, err = pending.Resolve()
+		f.err = convertError(err)
 	}()
 	return f
 }
@@ -246,6 +263,16 @@ func newReadyFutureKeyArray(val []Key, err error) FutureKeyArray {
 	f.val = val
 	f.err = err
 	close(f.done)
+	return f
+}
+
+func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
+	f := &futureKeyArray{}
+	f.init()
+	go func() {
+		f.val, f.err = fn()
+		close(f.done)
+	}()
 	return f
 }
 

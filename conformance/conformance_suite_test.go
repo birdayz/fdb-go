@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +12,7 @@ import (
 
 var (
 	sharedContainer *foundationdbtc.Container
+	sharedDB        gofdb.Database
 	suiteCtx        context.Context
 )
 
@@ -29,11 +31,13 @@ var _ = BeforeSuite(func() {
 	err = sharedContainer.InitializeDatabase(suiteCtx)
 	Expect(err).NotTo(HaveOccurred())
 
-	// Ensure database is ready
-	_, err = sharedContainer.GetFDBDatabase(suiteCtx)
+	// Open ONE database connection for the entire suite.
+	// Pure Go client bootstrap is expensive (~1-2s per connection).
+	// Reusing avoids 422 × bootstrap = 633s+ overhead.
+	sharedDB, err = openGoDatabase(suiteCtx, sharedContainer)
 	Expect(err).NotTo(HaveOccurred())
 
-	GinkgoWriter.Println("✅ Shared FDB container ready")
+	GinkgoWriter.Println("✅ Shared FDB container + database ready")
 })
 
 var _ = AfterSuite(func() {

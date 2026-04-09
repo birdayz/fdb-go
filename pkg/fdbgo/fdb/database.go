@@ -3,6 +3,7 @@ package fdb
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
@@ -65,11 +66,16 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	if apiVersion.Load() == 0 {
 		return Database{}, Error{Code: 2200} // api_version_unset
 	}
-	ctx := context.Background()
-	db, err := client.OpenDatabase(ctx, clusterFile)
+	// Use a temporary timeout for bootstrap only. The database's long-lived
+	// context must NOT be the bootstrap context (which we cancel after connect).
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer bootstrapCancel()
+	db, err := client.OpenDatabase(bootstrapCtx, clusterFile)
 	if err != nil {
 		return Database{}, err
 	}
+	// Long-lived context for the database — not the bootstrap timeout.
+	ctx := context.Background()
 	return Database{d: &internalDB{inner: db, ctx: ctx}}, nil
 }
 
@@ -131,22 +137,31 @@ func (db Database) CreateTransaction() (Transaction, error) {
 
 // Transact runs a transactional function with automatic retry.
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
+	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		// Order matters: unconvertError runs AFTER panicToError (LIFO).
-		// panicToError catches Error panics → sets e = Error{...}.
-		// unconvertError converts Error → *wire.FDBError for retry loop.
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
-		tr := Transaction{t: &transaction{
-			inner: tx,
-			db:    db,
-			ctx:   db.d.ctx,
-			// No commitDone — commit is driven by the retry wrapper after
-			// this closure returns, so we can't signal completion here.
-			// GetVersionstamp() returns an error when commitDone is nil.
-		}}
-		return f(tr)
+		t := &transaction{
+			inner:      tx,
+			db:         db,
+			ctx:        db.d.ctx,
+			commitDone: make(chan struct{}),
+		}
+		lastTx = t
+		return f(Transaction{t: t})
 	})
+	// Signal commitDone — client.Transact auto-committed after the closure
+	// returned. Any GetVersionstamp goroutine blocked on commitDone will unblock.
+	if lastTx != nil && lastTx.commitDone != nil {
+		select {
+		case <-lastTx.commitDone:
+		default:
+			if err != nil {
+				lastTx.commitErr = convertError(err)
+			}
+			close(lastTx.commitDone)
+		}
+	}
 	if err != nil {
 		return nil, convertError(err)
 	}
@@ -178,14 +193,36 @@ func (db Database) Options() DatabaseOptions {
 	return DatabaseOptions{}
 }
 
+// InvalidateGRVCache forces the next transaction to fetch a fresh read version
+// from the GRV proxy instead of using the cached version. Use after external
+// writes (e.g., from a Java conformance server) to ensure Go reads see them.
+func (db Database) InvalidateGRVCache() {
+	db.d.inner.InvalidateGRVCache()
+}
+
 // Tenant operations.
 
 // OpenTenant opens a named tenant on this database.
 // Resolves the tenant name to an ID via the FDB special key space.
 // Not yet implemented — use OpenTenantById for direct ID-based access.
-func (db Database) OpenTenant(_ KeyConvertible) (Tenant, error) {
-	// TODO: resolve name→ID via \xff\xff/management/tenant/map/<name>
-	return Tenant{}, errNotSupported
+// OpenTenant opens a tenant by name. Reads the tenant ID from the system
+// key name index (\xff/tenant/nameIndex/<name>).
+func (db Database) OpenTenant(name KeyConvertible) (Tenant, error) {
+	tenantName := name.FDBKey()
+	if len(tenantName) == 0 || tenantName[0] == 0xff {
+		return Tenant{}, errTenantInvalid
+	}
+	var tenantId int64
+	_, err := db.Transact(func(tr Transaction) (any, error) {
+		tr.Options().SetLockAware()
+		var err error
+		tenantId, err = openTenantInternal(tr, tenantName)
+		return nil, err
+	})
+	if err != nil {
+		return Tenant{}, err
+	}
+	return Tenant{db: db, tenantId: tenantId}, nil
 }
 
 // OpenTenantById opens a tenant by its numeric ID. All operations on the
@@ -195,16 +232,36 @@ func (db Database) OpenTenantById(id int64) Tenant {
 	return Tenant{db: db, tenantId: id}
 }
 
-func (db Database) CreateTenant(_ KeyConvertible) error {
-	return errNotSupported
+// CreateTenant creates a new tenant. Writes to system keys (\xff/tenant/*)
+// matching C++ TenantAPI::createTenantTransaction.
+func (db Database) CreateTenant(name KeyConvertible) error {
+	_, err := db.Transact(func(tr Transaction) (any, error) {
+		tr.Options().SetLockAware()
+		_, err := createTenantInternal(tr, name.FDBKey())
+		return nil, err
+	})
+	return err
 }
 
-func (db Database) DeleteTenant(_ KeyConvertible) error {
-	return errNotSupported
+// DeleteTenant deletes a tenant. Writes to system keys (\xff/tenant/*).
+func (db Database) DeleteTenant(name KeyConvertible) error {
+	_, err := db.Transact(func(tr Transaction) (any, error) {
+		tr.Options().SetLockAware()
+		return nil, deleteTenantInternal(tr, name.FDBKey())
+	})
+	return err
 }
 
+// ListTenants lists all tenants by scanning the name index.
 func (db Database) ListTenants() ([]Key, error) {
-	return nil, errNotSupported
+	result, err := db.Transact(func(tr Transaction) (any, error) {
+		tr.Options().SetLockAware()
+		return listTenantsInternal(tr)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]Key), nil
 }
 
 // GetClientStatus is not yet implemented.

@@ -8,10 +8,16 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sync"
 	"time"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
+
+// ErrNeedFullRYW is returned by GetPipelined when the key has pending atomics
+// that require a server read + merge through the full ryw.get() path.
+var ErrNeedFullRYW = errors.New("need full RYW path")
 
 // FDB error codes.
 const (
@@ -123,6 +129,10 @@ type Transaction struct {
 	hasCommitted     bool // true after at least one successful commit
 	txnBatchId       uint16
 
+	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
+	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
+	// use goroutines, so concurrent Get/Set calls on the same transaction race.
+	conflictMu     sync.Mutex
 	mutations      []Mutation
 	readConflicts  []KeyRange
 	writeConflicts []KeyRange
@@ -273,9 +283,101 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+		tx.addReadConflict(key, keyAfterBytes(key))
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
+}
+
+// GetPipelined sends a GetValue request and returns a PendingGet that can be
+// resolved later. This enables true pipelining: send N requests without
+// waiting, then collect all N responses. Matches C++ client pipelining.
+//
+// Returns (nil, nil, nil) for RYW cache hits (value is returned in val).
+// Returns (nil, pending, nil) for server requests (call pending.Resolve() to get value).
+// Returns (nil, nil, err) for errors during send.
+func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte, pending *PendingGet, err error) {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return nil, nil, err
+	}
+	if !isSystemKey(key) {
+		tx.addReadConflict(key, keyAfterBytes(key))
+	}
+
+	// Check RYW cache.
+	tx.ryw.mu.Lock()
+	if entry, ok := tx.ryw.writes[string(key)]; ok {
+		if !entry.hasAtomics {
+			v := entry.value
+			tx.ryw.mu.Unlock()
+			return v, nil, nil
+		}
+		// Has atomics — need full ryw.get() to merge server value with atomics.
+		tx.ryw.mu.Unlock()
+		return nil, nil, ErrNeedFullRYW
+	}
+	isClr := tx.ryw.isClearedLocked(key)
+	tx.ryw.mu.Unlock()
+	if isClr {
+		return nil, nil, nil
+	}
+
+	// Locate shard.
+	loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	if locErr != nil {
+		return nil, nil, fmt.Errorf("locate key: %w", locErr)
+	}
+	if len(loc.Servers) == 0 {
+		return nil, nil, fmt.Errorf("no storage servers for key")
+	}
+
+	// Send request without waiting for response.
+	for _, server := range loc.Servers {
+		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
+		if dialErr != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
+			cancelReply()
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		rctx, rcancel := context.WithTimeout(ctx, DefaultRPCTimeout)
+		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: rctx, cancel: rcancel}, nil
+	}
+	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// PendingGet represents a GetValue request that has been sent but not yet resolved.
+type PendingGet struct {
+	replyCh     <-chan transport.Response
+	cancelReply func()
+	conn        *transport.Conn
+	ctx         context.Context
+	cancel      context.CancelFunc
+	flushed     bool
+}
+
+// Resolve blocks until the response arrives or timeout.
+// Flushes the write buffer on first call to ensure the request reaches the server.
+func (p *PendingGet) Resolve() ([]byte, error) {
+	if !p.flushed {
+		p.flushed = true
+		p.conn.Flush()
+	}
+	defer p.cancel()
+	select {
+	case resp := <-p.replyCh:
+		if resp.Err != nil {
+			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+		}
+		return parseGetValueReply(resp.Body)
+	case <-p.ctx.Done():
+		p.cancelReply()
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	}
 }
 
 // GetKey resolves a key selector to the actual key in the database.
@@ -284,7 +386,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		return nil, err
 	}
 	if !isSystemKey(selectorKey) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: selectorKey, End: append(selectorKey, 0)})
+		tx.addReadConflict(selectorKey, keyAfterBytes(selectorKey))
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
@@ -313,7 +415,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	// C++ client validates inverted ranges and handles \xff\xff keys internally
 	// without adding resolver conflict ranges.
 	if bytes.Compare(begin, end) <= 0 && !isSystemKey(begin) && !isSystemKey(end) {
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+		tx.addReadConflict(begin, end)
 	}
 
 	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
@@ -321,12 +423,14 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 
 // Set writes a key-value pair.
 func (tx *Transaction) Set(key, value []byte) {
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutSetValue,
 		Key:   key,
 		Value: value,
 	})
-	tx.addWriteConflict(key, append(key, 0))
+	tx.conflictMu.Unlock()
+	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.set(key, value)
 }
 
@@ -335,11 +439,13 @@ func (tx *Transaction) Clear(key []byte) {
 	end := make([]byte, len(key)+1)
 	copy(end, key)
 	end[len(key)] = 0
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   key,
 		Value: end,
 	})
+	tx.conflictMu.Unlock()
 	tx.addWriteConflict(key, end)
 	tx.ryw.clear(key)
 }
@@ -350,11 +456,13 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  MutClearRange,
 		Key:   begin,
 		Value: end,
 	})
+	tx.conflictMu.Unlock()
 	tx.addWriteConflict(begin, end)
 	tx.ryw.clearRange(begin, end)
 	return nil
@@ -362,13 +470,15 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 
 // Atomic performs an atomic mutation.
 func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
+	tx.conflictMu.Lock()
 	tx.mutations = append(tx.mutations, Mutation{
 		Type:  op,
 		Key:   key,
 		Value: operand,
 	})
+	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflict(key, append(key, 0))
+	tx.addWriteConflict(key, keyAfterBytes(key))
 	tx.ryw.atomic(op, key, operand)
 }
 
@@ -575,12 +685,44 @@ func (tx *Transaction) checkTimeout() error {
 	return nil
 }
 
+// addConflictMu protects readConflicts/writeConflicts from concurrent append.
+// The Apple C binding uses a single-threaded actor model so doesn't need this.
+// Our Go futures use goroutines, so concurrent Get/Set calls on the same
+// transaction race on the conflict slices.
+
+// keyAfterBytes returns a copy of key with \x00 appended.
+// Always allocates — safe for storing in conflict ranges.
+func keyAfterBytes(key []byte) []byte {
+	r := make([]byte, len(key)+1)
+	copy(r, key)
+	return r
+}
+
+// addReadConflict adds a read conflict range with defensive copies.
+func (tx *Transaction) addReadConflict(begin, end []byte) {
+	b := make([]byte, len(begin))
+	copy(b, begin)
+	e := make([]byte, len(end))
+	copy(e, end)
+	tx.conflictMu.Lock()
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: b, End: e})
+	tx.conflictMu.Unlock()
+}
+
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	// Defensive copy: callers use append(key, 0) which may alias the key slice.
+	// Without a copy, later mutations on the same backing array corrupt the range.
+	b := make([]byte, len(begin))
+	copy(b, begin)
+	e := make([]byte, len(end))
+	copy(e, end)
+	tx.conflictMu.Lock()
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: b, End: e})
+	tx.conflictMu.Unlock()
 }
 
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
@@ -663,7 +805,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 
 // AddReadConflictKey adds a read conflict on a single key.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	tx.addReadConflict(key, keyAfterBytes(key))
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
@@ -672,13 +814,13 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
+	tx.addWriteConflict(begin, end)
 	return nil
 }
 
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: key, End: append(key, 0)})
+	tx.addWriteConflict(key, keyAfterBytes(key))
 }
 
 // reset clears transaction state for retry, preserving retryCount, backoff,

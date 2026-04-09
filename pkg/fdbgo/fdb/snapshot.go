@@ -55,8 +55,19 @@ func (sn Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
 	})
 }
 
-func (sn Snapshot) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, errNotSupported)
+func (sn Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	return newFutureKeyArray(func() ([]Key, error) {
+		begin, end := r.FDBRangeKeys()
+		points, err := sn.s.tx.inner.GetRangeSplitPoints(sn.s.tx.ctx, begin.FDBKey(), end.FDBKey(), chunkSize)
+		if err != nil {
+			return nil, convertError(err)
+		}
+		keys := make([]Key, len(points))
+		for i, p := range points {
+			keys[i] = Key(p)
+		}
+		return keys, nil
+	})
 }
 
 func (sn Snapshot) Options() TransactionOptions {

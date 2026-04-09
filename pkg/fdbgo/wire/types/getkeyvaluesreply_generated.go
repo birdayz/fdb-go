@@ -24,8 +24,8 @@ var GetKeyValuesReplyVTable = wire.VTable{18, 31, 4, 28, 20, 24, 12, 29, 30}
 const GetKeyValuesReplyFileID uint32 = 1783066
 
 var GetKeyValuesReplyVTableClosure = []wire.VTable{
-	{6, 8, 4},
 	{6, 6, 4},
+	{6, 8, 4},
 	{18, 31, 4, 28, 20, 24, 12, 29, 30},
 }
 

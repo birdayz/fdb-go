@@ -1692,7 +1692,80 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 - [x] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 merged)
 - [x] **HIGH** — Tenant support: thread tenantId through all wire requests, location cache tenant-aware. `Tenant` facade with `Transact/CreateTransaction`. (PR #18 merged)
 - [ ] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. (PR #15 closed — needs fresh implementation)
-- [ ] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen. (PR #16 closed — needs fresh implementation)
+- [x] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen.
+
+### Record layer integration with pure Go client
+
+**Status: 2305/2309 record layer tests pass (0 fail, 4 skip performance-only).**
+
+Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/fdb`. Tuple and subspace vendored at `pkg/fdbgo/fdb/tuple/` and `pkg/fdbgo/fdb/subspace/`.
+
+#### Done
+- [x] **CRITICAL — ConnectPacket canonicalRemotePort** — was sending TCP source port (random ephemeral), causing FDB server assertion crash through socat proxy. C++ pure clients send port=0. Fixed: `CanonicalRemotePort: 0`. Root cause of ALL test hangs.
+- [x] **RYW cache** — `ryw.go`: Set/Clear/ClearRange/Atomic tracking, Get/GetRange interception with merge, thread-safe (sync.Mutex). Fixed 770→0 failures.
+- [x] **RYW atomic ops** — all mirror C++ Atomic.h exactly: doAdd, doAnd(V2), doOr, doXor, doMax, doMin(V2), doByteMax, doByteMin, doAppendIfFits, doCompareAndClear.
+- [x] **API version upgrade** — Min→MinV2, And→AndV2 for API >= 510 (C++ atomicOp).
+- [x] **GetVersionstamp in Transact()** — `commitDone` channel initialized, closed after auto-commit.
+- [x] **Empty value Set** — `make([]byte, len(value))` instead of `append(nil, value...)`.
+- [x] **StreamingMode constants** — fixed all values to match Apple binding.
+- [x] **GetRangeSplitPoints** — SplitRangeRequest/Reply wire types generated, endpoint 12.
+
+#### Remaining work — marathon to all-green
+
+##### CRITICAL — CI blockers (3 failures in CI run)
+
+- [x] **HIGH — HNSW 500-vector test timeout — FIXED** — Root cause: batched `Get` calls (N futures pipelined) were 36x slower than CGo because each goroutine did a full send+wait round-trip sequentially. Fix: `GetPipelined` sends the request frame synchronously (no goroutine), defers TCP flush; `PendingGet.Resolve()` flushes once then waits. All N frames go to the write buffer before any flush, so they reach the server in one TCP write. Result: batch-10 latency 11ms → 1.3ms (8.5x improvement). 500-vector test: timeout → passes in 21s. Also added `TCP_NODELAY`, `bufio.Writer` on connection, `maxRelocateRetries=5`.
+- [ ] **MEDIUM — Pure Go client: remaining 3-4x perf gap vs CGo** — Batch-10 Get: Go 1.3ms vs CGo 316µs (4.1x). 5-agent review identified these optimization targets:
+
+  **Write coalescing (conn.go) — main cause of gap:**
+  - [ ] **(a) Dedicated flush goroutine (C++ connectionWriter port)** — `SendFrame` writes to buffer + signals channel (no flush). Dedicated goroutine sleeps 10-20µs (C++ `MIN_COALESCE_DELAY`/`MAX_COALESCE_DELAY`), then flushes all accumulated frames in one `write()` syscall. Goroutines are cooperatively scheduled (same model as Flow coroutines) so identical architecture works. Currently: N write syscalls per batch. Target: 1.
+  - [ ] **(b) `net.Buffers` (writev)** — scatter-gather I/O to send multiple frames in one syscall without contiguous buffer copy.
+
+  **Location cache (locality.go) — O(N) linear scan:**
+  - [ ] **(c) Replace flat slice with interval tree** — `locate()` scans all 600K-max entries linearly. C++ uses KeyRangeMap (O(log N)). Replace with B-tree or interval tree (`github.com/google/btree`).
+  - [ ] **(d) LRU eviction** — current random eviction (`rand.Intn`) evicts hot entries. C++ uses LRU.
+  - [ ] **(e) invalidateRange in-place deletion** — currently copies entire slice.
+
+  **GRV batcher (grv.go):**
+  - [ ] **(f) Per-priority batchers** — single batcher for all priorities. SYSTEM_IMMEDIATE elevates the whole batch. C++ uses separate batchers (DEFAULT, BATCH, SYSTEM_IMMEDIATE).
+  - [ ] **(g) Non-blocking flush** — `flush()` holds mutex during RPC (~200µs), blocking all new GRV requests. C++ uses non-blocking queue.
+
+  **Get pipelining (transaction.go, future.go):**
+  - [ ] **(h) Eliminate goroutine per PendingGet** — `newPendingFutureByteSlice` spawns goroutine just to call `Resolve()`. Inline into `BlockUntilReady` directly.
+  - [ ] **(i) Batch `locate()` for multi-shard Gets** — 10 Gets to different shards = 10 serial proxy RPCs. C++ batches location lookups in one `GetKeyServerLocations`.
+  - [ ] **(j) RYW Set→Clear gap** — `GetPipelined` checks `hasAtomics` but not cleared-after-set. Key in `cleared` ranges falls through to stale server read.
+
+  **applyTenantPrefix (commitpath.go):**
+  - [ ] **(k) Pre-allocate prefixed keys** — `append(prefix[:], m.Param1...)` allocates per mutation. C++ arena-allocates once. 100 mutations = 100 allocs vs 1.
+  - [ ] **(l) Intern metadataVersionKey** — `bytes.Equal` (18 bytes) on every mutation. C++ uses pointer comparison.
+- [x] **HIGH — Tenant CRUD via system keys** — Full 1:1 port of C++ `TenantAPI::createTenantTransaction` / `deleteTenantTransaction`. All codec formats match C++: TenantIdCodec (raw 8-byte BE), TupleCodec<int64_t> (nameIndex, lastTenantId), BinaryCodec (count), ObjectCodec+IncludeVersion (tenantMap), SetVersionstampedValue (lastModification). All checks: `checkTenantMode`, prefix emptiness (create → `tenant_prefix_allocator_conflict`, delete → `tenant_not_empty`), count validation (`cluster_no_capacity`, MAX=1M), name validation (no `\xff` prefix). `applyTenantPrefix` on commit (8-byte BE prefix on mutations/conflict ranges). Test: `TestTenantCRUD` covers create, list, open, read/write through tenant, duplicate create, non-empty delete, clear+delete, double delete.
+- [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
+- [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
+- [ ] **LOW — Tenant ID prefix** (multi-cluster ID partitioning) — `tenantIdPrefix` at `\xff/tenant/idPrefix`, shifts prefix into upper 2 bytes of 8-byte ID (`tenantIdPrefix << 48`). `computeNextTenantId` validates 48-bit space. Standalone clusters use prefix=0.
+- [ ] **CRITICAL — `bootstrap()` hangs forever** — `gofdbhelper.OpenDatabase` calls `bootstrap()` which retries forever on `failed_to_progress` (1216). The retry loop has no deadline when called with `context.Background()`. Affects: `foundationdb_test` (TIMEOUT 300s), `conformance_test` (TIMEOUT 900s). Fix: add max retry count or derive deadline from the provided context.
+- [ ] **CRITICAL — Conformance `SetupTenantEnvironment` hangs** — same root cause as bootstrap hang. `gofdbhelper.OpenDatabase` called per-spec in `BeforeEach`, each call retries bootstrap forever. Fix: same as above.
+
+##### A) Record layer integration tests
+- [x] 2305/2309 pass, 0 fail
+- [x] OnlineIndexer limit=1 — PASSES (6s). Was never broken, only timed out when run alongside hanging 500-vector test.
+- [x] VectorIndex "medium-scale search with 500 vectors" — FIXED. Was 36x slower than CGo due to missing request pipelining. `GetPipelined` + deferred flush fix brought it from timeout to 21s.
+- [ ] million_record — tagged `manual`, never runs in CI.
+
+##### B) Conformance tests
+- [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
+- [ ] Tenant conformance: tenant CRUD now via system keys (no fdbcli). Needs conformance test wiring.
+
+##### C) Chaos tests
+- [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.
+- [ ] Chaos tests may timeout with pure Go client (slower per-transaction). Monitor.
+
+##### D) fdbgo unit tests
+- [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
+
+#### Architecture
+- `gofdbhelper` package provides `OpenDatabase`/`CreateTenant` without import cycle.
+- `just test` uses `--local_test_jobs=1` to prevent Docker resource exhaustion.
+- `just fmt`/`just lint` use Bazel-managed gofumpt.
 
 ### Way of working
 

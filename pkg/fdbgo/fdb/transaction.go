@@ -38,9 +38,24 @@ type Transaction struct {
 // key does not exist. The read is performed asynchronously.
 func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 	inner, ctx := tr.t.inner, tr.t.ctx
+	// Try pipelined path first: send the request synchronously (no goroutine),
+	// return a future backed by the reply channel. This enables true pipelining —
+	// N Gets send N frames immediately, then N future.Get() calls collect responses.
+	val, pending, err := inner.GetPipelined(ctx, key.FDBKey())
+	if err == nil {
+		if pending != nil {
+			// Server request in flight — future resolves when response arrives.
+			return newPendingFutureByteSlice(pending)
+		}
+		// RYW cache hit or cleared key.
+		return newReadyFutureByteSlice(val, nil)
+	}
+	// GetPipelined returned errNeedFullRYW — key has pending atomics that
+	// require a server read + merge. Fall back to goroutine-based Get which
+	// goes through the full ryw.get() path.
 	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := inner.Get(ctx, key.FDBKey())
-		return v, convertError(err)
+		v, gerr := inner.Get(ctx, key.FDBKey())
+		return v, convertError(gerr)
 	})
 }
 
@@ -132,9 +147,19 @@ func (tr Transaction) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
 }
 
 // GetRangeSplitPoints suggests split points for the given key range.
-// Not yet implemented in the pure Go client.
-func (tr Transaction) GetRangeSplitPoints(_ ExactRange, _ int64) FutureKeyArray {
-	return newReadyFutureKeyArray(nil, errNotSupported)
+func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	return newFutureKeyArray(func() ([]Key, error) {
+		begin, end := r.FDBRangeKeys()
+		points, err := tr.t.inner.GetRangeSplitPoints(tr.t.ctx, begin.FDBKey(), end.FDBKey(), chunkSize)
+		if err != nil {
+			return nil, convertError(err)
+		}
+		keys := make([]Key, len(points))
+		for i, p := range points {
+			keys[i] = Key(p)
+		}
+		return keys, nil
+	})
 }
 
 // Snapshot returns a Snapshot view of this transaction.
@@ -181,11 +206,12 @@ func (tr Transaction) Add(key KeyConvertible, param []byte) {
 }
 
 func (tr Transaction) And(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutAnd, key.FDBKey(), param)
+	// C++ ReadYourWritesTransaction::atomicOp upgrades And → AndV2 for API >= 510.
+	tr.t.inner.Atomic(client.MutAndV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) BitAnd(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutAnd, key.FDBKey(), param)
+	tr.t.inner.Atomic(client.MutAndV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) Or(key KeyConvertible, param []byte) {
@@ -209,7 +235,8 @@ func (tr Transaction) Max(key KeyConvertible, param []byte) {
 }
 
 func (tr Transaction) Min(key KeyConvertible, param []byte) {
-	tr.t.inner.Atomic(client.MutMin, key.FDBKey(), param)
+	// C++ ReadYourWritesTransaction::atomicOp upgrades Min → MinV2 for API >= 510.
+	tr.t.inner.Atomic(client.MutMinV2, key.FDBKey(), param)
 }
 
 func (tr Transaction) ByteMax(key KeyConvertible, param []byte) {
@@ -332,20 +359,6 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 // Watch is not yet implemented.
 func (tr Transaction) Watch(_ KeyConvertible) FutureNil {
 	return newReadyFutureNil(errNotSupported)
-}
-
-// Tenant operations (stubs).
-
-func (tr Transaction) CreateTenant(_ KeyConvertible) error {
-	return errNotSupported
-}
-
-func (tr Transaction) DeleteTenant(_ KeyConvertible) error {
-	return errNotSupported
-}
-
-func (tr Transaction) ListTenants() ([]Key, error) {
-	return nil, errNotSupported
 }
 
 // LocalityGetAddressesForKey is not yet implemented.

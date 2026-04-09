@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"context"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

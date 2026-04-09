@@ -141,3 +141,176 @@ func TestReadYourOwnWrite_AtomicAdd(t *testing.T) {
 		t.Fatalf("Transact: %v", err)
 	}
 }
+
+// TestReadYourOwnWrite_SetClearGetRange tests the pattern used by PermutedMinMax:
+// Set 3 keys, Clear 1, then GetRange should only return the 2 remaining.
+func TestReadYourOwnWrite_SetClearGetRange(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("ryw-scgr-a"), []byte("1"))
+		tr.Set(fdb.Key("ryw-scgr-b"), []byte("2"))
+		tr.Set(fdb.Key("ryw-scgr-c"), []byte("3"))
+
+		tr.Clear(fdb.Key("ryw-scgr-b"))
+
+		rr := tr.GetRange(
+			fdb.KeyRange{Begin: fdb.Key("ryw-scgr-a"), End: fdb.Key("ryw-scgr-d")},
+			fdb.RangeOptions{},
+		)
+		kvs, err := rr.GetSliceWithError()
+		if err != nil {
+			t.Fatalf("GetRange: %v", err)
+		}
+		if len(kvs) != 2 {
+			t.Errorf("Set 3, Clear 1, GetRange returned %d results, want 2", len(kvs))
+			for i, kv := range kvs {
+				t.Logf("  [%d] key=%q val=%q", i, kv.Key, kv.Value)
+			}
+			return nil, nil
+		}
+		if string(kvs[0].Key) != "ryw-scgr-a" || string(kvs[1].Key) != "ryw-scgr-c" {
+			t.Errorf("wrong keys: got %q and %q", kvs[0].Key, kvs[1].Key)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_SetClearIterator tests that the RangeIterator correctly
+// filters cleared entries across multiple batches.
+func TestReadYourOwnWrite_SetClearIterator(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("ryw-iter-a"), []byte("1"))
+		tr.Set(fdb.Key("ryw-iter-b"), []byte("2"))
+		tr.Set(fdb.Key("ryw-iter-c"), []byte("3"))
+
+		tr.Clear(fdb.Key("ryw-iter-b"))
+
+		rr := tr.GetRange(
+			fdb.KeyRange{Begin: fdb.Key("ryw-iter-a"), End: fdb.Key("ryw-iter-d")},
+			fdb.RangeOptions{Mode: fdb.StreamingModeSmall},
+		)
+		iter := rr.Iterator()
+		var keys []string
+		for iter.Advance() {
+			kv := iter.MustGet()
+			keys = append(keys, string(kv.Key))
+		}
+		if len(keys) != 2 {
+			t.Errorf("iterator: got %d keys, want 2: %v", len(keys), keys)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_PermutedMinMaxPattern reproduces the exact PermutedMinMax
+// test failure: save 3 records (via Set), delete the highest (via Clear),
+// reverse scan with limit=1 to find the new max.
+// Uses tuple-packed keys to match the real index format.
+func TestReadYourOwnWrite_PermutedMinMaxPattern(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		prefix := fdb.Key("ryw-pmm-")
+
+		// Simulate 3 VALUE index entries: [group=100, value=1], [group=100, value=5], [group=100, value=10]
+		key1 := append(append([]byte(nil), prefix...), []byte{1}...)
+		key5 := append(append([]byte(nil), prefix...), []byte{5}...)
+		key10 := append(append([]byte(nil), prefix...), []byte{10}...)
+
+		// INSERT all 3
+		tr.Set(fdb.Key(key1), []byte{})
+		tr.Set(fdb.Key(key5), []byte{})
+		tr.Set(fdb.Key(key10), []byte{})
+
+		// Verify max = key10 (reverse scan limit=1)
+		rr := tr.GetRange(
+			fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(append(append([]byte(nil), prefix...), 0xFF))},
+			fdb.RangeOptions{Reverse: true, Limit: 1},
+		)
+		kvs, err := rr.GetSliceWithError()
+		if err != nil {
+			t.Fatalf("first scan: %v", err)
+		}
+		if len(kvs) != 1 || kvs[0].Key[len(prefix)] != 10 {
+			t.Fatalf("first scan: expected key10, got %v", kvs)
+		}
+
+		// DELETE key10 (standard index clear)
+		tr.Clear(fdb.Key(key10))
+
+		// Also Get to check (like permuted maintainer does)
+		val := tr.Get(fdb.Key(key10)).MustGet()
+		if val != nil {
+			t.Errorf("Get after Clear should return nil, got %v", val)
+		}
+
+		// Reverse scan limit=1 should now return key5
+		rr2 := tr.GetRange(
+			fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(append(append([]byte(nil), prefix...), 0xFF))},
+			fdb.RangeOptions{Reverse: true, Limit: 1},
+		)
+		kvs2, err := rr2.GetSliceWithError()
+		if err != nil {
+			t.Fatalf("second scan: %v", err)
+		}
+		if len(kvs2) != 1 {
+			t.Errorf("second scan: expected 1 result, got %d", len(kvs2))
+			return nil, nil
+		}
+		if kvs2[0].Key[len(prefix)] != 5 {
+			t.Errorf("second scan: expected key5, got key=%v (last byte=%d)", kvs2[0].Key, kvs2[0].Key[len(prefix)])
+		}
+
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_SetClearGetRangeReverse tests reverse scan after
+// Set + Clear — the PermutedMinMax getExtremum pattern.
+func TestReadYourOwnWrite_SetClearGetRangeReverse(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("ryw-rev-a"), []byte("1"))
+		tr.Set(fdb.Key("ryw-rev-b"), []byte("2"))
+		tr.Set(fdb.Key("ryw-rev-c"), []byte("3"))
+
+		tr.Clear(fdb.Key("ryw-rev-c"))
+
+		rr := tr.GetRange(
+			fdb.KeyRange{Begin: fdb.Key("ryw-rev-a"), End: fdb.Key("ryw-rev-d")},
+			fdb.RangeOptions{Reverse: true, Limit: 1},
+		)
+		kvs, err := rr.GetSliceWithError()
+		if err != nil {
+			t.Fatalf("GetRange reverse: %v", err)
+		}
+		if len(kvs) != 1 {
+			t.Errorf("expected 1 result, got %d", len(kvs))
+			return nil, nil
+		}
+		if string(kvs[0].Key) != "ryw-rev-b" {
+			t.Errorf("reverse scan after clear: got key=%q, want ryw-rev-b", kvs[0].Key)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}

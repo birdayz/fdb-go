@@ -3,7 +3,7 @@ package recordlayer
 import (
 	"time"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // IsolationLevel represents the transaction isolation level.

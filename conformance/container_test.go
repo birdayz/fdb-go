@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
-	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
@@ -38,8 +39,8 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
-	// Get FDB database connection
-	db, err := container.GetFDBDatabase(ctx)
+	// Get pure Go FDB database connection
+	db, err := openGoDatabase(ctx, container)
 	if err != nil {
 		_ = container.Terminate(ctx)
 		return nil, fmt.Errorf("failed to get database connection: %w", err)
@@ -87,6 +88,7 @@ func (env *TestEnvironment) Cleanup(ctx context.Context) error {
 // and provides isolation via FDB tenants
 type TenantEnvironment struct {
 	Container   *foundationdbtc.Container
+	DB          gofdb.Database
 	RecordDB    *recordlayer.FDBDatabase
 	MetaData    *recordlayer.RecordMetaData
 	Keyspace    subspace.Subspace
@@ -97,8 +99,11 @@ type TenantEnvironment struct {
 // SetupTenantEnvironment creates a tenant-isolated test environment
 // This reuses the provided container and creates an FDB tenant for isolation
 func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Container, tenantName string) (*TenantEnvironment, error) {
-	// Create tenant
-	tenant, err := container.CreateTenant(ctx, tenantName)
+	// Reuse the shared database connection (opened once in BeforeSuite).
+	db := sharedDB
+
+	// Create tenant via fdbcli and open with pure Go client
+	tenant, err := createGoTenant(ctx, container, db, tenantName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tenant: %w", err)
 	}
@@ -109,14 +114,14 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 	// Create metadata
 	metaData, err := createOrderMetaData()
 	if err != nil {
-		_ = container.DeleteTenant(ctx, tenantName)
+		_, _, _ = container.Exec(ctx, []string{"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", tenantName)})
 		return nil, fmt.Errorf("failed to create metadata: %w", err)
 	}
 
 	// Get cluster file
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
-		_ = container.DeleteTenant(ctx, tenantName)
+		_, _, _ = container.Exec(ctx, []string{"/usr/bin/fdbcli", "--exec", fmt.Sprintf("deletetenant %s", tenantName)})
 		return nil, fmt.Errorf("failed to get cluster file: %w", err)
 	}
 
@@ -125,6 +130,7 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 
 	return &TenantEnvironment{
 		Container:   container,
+		DB:          db,
 		RecordDB:    recordDB,
 		MetaData:    metaData,
 		Keyspace:    keyspace,
@@ -134,11 +140,59 @@ func SetupTenantEnvironment(ctx context.Context, container *foundationdbtc.Conta
 }
 
 // Cleanup deletes the tenant (not the container)
-func (env *TenantEnvironment) Cleanup(ctx context.Context) error {
-	if env.Container != nil && env.TenantName != "" {
-		return env.Container.DeleteTenant(ctx, env.TenantName)
+func (env *TenantEnvironment) Cleanup(_ context.Context) error {
+	if env.TenantName != "" {
+		// Open tenant and clear all data first (tenant_not_empty check on delete).
+		tenant, err := env.DB.OpenTenant(gofdb.Key(env.TenantName))
+		if err == nil {
+			_, _ = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+				tr.ClearRange(gofdb.KeyRange{Begin: gofdb.Key(""), End: gofdb.Key("\xff")})
+				return nil, nil
+			})
+		}
+		// Delete tenant via native API. Ignore errors — best-effort cleanup.
+		_ = env.DB.DeleteTenant(gofdb.Key(env.TenantName))
 	}
 	return nil
+}
+
+func openGoDatabase(ctx context.Context, container *foundationdbtc.Container) (gofdb.Database, error) {
+	path, err := container.ClusterFilePath(ctx)
+	if err != nil {
+		return gofdb.Database{}, err
+	}
+	gofdb.MustAPIVersion(730)
+	return gofdb.OpenDatabase(path)
+}
+
+func createGoTenant(ctx context.Context, container *foundationdbtc.Container, db gofdb.Database, name string) (gofdb.Tenant, error) {
+	// Create tenant via native system key CRUD (no fdbcli).
+	if err := db.CreateTenant(gofdb.Key(name)); err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("create tenant %q: %w", name, err)
+	}
+
+	// Open tenant — this reads the tenant ID from system keys.
+	tenant, err := db.OpenTenant(gofdb.Key(name))
+	if err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("open tenant %q: %w", name, err)
+	}
+	fmt.Printf("[TENANT] %s → id=%d\n", name, tenant.ID())
+
+	// Smoke test: write + read through the tenant. Use Set+Get (point ops)
+	// to verify tenant mapping works. GetRange hangs — known issue under investigation.
+	_, err = tenant.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(gofdb.Key("_init"), []byte("1"))
+		v := tr.Get(gofdb.Key("_init")).MustGet()
+		if string(v) != "1" {
+			return nil, fmt.Errorf("smoke test: got %q, want %q", v, "1")
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return gofdb.Tenant{}, fmt.Errorf("tenant %q smoke test: %w", name, err)
+	}
+
+	return tenant, nil
 }
 
 // createOrderMetaData creates RecordMetaData for the Order protobuf schema

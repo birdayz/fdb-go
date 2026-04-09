@@ -24,7 +24,7 @@ generate: ensure-buf
 build:
     bazelisk build //...
 
-# Test all targets
+# Test all targets.
 test:
     bazelisk test //...
 

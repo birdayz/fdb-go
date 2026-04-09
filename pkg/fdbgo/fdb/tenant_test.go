@@ -1,0 +1,140 @@
+package fdb_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+)
+
+// openTestDBWithTenants starts a container with tenant_mode=optional_experimental.
+func openTestDBWithTenants(t *testing.T) (fdb.Database, *tcfdb.Container) {
+	t.Helper()
+	fdb.MustAPIVersion(730)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	container, err := tcfdb.Run(ctx, "")
+	if err != nil {
+		t.Fatalf("start FDB container: %v", err)
+	}
+
+	err = container.InitializeDatabase(ctx)
+	if err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	path, err := container.ClusterFilePath(ctx)
+	if err != nil {
+		t.Fatalf("cluster file: %v", err)
+	}
+
+	db, err := fdb.OpenDatabase(path)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db, container
+}
+
+func TestTenantCRUD(t *testing.T) {
+	t.Parallel()
+	db, _ := openTestDBWithTenants(t)
+
+	name := fdb.Key("test-tenant-crud")
+
+	// Create
+	err := db.CreateTenant(name)
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	// List — should contain our tenant
+	tenants, err := db.ListTenants()
+	if err != nil {
+		t.Fatalf("ListTenants: %v", err)
+	}
+	found := false
+	for _, tn := range tenants {
+		if string(tn) == string(name) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("tenant %q not in list: %v", name, tenants)
+	}
+
+	// Open — should return a valid tenant handle
+	tenant, err := db.OpenTenant(name)
+	if err != nil {
+		t.Fatalf("OpenTenant: %v", err)
+	}
+
+	// Write+read through tenant
+	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("tenant-key"), []byte("tenant-value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tenant Set: %v", err)
+	}
+
+	result, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		return tr.Get(fdb.Key("tenant-key")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("tenant Get: %v", err)
+	}
+	if string(result.([]byte)) != "tenant-value" {
+		t.Fatalf("got %q, want %q", result, "tenant-value")
+	}
+
+	// GetRange through tenant
+	rangeResult, err := tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")}, fdb.RangeOptions{Limit: 10})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("tenant GetRange: %v", err)
+	}
+	kvs := rangeResult.([]fdb.KeyValue)
+	if len(kvs) != 1 || string(kvs[0].Key) != "tenant-key" {
+		t.Fatalf("tenant GetRange: got %d keys, want 1 (tenant-key)", len(kvs))
+	}
+
+	// Duplicate create should fail
+	err = db.CreateTenant(name)
+	if err == nil {
+		t.Fatal("expected error on duplicate CreateTenant")
+	}
+
+	// Delete with data should fail (tenant_not_empty)
+	err = db.DeleteTenant(name)
+	if err == nil {
+		t.Fatal("expected tenant_not_empty error")
+	}
+
+	// Clear tenant data first
+	_, err = tenant.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(""), End: fdb.Key("\xff")})
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("clear tenant data: %v", err)
+	}
+
+	// Now delete should succeed
+	err = db.DeleteTenant(name)
+	if err != nil {
+		t.Fatalf("DeleteTenant: %v", err)
+	}
+
+	// Delete again should fail
+	err = db.DeleteTenant(name)
+	if err == nil {
+		t.Fatal("expected error on double DeleteTenant")
+	}
+}

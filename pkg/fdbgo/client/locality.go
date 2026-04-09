@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand"
@@ -186,6 +187,9 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, 
 				for i := range entries {
 					entries[i].tenantId = tenantId
 				}
+				// Proxy returns absolute shard boundaries (with tenant prefix).
+				// Strip prefix so cache uses tenant-relative keys.
+				stripTenantPrefix(entries, tenantId)
 				lc.mu.Lock()
 				lc.entries = append(lc.entries, entries...)
 				for len(lc.entries) > lc.maxSize {
@@ -307,6 +311,26 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 	}
 }
 
+// stripTenantPrefix removes the 8-byte tenant prefix from shard boundaries.
+// The FDB proxy returns absolute shard ranges (with tenant prefix prepended).
+// Our cache and lookup use tenant-relative keys, so we strip the prefix.
+// C++ caches absolute and looks up absolute; we cache relative and look up relative.
+func stripTenantPrefix(entries []locationEntry, tenantId int64) {
+	if tenantId < 0 {
+		return // no tenant, boundaries are already in normal key space
+	}
+	var prefix [8]byte
+	binary.BigEndian.PutUint64(prefix[:], uint64(tenantId))
+	for i := range entries {
+		if bytes.HasPrefix(entries[i].begin, prefix[:]) {
+			entries[i].begin = entries[i].begin[8:]
+		}
+		if entries[i].end != nil && bytes.HasPrefix(entries[i].end, prefix[:]) {
+			entries[i].end = entries[i].end[8:]
+		}
+	}
+}
+
 // sortLocationResults sorts by ShardBegin ascending.
 func sortLocationResults(results []LocationResult) {
 	// Simple insertion sort — typically very few entries (< 100 shards).
@@ -383,6 +407,7 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 				for i := range entries {
 					entries[i].tenantId = tenantId
 				}
+				stripTenantPrefix(entries, tenantId)
 				lc.mu.Lock()
 				lc.entries = append(lc.entries, entries...)
 				for len(lc.entries) > lc.maxSize {

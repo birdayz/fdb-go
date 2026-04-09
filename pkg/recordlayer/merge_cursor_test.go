@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // intCompKey extracts an int as the comparison key.

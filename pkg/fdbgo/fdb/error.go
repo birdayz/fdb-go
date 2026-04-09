@@ -18,7 +18,16 @@ func (e Error) Error() string {
 
 // errNotSupported is returned by stubs for operations not yet implemented
 // in the pure Go client.
-var errNotSupported = Error{Code: 2051}
+var (
+	errNotSupported         = Error{Code: 2051}
+	errTenantNotFound       = Error{Code: 2131}
+	errTenantExists         = Error{Code: 2132}
+	errTenantNotEmpty       = Error{Code: 2133}
+	errTenantInvalid        = Error{Code: 2134}
+	errTenantPrefixConflict = Error{Code: 2135}
+	errTenantsDisabled      = Error{Code: 2136}
+	errClusterNoCapacity    = Error{Code: 2141}
+)
 
 // Common FDB error code descriptions.
 var errorDescriptions = map[int]string{
@@ -33,11 +42,17 @@ var errorDescriptions = map[int]string{
 	1051: "batch_transaction_throttled",
 	1062: "wrong_shard_server",
 	2000: "operation_failed",
-	2051: "operation_not_supported",
 	2005: "inverted_range",
 	2015: "used_during_commit",
+	2051: "operation_not_supported",
 	2101: "transaction_too_large",
 	2131: "tenant_not_found",
+	2132: "tenant_already_exists",
+	2133: "tenant_not_empty",
+	2134: "invalid_tenant_name",
+	2135: "tenant_prefix_allocator_conflict",
+	2136: "tenants_disabled",
+	2141: "cluster_no_capacity",
 	2200: "api_version_unset",
 	2201: "api_version_not_supported",
 }
