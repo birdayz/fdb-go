@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 // Methods receive *database as argument — no stored back-pointer.
 // Size-capped to maxSize entries (C++ default: LOCATION_CACHE_EVICTION_SIZE = 600,000).
 // Random eviction on overflow, matching C++ setCachedLocation behavior.
+//
+// Entries are kept sorted by (tenantId, begin) for O(log N) lookups via
+// binary search. Most deployments use a single tenant (tenantId=-1), so
+// entries within that tenant form a contiguous sorted block.
 type locationCache struct {
 	mu      sync.RWMutex
 	entries []locationEntry
@@ -32,6 +37,46 @@ type locationEntry struct {
 	begin    []byte
 	end      []byte
 	servers  []ServerInfo
+}
+
+// entryLess returns true if a sorts before b by (tenantId, begin).
+func entryLess(a, b *locationEntry) bool {
+	if a.tenantId != b.tenantId {
+		return a.tenantId < b.tenantId
+	}
+	return bytes.Compare(a.begin, b.begin) < 0
+}
+
+// searchIndex returns the index of the first entry where
+// (entry.tenantId, entry.begin) >= (tenantId, key) using binary search.
+func (lc *locationCache) searchIndex(tenantId int64, key []byte) int {
+	return sort.Search(len(lc.entries), func(i int) bool {
+		e := &lc.entries[i]
+		if e.tenantId != tenantId {
+			return e.tenantId > tenantId
+		}
+		return bytes.Compare(e.begin, key) >= 0
+	})
+}
+
+// insertSorted inserts entries in sorted order, replacing any existing entry
+// with the same (tenantId, begin). Caller must hold lc.mu write lock.
+func (lc *locationCache) insertSorted(newEntries []locationEntry) {
+	for _, ne := range newEntries {
+		idx := lc.searchIndex(ne.tenantId, ne.begin)
+		// Check for duplicate: same (tenantId, begin) at idx.
+		if idx < len(lc.entries) &&
+			lc.entries[idx].tenantId == ne.tenantId &&
+			bytes.Equal(lc.entries[idx].begin, ne.begin) {
+			// Replace in-place.
+			lc.entries[idx] = ne
+			continue
+		}
+		// Insert at idx.
+		lc.entries = append(lc.entries, locationEntry{})
+		copy(lc.entries[idx+1:], lc.entries[idx:])
+		lc.entries[idx] = ne
+	}
 }
 
 // ServerInfo holds a storage server's address and endpoint token.
@@ -51,6 +96,7 @@ type LocationResult struct {
 // locate finds the storage servers responsible for a key.
 // On cache miss, queries a commit proxy.
 // Returns the servers AND the shard boundaries so callers can clamp requests.
+// O(log N) via binary search on the sorted entries.
 func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, tenantId int64) (LocationResult, error) {
 	// System key space (\xff\xff prefix) is handled specially in C++ client.
 	// Don't send GetKeyServerLocationsRequest for it — clamp to normal key range.
@@ -60,20 +106,11 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 		key = []byte{0xff}
 	}
 
-	// Check cache first. Entries are keyed by (tenantId, key range).
+	// Check cache first. Binary search for the entry where begin <= key.
 	lc.mu.RLock()
-	for _, entry := range lc.entries {
-		if entry.tenantId == tenantId &&
-			bytes.Compare(key, entry.begin) >= 0 &&
-			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
-			result := LocationResult{
-				Servers:    entry.servers,
-				ShardBegin: entry.begin,
-				ShardEnd:   entry.end,
-			}
-			lc.mu.RUnlock()
-			return result, nil
-		}
+	if result, ok := lc.lookupLocked(tenantId, key); ok {
+		lc.mu.RUnlock()
+		return result, nil
 	}
 	lc.mu.RUnlock()
 
@@ -81,43 +118,149 @@ func (lc *locationCache) locate(db *database, ctx context.Context, key []byte, t
 	return lc.refresh(db, ctx, key, tenantId)
 }
 
-// invalidate removes cached entries containing the given key for the given tenant.
-// Called on wrong_shard_server errors for point lookups.
+// lookupLocked finds the entry containing key for the given tenant.
+// Caller must hold at least lc.mu.RLock(). O(log N).
+func (lc *locationCache) lookupLocked(tenantId int64, key []byte) (LocationResult, bool) {
+	// searchIndex returns the first entry with begin >= key for this tenant.
+	// The containing entry (begin <= key) is at idx-1, unless idx itself
+	// has begin == key (exact match).
+	idx := lc.searchIndex(tenantId, key)
+
+	// Check idx (exact match: entry.begin == key).
+	if idx < len(lc.entries) {
+		e := &lc.entries[idx]
+		if e.tenantId == tenantId && bytes.Equal(e.begin, key) {
+			if e.end == nil || bytes.Compare(key, e.end) < 0 {
+				return LocationResult{
+					Servers:    e.servers,
+					ShardBegin: e.begin,
+					ShardEnd:   e.end,
+				}, true
+			}
+		}
+	}
+
+	// Check idx-1 (entry.begin < key, might contain key if key < entry.end).
+	if idx > 0 {
+		e := &lc.entries[idx-1]
+		if e.tenantId == tenantId &&
+			bytes.Compare(key, e.begin) >= 0 &&
+			(e.end == nil || bytes.Compare(key, e.end) < 0) {
+			return LocationResult{
+				Servers:    e.servers,
+				ShardBegin: e.begin,
+				ShardEnd:   e.end,
+			}, true
+		}
+	}
+
+	return LocationResult{}, false
+}
+
+// invalidate removes the cached entry containing the given key for the given tenant.
+// Called on wrong_shard_server errors for point lookups. O(log N).
 func (lc *locationCache) invalidate(key []byte, tenantId int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
-	filtered := lc.entries[:0]
-	for _, entry := range lc.entries {
-		if entry.tenantId == tenantId &&
-			bytes.Compare(key, entry.begin) >= 0 &&
-			(entry.end == nil || bytes.Compare(key, entry.end) < 0) {
-			continue // remove this entry
+	// Binary search: find the entry that might contain key.
+	idx := lc.searchIndex(tenantId, key)
+
+	// Check exact match at idx.
+	if idx < len(lc.entries) {
+		e := &lc.entries[idx]
+		if e.tenantId == tenantId && bytes.Equal(e.begin, key) {
+			if e.end == nil || bytes.Compare(key, e.end) < 0 {
+				lc.entries = append(lc.entries[:idx], lc.entries[idx+1:]...)
+				return
+			}
 		}
-		filtered = append(filtered, entry)
 	}
-	lc.entries = filtered
+
+	// Check idx-1 (entry.begin < key, key < entry.end).
+	if idx > 0 {
+		e := &lc.entries[idx-1]
+		if e.tenantId == tenantId &&
+			bytes.Compare(key, e.begin) >= 0 &&
+			(e.end == nil || bytes.Compare(key, e.end) < 0) {
+			lc.entries = append(lc.entries[:idx-1], lc.entries[idx:]...)
+			return
+		}
+	}
 }
 
 // invalidateRange removes all cached entries overlapping [begin, end) for the given tenant.
 // C++ DatabaseContext::invalidateCache(KeyRangeRef) uses intersectingRanges to clear
 // all stale entries after wrong_shard_server during range reads.
 // Note: end must not be nil (callers always pass concrete byte slices).
+// O(log N + K) where K is the number of overlapping entries.
 func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 
-	filtered := lc.entries[:0]
-	for _, entry := range lc.entries {
-		// Entry overlaps [begin, end) if entry.begin < end && entry.end > begin.
-		if entry.tenantId == tenantId &&
-			bytes.Compare(entry.begin, end) < 0 &&
-			(entry.end == nil || bytes.Compare(entry.end, begin) > 0) {
-			continue // remove overlapping entry
-		}
-		filtered = append(filtered, entry)
+	if len(lc.entries) == 0 {
+		return
 	}
-	lc.entries = filtered
+
+	// Find the first entry that could overlap [begin, end).
+	// An entry overlaps if entry.begin < end AND entry.end > begin.
+	// The earliest possible overlapping entry has begin < end, so we
+	// search for the first entry with begin >= end and start checking
+	// backwards from there. But we also need entries whose begin < end
+	// but end > begin. The simplest correct approach:
+	// - Binary search for first entry with (tenantId, begin) >= (tenantId, begin).
+	//   Back up one to catch an entry whose begin < begin but end > begin.
+	// - Scan forward collecting entries to remove while entry.begin < end.
+	startIdx := lc.searchIndex(tenantId, begin)
+	// Back up one: the entry at startIdx-1 might have begin < begin but end > begin.
+	if startIdx > 0 {
+		prev := &lc.entries[startIdx-1]
+		if prev.tenantId == tenantId {
+			startIdx--
+		}
+	}
+
+	// Collect indices to remove (scan forward while in tenant and begin < end).
+	var toRemove int
+	for i := startIdx; i < len(lc.entries); i++ {
+		e := &lc.entries[i]
+		if e.tenantId != tenantId {
+			if e.tenantId > tenantId {
+				break // past this tenant's entries
+			}
+			continue // before this tenant (shouldn't happen given startIdx, but safe)
+		}
+		if bytes.Compare(e.begin, end) >= 0 {
+			break // past the range
+		}
+		// entry.begin < end. Check entry.end > begin.
+		if e.end == nil || bytes.Compare(e.end, begin) > 0 {
+			toRemove++
+		}
+	}
+
+	if toRemove == 0 {
+		return
+	}
+
+	// Remove overlapping entries in-place (shift left).
+	dst := startIdx
+	for i := startIdx; i < len(lc.entries); i++ {
+		e := &lc.entries[i]
+		remove := false
+		if e.tenantId == tenantId &&
+			bytes.Compare(e.begin, end) < 0 &&
+			(e.end == nil || bytes.Compare(e.end, begin) > 0) {
+			remove = true
+		}
+		if !remove {
+			if dst != i {
+				lc.entries[dst] = lc.entries[i]
+			}
+			dst++
+		}
+	}
+	lc.entries = lc.entries[:dst]
 }
 
 // refresh queries commit proxies for the location of a key, matching C++
@@ -191,12 +334,8 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, 
 				// Strip prefix so cache uses tenant-relative keys.
 				stripTenantPrefix(entries, tenantId)
 				lc.mu.Lock()
-				lc.entries = append(lc.entries, entries...)
-				for len(lc.entries) > lc.maxSize {
-					idx := rand.Intn(len(lc.entries))
-					lc.entries[idx] = lc.entries[len(lc.entries)-1]
-					lc.entries = lc.entries[:len(lc.entries)-1]
-				}
+				lc.insertSorted(entries)
+				lc.evictIfNeeded()
 				lc.mu.Unlock()
 				if len(entries) > 0 {
 					return LocationResult{
@@ -228,6 +367,24 @@ func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, 
 	}
 }
 
+// evictIfNeeded removes random entries when the cache exceeds maxSize.
+// Caller must hold lc.mu write lock. After eviction the slice is re-sorted
+// because swap-with-last during random eviction breaks sort order.
+func (lc *locationCache) evictIfNeeded() {
+	if len(lc.entries) <= lc.maxSize {
+		return
+	}
+	for len(lc.entries) > lc.maxSize {
+		idx := rand.Intn(len(lc.entries))
+		lc.entries[idx] = lc.entries[len(lc.entries)-1]
+		lc.entries = lc.entries[:len(lc.entries)-1]
+	}
+	// Re-sort after random eviction broke ordering.
+	sort.Slice(lc.entries, func(i, j int) bool {
+		return entryLess(&lc.entries[i], &lc.entries[j])
+	})
+}
+
 // locateRange returns all cached location entries overlapping [begin, end).
 // On cache miss for any sub-range, queries a commit proxy for the missing range.
 // C++ getKeyRangeLocations equivalent. The reverse parameter is forwarded to the
@@ -245,24 +402,12 @@ func (lc *locationCache) locateRange(db *database, ctx context.Context, begin, e
 	for {
 		var results []LocationResult
 
-		// Scan cache for all entries overlapping [curBegin, end).
+		// Binary search for overlapping entries. O(log N + K).
 		lc.mu.RLock()
-		for _, entry := range lc.entries {
-			// Entry overlaps [curBegin, end) if entry.begin < end && entry.end > curBegin.
-			if entry.tenantId == tenantId &&
-				(entry.end == nil || bytes.Compare(entry.end, curBegin) > 0) &&
-				bytes.Compare(entry.begin, end) < 0 {
-				results = append(results, LocationResult{
-					Servers:    entry.servers,
-					ShardBegin: entry.begin,
-					ShardEnd:   entry.end,
-				})
-			}
-		}
+		results = lc.collectOverlapping(tenantId, curBegin, end)
 		lc.mu.RUnlock()
 
-		// Sort by begin key.
-		sortLocationResults(results)
+		// Results are already sorted (entries are sorted, we scan forward).
 
 		// Check for gaps in [curBegin, end).
 		gapBegin := curBegin
@@ -331,14 +476,45 @@ func stripTenantPrefix(entries []locationEntry, tenantId int64) {
 	}
 }
 
-// sortLocationResults sorts by ShardBegin ascending.
-func sortLocationResults(results []LocationResult) {
-	// Simple insertion sort — typically very few entries (< 100 shards).
-	for i := 1; i < len(results); i++ {
-		for j := i; j > 0 && bytes.Compare(results[j].ShardBegin, results[j-1].ShardBegin) < 0; j-- {
-			results[j], results[j-1] = results[j-1], results[j]
+// collectOverlapping returns all entries overlapping [begin, end) for the given
+// tenant, in sorted order. Caller must hold at least lc.mu.RLock(). O(log N + K).
+func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) []LocationResult {
+	if len(lc.entries) == 0 {
+		return nil
+	}
+
+	// Find starting position: first entry with (tenantId, begin) >= (tenantId, begin).
+	// Back up one to catch entry whose begin < begin but end > begin.
+	startIdx := lc.searchIndex(tenantId, begin)
+	if startIdx > 0 {
+		prev := &lc.entries[startIdx-1]
+		if prev.tenantId == tenantId {
+			startIdx--
 		}
 	}
+
+	var results []LocationResult
+	for i := startIdx; i < len(lc.entries); i++ {
+		e := &lc.entries[i]
+		if e.tenantId != tenantId {
+			if e.tenantId > tenantId {
+				break
+			}
+			continue
+		}
+		if bytes.Compare(e.begin, end) >= 0 {
+			break // past the range
+		}
+		// entry.begin < end. Check entry.end > begin.
+		if e.end == nil || bytes.Compare(e.end, begin) > 0 {
+			results = append(results, LocationResult{
+				Servers:    e.servers,
+				ShardBegin: e.begin,
+				ShardEnd:   e.end,
+			})
+		}
+	}
+	return results
 }
 
 // refreshRange queries commit proxies for locations overlapping [begin, end).
@@ -409,12 +585,8 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 				}
 				stripTenantPrefix(entries, tenantId)
 				lc.mu.Lock()
-				lc.entries = append(lc.entries, entries...)
-				for len(lc.entries) > lc.maxSize {
-					idx := rand.Intn(len(lc.entries))
-					lc.entries[idx] = lc.entries[len(lc.entries)-1]
-					lc.entries = lc.entries[:len(lc.entries)-1]
-				}
+				lc.insertSorted(entries)
+				lc.evictIfNeeded()
 				lc.mu.Unlock()
 				if len(entries) > 0 {
 					return entries, nil

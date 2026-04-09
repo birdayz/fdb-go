@@ -37,6 +37,7 @@ go_test(
         "failure_monitor_test.go",
         "fault_test.go",
         "lint_test.go",
+        "locality_test.go",
         "nil_shard_end_test.go",
         "setget_test.go",
     ],
