@@ -200,6 +200,7 @@ func (c *rywCache) getRange(
 	}
 
 	// Slow path: fetch from server and merge with local writes/clears.
+	// Over-fetch to compensate for clears removing server results.
 	serverLimit := limit
 	c.mu.Lock()
 	if c.hasClearsInRangeLocked(begin, end) {
@@ -215,8 +216,10 @@ func (c *rywCache) getRange(
 	}
 	c.mu.Unlock()
 
-	// Server call outside lock.
-	serverKVs, _, err := serverGetRange(ctx, begin, end, serverLimit, reverse)
+	// Server call outside lock. Track the server's `more` flag so we can
+	// propagate it correctly: if clears remove results and server had more
+	// data, we must not claim the range is exhausted.
+	serverKVs, serverMore, err := serverGetRange(ctx, begin, end, serverLimit, reverse)
 	if err != nil {
 		return nil, false, err
 	}
@@ -290,10 +293,16 @@ func (c *rywCache) getRange(
 		})
 	}
 
-	// Apply limit.
+	// Apply limit. Track whether more data may exist beyond what we return.
+	// If the server indicated more data exists, we must propagate that —
+	// clears removing entries doesn't mean the range is exhausted.
 	more := false
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
+		more = true
+	} else if serverMore {
+		// Server had more data beyond what we fetched. Even if clears
+		// removed results, we cannot claim the range is exhausted.
 		more = true
 	}
 

@@ -415,20 +415,30 @@ func (e *FDBError) Error() string {
 	return fmt.Sprintf("fdb error %d", e.Code)
 }
 
-// Retryable returns true if this error code is retryable per FDB's error model.
+// Retryable returns true if this error is retryable per C++ fdb_error_predicate().
+// RETRYABLE = MAYBE_COMMITTED ∪ RETRYABLE_NOT_COMMITTED.
+// Source: flow/error_definitions.h + fdb_c.cpp fdb_error_predicate().
 func (e *FDBError) Retryable() bool {
 	switch e.Code {
-	case 1020, // not_committed
-		1021, // commit_unknown_result
-		1007, // transaction_too_old
+	// MAYBE_COMMITTED
+	case 1021, // commit_unknown_result
+		1039: // cluster_version_changed
+		return true
+	// RETRYABLE_NOT_COMMITTED
+	case 1007, // transaction_too_old
 		1009, // future_version
+		1020, // not_committed (conflict)
 		1037, // process_behind
-		1039, // database_locked
+		1038, // database_locked
 		1042, // proxy_memory_limit_exceeded
 		1051, // batch_transaction_throttled
-		1006, // all_alternatives_failed
-		1200, // all_proxies_unreachable (Go-internal)
-		1213: // tag_throttled
+		1078, // grv_proxy_memory_limit_exceeded
+		1213, // tag_throttled
+		1223, // proxy_tag_throttled
+		1235, // transaction_throttled_hot_shard
+		1242, // transaction_rejected_range_locked
+		1006, // all_alternatives_failed (Layer 2)
+		1200: // all_proxies_unreachable (Go-internal)
 		return true
 	}
 	return false

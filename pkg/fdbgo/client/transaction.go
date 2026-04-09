@@ -19,22 +19,27 @@ import (
 // that require a server read + merge through the full ryw.get() path.
 var ErrNeedFullRYW = errors.New("need full RYW path")
 
-// FDB error codes.
+// FDB error codes. Source of truth: flow/error_definitions.h + fdb_c.cpp fdb_error_predicate().
 const (
-	ErrNotCommitted              = 1020
-	ErrCommitUnknownResult       = 1021
-	ErrTransactionTooOld         = 1007
-	ErrFutureVersion             = 1009
-	ErrWrongShardServer          = 1062
-	ErrTransactionTimedOut       = 1031
-	ErrProcessBehind             = 1037
-	ErrDatabaseLocked            = 1038
-	ErrProxyMemoryLimitExceeded  = 1042
-	ErrBatchTransactionThrottled = 1051
-	ErrGrvProxyMemoryLimit       = 1078
-	ErrAllAlternativesFailed     = 1006 // C++: all_alternatives_failed (storage reads)
+	ErrNotCommitted              = 1020 // not_committed (conflict)
+	ErrCommitUnknownResult       = 1021 // commit_unknown_result
+	ErrTransactionTooOld         = 1007 // transaction_too_old
+	ErrFutureVersion             = 1009 // future_version
+	ErrWrongShardServer          = 1062 // wrong_shard_server (Layer 2 only)
+	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
+	ErrProcessBehind             = 1037 // process_behind
+	ErrDatabaseLocked            = 1038 // database_locked
+	ErrClusterVersionChanged     = 1039 // cluster_version_changed (MAYBE_COMMITTED)
+	ErrProxyMemoryLimitExceeded  = 1042 // proxy_memory_limit_exceeded
+	ErrBatchTransactionThrottled = 1051 // batch_transaction_throttled
+	ErrGrvProxyMemoryLimit       = 1078 // grv_proxy_memory_limit_exceeded
+	ErrTagThrottled              = 1213 // tag_throttled
+	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
+	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard
+	ErrRangeLocked               = 1242 // transaction_rejected_range_locked
+	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
-	ErrInvertedRange             = 2005 // C++: inverted_range (begin > end)
+	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 )
 
 // Client constants. These mirror CLIENT_KNOBS in NativeAPI.actor.cpp.
@@ -585,7 +590,8 @@ func (tx *Transaction) OnError(err error) error {
 
 	switch fdbErr.Code {
 	case ErrTransactionTooOld, ErrFutureVersion:
-		// Version-related: fixed delay, no backoff growth. Match C++.
+		// Version-related: fixed delay, no backoff growth.
+		// C++ NativeAPI.actor.cpp: FUTURE_VERSION_RETRY_DELAY.
 		tx.retryCount++
 		time.Sleep(futureVersionDelay)
 		tx.reset()
@@ -593,15 +599,19 @@ func (tx *Transaction) OnError(err error) error {
 
 	case ErrNotCommitted, ErrDatabaseLocked, ErrProxyMemoryLimitExceeded,
 		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled,
-		ErrAllProxiesUnreachable:
-		// Commit-related: exponential backoff.
+		ErrTagThrottled, ErrProxyTagThrottled, ErrThrottledHotShard,
+		ErrRangeLocked, ErrAllProxiesUnreachable:
+		// RETRYABLE_NOT_COMMITTED: exponential backoff.
+		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff())
 		tx.reset()
 		return nil
 
-	case ErrCommitUnknownResult:
-		// Self-conflicting: copy write conflicts to read conflicts.
+	case ErrCommitUnknownResult, ErrClusterVersionChanged:
+		// MAYBE_COMMITTED: self-conflicting — copy write conflicts to read
+		// conflicts so the retry detects if our prior commit actually landed.
+		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_MAYBE_COMMITTED, code).
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
 		copy(selfConflicts, tx.writeConflicts)
 		tx.retryCount++
@@ -799,7 +809,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: begin, End: end})
+	tx.addReadConflict(begin, end)
 	return nil
 }
 

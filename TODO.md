@@ -11,6 +11,12 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+### Correctness audit (2026-04-09) — C++ alignment sweep
+
+- [x] **HIGH** — `OnError()` missing 5 retryable error codes. `tag_throttled` (1213), `proxy_tag_throttled` (1223), `transaction_throttled_hot_shard` (1235), `transaction_rejected_range_locked` (1242) fell through to non-retryable default. `cluster_version_changed` (1039) was not handled as MAYBE_COMMITTED (should inject self-conflicts like 1021). Fixed: all 5 codes added to OnError switch, 1039 gets self-conflicting treatment. `wire.FDBError.Retryable()` also updated (had wrong comment: 1039 labeled as `database_locked`, missing 1038/1078/1223/1235/1242). Test added for 1039 self-conflicting.
+- [x] **MEDIUM** — `AddReadConflictRange()` missing defensive copies + mutex. Unlike `addReadConflict()` (internal, copies), `AddWriteConflictRange()` (public, delegates to copier), and `addWriteConflict()` (internal, copies), the public `AddReadConflictRange()` stored raw caller slices. Aliasing risk on slice reuse. Fixed: delegate to `addReadConflict()` which copies and locks.
+- [x] **MEDIUM** — RYW `getRange` discarded server `more` flag. When clears removed enough server results to bring count below limit, the function returned `more=false` even though the server had more data. Callers (e.g. ranked set traversal) would stop scanning prematurely. Fixed: propagate server `more` flag.
+
 - [x] **HIGH** — Align location cache with C++ `getKeyRangeLocations`. `locateRange()` fetches all overlapping shards at once. `getRange` matches C++ `getExactRange`: `Reverse` flag on `GetKeyServerLocationsRequest`, re-query same shard on `more=true` (no re-locate), `invalidateRange()` clears entire remaining range on `wrong_shard_server`, "fix more" heuristic for reverse shard boundary, zero-rows infinite loop guard.
 - [ ] **HIGH** — ConnectPacket `canonicalRemotePort` mismatch assertion in CI. FDB server asserts `pkt.canonicalRemotePort == peerAddress.port` at `FlowTransport.actor.cpp:1409`. Observed in CI run `23981658119`: `TestGetRange` stuck 56 minutes, caused 1h timeout cascade. Could not reproduce locally (`-test.count=10` passes). Likely CI-specific: resource exhaustion with many parallel testcontainer tests competing for Docker, or socat proxy port mapping inconsistency. The `TestGetRange` test uses both CGo client (writes) and Go client (reads) against the same FDB container (`coordinator_test.go:365-389`). Fix: match C client's ConnectPacket port logic — report the actual TCP source port. May also need test isolation improvements (one FDB per test, not shared).
 - [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
@@ -1733,7 +1739,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
   **Get pipelining (transaction.go, future.go):**
   - [ ] **(h) Eliminate goroutine per PendingGet** — `newPendingFutureByteSlice` spawns goroutine just to call `Resolve()`. Inline into `BlockUntilReady` directly.
   - [ ] **(i) Batch `locate()` for multi-shard Gets** — 10 Gets to different shards = 10 serial proxy RPCs. C++ batches location lookups in one `GetKeyServerLocations`.
-  - [ ] **(j) RYW Set→Clear gap** — `GetPipelined` checks `hasAtomics` but not cleared-after-set. Key in `cleared` ranges falls through to stale server read.
+  - [x] **(j) RYW Set→Clear gap** — FALSE ALARM. `GetPipelined` correctly checks `isClearedLocked` after writes check (line 318). Verified by existing test coverage (Set→Clear→Get, Set→Clear→GetRange).
 
   **applyTenantPrefix (commitpath.go):**
   - [ ] **(k) Pre-allocate prefixed keys** — `append(prefix[:], m.Param1...)` allocates per mutation. C++ arena-allocates once. 100 mutations = 100 allocs vs 1.
@@ -1742,8 +1748,8 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
 - [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
 - [ ] **LOW — Tenant ID prefix** (multi-cluster ID partitioning) — `tenantIdPrefix` at `\xff/tenant/idPrefix`, shifts prefix into upper 2 bytes of 8-byte ID (`tenantIdPrefix << 48`). `computeNextTenantId` validates 48-bit space. Standalone clusters use prefix=0.
-- [ ] **CRITICAL — `bootstrap()` hangs forever** — `gofdbhelper.OpenDatabase` calls `bootstrap()` which retries forever on `failed_to_progress` (1216). The retry loop has no deadline when called with `context.Background()`. Affects: `foundationdb_test` (TIMEOUT 300s), `conformance_test` (TIMEOUT 900s). Fix: add max retry count or derive deadline from the provided context.
-- [ ] **CRITICAL — Conformance `SetupTenantEnvironment` hangs** — same root cause as bootstrap hang. `gofdbhelper.OpenDatabase` called per-spec in `BeforeEach`, each call retries bootstrap forever. Fix: same as above.
+- [x] **~~CRITICAL~~ — `bootstrap()` hangs forever** — STALE. `gofdbhelper` package was deleted (commit `28c8d0a`). `fdb.OpenDatabase()` already has 60s bootstrap timeout. `client.OpenDatabase()` takes context with caller-controlled deadline.
+- [x] **~~CRITICAL~~ — Conformance `SetupTenantEnvironment` hangs** — STALE. Same root cause resolved by gofdbhelper deletion.
 
 ##### A) Record layer integration tests
 - [x] 2305/2309 pass, 0 fail

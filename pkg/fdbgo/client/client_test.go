@@ -166,6 +166,7 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 	}{
 		{"not_committed", ErrNotCommitted},
 		{"commit_unknown_result", ErrCommitUnknownResult},
+		{"cluster_version_changed", ErrClusterVersionChanged},
 		{"transaction_too_old", ErrTransactionTooOld},
 		{"future_version", ErrFutureVersion},
 		{"database_locked", ErrDatabaseLocked},
@@ -173,6 +174,10 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		{"grv_proxy_memory_limit", ErrGrvProxyMemoryLimit},
 		{"process_behind", ErrProcessBehind},
 		{"batch_transaction_throttled", ErrBatchTransactionThrottled},
+		{"tag_throttled", ErrTagThrottled},
+		{"proxy_tag_throttled", ErrProxyTagThrottled},
+		{"throttled_hot_shard", ErrThrottledHotShard},
+		{"range_locked", ErrRangeLocked},
 		{"all_proxies_unreachable", ErrAllProxiesUnreachable},
 		// all_alternatives_failed (1006) is NOT retryable at OnError level.
 		// It's retried at Layer 2 (read path wrong-shard loop). If it
@@ -303,6 +308,34 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	tx2.OnError(err2)
 	if len(tx2.readConflicts) != 0 {
 		t.Errorf("1020 should NOT inject self-conflicts, got %d readConflicts", len(tx2.readConflicts))
+	}
+}
+
+func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
+	t.Parallel()
+
+	// cluster_version_changed (1039) is MAYBE_COMMITTED — must inject
+	// self-conflicts, same as commit_unknown_result (1021).
+	tx := &Transaction{state: txStateActive}
+	tx.Set([]byte("key_a"), []byte("val"))
+	tx.Set([]byte("key_b"), []byte("val"))
+
+	originalWriteConflicts := make([]KeyRange, len(tx.writeConflicts))
+	copy(originalWriteConflicts, tx.writeConflicts)
+
+	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrClusterVersionChanged})
+	result := tx.OnError(err)
+	if result != nil {
+		t.Fatalf("1039 should be retryable, got: %v", result)
+	}
+
+	// Self-conflicts injected: write conflicts → read conflicts.
+	if len(tx.readConflicts) != len(originalWriteConflicts) {
+		t.Fatalf("readConflicts: got %d, want %d (self-conflicts)",
+			len(tx.readConflicts), len(originalWriteConflicts))
+	}
+	if len(tx.writeConflicts) != 0 {
+		t.Errorf("writeConflicts should be cleared, got %d", len(tx.writeConflicts))
 	}
 }
 
