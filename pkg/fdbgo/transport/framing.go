@@ -23,7 +23,8 @@ import (
 const (
 	packetLenWidth = 4
 	checksumWidth  = 8
-	minPayloadSize = 16 // UID = 2x uint64
+	minPayloadSize = 16        // UID = 2x uint64
+	maxPayloadSize = 100 << 20 // 100 MiB — prevent OOM on malicious payloadLen
 )
 
 // WriteFrame writes a framed message to w.
@@ -73,6 +74,9 @@ func ReadFrame(r io.Reader, tls bool) (token UID, body []byte, err error) {
 
 	if payloadLen < minPayloadSize {
 		return UID{}, nil, fmt.Errorf("payload too short: %d < %d", payloadLen, minPayloadSize)
+	}
+	if payloadLen > maxPayloadSize {
+		return UID{}, nil, fmt.Errorf("payload too large: %d > %d", payloadLen, maxPayloadSize)
 	}
 
 	// Read checksum (non-TLS only).

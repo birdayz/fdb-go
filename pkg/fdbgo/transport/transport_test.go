@@ -189,6 +189,22 @@ func TestBuildVoidReply(t *testing.T) {
 	}
 }
 
+func TestFramePayloadTooLarge(t *testing.T) {
+	t.Parallel()
+
+	// Craft a frame header claiming a payload larger than maxPayloadSize.
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, uint32(maxPayloadSize+1))
+
+	_, _, err := ReadFrame(&buf, true) // TLS = skip checksum, hit the size check directly
+	if err == nil {
+		t.Fatal("expected error for oversized payload, got nil")
+	}
+	if !bytes.Contains([]byte(err.Error()), []byte("payload too large")) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestMultipleFrames(t *testing.T) {
 	t.Parallel()
 
