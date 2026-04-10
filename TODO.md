@@ -897,7 +897,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Store API surface expansion** — 13 new public methods matching Java: `RecordsSubspace`, `IndexSubspace`, `IndexSecondarySubspace`, `GetReadableIndexes`, `GetEnabledIndexes`, `GetAllIndexStates`, `RebuildAllIndexes`, `VacuumReadableIndexesBuildData`, `DeleteStore`, `FirstUnbuiltRange`, `IsCacheable`, `GetStoreHeader`, `GetAllIndexStatesMap`. 15 tests.
 - [x] **Advanced store operations** — `DryRunSaveRecord`, `DryRunDeleteRecord`, `ScanRecordKeys`, `IsIndexReadableUniquePending`, `GetWriteOnlyIndexes`, `GetDisabledIndexes`, `GetIndexesToBuildSince`, `ResolveUniquenessViolationByDeletion`, `ScanUniquenessViolationsForValue`. 24 tests.
-- [ ] **Remaining advanced store operations** — Java has `preloadRecordAsync()`, `repairRecordKeys()`. Not yet ported.
+- [x] **Remaining advanced store operations** — `preloadRecordAsync()` WONTFIX (Go sync model). `repairRecordKeys()` WONTFIX (niche maintenance for corrupted split suffixes).
 
 - [ ] **Synthetic records** — Java has `loadSyntheticRecord()`. Large feature tied to synthetic record types.
 
@@ -931,7 +931,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **Weak read semantics** — `WeakReadSemantics` struct + `RunWithWeakReads()`. IsCausalReadRisky sets FDB_TR_OPTION_CAUSAL_READ_RISKY. 2 tests.
 - [ ] **Directory layer caching** — Multi-tenant keyspace management.
 - [ ] **Transaction ID / MDC / logging** — Transaction tracing and structured logging.
-- [ ] **Latency injection** — `FDBLatencySource` for testing.
+- [x] **Latency injection** — WONTFIX: Java-specific test harness. Go uses ChaosTransactor for fault injection instead.
 
 ---
 
