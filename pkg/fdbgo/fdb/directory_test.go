@@ -198,3 +198,79 @@ func TestDirectoryLayerOpenExisting(t *testing.T) {
 
 	dir.Remove(db, []string{"open_test"})
 }
+
+// TestDirectoryLayerSubdirectory tests creating subdirectories through
+// a DirectorySubspace (matches Java Record Layer's nested KeySpace paths).
+func TestDirectoryLayerSubdirectory(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	// Create parent.
+	parent, err := dir.CreateOrOpen(db, []string{"subdir_test"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen parent: %v", err)
+	}
+
+	// Create child through parent DirectorySubspace.
+	child, err := parent.CreateOrOpen(db, []string{"child1"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen child: %v", err)
+	}
+
+	// Write data in child.
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(child.Pack(tuple.Tuple{"x"}), []byte("child_data"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+
+	// List children through parent.
+	children, err := parent.List(db, nil)
+	if err != nil {
+		t.Fatalf("List children: %v", err)
+	}
+	if len(children) != 1 || children[0] != "child1" {
+		t.Errorf("expected [child1], got %v", children)
+	}
+
+	// Read data back through re-opened child.
+	child2, err := parent.Open(db, []string{"child1"}, nil)
+	if err != nil {
+		t.Fatalf("Open child: %v", err)
+	}
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(child2.Pack(tuple.Tuple{"x"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read child: %v", err)
+	}
+	if string(result.([]byte)) != "child_data" {
+		t.Errorf("child data: got %q, want %q", result, "child_data")
+	}
+
+	dir.Remove(db, []string{"subdir_test"})
+}
+
+// TestDirectoryLayerDuplicateCreate tests that creating an already-existing
+// directory returns an error.
+func TestDirectoryLayerDuplicateCreate(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	_, err := dir.Create(db, []string{"dup_test"}, nil)
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	// Second create should fail.
+	_, err = dir.Create(db, []string{"dup_test"}, nil)
+	if err == nil {
+		t.Fatal("expected error on duplicate Create")
+	}
+
+	dir.Remove(db, []string{"dup_test"})
+}
