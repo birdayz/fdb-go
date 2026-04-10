@@ -698,6 +698,72 @@ func TestInterop_GetRangeWithLimit(t *testing.T) {
 	}
 }
 
+// TestInterop_LastLessOrEqual verifies that LastLessOrEqual resolves
+// identically across Go and CGo. This selector goes through resolveSelector
+// → GetKey wire call, and was affected by the OrEqual inversion bug.
+func TestInterop_LastLessOrEqual(t *testing.T) {
+	prefix := "interop_lle_"
+
+	// Seed via Go.
+	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	goClient.InvalidateGRVCache()
+
+	// LastLessOrEqual("interop_lle_02") → should return "interop_lle_02" (exact match).
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		return tx.GetKey(gofdb.LastLessOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("go getkey: %v", err)
+	}
+
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		return tx.GetKey(cgofdb.LastLessOrEqual(cgofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("cgo getkey: %v", err)
+	}
+
+	goKey := goResult.(gofdb.Key)
+	cgoKey := cgoResult.(cgofdb.Key)
+	if !bytes.Equal(goKey, cgoKey) {
+		t.Errorf("LastLessOrEqual mismatch: go=%q, cgo=%q", goKey, cgoKey)
+	}
+	if string(goKey) != prefix+"02" {
+		t.Errorf("expected %q, got %q", prefix+"02", goKey)
+	}
+
+	// LastLessThan("interop_lle_02") → should return "interop_lle_01".
+	goResult2, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		return tx.GetKey(gofdb.LastLessThan(gofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("go getkey LLT: %v", err)
+	}
+	cgoResult2, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		return tx.GetKey(cgofdb.LastLessThan(cgofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("cgo getkey LLT: %v", err)
+	}
+	goKey2 := goResult2.(gofdb.Key)
+	cgoKey2 := cgoResult2.(cgofdb.Key)
+	if !bytes.Equal(goKey2, cgoKey2) {
+		t.Errorf("LastLessThan mismatch: go=%q, cgo=%q", goKey2, cgoKey2)
+	}
+	if string(goKey2) != prefix+"01" {
+		t.Errorf("expected %q, got %q", prefix+"01", goKey2)
+	}
+}
+
 // TestInterop_SnapshotGetKey verifies that Snapshot.GetKey resolves key
 // selectors identically across Go and CGo clients.
 func TestInterop_SnapshotGetKey(t *testing.T) {

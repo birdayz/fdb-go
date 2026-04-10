@@ -249,10 +249,10 @@ func (ri *RangeIterator) MustGet() KeyValue {
 }
 
 // isTrivialSelector returns true when the selector is FirstGreaterOrEqual
-// (OrEqual=true, Offset=1) — the only form that can be resolved by just
-// extracting the key bytes.
+// (OrEqual=false, Offset=1) — the only form that can be resolved by just
+// extracting the key bytes. Matches Apple Go binding convention.
 func isTrivialSelector(ks KeySelector) bool {
-	return ks.OrEqual && ks.Offset == 1
+	return !ks.OrEqual && ks.Offset == 1
 }
 
 // resolveSelector resolves a key selector to raw bytes. Trivial selectors
@@ -267,7 +267,7 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 		copy(out, key)
 		return out, nil
 	}
-	if !ks.OrEqual && ks.Offset == 1 {
+	if ks.OrEqual && ks.Offset == 1 {
 		// FirstGreaterThan(k) = FirstGreaterOrEqual(k + \x00).
 		// Resolve client-side to avoid unnecessary GetKey round-trip.
 		key := ks.Key.FDBKey()
@@ -275,8 +275,8 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 		copy(out, key)
 		return out, nil
 	}
-	// Negate OrEqual: Apple binding convention → C++ wire protocol.
-	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), !ks.OrEqual, int32(ks.Offset))
+	// OrEqual values match the wire convention. Pass directly.
+	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 	if err != nil {
 		return nil, err
 	}

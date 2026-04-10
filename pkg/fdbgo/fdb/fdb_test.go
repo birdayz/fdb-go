@@ -446,14 +446,17 @@ func TestStrinc(t *testing.T) {
 func TestKeySelectors(t *testing.T) {
 	t.Parallel()
 
+	// OrEqual values match the Apple Go binding / C++ wire convention:
+	// FGE: orEqual=false (key IS the boundary, offset=1 advances past it)
+	// FGT: orEqual=true (key is NOT the boundary, so first > key)
 	ks := fdb.FirstGreaterOrEqual(fdb.Key("hello"))
-	if !ks.OrEqual || ks.Offset != 1 {
-		t.Fatalf("FirstGreaterOrEqual: OrEqual=%v Offset=%d", ks.OrEqual, ks.Offset)
+	if ks.OrEqual || ks.Offset != 1 {
+		t.Fatalf("FirstGreaterOrEqual: OrEqual=%v Offset=%d (want false, 1)", ks.OrEqual, ks.Offset)
 	}
 
 	ks = fdb.FirstGreaterThan(fdb.Key("hello"))
-	if ks.OrEqual || ks.Offset != 1 {
-		t.Fatalf("FirstGreaterThan: OrEqual=%v Offset=%d", ks.OrEqual, ks.Offset)
+	if !ks.OrEqual || ks.Offset != 1 {
+		t.Fatalf("FirstGreaterThan: OrEqual=%v Offset=%d (want true, 1)", ks.OrEqual, ks.Offset)
 	}
 
 	ks = fdb.LastLessOrEqual(fdb.Key("hello"))

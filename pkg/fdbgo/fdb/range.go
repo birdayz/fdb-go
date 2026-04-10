@@ -14,14 +14,16 @@ func (ks KeySelector) FDBKeySelector() KeySelector { return ks }
 
 // FirstGreaterOrEqual returns a KeySelector specifying the lexicographically
 // least key greater than or equal to the given key.
+// Matches Apple Go binding: KeySelectorRef(key, false, 1).
 func FirstGreaterOrEqual(key KeyConvertible) KeySelector {
-	return KeySelector{Key: key, OrEqual: true, Offset: 1}
+	return KeySelector{Key: key, OrEqual: false, Offset: 1}
 }
 
 // FirstGreaterThan returns a KeySelector specifying the lexicographically
 // least key strictly greater than the given key.
+// Matches Apple Go binding: KeySelectorRef(key, true, 1).
 func FirstGreaterThan(key KeyConvertible) KeySelector {
-	return KeySelector{Key: key, OrEqual: false, Offset: 1}
+	return KeySelector{Key: key, OrEqual: true, Offset: 1}
 }
 
 // LastLessOrEqual returns a KeySelector specifying the lexicographically
