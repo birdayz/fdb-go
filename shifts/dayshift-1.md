@@ -36,6 +36,10 @@ The nightshift said "can't fix client-side" — but RST-on-close eliminates the 
 - `TestSizeLimitMinimum_CPort` (C++ line 835)
 - `TestWatchRYWDisable_CPort` (C++ line 1973)
 
+### Security Fix
+
+**VecSerStrategy parser OOM** — All three vector parsers (`ParseKeyRefStringVector`, `ParseKeyRangeRefStringVector`, `ParseKeyValueRefStringVector`) used the wire count directly as `make()` capacity. Crafted count of `0xFFFFFFFF` → 32GB allocation attempt → OOM. Fix: clamp capacity to `remaining_bytes / min_element_size`.
+
 ### Write Path Investigation
 
 Profiled Go vs CGo Set+Commit:
