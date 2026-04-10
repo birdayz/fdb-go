@@ -3058,9 +3058,11 @@ func TestDatabaseLevelAccessSystemKeys_CPort(t *testing.T) {
 	defer cancel()
 	db := openTestDB(t, ctx)
 
-	// Write a system key using per-transaction AccessSystemKeys.
+	// Set database-level default so all transactions can access system keys.
+	db.SetDefaultAccessSystemKeys()
+
+	// Write a system key — no per-tx SetAccessSystemKeys needed.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.SetAccessSystemKeys()
 		tx.Set([]byte("\xff\x03"), []byte("sysval"))
 		return nil, nil
 	})
@@ -3068,9 +3070,8 @@ func TestDatabaseLevelAccessSystemKeys_CPort(t *testing.T) {
 		t.Fatalf("write system key: %v", err)
 	}
 
-	// Read it back.
+	// Read it back — no per-tx SetReadSystemKeys needed.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.SetReadSystemKeys()
 		return tx.Get(ctx, []byte("\xff\x03"))
 	})
 	if err != nil {
@@ -3078,6 +3079,36 @@ func TestDatabaseLevelAccessSystemKeys_CPort(t *testing.T) {
 	}
 	if string(result.([]byte)) != "sysval" {
 		t.Errorf("system key value: got %q, want %q", result, "sysval")
+	}
+}
+
+// TestDatabaseLevelTimeout_CPort verifies that database-level transaction
+// timeout is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_TIMEOUT
+func TestDatabaseLevelTimeout_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set a very short timeout at database level.
+	db.SetTransactionTimeout(1) // 1ms
+
+	// A transaction should time out almost immediately.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		time.Sleep(50 * time.Millisecond)
+		return tx.Get(ctx, []byte("db_timeout_test"))
+	})
+
+	// Should get transaction_timed_out (1031) — non-retryable, escapes retry loop.
+	if err == nil {
+		t.Fatal("expected transaction to time out")
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		if fdbErr.Code != ErrTransactionTimedOut {
+			t.Errorf("expected error 1031 (transaction_timed_out), got %d", fdbErr.Code)
+		}
 	}
 }
 
