@@ -11,6 +11,10 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+### Correctness audit (2026-04-10) — fdb facade audit
+
+- [x] **HIGH** — `OrEqual` values wrong in `FirstGreaterOrEqual`/`FirstGreaterThan` key selector definitions. Our `range.go` had `FGE={OrEqual:true}` and `FGT={OrEqual:false}`, but the Apple Go binding (and C++ wire protocol) uses the opposite: `FGE={OrEqual:false}`, `FGT={OrEqual:true}`. The Apple C binding does NOT invert OrEqual (confirmed by reading `fdb_c.cpp` source). Root cause was wrong definitions, not a missing inversion. Fixed at the definition level in `range.go` + updated `isTrivialSelector` and `resolveSelector` optimizations. Affected all 4 key selectors through the fdb facade. Found via cross-client interop tests (Go vs CGo). 5 new interop tests added.
+
 ### Correctness audit (2026-04-09) — C++ alignment sweep
 
 - [x] **HIGH** — `OnError()` missing 5 retryable error codes. `tag_throttled` (1213), `proxy_tag_throttled` (1223), `transaction_throttled_hot_shard` (1235), `transaction_rejected_range_locked` (1242) fell through to non-retryable default. `cluster_version_changed` (1039) was not handled as MAYBE_COMMITTED (should inject self-conflicts like 1021). Fixed: all 5 codes added to OnError switch, 1039 gets self-conflicting treatment. `wire.FDBError.Retryable()` also updated (had wrong comment: 1039 labeled as `database_locked`, missing 1038/1078/1223/1235/1242). Test added for 1039 self-conflicting.
@@ -1788,7 +1792,7 @@ This workflow already found 2 critical bugs on first run: 13 wrong mutation type
 
 Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
-**Ported (39 tests) — `c_binding_port_test.go`:**
+**Ported (80 tests) — `c_binding_port_test.go`:**
 - [x] GetRange (forward, reverse, limit, empty, streaming modes, exact)
 - [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue) + MultipleAtomicOps
 - [x] SetReadVersion old/future, GetCommittedVersion (read-only + write)
@@ -1800,6 +1804,11 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] SizeLimit (too small, too large, minimum valid) (dayshift-1)
 - [x] Watch with RYW disabled (dayshift-1)
 - [x] System key access: cannot read, read with option, cannot write, write with option (dayshift-1)
+- [x] Versionstamp invalid index (key, value, too-short), valid boundary offset (swingshift-1)
+- [x] Transaction Reset (basic reuse, retry count clear, read version clear, cancel→reset) (swingshift-1)
+- [x] GetLocations, write-write conflict detection (swingshift-1)
+- [x] Transaction reuse after commit, database-level AccessSystemKeys (swingshift-1)
+- [x] OnError retry semantics (retry limit, non-retryable, non-FDB errors) (swingshift-1)
 
 **Next to port (need API additions):**
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)

@@ -2667,3 +2667,781 @@ func TestWriteSystemKey_CPort(t *testing.T) {
 		t.Errorf("value: got %q, want %q", result, "bar")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Versionstamp — invalid index
+// ---------------------------------------------------------------------------
+
+// TestAtomicSetVersionstampedKeyInvalidIndex_CPort verifies that a
+// SET_VERSIONSTAMPED_KEY with an offset that would place the 10-byte
+// versionstamp past the end of the key returns an error on commit.
+// Ported from unit_tests.cpp line 1834
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1834
+func TestAtomicSetVersionstampedKeyInvalidIndex_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Build key: "foo" + \x00 (padding to 4 bytes) + 4-byte LE offset=4.
+	// Key body before offset suffix is 4 bytes. Starting at index 4 there are
+	// only 0 bytes for the versionstamp, but 10 are needed → error.
+	// C++ test: keybuf = {'f','o','o','\0', ..., 4,0,0,0} with 17 bytes total.
+	// The 4-byte LE offset at end says "versionstamp starts at byte 4",
+	// but only 9 bytes remain (indices 4..12) — need 10 → commit error.
+	keybuf := []byte{'f', 'o', 'o', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0}
+
+	tx := db.CreateTransaction()
+	tx.Atomic(MutSetVersionstampedKey, keybuf, []byte("bar"))
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected commit to fail with invalid versionstamp index, got nil")
+	}
+	// C++ test only checks that the error is non-zero (type unspecified).
+	t.Logf("expected commit error: %v", err)
+}
+
+// TestAtomicSetVersionstampedValueInvalidIndex_CPort verifies that a
+// SET_VERSIONSTAMPED_VALUE with an offset that would place the 10-byte
+// versionstamp past the end of the value returns an error on commit.
+func TestAtomicSetVersionstampedValueInvalidIndex_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Value: 3 bytes + 4-byte LE offset. Offset=0 needs 10 bytes at position 0,
+	// but value body is only 3 bytes → error.
+	value := []byte{'a', 'b', 'c', 0, 0, 0, 0}
+
+	tx := db.CreateTransaction()
+	tx.Atomic(MutSetVersionstampedValue, []byte("vsv_invalid_test"), value)
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected commit to fail with invalid versionstamp value offset, got nil")
+	}
+	t.Logf("expected commit error: %v", err)
+}
+
+// TestAtomicSetVersionstampedValueTooShort_CPort verifies that a
+// SET_VERSIONSTAMPED_VALUE with fewer than 4 bytes returns an error.
+func TestAtomicSetVersionstampedValueTooShort_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	tx.Atomic(MutSetVersionstampedValue, []byte("vsv_short_test"), []byte("ab"))
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected commit to fail with too-short versionstamp value, got nil")
+	}
+	t.Logf("expected commit error: %v", err)
+}
+
+// ---------------------------------------------------------------------------
+// Transaction Reset
+// ---------------------------------------------------------------------------
+
+// TestReset_CPort verifies that Transaction.Reset() clears all state and allows
+// the transaction to be reused for a fresh transaction.
+func TestReset_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+
+	// First transaction: write a key and commit.
+	tx.Set([]byte("reset_test_a"), []byte("1"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+
+	// Reset and reuse for a second transaction.
+	tx.Reset()
+
+	// Verify we can read (fresh read version) and write again.
+	val, err := tx.Get(ctx, []byte("reset_test_a"))
+	if err != nil {
+		t.Fatalf("Get after reset: %v", err)
+	}
+	if string(val) != "1" {
+		t.Errorf("value after reset: got %q, want %q", val, "1")
+	}
+
+	tx.Set([]byte("reset_test_b"), []byte("2"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("second commit after reset: %v", err)
+	}
+
+	// Verify both keys exist.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		b, bErr := tx.Get(ctx, []byte("reset_test_b"))
+		return b, bErr
+	})
+	if err != nil {
+		t.Fatalf("verify key b: %v", err)
+	}
+	if string(result.([]byte)) != "2" {
+		t.Errorf("key b: got %q, want %q", result, "2")
+	}
+}
+
+// TestResetClearsRetryCount_CPort verifies that Reset() clears the retry counter,
+// so OnError will retry even if the previous transaction had exhausted retries.
+func TestResetClearsRetryCount_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	tx.SetRetryLimit(0) // no retries allowed
+
+	// OnError with a retryable error should fail (retry limit 0).
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("expected OnError to fail with retry limit 0")
+	}
+
+	// After Reset, retry count is cleared. Set limit=1 and verify OnError succeeds.
+	tx.Reset()
+	tx.SetRetryLimit(1)
+	err = tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err != nil {
+		t.Fatalf("OnError after reset: %v", err)
+	}
+}
+
+// TestResetClearsReadVersion_CPort verifies that Reset() clears the read version.
+func TestResetClearsReadVersion_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+
+	// Set a specific read version.
+	tx.SetReadVersion(12345)
+
+	// Reset should clear it. A subsequent Get should fetch a new read version.
+	tx.Reset()
+
+	// After reset, Get should succeed (fetches new GRV, not use stale 12345).
+	_, err := tx.Get(ctx, []byte("reset_rv_test"))
+	if err != nil {
+		t.Fatalf("Get after reset: %v", err)
+	}
+}
+
+// TestResetAfterCancel_CPort verifies that Reset() on a cancelled transaction
+// restores it to an active state.
+func TestResetAfterCancel_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	tx.Cancel()
+
+	// After Cancel, operations should fail.
+	tx.Reset()
+
+	// After Reset, the transaction should be usable again.
+	tx.Set([]byte("reset_cancel_test"), []byte("val"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit after Reset on cancelled tx: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetLocations
+// ---------------------------------------------------------------------------
+
+// TestGetLocations_CPort verifies that GetLocations returns at least one
+// shard covering the requested key range.
+func TestGetLocations_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Write some data so the range is non-empty.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("loc_a"), []byte("1"))
+		tx.Set([]byte("loc_z"), []byte("2"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetLocations(ctx, []byte("loc_"), []byte("loc_~"), 100)
+	})
+	if err != nil {
+		t.Fatalf("GetLocations: %v", err)
+	}
+	locs := result.([]LocationResult)
+	if len(locs) == 0 {
+		t.Fatal("expected at least one location, got 0")
+	}
+	for i, loc := range locs {
+		if len(loc.Servers) == 0 {
+			t.Errorf("location[%d]: no servers", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Write-write conflict detection
+// ---------------------------------------------------------------------------
+
+// TestWriteConflict_CPort verifies that two concurrent transactions writing to
+// the same key will cause one to fail with not_committed (1020).
+func TestWriteConflict_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Seed a key so both transactions read something (creating read conflicts).
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("conflict_key"), []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Create two transactions at the same read version.
+	tx1 := db.CreateTransaction()
+	tx2 := db.CreateTransaction()
+
+	// Both read the key (adds read conflict range) then write to it.
+	_, err = tx1.Get(ctx, []byte("conflict_key"))
+	if err != nil {
+		t.Fatalf("tx1 Get: %v", err)
+	}
+	_, err = tx2.Get(ctx, []byte("conflict_key"))
+	if err != nil {
+		t.Fatalf("tx2 Get: %v", err)
+	}
+
+	tx1.Set([]byte("conflict_key"), []byte("from_tx1"))
+	tx2.Set([]byte("conflict_key"), []byte("from_tx2"))
+
+	// Commit tx1 first — should succeed.
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit: %v", err)
+	}
+
+	// Commit tx2 — should fail with not_committed (1020) since tx1 committed
+	// a write to a key that tx2 read.
+	err = tx2.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected tx2 commit to fail with conflict, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got: %T: %v", err, err)
+	}
+	if fdbErr.Code != ErrNotCommitted {
+		t.Errorf("expected error 1020 (not_committed), got %d", fdbErr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Versionstamp boundary
+// ---------------------------------------------------------------------------
+
+// TestVersionstampValidOffset_CPort verifies that SET_VERSIONSTAMPED_VALUE
+// with an offset at the maximum valid position (offset + 10 == bodyLen) succeeds.
+func TestVersionstampValidOffset_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Value: 10 zero bytes (versionstamp placeholder) + 4-byte LE offset=0.
+	// bodyLen = 10, offset = 0, offset + 10 = 10 == bodyLen → valid.
+	value := make([]byte, 14)
+	// offset bytes at end are already 0 (offset=0), which is valid.
+
+	tx := db.CreateTransaction()
+	tx.Set([]byte("vs_boundary_key"), []byte("placeholder"))
+	tx.Atomic(MutSetVersionstampedValue, []byte("vs_boundary_key"), value)
+	err := tx.Commit(ctx)
+	if err != nil {
+		t.Fatalf("expected commit to succeed with valid boundary offset, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Transaction reuse after commit
+// ---------------------------------------------------------------------------
+
+// TestTransactionReuseAfterCommit_CPort verifies that a transaction can be
+// reused after commit (auto-reset via postCommitReset).
+func TestTransactionReuseAfterCommit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+
+	// First commit.
+	tx.Set([]byte("reuse_1"), []byte("a"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	v1, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after 1st: %v", err)
+	}
+
+	// Second commit — transaction should auto-reset after first commit.
+	tx.Set([]byte("reuse_2"), []byte("b"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	v2, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after 2nd: %v", err)
+	}
+
+	// v2 should be >= v1 (new transaction, later commit version).
+	if v2 < v1 {
+		t.Errorf("second commit version %d should be >= first %d", v2, v1)
+	}
+
+	// Verify both keys exist.
+	result, err := db.Transact(ctx, func(rtx *Transaction) (any, error) {
+		a, err := rtx.Get(ctx, []byte("reuse_1"))
+		if err != nil {
+			return nil, err
+		}
+		b, err := rtx.Get(ctx, []byte("reuse_2"))
+		if err != nil {
+			return nil, err
+		}
+		return [2][]byte{a, b}, nil
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	vals := result.([2][]byte)
+	if string(vals[0]) != "a" {
+		t.Errorf("reuse_1: got %q, want %q", vals[0], "a")
+	}
+	if string(vals[1]) != "b" {
+		t.Errorf("reuse_2: got %q, want %q", vals[1], "b")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Database-level SetAccessSystemKeys
+// ---------------------------------------------------------------------------
+
+// TestDatabaseLevelAccessSystemKeys_CPort verifies that database-level
+// access_system_keys option enables writing \xff-prefixed keys.
+func TestDatabaseLevelAccessSystemKeys_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set database-level default so all transactions can access system keys.
+	db.SetDefaultAccessSystemKeys()
+
+	// Write a system key — no per-tx SetAccessSystemKeys needed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("\xff\x03"), []byte("sysval"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write system key: %v", err)
+	}
+
+	// Read it back — no per-tx SetReadSystemKeys needed.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, []byte("\xff\x03"))
+	})
+	if err != nil {
+		t.Fatalf("read system key: %v", err)
+	}
+	if string(result.([]byte)) != "sysval" {
+		t.Errorf("system key value: got %q, want %q", result, "sysval")
+	}
+}
+
+// TestDatabaseLevelTimeout_CPort verifies that database-level transaction
+// timeout is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_TIMEOUT
+func TestDatabaseLevelTimeout_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set a very short timeout at database level.
+	db.SetTransactionTimeout(1) // 1ms
+
+	// A transaction should time out almost immediately.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		time.Sleep(50 * time.Millisecond)
+		return tx.Get(ctx, []byte("db_timeout_test"))
+	})
+
+	// Should get transaction_timed_out (1031) — non-retryable, escapes retry loop.
+	if err == nil {
+		t.Fatal("expected transaction to time out")
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		if fdbErr.Code != ErrTransactionTimedOut {
+			t.Errorf("expected error 1031 (transaction_timed_out), got %d", fdbErr.Code)
+		}
+	}
+}
+
+// TestDatabaseLevelRetryLimit_CPort verifies that database-level retry limit
+// is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
+func TestDatabaseLevelRetryLimit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set retry limit of 0 at database level — no retries allowed.
+	db.SetTransactionRetryLimit(0)
+
+	tx := db.CreateTransaction()
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("expected OnError to fail with retry limit 0 from database default")
+	}
+}
+
+// TestDatabaseLevelSizeLimit_CPort verifies that database-level size limit
+// is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
+func TestDatabaseLevelSizeLimit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set a tiny size limit at database level.
+	db.SetTransactionSizeLimit(32) // minimum valid
+
+	tx := db.CreateTransaction()
+	// Write enough data to exceed 32 bytes.
+	tx.Set([]byte("big_key_that_is_definitely_over_32_bytes"), []byte("a value"))
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected commit to fail with size limit exceeded")
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) && fdbErr.Code != 2101 {
+		t.Errorf("expected error 2101 (transaction_too_large), got %d", fdbErr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// OnError retry semantics
+// ---------------------------------------------------------------------------
+
+// TestOnErrorRetryWithBackoff_CPort verifies that OnError increments retry
+// count and eventually stops retrying when limit is reached.
+func TestOnErrorRetryWithBackoff_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	tx.SetRetryLimit(3)
+
+	// Three OnError calls should succeed (retries 0, 1, 2).
+	for i := 0; i < 3; i++ {
+		err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		if err != nil {
+			t.Fatalf("OnError retry %d: unexpected error: %v", i, err)
+		}
+	}
+
+	// Fourth call should fail (retry 3 >= limit 3).
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("expected OnError to fail after retry limit exhausted")
+	}
+}
+
+// TestOnErrorNonRetryable_CPort verifies that OnError returns the error
+// for non-retryable error codes.
+func TestOnErrorNonRetryable_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+
+	// transaction_timed_out (1031) is never retryable.
+	err := tx.OnError(&wire.FDBError{Code: ErrTransactionTimedOut})
+	if err == nil {
+		t.Fatal("expected transaction_timed_out to be non-retryable")
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) {
+		if fdbErr.Code != ErrTransactionTimedOut {
+			t.Errorf("expected error 1031, got %d", fdbErr.Code)
+		}
+	}
+}
+
+// TestOnErrorNonFDBError_CPort verifies that OnError transitions to errored
+// state for non-FDB errors.
+func TestOnErrorNonFDBError_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+
+	err := tx.OnError(fmt.Errorf("some non-FDB error"))
+	if err == nil {
+		t.Fatal("expected non-FDB error to be returned")
+	}
+	if err.Error() != "some non-FDB error" {
+		t.Errorf("wrong error: %v", err)
+	}
+
+	// Transaction should be in errored state — commit should fail.
+	commitErr := tx.Commit(ctx)
+	if commitErr == nil {
+		t.Fatal("expected commit to fail on errored transaction")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RYW cache edge cases
+// ---------------------------------------------------------------------------
+
+// TestRYWAtomicAdd_CPort verifies that an atomic ADD followed by a Get within
+// the same transaction returns the correct accumulated value via RYW.
+func TestRYWAtomicAdd_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_atomic_add")
+
+	// Seed with initial value 100 (8-byte LE).
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint64(buf, 100)
+		tx.Set(key, buf)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Atomic ADD +50 and +25 in same tx, then read.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		add50 := make([]byte, 8)
+		binary.LittleEndian.PutUint64(add50, 50)
+		tx.Atomic(MutAddValue, key, add50)
+
+		add25 := make([]byte, 8)
+		binary.LittleEndian.PutUint64(add25, 25)
+		tx.Atomic(MutAddValue, key, add25)
+
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("atomic add + get: %v", err)
+	}
+	val := result.([]byte)
+	if len(val) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(val))
+	}
+	got := binary.LittleEndian.Uint64(val)
+	if got != 175 {
+		t.Errorf("expected 175 (100+50+25), got %d", got)
+	}
+}
+
+// TestRYWClearThenGet_CPort verifies that Clear followed by Get in the same
+// transaction returns nil (the key was logically deleted).
+func TestRYWClearThenGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_clear_get")
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("exists"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear then Get in same tx.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Clear(key)
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("clear + get: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Errorf("expected nil after clear, got %q", result)
+	}
+}
+
+// TestRYWSetClearGet_CPort verifies that Set then Clear then Get returns nil.
+func TestRYWSetClearGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_scg")
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v1"))
+		tx.Clear(key)
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("set+clear+get: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Errorf("expected nil after set+clear, got %q", result)
+	}
+}
+
+// TestRYWClearSetGet_CPort verifies that Clear then Set then Get returns the
+// new value (Set overwrites the pending Clear).
+func TestRYWClearSetGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_csg")
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("old"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Clear(key)
+		tx.Set(key, []byte("new"))
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("clear+set+get: %v", err)
+	}
+	if string(result.([]byte)) != "new" {
+		t.Errorf("expected 'new', got %q", result)
+	}
+}
+
+// TestRYWClearRangeGetRange_CPort verifies that ClearRange removes keys
+// from GetRange results within the same transaction.
+func TestRYWClearRangeGetRange_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "ryw_crg_"
+
+	// Seed 5 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear keys 1-3, then GetRange — should only see 0 and 4.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.ClearRange([]byte(pfx+"1"), []byte(pfx+"4"))
+		kvs, _, rangeErr := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
+		return kvs, rangeErr
+	})
+	if err != nil {
+		t.Fatalf("clear range + get range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 2 {
+		for i, kv := range kvs {
+			t.Logf("kv[%d] = %q → %q", i, kv.Key, kv.Value)
+		}
+		t.Fatalf("expected 2 keys after clear range, got %d", len(kvs))
+	}
+	if string(kvs[0].Key) != pfx+"0" || string(kvs[1].Key) != pfx+"4" {
+		t.Errorf("wrong keys: got %q and %q", kvs[0].Key, kvs[1].Key)
+	}
+}
+
+// TestRYWSetNewKeysGetRange_CPort verifies that new keys Set within a
+// transaction appear in GetRange results via RYW.
+func TestRYWSetNewKeysGetRange_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "ryw_sng_"
+
+	// No seed — start empty.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte(pfx+"b"), []byte("2"))
+		tx.Set([]byte(pfx+"a"), []byte("1"))
+		tx.Set([]byte(pfx+"c"), []byte("3"))
+		kvs, _, rangeErr := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
+		return kvs, rangeErr
+	})
+	if err != nil {
+		t.Fatalf("set + get range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 3 {
+		t.Fatalf("expected 3 keys, got %d", len(kvs))
+	}
+	// Should be sorted.
+	expected := []string{pfx + "a", pfx + "b", pfx + "c"}
+	for i, kv := range kvs {
+		if string(kv.Key) != expected[i] {
+			t.Errorf("key[%d]: got %q, want %q", i, kv.Key, expected[i])
+		}
+	}
+}

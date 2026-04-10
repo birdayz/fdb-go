@@ -21,6 +21,7 @@ func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
+	// OrEqual values match the wire convention. Pass directly.
 	return newFutureKey(func() (Key, error) {
 		k, err := inner.Snapshot().GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)

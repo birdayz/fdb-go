@@ -679,6 +679,24 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		}
 	}
 
+	// Validate versionstamp offsets. C++ ReadYourWritesTransaction::atomicOp
+	// validates immediately; we defer to commit time since Atomic() is void.
+	// Error: client_invalid_operation (2000).
+	for _, m := range tx.mutations {
+		switch m.Type {
+		case MutSetVersionstampedKey:
+			if err := validateVersionstampOffset(m.Key); err != nil {
+				tx.state = txStateErrored
+				return err
+			}
+		case MutSetVersionstampedValue:
+			if err := validateVersionstampOffset(m.Value); err != nil {
+				tx.state = txStateErrored
+				return err
+			}
+		}
+	}
+
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
@@ -716,6 +734,20 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
 	tx.state = txStateCancelled
+}
+
+// Reset resets the transaction to a clean state, as if newly created from Database.
+// Unlike the internal reset() used by OnError (which preserves retryCount/backoff),
+// this clears everything including retry state. Options set via Set*() are preserved
+// across Reset, matching C++ ReadYourWritesTransaction::reset() + applyPersistentOptions.
+//
+// Note: in-flight Watch() calls are NOT cancelled by Reset(). Use context cancellation
+// to cancel pending watches. This differs from C++ where reset triggers
+// resetPromise.sendError(transaction_cancelled).
+func (tx *Transaction) Reset() {
+	tx.retryCount = 0
+	tx.backoff = 0
+	tx.reset()
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
@@ -892,6 +924,22 @@ func (tx *Transaction) checkTimeout() error {
 // The Apple C binding uses a single-threaded actor model so doesn't need this.
 // Our Go futures use goroutines, so concurrent Get/Set calls on the same
 // transaction race on the conflict slices.
+
+// validateVersionstampOffset checks that a SET_VERSIONSTAMPED_KEY or
+// SET_VERSIONSTAMPED_VALUE operand has a valid 4-byte LE offset suffix
+// and that the 10-byte versionstamp fits within the operand.
+// Matches C++ ReadYourWritesTransaction::atomicOp validation.
+func validateVersionstampOffset(data []byte) error {
+	if len(data) < 4 {
+		return &wire.FDBError{Code: 2000} // client_invalid_operation
+	}
+	offset := int32(binary.LittleEndian.Uint32(data[len(data)-4:]))
+	bodyLen := int32(len(data) - 4) // length without the offset suffix
+	if offset < 0 || offset+10 > bodyLen {
+		return &wire.FDBError{Code: 2000} // client_invalid_operation
+	}
+	return nil
+}
 
 // keyAfterBytes returns a copy of key with \x00 appended.
 // Always allocates — safe for storing in conflict ranges.

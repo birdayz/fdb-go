@@ -43,6 +43,7 @@ go_test(
         "locality_test.go",
         "nil_shard_end_test.go",
         "setget_test.go",
+        "testmain_test.go",
     ],
     args = [
         "-test.parallel=4",

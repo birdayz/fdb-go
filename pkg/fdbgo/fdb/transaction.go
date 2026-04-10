@@ -63,6 +63,8 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 func (tr Transaction) GetKey(sel Selectable) FutureKey {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	ks := sel.FDBKeySelector()
+	// OrEqual values in our KeySelector match the C++ wire convention
+	// (same as Apple Go binding). Pass directly — no inversion needed.
 	return newFutureKey(func() (Key, error) {
 		k, err := inner.GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)

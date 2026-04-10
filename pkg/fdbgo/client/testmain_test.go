@@ -1,0 +1,110 @@
+package client
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+)
+
+// Shared FDB container for all tests in this package.
+// Started once in TestMain, used by openTestDB to create per-test Database connections.
+var (
+	sharedContainer   *tcfdb.Container
+	sharedClusterFile *ClusterFile
+)
+
+func TestMain(m *testing.M) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	container, err := tcfdb.Run(ctx, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start FDB container: %v\n", err)
+		os.Exit(1)
+	}
+
+	connStr, err := container.ClusterFile(ctx)
+	if err != nil {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "get cluster file: %v\n", err)
+		os.Exit(1)
+	}
+
+	cf, err := ParseClusterString(connStr)
+	if err != nil {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "parse cluster string: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Configure cluster and wait for health.
+	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
+	if exitCode != 0 {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "fdbcli configure exit: %d\n", exitCode)
+		os.Exit(1)
+	}
+	for i := 0; i < 30; i++ {
+		time.Sleep(1 * time.Second)
+		code, reader, execErr := container.Exec(ctx, []string{"fdbcli", "--exec", "status minimal"})
+		if execErr != nil || reader == nil {
+			continue
+		}
+		if code == 0 {
+			out, _ := io.ReadAll(reader)
+			if strings.Contains(string(out), "Healthy") {
+				break
+			}
+		}
+	}
+
+	// Read internal cluster file for correct cluster key.
+	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
+	if err != nil {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "read internal cluster file: %v\n", err)
+		os.Exit(1)
+	}
+	internalBytes, _ := io.ReadAll(internalReader)
+	internalStr := string(internalBytes)
+	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
+		internalStr = internalStr[idx:]
+	}
+	internalCF, err := ParseClusterString(strings.TrimSpace(internalStr))
+	if err != nil {
+		container.Terminate(ctx)
+		fmt.Fprintf(os.Stderr, "parse internal cluster: %v\n", err)
+		os.Exit(1)
+	}
+
+	connectCF := &ClusterFile{
+		Description:  internalCF.Description,
+		ID:           internalCF.ID,
+		Coordinators: cf.Coordinators,
+	}
+	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
+	for i, a := range internalCF.Coordinators {
+		if i > 0 {
+			connectCF.InternalKey += ","
+		}
+		connectCF.InternalKey += a
+	}
+
+	sharedContainer = container
+	sharedClusterFile = connectCF
+
+	code := m.Run()
+
+	// Cleanup: terminate the shared container.
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+	container.Terminate(cleanupCtx)
+
+	os.Exit(code)
+}

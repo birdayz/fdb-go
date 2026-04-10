@@ -487,7 +487,40 @@ type FDBError struct {
 }
 
 func (e *FDBError) Error() string {
+	if desc, ok := fdbErrorDescriptions[e.Code]; ok {
+		return fmt.Sprintf("%s (%d)", desc, e.Code)
+	}
 	return fmt.Sprintf("fdb error %d", e.Code)
+}
+
+// fdbErrorDescriptions maps common FDB error codes to human-readable names.
+// Source: flow/error_definitions.h
+var fdbErrorDescriptions = map[int]string{
+	1007: "transaction_too_old",
+	1009: "future_version",
+	1020: "not_committed",
+	1021: "commit_unknown_result",
+	1025: "transaction_cancelled",
+	1031: "transaction_timed_out",
+	1034: "watches_disabled",
+	1037: "process_behind",
+	1038: "database_locked",
+	1039: "cluster_version_changed",
+	1042: "proxy_memory_limit_exceeded",
+	1051: "batch_transaction_throttled",
+	1062: "wrong_shard_server",
+	1078: "grv_proxy_memory_limit_exceeded",
+	1200: "all_alternatives_failed",
+	1213: "tag_throttled",
+	1223: "proxy_tag_throttled",
+	1235: "transaction_throttled_hot_shard",
+	1242: "transaction_rejected_range_locked",
+	2000: "client_invalid_operation",
+	2004: "key_outside_legal_range",
+	2005: "inverted_range",
+	2006: "invalid_option_value",
+	2015: "used_during_commit",
+	2101: "transaction_too_large",
 }
 
 // Retryable returns true if this error is retryable per C++ fdb_error_predicate().

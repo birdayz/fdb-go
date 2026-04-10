@@ -4,32 +4,34 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-// openTestDB starts an FDB testcontainer and returns a facade Database.
+// openTestDB returns a Database connected to the shared FDB testcontainer.
+// Each call creates a fresh Database connection for option isolation.
 func openTestDB(t *testing.T) fdb.Database {
 	t.Helper()
-	fdb.MustAPIVersion(730)
 
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if sharedClusterFile == nil {
+		t.Fatal("shared FDB container not initialized — TestMain must run first")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
 
-	container, err := tcfdb.Run(setupCtx, "")
+	db, err := fdb.OpenDatabaseFromConfig(setupCtx, sharedClusterFile)
 	if err != nil {
-		t.Fatalf("start FDB container: %v", err)
+		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
 	t.Cleanup(func() {
-		if t.Failed() {
-			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			logs, lerr := container.Logs(logCtx)
+		db.Close()
+		if t.Failed() && sharedContainer != nil {
+			diagCtx, diagCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer diagCancel()
+			logs, lerr := sharedContainer.Logs(diagCtx)
 			if lerr == nil {
 				logBytes, _ := io.ReadAll(logs)
 				if len(logBytes) > 2000 {
@@ -38,69 +40,7 @@ func openTestDB(t *testing.T) fdb.Database {
 				t.Logf("=== FDB logs (last 2000 bytes) ===\n%s", string(logBytes))
 			}
 		}
-		container.Terminate(context.Background())
 	})
-
-	connStr, err := container.ClusterFile(setupCtx)
-	if err != nil {
-		t.Fatalf("get cluster file: %v", err)
-	}
-
-	cf, err := client.ParseClusterString(connStr)
-	if err != nil {
-		t.Fatalf("parse cluster string: %v", err)
-	}
-
-	exitCode, _, _ := container.Exec(setupCtx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		t.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, execErr := container.Exec(setupCtx, []string{"fdbcli", "--exec", "status minimal"})
-		if execErr != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
-	}
-
-	_, internalReader, err := container.Exec(setupCtx, []string{"cat", "/var/fdb/fdb.cluster"})
-	if err != nil {
-		t.Fatalf("read internal cluster file: %v", err)
-	}
-	internalBytes, _ := io.ReadAll(internalReader)
-	internalStr := string(internalBytes)
-	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
-		internalStr = internalStr[idx:]
-	}
-	internalCF, err := client.ParseClusterString(strings.TrimSpace(internalStr))
-	if err != nil {
-		t.Fatalf("parse internal cluster: %v", err)
-	}
-
-	connectCF := &client.ClusterFile{
-		Description:  internalCF.Description,
-		ID:           internalCF.ID,
-		Coordinators: cf.Coordinators,
-	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
-
-	db, err := fdb.OpenDatabaseFromConfig(setupCtx, connectCF)
-	if err != nil {
-		t.Fatalf("OpenDatabaseFromConfig: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	return db
 }
@@ -506,14 +446,17 @@ func TestStrinc(t *testing.T) {
 func TestKeySelectors(t *testing.T) {
 	t.Parallel()
 
+	// OrEqual values match the Apple Go binding / C++ wire convention:
+	// FGE: orEqual=false (key IS the boundary, offset=1 advances past it)
+	// FGT: orEqual=true (key is NOT the boundary, so first > key)
 	ks := fdb.FirstGreaterOrEqual(fdb.Key("hello"))
-	if !ks.OrEqual || ks.Offset != 1 {
-		t.Fatalf("FirstGreaterOrEqual: OrEqual=%v Offset=%d", ks.OrEqual, ks.Offset)
+	if ks.OrEqual || ks.Offset != 1 {
+		t.Fatalf("FirstGreaterOrEqual: OrEqual=%v Offset=%d (want false, 1)", ks.OrEqual, ks.Offset)
 	}
 
 	ks = fdb.FirstGreaterThan(fdb.Key("hello"))
-	if ks.OrEqual || ks.Offset != 1 {
-		t.Fatalf("FirstGreaterThan: OrEqual=%v Offset=%d", ks.OrEqual, ks.Offset)
+	if !ks.OrEqual || ks.Offset != 1 {
+		t.Fatalf("FirstGreaterThan: OrEqual=%v Offset=%d (want true, 1)", ks.OrEqual, ks.Offset)
 	}
 
 	ks = fdb.LastLessOrEqual(fdb.Key("hello"))
@@ -871,4 +814,90 @@ func TestDatabaseTransactionSizeLimit(t *testing.T) {
 
 	// Reset to default.
 	db.Options().SetTransactionSizeLimit(0)
+}
+
+func TestLocalityGetBoundaryKeys(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Write some data.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("boundary_%02d", i)), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Get boundary keys — should return at least one boundary.
+	keys, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{
+		Begin: fdb.Key(""),
+		End:   fdb.Key("\xff"),
+	}, 100, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys: %v", err)
+	}
+	// Single-node cluster has at least 1 shard boundary.
+	if len(keys) == 0 {
+		t.Fatal("expected at least one boundary key")
+	}
+	t.Logf("got %d boundary keys", len(keys))
+}
+
+func TestGetClientStatus(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	status, err := db.GetClientStatus()
+	if err != nil {
+		t.Fatalf("GetClientStatus: %v", err)
+	}
+	if len(status) == 0 {
+		t.Fatal("expected non-empty status JSON")
+	}
+	t.Logf("status: %s", status)
+}
+
+func TestReset(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Create a transaction, write, commit, reset, write again, commit.
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	tr.Set(fdb.Key("reset_test_a"), []byte("1"))
+	err = tr.Commit().Get()
+	if err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+
+	tr.Reset()
+
+	tr.Set(fdb.Key("reset_test_b"), []byte("2"))
+	err = tr.Commit().Get()
+	if err != nil {
+		t.Fatalf("second commit after reset: %v", err)
+	}
+
+	// Verify both keys.
+	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		a := tr.Get(fdb.Key("reset_test_a")).MustGet()
+		b := tr.Get(fdb.Key("reset_test_b")).MustGet()
+		return [2][]byte{a, b}, nil
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	vals := result.([2][]byte)
+	if string(vals[0]) != "1" {
+		t.Errorf("reset_test_a: got %q, want %q", vals[0], "1")
+	}
+	if string(vals[1]) != "2" {
+		t.Errorf("reset_test_b: got %q, want %q", vals[1], "2")
+	}
 }

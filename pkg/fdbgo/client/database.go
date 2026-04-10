@@ -140,6 +140,16 @@ type database struct {
 	// client-side, matching C++ DatabaseContext::validateVersion().
 	minAcceptableReadVersion atomic.Int64
 
+	// Transaction defaults — applied to every new transaction.
+	// Matches C++ DatabaseContext::transactionDefaults.
+	txDefaultTimeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms)
+	txDefaultRetryLimit     int   // FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
+	txDefaultMaxRetryDelay  int64 // FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY (ms)
+	txDefaultSizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
+	txDefaultHasRetryLimit  bool
+	txDefaultReadSystemKeys bool // read \xff/* keys by default
+	txDefaultAccessSysKeys  bool // read+write \xff/* keys by default
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -476,12 +486,70 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 }
 
 // CreateTransaction creates a new transaction.
+// Database-level defaults (timeout, retry limit, system key access) are applied.
 func (d *Database) CreateTransaction() *Transaction {
-	return &Transaction{
+	tx := &Transaction{
 		db:       d.db,
 		state:    txStateActive,
 		tenantId: NoTenantID,
 	}
+	// Apply database-level defaults (matches C++ applyTxDefaults).
+	if d.db.txDefaultTimeout > 0 {
+		tx.SetTimeout(d.db.txDefaultTimeout)
+	}
+	if d.db.txDefaultHasRetryLimit {
+		tx.SetRetryLimit(int64(d.db.txDefaultRetryLimit))
+	}
+	if d.db.txDefaultMaxRetryDelay > 0 {
+		tx.SetMaxRetryDelay(d.db.txDefaultMaxRetryDelay)
+	}
+	if d.db.txDefaultSizeLimit > 0 {
+		tx.SetSizeLimit(d.db.txDefaultSizeLimit)
+	}
+	if d.db.txDefaultReadSystemKeys {
+		tx.SetReadSystemKeys()
+	}
+	if d.db.txDefaultAccessSysKeys {
+		tx.SetAccessSystemKeys()
+	}
+	return tx
+}
+
+// SetTransactionTimeout sets the default timeout (in milliseconds) for all
+// transactions created from this database. Matches FDB_DB_OPTION_TRANSACTION_TIMEOUT.
+func (d *Database) SetTransactionTimeout(ms int64) {
+	d.db.txDefaultTimeout = ms
+}
+
+// SetTransactionRetryLimit sets the default retry limit for all transactions.
+// Matches FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT.
+func (d *Database) SetTransactionRetryLimit(retries int64) {
+	d.db.txDefaultRetryLimit = int(retries)
+	d.db.txDefaultHasRetryLimit = true
+}
+
+// SetTransactionMaxRetryDelay sets the default max retry delay (ms) for all
+// transactions. Matches FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY.
+func (d *Database) SetTransactionMaxRetryDelay(ms int64) {
+	d.db.txDefaultMaxRetryDelay = ms
+}
+
+// SetTransactionSizeLimit sets the default size limit for all transactions.
+// Matches FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT.
+func (d *Database) SetTransactionSizeLimit(limit int64) {
+	d.db.txDefaultSizeLimit = limit
+}
+
+// SetDefaultReadSystemKeys makes all new transactions automatically call
+// SetReadSystemKeys(), allowing reads of \xff-prefixed system keys.
+func (d *Database) SetDefaultReadSystemKeys() {
+	d.db.txDefaultReadSystemKeys = true
+}
+
+// SetDefaultAccessSystemKeys makes all new transactions automatically call
+// SetAccessSystemKeys(), allowing reads AND writes of \xff-prefixed system keys.
+func (d *Database) SetDefaultAccessSystemKeys() {
+	d.db.txDefaultAccessSysKeys = true
 }
 
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
