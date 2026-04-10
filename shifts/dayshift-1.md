@@ -60,7 +60,7 @@ Profiled Go vs CGo Set+Commit:
 ## What to work on next
 
 ### High impact
-- **Investigate binding tester seed 1 flake** — 100-seed run had seed 1 fail (popInt64 gets bytes at GET_RANGE_SELECTOR), but 50/50 run passed seed 1 cleanly. Intermittent — likely timing-dependent stack mismatch where a prior instruction pushes wrong type
+- **Binding tester seed 1 flake — Docker contention artifact** — 100-seed run had seed 1 fail when competing with another stress run for Docker resources. 5/5 clean reproductions pass. STACKTESTER_TRACE env var added for future diagnosis. Not a real client bug
 - **Port more C binding tests** — 39/81 done. Medium-priority remaining: system key access control (4 tests, needs client-side validation), more watch edge cases
 - **Directory layer** — needed by some FDB applications
 
