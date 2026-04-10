@@ -28,6 +28,7 @@ go_library(
 
 go_test(
     name = "fdb_test",
+    timeout = "long",
     srcs = [
         "fdb_test.go",
         "ryw_test.go",
