@@ -365,6 +365,24 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	})
 }
 
+// CreateTenant creates a tenant within this transaction.
+// Convenience method matching Apple binding — delegates to Database.CreateTenant.
+func (tr Transaction) CreateTenant(name KeyConvertible) error {
+	return tr.t.db.CreateTenant(name)
+}
+
+// DeleteTenant deletes a tenant within this transaction.
+// Convenience method matching Apple binding — delegates to Database.DeleteTenant.
+func (tr Transaction) DeleteTenant(name KeyConvertible) error {
+	return tr.t.db.DeleteTenant(name)
+}
+
+// ListTenants lists all tenants.
+// Convenience method matching Apple binding — delegates to Database.ListTenants.
+func (tr Transaction) ListTenants() ([]Key, error) {
+	return tr.t.db.ListTenants()
+}
+
 // LocalityGetAddressesForKey is not yet implemented.
 func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
 	return newReadyFutureStringSlice(nil, errNotSupported)

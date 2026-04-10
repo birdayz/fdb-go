@@ -99,9 +99,24 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile) (Databa
 	return Database{d: &internalDB{inner: db, ctx: context.Background()}}, nil
 }
 
+// Open opens a database. The dbName parameter is ignored (legacy API compatibility).
+func Open(clusterFile string, _ []byte) (Database, error) {
+	return OpenDatabase(clusterFile)
+}
+
+// MustOpen opens a database or panics. The dbName parameter is ignored.
+func MustOpen(clusterFile string, _ []byte) Database {
+	return MustOpenDatabase(clusterFile)
+}
+
+// OpenDefault opens the database at the default cluster file (/etc/foundationdb/fdb.cluster).
+func OpenDefault() (Database, error) {
+	return OpenDatabase("/etc/foundationdb/fdb.cluster")
+}
+
 // MustOpenDefault opens the default database or panics.
 func MustOpenDefault() Database {
-	db, err := OpenDatabase("/etc/foundationdb/fdb.cluster")
+	db, err := OpenDefault()
 	if err != nil {
 		panic(err)
 	}
