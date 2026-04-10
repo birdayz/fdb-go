@@ -147,8 +147,9 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
-			tx:  tx,
-			ctx: ctx,
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
 		}
 		lastCtx = recordCtx
 
@@ -189,8 +190,9 @@ func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemanti
 			tx.Options().SetCausalReadRisky()
 		}
 		recordCtx := &FDBRecordContext{
-			tx:  tx,
-			ctx: ctx,
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
 		}
 		lastCtx = recordCtx
 
@@ -229,8 +231,9 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
-			tx:  tx,
-			ctx: ctx,
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
 		}
 		lastCtx = recordCtx
 
@@ -330,9 +333,13 @@ type versionMutation struct {
 // lockRegistry. Multiple goroutines may safely operate on the same context
 // within a single FDB transaction (matching Java's CompletableFuture model).
 // Matches Java's FDBRecordContext.
+// nextTransactionID generates unique IDs for FDBRecordContext instances.
+var nextTransactionID atomic.Int64
+
 type FDBRecordContext struct {
-	tx  fdb.Transaction
-	ctx context.Context
+	tx            fdb.Transaction
+	ctx           context.Context
+	transactionID int64 // unique ID for logging/tracing
 
 	// Version management — matches Java's FDBRecordContext.
 	// Java uses AtomicInteger + ConcurrentSkipListMap.
@@ -380,6 +387,12 @@ func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
 // Transaction returns the underlying FDB transaction
 func (rc *FDBRecordContext) Transaction() fdb.Transaction {
 	return rc.tx
+}
+
+// TransactionID returns a unique ID for this record context.
+// Useful for logging and tracing. Matches Java's FDBRecordContext transaction ID.
+func (rc *FDBRecordContext) TransactionID() int64 {
+	return rc.transactionID
 }
 
 // Context returns the Go context
