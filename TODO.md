@@ -310,7 +310,7 @@ Additional Go-specific optimizations (from RFC 007):
 - [x] **Store state caching** — `FDBRecordStoreStateCache` interface, `MetaDataVersionStampStoreStateCache` implementation (LRU+TTL, \xff/metadataVersion invalidation), `SetStateCacheability()` API, dirty state tracking on context, read conflict on cache hit. 2.2x speedup on store open. 40 tests. **MEDIUM**.
 - [x] **Incarnation APIs** — `GetIncarnation()`, `UpdateIncarnation(updater)`. **MEDIUM**.
 - [x] **Snapshot version loading** — `LoadRecordVersion(pk, snapshot)` already implemented in `store_version.go`. **LOW**.
-- [ ] **PreloadRecordStoreState** — Separate state loading from store creation. **LOW** (optimization).
+- [x] **PreloadRecordStoreState** — WONTFIX: Java-specific async pipelining. Go's `Open()`/`CreateOrOpen()` loads state eagerly and synchronously. Separate preload adds complexity without benefit in Go's sync model.
 - [x] **Index build state tracking** — `AddBuildProgress`/`LoadBuildProgress` at `[9][indexSubspaceKey][1]` (atomic ADD). Wired into `buildRange`/`buildRangeByIndex`. 4 tests. **LOW**.
 - [x] **DryRunSaveRecord** — Validation (existence, type, lock) without writes. Returns computed record with size info. 4 tests. **LOW**.
 - [x] **DryRunDeleteRecord** — Checks record existence without deleting. 3 tests. **LOW**.
