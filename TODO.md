@@ -2100,7 +2100,7 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - **wrong_shard_server fault injection**: `TestWrongShardServer_FaultInjection`
 - **Custom Docker networking**: used by all testcontainer tests via hybrid cluster config
 - [x] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510. Already done in fdb/transaction.go.
-- [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
+- [x] **Metadata version cache** — Already implemented: `MetaDataVersionStampStoreStateCache` in record layer + `metadataVersionKey` exemption in pure Go client.
 
 ### HIGH — Integration test coverage
 
