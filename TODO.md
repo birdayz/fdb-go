@@ -1294,7 +1294,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [x] **`canDeleteWhere()` with QueryToKeyMatcher** — WONTFIX: Go's `DeleteRecordsWhere` uses structural expression matching directly. QueryToKeyMatcher is query planner infrastructure.
 - [x] **`scanRemoteFetch()`** — WONTFIX: experimental Java feature for remote record fetching. Not in scope.
 - [x] **`mergeIndex()` / `performOperation()`** — WONTFIX: Java's generic dispatch pattern. Go uses direct method calls on IndexMaintainer interface.
-- [ ] **`isIdempotent()` / `addedRangeWithKey()`** — Internal to Go, not on interface. **LOW**.
+- [x] **`isIdempotent()` / `addedRangeWithKey()`** — WONTFIX: internal Java methods. Go's OnlineIndexer handles idempotency via `removeCommonEntries` pattern directly.
 
 ### Index types — ALL COMPLETE (19/19)
 
@@ -1306,8 +1306,8 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### Index scanning — API gaps
 
-- [ ] **`IndexScanBounds` abstraction** — Go takes `TupleRange` directly; Java has `IndexScanBounds` wrapping bounds + comparisons. **LOW**.
-- [ ] **`scanIndexRecords` with record type filtering** — Go infers from metadata. **LOW**.
+- [x] **`IndexScanBounds` abstraction** — WONTFIX: Go uses `TupleRange` directly which is simpler. `IndexScanBounds` is query planner infrastructure for translating query predicates into scan ranges.
+- [x] **`scanIndexRecords` with record type filtering** — WONTFIX: Go's `ScanIndexRecords` returns all record types. Callers filter via `TypedFDBRecordStore.ScanRecords` which auto-filters by type.
 
 ### MetaData — missing public methods
 
