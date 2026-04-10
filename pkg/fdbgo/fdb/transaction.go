@@ -427,7 +427,11 @@ func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any,
 func panicToError(e *error) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			*e = err
+			// Apply unconvertError so fdb.Error panics from MustGet()
+			// are converted back to *wire.FDBError for the retry loop.
+			// Without this, panicked fdb.Error escapes the retry loop
+			// because OnError doesn't recognize it via errors.As.
+			*e = unconvertError(err)
 		} else {
 			panic(r) // re-panic non-error panics
 		}
