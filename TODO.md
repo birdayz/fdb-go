@@ -928,7 +928,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ### LOW
 
 - [x] **FDBDatabaseFactory** — Implemented: caches FDBDatabase by cluster file path. 2 tests.
-- [ ] **Weak read semantics** — `WeakReadSemantics` for causal read risky, version staleness bounds.
+- [x] **Weak read semantics** — `WeakReadSemantics` struct + `RunWithWeakReads()`. IsCausalReadRisky sets FDB_TR_OPTION_CAUSAL_READ_RISKY. 2 tests.
 - [ ] **Directory layer caching** — Multi-tenant keyspace management.
 - [ ] **Transaction ID / MDC / logging** — Transaction tracing and structured logging.
 - [ ] **Latency injection** — `FDBLatencySource` for testing.
@@ -1282,18 +1282,18 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### FDBRecordStore — missing public methods
 
-- [ ] **`preloadRecordAsync()`** — Read-ahead optimization. Not applicable to Go's sync model. **LOW**.
+- [x] **`preloadRecordAsync()`** — WONTFIX: Java-specific async pipeline optimization. Go's sync model loads records eagerly. No equivalent needed.
 - [x] **`isVersionChanged()`** — `IsVersionChanged()` on `FDBRecordStore`. Set during `checkPossiblyRebuild` when stored version < metadata version.
-- [ ] **`buildSingleRecord()`** — Edge case for single-record index builds. **LOW**.
+- [x] **`buildSingleRecord()`** — WONTFIX: only called internally in Java. Go's `ScanIndexRecords` handles record reconstruction from index entries.
 - [ ] **Query planning methods** (~5 methods) — Out of scope until query planner is ported. **LOW**.
 
 ### Index API — missing methods on IndexMaintainer interface
 
 - [x] **`scanUniquenessViolations()` / `clearUniquenessViolations()`** — Already implemented as `ScanUniquenessViolations()` / `ScanUniquenessViolationsForValue()` / `ResolveUniquenessViolation()` on store. Maintainer-level variant not needed (store dispatches internally).
 - [x] **`validateEntries()`** — Already implemented as `ValidateIndex()` in `index_validation.go` (3-phase: scan records → build expected → diff against actual).
-- [ ] **`canDeleteWhere()` with QueryToKeyMatcher** — Go uses structural expression matching instead. **LOW**.
-- [ ] **`scanRemoteFetch()`** — Experimental Java feature. **LOW**.
-- [ ] **`mergeIndex()` / `performOperation()`** — Generic index operation dispatch. **LOW**.
+- [x] **`canDeleteWhere()` with QueryToKeyMatcher** — WONTFIX: Go's `DeleteRecordsWhere` uses structural expression matching directly. QueryToKeyMatcher is query planner infrastructure.
+- [x] **`scanRemoteFetch()`** — WONTFIX: experimental Java feature for remote record fetching. Not in scope.
+- [x] **`mergeIndex()` / `performOperation()`** — WONTFIX: Java's generic dispatch pattern. Go uses direct method calls on IndexMaintainer interface.
 - [ ] **`isIdempotent()` / `addedRangeWithKey()`** — Internal to Go, not on interface. **LOW**.
 
 ### Index types — ALL COMPLETE (19/19)
