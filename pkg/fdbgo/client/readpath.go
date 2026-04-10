@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -40,7 +41,11 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 }
 
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
-	for _, server := range servers {
+	// Pick the least-loaded server, then fall back to remaining on failure.
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -64,32 +69,36 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		}
 		reqData := req.MarshalFDB()
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetKeyReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		return parseGetKeyReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func parseGetKeyReply(data []byte) ([]byte, error) {
-	r, err := wire.ReadErrorOr(data)
-	if err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return nil, fmt.Errorf("GetKey: %w", err)
 	}
 	// Navigate into the KeySelector nested struct (slot 3) to extract the key (inner slot 0).
@@ -132,7 +141,10 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
-	for _, server := range servers {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -140,25 +152,29 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(server.Token, body); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetValueReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		return parseGetValueReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -174,6 +190,9 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 	var allKVs []KeyValue
 	remaining := limit
+	if remaining <= 0 {
+		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
+	}
 	curBegin := begin
 	curEnd := end
 	relocateRetries := 0
@@ -238,7 +257,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 				remaining -= len(kvs)
 
 				if remaining <= 0 {
-					return allKVs, true, nil
+					return allKVs, more, nil
 				}
 
 				// C++ "fix more" heuristic (NativeAPI.actor.cpp:2331-2333):
@@ -301,11 +320,19 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
 	// C++ uses negative limit for reverse scans (transformRangeLimits in NativeAPI.actor.cpp:4231).
-	wireLimit := int32(limit)
+	// Wire format: int32. Clamp at boundary (Go int may be 64-bit).
+	wl := limit
+	if wl > math.MaxInt32 {
+		wl = math.MaxInt32
+	}
+	wireLimit := int32(wl)
 	if reverse {
 		wireLimit = -wireLimit
 	}
-	for _, server := range servers {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
 		conn, err := tx.db.getOrDial(ctx, server.Address)
 		if err != nil {
 			tx.db.handleConnError(server.Address)
@@ -314,25 +341,29 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
 		if err := conn.SendFrame(gkvToken, body); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
-				continue
-			}
-			return parseGetKeyValuesReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
+		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+		if err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			continue
 		}
+		if resp.Err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		return parseGetKeyValuesReply(resp.Body)
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -370,13 +401,12 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
 // Returns (keyValues, more, error).
 func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return nil, false, fmt.Errorf("GetKeyValues: %w", err)
 	}
 	var reply types.GetKeyValuesReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
-	}
+	reply.UnmarshalFromReader(&r)
 
 	kvs := types.ParseKeyValueRefStringVector(reply.Data)
 	return kvs, reply.More, nil
@@ -420,17 +450,123 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
 func parseGetValueReply(data []byte) ([]byte, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return nil, fmt.Errorf("GetValue: %w", err)
 	}
 	var reply types.GetValueReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
-	}
+	reply.UnmarshalFromReader(&r)
 	if !reply.HasValue {
 		return nil, nil // key not found
 	}
 	return reply.Value, nil
+}
+
+// Watch watches a key for changes. The server holds the connection open until
+// the watched key's value changes from the version observed by this transaction.
+// Returns nil when the key has changed, or an error on failure.
+//
+// Matches C++ NativeAPI.actor.cpp watchValueMap/watchValue flow: locate storage
+// server, send WatchValueRequest with current read version, long-poll for
+// WatchValueReply. Retries on wrong_shard_server with cache invalidation.
+//
+// The watch is a long-poll: there is no short timeout. The context's deadline
+// (if any) controls the maximum wait time.
+func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
+	if err := tx.ensureReadVersion(ctx); err != nil {
+		return err
+	}
+	// C++ NativeAPI.actor.cpp watchValueMap: adds read conflict on watched key.
+	tx.AddReadConflictKey(key)
+
+	// Read current value so we can send it with the watch request.
+	// C++ getValueOrStandby in watchValue actor reads the value at the watch version.
+	val, err := tx.ryw.get(ctx, key, tx.getValue)
+	if err != nil {
+		return err
+	}
+
+	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+		loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+		if locErr != nil {
+			return fmt.Errorf("locate key: %w", locErr)
+		}
+		if len(loc.Servers) == 0 {
+			return fmt.Errorf("no storage servers for key")
+		}
+
+		watchErr := tx.sendWatch(ctx, key, val, loc.Servers)
+		if watchErr == nil {
+			return nil
+		}
+		if isWrongShardServer(watchErr) || isAllAlternativesFailed(watchErr) {
+			tx.db.locCache.invalidate(key, tx.tenantId)
+			time.Sleep(wrongShardRetryDelay)
+			continue
+		}
+		return watchErr
+	}
+	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers []ServerInfo) error {
+	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
+	order := loadBalanceOrder(servers, chosenIdx)
+
+	for _, server := range order {
+		conn, err := tx.db.getOrDial(ctx, server.Address)
+		if err != nil {
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		req := types.WatchValueRequest{
+			Key:        key,
+			Version:    tx.readVersion,
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
+		}
+		if value != nil {
+			req.HasValue = true
+			req.Value = value
+		}
+		reqData := req.MarshalFDB()
+		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
+
+		tx.db.queueModel.startRequest(server.Address)
+		start := time.Now()
+
+		if err := conn.SendFrame(watchToken, reqData); err != nil {
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			cancelReply()
+			tx.db.handleConnError(server.Address)
+			continue
+		}
+		// Long-poll: no short timeout. Use the caller's context deadline.
+		select {
+		case resp := <-replyCh:
+			if resp.Err != nil {
+				tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+				tx.db.handleConnError(server.Address)
+				continue
+			}
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+			return parseWatchValueReply(resp.Body)
+		case <-ctx.Done():
+			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			cancelReply()
+			return ctx.Err()
+		}
+	}
+	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func parseWatchValueReply(data []byte) error {
+	if _, err := wire.ReadErrorOr(data); err != nil {
+		return fmt.Errorf("WatchValue: %w", err)
+	}
+	// Reply parsed successfully — key has changed.
+	return nil
 }
 
 // getAdjustedEndpoint computes the endpoint token for interface method at given index.

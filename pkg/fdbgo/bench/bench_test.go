@@ -303,6 +303,26 @@ func BenchmarkPipelinedGet(b *testing.B) {
 	}
 }
 
+// BenchmarkReadTransact isolates read-path overhead (no commit).
+func BenchmarkReadTransact(b *testing.B) {
+	b.Run("Go/1", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo/1", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+}
+
 func BenchmarkRYW(b *testing.B) {
 	b.Run("Go", func(b *testing.B) {
 		b.ReportAllocs()

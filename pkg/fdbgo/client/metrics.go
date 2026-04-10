@@ -117,8 +117,6 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-const EndpointGetRangeSplitPoints = 12 // StorageServerInterface::getRangeSplitPoints
-
 // GetRangeSplitPoints returns suggested split points for the given key range.
 // Matches C++ Transaction::getRangeSplitPoints in NativeAPI.actor.cpp.
 func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
@@ -202,7 +200,7 @@ func parseSplitRangeReply(data []byte) ([][]byte, error) {
 
 func isOperationFailed(err error) bool {
 	var fdbErr *wire.FDBError
-	return errors.As(err, &fdbErr) && fdbErr.Code == 4
+	return errors.As(err, &fdbErr) && fdbErr.Code == ErrOperationFailed
 }
 
 // parseWaitMetricsReply parses the ErrorOr-wrapped StorageMetrics reply.

@@ -38,21 +38,17 @@ func (tx *Transaction) commit(ctx context.Context) error {
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-replyCh:
-		if resp.Err != nil {
-			tx.db.handleConnError(proxy.Address)
-			tx.db.kickTopology()
-			return &wire.FDBError{Code: ErrCommitUnknownResult}
-		}
-		return tx.parseCommitReply(resp.Body)
-	case <-rctx.Done():
+	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	if err != nil {
 		cancelReply()
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
+	if resp.Err != nil {
+		tx.db.handleConnError(proxy.Address)
+		tx.db.kickTopology()
+		return &wire.FDBError{Code: ErrCommitUnknownResult}
+	}
+	return tx.parseCommitReply(resp.Body)
 }
 
 // metadataVersionKey is \xff/metadataVersion — the only key exempt from tenant prefix.
@@ -142,13 +138,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 
 // parseCommitReply parses an ErrorOr<CommitID> response.
 func (tx *Transaction) parseCommitReply(data []byte) error {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return fmt.Errorf("unmarshal CommitID: %w", err)
-	}
+	reply.UnmarshalFromReader(&r)
 	tx.committedVersion = reply.Version
 	tx.txnBatchId = reply.TxnBatchId
 	return nil

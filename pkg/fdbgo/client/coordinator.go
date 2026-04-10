@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -22,7 +21,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, CoordinatorTimeout)
 	defer cancel()
 
 	select {

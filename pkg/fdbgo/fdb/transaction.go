@@ -356,14 +356,54 @@ func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 	return nil
 }
 
-// Watch is not yet implemented.
-func (tr Transaction) Watch(_ KeyConvertible) FutureNil {
-	return newReadyFutureNil(errNotSupported)
+// Watch returns a future that becomes ready when the value associated with the
+// given key changes. The watch is a long-poll to the storage server.
+func (tr Transaction) Watch(key KeyConvertible) FutureNil {
+	inner, ctx := tr.t.inner, tr.t.ctx
+	return newFutureNil(func() error {
+		return convertError(inner.Watch(ctx, key.FDBKey()))
+	})
 }
 
-// LocalityGetAddressesForKey is not yet implemented.
-func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	return newReadyFutureStringSlice(nil, errNotSupported)
+// CreateTenant creates a tenant within this transaction.
+// Convenience method matching Apple binding — delegates to Database.CreateTenant.
+func (tr Transaction) CreateTenant(name KeyConvertible) error {
+	return tr.t.db.CreateTenant(name)
+}
+
+// DeleteTenant deletes a tenant within this transaction.
+// Convenience method matching Apple binding — delegates to Database.DeleteTenant.
+func (tr Transaction) DeleteTenant(name KeyConvertible) error {
+	return tr.t.db.DeleteTenant(name)
+}
+
+// ListTenants lists all tenants.
+// Convenience method matching Apple binding — delegates to Database.ListTenants.
+func (tr Transaction) ListTenants() ([]Key, error) {
+	return tr.t.db.ListTenants()
+}
+
+// LocalityGetAddressesForKey returns the addresses of storage servers that
+// hold the given key. Uses the location cache, querying the cluster on miss.
+func (tr Transaction) LocalityGetAddressesForKey(key KeyConvertible) FutureStringSlice {
+	inner, ctx := tr.t.inner, tr.t.ctx
+	return newFutureStringSlice(func() ([]string, error) {
+		addrs, err := inner.GetAddressesForKey(ctx, key.FDBKey())
+		if err != nil {
+			return nil, convertError(err)
+		}
+		return addrs, nil
+	})
+}
+
+func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
+	f := &futureStringSlice{}
+	f.init()
+	go func() {
+		defer close(f.done)
+		f.val, f.err = fn()
+	}()
+	return f
 }
 
 // Transact implements Transactor for composability.
@@ -387,7 +427,11 @@ func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any,
 func panicToError(e *error) {
 	if r := recover(); r != nil {
 		if err, ok := r.(error); ok {
-			*e = err
+			// Apply unconvertError so fdb.Error panics from MustGet()
+			// are converted back to *wire.FDBError for the retry loop.
+			// Without this, panicked fdb.Error escapes the retry loop
+			// because OnError doesn't recognize it via errors.As.
+			*e = unconvertError(err)
 		} else {
 			panic(r) // re-panic non-error panics
 		}

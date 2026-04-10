@@ -44,6 +44,8 @@ go_library(
         "tenantinfo_generated.go",
         "tenantmapentry_generated.go",
         "waitmetricsrequest_generated.go",
+        "watchvaluereply_generated.go",
+        "watchvaluerequest_generated.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types",
     visibility = ["//visibility:public"],

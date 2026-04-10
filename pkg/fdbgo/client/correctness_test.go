@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -341,7 +345,7 @@ func TestSnapshotRead(t *testing.T) {
 	// With snapshot read: tx1 should succeed (no read conflict range).
 
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
 
 	// Snapshot read — no conflict range added.
@@ -372,7 +376,7 @@ func TestSnapshotRead(t *testing.T) {
 
 	// Verify: now do a regular read that WOULD conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv3, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx3.SetReadVersion(rv3)
 
 	// Regular read — adds conflict range.
@@ -412,7 +416,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddReadConflictKey: tx1 adds explicit read conflict (no actual read),
 	// tx2 writes the same key. tx1 should conflict on commit.
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictKey([]byte("ecr_key"))
 	tx1.Set([]byte("ecr_other"), []byte("unrelated"))
@@ -435,7 +439,7 @@ func TestExplicitConflictRanges(t *testing.T) {
 	// AddWriteConflictKey: tx3 adds explicit write conflict on a key
 	// that tx4 also writes. tx4 reads it first, so tx4 should conflict.
 	tx3 := db.CreateTransaction()
-	rv3, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv3, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx3.SetReadVersion(rv3)
 
 	tx4 := db.CreateTransaction()
@@ -568,7 +572,7 @@ func TestAddReadConflictRange(t *testing.T) {
 
 	// tx1: add read conflict range [rcr_a, rcr_d) — covers a, b, c.
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
 	tx1.AddReadConflictRange([]byte("rcr_a"), []byte("rcr_d"))
 	tx1.Set([]byte("rcr_unrelated"), []byte("x"))
@@ -599,7 +603,7 @@ func TestAddWriteConflictRange(t *testing.T) {
 
 	// tx1 reads a key in the range [wcr_a, wcr_d).
 	tx1 := db.CreateTransaction()
-	rv, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
 	_, _ = tx1.Get(ctx, []byte("wcr_b")) // adds read conflict for wcr_b
 	tx1.Set([]byte("wcr_b"), []byte("from_tx1"))
@@ -690,7 +694,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a transaction and get the versionstamp.
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -718,7 +722,7 @@ func TestGetVersionstamp(t *testing.T) {
 
 	// Commit a second transaction — its versionstamp should be greater.
 	tx2 := db.CreateTransaction()
-	rv2, _ := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv2, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx2.SetReadVersion(rv2)
 	tx2.Set([]byte("vs_key2"), []byte("val2"))
 	if err := tx2.Commit(ctx); err != nil {
@@ -738,6 +742,122 @@ func TestGetVersionstamp(t *testing.T) {
 	_, err = tx3.GetVersionstamp()
 	if err == nil {
 		t.Error("GetVersionstamp before commit should fail")
+	}
+}
+
+func TestWatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("watch_test_key")
+
+	// Set initial value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("initial set: %v", err)
+	}
+
+	// Start watching in a goroutine.
+	watchDone := make(chan error, 1)
+	go func() {
+		_, werr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.Watch(ctx, key)
+		})
+		watchDone <- werr
+	}()
+
+	// Give the watch time to register, then change the key.
+	time.Sleep(500 * time.Millisecond)
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("changed"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("change set: %v", err)
+	}
+
+	// Watch should resolve.
+	select {
+	case err := <-watchDone:
+		if err != nil {
+			t.Fatalf("watch error: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch did not resolve within 30 seconds")
+	}
+}
+
+func TestGetEstimatedRangeSizeBytes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed some data so the range is non-empty.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 100; i++ {
+			k := []byte(fmt.Sprintf("est_%04d", i))
+			tx.Set(k, bytes.Repeat([]byte("x"), 1000))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetEstimatedRangeSizeBytes should not error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetEstimatedRangeSizeBytes(ctx, []byte("est_"), []byte("est_~"))
+	})
+	if err != nil {
+		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
+	}
+	size := result.(int64)
+	t.Logf("estimated range size: %d bytes", size)
+	// The exact value is non-deterministic, but it should be non-negative.
+	if size < 0 {
+		t.Fatalf("expected non-negative size, got %d", size)
+	}
+}
+
+func TestGetRangeSplitPoints(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed some data.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 100; i++ {
+			k := []byte(fmt.Sprintf("split_%04d", i))
+			tx.Set(k, bytes.Repeat([]byte("y"), 1000))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetRangeSplitPoints should not error. With small data the result
+	// may be nil/empty (everything fits in one chunk), which is fine.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetRangeSplitPoints(ctx, []byte("split_"), []byte("split_~"), 50000)
+	})
+	if err != nil {
+		t.Fatalf("GetRangeSplitPoints: %v", err)
+	}
+	points := result.([][]byte)
+	t.Logf("split points: %d", len(points))
+	for i, p := range points {
+		t.Logf("  split[%d]: %q", i, p)
 	}
 }
 
@@ -763,5 +883,212 @@ func TestEmptyRange(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("GetRange: %v", err)
+	}
+}
+
+// TestGetAddressesForKey verifies that GetAddressesForKey returns at least
+// one storage server address for an existing key.
+func TestGetAddressesForKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("locality_test_key")
+
+	// Write a key so the shard is populated.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Get addresses for the key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetAddressesForKey(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("GetAddressesForKey: %v", err)
+	}
+	addrs := result.([]string)
+	if len(addrs) == 0 {
+		t.Fatal("expected at least one address")
+	}
+	// Verify address format (host:port).
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			t.Errorf("address %q doesn't look like host:port", addr)
+		}
+	}
+	t.Logf("addresses for key: %v", addrs)
+}
+
+func TestConcurrentTransactions(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const goroutines = 10
+	const txPerGoroutine = 50
+	var wg sync.WaitGroup
+	var successCount atomic.Int64
+	var errorCount atomic.Int64
+
+	start := time.Now()
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < txPerGoroutine; i++ {
+				key := []byte(fmt.Sprintf("concurrent_%d_%d", id, i))
+				val := []byte(fmt.Sprintf("value_%d_%d", id, i))
+				_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					tx.Set(key, val)
+					return nil, nil
+				})
+				if err != nil {
+					errorCount.Add(1)
+					continue
+				}
+				// Read back in separate transaction
+				result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					return tx.Get(ctx, key)
+				})
+				if err != nil {
+					errorCount.Add(1)
+					continue
+				}
+				if !bytes.Equal(result.([]byte), val) {
+					t.Errorf("goroutine %d tx %d: got %q, want %q", id, i, result, val)
+					errorCount.Add(1)
+					continue
+				}
+				successCount.Add(1)
+			}
+		}(g)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	t.Logf("concurrent: %d success, %d errors, %d total, %.0f tx/s",
+		successCount.Load(), errorCount.Load(),
+		goroutines*txPerGoroutine,
+		float64(successCount.Load())/elapsed.Seconds())
+
+	if errorCount.Load() > 0 {
+		t.Errorf("%d errors occurred", errorCount.Load())
+	}
+}
+
+func TestConcurrentGetRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const writers = 5
+	const readers = 5
+	const opsPerWorker = 50
+	prefix := "cgr_"
+
+	// Seed initial data so readers have something to scan from the start.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 20; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%04d", prefix, i)), []byte(fmt.Sprintf("seed_%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var writeErrors atomic.Int64
+	var readErrors atomic.Int64
+	var readSuccess atomic.Int64
+	var writeSuccess atomic.Int64
+
+	start := time.Now()
+
+	// Writer goroutines: continuously insert new keys.
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerWorker; i++ {
+				key := []byte(fmt.Sprintf("%sw%d_%04d", prefix, id, i))
+				val := []byte(fmt.Sprintf("wval_%d_%d", id, i))
+				_, werr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					tx.Set(key, val)
+					return nil, nil
+				})
+				if werr != nil {
+					writeErrors.Add(1)
+				} else {
+					writeSuccess.Add(1)
+				}
+			}
+		}(w)
+	}
+
+	// Reader goroutines: continuously scan the prefix range.
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerWorker; i++ {
+				result, rerr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					kvs, _, err := tx.GetRange(ctx, []byte(prefix), []byte(prefix+"~"), 100)
+					return kvs, err
+				})
+				if rerr != nil {
+					readErrors.Add(1)
+					continue
+				}
+				kvs := result.([]KeyValue)
+				// Every returned key must start with prefix.
+				for _, kv := range kvs {
+					if !bytes.HasPrefix(kv.Key, []byte(prefix)) {
+						t.Errorf("reader %d scan %d: key %q missing prefix %q", id, i, kv.Key, prefix)
+						readErrors.Add(1)
+						continue
+					}
+				}
+				// Keys must be in sorted order.
+				for j := 1; j < len(kvs); j++ {
+					if bytes.Compare(kvs[j-1].Key, kvs[j].Key) >= 0 {
+						t.Errorf("reader %d scan %d: keys not sorted at %d: %q >= %q",
+							id, i, j, kvs[j-1].Key, kvs[j].Key)
+						readErrors.Add(1)
+						break
+					}
+				}
+				readSuccess.Add(1)
+			}
+		}(r)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	t.Logf("concurrent range: writes=%d(err=%d) reads=%d(err=%d) elapsed=%s",
+		writeSuccess.Load(), writeErrors.Load(),
+		readSuccess.Load(), readErrors.Load(),
+		elapsed)
+	t.Logf("throughput: %.0f writes/s, %.0f reads/s",
+		float64(writeSuccess.Load())/elapsed.Seconds(),
+		float64(readSuccess.Load())/elapsed.Seconds())
+
+	if writeErrors.Load() > 0 {
+		t.Errorf("%d write errors", writeErrors.Load())
+	}
+	if readErrors.Load() > 0 {
+		t.Errorf("%d read errors", readErrors.Load())
 	}
 }

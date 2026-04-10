@@ -6,9 +6,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/zeebo/xxh3"
 )
+
+// Frame buffer pool. WriteFrame allocates a buffer per frame.
+// Pool to reduce GC pressure. Uses *[]byte to avoid interface boxing allocation.
+var writeFramePool = sync.Pool{New: func() any {
+	b := make([]byte, 0, 4096)
+	return &b
+}}
 
 // Frame layout on the wire:
 //
@@ -36,7 +44,17 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
 		headerSize += checksumWidth
 	}
 
-	buf := make([]byte, headerSize+payloadLen)
+	totalSize := headerSize + payloadLen
+
+	// Get buffer from pool, grow if needed.
+	bufp := writeFramePool.Get().(*[]byte)
+	buf := *bufp
+	if cap(buf) < totalSize {
+		buf = make([]byte, totalSize)
+	} else {
+		buf = buf[:totalSize]
+	}
+
 	off := 0
 
 	// Packet length (does not include itself or checksum).
@@ -59,6 +77,8 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
 	}
 
 	_, err := w.Write(buf)
+	*bufp = buf[:0] // reset length, keep capacity
+	writeFramePool.Put(bufp)
 	return err
 }
 

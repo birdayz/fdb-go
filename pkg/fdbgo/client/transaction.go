@@ -37,6 +37,7 @@ const (
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
 	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard
 	ErrRangeLocked               = 1242 // transaction_rejected_range_locked
+	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
 	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
@@ -47,7 +48,15 @@ const (
 	NoTenantID           int64 = -1
 	UnlimitedBytes       int32 = 0x7FFFFFFF
 	DefaultRPCTimeout          = 5 * time.Second
+	CoordinatorTimeout         = 30 * time.Second // OpenDatabaseCoordRequest + GRV batch context
+	BootstrapMaxBackoff        = 5 * time.Second  // bootstrap retry backoff cap
 	MaxWrongShardRetries       = 5
+)
+
+// C++ version constants from flow/flow.h.
+const (
+	LatestVersion  int64 = -2 // C++ latestVersion — used in GetKeyServerLocationsRequest.MinTenantVersion
+	InvalidVersion int64 = -1 // C++ invalidVersion — used in GetReadVersionRequest.MaxVersion
 )
 
 // Backoff constants — match C++ CLIENT_KNOBS.
@@ -61,19 +70,32 @@ const (
 // Endpoint indices from C++ interface definitions.
 // Indices are relative to each interface's base token via getAdjustedEndpoint().
 //
-// StorageServerInterface (base = server token):
+// StorageServerInterface (StorageServerInterface.h):
 //
-//	getValue=0, getKey=1, getKeyValues=2, getShardState=3, waitMetrics=4
+//	getValue=0, getKey=1, getKeyValues=2, getShardState=3, waitMetrics=4,
+//	splitMetrics=5, getStorageMetrics=6, waitFailure=7, getQueuingMetrics=8,
+//	getKeyValueStoreType=9, watchValue=10, getReadHotRanges=11,
+//	getRangeSplitPoints=12, getKeyValuesStream=13
 //
-// CommitProxyInterface (base = proxy token):
+// CommitProxyInterface (CommitProxyInterface.h):
 //
 //	commit=0, ..., getKeyServerLocations=2
 const (
-	EndpointGetValue              = 0 // StorageServerInterface::getValue
-	EndpointGetKey                = 1 // StorageServerInterface::getKey
-	EndpointGetKeyValues          = 2 // StorageServerInterface::getKeyValues
-	EndpointWaitMetrics           = 4 // StorageServerInterface::waitMetrics
-	EndpointGetKeyServerLocations = 2 // CommitProxyInterface::getKeyServerLocations
+	EndpointGetValue              = 0  // StorageServerInterface::getValue
+	EndpointGetKey                = 1  // StorageServerInterface::getKey
+	EndpointGetKeyValues          = 2  // StorageServerInterface::getKeyValues
+	EndpointGetShardState         = 3  // StorageServerInterface::getShardState
+	EndpointWaitMetrics           = 4  // StorageServerInterface::waitMetrics
+	EndpointSplitMetrics          = 5  // StorageServerInterface::splitMetrics
+	EndpointGetStorageMetrics     = 6  // StorageServerInterface::getStorageMetrics
+	EndpointWaitFailure           = 7  // StorageServerInterface::waitFailure
+	EndpointGetQueuingMetrics     = 8  // StorageServerInterface::getQueuingMetrics
+	EndpointGetKeyValueStoreType  = 9  // StorageServerInterface::getKeyValueStoreType
+	EndpointWatchValue            = 10 // StorageServerInterface::watchValue
+	EndpointGetReadHotRanges      = 11 // StorageServerInterface::getReadHotRanges
+	EndpointGetRangeSplitPoints   = 12 // StorageServerInterface::getRangeSplitPoints
+	EndpointGetKeyValuesStream    = 13 // StorageServerInterface::getKeyValuesStream
+	EndpointGetKeyServerLocations = 2  // CommitProxyInterface::getKeyServerLocations
 )
 
 type txState int
@@ -270,7 +292,8 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		return err
 	}
 	if !tx.hasReadVersion {
-		rv, err := tx.db.grvBatcher.getReadVersion(tx.db, ctx, tx.grvFlags())
+		flags := tx.grvFlags()
+		rv, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		if err != nil {
 			return err
 		}
@@ -288,7 +311,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
-		tx.addReadConflict(key, keyAfterBytes(key))
+		tx.addReadConflictForKey(key)
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
 }
@@ -305,7 +328,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, err
 	}
 	if !isSystemKey(key) {
-		tx.addReadConflict(key, keyAfterBytes(key))
+		tx.addReadConflictForKey(key)
 	}
 
 	// Check RYW cache.
@@ -349,8 +372,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		rctx, rcancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: rctx, cancel: rcancel}, nil
+		timer := getTimer(DefaultRPCTimeout)
+		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -361,7 +384,7 @@ type PendingGet struct {
 	cancelReply func()
 	conn        *transport.Conn
 	ctx         context.Context
-	cancel      context.CancelFunc
+	timer       *time.Timer
 	flushed     bool
 }
 
@@ -372,13 +395,16 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		p.flushed = true
 		p.conn.Flush()
 	}
-	defer p.cancel()
+	defer putTimer(p.timer)
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
 			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 		}
 		return parseGetValueReply(resp.Body)
+	case <-p.timer.C:
+		p.cancelReply()
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	case <-p.ctx.Done():
 		p.cancelReply()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -391,7 +417,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		return nil, err
 	}
 	if !isSystemKey(selectorKey) {
-		tx.addReadConflict(selectorKey, keyAfterBytes(selectorKey))
+		tx.addReadConflictForKey(selectorKey)
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
@@ -435,7 +461,7 @@ func (tx *Transaction) Set(key, value []byte) {
 		Value: value,
 	})
 	tx.conflictMu.Unlock()
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 	tx.ryw.set(key, value)
 }
 
@@ -488,7 +514,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	})
 	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 	tx.ryw.atomic(op, key, operand)
 }
 
@@ -692,6 +718,25 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	return size
 }
 
+// GetLocations returns all shard location entries overlapping [begin, end).
+func (tx *Transaction) GetLocations(ctx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
+	return tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+}
+
+// GetAddressesForKey returns the addresses of storage servers responsible for
+// the given key. Uses the location cache (queries cluster on miss).
+func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]string, error) {
+	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	if err != nil {
+		return nil, fmt.Errorf("locate key: %w", err)
+	}
+	addrs := make([]string, len(loc.Servers))
+	for i, s := range loc.Servers {
+		addrs[i] = s.Address
+	}
+	return addrs, nil
+}
+
 // checkTimeout returns a timeout error if the deadline has passed.
 func (tx *Transaction) checkTimeout() error {
 	if tx.timeout > 0 && time.Now().After(tx.deadline) {
@@ -713,6 +758,21 @@ func keyAfterBytes(key []byte) []byte {
 	return r
 }
 
+// addReadConflictForKey adds a read conflict range [key, key\x00) with a
+// single allocation for both begin and end slices. Saves 2 allocs vs
+// keyAfterBytes + addReadConflict which allocate 3 buffers.
+func (tx *Transaction) addReadConflictForKey(key []byte) {
+	// One buffer: [begin(len)][end(len+1)] — end has implicit \x00 from make.
+	n := len(key)
+	buf := make([]byte, n+n+1)
+	copy(buf, key)
+	copy(buf[n:], key)
+	// buf[2*n] is already 0 from make
+	tx.conflictMu.Lock()
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.conflictMu.Unlock()
+}
+
 // addReadConflict adds a read conflict range with defensive copies.
 func (tx *Transaction) addReadConflict(begin, end []byte) {
 	b := make([]byte, len(begin))
@@ -724,13 +784,27 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 	tx.conflictMu.Unlock()
 }
 
+// addWriteConflictForKey adds a write conflict range [key, key\x00) with a
+// single allocation. Same optimization as addReadConflictForKey.
+func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	if tx.nextWriteNoConflict {
+		tx.nextWriteNoConflict = false
+		return
+	}
+	n := len(key)
+	buf := make([]byte, n+n+1)
+	copy(buf, key)
+	copy(buf[n:], key)
+	tx.conflictMu.Lock()
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.conflictMu.Unlock()
+}
+
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	// Defensive copy: callers use append(key, 0) which may alias the key slice.
-	// Without a copy, later mutations on the same backing array corrupt the range.
 	b := make([]byte, len(begin))
 	copy(b, begin)
 	e := make([]byte, len(end))
@@ -820,7 +894,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 
 // AddReadConflictKey adds a read conflict on a single key.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.addReadConflict(key, keyAfterBytes(key))
+	tx.addReadConflictForKey(key)
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
@@ -835,7 +909,7 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 }
 
 // reset clears transaction state for retry, preserving retryCount, backoff,

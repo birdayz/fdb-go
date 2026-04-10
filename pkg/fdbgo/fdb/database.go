@@ -2,6 +2,7 @@ package fdb
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -79,10 +80,14 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	return Database{d: &internalDB{inner: db, ctx: ctx}}, nil
 }
 
-// OpenWithConnectionString opens a connection using a cluster connection string.
-func OpenWithConnectionString(_ string) (Database, error) {
-	// TODO: connection string support
-	return Database{}, errNotSupported
+// OpenWithConnectionString opens a connection using a cluster connection string
+// (e.g., "description:id@host1:port1,host2:port2").
+func OpenWithConnectionString(connStr string) (Database, error) {
+	cf, err := client.ParseClusterString(connStr)
+	if err != nil {
+		return Database{}, fmt.Errorf("parse connection string: %w", err)
+	}
+	return OpenDatabaseFromConfig(context.Background(), cf)
 }
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
@@ -99,9 +104,24 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile) (Databa
 	return Database{d: &internalDB{inner: db, ctx: context.Background()}}, nil
 }
 
+// Open opens a database. The dbName parameter is ignored (legacy API compatibility).
+func Open(clusterFile string, _ []byte) (Database, error) {
+	return OpenDatabase(clusterFile)
+}
+
+// MustOpen opens a database or panics. The dbName parameter is ignored.
+func MustOpen(clusterFile string, _ []byte) Database {
+	return MustOpenDatabase(clusterFile)
+}
+
+// OpenDefault opens the database at the default cluster file (/etc/foundationdb/fdb.cluster).
+func OpenDefault() (Database, error) {
+	return OpenDatabase("/etc/foundationdb/fdb.cluster")
+}
+
 // MustOpenDefault opens the default database or panics.
 func MustOpenDefault() Database {
-	db, err := OpenDatabase("/etc/foundationdb/fdb.cluster")
+	db, err := OpenDefault()
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +159,6 @@ func (db Database) CreateTransaction() (Transaction, error) {
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		t := &transaction{
 			inner:      tx,
@@ -148,7 +167,9 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 			commitDone: make(chan struct{}),
 		}
 		lastTx = t
-		return f(Transaction{t: t})
+		r, e = f(Transaction{t: t})
+		e = unconvertError(e)
+		return
 	})
 	// Signal commitDone — client.Transact auto-committed after the closure
 	// returned. Any GetVersionstamp goroutine blocked on commitDone will unblock.
@@ -170,17 +191,20 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 
 // ReadTransact runs a read-only transactional function with automatic retry.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
+	// Use a reusable transaction wrapper to avoid per-call allocation.
+	// The transaction struct is stack-allocated (doesn't escape because
+	// the closure doesn't store it — it only stores the Transaction value
+	// which embeds a pointer to t).
 	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
-		tr := Transaction{t: &transaction{
+		t := transaction{
 			inner: tx,
 			db:    db,
 			ctx:   db.d.ctx,
-			// No commitDone — read transactions never commit.
-			// GetVersionstamp() returns error 2015 when commitDone is nil.
-		}}
-		return f(tr)
+		}
+		r, e = f(Transaction{t: &t})
+		e = unconvertError(e)
+		return
 	})
 	if err != nil {
 		return nil, convertError(err)
@@ -264,14 +288,35 @@ func (db Database) ListTenants() ([]Key, error) {
 	return result.([]Key), nil
 }
 
-// GetClientStatus is not yet implemented.
+// GetClientStatus returns a JSON blob with client connection status.
+// Provides basic connectivity info — not the full FDB status JSON.
 func (db Database) GetClientStatus() ([]byte, error) {
-	return nil, errNotSupported
+	info := db.d.inner.GetDBInfo()
+	if info == nil {
+		return []byte(`{"connected":false}`), nil
+	}
+	return fmt.Appendf(nil,
+		`{"connected":true,"grv_proxies":%d,"commit_proxies":%d}`,
+		len(info.GRVProxies), len(info.CommitProxies),
+	), nil
 }
 
-// LocalityGetBoundaryKeys is not yet implemented.
-func (db Database) LocalityGetBoundaryKeys(_ ExactRange, _ int, _ int64) ([]Key, error) {
-	return nil, errNotSupported
+// LocalityGetBoundaryKeys returns shard boundary keys within the given range.
+// Uses the location cache to find shard boundaries. The limit and readVersion
+// parameters match the Apple binding signature but are advisory.
+func (db Database) LocalityGetBoundaryKeys(r ExactRange, limit int, _ int64) ([]Key, error) {
+	begin, end := r.FDBRangeKeys()
+	ctx := db.d.ctx
+	tx := db.d.inner.CreateTransaction()
+	locs, err := tx.GetLocations(ctx, begin.FDBKey(), end.FDBKey(), limit)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]Key, 0, len(locs)+1)
+	for _, loc := range locs {
+		keys = append(keys, Key(loc.ShardBegin))
+	}
+	return keys, nil
 }
 
 // RebootWorker is not yet implemented.

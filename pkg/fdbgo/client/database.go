@@ -126,9 +126,14 @@ type database struct {
 	// Per-endpoint health tracking. Wakes GRV backoff on recovery.
 	failMon *failureMonitor
 
-	// GRV cache + batcher. C++: cachedReadVersion, versionBatcher.
-	grvCache   grvCache
-	grvBatcher grvBatcher
+	// Load balancing: QueueModel for storage servers, round-robin for proxies.
+	queueModel *QueueModel
+	proxyRR    proxyRoundRobin
+
+	// GRV cache + per-priority batchers. C++: cachedReadVersion, versionBatcher.
+	// One batcher per priority level: [BATCH, DEFAULT, SYSTEM_IMMEDIATE].
+	grvCache    grvCache
+	grvBatchers [3]*grvBatcher
 
 	// Lifecycle.
 	ctx       context.Context
@@ -138,23 +143,24 @@ type database struct {
 	wg        sync.WaitGroup
 }
 
-// GetGRVProxy returns a GRV proxy address for read version requests.
+// getGRVProxy returns a GRV proxy address using round-robin selection.
 func (db *database) getGRVProxy() (*ProxyInfo, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.GRVProxies) == 0 {
 		return nil, fmt.Errorf("no GRV proxies available")
 	}
-	// Simple round-robin (TODO: proper load balancing).
-	return &info.GRVProxies[0], nil
+	idx := db.proxyRR.nextGRV(len(info.GRVProxies))
+	return &info.GRVProxies[idx], nil
 }
 
-// getCommitProxy returns a commit proxy address.
+// getCommitProxy returns a commit proxy address using round-robin selection.
 func (db *database) getCommitProxy() (*ProxyInfo, error) {
 	info := db.dbInfo.Load()
 	if info == nil || len(info.CommitProxies) == 0 {
 		return nil, fmt.Errorf("no commit proxies available")
 	}
-	return &info.CommitProxies[0], nil
+	idx := db.proxyRR.nextCommit(len(info.CommitProxies))
+	return &info.CommitProxies[idx], nil
 }
 
 // getGRVProxies returns all GRV proxies from the current topology.
@@ -239,6 +245,44 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 	return c, true, nil
 }
 
+// warmConnections pre-establishes TCP connections to all known proxies.
+// Called after bootstrap to eliminate cold-start latency on first transaction.
+// Dials GRV and commit proxies in parallel. Errors are silently ignored —
+// connections will be established on demand if pre-warming fails.
+func (db *database) warmConnections(ctx context.Context) {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return
+	}
+
+	// Collect unique addresses from all proxy types.
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, p := range info.GRVProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+	for _, p := range info.CommitProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+
+	// Dial all in parallel.
+	var wg sync.WaitGroup
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(a string) {
+			defer wg.Done()
+			db.getOrDial(ctx, a)
+		}(addr)
+	}
+	wg.Wait()
+}
+
 // bootstrap connects to coordinators and fetches initial cluster topology.
 // Tries all coordinators in parallel — first success wins. Retries with
 // backoff on transient errors (e.g., failed_to_progress 1216).
@@ -256,7 +300,7 @@ func (db *database) bootstrap(ctx context.Context) error {
 		case <-ctx.Done():
 			return fmt.Errorf("failed to connect to any coordinator: %w", err)
 		case <-time.After(backoff):
-			if backoff < 5*time.Second {
+			if backoff < BootstrapMaxBackoff {
 				backoff *= 2
 			}
 		}
@@ -343,11 +387,14 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		ctx:          bgCtx,
 		cancel:       cancel,
 		failMon:      newFailureMonitor(),
+		queueModel:   newQueueModel(),
 		locCache: locationCache{
 			maxSize: 600_000,
 		},
-		grvBatcher: grvBatcher{
-			batchTime: 1 * time.Millisecond,
+		grvBatchers: [3]*grvBatcher{
+			grvBatcherBatch:           {batchTime: 1 * time.Millisecond, priority: grvPriorityBatch},
+			grvBatcherDefault:         {batchTime: 1 * time.Millisecond, priority: grvPriorityDefault},
+			grvBatcherSystemImmediate: {batchTime: 1 * time.Millisecond, priority: grvPrioritySystemImmediate},
 		},
 	}
 
@@ -355,6 +402,11 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		cancel()
 		return nil, fmt.Errorf("connect to cluster: %w", err)
 	}
+
+	// Pre-warm connections to all known proxies. The first transaction
+	// would dial lazily, but pre-warming saves ~5-10ms on first RPC.
+	// Errors are ignored — connections will be established on demand.
+	db.warmConnections(ctx)
 
 	// Start topology monitor goroutine.
 	db.wg.Add(1)
@@ -431,6 +483,12 @@ func (d *Database) CreateTransaction() *Transaction {
 // a fresh read version from the GRV proxy. Use after external writes.
 func (d *Database) InvalidateGRVCache() {
 	d.db.grvCache.version.Store(0)
+}
+
+// GetDBInfo returns the current cluster topology (proxy lists, cluster ID).
+// Returns nil if not yet connected.
+func (d *Database) GetDBInfo() *DBInfo {
+	return d.db.dbInfo.Load()
 }
 
 // Close shuts down the database connection. Idempotent.

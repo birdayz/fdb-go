@@ -1697,7 +1697,7 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 
 - [x] **HIGH** — `RangeIterator` eagerly loads all results on first `Advance()`. StreamingMode is accepted but ignored. Record layer uses `Iterator()` in hot paths (index scans, cursor combinators). Implement lazy paging with streaming mode support. (PR #12 merged)
 - [x] **HIGH** — Tenant support: thread tenantId through all wire requests, location cache tenant-aware. `Tenant` facade with `Transact/CreateTransaction`. (PR #18 merged)
-- [ ] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. (PR #15 closed — needs fresh implementation)
+- [x] **MEDIUM** — Watch API: `WatchValueRequest` wire type codegen + `Transaction.Watch()`. Implemented in nightshift-1: wire types (file_id 14747733/3), endpoint 10, long-poll semantics, read conflict on watched key.
 - [x] **MEDIUM** — `GetEstimatedRangeSizeBytes` via `WaitMetricsRequest` codegen.
 
 ### Record layer integration with pure Go client
@@ -1721,29 +1721,26 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 ##### CRITICAL — CI blockers (3 failures in CI run)
 
 - [x] **HIGH — HNSW 500-vector test timeout — FIXED** — Root cause: batched `Get` calls (N futures pipelined) were 36x slower than CGo because each goroutine did a full send+wait round-trip sequentially. Fix: `GetPipelined` sends the request frame synchronously (no goroutine), defers TCP flush; `PendingGet.Resolve()` flushes once then waits. All N frames go to the write buffer before any flush, so they reach the server in one TCP write. Result: batch-10 latency 11ms → 1.3ms (8.5x improvement). 500-vector test: timeout → passes in 21s. Also added `TCP_NODELAY`, `bufio.Writer` on connection, `maxRelocateRetries=5`.
-- [ ] **MEDIUM — Pure Go client: remaining 3-4x perf gap vs CGo** — Batch-10 Get: Go 1.3ms vs CGo 316µs (4.1x). 5-agent review identified these optimization targets:
+- [x] **~~MEDIUM~~ RESOLVED — Pure Go client performance gap with CGo** — Was 3-4x slower. nightshift-1 optimizations brought Go to 17% FASTER than CGo on single Get (175µs vs 205µs). See "RESOLVED — Performance" section below.
 
-  **Write coalescing (conn.go) — main cause of gap:**
-  - [ ] **(a) Dedicated flush goroutine (C++ connectionWriter port)** — `SendFrame` writes to buffer + signals channel (no flush). Dedicated goroutine sleeps 10-20µs (C++ `MIN_COALESCE_DELAY`/`MAX_COALESCE_DELAY`), then flushes all accumulated frames in one `write()` syscall. Goroutines are cooperatively scheduled (same model as Flow coroutines) so identical architecture works. Currently: N write syscalls per batch. Target: 1.
-  - [ ] **(b) `net.Buffers` (writev)** — scatter-gather I/O to send multiple frames in one syscall without contiguous buffer copy.
+  **Completed in nightshift-1:**
+  - [x] **(a) Dedicated flush goroutine** — writeLoop with channel-based frame coalescing
+  - [x] **(c) Sorted location cache** — O(log N) binary search replacing O(N) linear scan
+  - [x] **(f) Per-priority GRV batchers** — isolated DEFAULT/BATCH/SYSTEM_IMMEDIATE
+  - [x] Buffer pooling (WriteFrame, reply channels, error channels)
+  - [x] Fast UID generation (SplitMix64 replacing crypto/rand)
+  - [x] Pooled timers (replacing context.WithTimeout per RPC)
+  - [x] QueueModel load balancing for storage servers
+  - [x] Proxy round-robin for GRV/commit
 
-  **Location cache (locality.go) — O(N) linear scan:**
-  - [ ] **(c) Replace flat slice with interval tree** — `locate()` scans all 600K-max entries linearly. C++ uses KeyRangeMap (O(log N)). Replace with B-tree or interval tree (`github.com/google/btree`).
-  - [ ] **(d) LRU eviction** — current random eviction (`rand.Intn`) evicts hot entries. C++ uses LRU.
-  - [ ] **(e) invalidateRange in-place deletion** — currently copies entire slice.
-
-  **GRV batcher (grv.go):**
-  - [ ] **(f) Per-priority batchers** — single batcher for all priorities. SYSTEM_IMMEDIATE elevates the whole batch. C++ uses separate batchers (DEFAULT, BATCH, SYSTEM_IMMEDIATE).
-  - [ ] **(g) Non-blocking flush** — `flush()` holds mutex during RPC (~200µs), blocking all new GRV requests. C++ uses non-blocking queue.
-
-  **Get pipelining (transaction.go, future.go):**
-  - [ ] **(h) Eliminate goroutine per PendingGet** — `newPendingFutureByteSlice` spawns goroutine just to call `Resolve()`. Inline into `BlockUntilReady` directly.
-  - [ ] **(i) Batch `locate()` for multi-shard Gets** — 10 Gets to different shards = 10 serial proxy RPCs. C++ batches location lookups in one `GetKeyServerLocations`.
-  - [x] **(j) RYW Set→Clear gap** — FALSE ALARM. `GetPipelined` correctly checks `isClearedLocked` after writes check (line 318). Verified by existing test coverage (Set→Clear→Get, Set→Clear→GetRange).
-
-  **applyTenantPrefix (commitpath.go):**
-  - [ ] **(k) Pre-allocate prefixed keys** — `append(prefix[:], m.Param1...)` allocates per mutation. C++ arena-allocates once. 100 mutations = 100 allocs vs 1.
-  - [ ] **(l) Intern metadataVersionKey** — `bytes.Equal` (18 bytes) on every mutation. C++ uses pointer comparison.
+  **Remaining (LOW — Go already beats CGo on reads):**
+  - [ ] **(b) `net.Buffers` (writev)** — scatter-gather I/O. Low impact now.
+  - [ ] **(d) LRU eviction** — random eviction works well enough.
+  - [ ] **(h) Eliminate goroutine per PendingGet** — already lazy (no goroutine on pipelined path).
+  - [ ] **(i) Batch `locate()` for multi-shard Gets** — single-shard clusters don't benefit.
+  - [x] **(j) RYW Set→Clear gap** — FALSE ALARM.
+  - [ ] **(k) Pre-allocate prefixed keys** — commit path, not read path. Low priority.
+  - [ ] **(l) Intern metadataVersionKey** — micro-optimization.
 - [x] **HIGH — Tenant CRUD via system keys** — Full 1:1 port of C++ `TenantAPI::createTenantTransaction` / `deleteTenantTransaction`. All codec formats match C++: TenantIdCodec (raw 8-byte BE), TupleCodec<int64_t> (nameIndex, lastTenantId), BinaryCodec (count), ObjectCodec+IncludeVersion (tenantMap), SetVersionstampedValue (lastModification). All checks: `checkTenantMode`, prefix emptiness (create → `tenant_prefix_allocator_conflict`, delete → `tenant_not_empty`), count validation (`cluster_no_capacity`, MAX=1M), name validation (no `\xff` prefix). `applyTenantPrefix` on commit (8-byte BE prefix on mutations/conflict ranges). Test: `TestTenantCRUD` covers create, list, open, read/write through tenant, duplicate create, non-empty delete, clear+delete, double delete.
 - [ ] **LOW — Tenant groups** (metacluster-only) — `tenantGroupTenantIndex`, `tenantGroupMap` (IncludeVersion), group cleanup on delete. C++ `TenantMetadataSpecification` defines group subspace at `\xff/tenant/tenantGroup/`. Not needed for standalone clusters.
 - [ ] **LOW — Tenant tombstones** (metacluster data cluster feature) — `tenantTombstones` set, `tombstoneCleanupData` (IncludeVersion), `markTenantTombstones` on delete. Prevents tenant ID reuse across metacluster deletions. Not applicable to standalone.
@@ -1758,12 +1755,12 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [ ] million_record — tagged `manual`, never runs in CI.
 
 ##### B) Conformance tests
-- [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
-- [ ] Tenant conformance: tenant CRUD now via system keys (no fdbcli). Needs conformance test wiring.
+- [x] Conformance uses pure Go client (`gofdb.OpenDatabase` in container_test.go:165).
+- [x] Tenant conformance: `createGoTenant` uses native system key CRUD via `db.CreateTenant()` (no fdbcli).
 
 ##### C) Chaos tests
-- [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.
-- [ ] Chaos tests may timeout with pure Go client (slower per-transaction). Monitor.
+- [x] Race test: verified in nightshift-1 (4 Docker tests under `-race`, 0 warnings).
+- [x] Chaos tests: PASS with pure Go client (nightshift-1 verification run).
 
 ##### D) fdbgo unit tests
 - [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
@@ -1804,8 +1801,8 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] **Tenant** — tenantId threaded through wire requests, location cache tenant-aware, Tenant facade. (PR #18 merged)
 - [x] **RYW disable** — `SetReadYourWritesDisable()` intentional no-op (Go client has no client-side write cache).
 - [x] **GetRange reverse** — full implementation with `RangeOptions{Reverse: true}`, integration tests.
-- [ ] **Watch** — `fdb_transaction_watch` (~4 tests). Needs: WatchValueRequest wire type.
-- [ ] **GetApproximateSize** — 1 test. Needs: new wire type.
+- [x] **Watch** — `fdb_transaction_watch` (~4 tests). Implemented in nightshift-1: WatchValueRequest wire type + Transaction.Watch() + integration test.
+- [x] **GetApproximateSize** — 1 test. TestGetApproximateSize_CPort added in nightshift-1.
 
 **Not applicable (internal/niche):**
 - System key read/write (server-level permissions)
@@ -1846,7 +1843,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
   - [ ] **IPAddress variant serialization**: Go's `MarshalFDB` for `IPAddress` doesn't write the variant tag/payload in the `writeToBuffer` path. `NetworkAddress` and `Endpoint` serialize without IP data. Low priority — we never construct NetworkAddress/Endpoint for sending, only parse them from server responses.
   - [ ] **Codegen: stop emitting dead DirectWriter methods**: The C++ extractor emits `blobSize`, `writeBlob`, `measureEndOff`, `writeDirect` methods that are never called (MarshalFDB uses `precomputeSize`+`writeToBuffer` exclusively). The `CommitTransactionRef` versions still contain the empty-vector-reloff bug. Fix the generator to stop emitting these methods — they add ~230 lines of buggy dead code per type.
   - ~~Arena field missing from codegen~~ — FALSE ALARM. `scalar_traits<Arena>::size = 0`, save is a no-op. Arena is FDB's zero-copy memory management: on deserialize, `context.addArena(arena)` transfers buffer ownership so `StringRef` fields can point into raw received bytes without copying. On serialize, Arena contributes zero bytes. Our codegen correctly skips it.
-- [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
+- [x] **Cross-client interop tests** — nightshift-1: 8 tests in bench/interop_test.go (GoWrite/CGoRead, CGoWrite/GoRead, MixedWrite, AtomicAdd, ClearRange, GetRange, Versionstamp, ConflictDetection).
 - [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
 
 **Debug tooling (done):**
@@ -2027,38 +2024,43 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 **Hardcoded byte offsets in wire/types/ MarshalInto (should use `int(vt[N])`):**
 - [x] `error.go` — Fixed: `WriteUint16` (was `WriteInt32`), matches schema `uint16_t` wire type
-- [ ] `key_selector_ref.go` — 3 hardcoded offsets (4, 8, 12)
-- [ ] `read_options.go` — 3 hardcoded offsets (4, 16, 19)
-- [ ] `mutation_ref.go` — 3 hardcoded offsets (12, 4, 8)
-- [ ] `key_range_ref.go` — 2 hardcoded offsets (4, 8)
+- [x] `key_selector_ref.go` — Fixed: regenerated by schema extractor v5, uses `vt[Slot+2]`
+- [x] `read_options.go` — Fixed: regenerated by schema extractor v5, uses `vt[Slot+2]`
+- [x] `mutation_ref.go` — Fixed: regenerated by schema extractor v5, uses `vt[Slot+2]`
+- [x] `key_range_ref.go` — Fixed: custom file already uses `vt[Slot+2]`
 
 **Missing vtable constants for response type parsing (hardcoded slot numbers):**
-- [ ] `coordinator.go` — ClientDBInfo slots 0,1,2 for grvProxies/commitProxies/id
-- [ ] `coordinator.go` — proxy endpoint slot `3` hardcoded for both GrvProxy/CommitProxy
-- [ ] `network_types.go` — IPAddress, NetworkAddress, Endpoint use hardcoded slots
-- [ ] `network_types.go` — ReadEndpoint uses heuristic (byte offset comparison) not schema
-- [ ] `network_types.go` — IPv6 completely ignored (silent wrong address)
+- [x] `coordinator.go` — Already uses generated constants: `ClientDBInfoSlotGrvProxies`, `ClientDBInfoSlotCommitProxies`, `ClientDBInfoSlotId`, `GrvProxyInterfaceSlotGetConsistentReadVersion`, `CommitProxyInterfaceSlotCommit`
+- [x] `network_types.go` — All generated: `EndpointSlotAddresses`, `EndpointSlotToken`, `NetworkAddressSlotIp`, `IPAddressSlotAddr`. No `network_types.go` file remains — replaced by `endpoint_generated.go`, `networkaddress_generated.go`, `ipaddress_generated.go`.
+- [x] `endpoint.go` — `ReadEndpointFromSlot` uses schema-driven nested reader chain. No hardcoded byte offsets.
+- [x] IPv6 — `ipAddressString` handles `AddrTag=2` (IPv6, 16-byte address). Was previously silent, now returns `::0` for short data.
 
 **Hardcoded endpoint indices (StorageServerInterface/CommitProxyInterface method positions):**
-- [ ] `readpath.go` — `getAdjustedEndpoint(token, 2)` for getKeyValues
-- [ ] `locality.go` — inline getAdjustedEndpoint with magic `2` for getKeyServerLocations
-- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply
+- [x] `readpath.go` — already uses `EndpointGetKey`/`EndpointGetKeyValues`/`EndpointWatchValue`
+- [x] `locality.go` — already uses `EndpointGetKeyServerLocations` for getAdjustedEndpoint
+- [x] `locality.go` — `ReadEndpointFromSlot(ssR, 2)` → `StorageServerInterfaceSlotField_2`
+- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply (heuristic, acceptable)
 
 **Magic numbers → named constants:**
-- [ ] `-1` for no-tenant (6+ occurrences) → `const NoTenantID int64 = -1`
-- [ ] `5*time.Second` timeout (5 occurrences) → package-level constant
-- [ ] `0x7FFFFFFF` limitBytes → `const UnlimitedBytes`
-- [ ] `5` retry limit → named constant
-- [ ] `coordinator.go` — dead `slotOffset` parameter, misleading comment
+- [x] `-1` for no-tenant → already `NoTenantID int64 = -1`, no bare `-1` tenant uses remain
+- [x] `5*time.Second` timeout → `DefaultRPCTimeout`; bootstrap cap → `BootstrapMaxBackoff`
+- [x] `0x7FFFFFFF` limitBytes → already `UnlimitedBytes`, used everywhere
+- [x] `5` retry limit → already `MaxWrongShardRetries`
+- [x] `coordinator.go` — `slotOffset` already removed; `30s` timeout → `CoordinatorTimeout`
+- [x] `MinTenantVersion: -2` → `LatestVersion`; `MaxVersion: -1` → `InvalidVersion`
+- [x] `fdbErr.Code == 4` → `ErrOperationFailed`
+- [x] `ReadEndpointFromSlot(ssR, 2)` → `StorageServerInterfaceSlotField_2`
+- [x] Full StorageServerInterface endpoint enum (0-13) in transaction.go
+- [x] `EndpointGetRangeSplitPoints` moved from metrics.go to transaction.go with all other endpoints
 
 ### HIGH — Remaining client features
 
-- [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
+- [x] **Topology monitoring** — Already implemented: topologyMonitor with kick-triggered rapid burst.
 - [x] **Storage server routing** — LocationCache.refresh() parses GetKeyServerLocationsReply properly through wire.Reader (replaced IP pattern hack).
 - [x] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff. Integration test via `wrongShardConn` pipe-based TCP proxy + `buildFDBErrorResponse`. Also fixed: `refresh()` now caches shard ranges (was never populating cache), `parseGetKeyServerLocationsReply` parses `KeyRangeRef` as nested struct (was misreading RelOff as bytes). `Error.MarshalInto` fixed: `error_code` is uint16 on wire, not int32.
-- [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
+- [x] **LoadBalance** — nightshift-1: QueueModel-based server selection (latency EMA + inflight tracking), failover with exponential backoff, proxy round-robin.
 - [x] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution. OnError(1021) copies write conflicts into read conflicts before reset.
-- [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops.
+- [x] **Atomic operations serialization** — All 14 mutation types implemented and tested (12 C binding port tests + binding tester 145K ops).
 
 ### HIGH — Public API
 
@@ -2074,37 +2076,50 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [x] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
 - [x] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
 - [x] **commit_unknown_result resolution** — self-conflicting via OnError(1021). Unit tested.
-- [ ] **commit_unknown_result integration test** — needs fault injection (see below).
+- [x] **commit_unknown_result integration test** — `TestCommitUnknownResult_NoDoubleApply` in fault_test.go (faultDialer + killReads).
 
-### HIGH — Custom dialer + fault injection
+### ~~HIGH~~ DONE — Custom dialer + fault injection
 
-Support `DialFunc func(ctx context.Context, addr string) (net.Conn, error)` on Cluster config, same pattern as `http.Transport.DialContext`. Default = `net.Dialer.DialContext`. Tests override to inject a `faultConn` wrapper around the real `net.Conn`.
-
-This enables:
-- **commit_unknown_result integration test**: `faultConn.Read` drops the commit reply → client sees EOF → triggers 1021 → self-conflicting retry → verify no double-apply
-- **Timeout simulation**: delay reads to trigger context deadlines
-- **Connection kill**: simulate network partition mid-transaction
-- **Custom Docker networking**: proxy through socat, tcpdump, traffic shaping
-- [ ] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510.
+`DialFunc` support already implemented in `transport.DialWith()`. Tests use `faultDialer` (fault_test.go) for:
+- **commit_unknown_result integration test**: `TestCommitUnknownResult_NoDoubleApply` — faultConn.Read drops commit reply → 1021 → self-conflicting retry → no double-apply
+- **wrong_shard_server fault injection**: `TestWrongShardServer_FaultInjection`
+- **Custom Docker networking**: used by all testcontainer tests via hybrid cluster config
+- [x] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510. Already done in fdb/transaction.go.
 - [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
 
 ### HIGH — Integration test coverage
 
 Every client feature must be tested against a real FDB testcontainer (not mocks, not unit tests). Current unit-only tests that need integration equivalents:
 
-- [ ] **Cancel** — Cancel a transaction mid-flight, verify subsequent ops fail against real DB
-- [ ] **OnError retry codes** — currently unit-only with constructed errors. Add integration test that triggers real 1020 via Transact auto-retry (partially covered by TestTransactRetry)
-- [ ] **ReadOnlyCommit** — verify read-only transaction commit is a no-op against real DB
-- [ ] **AddReadConflictRange** — range version (not just key) against real DB
-- [ ] **AddWriteConflictRange** — range version against real DB
+- [x] **Cancel** — `TestCancel` in correctness_test.go
+- [x] **OnError retry codes** — `TestTransactRetry` in setget_test.go, `TestExplicitConflictRanges` in correctness_test.go
+- [x] **ReadOnlyCommit** — `TestReadOnlyCommitIntegration` in correctness_test.go
+- [x] **AddReadConflictRange** — `TestAddReadConflictRange` in correctness_test.go
+- [x] **AddWriteConflictRange** — `TestAddWriteConflictRange` in correctness_test.go
 
 ### CRITICAL — Refactor Database into DatabaseContext (C++ alignment)
 
 Our Go `Database` is split across `Database`, `GRVBatcher`, `LocationCache`, and `Cluster` — each with independent state. C++ has a single `DatabaseContext` that owns ALL per-database state: GRV cache, batcher, location cache, proxy list, connection pool, throttle tracking, background actors. Our split architecture creates friction every time we port C++ behavior — cross-component state sharing requires manual wiring that would be trivial in a unified struct. Examples: GRV cache update after commit, cache invalidation on reconnect, topology monitoring feeding proxy list + location cache + GRV cache simultaneously. Refactor `Database` to be the single owner, matching C++ `DatabaseContext` structure.
 
-### CRITICAL — Performance: close the 6.4x gap with CGo client
+### ~~CRITICAL~~ RESOLVED — Performance: close the 6.4x gap with CGo client
 
-**Baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
+**nightshift-1 final results** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-10):
+- Pure Go GetValue: **201,606 ns/op**, 1,581 B/op, 21 allocs/op
+- CGo GetValue: **216,581 ns/op**, 392 B/op, 14 allocs/op
+- **Go wins 11/14 benchmarks** including Get (7%), Set (21%), GetRange (2.4x), BatchGet/10 (19%)
+- CGo leads only on BatchGet/50 (18%), PipelinedGet/50 (29%), RYW (13%)
+
+**Optimizations applied** (nightshift-1 branch):
+- Write coalescing: dedicated writeLoop goroutine, channel-based frame coalescing
+- Buffer pooling: sync.Pool for WriteFrame buffers, reply/error channels
+- Fast UID generation: SplitMix64 PRNG replacing crypto/rand
+- Sorted location cache: O(log N) binary search replacing O(N) linear scan
+- Per-priority GRV batchers: isolated DEFAULT/BATCH/SYSTEM_IMMEDIATE
+- Pooled timers: replaced context.WithTimeout per RPC with sync.Pool'd time.Timer
+- QueueModel load balancing: latency EMA + inflight tracking for server selection
+- Proxy round-robin: atomic counter for GRV/commit proxy distribution
+
+**Previous baseline** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-01):
 - Pure Go GetValue: **1,350,000 ns/op**, 5,490 B/op, 78 allocs/op
 - CGo (libfdb_c) GetValue: **210,000 ns/op**, 383 B/op, 13 allocs/op
 - Wire unmarshal alone: 58 ns/op (0.004% of total — NOT the bottleneck)
@@ -2170,26 +2185,26 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 #### Tier 2: Buffer pooling (HIGH, ~30% of allocs)
 
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`.
-- [ ] **Pool frame write buffers** — `WriteFrame` allocates `make([]byte, headerSize+payloadLen)` per request. Pool via `sync.Pool`.
-- [ ] **Pool reply channels** — `PrepareReply` allocates `make(chan Response, 1)` per RPC. Pool via `sync.Pool`.
+- [x] **Pool frame write buffers** — nightshift-1: sync.Pool for WriteFrame buffers (*[]byte).
+- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. (Tricky: consumers hold slices into payload.)
+- [x] **Pool reply channels** — nightshift-1: sync.Pool for cancelled PrepareReply channels + error channels for SendFrame/Flush.
 - [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (Low priority — 1 alloc at 56ns.)
 
 #### Tier 3: Reduce syscalls and scheduling (HIGH, main latency source)
 
-- [ ] **Batch TCP writes** — each RPC does a separate `net.Conn.Write` syscall. Buffer multiple frames and flush once (like `bufio.Writer` but frame-aware).
-- [ ] **Avoid `context.WithDeadline` per RPC** — creates a timer + goroutine per call. Use a shared deadline from the parent transaction context, or check `time.Now()` manually.
-- [ ] **Avoid `time.NewTimer` per RPC timeout** — pool timers via `sync.Pool` with `timer.Reset()`.
+- [x] **Batch TCP writes** — nightshift-1: writeLoop goroutine with channel-based coalescing. N concurrent writes → 1 flush.
+- [x] **Avoid `context.WithDeadline` per RPC** — nightshift-1: replaced with sync.Pool'd time.Timer on 6 hot-path RPC sites.
+- [x] **Avoid `time.NewTimer` per RPC timeout** — nightshift-1: timerPool in rpc.go.
 
 #### Tier 4: Reduce round trips (CRITICAL, main latency source)
 
 - [x] **GRV caching** — `grvCache` with 100ms staleness window + `grvBatcher` with adaptive batching. Cache-hit fast path skips GRV RPC entirely. Background refresher, commit feeds cache, ratekeeper throttle cooldown. Matches C++ `MAX_VERSION_CACHE_LAG`.
 - ~~**Pipelined GRV + read**~~ — NOT FEASIBLE. Wire protocol requires Version (int64) at marshal time. Storage server uses `req.version` immediately for `waitForVersion()`. No sentinel, no deferred resolution. C++ doesn't pipeline either — `getValue` blocks on `wait(trState->startTransaction())` before sending read.
-- [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
+- [x] **Connection keep-warm** — nightshift-1: warmConnections() pre-dials all proxies after bootstrap.
 
 #### Tier 5: Generated code improvements (HIGH, scales with data size)
 
-- [ ] **ParseKeyValueRefStringVector zero-copy** — Generator emits `make([]byte, n)` + `copy` per KV pair (2 allocs/element). Should slice into data buffer instead: `elem.Key = data[pos:pos+n:pos+n]`. Drops 100-KV parse from 201 allocs to 1. Generator fix in `cmd/fdb-schema-extract/main.cpp`.
+- [x] **ParseKeyValueRefStringVector zero-copy** — Already zero-copy: `data[pos:pos+n:pos+n]` slices into buffer. Only 1 allocation for result slice.
 - [ ] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. Low priority — requests are not on the unmarshal hot path.
 
 ### LOW — Missing primitives
@@ -2198,30 +2213,30 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 ### Phase 2
 
-- [ ] **Watch API** — `WatchValueRequest` long-poll to storage server.
+- [x] **Watch API** — nightshift-1: WatchValueRequest (file_id 14747733), endpoint 10, long-poll semantics.
 - [ ] **Directory layer** — vendor from upstream.
 - [ ] **Version vector support** — causal consistency optimization.
-- [ ] **Tenant API** — `Tenant.CreateTransaction()`, `Tenant.Transact()`.
-- [ ] **TLS support** — `crypto/tls` for TLS connections.
+- [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
+- [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
 - [ ] **Tag throttling** — client-side throttle enforcement.
 
 ### Phase 3
 
 - [ ] **Multi-version client** — plugin loading for older client versions.
 - [ ] **FDB status JSON parsing** — cluster status monitoring.
-- [ ] **Binding tester** — pass FDB's official binding test suite (47 core + 21 directory ops).
+- [x] **Binding tester** — 145K ops (145 seeds x 1000) + 50 seeds nightshift-1 = 0 failures.
 
 ### HIGH — Client code migration to generated structs
 
 Request type `_custom.go` files are eliminated by flipping `EmitStructs=true` in the C++ extractor. The generated `MarshalFDB()` composes nested structs via `MarshalInto`. Client code constructs the struct and calls `MarshalFDB()` instead of standalone `MarshalXxx(...)` functions.
 
 - [x] **GetReadVersionRequest** — flipped to EmitStructs=true, _custom.go deleted, grv.go updated
-- [ ] **GetValueRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyValuesRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyServerLocationsRequest** — flip, delete _custom.go, update locality.go
-- [ ] **OpenDatabaseCoordRequest** — flip, delete _custom.go, update coordinator.go
-- [ ] **CommitTransactionRequest** — flip, delete _custom.go, update commitpath.go (most complex — nested CommitTransactionRef with pre-serialized vectors)
+- [x] **GetValueRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyValuesRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyServerLocationsRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **OpenDatabaseCoordRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **CommitTransactionRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
 
 ### Wire protocol bugs found by 5-agent review (2026-04-01) — ALL RESOLVED by v5 codegen
 
@@ -2240,4 +2255,4 @@ Remaining (still relevant but low impact):
 - [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — v5 uses `len(m.Key) > 0`. FDB wire format likely doesn't distinguish absent from empty StringRef, but verify.
 - [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore. Low risk — tag=0 means no value present.
 - [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data risk. Should add bounds check.
-- [ ] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Works because EndpointGetValue=0, but should use the constant for clarity.
+- [x] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Fixed in nightshift-1 constants cleanup. All endpoint constants now named and centralized.

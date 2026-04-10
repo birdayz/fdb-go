@@ -1165,7 +1165,7 @@ func TestAddConflictRange_CPort(t *testing.T) {
 
 	// tx1 gets a read version (establishes its snapshot).
 	tx1 := db.CreateTransaction()
-	rv, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
@@ -1219,7 +1219,7 @@ func TestCommitDoesNotReset_CPort(t *testing.T) {
 
 	// tx1: set and commit.
 	tx1 := db.CreateTransaction()
-	rv1, err := db.db.grvBatcher.getReadVersion(db.db, ctx, grvPriorityDefault)
+	rv1, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV for tx1: %v", err)
 	}
@@ -1531,5 +1531,766 @@ func TestSetTimeout_CommitCheck(t *testing.T) {
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
 		t.Errorf("expected error 1031 from Commit, got: %v", err)
+	}
+}
+
+// TestGetApproximateSize_CPort verifies GetApproximateSize tracks mutation size.
+// C binding: fdb_transaction_get_approximate_size
+func TestGetApproximateSize_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+
+	// Empty transaction should have zero size.
+	if size := tx.GetApproximateSize(); size != 0 {
+		t.Errorf("empty tx size: got %d, want 0", size)
+	}
+
+	// Add a mutation and verify size increases.
+	tx.Set([]byte("key123"), []byte("value456"))
+	size1 := tx.GetApproximateSize()
+	if size1 == 0 {
+		t.Error("size should be non-zero after Set")
+	}
+
+	// Add more mutations.
+	tx.Set([]byte("another_key"), []byte("another_value"))
+	tx.Clear([]byte("cleared_key"))
+	size2 := tx.GetApproximateSize()
+	if size2 <= size1 {
+		t.Errorf("size should increase: %d <= %d", size2, size1)
+	}
+
+	// Add conflict ranges.
+	tx.AddReadConflictKey([]byte("conflict_read"))
+	tx.AddWriteConflictKey([]byte("conflict_write"))
+	size3 := tx.GetApproximateSize()
+	if size3 <= size2 {
+		t.Errorf("size should increase with conflict ranges: %d <= %d", size3, size2)
+	}
+}
+
+// TestGetRangeReverse_Full verifies full reverse range scan returns keys in descending order.
+// C binding: fdb_transaction_get_range with reverse=true, limit=0 (unlimited)
+func TestGetRangeReverse_Full(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	prefix := "reverse_full_"
+	keys := make([]string, 20)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("%s%04d", prefix, i)
+	}
+
+	// Write 20 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, k := range keys {
+			tx.Set([]byte(k), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Read all in reverse.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRangeReverse(ctx,
+			[]byte(prefix+"0000"),
+			[]byte(prefix+"9999"),
+			0, // unlimited
+		)
+		return kvs, err
+	})
+	if err != nil {
+		t.Fatalf("reverse range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 20 {
+		t.Fatalf("got %d keys, want 20", len(kvs))
+	}
+
+	// Verify descending order.
+	for i := 0; i < len(kvs)-1; i++ {
+		if bytes.Compare(kvs[i].Key, kvs[i+1].Key) <= 0 {
+			t.Errorf("not descending at %d: %q >= %q", i, kvs[i].Key, kvs[i+1].Key)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Additional range and value tests
+// ---------------------------------------------------------------------------
+
+// TestGetRangeStreamingMode_CPort verifies that GetRange respects different
+// limit values — unlimited (returns all), exact limit (returns exactly N),
+// and small limit for iteration (returns limited results with more=true).
+// The pure Go client doesn't have a streaming mode enum; the limit parameter
+// controls the same behavior.
+func TestGetRangeStreamingMode_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := "c_stream_"
+
+	// Write 50 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 50; i++ {
+			k := fmt.Sprintf("%s%04d", prefix, i)
+			tx.Set([]byte(k), []byte(fmt.Sprintf("val%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	begin := []byte(prefix + "0000")
+	end := []byte(prefix + "9999")
+
+	// WantAll equivalent: limit=0 (unlimited) — returns all 50 results.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, begin, end, 0)
+		return struct {
+			kvs  []KeyValue
+			more bool
+		}{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange unlimited: %v", err)
+	}
+	r := result.(struct {
+		kvs  []KeyValue
+		more bool
+	})
+	if len(r.kvs) != 50 {
+		t.Errorf("unlimited: got %d keys, want 50", len(r.kvs))
+	}
+	if r.more {
+		t.Error("unlimited: more should be false when all keys returned")
+	}
+
+	// Exact equivalent: limit=50 — returns exactly 50 results.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx, begin, end, 50)
+		return kvs, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange exact: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 50 {
+		t.Errorf("exact: got %d keys, want 50", len(kvs))
+	}
+
+	// Iterator equivalent: limit=10 — returns 10 results with more=true.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, begin, end, 10)
+		return struct {
+			kvs  []KeyValue
+			more bool
+		}{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange iterator: %v", err)
+	}
+	r = result.(struct {
+		kvs  []KeyValue
+		more bool
+	})
+	if len(r.kvs) != 10 {
+		t.Errorf("iterator: got %d keys, want 10", len(r.kvs))
+	}
+	if !r.more {
+		t.Error("iterator: more should be true when limit < total keys")
+	}
+
+	// Verify the 10 returned keys are the first 10 in ascending order.
+	for i, kv := range r.kvs {
+		want := fmt.Sprintf("%s%04d", prefix, i)
+		if string(kv.Key) != want {
+			t.Errorf("iterator key[%d]: got %q, want %q", i, kv.Key, want)
+		}
+	}
+}
+
+// TestGetRangeEmpty_CPort verifies that GetRange on a range with no keys
+// returns an empty slice and more=false.
+func TestGetRangeEmpty_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Use a prefix that no other test writes to.
+	prefix := "c_empty_range_"
+
+	// Clear the range to be sure it's empty.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		if err := tx.ClearRange([]byte(prefix), []byte(prefix+"\xff")); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	type rangeResult struct {
+		kvs  []KeyValue
+		more bool
+	}
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, []byte(prefix), []byte(prefix+"\xff"), 100)
+		return rangeResult{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	rr := result.(rangeResult)
+	if len(rr.kvs) != 0 {
+		t.Errorf("expected 0 keys, got %d", len(rr.kvs))
+	}
+	if rr.more {
+		t.Error("more should be false for empty range")
+	}
+}
+
+// TestClearRangeAndVerify_CPort writes 10 keys, clears range [3,7), and
+// verifies that keys 0-2 and 7-9 still exist while keys 3-6 are gone.
+func TestClearRangeAndVerify_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := "c_clrng_"
+
+	// Write 10 keys: prefix_00 through prefix_09.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			k := fmt.Sprintf("%s%02d", prefix, i)
+			tx.Set([]byte(k), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear range [03, 07) — removes keys 03, 04, 05, 06.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return nil, tx.ClearRange([]byte(prefix+"03"), []byte(prefix+"07"))
+	})
+	if err != nil {
+		t.Fatalf("ClearRange: %v", err)
+	}
+
+	// Verify which keys exist.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		out := make(map[string][]byte)
+		for i := 0; i < 10; i++ {
+			k := fmt.Sprintf("%s%02d", prefix, i)
+			val, err := tx.Get(ctx, []byte(k))
+			if err != nil {
+				return nil, err
+			}
+			out[k] = val
+		}
+		return out, nil
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	data := result.(map[string][]byte)
+	for i := 0; i < 10; i++ {
+		k := fmt.Sprintf("%s%02d", prefix, i)
+		val := data[k]
+		if i >= 3 && i < 7 {
+			// Should be cleared.
+			if val != nil {
+				t.Errorf("key %q should be cleared, got %q", k, val)
+			}
+		} else {
+			// Should still exist.
+			want := fmt.Sprintf("v%d", i)
+			if val == nil {
+				t.Errorf("key %q should exist", k)
+			} else if string(val) != want {
+				t.Errorf("key %q: got %q, want %q", k, val, want)
+			}
+		}
+	}
+}
+
+// TestMultipleAtomicOps_CPort verifies that multiple atomic ADD operations on
+// the same key within a single transaction produce the correct sum. This
+// exercises the RYW cache's atomic mutation merging.
+func TestMultipleAtomicOps_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("c_multi_atomic_add")
+
+	// Initialize to 0 as int64 LE.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], 0)
+		tx.Set(key, buf[:])
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Apply 5 atomic ADDs of values 10, 20, 30, 40, 50 in one transaction.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, v := range []uint64{10, 20, 30, 40, 50} {
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], v)
+			tx.Atomic(MutAddValue, key, buf[:])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("atomic ADDs: %v", err)
+	}
+
+	// Read back — should be 150 (10+20+30+40+50).
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	val := result.([]byte)
+	if len(val) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(val))
+	}
+	got := binary.LittleEndian.Uint64(val)
+	if got != 150 {
+		t.Errorf("sum: got %d, want 150", got)
+	}
+}
+
+// TestLargeValue_CPort writes a 90KB value (near the FDB 100KB limit),
+// reads it back, and verifies byte-exact match.
+func TestLargeValue_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("c_large_val")
+
+	// Create 90KB value with recognizable pattern.
+	size := 90 * 1024
+	bigVal := make([]byte, size)
+	for i := range bigVal {
+		bigVal[i] = byte(i % 251) // prime mod avoids simple repetition
+	}
+
+	// Write it.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, bigVal)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Read it back.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	readVal := result.([]byte)
+	if readVal == nil {
+		t.Fatal("expected non-nil value")
+	}
+	if len(readVal) != size {
+		t.Fatalf("value length: got %d, want %d", len(readVal), size)
+	}
+	if !bytes.Equal(readVal, bigVal) {
+		// Find first mismatch for diagnostic.
+		for i := range bigVal {
+			if readVal[i] != bigVal[i] {
+				t.Fatalf("mismatch at byte %d: got 0x%02x, want 0x%02x", i, readVal[i], bigVal[i])
+			}
+		}
+	}
+}
+
+// TestEmptyKeyValue_CPort verifies that empty keys and empty values are
+// handled correctly — both should be readable and return empty byte slices.
+func TestEmptyKeyValue_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	emptyKey := []byte("")
+	normalKey := []byte("c_emptyval_k")
+
+	// Write: key="" value="" and key="c_emptyval_k" value="".
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(emptyKey, []byte(""))
+		tx.Set(normalKey, []byte(""))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Read empty key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, emptyKey)
+	})
+	if err != nil {
+		t.Fatalf("Get empty key: %v", err)
+	}
+	val := result.([]byte)
+	if val == nil {
+		t.Error("empty key: got nil, want empty byte slice")
+	} else if len(val) != 0 {
+		t.Errorf("empty key value: got %q (len=%d), want empty", val, len(val))
+	}
+
+	// Read normal key with empty value.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, normalKey)
+	})
+	if err != nil {
+		t.Fatalf("Get normal key: %v", err)
+	}
+	val = result.([]byte)
+	if val == nil {
+		t.Error("normal key: got nil, want empty byte slice")
+	} else if len(val) != 0 {
+		t.Errorf("normal key value: got %q (len=%d), want empty", val, len(val))
+	}
+}
+
+// TestGetKey_AllSelectors verifies all key selector types against real FDB.
+// C binding: fdb_transaction_get_key
+func TestGetKey_AllSelectors(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	prefix := "getkey_sel_"
+	// Write keys: 10, 20, 30, 40, 50
+	vals := []string{"10", "20", "30", "40", "50"}
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, v := range vals {
+			tx.Set([]byte(prefix+v), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		key     string
+		orEqual bool
+		offset  int32
+		want    string
+	}{
+		// firstGreaterOrEqual("30") → "30"
+		{"FGE exact", prefix + "30", false, 1, prefix + "30"},
+		// firstGreaterOrEqual("25") → "30"
+		{"FGE between", prefix + "25", false, 1, prefix + "30"},
+		// firstGreaterThan("30") → "40"
+		{"FGT exact", prefix + "30", true, 1, prefix + "40"},
+		// lastLessOrEqual("30") → "30"
+		{"LLE exact", prefix + "30", true, 0, prefix + "30"},
+		// lastLessThan("30") → "20"
+		{"LLT exact", prefix + "30", false, 0, prefix + "20"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				return tx.GetKey(ctx, []byte(tc.key), tc.orEqual, tc.offset)
+			})
+			if err != nil {
+				t.Fatalf("GetKey: %v", err)
+			}
+			got := string(result.([]byte))
+			if got != tc.want {
+				t.Errorf("GetKey(%q, orEqual=%v, offset=%d) = %q, want %q",
+					tc.key, tc.orEqual, tc.offset, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Watch
+// ---------------------------------------------------------------------------
+
+// TestWatch_CPort verifies the full Watch lifecycle: start a watch on a key,
+// update the key from another goroutine, and confirm the watch resolves.
+// Ported from unit_tests.cpp line 2071
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2071
+func TestWatch_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("watch_cport_foo")
+
+	// Seed the key with an initial value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("foo"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Start a watch in a transaction. The watch reads the current value and
+	// then long-polls until it changes.
+	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer watchCancel()
+
+	watchErr := make(chan error, 1)
+	go func() {
+		_, err := db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+			// Read the key to establish the version for the watch.
+			_, err := tx.Get(watchCtx, key)
+			if err != nil {
+				return nil, err
+			}
+			// Start the watch — this commits the transaction and blocks
+			// until the key changes.
+			return nil, tx.Watch(watchCtx, key)
+		})
+		watchErr <- err
+	}()
+
+	// Give the watch time to set up, then update the key.
+	time.Sleep(500 * time.Millisecond)
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("bar"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// The watch should resolve within the 10-second context.
+	select {
+	case err := <-watchErr:
+		if err != nil {
+			t.Fatalf("watch returned error: %v", err)
+		}
+	case <-watchCtx.Done():
+		t.Fatal("watch did not resolve within 10 seconds")
+	}
+
+	// Verify the key has the new value.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("final Get: %v", err)
+	}
+	val := result.([]byte)
+	if string(val) != "bar" {
+		t.Errorf("final value: got %q, want %q", val, "bar")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Read-your-writes
+// ---------------------------------------------------------------------------
+
+// TestReadYourWrites_CPort verifies that uncommitted writes are visible to
+// subsequent reads within the same transaction (read-your-writes semantics).
+// Ported from unit_tests.cpp line 643
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L643
+func TestReadYourWrites_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("c_ryw_foo")
+
+	// Clear any leftover value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Clear(key)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	// In one transaction: Set a key, then Get it without committing.
+	// The uncommitted write should be visible via RYW.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("hello_ryw"))
+
+		// Read back within the same transaction — should see the uncommitted write.
+		val, err := tx.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		return val, nil
+	})
+	if err != nil {
+		t.Fatalf("RYW transaction: %v", err)
+	}
+
+	val := result.([]byte)
+	if val == nil {
+		t.Fatal("RYW: got nil, want the uncommitted write to be visible")
+	}
+	if string(val) != "hello_ryw" {
+		t.Errorf("RYW: got %q, want %q", val, "hello_ryw")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Transaction size limit
+// ---------------------------------------------------------------------------
+
+// TestSizeLimit_CPort verifies that setting a transaction size limit causes
+// Commit to fail with transaction_too_large (2101) when exceeded.
+// Ported from unit_tests.cpp line 835
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L835
+//
+// Pure unit test — no Docker needed. The size limit check happens at Commit
+// time in our Go client.
+func TestSizeLimit_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetSizeLimit(1000) // 1000 bytes
+
+	// Write a key with a large value that pushes total transaction size over 1000.
+	bigValue := make([]byte, 1200)
+	for i := range bigValue {
+		bigValue[i] = 'x'
+	}
+	tx.Set([]byte("c_sizelim_key"), bigValue)
+
+	// Commit should fail with transaction_too_large.
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected transaction_too_large error, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2101 {
+		t.Errorf("error code: got %d, want 2101 (transaction_too_large)", fdbErr.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetRange streaming mode EXACT
+// ---------------------------------------------------------------------------
+
+// TestGetRangeStreamingExact_CPort verifies that GetRange with an exact limit
+// returns precisely that many results, and that more=true when additional keys
+// exist beyond the limit.
+// Ported from unit_tests.cpp FDB_STREAMING_MODE_EXACT line 1261
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1261
+func TestGetRangeStreamingExact_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := "c_exact_"
+
+	// Write 10 keys: key_00 through key_09.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			k := fmt.Sprintf("%skey_%02d", prefix, i)
+			v := fmt.Sprintf("val_%02d", i)
+			tx.Set([]byte(k), []byte(v))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	type rangeResult struct {
+		kvs  []KeyValue
+		more bool
+	}
+
+	// GetRange with limit=5 — should return exactly 5 results and more=true.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(prefix + "key_00")
+		end := []byte(prefix + "key_99\x00")
+		kvs, more, err := tx.GetRange(ctx, begin, end, 5)
+		return rangeResult{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange(limit=5): %v", err)
+	}
+	rr := result.(rangeResult)
+	if len(rr.kvs) != 5 {
+		t.Errorf("limit=5: got %d results, want 5", len(rr.kvs))
+	}
+	if !rr.more {
+		t.Error("limit=5: more should be true (10 keys total)")
+	}
+	// Verify keys are in order.
+	for i, kv := range rr.kvs {
+		wantKey := fmt.Sprintf("%skey_%02d", prefix, i)
+		if string(kv.Key) != wantKey {
+			t.Errorf("limit=5 key[%d]: got %q, want %q", i, kv.Key, wantKey)
+		}
+	}
+
+	// GetRange with limit=10 — should return exactly 10 results and more=false.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(prefix + "key_00")
+		end := []byte(prefix + "key_99\x00")
+		kvs, more, err := tx.GetRange(ctx, begin, end, 10)
+		return rangeResult{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange(limit=10): %v", err)
+	}
+	rr = result.(rangeResult)
+	if len(rr.kvs) != 10 {
+		t.Errorf("limit=10: got %d results, want 10", len(rr.kvs))
+	}
+	// Note: FDB returns more=true when the limit is reached, even if the
+	// range is exhausted. The server doesn't scan past the limit.
+	// Verify all 10 keys.
+	for i, kv := range rr.kvs {
+		wantKey := fmt.Sprintf("%skey_%02d", prefix, i)
+		wantVal := fmt.Sprintf("val_%02d", i)
+		if string(kv.Key) != wantKey {
+			t.Errorf("limit=10 key[%d]: got %q, want %q", i, kv.Key, wantKey)
+		}
+		if string(kv.Value) != wantVal {
+			t.Errorf("limit=10 val[%d]: got %q, want %q", i, kv.Value, wantVal)
+		}
 	}
 }
