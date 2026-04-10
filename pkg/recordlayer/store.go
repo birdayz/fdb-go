@@ -106,11 +106,25 @@ func (store *FDBRecordStore) IsVersionChanged() bool {
 }
 
 // AsBuilder creates a new StoreBuilder pre-configured with this store's
-// subspace, metadata, and index rebuild policy.
+// subspace, metadata, and index rebuild policy. Uses the same context.
 // Matches Java's FDBRecordStore.asBuilder().
 func (store *FDBRecordStore) AsBuilder() *StoreBuilder {
 	return &StoreBuilder{
 		context:            store.context,
+		metaData:           store.metaData,
+		subspace:           store.subspace,
+		indexRebuildPolicy: store.indexRebuildPolicy,
+		storeStateCache:    store.storeStateCache,
+	}
+}
+
+// CopyBuilder creates a new StoreBuilder with this store's configuration
+// but for a different context (transaction). Used to open the same store
+// in a new transaction.
+// Matches Java's FDBRecordStore.copyBuilder().
+func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBuilder {
+	return &StoreBuilder{
+		context:            newContext,
 		metaData:           store.metaData,
 		subspace:           store.subspace,
 		indexRebuildPolicy: store.indexRebuildPolicy,
