@@ -41,8 +41,10 @@ type Conn struct {
 	cancel   context.CancelFunc
 	loopWG   sync.WaitGroup // tracks readLoop + writeLoop goroutines
 
-	pending sync.Map       // UID → chan Response
-	peerPkt *ConnectPacket // peer's connect packet
+	// Typed pending map avoids sync.Map's interface boxing (saves 3 allocs/RPC).
+	pendingMu sync.RWMutex
+	pending   map[UID]chan Response
+	peerPkt   *ConnectPacket // peer's connect packet
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -123,6 +125,7 @@ func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc,
 		useTLS:  useTLS,
 		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
+		pending: make(map[UID]chan Response, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
 	}
@@ -171,10 +174,14 @@ func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc,
 func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan Response, err error) {
 	replyToken = NewUID()
 	ch := getReplyChannel()
-	c.pending.Store(replyToken, ch)
+	c.pendingMu.Lock()
+	c.pending[replyToken] = ch
+	c.pendingMu.Unlock()
 
 	if err = c.SendFrame(destToken, body); err != nil {
-		c.pending.Delete(replyToken)
+		c.pendingMu.Lock()
+		delete(c.pending, replyToken)
+		c.pendingMu.Unlock()
 		putReplyChannel(ch)
 		return UID{}, nil, fmt.Errorf("write frame: %w", err)
 	}
@@ -187,17 +194,19 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // (e.g., to embed it in the FDB request's Reply field).
 //
 // Returns a cancel function that removes the pending token from the map.
-// Callers should defer cancel() immediately to prevent token leak if
-// SendFrame fails. Deleting a non-existent key from sync.Map is a no-op,
-// so it's safe to call cancel() even after a successful response.
 func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
 	token := NewUID()
 	ch := getReplyChannel()
-	c.pending.Store(token, ch)
+	c.pendingMu.Lock()
+	c.pending[token] = ch
+	c.pendingMu.Unlock()
 	cancel := func() {
-		if _, loaded := c.pending.LoadAndDelete(token); loaded {
+		c.pendingMu.Lock()
+		if _, ok := c.pending[token]; ok {
+			delete(c.pending, token)
 			putReplyChannel(ch)
 		}
+		c.pendingMu.Unlock()
 	}
 	return token, ch, cancel
 }
@@ -420,7 +429,9 @@ func (c *Conn) readLoop() {
 		LogRecv(token, body)
 
 		if c.debugFrames {
-			_, isPending := c.pending.Load(token)
+			c.pendingMu.RLock()
+			_, isPending := c.pending[token]
+			c.pendingMu.RUnlock()
 			fmt.Fprintf(c.debugWriter, "[recv] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n",
 				token.First, token.Second, len(body), token == pingToken, isPending)
 		}
@@ -432,15 +443,14 @@ func (c *Conn) readLoop() {
 		}
 
 		// Look up the pending request by reply token.
-		if val, ok := c.pending.LoadAndDelete(token); ok {
-			ch := val.(chan Response)
+		c.pendingMu.Lock()
+		ch, ok := c.pending[token]
+		if ok {
+			delete(c.pending, token)
+		}
+		c.pendingMu.Unlock()
+		if ok {
 			ch <- Response{Body: body}
-			// NOTE: We do NOT return ch to pool here because the consumer
-			// goroutine still holds a <-chan reference and will read from it.
-			// The channel is effectively transferred to the consumer; it
-			// becomes eligible for GC after the consumer reads and discards.
-			// To pool: consumer must call putReplyChannel after reading.
-			// For now, only pool on cancel (PrepareReply cancel func).
 		}
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
@@ -450,15 +460,15 @@ func (c *Conn) readLoop() {
 // Matches C++ connectionKeeper's disconnect promise that wakes all
 // in-flight deliver() actors.
 func (c *Conn) failAllPending(err error) {
-	c.pending.Range(func(key, value any) bool {
-		ch := value.(chan Response)
+	c.pendingMu.Lock()
+	for token, ch := range c.pending {
 		select {
 		case ch <- Response{Err: err}:
 		default:
 		}
-		c.pending.Delete(key)
-		return true
-	})
+		delete(c.pending, token)
+	}
+	c.pendingMu.Unlock()
 }
 
 // WLTokenPingPacket is the well-known token for PING keepalive.
