@@ -812,3 +812,89 @@ func TestDatabaseTransactionSizeLimit(t *testing.T) {
 	// Reset to default.
 	db.Options().SetTransactionSizeLimit(0)
 }
+
+func TestLocalityGetBoundaryKeys(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Write some data.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("boundary_%02d", i)), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Get boundary keys — should return at least one boundary.
+	keys, err := db.LocalityGetBoundaryKeys(fdb.KeyRange{
+		Begin: fdb.Key(""),
+		End:   fdb.Key("\xff"),
+	}, 100, 0)
+	if err != nil {
+		t.Fatalf("LocalityGetBoundaryKeys: %v", err)
+	}
+	// Single-node cluster has at least 1 shard boundary.
+	if len(keys) == 0 {
+		t.Fatal("expected at least one boundary key")
+	}
+	t.Logf("got %d boundary keys", len(keys))
+}
+
+func TestGetClientStatus(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	status, err := db.GetClientStatus()
+	if err != nil {
+		t.Fatalf("GetClientStatus: %v", err)
+	}
+	if len(status) == 0 {
+		t.Fatal("expected non-empty status JSON")
+	}
+	t.Logf("status: %s", status)
+}
+
+func TestReset(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Create a transaction, write, commit, reset, write again, commit.
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	tr.Set(fdb.Key("reset_test_a"), []byte("1"))
+	err = tr.Commit().Get()
+	if err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+
+	tr.Reset()
+
+	tr.Set(fdb.Key("reset_test_b"), []byte("2"))
+	err = tr.Commit().Get()
+	if err != nil {
+		t.Fatalf("second commit after reset: %v", err)
+	}
+
+	// Verify both keys.
+	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		a := tr.Get(fdb.Key("reset_test_a")).MustGet()
+		b := tr.Get(fdb.Key("reset_test_b")).MustGet()
+		return [2][]byte{a, b}, nil
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	vals := result.([2][]byte)
+	if string(vals[0]) != "1" {
+		t.Errorf("reset_test_a: got %q, want %q", vals[0], "1")
+	}
+	if string(vals[1]) != "2" {
+		t.Errorf("reset_test_b: got %q, want %q", vals[1], "2")
+	}
+}
