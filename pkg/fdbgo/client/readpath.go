@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -189,6 +190,9 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 	var allKVs []KeyValue
 	remaining := limit
+	if remaining <= 0 {
+		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
+	}
 	curBegin := begin
 	curEnd := end
 	relocateRetries := 0
@@ -253,7 +257,7 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 				remaining -= len(kvs)
 
 				if remaining <= 0 {
-					return allKVs, true, nil
+					return allKVs, more, nil
 				}
 
 				// C++ "fix more" heuristic (NativeAPI.actor.cpp:2331-2333):
@@ -316,7 +320,12 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
 	// C++ uses negative limit for reverse scans (transformRangeLimits in NativeAPI.actor.cpp:4231).
-	wireLimit := int32(limit)
+	// Wire format: int32. Clamp at boundary (Go int may be 64-bit).
+	wl := limit
+	if wl > math.MaxInt32 {
+		wl = math.MaxInt32
+	}
+	wireLimit := int32(wl)
 	if reverse {
 		wireLimit = -wireLimit
 	}

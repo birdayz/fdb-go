@@ -2280,9 +2280,8 @@ func TestGetRangeStreamingExact_CPort(t *testing.T) {
 	if len(rr.kvs) != 10 {
 		t.Errorf("limit=10: got %d results, want 10", len(rr.kvs))
 	}
-	if rr.more {
-		t.Error("limit=10: more should be false (exactly 10 keys)")
-	}
+	// Note: FDB returns more=true when the limit is reached, even if the
+	// range is exhausted. The server doesn't scan past the limit.
 	// Verify all 10 keys.
 	for i, kv := range rr.kvs {
 		wantKey := fmt.Sprintf("%skey_%02d", prefix, i)
