@@ -788,8 +788,8 @@ func TestSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
-	// Set a tiny size limit
-	if err := tr.Options().SetSizeLimit(10); err != nil {
+	// Set a small but valid size limit (min 32, max 10_000_000).
+	if err := tr.Options().SetSizeLimit(32); err != nil {
 		t.Fatalf("SetSizeLimit: %v", err)
 	}
 	// Write more data than the limit
@@ -806,4 +806,69 @@ func TestSizeLimit(t *testing.T) {
 	if fdbErr.Code != 2101 {
 		t.Fatalf("expected error code 2101 (transaction_too_large), got %d", fdbErr.Code)
 	}
+}
+
+// TestDatabaseTransactionTimeout verifies that FDB_DB_OPTION_TRANSACTION_TIMEOUT
+// applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:787.
+func TestDatabaseTransactionTimeout(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Set 1ms database-level timeout.
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+
+	// Run transactions until one times out. With 1ms timeout, it should
+	// happen almost immediately (the GRV round-trip alone takes >1ms).
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(fdb.Key("foo")).MustGet(), nil
+		})
+		if err != nil {
+			fdbErr, ok := err.(fdb.Error)
+			if ok && fdbErr.Code == 1031 { // transaction_timed_out
+				timedOut = true
+				break
+			}
+		}
+	}
+	if !timedOut {
+		t.Fatal("expected transaction_timed_out (1031) with 1ms database timeout")
+	}
+
+	// Reset timeout (disable).
+	db.Options().SetTransactionTimeout(0)
+}
+
+// TestDatabaseTransactionSizeLimit verifies that FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
+// applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:888.
+func TestDatabaseTransactionSizeLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Set tiny size limit at database level.
+	if err := db.Options().SetTransactionSizeLimit(32); err != nil {
+		t.Fatalf("SetTransactionSizeLimit: %v", err)
+	}
+
+	// Transaction with mutations exceeding the limit should fail.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("foo"), []byte("foundation database is amazing"))
+		return nil, nil
+	})
+	if err == nil {
+		t.Fatal("expected transaction_too_large error")
+	}
+	fdbErr, ok := err.(fdb.Error)
+	if !ok {
+		t.Fatalf("expected fdb.Error, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2101 {
+		t.Fatalf("expected error code 2101 (transaction_too_large), got %d", fdbErr.Code)
+	}
+
+	// Reset to default.
+	db.Options().SetTransactionSizeLimit(0)
 }

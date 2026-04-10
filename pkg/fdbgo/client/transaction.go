@@ -150,11 +150,12 @@ type Transaction struct {
 	db    *database
 	state txState
 
-	readVersion      int64
-	hasReadVersion   bool
-	committedVersion int64
-	hasCommitted     bool // true after at least one successful commit
-	txnBatchId       uint16
+	readVersion        int64
+	hasReadVersion     bool
+	userSetReadVersion bool // true when SetReadVersion was called (needs validateVersion)
+	committedVersion   int64
+	hasCommitted       bool // true after at least one successful commit
+	txnBatchId         uint16
 
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
@@ -200,7 +201,21 @@ type Transaction struct {
 	readLockAware bool
 
 	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
+	// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 	sizeLimit int64
+
+	// maxRetryDelay: if > 0, caps the exponential backoff. Default: 1s (maxBackoff).
+	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
+	maxRetryDelay time.Duration
+
+	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
+	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+	rywDisabled bool
+
+	// snapshotRYWDisabled: when true, Snapshot.Get/GetRange bypass the RYW cache.
+	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE. Note: by default, snapshot
+	// reads DO go through the RYW cache (matching FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE).
+	snapshotRYWDisabled bool
 
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
@@ -242,10 +257,13 @@ type Snapshot struct {
 }
 
 // Get reads a key without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getValue(ctx, key)
 	}
 	return s.tx.ryw.get(ctx, key, s.tx.getValue)
 }
@@ -259,19 +277,25 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 }
 
 // GetRange reads a range without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getRange(ctx, begin, end, limit, false)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getRange(ctx, begin, end, limit, true)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
 }
@@ -300,6 +324,20 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	// C++ DatabaseContext::validateVersion(): reject user-set read versions
+	// outside the acceptable range. If the client hasn't seen a version yet
+	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
+	// baseline. C++ does this in startTransaction() before validateVersion().
+	if tx.db != nil && tx.userSetReadVersion {
+		if tx.db.minAcceptableReadVersion.Load() == 0 {
+			// Bootstrap: fetch a version to establish the minimum.
+			flags := tx.grvFlags()
+			_, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+		}
+		if err := tx.db.validateVersion(tx.readVersion); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -312,6 +350,9 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
 		tx.addReadConflictForKey(key)
+	}
+	if tx.rywDisabled {
+		return tx.getValue(ctx, key)
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
 }
@@ -449,6 +490,9 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 		tx.addReadConflict(begin, end)
 	}
 
+	if tx.rywDisabled {
+		return tx.getRange(ctx, begin, end, limit, reverse)
+	}
 	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
 }
 
@@ -529,6 +573,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
+	}
+
+	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
+	// Out-of-range values return invalid_option_value (2006) at commit time.
+	if tx.sizeLimit > 0 && (tx.sizeLimit < 32 || tx.sizeLimit > 10_000_000) {
+		tx.state = txStateErrored
+		return &wire.FDBError{Code: 2006} // invalid_option_value
 	}
 
 	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
@@ -670,6 +721,7 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
+	tx.userSetReadVersion = true
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
@@ -844,10 +896,31 @@ func (tx *Transaction) SetReadLockAware(v bool) {
 }
 
 // SetSizeLimit sets the maximum transaction size in bytes.
-// If the transaction exceeds this size, commit returns an error.
+// If the transaction exceeds this size, commit returns error 2101.
+// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 // A value of 0 disables the limit.
 func (tx *Transaction) SetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
+}
+
+// SetMaxRetryDelay caps the exponential backoff between retries.
+// Value in milliseconds. Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
+func (tx *Transaction) SetMaxRetryDelay(ms int64) {
+	tx.maxRetryDelay = time.Duration(ms) * time.Millisecond
+}
+
+// SetReadYourWritesDisable disables RYW for regular (non-snapshot) reads.
+// When set, Get/GetRange always read from the server, ignoring uncommitted writes.
+// Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+func (tx *Transaction) SetReadYourWritesDisable() {
+	tx.rywDisabled = true
+}
+
+// SetSnapshotRYWDisable disables RYW for snapshot reads.
+// When set, Snapshot.Get/GetRange always read from the server.
+// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE.
+func (tx *Transaction) SetSnapshotRYWDisable() {
+	tx.snapshotRYWDisabled = true
 }
 
 // SetTenantId sets the tenant for this transaction. All operations will
@@ -925,6 +998,7 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 func (tx *Transaction) postCommitReset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false
+	tx.userSetReadVersion = false
 	tx.readVersion = 0
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
@@ -950,7 +1024,7 @@ func (tx *Transaction) reset() {
 	}
 	// Preserved across reset (match C++ option re-application on retry):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit, tenantId.
+	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled, snapshotRYWDisabled, tenantId.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
@@ -961,6 +1035,10 @@ func (tx *Transaction) nextBackoff() time.Duration {
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
 	delay := time.Duration(float64(tx.backoff) * rand.Float64())
-	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(maxBackoff)))
+	cap := maxBackoff
+	if tx.maxRetryDelay > 0 {
+		cap = tx.maxRetryDelay
+	}
+	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(cap)))
 	return delay
 }

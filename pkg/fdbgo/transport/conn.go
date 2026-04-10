@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
@@ -107,6 +108,18 @@ func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc,
 	// C++ FlowTransport sets TCP_NODELAY on all connections.
 	if tc, ok := netConn.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
+
+		// Send RST (not FIN) on close to avoid TIME_WAIT state.
+		// Without this, the OS may reuse the ephemeral source port while
+		// the FDB server still has a stale Peer entry for the old connection,
+		// triggering an ASSERT at FlowTransport.actor.cpp:1569.
+		// RST causes immediate Peer cleanup on the server side.
+		tc.SetLinger(0)
+
+		// Detect dead connections faster than read timeouts.
+		// Under Docker/CI load, socat proxies can silently drop connections.
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(10 * time.Second)
 	}
 
 	// Wrap in TLS if configured.

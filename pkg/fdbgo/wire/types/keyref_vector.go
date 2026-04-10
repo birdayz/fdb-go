@@ -13,6 +13,12 @@ func ParseKeyRefStringVector(data []byte) [][]byte {
 		return nil
 	}
 	pos := 4
+	// Clamp capacity to prevent OOM from crafted count values.
+	// Each element needs at least 4 bytes (length prefix).
+	maxElems := uint32((len(data) - pos) / 4)
+	if count > maxElems {
+		count = maxElems
+	}
 	result := make([][]byte, 0, count)
 	for i := uint32(0); i < count; i++ {
 		if pos+4 > len(data) {

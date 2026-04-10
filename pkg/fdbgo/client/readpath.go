@@ -473,6 +473,12 @@ func parseGetValueReply(data []byte) ([]byte, error) {
 // The watch is a long-poll: there is no short timeout. The context's deadline
 // (if any) controls the maximum wait time.
 func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
+	// C++ NativeAPI.actor.cpp: watches are disabled when RYW is disabled.
+	// Returns watches_disabled (1034) immediately.
+	if tx.rywDisabled {
+		return &wire.FDBError{Code: 1034} // watches_disabled
+	}
+
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return err
 	}

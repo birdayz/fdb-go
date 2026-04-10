@@ -18,7 +18,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 - [x] **MEDIUM** — RYW `getRange` discarded server `more` flag. When clears removed enough server results to bring count below limit, the function returned `more=false` even though the server had more data. Callers (e.g. ranked set traversal) would stop scanning prematurely. Fixed: propagate server `more` flag.
 
 - [x] **HIGH** — Align location cache with C++ `getKeyRangeLocations`. `locateRange()` fetches all overlapping shards at once. `getRange` matches C++ `getExactRange`: `Reverse` flag on `GetKeyServerLocationsRequest`, re-query same shard on `more=true` (no re-locate), `invalidateRange()` clears entire remaining range on `wrong_shard_server`, "fix more" heuristic for reverse shard boundary, zero-rows infinite loop guard.
-- [ ] **HIGH** — ConnectPacket `canonicalRemotePort` mismatch assertion in CI. FDB server asserts `pkt.canonicalRemotePort == peerAddress.port` at `FlowTransport.actor.cpp:1409`. Observed in CI run `23981658119`: `TestGetRange` stuck 56 minutes, caused 1h timeout cascade. Could not reproduce locally (`-test.count=10` passes). Likely CI-specific: resource exhaustion with many parallel testcontainer tests competing for Docker, or socat proxy port mapping inconsistency. The `TestGetRange` test uses both CGo client (writes) and Go client (reads) against the same FDB container (`coordinator_test.go:365-389`). Fix: match C client's ConnectPacket port logic — report the actual TCP source port. May also need test isolation improvements (one FDB per test, not shared).
+- [x] **HIGH** — ConnectPacket TCP port reuse ASSERT in CI. FDB server asserts at `FlowTransport.actor.cpp:1569` when a new TCP connection arrives from the same ephemeral port as a recently closed connection (stale Peer entry). Observed in CI under Docker load. Two-part fix: (1) `SetLinger(0)` on TCP sockets — sends RST instead of FIN on close, eliminating TIME_WAIT state and causing immediate Peer cleanup on the server. (2) TCP keepalive (10s interval) for faster dead connection detection under Docker/socat load. The original port=0 fix (sending `CanonicalRemotePort: 0` matching C++ pure-client behavior) was already correct; this addresses the remaining race from ephemeral port reuse.
 - [x] **CRITICAL (RESOLVED)** — Pure Go FDB client wire protocol crashed FDB server (SIGSEGV). Three root causes found and fixed. See `pkg/fdbgo/client/CRASH_BUG.md` for full analysis + debugging playbook.
 
   **Serialization bugs (all fixed):**
@@ -1763,7 +1763,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [x] Chaos tests: PASS with pure Go client (nightshift-1 verification run).
 
 ##### D) fdbgo unit tests
-- [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
+- [x] client_test, fdb_test: timeouts set (client_test=eternal/3600s, fdb_test=long/900s). Fixed in nightshift-1.
 
 #### Architecture
 - `gofdbhelper` package provides `OpenDatabase`/`CreateTenant` without import cycle.
@@ -1774,7 +1774,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 **C code is the source of truth for the client.** Development is test-driven from the C binding tests:
 
-1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 23 ported so far)
+1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 39 ported so far)
 2. **Add functionality** only when a test needs it — no speculative API additions
 3. **Principles first** — if a test needs a feature, port it COMPLETELY, not a stub
 4. **Tests are authoritative** — if Go behavior differs from C, Go is wrong
@@ -1788,12 +1788,17 @@ This workflow already found 2 critical bugs on first run: 13 wrong mutation type
 
 Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
-**Ported (23 tests) — `c_binding_port_test.go`:**
-- [x] GetRange forward, GetRange limit, Clear
-- [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue)
-- [x] SetReadVersion old/future (skipped — client-side validation needed)
-- [x] GetCommittedVersion (read-only + write)
+**Ported (39 tests) — `c_binding_port_test.go`:**
+- [x] GetRange (forward, reverse, limit, empty, streaming modes, exact)
+- [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue) + MultipleAtomicOps
+- [x] SetReadVersion old/future, GetCommittedVersion (read-only + write)
 - [x] Cancel, AddConflictRange, CommitDoesNotReset, ErrorPredicate
+- [x] Timeout (set, get, preserved across reset, disabled, commit check), RetryLimit (set, zero, unlimited)
+- [x] GetApproximateSize, ClearRangeAndVerify, LargeValue, EmptyKeyValue
+- [x] GetKey with all selectors, ReadYourWrites, Watch
+- [x] RYW disable, Snapshot RYW enable/disable (dayshift-1)
+- [x] SizeLimit (too small, too large, minimum valid) (dayshift-1)
+- [x] Watch with RYW disabled (dayshift-1)
 
 **Next to port (need API additions):**
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
@@ -2254,5 +2259,5 @@ v5 composable-primitives generator (RFC 013) rewrote all marshal/unmarshal code.
 Remaining (still relevant but low impact):
 - [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — v5 uses `len(m.Key) > 0`. FDB wire format likely doesn't distinguish absent from empty StringRef, but verify.
 - [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore. Low risk — tag=0 means no value present.
-- [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data risk. Should add bounds check.
+- [x] **MEDIUM #15 — VecSerStrategy parser DoS** — Fixed: `make()` capacity clamped to `(len(data)-pos)/minElementSize` in all three parsers (ParseKeyRefStringVector, ParseKeyRangeRefStringVector, ParseKeyValueRefStringVector). Prevents OOM from crafted count values in untrusted wire data.
 - [x] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Fixed in nightshift-1 constants cleanup. All endpoint constants now named and centralized.

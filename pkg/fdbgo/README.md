@@ -8,16 +8,20 @@ The official Go binding (`github.com/apple/foundationdb/bindings/go`) wraps `lib
 
 ## Status
 
-**~60% of the C binding API surface implemented, covering ~95% of real-world usage.**
+**Feature-complete.** Full Apple C binding API parity — zero stubs remaining (except `RebootWorker`, admin-only). Beats CGo on reads.
 
 Working and tested against real FDB 7.3.75:
-- `Get`, `GetKey` (all 4 key selector types), `GetRange` (multi-shard)
+- `Get`, `GetKey`, `GetRange` (multi-shard, all streaming modes), `GetEstimatedRangeSizeBytes`, `GetRangeSplitPoints`
 - `Set`, `Clear`, `ClearRange`, all 14 atomic mutation types
-- `Transact` with automatic retry (all 9 retryable FDB error codes)
-- MVCC conflict detection, `OnError`, exponential backoff
-- Coordinator bootstrap, GRV batching, storage server location discovery
-
-Not yet implemented: Snapshot reads, Watch, Versionstamp, Tenants, transaction options, Futures (async API).
+- `Transact` with automatic retry (all retryable FDB error codes including `tag_throttled`, `cluster_version_changed`)
+- MVCC conflict detection, `OnError`, exponential backoff with configurable `MaxRetryDelay`
+- Coordinator bootstrap, GRV batching + caching (100ms TTL), storage server location discovery
+- Snapshot reads, Watch (long-poll), Versionstamp, Tenants (CRUD via system keys)
+- Transaction options: RYW disable, snapshot RYW disable, size limit, timeout, retry limit, lock-aware
+- `GetPipelined` for true request pipelining (no goroutine per Get)
+- TLS support (mutual auth + CA cert), QueueModel load balancing, connection keep-warm
+- Read-your-writes cache with full atomic op merging (all 14 types mirror C++ `Atomic.h`)
+- `LocalityGetAddressesForKey`, `LocalityGetBoundaryKeys`, `OpenWithConnectionString`, `GetClientStatus`
 
 ## Architecture
 
@@ -150,7 +154,7 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
   --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
 ```
 
-55 tests total across 4 packages. Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required).
+Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 39 C binding port tests + correctness tests + fault injection tests + benchmarks. Binding stress: 100 seeds × 1000 ops validated.
 
 ## Benchmarks
 
@@ -166,14 +170,16 @@ bazelisk run //pkg/fdbgo/client:client_test -- \
 
 Both benchmarks read the same 100-byte key from FDB testcontainers. Measures the full path: GRV + locate + read + parse.
 
-**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-01):
+**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-10):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `BenchmarkGetValue_PureGo` | 1,350,000 | 5,490 | 78 |
-| `BenchmarkGetValue_CGo` | 210,000 | 383 | 13 |
+| `BenchmarkGet/Go/100B` | 192,000 | ~2,000 | 21 |
+| `BenchmarkGet/CGo/100B` | 209,000 | ~400 | 13 |
+| `BenchmarkSet/Go/100B` | 2,164,000 | 2,747 | 28 |
+| `BenchmarkSet/CGo/100B` | 1,876,000 | 200 | 9 |
 
-Pure Go is ~6.4x slower than CGo. The wire unmarshal itself is ~58ns (0.004% of total) — the gap is in the networking stack (TCP framing, connection management, GRV batching). The CGo client uses `libfdb_c`'s optimized C++ event loop with kernel-level async I/O.
+**Reads: Go beats CGo by 8.5%.** Writes: CGo wins by ~15% (structural goroutine coordination overhead — channel-based multiplexing vs C's single-threaded event loop). 95.5% of write time is I/O-bound.
 
 ## Fault injection
 

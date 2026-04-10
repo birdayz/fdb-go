@@ -43,13 +43,7 @@ func (o TransactionOptions) SetCausalReadRisky() error {
 }
 
 func (o TransactionOptions) SetReadYourWritesDisable() error {
-	// No-op: the pure Go client has no client-side read-your-writes cache.
-	// In the C binding, RYW is a client-side write buffer that lets reads
-	// within the same transaction see pending writes without a server
-	// round-trip. Disabling RYW tells the C client to skip its local cache.
-	// Since we have no local write cache, this is a no-op. Note: reads in
-	// our client do NOT see the transaction's own pending writes (they
-	// always go to the server which only sees committed data).
+	o.tx.inner.SetReadYourWritesDisable()
 	return nil
 }
 
@@ -89,16 +83,18 @@ func (o TransactionOptions) SetSizeLimit(limit int64) error {
 	return nil
 }
 
-func (o TransactionOptions) SetMaxRetryDelay(_ int64) error {
-	// TODO: configurable max retry delay
+func (o TransactionOptions) SetMaxRetryDelay(ms int64) error {
+	o.tx.inner.SetMaxRetryDelay(ms)
 	return nil
 }
 
 func (o TransactionOptions) SetSnapshotRywEnable() error {
+	// Default behavior — snapshot reads already go through RYW cache.
 	return nil
 }
 
 func (o TransactionOptions) SetSnapshotRywDisable() error {
+	o.tx.inner.SetSnapshotRYWDisable()
 	return nil
 }
 
@@ -227,18 +223,43 @@ func (o TransactionOptions) SetExpensiveClearCostEstimationEnable() error {
 }
 
 // DatabaseOptions is a handle for setting options that affect a Database.
-type DatabaseOptions struct{}
+type DatabaseOptions struct {
+	db *internalDB
+}
 
-func (o DatabaseOptions) SetLocationCacheSize(_ int64) error                     { return nil }
-func (o DatabaseOptions) SetMaxWatches(_ int64) error                            { return nil }
-func (o DatabaseOptions) SetDatacenterId(_ string) error                         { return nil }
-func (o DatabaseOptions) SetMachineId(_ string) error                            { return nil }
-func (o DatabaseOptions) SetSnapshotRywEnable() error                            { return nil }
-func (o DatabaseOptions) SetSnapshotRywDisable() error                           { return nil }
-func (o DatabaseOptions) SetTransactionTimeout(_ int64) error                    { return nil }
-func (o DatabaseOptions) SetTransactionRetryLimit(_ int64) error                 { return nil }
-func (o DatabaseOptions) SetTransactionMaxRetryDelay(_ int64) error              { return nil }
-func (o DatabaseOptions) SetTransactionSizeLimit(_ int64) error                  { return nil }
+func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
+func (o DatabaseOptions) SetMaxWatches(_ int64) error        { return nil }
+func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
+func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
+func (o DatabaseOptions) SetSnapshotRywEnable() error        { return nil }
+func (o DatabaseOptions) SetSnapshotRywDisable() error       { return nil }
+func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
+	if o.db != nil {
+		o.db.txDefaults.timeout = ms
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionRetryLimit(retries int64) error {
+	if o.db != nil {
+		o.db.txDefaults.retryLimit = retries
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionMaxRetryDelay(ms int64) error {
+	if o.db != nil {
+		o.db.txDefaults.maxRetryDelay = ms
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
+	if o.db != nil {
+		o.db.txDefaults.sizeLimit = bytes
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionCausalReadRisky() error                   { return nil }
 func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error      { return nil }
 func (o DatabaseOptions) SetTransactionReportConflictingKeys() error             { return nil }
