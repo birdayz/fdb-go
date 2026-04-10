@@ -4,32 +4,34 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
-// openTestDB starts an FDB testcontainer and returns a facade Database.
+// openTestDB returns a Database connected to the shared FDB testcontainer.
+// Each call creates a fresh Database connection for option isolation.
 func openTestDB(t *testing.T) fdb.Database {
 	t.Helper()
-	fdb.MustAPIVersion(730)
 
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if sharedClusterFile == nil {
+		t.Fatal("shared FDB container not initialized — TestMain must run first")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
 
-	container, err := tcfdb.Run(setupCtx, "")
+	db, err := fdb.OpenDatabaseFromConfig(setupCtx, sharedClusterFile)
 	if err != nil {
-		t.Fatalf("start FDB container: %v", err)
+		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
 	t.Cleanup(func() {
-		if t.Failed() {
-			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			logs, lerr := container.Logs(logCtx)
+		db.Close()
+		if t.Failed() && sharedContainer != nil {
+			diagCtx, diagCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer diagCancel()
+			logs, lerr := sharedContainer.Logs(diagCtx)
 			if lerr == nil {
 				logBytes, _ := io.ReadAll(logs)
 				if len(logBytes) > 2000 {
@@ -38,69 +40,7 @@ func openTestDB(t *testing.T) fdb.Database {
 				t.Logf("=== FDB logs (last 2000 bytes) ===\n%s", string(logBytes))
 			}
 		}
-		container.Terminate(context.Background())
 	})
-
-	connStr, err := container.ClusterFile(setupCtx)
-	if err != nil {
-		t.Fatalf("get cluster file: %v", err)
-	}
-
-	cf, err := client.ParseClusterString(connStr)
-	if err != nil {
-		t.Fatalf("parse cluster string: %v", err)
-	}
-
-	exitCode, _, _ := container.Exec(setupCtx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		t.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, execErr := container.Exec(setupCtx, []string{"fdbcli", "--exec", "status minimal"})
-		if execErr != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
-	}
-
-	_, internalReader, err := container.Exec(setupCtx, []string{"cat", "/var/fdb/fdb.cluster"})
-	if err != nil {
-		t.Fatalf("read internal cluster file: %v", err)
-	}
-	internalBytes, _ := io.ReadAll(internalReader)
-	internalStr := string(internalBytes)
-	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
-		internalStr = internalStr[idx:]
-	}
-	internalCF, err := client.ParseClusterString(strings.TrimSpace(internalStr))
-	if err != nil {
-		t.Fatalf("parse internal cluster: %v", err)
-	}
-
-	connectCF := &client.ClusterFile{
-		Description:  internalCF.Description,
-		ID:           internalCF.ID,
-		Coordinators: cf.Coordinators,
-	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
-
-	db, err := fdb.OpenDatabaseFromConfig(setupCtx, connectCF)
-	if err != nil {
-		t.Fatalf("OpenDatabaseFromConfig: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	return db
 }
