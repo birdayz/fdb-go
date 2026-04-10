@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -922,4 +924,171 @@ func TestGetAddressesForKey(t *testing.T) {
 		}
 	}
 	t.Logf("addresses for key: %v", addrs)
+}
+
+func TestConcurrentTransactions(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const goroutines = 10
+	const txPerGoroutine = 50
+	var wg sync.WaitGroup
+	var successCount atomic.Int64
+	var errorCount atomic.Int64
+
+	start := time.Now()
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < txPerGoroutine; i++ {
+				key := []byte(fmt.Sprintf("concurrent_%d_%d", id, i))
+				val := []byte(fmt.Sprintf("value_%d_%d", id, i))
+				_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					tx.Set(key, val)
+					return nil, nil
+				})
+				if err != nil {
+					errorCount.Add(1)
+					continue
+				}
+				// Read back in separate transaction
+				result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					return tx.Get(ctx, key)
+				})
+				if err != nil {
+					errorCount.Add(1)
+					continue
+				}
+				if !bytes.Equal(result.([]byte), val) {
+					t.Errorf("goroutine %d tx %d: got %q, want %q", id, i, result, val)
+					errorCount.Add(1)
+					continue
+				}
+				successCount.Add(1)
+			}
+		}(g)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	t.Logf("concurrent: %d success, %d errors, %d total, %.0f tx/s",
+		successCount.Load(), errorCount.Load(),
+		goroutines*txPerGoroutine,
+		float64(successCount.Load())/elapsed.Seconds())
+
+	if errorCount.Load() > 0 {
+		t.Errorf("%d errors occurred", errorCount.Load())
+	}
+}
+
+func TestConcurrentGetRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const writers = 5
+	const readers = 5
+	const opsPerWorker = 50
+	prefix := "cgr_"
+
+	// Seed initial data so readers have something to scan from the start.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 20; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%04d", prefix, i)), []byte(fmt.Sprintf("seed_%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var writeErrors atomic.Int64
+	var readErrors atomic.Int64
+	var readSuccess atomic.Int64
+	var writeSuccess atomic.Int64
+
+	start := time.Now()
+
+	// Writer goroutines: continuously insert new keys.
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerWorker; i++ {
+				key := []byte(fmt.Sprintf("%sw%d_%04d", prefix, id, i))
+				val := []byte(fmt.Sprintf("wval_%d_%d", id, i))
+				_, werr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					tx.Set(key, val)
+					return nil, nil
+				})
+				if werr != nil {
+					writeErrors.Add(1)
+				} else {
+					writeSuccess.Add(1)
+				}
+			}
+		}(w)
+	}
+
+	// Reader goroutines: continuously scan the prefix range.
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < opsPerWorker; i++ {
+				result, rerr := db.Transact(ctx, func(tx *Transaction) (any, error) {
+					kvs, _, err := tx.GetRange(ctx, []byte(prefix), []byte(prefix+"~"), 100)
+					return kvs, err
+				})
+				if rerr != nil {
+					readErrors.Add(1)
+					continue
+				}
+				kvs := result.([]KeyValue)
+				// Every returned key must start with prefix.
+				for _, kv := range kvs {
+					if !bytes.HasPrefix(kv.Key, []byte(prefix)) {
+						t.Errorf("reader %d scan %d: key %q missing prefix %q", id, i, kv.Key, prefix)
+						readErrors.Add(1)
+						continue
+					}
+				}
+				// Keys must be in sorted order.
+				for j := 1; j < len(kvs); j++ {
+					if bytes.Compare(kvs[j-1].Key, kvs[j].Key) >= 0 {
+						t.Errorf("reader %d scan %d: keys not sorted at %d: %q >= %q",
+							id, i, j, kvs[j-1].Key, kvs[j].Key)
+						readErrors.Add(1)
+						break
+					}
+				}
+				readSuccess.Add(1)
+			}
+		}(r)
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	t.Logf("concurrent range: writes=%d(err=%d) reads=%d(err=%d) elapsed=%s",
+		writeSuccess.Load(), writeErrors.Load(),
+		readSuccess.Load(), readErrors.Load(),
+		elapsed)
+	t.Logf("throughput: %.0f writes/s, %.0f reads/s",
+		float64(writeSuccess.Load())/elapsed.Seconds(),
+		float64(readSuccess.Load())/elapsed.Seconds())
+
+	if writeErrors.Load() > 0 {
+		t.Errorf("%d write errors", writeErrors.Load())
+	}
+	if readErrors.Load() > 0 {
+		t.Errorf("%d read errors", readErrors.Load())
+	}
 }

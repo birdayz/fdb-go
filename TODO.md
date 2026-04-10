@@ -1759,8 +1759,8 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [x] Tenant conformance: `createGoTenant` uses native system key CRUD via `db.CreateTenant()` (no fdbcli).
 
 ##### C) Chaos tests
-- [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.
-- [ ] Chaos tests may timeout with pure Go client (slower per-transaction). Monitor.
+- [x] Race test: verified in nightshift-1 (4 Docker tests under `-race`, 0 warnings).
+- [x] Chaos tests: PASS with pure Go client (nightshift-1 verification run).
 
 ##### D) fdbgo unit tests
 - [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
