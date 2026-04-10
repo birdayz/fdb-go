@@ -1788,7 +1788,7 @@ This workflow already found 2 critical bugs on first run: 13 wrong mutation type
 
 Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
-**Ported (71 tests) — `c_binding_port_test.go`:**
+**Ported (80 tests) — `c_binding_port_test.go`:**
 - [x] GetRange (forward, reverse, limit, empty, streaming modes, exact)
 - [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue) + MultipleAtomicOps
 - [x] SetReadVersion old/future, GetCommittedVersion (read-only + write)
