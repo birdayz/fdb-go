@@ -59,7 +59,7 @@ Resolved 24 items:
 - **Directory layer:** ported, tested, cross-client verified
 - **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
 - **TODO.md:** 128 → 61 open items (67 resolved)
-- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged(), TransactionID()
+- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged(), TransactionID(), FDBMetaDataStore
 
 ## Known issues
 
@@ -69,7 +69,7 @@ Resolved 24 items:
 
 ### High impact
 - **Binding tester directory extension** — implement DIRECTORY_* stack machine operations to pass the binding tester's directory test suite (~21 operations, ~400 lines)
-- **FDBMetaDataStore** — dynamic schema storage in FDB (~580 lines Java). Enables runtime schema evolution. **NOTE**: initial attempt failed due to Go `interface{}(nil-typed-value) != nil` gotcha — when `Transact` callback returns `([]byte(nil), nil)`, the result is not Go-nil because the interface wraps a typed nil. Tests must type-assert before nil-checking. NOT a client bug.
+- **FDBMetaDataStore** — Implemented! Stores/loads MetaData proto in FDB with version history. 4 tests. Key learnings: (1) tuple.Pack panics on int32 — use int64, (2) Go `interface{}(nil-typed-value) != nil` — use closure vars instead of Transact return for nil checks, (3) `len(data) == 0` instead of `data == nil` for MustGet results.
 - **Performance benchmarking** — real workload benchmarks (bulk inserts, index-heavy saves, large scans, OnlineIndexer throughput). Compare with Java.
 
 ### Medium impact
