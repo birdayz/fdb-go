@@ -1755,8 +1755,8 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [ ] million_record — tagged `manual`, never runs in CI.
 
 ##### B) Conformance tests
-- [ ] Switch conformance from CGo `GetFDBDatabase` to `gofdbhelper.OpenDatabase`. Done in code, needs testing.
-- [ ] Tenant conformance: tenant CRUD now via system keys (no fdbcli). Needs conformance test wiring.
+- [x] Conformance uses pure Go client (`gofdb.OpenDatabase` in container_test.go:165).
+- [x] Tenant conformance: `createGoTenant` uses native system key CRUD via `db.CreateTenant()` (no fdbcli).
 
 ##### C) Chaos tests
 - [ ] Race test: RYW cache now has sync.Mutex — should fix the data race panic.
