@@ -43,13 +43,7 @@ func (o TransactionOptions) SetCausalReadRisky() error {
 }
 
 func (o TransactionOptions) SetReadYourWritesDisable() error {
-	// No-op: the pure Go client has no client-side read-your-writes cache.
-	// In the C binding, RYW is a client-side write buffer that lets reads
-	// within the same transaction see pending writes without a server
-	// round-trip. Disabling RYW tells the C client to skip its local cache.
-	// Since we have no local write cache, this is a no-op. Note: reads in
-	// our client do NOT see the transaction's own pending writes (they
-	// always go to the server which only sees committed data).
+	o.tx.inner.SetReadYourWritesDisable()
 	return nil
 }
 
@@ -95,10 +89,12 @@ func (o TransactionOptions) SetMaxRetryDelay(ms int64) error {
 }
 
 func (o TransactionOptions) SetSnapshotRywEnable() error {
+	// Default behavior — snapshot reads already go through RYW cache.
 	return nil
 }
 
 func (o TransactionOptions) SetSnapshotRywDisable() error {
+	o.tx.inner.SetSnapshotRYWDisable()
 	return nil
 }
 
