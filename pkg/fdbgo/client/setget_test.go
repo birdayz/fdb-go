@@ -3,11 +3,8 @@ package client
 import (
 	"context"
 	"io"
-	"strings"
 	"testing"
 	"time"
-
-	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 // TestTransactRetry verifies the Transact retry loop handles retryable
@@ -134,110 +131,44 @@ func TestSetGet(t *testing.T) {
 	}
 }
 
-// openTestDB starts an FDB testcontainer and returns a connected Database.
-// Uses a 60s setup context for container creation + configuration, independent
-// of the caller's ctx (which may be shorter for the actual test operations).
+// openTestDB returns a Database connected to the shared FDB testcontainer.
+// Each call creates a fresh Database connection (separate connection pool,
+// separate options) for test isolation, but reuses the single container
+// started in TestMain. This cuts per-test overhead from ~30s to ~1s.
 func openTestDB(t *testing.T, ctx context.Context) *Database {
 	t.Helper()
 
-	// 5 min setup timeout. If FDB crashes (assertion failure under load),
-	// the GRV infinite loop would hang forever without this.
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if sharedClusterFile == nil {
+		t.Fatal("shared FDB container not initialized — TestMain must run first")
+	}
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer setupCancel()
 
-	container, err := tcfdb.Run(setupCtx, "")
+	db, err := OpenDatabaseFromConfig(setupCtx, sharedClusterFile, nil)
 	if err != nil {
-		t.Fatalf("start FDB container: %v", err)
+		t.Fatalf("OpenDatabaseFromConfig: %v", err)
 	}
 	t.Cleanup(func() {
-		if t.Failed() {
+		db.Close()
+		if t.Failed() && sharedContainer != nil {
 			// Dump container state + logs on failure for debugging.
-			state, serr := container.State(ctx)
+			diagCtx, diagCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer diagCancel()
+			state, serr := sharedContainer.State(diagCtx)
 			if serr == nil {
 				t.Logf("=== FDB container state: %s (exit=%d) ===", state.Status, state.ExitCode)
-			} else {
-				t.Logf("=== FDB container state error: %v ===", serr)
 			}
-			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			logs, lerr := container.Logs(logCtx)
+			logs, lerr := sharedContainer.Logs(diagCtx)
 			if lerr == nil {
 				logBytes, _ := io.ReadAll(logs)
 				if len(logBytes) > 2000 {
 					logBytes = logBytes[len(logBytes)-2000:]
 				}
 				t.Logf("=== FDB container logs (last 2000 bytes) ===\n%s", string(logBytes))
-			} else {
-				t.Logf("=== FDB container logs error: %v ===", lerr)
 			}
 		}
-		container.Terminate(ctx)
 	})
-
-	connStr, err := container.ClusterFile(ctx)
-	if err != nil {
-		t.Fatalf("get cluster file: %v", err)
-	}
-
-	cf, err := ParseClusterString(connStr)
-	if err != nil {
-		t.Fatalf("parse cluster string: %v", err)
-	}
-
-	// Configure cluster and wait for it to be fully ready.
-	// The "configure" command returns before resolvers are initialized.
-	// "status minimal" reports "Healthy" only when all roles are up.
-	exitCode, _, _ := container.Exec(setupCtx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		t.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, err := container.Exec(setupCtx, []string{"fdbcli", "--exec", "status minimal"})
-		if err != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
-	}
-
-	// Read internal cluster file for correct cluster key
-	_, internalReader, err := container.Exec(setupCtx, []string{"cat", "/var/fdb/fdb.cluster"})
-	if err != nil {
-		t.Fatalf("read internal cluster file: %v", err)
-	}
-	internalBytes, _ := io.ReadAll(internalReader)
-	internalStr := string(internalBytes)
-	if idx := strings.Index(internalStr, cf.Description); idx >= 0 {
-		internalStr = internalStr[idx:]
-	}
-	internalCF, err := ParseClusterString(strings.TrimSpace(internalStr))
-	if err != nil {
-		t.Fatalf("parse internal cluster: %v", err)
-	}
-
-	connectCF := &ClusterFile{
-		Description:  internalCF.Description,
-		ID:           internalCF.ID,
-		Coordinators: cf.Coordinators,
-	}
-	connectCF.InternalKey = internalCF.Description + ":" + internalCF.ID + "@"
-	for i, a := range internalCF.Coordinators {
-		if i > 0 {
-			connectCF.InternalKey += ","
-		}
-		connectCF.InternalKey += a
-	}
-
-	db, err := OpenDatabaseFromConfig(setupCtx, connectCF, nil)
-	if err != nil {
-		t.Fatalf("OpenDatabaseFromConfig: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
 
 	return db
 }
