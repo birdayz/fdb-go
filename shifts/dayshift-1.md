@@ -60,8 +60,8 @@ Profiled Go vs CGo Set+Commit:
 ## What to work on next
 
 ### High impact
+- **Investigate binding tester seed 1 flake** — 100-seed run had seed 1 fail (popInt64 gets bytes at GET_RANGE_SELECTOR), but 50/50 run passed seed 1 cleanly. Intermittent — likely timing-dependent stack mismatch where a prior instruction pushes wrong type
 - **Port more C binding tests** — 39/81 done. Medium-priority remaining: system key access control (4 tests, needs client-side validation), more watch edge cases
-- **Run full binding stress** — `just binding-stress` (100 seeds × 1000 ops) to validate SetLinger fix under load
 - **Directory layer** — needed by some FDB applications
 
 ### Medium impact  
