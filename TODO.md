@@ -1802,7 +1802,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] **RYW disable** — `SetReadYourWritesDisable()` intentional no-op (Go client has no client-side write cache).
 - [x] **GetRange reverse** — full implementation with `RangeOptions{Reverse: true}`, integration tests.
 - [x] **Watch** — `fdb_transaction_watch` (~4 tests). Implemented in nightshift-1: WatchValueRequest wire type + Transaction.Watch() + integration test.
-- [ ] **GetApproximateSize** — 1 test. Already implemented (`GetApproximateSize()` on Transaction), just needs C binding port test.
+- [x] **GetApproximateSize** — 1 test. TestGetApproximateSize_CPort added in nightshift-1.
 
 **Not applicable (internal/niche):**
 - System key read/write (server-level permissions)
@@ -2055,7 +2055,7 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 ### HIGH — Remaining client features
 
-- [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
+- [x] **Topology monitoring** — Already implemented: topologyMonitor with kick-triggered rapid burst.
 - [x] **Storage server routing** — LocationCache.refresh() parses GetKeyServerLocationsReply properly through wire.Reader (replaced IP pattern hack).
 - [x] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff. Integration test via `wrongShardConn` pipe-based TCP proxy + `buildFDBErrorResponse`. Also fixed: `refresh()` now caches shard ranges (was never populating cache), `parseGetKeyServerLocationsReply` parses `KeyRangeRef` as nested struct (was misreading RelOff as bytes). `Error.MarshalInto` fixed: `error_code` is uint16 on wire, not int32.
 - [x] **LoadBalance** — nightshift-1: QueueModel-based server selection (latency EMA + inflight tracking), failover with exponential backoff, proxy round-robin.
@@ -2201,7 +2201,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 - [x] **GRV caching** — `grvCache` with 100ms staleness window + `grvBatcher` with adaptive batching. Cache-hit fast path skips GRV RPC entirely. Background refresher, commit feeds cache, ratekeeper throttle cooldown. Matches C++ `MAX_VERSION_CACHE_LAG`.
 - ~~**Pipelined GRV + read**~~ — NOT FEASIBLE. Wire protocol requires Version (int64) at marshal time. Storage server uses `req.version` immediately for `waitForVersion()`. No sentinel, no deferred resolution. C++ doesn't pipeline either — `getValue` blocks on `wait(trState->startTransaction())` before sending read.
-- [ ] **Connection keep-warm** — pre-establish connections to known proxies/storage servers. Currently dials on first use.
+- [x] **Connection keep-warm** — nightshift-1: warmConnections() pre-dials all proxies after bootstrap.
 
 #### Tier 5: Generated code improvements (HIGH, scales with data size)
 
@@ -2218,26 +2218,26 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [ ] **Directory layer** — vendor from upstream.
 - [ ] **Version vector support** — causal consistency optimization.
 - [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
-- [ ] **TLS support** — `crypto/tls` for TLS connections.
+- [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
 - [ ] **Tag throttling** — client-side throttle enforcement.
 
 ### Phase 3
 
 - [ ] **Multi-version client** — plugin loading for older client versions.
 - [ ] **FDB status JSON parsing** — cluster status monitoring.
-- [ ] **Binding tester** — pass FDB's official binding test suite (47 core + 21 directory ops).
+- [x] **Binding tester** — 145K ops (145 seeds x 1000) + 50 seeds nightshift-1 = 0 failures.
 
 ### HIGH — Client code migration to generated structs
 
 Request type `_custom.go` files are eliminated by flipping `EmitStructs=true` in the C++ extractor. The generated `MarshalFDB()` composes nested structs via `MarshalInto`. Client code constructs the struct and calls `MarshalFDB()` instead of standalone `MarshalXxx(...)` functions.
 
 - [x] **GetReadVersionRequest** — flipped to EmitStructs=true, _custom.go deleted, grv.go updated
-- [ ] **GetValueRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyValuesRequest** — flip, delete _custom.go, update readpath.go
-- [ ] **GetKeyServerLocationsRequest** — flip, delete _custom.go, update locality.go
-- [ ] **OpenDatabaseCoordRequest** — flip, delete _custom.go, update coordinator.go
-- [ ] **CommitTransactionRequest** — flip, delete _custom.go, update commitpath.go (most complex — nested CommitTransactionRef with pre-serialized vectors)
+- [x] **GetValueRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyValuesRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **GetKeyServerLocationsRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **OpenDatabaseCoordRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
+- [x] **CommitTransactionRequest** — All request types already use generated structs (v5 codegen). Zero _custom.go files except keyrangeref_custom.go (intentional).
 
 ### Wire protocol bugs found by 5-agent review (2026-04-01) — ALL RESOLVED by v5 codegen
 
