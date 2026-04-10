@@ -1005,7 +1005,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### STYLE (LOW)
 
-- [ ] **Get prefix on ~30 trivial accessors** — `GetRecordType()`, `GetIndex()`, `GetValue()`, `GetContinuation()`, etc. Go convention: drop `Get` for simple field reads.
+- [x] **Get prefix on ~30 trivial accessors** — WONTFIX: keeping `Get` prefix for 1:1 Java naming correspondence. `GetRecordCount()` maps directly to Java's `getRecordCount()`. Go convention sacrificed for porting clarity.
 
 - [x] **interface{} → any** — Fixed: replaced all 524 occurrences of `interface{}` with `any` across 72 files.
 
@@ -1493,9 +1493,9 @@ The Cascades framework (Graefe 1995) is the cost-based query optimizer — 494 f
 ### Phase 2: Prerequisites from core
 
 - [ ] **Joined record types** — `SyntheticRecordType`, `JoinedRecordType`, `UnnestedRecordType` — virtual records composed from constituents via equi-joins
-- [ ] **KeySpace directory layer** — `provider/fdb/keyspace/` (25 files, 7K lines) — hierarchical key management
-- [ ] **TEXT index** — full-text search with tokenization
-- [ ] **Remaining key expression types** — ~10 unported expression types from `metadata/expressions/`
+- [ ] **KeySpace directory layer** — `provider/fdb/keyspace/` (25 files, 7K lines) — hierarchical key management. Note: basic FDB directory layer ported in nightshift-2; KeySpace is the Record Layer wrapper on top.
+- [x] **TEXT index** — full-text search with BunchedMap, UAX#29 tokenization, NFKD normalization. 115 unit + 34 integration + 7 conformance tests.
+- [x] **Remaining key expression types** — All done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE, OrderFunctionKE, CollateFunctionKE. Only AtomKE remaining (Java interface only, no wire format).
 
 ### Phase 3: Relational / SQL layer (~55K lines Java)
 
