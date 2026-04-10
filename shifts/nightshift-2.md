@@ -68,13 +68,17 @@ Resolved 24 items:
 ## What to work on next
 
 ### High impact
-- **Binding tester directory extension** — implement DIRECTORY_* stack machine operations to pass the binding tester's directory test suite (~40 operations)
-- **Extended binding stress results** — check 2h run completion
+- **Binding tester directory extension** — implement DIRECTORY_* stack machine operations to pass the binding tester's directory test suite (~21 operations, ~400 lines)
+- **FDBMetaDataStore** — dynamic schema storage in FDB (~580 lines Java). Enables runtime schema evolution without redeployment. Key for production deployments.
+- **Performance benchmarking** — real workload benchmarks (bulk inserts, index-heavy saves, large scans, OnlineIndexer throughput). Compare with Java.
 
 ### Medium impact
-- **Directory layer conformance tests** — Go↔Java cross-language directory interop (would need Java conformance server additions)
+- **Directory layer conformance tests** — Go↔Java cross-language directory interop (needs Java conformance server additions)
+- **FDBReverseDirectoryCache** — prefix→name caching for multi-tenant apps (~496 lines Java)
 - **Version vector support** — causal consistency optimization
 
 ### Low priority
-- Synthetic record types, query planner, views, UDFs
-- Wire type MEDIUM items (#11, #14)
+- Query planner (26 items — out of scope until needed)
+- Synthetic record types (13 items — experimental API)
+- Cursor combinators needing planner (10 items)
+- Tag throttling, multi-shard test, multi-version client
