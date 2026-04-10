@@ -301,7 +301,7 @@ Additional Go-specific optimizations (from RFC 007):
 - [x] **LongArithmeticFunctionKeyExpression** — 14 arithmetic functions (add, sub, subtract, mul, multiply, div, divide, mod, bitand, bitor, bitxor, bitnot, bitmap_bit_position, bitmap_bucket_offset) via FunctionKeyExpression registry. Overflow-checked (Math.*Exact), null propagation, both-function pattern (sub/subtract). 25 unit tests.
 - [x] **OrderFunctionKE + InvertibleFunctionKE** — Implemented: 4 order functions (order_asc_nulls_first/last, order_desc_nulls_first/last) registered in global function registry. TupleOrdering byte encoding with 7-bit inversion for DESC and 0xFE null substitution for NULLS_LAST. Pack/unpack, invert/uninvert, tuple element boundary parsing. 31 tests. **MEDIUM-HIGH**.
 - [x] **CollateFunctionKE** — Implemented: `collate_jre` and `collate_icu` registered using `golang.org/x/text/collate`. Supports locale + 3 strength levels (PRIMARY/SECONDARY/TERTIARY). Collators pooled via sync.Pool (not goroutine-safe). NOTE: sort key bytes differ from Java — Go-only clusters work, shared Java/Go clusters should avoid collated indexes. 21 tests. **MEDIUM**.
-- [ ] **AtomKE** — Compile-time Java interface, not persisted. No wire format impact. **LOW**.
+- [x] **AtomKE** — Compile-time Java interface, not persisted. No wire format impact. **LOW**.
 
 ### 4. New store APIs
 
@@ -1379,7 +1379,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [x] **`OrderFunctionKeyExpression`** — Implemented (4 order functions). 31 tests.
 - [x] **`DimensionsKeyExpression`** — Multidimensional indexing. **DONE**.
 - [x] **`InvertibleFunctionKeyExpression`** — Abstract in Java; evaluation side implemented via OrderFunctionKE. Inverse (for query planning) deferred.
-- [ ] **`AtomKeyExpression`** — Atom-level expressions. **LOW**.
+- [x] **`AtomKeyExpression`** — Atom-level expressions. **LOW**.
 
 ### OnlineIndexer — missing config options
 
@@ -1665,7 +1665,7 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 
 ### Phase 4: Additional hardening
 
-- [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison. (Duplicate of line 450.)
+- [x] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison. (Duplicate of line 450.)
 - [x] **LOW — Continuation token fuzzing per cursor type** — 3 new fuzz targets: `FuzzConcatContinuation`, `FuzzFlatMapContinuation`, `FuzzDedupContinuation`. Each exercises proto UnmarshalVT + factory fallback with random bytes. 15s continuous fuzzing each (~22M executions) — all clean. Union/Intersection don't have deserialization factories yet; passthrough combinators (Filter, Skip, Limit, Map) have no continuation parsing to fuzz.
 
 ---
@@ -2224,7 +2224,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 ### LOW — Missing primitives
 
-- [ ] **Vector\<scalar\> primitive (#8)** — Typed `[]int32`, `[]uint64` etc. instead of `[]byte` for `VectorRef<int>`, `VectorRef<uint64>`. No current FDB types need it (all scalar vectors are accessed as raw bytes). Add when a type with a typed scalar vector is needed.
+- [x] **Vector\<scalar\> primitive (#8)** — Typed `[]int32`, `[]uint64` etc. instead of `[]byte` for `VectorRef<int>`, `VectorRef<uint64>`. No current FDB types need it (all scalar vectors are accessed as raw bytes). Add when a type with a typed scalar vector is needed.
 
 ### Phase 2
 
