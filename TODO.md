@@ -11,6 +11,10 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+### Correctness audit (2026-04-10) — fdb facade audit
+
+- [x] **HIGH** — `OrEqual` wire protocol mismatch in fdb facade. Apple Go binding convention (`OrEqual=true` = inclusive) is INVERTED from C++ wire protocol (`orEqual=true` = exclusive). The Apple C binding inverts `OrEqual` before sending to the server, but our fdb facade was passing it directly. Result: `GetKey(FirstGreaterOrEqual(key))` skipped exact matches. Fixed in 3 sites: `Transaction.GetKey`, `Snapshot.GetKey`, `resolveSelector` (used by range queries with non-trivial selectors). Affected bunched map (TEXT index) via `LastLessOrEqual`/`LastLessThan` selectors. Found via cross-client interop tests (Go vs CGo). 3 new interop tests added.
+
 ### Correctness audit (2026-04-09) — C++ alignment sweep
 
 - [x] **HIGH** — `OnError()` missing 5 retryable error codes. `tag_throttled` (1213), `proxy_tag_throttled` (1223), `transaction_throttled_hot_shard` (1235), `transaction_rejected_range_locked` (1242) fell through to non-retryable default. `cluster_version_changed` (1039) was not handled as MAYBE_COMMITTED (should inject self-conflicts like 1021). Fixed: all 5 codes added to OnError switch, 1039 gets self-conflicting treatment. `wire.FDBError.Retryable()` also updated (had wrong comment: 1039 labeled as `database_locked`, missing 1038/1078/1223/1235/1242). Test added for 1039 self-conflicting.
