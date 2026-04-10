@@ -1318,8 +1318,8 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
 - [x] **`getFormerIndexesSince(version)`** — Added `GetFormerIndexesSince()`. **LOW**.
 - [x] **Builder query methods** — Added `GetVersion()`, `IsSplitLongRecords()`, `IsStoreRecordVersions()`, `GetRecordCountKey()`, `GetRecordTypes()` on builder. **LOW**.
-- [ ] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
-- [ ] **`IndexMaintainerRegistry` pluggable** — Go dispatches from hardcoded switch. **LOW**.
+- [x] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
+- [x] **`IndexMaintainerRegistry` pluggable** — Go dispatches from hardcoded switch. **LOW**.
 - [ ] **Synthetic record types** — JoinedRecordType, UnnestedRecordType. Large feature. **LOW**.
 - [ ] **User-defined functions** — `PUserDefinedFunction` in MetaData proto. **LOW**.
 - [ ] **Views** — `PView` in MetaData proto. **LOW**.
@@ -1348,7 +1348,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### ExecuteProperties — missing features
 
-- [ ] **`isDryRun` flag** — Dry-run execution mode. **LOW**.
+- [x] **`isDryRun` flag** — Dry-run execution mode. **LOW**.
 - [x] **Convenience clear methods** — `ClearRowAndTimeLimits()`, `ClearSkipAndLimit()`, `WithScannedRecordsLimit()`, `WithScannedBytesLimit()`, `WithSkip()`. **LOW**.
 
 ### FDBDatabase — missing methods
@@ -1366,7 +1366,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [ ] **`getCommitCheck()` / `removeCommitChecks()`** — Hook management post-add. **LOW**.
 - [ ] **`removePostCommit()` / `addPostCloseHook()`** — Hook removal. **LOW**.
 - [ ] **`WeakReadSemantics`** — Causal read risky / version staleness bounds. **LOW**.
-- [ ] **`getMdcContext()`** — Mapped diagnostic context. **LOW**.
+- [x] **`getMdcContext()`** — Mapped diagnostic context. **LOW**.
 
 ### FDBDatabaseRunner — missing methods
 
