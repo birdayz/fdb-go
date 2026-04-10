@@ -311,7 +311,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
-		tx.addReadConflict(key, keyAfterBytes(key))
+		tx.addReadConflictForKey(key)
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
 }
@@ -328,7 +328,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, err
 	}
 	if !isSystemKey(key) {
-		tx.addReadConflict(key, keyAfterBytes(key))
+		tx.addReadConflictForKey(key)
 	}
 
 	// Check RYW cache.
@@ -417,7 +417,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		return nil, err
 	}
 	if !isSystemKey(selectorKey) {
-		tx.addReadConflict(selectorKey, keyAfterBytes(selectorKey))
+		tx.addReadConflictForKey(selectorKey)
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
 }
@@ -461,7 +461,7 @@ func (tx *Transaction) Set(key, value []byte) {
 		Value: value,
 	})
 	tx.conflictMu.Unlock()
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 	tx.ryw.set(key, value)
 }
 
@@ -514,7 +514,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	})
 	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 	tx.ryw.atomic(op, key, operand)
 }
 
@@ -758,6 +758,21 @@ func keyAfterBytes(key []byte) []byte {
 	return r
 }
 
+// addReadConflictForKey adds a read conflict range [key, key\x00) with a
+// single allocation for both begin and end slices. Saves 2 allocs vs
+// keyAfterBytes + addReadConflict which allocate 3 buffers.
+func (tx *Transaction) addReadConflictForKey(key []byte) {
+	// One buffer: [begin(len)][end(len+1)] — end has implicit \x00 from make.
+	n := len(key)
+	buf := make([]byte, n+n+1)
+	copy(buf, key)
+	copy(buf[n:], key)
+	// buf[2*n] is already 0 from make
+	tx.conflictMu.Lock()
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.conflictMu.Unlock()
+}
+
 // addReadConflict adds a read conflict range with defensive copies.
 func (tx *Transaction) addReadConflict(begin, end []byte) {
 	b := make([]byte, len(begin))
@@ -769,13 +784,27 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 	tx.conflictMu.Unlock()
 }
 
+// addWriteConflictForKey adds a write conflict range [key, key\x00) with a
+// single allocation. Same optimization as addReadConflictForKey.
+func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	if tx.nextWriteNoConflict {
+		tx.nextWriteNoConflict = false
+		return
+	}
+	n := len(key)
+	buf := make([]byte, n+n+1)
+	copy(buf, key)
+	copy(buf[n:], key)
+	tx.conflictMu.Lock()
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
+	tx.conflictMu.Unlock()
+}
+
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	// Defensive copy: callers use append(key, 0) which may alias the key slice.
-	// Without a copy, later mutations on the same backing array corrupt the range.
 	b := make([]byte, len(begin))
 	copy(b, begin)
 	e := make([]byte, len(end))
@@ -865,7 +894,7 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 
 // AddReadConflictKey adds a read conflict on a single key.
 func (tx *Transaction) AddReadConflictKey(key []byte) {
-	tx.addReadConflict(key, keyAfterBytes(key))
+	tx.addReadConflictForKey(key)
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
@@ -880,7 +909,7 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tx *Transaction) AddWriteConflictKey(key []byte) {
-	tx.addWriteConflict(key, keyAfterBytes(key))
+	tx.addWriteConflictForKey(key)
 }
 
 // reset clears transaction state for retry, preserving retryCount, backoff,
