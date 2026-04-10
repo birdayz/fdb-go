@@ -1774,7 +1774,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 **C code is the source of truth for the client.** Development is test-driven from the C binding tests:
 
-1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 23 ported so far)
+1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 39 ported so far)
 2. **Add functionality** only when a test needs it — no speculative API additions
 3. **Principles first** — if a test needs a feature, port it COMPLETELY, not a stub
 4. **Tests are authoritative** — if Go behavior differs from C, Go is wrong
@@ -1788,12 +1788,17 @@ This workflow already found 2 critical bugs on first run: 13 wrong mutation type
 
 Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
-**Ported (23 tests) — `c_binding_port_test.go`:**
-- [x] GetRange forward, GetRange limit, Clear
-- [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue)
-- [x] SetReadVersion old/future (skipped — client-side validation needed)
-- [x] GetCommittedVersion (read-only + write)
+**Ported (39 tests) — `c_binding_port_test.go`:**
+- [x] GetRange (forward, reverse, limit, empty, streaming modes, exact)
+- [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue) + MultipleAtomicOps
+- [x] SetReadVersion old/future, GetCommittedVersion (read-only + write)
 - [x] Cancel, AddConflictRange, CommitDoesNotReset, ErrorPredicate
+- [x] Timeout (set, get, preserved across reset, disabled, commit check), RetryLimit (set, zero, unlimited)
+- [x] GetApproximateSize, ClearRangeAndVerify, LargeValue, EmptyKeyValue
+- [x] GetKey with all selectors, ReadYourWrites, Watch
+- [x] RYW disable, Snapshot RYW enable/disable (dayshift-1)
+- [x] SizeLimit (too small, too large, minimum valid) (dayshift-1)
+- [x] Watch with RYW disabled (dayshift-1)
 
 **Next to port (need API additions):**
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
