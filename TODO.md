@@ -857,13 +857,13 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
   - [x] `MapErrCursor` — fallible transform combinator (fn returns (R, error)). 3 tests.
   - [x] `AsListWithContinuation` — pagination helper: drains cursor to slice, returns continuation bytes. 3 tests.
 
-- [ ] **CursorLimitManager** — Java has a separate class for comprehensive limit tracking (record scan, byte scan, time). Go has inline limit logic in keyValueCursor.
+- [x] **CursorLimitManager** — WONTFIX: Go has inline limit logic in keyValueCursor matching Java's `CursorLimitManager.tryRecordScan()`. Extracting to separate class adds no functionality.
 
 - [x] **RecordCursor instance methods** — `First()`, `GetCount()`, `Reduce()` as standalone generic functions. `SkipCursor()`, `LimitRowsCursor()` as cursor wrappers. Matches Java's `first()`, `getCount()`, `reduce()`, `skip()`, `limitRowsTo()`.
 
 ### LOW
 
-- [ ] **Visitor pattern** — Java has `RecordCursorVisitor` interface for cursor inspection/instrumentation.
+- [x] **Visitor pattern** — WONTFIX: Java's `RecordCursorVisitor` is for query planner inspection. Not needed without query planner.
 - [x] **Continuation SerializationMode** — Go uses TO_OLD (raw bytes) for writing, accepts both TO_OLD and TO_NEW (proto-wrapped) for reading. Confirmed working with Java Record Layer 4.10.6.0 (all conformance tests pass).
 
 ---
