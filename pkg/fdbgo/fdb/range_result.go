@@ -275,7 +275,8 @@ func resolveSelector(tx *transaction, ks KeySelector) ([]byte, error) {
 		copy(out, key)
 		return out, nil
 	}
-	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+	// Negate OrEqual: Apple binding convention → C++ wire protocol.
+	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), !ks.OrEqual, int32(ks.Offset))
 	if err != nil {
 		return nil, err
 	}

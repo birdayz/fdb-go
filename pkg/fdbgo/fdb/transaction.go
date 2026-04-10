@@ -63,8 +63,12 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 func (tr Transaction) GetKey(sel Selectable) FutureKey {
 	inner, ctx := tr.t.inner, tr.t.ctx
 	ks := sel.FDBKeySelector()
+	// Apple binding convention: OrEqual=true means "or equal" (inclusive).
+	// C++ wire protocol: orEqual=true means "strict greater" (exclusive).
+	// The Apple C binding inverts this before sending to the server.
+	// We must do the same: negate OrEqual for the wire format.
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.GetKey(ctx, ks.Key.FDBKey(), !ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }

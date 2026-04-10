@@ -540,6 +540,164 @@ func TestInterop_ConflictDetection(t *testing.T) {
 	}
 }
 
+// TestInterop_GetRangeReverse verifies both clients return identical results
+// when scanning in reverse.
+func TestInterop_GetRangeReverse(t *testing.T) {
+	prefix := "interop_rev_"
+
+	// Seed via Go client.
+	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Read reverse via Go.
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		rr := tx.GetRange(gofdb.KeyRange{
+			Begin: gofdb.Key(prefix),
+			End:   gofdb.Key(prefix + "\xff"),
+		}, gofdb.RangeOptions{Reverse: true})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("go reverse scan: %v", err)
+	}
+	goKvs := goResult.([]gofdb.KeyValue)
+
+	// Read reverse via CGo.
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		rr := tx.GetRange(cgofdb.KeyRange{
+			Begin: cgofdb.Key(prefix),
+			End:   cgofdb.Key(prefix + "\xff"),
+		}, cgofdb.RangeOptions{Reverse: true})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("cgo reverse scan: %v", err)
+	}
+	cgoKvs := cgoResult.([]cgofdb.KeyValue)
+
+	if len(goKvs) != len(cgoKvs) {
+		t.Fatalf("length mismatch: go=%d, cgo=%d", len(goKvs), len(cgoKvs))
+	}
+	for i := range goKvs {
+		if !bytes.Equal(goKvs[i].Key, cgoKvs[i].Key) {
+			t.Errorf("key[%d]: go=%q, cgo=%q", i, goKvs[i].Key, cgoKvs[i].Key)
+		}
+		if !bytes.Equal(goKvs[i].Value, cgoKvs[i].Value) {
+			t.Errorf("value[%d]: go=%q, cgo=%q", i, goKvs[i].Value, cgoKvs[i].Value)
+		}
+	}
+	// Verify descending order.
+	if len(goKvs) > 0 {
+		first := string(goKvs[0].Key)
+		last := string(goKvs[len(goKvs)-1].Key)
+		if first < last {
+			t.Errorf("not descending: first=%q, last=%q", first, last)
+		}
+	}
+}
+
+// TestInterop_KeySelector verifies both clients resolve key selectors identically.
+func TestInterop_KeySelector(t *testing.T) {
+	prefix := "interop_ks_"
+
+	// Seed via CGo.
+	_, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set(cgofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Invalidate GRV cache so the Go client sees the CGo write.
+	// The GRV cache may hold a version from before the CGo commit.
+	goClient.InvalidateGRVCache()
+
+	// Resolve FirstGreaterOrEqual(prefix+"02") via both clients.
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		return tx.GetKey(gofdb.FirstGreaterOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("go getkey: %v", err)
+	}
+
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		return tx.GetKey(cgofdb.FirstGreaterOrEqual(cgofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("cgo getkey: %v", err)
+	}
+
+	goKey := goResult.(gofdb.Key)
+	cgoKey := cgoResult.(cgofdb.Key)
+	if !bytes.Equal(goKey, cgoKey) {
+		t.Errorf("key selector mismatch: go=%q, cgo=%q", goKey, cgoKey)
+	}
+	if string(goKey) != prefix+"02" {
+		t.Errorf("expected %q, got %q", prefix+"02", goKey)
+	}
+}
+
+// TestInterop_GetRangeWithLimit verifies both clients return identical
+// results when using a row limit.
+func TestInterop_GetRangeWithLimit(t *testing.T) {
+	prefix := "interop_lim_"
+
+	// Seed via Go.
+	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Read with limit=3 via both.
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		rr := tx.GetRange(gofdb.KeyRange{
+			Begin: gofdb.Key(prefix),
+			End:   gofdb.Key(prefix + "\xff"),
+		}, gofdb.RangeOptions{Limit: 3})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("go limited scan: %v", err)
+	}
+	goKvs := goResult.([]gofdb.KeyValue)
+
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		rr := tx.GetRange(cgofdb.KeyRange{
+			Begin: cgofdb.Key(prefix),
+			End:   cgofdb.Key(prefix + "\xff"),
+		}, cgofdb.RangeOptions{Limit: 3})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("cgo limited scan: %v", err)
+	}
+	cgoKvs := cgoResult.([]cgofdb.KeyValue)
+
+	if len(goKvs) != 3 || len(cgoKvs) != 3 {
+		t.Fatalf("expected 3 results each: go=%d, cgo=%d", len(goKvs), len(cgoKvs))
+	}
+	for i := range goKvs {
+		if !bytes.Equal(goKvs[i].Key, cgoKvs[i].Key) {
+			t.Errorf("key[%d]: go=%q, cgo=%q", i, goKvs[i].Key, cgoKvs[i].Key)
+		}
+	}
+}
+
 // errorAs is a generic helper that avoids importing errors for a simple
 // type assertion (both Error types are concrete structs, not wrapped).
 func errorAs[T any](err error, target *T) bool {
