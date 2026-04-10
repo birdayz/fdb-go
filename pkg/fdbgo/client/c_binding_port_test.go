@@ -1621,6 +1621,366 @@ func TestGetRangeReverse_Full(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Additional range and value tests
+// ---------------------------------------------------------------------------
+
+// TestGetRangeStreamingMode_CPort verifies that GetRange respects different
+// limit values — unlimited (returns all), exact limit (returns exactly N),
+// and small limit for iteration (returns limited results with more=true).
+// The pure Go client doesn't have a streaming mode enum; the limit parameter
+// controls the same behavior.
+func TestGetRangeStreamingMode_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := "c_stream_"
+
+	// Write 50 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 50; i++ {
+			k := fmt.Sprintf("%s%04d", prefix, i)
+			tx.Set([]byte(k), []byte(fmt.Sprintf("val%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	begin := []byte(prefix + "0000")
+	end := []byte(prefix + "9999")
+
+	// WantAll equivalent: limit=0 (unlimited) — returns all 50 results.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, begin, end, 0)
+		return struct {
+			kvs  []KeyValue
+			more bool
+		}{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange unlimited: %v", err)
+	}
+	r := result.(struct {
+		kvs  []KeyValue
+		more bool
+	})
+	if len(r.kvs) != 50 {
+		t.Errorf("unlimited: got %d keys, want 50", len(r.kvs))
+	}
+	if r.more {
+		t.Error("unlimited: more should be false when all keys returned")
+	}
+
+	// Exact equivalent: limit=50 — returns exactly 50 results.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx, begin, end, 50)
+		return kvs, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange exact: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 50 {
+		t.Errorf("exact: got %d keys, want 50", len(kvs))
+	}
+
+	// Iterator equivalent: limit=10 — returns 10 results with more=true.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, begin, end, 10)
+		return struct {
+			kvs  []KeyValue
+			more bool
+		}{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange iterator: %v", err)
+	}
+	r = result.(struct {
+		kvs  []KeyValue
+		more bool
+	})
+	if len(r.kvs) != 10 {
+		t.Errorf("iterator: got %d keys, want 10", len(r.kvs))
+	}
+	if !r.more {
+		t.Error("iterator: more should be true when limit < total keys")
+	}
+
+	// Verify the 10 returned keys are the first 10 in ascending order.
+	for i, kv := range r.kvs {
+		want := fmt.Sprintf("%s%04d", prefix, i)
+		if string(kv.Key) != want {
+			t.Errorf("iterator key[%d]: got %q, want %q", i, kv.Key, want)
+		}
+	}
+}
+
+// TestGetRangeEmpty_CPort verifies that GetRange on a range with no keys
+// returns an empty slice and more=false.
+func TestGetRangeEmpty_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Use a prefix that no other test writes to.
+	prefix := "c_empty_range_"
+
+	// Clear the range to be sure it's empty.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		if err := tx.ClearRange([]byte(prefix), []byte(prefix+"\xff")); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	type rangeResult struct {
+		kvs  []KeyValue
+		more bool
+	}
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, more, err := tx.GetRange(ctx, []byte(prefix), []byte(prefix+"\xff"), 100)
+		return rangeResult{kvs, more}, err
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	rr := result.(rangeResult)
+	if len(rr.kvs) != 0 {
+		t.Errorf("expected 0 keys, got %d", len(rr.kvs))
+	}
+	if rr.more {
+		t.Error("more should be false for empty range")
+	}
+}
+
+// TestClearRangeAndVerify_CPort writes 10 keys, clears range [3,7), and
+// verifies that keys 0-2 and 7-9 still exist while keys 3-6 are gone.
+func TestClearRangeAndVerify_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := "c_clrng_"
+
+	// Write 10 keys: prefix_00 through prefix_09.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			k := fmt.Sprintf("%s%02d", prefix, i)
+			tx.Set([]byte(k), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear range [03, 07) — removes keys 03, 04, 05, 06.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return nil, tx.ClearRange([]byte(prefix+"03"), []byte(prefix+"07"))
+	})
+	if err != nil {
+		t.Fatalf("ClearRange: %v", err)
+	}
+
+	// Verify which keys exist.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		out := make(map[string][]byte)
+		for i := 0; i < 10; i++ {
+			k := fmt.Sprintf("%s%02d", prefix, i)
+			val, err := tx.Get(ctx, []byte(k))
+			if err != nil {
+				return nil, err
+			}
+			out[k] = val
+		}
+		return out, nil
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	data := result.(map[string][]byte)
+	for i := 0; i < 10; i++ {
+		k := fmt.Sprintf("%s%02d", prefix, i)
+		val := data[k]
+		if i >= 3 && i < 7 {
+			// Should be cleared.
+			if val != nil {
+				t.Errorf("key %q should be cleared, got %q", k, val)
+			}
+		} else {
+			// Should still exist.
+			want := fmt.Sprintf("v%d", i)
+			if val == nil {
+				t.Errorf("key %q should exist", k)
+			} else if string(val) != want {
+				t.Errorf("key %q: got %q, want %q", k, val, want)
+			}
+		}
+	}
+}
+
+// TestMultipleAtomicOps_CPort verifies that multiple atomic ADD operations on
+// the same key within a single transaction produce the correct sum. This
+// exercises the RYW cache's atomic mutation merging.
+func TestMultipleAtomicOps_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("c_multi_atomic_add")
+
+	// Initialize to 0 as int64 LE.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], 0)
+		tx.Set(key, buf[:])
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// Apply 5 atomic ADDs of values 10, 20, 30, 40, 50 in one transaction.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, v := range []uint64{10, 20, 30, 40, 50} {
+			var buf [8]byte
+			binary.LittleEndian.PutUint64(buf[:], v)
+			tx.Atomic(MutAddValue, key, buf[:])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("atomic ADDs: %v", err)
+	}
+
+	// Read back — should be 150 (10+20+30+40+50).
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	val := result.([]byte)
+	if len(val) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(val))
+	}
+	got := binary.LittleEndian.Uint64(val)
+	if got != 150 {
+		t.Errorf("sum: got %d, want 150", got)
+	}
+}
+
+// TestLargeValue_CPort writes a 90KB value (near the FDB 100KB limit),
+// reads it back, and verifies byte-exact match.
+func TestLargeValue_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("c_large_val")
+
+	// Create 90KB value with recognizable pattern.
+	size := 90 * 1024
+	bigVal := make([]byte, size)
+	for i := range bigVal {
+		bigVal[i] = byte(i % 251) // prime mod avoids simple repetition
+	}
+
+	// Write it.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, bigVal)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Read it back.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	readVal := result.([]byte)
+	if readVal == nil {
+		t.Fatal("expected non-nil value")
+	}
+	if len(readVal) != size {
+		t.Fatalf("value length: got %d, want %d", len(readVal), size)
+	}
+	if !bytes.Equal(readVal, bigVal) {
+		// Find first mismatch for diagnostic.
+		for i := range bigVal {
+			if readVal[i] != bigVal[i] {
+				t.Fatalf("mismatch at byte %d: got 0x%02x, want 0x%02x", i, readVal[i], bigVal[i])
+			}
+		}
+	}
+}
+
+// TestEmptyKeyValue_CPort verifies that empty keys and empty values are
+// handled correctly — both should be readable and return empty byte slices.
+func TestEmptyKeyValue_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	emptyKey := []byte("")
+	normalKey := []byte("c_emptyval_k")
+
+	// Write: key="" value="" and key="c_emptyval_k" value="".
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(emptyKey, []byte(""))
+		tx.Set(normalKey, []byte(""))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Read empty key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, emptyKey)
+	})
+	if err != nil {
+		t.Fatalf("Get empty key: %v", err)
+	}
+	val := result.([]byte)
+	if val == nil {
+		t.Error("empty key: got nil, want empty byte slice")
+	} else if len(val) != 0 {
+		t.Errorf("empty key value: got %q (len=%d), want empty", val, len(val))
+	}
+
+	// Read normal key with empty value.
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, normalKey)
+	})
+	if err != nil {
+		t.Fatalf("Get normal key: %v", err)
+	}
+	val = result.([]byte)
+	if val == nil {
+		t.Error("normal key: got nil, want empty byte slice")
+	} else if len(val) != 0 {
+		t.Errorf("normal key value: got %q (len=%d), want empty", val, len(val))
+	}
+}
+
 // TestGetKey_AllSelectors verifies all key selector types against real FDB.
 // C binding: fdb_transaction_get_key
 func TestGetKey_AllSelectors(t *testing.T) {

@@ -2,6 +2,7 @@ package fdb
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -79,10 +80,14 @@ func OpenDatabase(clusterFile string) (Database, error) {
 	return Database{d: &internalDB{inner: db, ctx: ctx}}, nil
 }
 
-// OpenWithConnectionString opens a connection using a cluster connection string.
-func OpenWithConnectionString(_ string) (Database, error) {
-	// TODO: connection string support
-	return Database{}, errNotSupported
+// OpenWithConnectionString opens a connection using a cluster connection string
+// (e.g., "description:id@host1:port1,host2:port2").
+func OpenWithConnectionString(connStr string) (Database, error) {
+	cf, err := client.ParseClusterString(connStr)
+	if err != nil {
+		return Database{}, fmt.Errorf("parse connection string: %w", err)
+	}
+	return OpenDatabaseFromConfig(context.Background(), cf)
 }
 
 // OpenDatabaseFromConfig creates a Database from a client.ClusterFile.
@@ -279,9 +284,17 @@ func (db Database) ListTenants() ([]Key, error) {
 	return result.([]Key), nil
 }
 
-// GetClientStatus is not yet implemented.
+// GetClientStatus returns a JSON blob with client connection status.
+// Provides basic connectivity info — not the full FDB status JSON.
 func (db Database) GetClientStatus() ([]byte, error) {
-	return nil, errNotSupported
+	info := db.d.inner.GetDBInfo()
+	if info == nil {
+		return []byte(`{"connected":false}`), nil
+	}
+	return fmt.Appendf(nil,
+		`{"connected":true,"grv_proxies":%d,"commit_proxies":%d}`,
+		len(info.GRVProxies), len(info.CommitProxies),
+	), nil
 }
 
 // LocalityGetBoundaryKeys is not yet implemented.

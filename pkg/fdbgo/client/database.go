@@ -485,6 +485,12 @@ func (d *Database) InvalidateGRVCache() {
 	d.db.grvCache.version.Store(0)
 }
 
+// GetDBInfo returns the current cluster topology (proxy lists, cluster ID).
+// Returns nil if not yet connected.
+func (d *Database) GetDBInfo() *DBInfo {
+	return d.db.dbInfo.Load()
+}
+
 // Close shuts down the database connection. Idempotent.
 // Cancels background goroutines, waits for them to exit, closes all connections.
 func (d *Database) Close() error {
