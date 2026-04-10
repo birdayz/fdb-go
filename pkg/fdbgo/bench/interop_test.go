@@ -764,6 +764,68 @@ func TestInterop_LastLessOrEqual(t *testing.T) {
 	}
 }
 
+// TestInterop_SelectorRange verifies that GetRange with non-trivial key
+// selectors (LastLessOrEqual/FirstGreaterThan) produces identical results
+// across Go and CGo. This exercises the resolveSelector path in range_result.go.
+func TestInterop_SelectorRange(t *testing.T) {
+	prefix := "interop_sr_"
+
+	// Seed via Go.
+	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	goClient.InvalidateGRVCache()
+
+	// GetRange with SelectorRange: [LastLessOrEqual("03"), FirstGreaterThan("07"))
+	// Should return keys 03, 04, 05, 06, 07.
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		rr := tx.GetRange(gofdb.SelectorRange{
+			Begin: gofdb.LastLessOrEqual(gofdb.Key(prefix + "03")),
+			End:   gofdb.FirstGreaterThan(gofdb.Key(prefix + "07")),
+		}, gofdb.RangeOptions{})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("go selector range: %v", err)
+	}
+	goKvs := goResult.([]gofdb.KeyValue)
+
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		rr := tx.GetRange(cgofdb.SelectorRange{
+			Begin: cgofdb.LastLessOrEqual(cgofdb.Key(prefix + "03")),
+			End:   cgofdb.FirstGreaterThan(cgofdb.Key(prefix + "07")),
+		}, cgofdb.RangeOptions{})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("cgo selector range: %v", err)
+	}
+	cgoKvs := cgoResult.([]cgofdb.KeyValue)
+
+	if len(goKvs) != len(cgoKvs) {
+		t.Fatalf("length mismatch: go=%d, cgo=%d", len(goKvs), len(cgoKvs))
+	}
+	for i := range goKvs {
+		if !bytes.Equal(goKvs[i].Key, cgoKvs[i].Key) {
+			t.Errorf("key[%d]: go=%q, cgo=%q", i, goKvs[i].Key, cgoKvs[i].Key)
+		}
+	}
+	// Verify expected keys: 03 through 07.
+	if len(goKvs) != 5 {
+		t.Errorf("expected 5 keys (03-07), got %d", len(goKvs))
+		for i, kv := range goKvs {
+			t.Logf("  go[%d] = %q", i, kv.Key)
+		}
+	}
+}
+
 // TestInterop_SnapshotGetKey verifies that Snapshot.GetKey resolves key
 // selectors identically across Go and CGo clients.
 func TestInterop_SnapshotGetKey(t *testing.T) {
