@@ -2259,5 +2259,5 @@ v5 composable-primitives generator (RFC 013) rewrote all marshal/unmarshal code.
 Remaining (still relevant but low impact):
 - [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — v5 uses `len(m.Key) > 0`. FDB wire format likely doesn't distinguish absent from empty StringRef, but verify.
 - [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore. Low risk — tag=0 means no value present.
-- [ ] **MEDIUM #15 — Extractor: VecSerStrategy parser DoS** — Signed length `n` not clamped. Crafted data risk. Should add bounds check.
+- [x] **MEDIUM #15 — VecSerStrategy parser DoS** — Fixed: `make()` capacity clamped to `(len(data)-pos)/minElementSize` in all three parsers (ParseKeyRefStringVector, ParseKeyRangeRefStringVector, ParseKeyValueRefStringVector). Prevents OOM from crafted count values in untrusted wire data.
 - [x] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Fixed in nightshift-1 constants cleanup. All endpoint constants now named and centralized.

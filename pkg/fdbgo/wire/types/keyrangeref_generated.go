@@ -75,6 +75,12 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 		return nil
 	}
 	pos := 4
+	// Clamp capacity to prevent OOM from crafted count values.
+	// Each KeyRangeRef needs at least 8 bytes (two length prefixes).
+	maxElems := uint32((len(data) - pos) / 8)
+	if count > maxElems {
+		count = maxElems
+	}
 	result := make([]KeyRangeRef, 0, count)
 	for i := uint32(0); i < count; i++ {
 		var elem KeyRangeRef
