@@ -2103,12 +2103,11 @@ Our Go `Database` is split across `Database`, `GRVBatcher`, `LocationCache`, and
 
 ### ~~CRITICAL~~ RESOLVED — Performance: close the 6.4x gap with CGo client
 
-**nightshift-1 results** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-10):
-- Pure Go GetValue: **175,465 ns/op**, 1,842 B/op, 26 allocs/op
-- CGo GetValue: **205,243 ns/op**, 394 B/op, 14 allocs/op
-- **Go is 17% FASTER than CGo** on single Get. From 6.4x slower to faster.
-- Go wins on 8/11 benchmarks (Get, GetRange, PipelinedGet/1-10, BatchGet/1-10)
-- CGo leads on Set (17%), BatchGet/50 (54%), and RYW (15%) — all write-heavy
+**nightshift-1 final results** (Ryzen 9 3900X, FDB 7.3.75, 2026-04-10):
+- Pure Go GetValue: **201,606 ns/op**, 1,581 B/op, 21 allocs/op
+- CGo GetValue: **216,581 ns/op**, 392 B/op, 14 allocs/op
+- **Go wins 11/14 benchmarks** including Get (7%), Set (21%), GetRange (2.4x), BatchGet/10 (19%)
+- CGo leads only on BatchGet/50 (18%), PipelinedGet/50 (29%), RYW (13%)
 
 **Optimizations applied** (nightshift-1 branch):
 - Write coalescing: dedicated writeLoop goroutine, channel-based frame coalescing
