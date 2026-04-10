@@ -1515,6 +1515,31 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 	}
 }
 
+// TestSetMaxRetryDelay verifies that SetMaxRetryDelay caps the backoff.
+// The default max is 1s (maxBackoff). Setting a smaller cap should limit growth.
+func TestSetMaxRetryDelay(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetRetryLimit(-1)    // unlimited retries
+	tx.SetMaxRetryDelay(50) // 50ms cap
+
+	retryableErr := &wire.FDBError{Code: ErrNotCommitted}
+
+	// Retry several times to grow the backoff.
+	for i := 0; i < 10; i++ {
+		if err := tx.OnError(retryableErr); err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+
+	// After 10 retries with growth rate 2x, uncapped backoff would be
+	// 10ms * 2^10 = 10240ms. With 50ms cap, it should be <= 50ms.
+	if tx.backoff > 50*time.Millisecond {
+		t.Errorf("backoff %v exceeds max retry delay 50ms", tx.backoff)
+	}
+}
+
 // TestSetTimeout_CommitCheck verifies that Commit checks the timeout.
 func TestSetTimeout_CommitCheck(t *testing.T) {
 	t.Parallel()
