@@ -48,12 +48,14 @@ func (o TransactionOptions) SetReadYourWritesDisable() error {
 }
 
 func (o TransactionOptions) SetAccessSystemKeys() error {
+	o.tx.inner.SetAccessSystemKeys()
 	o.tx.inner.SetLockAware(true) // lock_aware on commit allows system key writes
 	return nil
 }
 
 func (o TransactionOptions) SetReadSystemKeys() error {
-	return nil // system key reads work without special options in our client
+	o.tx.inner.SetReadSystemKeys()
+	return nil
 }
 
 func (o TransactionOptions) SetLockAware() error {
