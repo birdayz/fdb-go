@@ -2030,8 +2030,7 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [x] `key_range_ref.go` — Fixed: custom file already uses `vt[Slot+2]`
 
 **Missing vtable constants for response type parsing (hardcoded slot numbers):**
-- [ ] `coordinator.go` — ClientDBInfo slots 0,1,2 for grvProxies/commitProxies/id
-- [ ] `coordinator.go` — proxy endpoint slot `3` hardcoded for both GrvProxy/CommitProxy
+- [x] `coordinator.go` — Already uses generated constants: `ClientDBInfoSlotGrvProxies`, `ClientDBInfoSlotCommitProxies`, `ClientDBInfoSlotId`, `GrvProxyInterfaceSlotGetConsistentReadVersion`, `CommitProxyInterfaceSlotCommit`
 - [ ] `network_types.go` — IPAddress, NetworkAddress, Endpoint use hardcoded slots
 - [ ] `network_types.go` — ReadEndpoint uses heuristic (byte offset comparison) not schema
 - [ ] `network_types.go` — IPv6 completely ignored (silent wrong address)
