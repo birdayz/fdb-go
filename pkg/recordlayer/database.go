@@ -81,6 +81,9 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
 	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+		// Record layer reads \xff/metadataVersion for store state caching.
+		// Matches Java's FDBRecordContext which sets READ_SYSTEM_KEYS.
+		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			tx:  tx,
 			ctx: ctx,
@@ -126,6 +129,7 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 		vsFuture = nil
 		hasVersionMutations = false
 
+		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			tx:  tx,
 			ctx: ctx,

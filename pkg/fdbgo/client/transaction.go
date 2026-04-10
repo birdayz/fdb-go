@@ -217,6 +217,12 @@ type Transaction struct {
 	// reads DO go through the RYW cache (matching FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE).
 	snapshotRYWDisabled bool
 
+	// System key access control. Matches C++ ReadYourWritesTransaction:
+	// getMaxReadKey() returns \xff without readSystemKeys, \xff\xff with it.
+	// getMaxWriteKey() returns \xff without writeSystemKeys, \xff\xff with it.
+	readSystemKeys  bool // READ_SYSTEM_KEYS: allows reading \xff/* keys
+	writeSystemKeys bool // ACCESS_SYSTEM_KEYS: allows reading AND writing \xff/* keys
+
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
@@ -261,6 +267,10 @@ type Snapshot struct {
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
+	}
+	// Same system key check as regular Get.
+	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return nil, &wire.FDBError{Code: 2004}
 	}
 	if s.tx.snapshotRYWDisabled {
 		return s.tx.getValue(ctx, key)
@@ -345,6 +355,10 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
+	}
+	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
+	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
+		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	// System keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map.
@@ -461,6 +475,40 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		tx.addReadConflictForKey(selectorKey)
 	}
 	return tx.getKey(ctx, selectorKey, orEqual, offset)
+}
+
+// maxReadKey returns the maximum readable key for this transaction.
+// Without readSystemKeys/writeSystemKeys: \xff (user keys only).
+// With: \xff\xff (system keys allowed, special keys still rejected).
+// Matches C++ ReadYourWritesTransaction::getMaxReadKey().
+func (tx *Transaction) maxReadKey() []byte {
+	if tx.readSystemKeys || tx.writeSystemKeys {
+		return []byte{0xff, 0xff}
+	}
+	return []byte{0xff}
+}
+
+// maxWriteKey returns the maximum writable key for this transaction.
+func (tx *Transaction) maxWriteKey() []byte {
+	if tx.writeSystemKeys {
+		return []byte{0xff, 0xff}
+	}
+	return []byte{0xff}
+}
+
+// metadataVersionKeyBytes is \xff/metadataVersion — exempt from system key checks.
+// C++ RYW: `key != metadataVersionKey` in getValue check.
+var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
+
+// SetReadSystemKeys allows reading \xff prefix system keys.
+func (tx *Transaction) SetReadSystemKeys() {
+	tx.readSystemKeys = true
+}
+
+// SetAccessSystemKeys allows reading AND writing \xff prefix system keys.
+func (tx *Transaction) SetAccessSystemKeys() {
+	tx.readSystemKeys = true
+	tx.writeSystemKeys = true
 }
 
 // isSystemKey returns true for keys with the \xff\xff prefix (FDB system key space).
@@ -586,6 +634,23 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
 		tx.state = txStateErrored
 		return &wire.FDBError{Code: 2101} // transaction_too_large
+	}
+
+	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
+	// - set(): if key == metadataVersionKey → client_invalid_operation
+	//          if key >= maxWriteKey → key_outside_legal_range
+	// - atomicOp(): if key == metadataVersionKey → allow (only SVV)
+	//               if key >= maxWriteKey → key_outside_legal_range
+	maxWrite := tx.maxWriteKey()
+	for _, m := range tx.mutations {
+		if bytes.Equal(m.Key, metadataVersionKeyBytes) {
+			// metadataVersionKey is exempt — only allowed via SetVersionstampedValue
+			continue
+		}
+		if bytes.Compare(m.Key, maxWrite) >= 0 {
+			tx.state = txStateErrored
+			return &wire.FDBError{Code: 2004} // key_outside_legal_range
+		}
 	}
 
 	if len(tx.mutations) == 0 && len(tx.writeConflicts) == 0 {
