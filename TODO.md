@@ -96,8 +96,8 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 - [x] **MEDIUM** — Package structure: investigated in RFC 004 (rejected multi-package split due to irreducible type cycle). Staying flat + nogo layering enforcement. See `rfcs/004-package-structure-investigation.md`.
 - [x] **HIGH** — `index_scan.go:250`: `keyExpressionColumnSize()` panic eliminated. Added `ColumnSize() int` to `KeyExpression` interface (matches Java's `getColumnSize()`), implemented on all 12 expression types, replaced all ~23 callsites, deleted both `keyExpressionColumnSize` and `keyExpressionColumnSizeChecked`.
-- [ ] **LOW** — `cursor.go:114`: `GetValue()` panics if called without `HasNext()`. Matches Java's `IllegalResultValueAccessException`. Acceptable precondition — document clearly.
-- [ ] **LOW** — `split_key_expression.go:29`: `Split()` constructor panics on `splitSize <= 0`. Acceptable build-time validation — programming error caught early.
+- [x] **LOW** — `cursor.go:114`: `GetValue()` panics if called without `HasNext()`. Already documented in godoc: "Panics if HasNext() is false — callers must check HasNext() first. This matches Java's behavior of throwing IllegalResultValueAccessException."
+- [x] **LOW** — `split_key_expression.go:29`: `Split()` constructor panics on `splitSize <= 0`. Already documented in godoc: "splitSize must be > 0".
 
 ---
 
