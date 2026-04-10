@@ -1274,11 +1274,11 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 | Index types | 19/19 | **ALL COMPLETE** |
 | IndexMaintainer interface | Core done | `mergeIndex`, `performOperation` (scanUniquenessViolations + validateEntries already shipped on store) |
 | MetaData/Schema | ~70% | toProto/fromProto (done), synthetic record types, UDFs, Views, descriptor lookups |
-| Cursors/Combinators | ~53% | Intersection (done), UnorderedUnion, MapPipelined, async variants |
+| Cursors/Combinators | ~80% | 15+ combinators done (Concat, Map, Filter, Skip, Limit, Union, Intersection, Dedup, FlatMap, Chained, AutoContinuing, Fallback, MapErr, AsListWithContinuation). Missing: AggregateCursor, UnorderedUnion. |
 | ScanProperties/ExecuteProperties | ~95% | `isDryRun`, convenience clear methods |
 | Continuations (wire format) | ~90% | Wire-compatible. Go writes TO_OLD, reads both TO_OLD and TO_NEW |
 | FDBDatabase/Context/Runner | ~60% | **Async API (see above)**, weak read semantics, MDC, executor control |
-| Key expressions | ~85% | OrderFunctionKE + InvertibleFunctionKE (**MEDIUM-HIGH**), CollateFunctionKE (**MEDIUM**), AtomKE (LOW). DimensionsKE done. |
+| Key expressions | ~95% | All done except AtomKE (Java interface only). OrderFunctionKE, InvertibleFunctionKE, CollateFunctionKE, LongArithmeticKE all shipped. |
 
 ### FDBRecordStore — missing public methods
 
@@ -1296,7 +1296,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [ ] **`mergeIndex()` / `performOperation()`** — Generic index operation dispatch. **LOW**.
 - [ ] **`isIdempotent()` / `addedRangeWithKey()`** — Internal to Go, not on interface. **LOW**.
 
-### Index types — 4 missing
+### Index types — ALL COMPLETE (19/19)
 
 - [x] **TEXT index** — Done. 115 unit + 34 integration + 7 conformance tests.
 - [x] **BITMAP_VALUE index** — Done. 27 unit tests + 6 conformance specs.
