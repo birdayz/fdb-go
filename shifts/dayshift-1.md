@@ -49,7 +49,7 @@ Profiled Go vs CGo Set+Commit:
 
 - **dayshift-1 branch:** 4 commits ahead of master, CI should be green
 - **All 13 Bazel test targets pass** (verified by pre-commit hooks on each commit)
-- **Binding stress test**: running 10 seeds × 1000 ops (background)
+- **Binding stress test**: 10/10 seeds × 1000 ops pass, 0 failures, 0 FDB deaths (1m47s)
 - **PR #24**: draft, ready for review
 
 ## What to work on next
