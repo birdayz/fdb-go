@@ -53,10 +53,11 @@ func GetAPIVersion() (int, error) {
 // Applied to every new transaction created by Transact/ReadTransact.
 // Matches C++ FDB_DB_OPTION_TRANSACTION_* options.
 type txDefaults struct {
-	timeout       int64 // milliseconds, 0 = disabled
-	retryLimit    int64 // -1 = unlimited, 0 = no retries
-	maxRetryDelay int64 // milliseconds, 0 = use default
-	sizeLimit     int64 // bytes, 0 = disabled
+	timeout        int64 // milliseconds, 0 = disabled
+	retryLimit     int64 // -1 = unlimited, 0 = no retries
+	maxRetryDelay  int64 // milliseconds, 0 = use default
+	sizeLimit      int64 // bytes, 0 = disabled
+	readSystemKeys bool  // allow reading \xff system keys
 }
 
 // internalDB wraps client.Database with a context for async operations.
@@ -240,6 +241,9 @@ func (db Database) applyTxDefaults(t *transaction) {
 	}
 	if d.sizeLimit > 0 {
 		t.inner.SetSizeLimit(d.sizeLimit)
+	}
+	if d.readSystemKeys {
+		t.inner.SetReadSystemKeys()
 	}
 }
 

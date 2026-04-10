@@ -120,8 +120,8 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 	if err != nil {
 		return nil, err
 	}
-
 	tx.Options().SetReadSystemKeys()
+
 	recordCtx := &FDBRecordContext{
 		tx:  tx,
 		ctx: ctx,
@@ -186,8 +186,8 @@ func (r *FDBDatabaseRunner) OpenContext(ctx context.Context) (*FDBRecordContext,
 	if err != nil {
 		return nil, err
 	}
-
 	tx.Options().SetReadSystemKeys()
+
 	recordCtx := &FDBRecordContext{
 		tx:  tx,
 		ctx: ctx,

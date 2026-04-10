@@ -34,6 +34,9 @@ type FDBDatabase struct {
 
 // NewFDBDatabase creates a new FDBDatabase wrapping the core FDB database
 func NewFDBDatabase(db fdb.Database) *FDBDatabase {
+	// Record layer reads \xff/metadataVersion — set ReadSystemKeys as default
+	// so ALL transactions (including test helpers that bypass Run()) get it.
+	db.Options().SetReadSystemKeys()
 	return &FDBDatabase{
 		transactor:      db,
 		db:              db,
@@ -81,8 +84,6 @@ func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
 	var lastCtx *FDBRecordContext
 	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
-		// Record layer reads \xff/metadataVersion for store state caching.
-		// Matches Java's FDBRecordContext which sets READ_SYSTEM_KEYS.
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
 			tx:  tx,

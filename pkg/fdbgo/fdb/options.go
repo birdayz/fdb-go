@@ -235,6 +235,13 @@ func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
 func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
 func (o DatabaseOptions) SetSnapshotRywEnable() error        { return nil }
 func (o DatabaseOptions) SetSnapshotRywDisable() error       { return nil }
+func (o DatabaseOptions) SetReadSystemKeys() error {
+	if o.db != nil {
+		o.db.txDefaults.readSystemKeys = true
+	}
+	return nil
+}
+
 func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
 	if o.db != nil {
 		o.db.txDefaults.timeout = ms
