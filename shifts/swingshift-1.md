@@ -65,17 +65,30 @@ New `StoreBuilder.SetSkipPossiblyRebuild(bool)` option that skips `checkPossibly
 
 Same TestMain pattern applied to `pkg/fdbgo/fdb/` test package. Tenant tests keep own container (need tenant config).
 
-### 10. Extended binding stress
+### 10. Extended binding stress (COMPLETED)
 
-1-hour binding stress test: 100+ seeds at 18 min mark, 0 failures, 0 FDB deaths. Running until ~21:28 CEST.
+1-hour binding stress test: **332 seeds × 1000 ops = 332,000 operations, 0 failures, 0 FDB deaths, 1h0m10s.**
+
+### 11. Fuzz testing
+
+All 10 fuzz targets run for 30s each: **409M total executions, 0 crashes.**
+
+### 12. Human-readable FDB error descriptions (commit `8d00142`)
+
+`wire.FDBError.Error()` now returns `"not_committed (1020)"` instead of `"fdb error 1020"`. Maps 25 common error codes to C++ names.
+
+### 13. fdb facade tests (commit `b527260`)
+
+3 new integration tests: LocalityGetBoundaryKeys, GetClientStatus, Transaction Reset through fdb facade.
 
 ## Current state
 
 - **Master:** clean (`b71680f`)
-- **Branch:** `swingshift-1` (10 commits ahead of master)
+- **Branch:** `swingshift-1` (14 commits ahead of master)
 - **Open PRs:** 1 (#29, draft)
 - **All 13 Bazel test targets pass**
-- **Binding stress:** 100/100 seeds + extended 1h run (100+ seeds), 0 failures, 0 FDB deaths
+- **Binding stress:** 100/100 seeds + extended 1h (332 seeds, 332K ops), 0 failures, 0 FDB deaths
+- **Fuzz testing:** 10/10 targets, 409M executions, 0 crashes
 - **C binding port tests:** 80 test functions (was 56)
 - **Client test time:** ~45s (was ~700s)
 
