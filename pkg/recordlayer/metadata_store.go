@@ -80,6 +80,11 @@ func (s *FDBMetaDataStore) LoadRecordMetaDataProto(tx fdb.Transaction) (*gen.Met
 	return &metaDataProto, nil
 }
 
+// Subspace returns the subspace this metadata store uses.
+func (s *FDBMetaDataStore) Subspace() subspace.Subspace {
+	return s.subspace
+}
+
 // LoadRecordMetaDataProtoAtVersion loads a historical version of the metadata.
 // Returns nil if the version doesn't exist.
 func (s *FDBMetaDataStore) LoadRecordMetaDataProtoAtVersion(tx fdb.Transaction, version int32) (*gen.MetaData, error) {
