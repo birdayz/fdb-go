@@ -2549,3 +2549,121 @@ func TestWatchRYWDisable_CPort(t *testing.T) {
 		t.Errorf("error code: got %d, want 1034 (watches_disabled)", fdbErr.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// System key access control
+// ---------------------------------------------------------------------------
+
+// TestCannotReadSystemKey_CPort verifies that reading a \xff system key
+// without READ_SYSTEM_KEYS returns key_outside_legal_range (2004).
+// Ported from unit_tests.cpp line 595
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L595
+func TestCannotReadSystemKey_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+
+	_, err = tx.Get(ctx, []byte("\xff/coordinators"))
+	if err == nil {
+		t.Fatal("expected key_outside_legal_range, got nil")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2004 {
+		t.Errorf("error code: got %d, want 2004 (key_outside_legal_range)", fdbErr.Code)
+	}
+}
+
+// TestReadSystemKey_CPort verifies that reading a \xff system key
+// succeeds when READ_SYSTEM_KEYS is set.
+// Ported from unit_tests.cpp line 604
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L604
+func TestReadSystemKey_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+	tx.SetReadSystemKeys()
+
+	// \xff/coordinators should be readable with READ_SYSTEM_KEYS.
+	// The value exists on any configured FDB cluster.
+	val, err := tx.Get(ctx, []byte("\xff/coordinators"))
+	if err != nil {
+		t.Fatalf("Get with READ_SYSTEM_KEYS: %v", err)
+	}
+	if val == nil {
+		t.Error("expected non-nil value for \\xff/coordinators")
+	}
+}
+
+// TestCannotWriteSystemKey_CPort verifies that writing a \xff system key
+// without ACCESS_SYSTEM_KEYS returns key_outside_legal_range (2004) at commit.
+// Ported from unit_tests.cpp line 609
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L609
+func TestCannotWriteSystemKey_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.Set([]byte("\xff\x02"), []byte("bar"))
+
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected key_outside_legal_range, got nil")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2004 {
+		t.Errorf("error code: got %d, want 2004 (key_outside_legal_range)", fdbErr.Code)
+	}
+}
+
+// TestWriteSystemKey_CPort verifies that writing a \xff system key
+// succeeds when ACCESS_SYSTEM_KEYS is set.
+// Ported from unit_tests.cpp line 619
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L619
+func TestWriteSystemKey_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.SetAccessSystemKeys()
+		tx.Set([]byte("\xff\x02"), []byte("bar"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set with ACCESS_SYSTEM_KEYS: %v", err)
+	}
+
+	// Read it back.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.SetReadSystemKeys()
+		return tx.Get(ctx, []byte("\xff\x02"))
+	})
+	if err != nil {
+		t.Fatalf("Get with READ_SYSTEM_KEYS: %v", err)
+	}
+	if string(result.([]byte)) != "bar" {
+		t.Errorf("value: got %q, want %q", result, "bar")
+	}
+}
