@@ -226,9 +226,6 @@ func (db Database) InvalidateGRVCache() {
 
 // Tenant operations.
 
-// OpenTenant opens a named tenant on this database.
-// Resolves the tenant name to an ID via the FDB special key space.
-// Not yet implemented — use OpenTenantById for direct ID-based access.
 // OpenTenant opens a tenant by name. Reads the tenant ID from the system
 // key name index (\xff/tenant/nameIndex/<name>).
 func (db Database) OpenTenant(name KeyConvertible) (Tenant, error) {
