@@ -105,6 +105,19 @@ func (store *FDBRecordStore) IsVersionChanged() bool {
 	return store.versionChanged
 }
 
+// AsBuilder creates a new StoreBuilder pre-configured with this store's
+// subspace, metadata, and index rebuild policy.
+// Matches Java's FDBRecordStore.asBuilder().
+func (store *FDBRecordStore) AsBuilder() *StoreBuilder {
+	return &StoreBuilder{
+		context:            store.context,
+		metaData:           store.metaData,
+		subspace:           store.subspace,
+		indexRebuildPolicy: store.indexRebuildPolicy,
+		storeStateCache:    store.storeStateCache,
+	}
+}
+
 // validateRecordUpdateAllowed checks if the store allows record mutations.
 // Returns StoreIsLockedForRecordUpdatesError if the store header has
 // StoreLockState set to FORBID_RECORD_UPDATE.
