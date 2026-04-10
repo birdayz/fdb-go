@@ -135,6 +135,11 @@ type database struct {
 	grvCache    grvCache
 	grvBatchers [3]*grvBatcher
 
+	// minAcceptableReadVersion tracks the minimum version this client has seen
+	// from the cluster. SetReadVersion below this throws transaction_too_old
+	// client-side, matching C++ DatabaseContext::validateVersion().
+	minAcceptableReadVersion atomic.Int64
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc

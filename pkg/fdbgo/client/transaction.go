@@ -150,11 +150,12 @@ type Transaction struct {
 	db    *database
 	state txState
 
-	readVersion      int64
-	hasReadVersion   bool
-	committedVersion int64
-	hasCommitted     bool // true after at least one successful commit
-	txnBatchId       uint16
+	readVersion        int64
+	hasReadVersion     bool
+	userSetReadVersion bool // true when SetReadVersion was called (needs validateVersion)
+	committedVersion   int64
+	hasCommitted       bool // true after at least one successful commit
+	txnBatchId         uint16
 
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
@@ -322,6 +323,20 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
+	}
+	// C++ DatabaseContext::validateVersion(): reject user-set read versions
+	// outside the acceptable range. If the client hasn't seen a version yet
+	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
+	// baseline. C++ does this in startTransaction() before validateVersion().
+	if tx.db != nil && tx.userSetReadVersion {
+		if tx.db.minAcceptableReadVersion.Load() == 0 {
+			// Bootstrap: fetch a version to establish the minimum.
+			flags := tx.grvFlags()
+			_, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
+		}
+		if err := tx.db.validateVersion(tx.readVersion); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -706,6 +721,7 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 func (tx *Transaction) SetReadVersion(version int64) {
 	tx.readVersion = version
 	tx.hasReadVersion = true
+	tx.userSetReadVersion = true
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
@@ -982,6 +998,7 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 func (tx *Transaction) postCommitReset() {
 	tx.state = txStateActive
 	tx.hasReadVersion = false
+	tx.userSetReadVersion = false
 	tx.readVersion = 0
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]

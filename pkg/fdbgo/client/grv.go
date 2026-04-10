@@ -89,6 +89,40 @@ func (c *grvCache) invalidate() {
 	c.lastTime.Store(0)
 }
 
+// updateMinAcceptable atomically ratchets minAcceptableReadVersion upward.
+// Matches C++ DatabaseContext::minAcceptableReadVersion.
+func updateMinAcceptable(min *atomic.Int64, v int64) {
+	for {
+		cur := min.Load()
+		if v <= cur {
+			return
+		}
+		if min.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+// validateVersion checks that a user-set read version is within the
+// acceptable range. Matches C++ DatabaseContext::validateVersion().
+// Returns transaction_too_old (1007) if version < minAcceptableReadVersion.
+// Returns future_version (1009) for obviously absurd versions (>10^15) that
+// the storage server would block on indefinitely. The server normally returns
+// future_version after MAX_READ_TRANSACTION_LIFE_VERSIONS (5s), but our RPC
+// timeout races with it — client-side detection is more reliable for extreme values.
+func (db *database) validateVersion(version int64) error {
+	min := db.minAcceptableReadVersion.Load()
+	if min > 0 && version < min {
+		return &wire.FDBError{Code: ErrTransactionTooOld}
+	}
+	// Reject absurd future versions client-side. Real FDB versions are ~10^7
+	// per second; even at 100 years that's ~3×10^16. 10^15 is a safe threshold.
+	if version > 1_000_000_000_000_000 {
+		return &wire.FDBError{Code: ErrFutureVersion}
+	}
+	return nil
+}
+
 // grvBatcherIndex maps GRV priority bits to a batcher array index.
 // C++ uses separate batchers for BATCH, DEFAULT, and SYSTEM_IMMEDIATE.
 const (
@@ -208,6 +242,8 @@ func (b *grvBatcher) flush(db *database) {
 		// Update cache with fresh version.
 		db.grvCache.update(requestTime, version)
 		db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
+		// Track minimum version for client-side validateVersion().
+		updateMinAcceptable(&db.minAcceptableReadVersion, version)
 
 		// Track ratekeeper throttle state.
 		if rkDefault {

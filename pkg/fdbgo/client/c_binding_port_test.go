@@ -1005,15 +1005,15 @@ func TestAtomicSetVersionstampedValue_CPort(t *testing.T) {
 // Ported from unit_tests.cpp line 905
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L905
 func TestSetReadVersionOld_CPort(t *testing.T) {
-	// C++ binding checks transaction_too_old at client level (5-second window).
-	// Our pure Go client sends directly to storage server, which may accept
-	// stale read versions. Skipped until client-side version validation
-	// is implemented (RFC 014 Phase 2: minReadVersion).
-	t.Skip("transaction_too_old check not implemented at client level yet")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	db := openTestDB(t, ctx)
+
+	// Get a real read version to confirm the client is working.
+	tx0 := db.CreateTransaction()
+	rv, rvErr := tx0.GetReadVersion(ctx)
+	t.Logf("current read version: %d, err: %v", rv, rvErr)
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(1)
@@ -1038,11 +1038,6 @@ func TestSetReadVersionOld_CPort(t *testing.T) {
 // Ported from unit_tests.cpp line 915
 // https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L915
 func TestSetReadVersionFuture_CPort(t *testing.T) {
-	// C++ binding checks future_version at client level before sending to server.
-	// Our pure Go client sends directly to storage server, which may not reject
-	// far-future versions for reads. Skipped until client-side version validation
-	// is implemented (RFC 014 Phase 2: minReadVersion).
-	t.Skip("future_version check not implemented at client level yet")
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
