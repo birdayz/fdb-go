@@ -76,6 +76,51 @@ func NewReader(data []byte) (*Reader, error) {
 	}, nil
 }
 
+// InitReader initializes a Reader in-place, avoiding heap allocation.
+// The caller can stack-allocate: var r wire.Reader; wire.InitReader(data, &r)
+// Returns error if the buffer is malformed.
+func InitReader(data []byte, r *Reader) error {
+	if len(data) < 8 {
+		return fmt.Errorf("wire: buffer too short (%d bytes, need at least 8)", len(data))
+	}
+
+	offset := 0
+	if len(data) >= 16 && data[7] == 0x0F && data[6] == 0xDB {
+		offset = 8
+	}
+
+	rootOffset := binary.LittleEndian.Uint32(data[offset : offset+4])
+	absRoot := offset + int(rootOffset)
+	if absRoot+8 > len(data) {
+		return fmt.Errorf("wire: root_offset %d out of bounds (buffer length %d)", rootOffset, len(data))
+	}
+
+	frObj := data[absRoot:]
+	if len(frObj) < 8 {
+		return fmt.Errorf("wire: FakeRoot object too short")
+	}
+
+	msgRelOff := binary.LittleEndian.Uint32(frObj[4:8])
+	msgAbsPos := absRoot + 4 + int(msgRelOff)
+	if msgAbsPos+4 > len(data) {
+		return fmt.Errorf("wire: message object position %d out of bounds", msgAbsPos)
+	}
+
+	msgObj := data[msgAbsPos:]
+	vtableSoffset := int32(binary.LittleEndian.Uint32(msgObj[0:4]))
+	vtableAbsPos := msgAbsPos - int(vtableSoffset)
+	if vtableAbsPos < 0 || vtableAbsPos+4 > len(data) {
+		return fmt.Errorf("wire: vtable position %d out of bounds", vtableAbsPos)
+	}
+
+	r.data = data
+	r.object = msgObj
+	r.objPos = msgAbsPos
+	r.vtable = data[vtableAbsPos:]
+	r.headerOff = offset
+	return nil
+}
+
 // FileIdentifier reads the file_identifier from the root footer.
 func (r *Reader) FileIdentifier() uint32 {
 	return binary.LittleEndian.Uint32(r.data[r.headerOff+4 : r.headerOff+8])
@@ -492,6 +537,27 @@ func ReadErrorOr(data []byte) (*Reader, error) {
 		return nil, fmt.Errorf("empty ErrorOr response")
 	}
 	return r, nil
+}
+
+// ReadErrorOrInto is like ReadErrorOr but initializes the Reader in-place.
+// This allows the caller to stack-allocate the Reader, avoiding a heap alloc:
+//
+//	var r wire.Reader
+//	if err := wire.ReadErrorOrInto(data, &r); err != nil { ... }
+//	reply.UnmarshalFromReader(&r)
+func ReadErrorOrInto(data []byte, r *Reader) error {
+	if err := InitReader(data, r); err != nil {
+		return err
+	}
+	nfields := r.VTableLength() - 2
+	if nfields <= 1 {
+		if r.FieldPresent(0) {
+			code := r.ReadInt32(0)
+			return &FDBError{Code: int(code)}
+		}
+		return fmt.Errorf("empty ErrorOr response")
+	}
+	return nil
 }
 
 // ReadUIDPair reads a 16-byte UID as two uint64 values (first, second).

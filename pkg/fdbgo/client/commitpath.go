@@ -138,12 +138,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 
 // parseCommitReply parses an ErrorOr<CommitID> response.
 func (tx *Transaction) parseCommitReply(data []byte) error {
-	r, err := wire.ReadErrorOr(data)
-	if err != nil {
+	var r wire.Reader
+	if err := wire.ReadErrorOrInto(data, &r); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
-	reply.UnmarshalFromReader(r)
+	reply.UnmarshalFromReader(&r)
 	tx.committedVersion = reply.Version
 	tx.txnBatchId = reply.TxnBatchId
 	return nil
