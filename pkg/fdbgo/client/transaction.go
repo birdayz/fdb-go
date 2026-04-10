@@ -292,6 +292,10 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
 	}
+	maxKey := s.tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, false, &wire.FDBError{Code: 2004}
+	}
 	if s.tx.snapshotRYWDisabled {
 		return s.tx.getRange(ctx, begin, end, limit, false)
 	}
@@ -303,6 +307,10 @@ func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) (
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	maxKey := s.tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, false, &wire.FDBError{Code: 2004}
 	}
 	if s.tx.snapshotRYWDisabled {
 		return s.tx.getRange(ctx, begin, end, limit, true)
@@ -530,6 +538,11 @@ func (tx *Transaction) GetRangeReverse(ctx context.Context, begin, end []byte, l
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	// C++ RYW::getRange: if (begin > maxKey || end > maxKey) → key_outside_legal_range
+	maxKey := tx.maxReadKey()
+	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		return nil, false, &wire.FDBError{Code: 2004}
 	}
 	// Only add read conflict if range is valid (begin <= end) and not system keys.
 	// C++ client validates inverted ranges and handles \xff\xff keys internally
