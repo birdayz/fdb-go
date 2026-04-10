@@ -49,10 +49,23 @@ Resolved 24 items:
 - **Style**: Get prefix WONTFIX (Java naming for compat)
 - **Updated**: coverage table, memory.md spec counts, index types heading
 
+### 6. FDBMetaDataStore (commit `bc219d4`)
+
+Runtime schema storage in FDB. Stores MetaData proto at `Tuple{nil}` (current) with version history at `("H", version)`. Matches Java's FDBMetaDataStore core operations.
+
+Key learnings during implementation:
+- `tuple.Pack()` panics on `int32` — must cast to `int64` for FDB tuple encoding
+- Go `interface{}([]byte(nil)) != nil` — use closure variables instead of Transact return value when checking for nil results
+- `MustGet()` returns `[]byte{}` (not nil) for non-existent keys — check `len(data) == 0`
+
+### 7. API Parity Documentation
+
+Verified 100% API parity with Apple Go binding: Transaction, Snapshot, Database, DatabaseOptions (20/19), TransactionOptions (49/49). Documented in `pkg/fdbgo/fdb/API_PARITY.md`.
+
 ## Current state
 
 - **Master:** `9be2748`
-- **Branch:** `nightshift-2` (39 commits ahead)
+- **Branch:** `nightshift-2` (49 commits ahead)
 - **Open PRs:** 1 (#30, draft)
 - **All 14 Bazel test targets pass**
 - **2h binding stress:** **673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deaths**
