@@ -2031,9 +2031,9 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 
 **Missing vtable constants for response type parsing (hardcoded slot numbers):**
 - [x] `coordinator.go` — Already uses generated constants: `ClientDBInfoSlotGrvProxies`, `ClientDBInfoSlotCommitProxies`, `ClientDBInfoSlotId`, `GrvProxyInterfaceSlotGetConsistentReadVersion`, `CommitProxyInterfaceSlotCommit`
-- [ ] `network_types.go` — IPAddress, NetworkAddress, Endpoint use hardcoded slots
-- [ ] `network_types.go` — ReadEndpoint uses heuristic (byte offset comparison) not schema
-- [ ] `network_types.go` — IPv6 completely ignored (silent wrong address)
+- [x] `network_types.go` — All generated: `EndpointSlotAddresses`, `EndpointSlotToken`, `NetworkAddressSlotIp`, `IPAddressSlotAddr`. No `network_types.go` file remains — replaced by `endpoint_generated.go`, `networkaddress_generated.go`, `ipaddress_generated.go`.
+- [x] `endpoint.go` — `ReadEndpointFromSlot` uses schema-driven nested reader chain. No hardcoded byte offsets.
+- [x] IPv6 — `ipAddressString` handles `AddrTag=2` (IPv6, 16-byte address). Was previously silent, now returns `::0` for short data.
 
 **Hardcoded endpoint indices (StorageServerInterface/CommitProxyInterface method positions):**
 - [x] `readpath.go` — already uses `EndpointGetKey`/`EndpointGetKeyValues`/`EndpointWatchValue`
