@@ -13,6 +13,25 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
+// WeakReadSemantics configures relaxed read consistency for a transaction.
+// When provided, the transaction may read at a slightly stale version,
+// reducing GRV latency at the cost of freshness.
+// Matches Java's FDBDatabase.WeakReadSemantics.
+type WeakReadSemantics struct {
+	// MinVersion is the minimum read version acceptable. If the cached read
+	// version is >= MinVersion, it will be reused without a GRV round-trip.
+	MinVersion int64
+
+	// StalenessBoundMillis is the maximum staleness (in ms) of a cached read
+	// version. If the cached version is older than this, a fresh GRV is fetched.
+	StalenessBoundMillis int64
+
+	// IsCausalReadRisky sets the FDB_TR_OPTION_CAUSAL_READ_RISKY flag.
+	// This allows the transaction to read from any storage replica, not
+	// just the one with the latest committed data.
+	IsCausalReadRisky bool
+}
+
 // FDBDatabase provides access to the underlying FoundationDB database or tenant
 // and manages transaction execution with retry logic.
 // This is the Record Layer equivalent of Java's FDBDatabase.
@@ -111,6 +130,42 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	}
 
 	// Run post-commit callbacks after successful commit
+	if lastCtx != nil {
+		lastCtx.runPostCommits()
+	}
+	return result, nil
+}
+
+// RunWithWeakReads is like Run but applies weak read semantics to the transaction.
+// If IsCausalReadRisky is set, the transaction reads from any replica.
+// Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
+func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	var lastCtx *FDBRecordContext
+	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+		tx.Options().SetReadSystemKeys()
+		if weak.IsCausalReadRisky {
+			tx.Options().SetCausalReadRisky()
+		}
+		recordCtx := &FDBRecordContext{
+			tx:  tx,
+			ctx: ctx,
+		}
+		lastCtx = recordCtx
+
+		result, err := fn(recordCtx)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := recordCtx.runCommitChecks(); err != nil {
+			return nil, err
+		}
+		recordCtx.flushVersionMutations()
+		return result, nil
+	})
+	if err != nil {
+		return result, err
+	}
 	if lastCtx != nil {
 		lastCtx.runPostCommits()
 	}

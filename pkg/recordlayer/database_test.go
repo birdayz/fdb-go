@@ -250,6 +250,39 @@ var _ = Describe("FDBDatabase", func() {
 		})
 	})
 
+	Describe("RunWithWeakReads", func() {
+		It("executes successfully with causal read risky", func() {
+			ss := specSubspace()
+
+			// Write a key.
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				rtx.Transaction().Set(fdb.Key(ss.Pack(tuple.Tuple{"weak-read"})), []byte("value"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Read with weak read semantics.
+			result, err := sharedDB.RunWithWeakReads(ctx, WeakReadSemantics{
+				IsCausalReadRisky: true,
+			}, func(rtx *FDBRecordContext) (any, error) {
+				return rtx.Transaction().Get(fdb.Key(ss.Pack(tuple.Tuple{"weak-read"}))).MustGet(), nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([]byte("value")))
+		})
+
+		It("executes successfully without causal read risky", func() {
+			result, err := sharedDB.RunWithWeakReads(ctx, WeakReadSemantics{
+				MinVersion:           0,
+				StalenessBoundMillis: 5000,
+			}, func(rtx *FDBRecordContext) (any, error) {
+				return "ok", nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal("ok"))
+		})
+	})
+
 	Describe("NewFDBDatabaseWithTransactor", func() {
 		It("uses the custom transactor for Run", func() {
 			// Create a wrapping transactor that records whether Transact was called.
