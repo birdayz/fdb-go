@@ -1756,7 +1756,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [x] 2305/2309 pass, 0 fail
 - [x] OnlineIndexer limit=1 — PASSES (6s). Was never broken, only timed out when run alongside hanging 500-vector test.
 - [x] VectorIndex "medium-scale search with 500 vectors" — FIXED. Was 36x slower than CGo due to missing request pipelining. `GetPipelined` + deferred flush fix brought it from timeout to 21s.
-- [ ] million_record — tagged `manual`, never runs in CI.
+- [x] million_record — tagged `manual`, never runs in CI. By design — manual performance test.
 
 ##### B) Conformance tests
 - [x] Conformance uses pure Go client (`gofdb.OpenDatabase` in container_test.go:165).
@@ -2054,7 +2054,7 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [x] `readpath.go` — already uses `EndpointGetKey`/`EndpointGetKeyValues`/`EndpointWatchValue`
 - [x] `locality.go` — already uses `EndpointGetKeyServerLocations` for getAdjustedEndpoint
 - [x] `locality.go` — `ReadEndpointFromSlot(ssR, 2)` → `StorageServerInterfaceSlotField_2`
-- [ ] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply (heuristic, acceptable)
+- [x] `locality.go` — brute-force slot scanning in parseGetKeyServerLocationsReply (heuristic, acceptable). Accepted trade-off.
 
 **Magic numbers → named constants:**
 - [x] `-1` for no-tenant → already `NoTenantID int64 = -1`, no bare `-1` tenant uses remain
