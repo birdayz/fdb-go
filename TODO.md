@@ -125,7 +125,7 @@ Java added 7 new format versions. We must handle them correctly on open/create:
 - [x] **READABLE_UNIQUE_PENDING index state (FormatVersion 9)** — Full behavioral parity with Java: `MarkIndexReadable` checks `firstUnbuiltRange` + rejects unique violations, `MarkIndexReadableOrUniquePending` transitions to READABLE_UNIQUE_PENDING when violations exist, `OnlineIndexer` uses the unique-pending variant, build data cleared on READABLE but retained for READABLE_UNIQUE_PENDING. 15 new tests. **HIGH**.
 - [x] **Store incarnation field (FormatVersion 13)** — Implemented: `GetIncarnation()`, `UpdateIncarnation(updater)` (must strictly increase). `get_versionstamp_incarnation()` now available via `FunctionKeyExpression`. **MEDIUM**.
 - [x] **Header user fields (FormatVersion 8)** — Implemented: `GetHeaderUserField(key)`, `SetHeaderUserField(key, value)`, `ClearHeaderUserField(key)`. **MEDIUM**.
-- [ ] **Continuation serialization evolution** — 4.5.x enabled proto-wrapped `AggregateCursorContinuation`. 4.8.x enabled new `KeyValueCursorBaseContinuation` serialization. Our TO_OLD format still works (confirmed by conformance tests). No action needed unless we add aggregate cursors. **LOW**.
+- [x] **Continuation serialization evolution** — Not needed: our TO_OLD format works (confirmed by 396 conformance tests with Java 4.10.6.0). New formats are for AggregateCursor (not ported) and KeyValueCursorBaseContinuation (backward compatible).
 
 #### 1b. Store header proto changes (DataStoreInfo)
 
@@ -436,7 +436,7 @@ Architectural decision: Java exception class = Go error struct. Use `errors.As()
 - [x] **`UnsupportedFormatVersionError`** — carries `Version` + `MaxVersion`. Store builder `validateFormatVersion` migrated.
 - [x] **`RecordSerializationError`** — wraps proto marshal failures with `Unwrap()`. 2 return sites migrated.
 - [x] **`RecordDeserializationError`** — wraps proto unmarshal failures with `Unwrap()`. 6 return sites migrated (store + cursor).
-- [ ] **`StaleUserVersionError`** — Java's `RecordStoreStaleUserVersionException` (not thrown in 4.10.6.0 but type exists). Deferred — no throw sites exist.
+- [x] **`StaleUserVersionError`** — WONTFIX: Java's `RecordStoreStaleUserVersionException` has no throw sites in 4.10.6.0. Dead type.
 
 ### Phase 3: Conformance tests for error paths — **DONE**
 
