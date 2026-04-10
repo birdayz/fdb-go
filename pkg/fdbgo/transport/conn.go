@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -31,7 +33,7 @@ var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 // and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
 	conn     net.Conn
-	tls      bool
+	useTLS   bool
 	wbuf     *bufio.Writer // owned exclusively by writeLoop
 	hasDirty atomic.Bool   // true when wbuf has unflushed data
 	writeCh  chan writeReq // channel-based write loop for coalescing
@@ -74,7 +76,21 @@ func Dial(ctx context.Context, addr string, tls bool) (*Conn, error) {
 
 // DialWith connects to an FDB server using a custom dialer.
 // If dialFn is nil, uses the default net.Dialer.
+// TLSConfig holds TLS configuration for FDB connections.
+// If non-nil, connections use TLS with the specified certificates.
+type TLSConfig struct {
+	CertFile string // Path to client certificate (PEM)
+	KeyFile  string // Path to client private key (PEM)
+	CAFile   string // Path to CA certificate (PEM)
+}
+
 func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Conn, error) {
+	return DialWithTLS(ctx, addr, tls, dialFn, nil)
+}
+
+// DialWithTLS connects to an FDB server with optional TLS.
+// If tlsCfg is non-nil and tls is true, the connection is encrypted.
+func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc, tlsCfg *TLSConfig) (*Conn, error) {
 	if dialFn == nil {
 		var d net.Dialer
 		dialFn = d.DialContext
@@ -91,10 +107,20 @@ func DialWith(ctx context.Context, addr string, tls bool, dialFn DialFunc) (*Con
 		tc.SetNoDelay(true)
 	}
 
+	// Wrap in TLS if configured.
+	if useTLS && tlsCfg != nil {
+		tlsConn, tlsErr := upgradeTLS(netConn, addr, tlsCfg)
+		if tlsErr != nil {
+			netConn.Close()
+			return nil, fmt.Errorf("TLS handshake %s: %w", addr, tlsErr)
+		}
+		netConn = tlsConn
+	}
+
 	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
 		conn:    netConn,
-		tls:     tls,
+		useTLS:  useTLS,
 		wbuf:    bufio.NewWriterSize(netConn, 64*1024),
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
 		ctx:     connCtx,
@@ -272,7 +298,7 @@ func (c *Conn) writeLoop() {
 		// Process first frame.
 		var writeErr error
 		if req.token != (UID{}) || req.body != nil {
-			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.tls)
+			writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
 		}
 		if req.errCh != nil {
 			errChans = append(errChans, req.errCh)
@@ -284,7 +310,7 @@ func (c *Conn) writeLoop() {
 			select {
 			case req = <-c.writeCh:
 				if req.token != (UID{}) || req.body != nil {
-					writeErr = WriteFrame(c.wbuf, req.token, req.body, c.tls)
+					writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
 				}
 				if req.errCh != nil {
 					errChans = append(errChans, req.errCh)
@@ -380,7 +406,7 @@ func (c *Conn) readLoop() {
 	pingToken := WellKnownToken(WLTokenPingPacket)
 
 	for {
-		token, body, err := ReadFrame(c.conn, c.tls)
+		token, body, err := ReadFrame(c.conn, c.useTLS)
 		if err != nil {
 			// Only log if this is unexpected (server died, not our Close).
 			if c.debugFrames && c.ctx.Err() == nil {
@@ -546,4 +572,44 @@ func newConnectionID() uint64 {
 	var buf [8]byte
 	rand.Read(buf[:])
 	return binary.LittleEndian.Uint64(buf[:])
+}
+
+// upgradeTLS wraps a TCP connection in TLS using the provided certificates.
+// Matches FDB's TLS requirements: mutual authentication with client cert.
+func upgradeTLS(conn net.Conn, addr string, cfg *TLSConfig) (net.Conn, error) {
+	tlsConf := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	// Load client certificate for mutual TLS.
+	if cfg.CertFile != "" && cfg.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client cert: %w", err)
+		}
+		tlsConf.Certificates = []tls.Certificate{cert}
+	}
+
+	// Load CA certificate for server verification.
+	if cfg.CAFile != "" {
+		caCert, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("load CA cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA cert")
+		}
+		tlsConf.RootCAs = pool
+	}
+
+	// Extract hostname for SNI.
+	host, _, _ := net.SplitHostPort(addr)
+	tlsConf.ServerName = host
+
+	tlsConn := tls.Client(conn, tlsConf)
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	return tlsConn, nil
 }
