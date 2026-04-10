@@ -1763,7 +1763,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 - [x] Chaos tests: PASS with pure Go client (nightshift-1 verification run).
 
 ##### D) fdbgo unit tests
-- [ ] client_test, fdb_test: need increased timeouts (each test starts its own container).
+- [x] client_test, fdb_test: timeouts set (client_test=eternal/3600s, fdb_test=long/900s). Fixed in nightshift-1.
 
 #### Architecture
 - `gofdbhelper` package provides `OpenDatabase`/`CreateTenant` without import cycle.
