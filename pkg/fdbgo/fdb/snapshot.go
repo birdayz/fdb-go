@@ -21,8 +21,9 @@ func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
 	ks := sel.FDBKeySelector()
+	// Negate OrEqual: Apple binding convention → C++ wire protocol.
 	return newFutureKey(func() (Key, error) {
-		k, err := inner.Snapshot().GetKey(ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
+		k, err := inner.Snapshot().GetKey(ctx, ks.Key.FDBKey(), !ks.OrEqual, int32(ks.Offset))
 		return Key(k), convertError(err)
 	})
 }
