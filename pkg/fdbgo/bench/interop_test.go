@@ -7,7 +7,11 @@ import (
 	"testing"
 
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
+	cgodir "github.com/apple/foundationdb/bindings/go/src/fdb/directory"
+	cgotuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	godir "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
+	gotuple "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
 // TestInterop_GoWriteCGoRead verifies the pure Go client writes data that the
@@ -866,6 +870,78 @@ func TestInterop_SnapshotGetKey(t *testing.T) {
 	if string(goKey) != prefix+"02" {
 		t.Errorf("expected %q, got %q", prefix+"02", goKey)
 	}
+}
+
+// TestInterop_DirectoryLayer verifies that directories created by the Go client
+// are readable by the CGo client (Apple binding) and vice versa. This is the
+// critical test for Java Record Layer KeySpace compatibility.
+func TestInterop_DirectoryLayer(t *testing.T) {
+	goDir := godir.Root()
+	cgoDir := cgodir.Root()
+
+	// Go creates a directory and writes data.
+	goDs, err := goDir.CreateOrOpen(goClient, []string{"interop_dir", "go_created"}, nil)
+	if err != nil {
+		t.Fatalf("go CreateOrOpen: %v", err)
+	}
+	_, err = goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		tx.Set(goDs.Pack(gotuple.Tuple{"msg"}), []byte("from_go"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("go write: %v", err)
+	}
+
+	// CGo opens the same directory and reads the data.
+	cgoDs, err := cgoDir.Open(cgoClient, []string{"interop_dir", "go_created"}, nil)
+	if err != nil {
+		t.Fatalf("cgo Open go-created dir: %v", err)
+	}
+	result, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		return tx.Get(cgoDs.Pack(cgotuple.Tuple{"msg"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("cgo read: %v", err)
+	}
+	if string(result.([]byte)) != "from_go" {
+		t.Errorf("cgo read go-created dir: got %q, want %q", result, "from_go")
+	}
+
+	// Verify prefixes match.
+	if !bytes.Equal(goDs.Bytes(), cgoDs.Bytes()) {
+		t.Errorf("prefix mismatch: go=%x, cgo=%x", goDs.Bytes(), cgoDs.Bytes())
+	}
+
+	// CGo creates a directory, Go reads it.
+	cgoDs2, err := cgoDir.CreateOrOpen(cgoClient, []string{"interop_dir", "cgo_created"}, nil)
+	if err != nil {
+		t.Fatalf("cgo CreateOrOpen: %v", err)
+	}
+	_, err = cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		tx.Set(cgoDs2.Pack(cgotuple.Tuple{"msg"}), []byte("from_cgo"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("cgo write: %v", err)
+	}
+
+	goClient.InvalidateGRVCache()
+	goDs2, err := goDir.Open(goClient, []string{"interop_dir", "cgo_created"}, nil)
+	if err != nil {
+		t.Fatalf("go Open cgo-created dir: %v", err)
+	}
+	result2, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		return tx.Get(goDs2.Pack(gotuple.Tuple{"msg"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("go read: %v", err)
+	}
+	if string(result2.([]byte)) != "from_cgo" {
+		t.Errorf("go read cgo-created dir: got %q, want %q", result2, "from_cgo")
+	}
+
+	// Clean up.
+	goDir.Remove(goClient, []string{"interop_dir"})
 }
 
 // errorAs is a generic helper that avoids importing errors for a simple
