@@ -2267,7 +2267,7 @@ v5 composable-primitives generator (RFC 013) rewrote all marshal/unmarshal code.
 - [x] **MEDIUM #17 — Client: CommitTransactionRef Field_0/1/2/3 fragile** — v5 generates named fields (Mutations, ReadConflictRanges, WriteConflictRanges).
 
 Remaining (still relevant but low impact):
-- [ ] **MEDIUM #11 — Writer: nil vs empty []byte** — v5 uses `len(m.Key) > 0`. FDB wire format likely doesn't distinguish absent from empty StringRef, but verify.
-- [ ] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Generated switch has no case 0 (valueless_by_exception). Silent ignore. Low risk — tag=0 means no value present.
+- [x] **MEDIUM #11 — Writer: nil vs empty []byte** — Verified: both nil and `[]byte{}` serialize as 4-byte length=0 entry via `VisitDynamicSize(0)`, matching C++ `StringRef()` behavior. No distinction on wire. Not a bug.
+- [x] **MEDIUM #14 — Extractor: variant tag=0 not handled** — Verified: tag=0 means `valueless_by_exception` (no value present). The generated switch correctly falls through — struct fields retain zero values. Not a bug.
 - [x] **MEDIUM #15 — VecSerStrategy parser DoS** — Fixed: `make()` capacity clamped to `(len(data)-pos)/minElementSize` in all three parsers (ParseKeyRefStringVector, ParseKeyRangeRefStringVector, ParseKeyValueRefStringVector). Prevents OOM from crafted count values in untrusted wire data.
 - [x] **MEDIUM #4 — Client: sendGetValue should use EndpointGetValue constant** — Fixed in nightshift-1 constants cleanup. All endpoint constants now named and centralized.
