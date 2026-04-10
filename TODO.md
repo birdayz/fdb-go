@@ -1363,15 +1363,15 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 - [x] **`getConfig()` / `getTransactionId()` / `getTimeoutMillis()`** — Context introspection. **LOW**.
 - [x] **`getTransactionAge()`** — Transaction timing. **LOW**.
-- [ ] **`getCommitCheck()` / `removeCommitChecks()`** — Hook management post-add. **LOW**.
-- [ ] **`removePostCommit()` / `addPostCloseHook()`** — Hook removal. **LOW**.
-- [ ] **`WeakReadSemantics`** — Causal read risky / version staleness bounds. **LOW**.
+- [x] **`getCommitCheck()` / `removeCommitChecks()`** — Hook management post-add. **LOW**.
+- [x] **`removePostCommit()` / `addPostCloseHook()`** — Hook removal. **LOW**.
+- [x] **`WeakReadSemantics`** — Causal read risky / version staleness bounds. **LOW**.
 - [x] **`getMdcContext()`** — Mapped diagnostic context. **LOW**.
 
 ### FDBDatabaseRunner — missing methods
 
-- [ ] **`runAsync()` (5 overloads)** — Go is sync only. **LOW**.
-- [ ] **Timer/MDC/WeakReadSemantics getters/setters** — **LOW**.
+- [x] **`runAsync()` (5 overloads)** — Go is sync only. **LOW**.
+- [x] **Timer/MDC/WeakReadSemantics getters/setters** — **LOW**.
 
 ### Key expressions — 5 missing types
 
