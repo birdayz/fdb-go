@@ -52,13 +52,13 @@ Resolved 24 items:
 ## Current state
 
 - **Master:** `9be2748`
-- **Branch:** `nightshift-2` (22 commits ahead)
+- **Branch:** `nightshift-2` (32 commits ahead)
 - **Open PRs:** 1 (#30, draft)
 - **All 14 Bazel test targets pass**
 - **2h binding stress:** 475+ seeds, 0 failures (running)
 - **Directory layer:** ported, tested, cross-client verified
 - **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
-- **TODO.md:** 128 → 104 open items (24 resolved)
+- **TODO.md:** 128 → 73 open items (55 resolved)
 
 ## Known issues
 
