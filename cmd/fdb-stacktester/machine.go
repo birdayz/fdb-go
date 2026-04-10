@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"sync"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 )
+
+// traceEnabled enables verbose stack tracing via STACKTESTER_TRACE=1.
+var traceEnabled = os.Getenv("STACKTESTER_TRACE") != ""
 
 // versionstampFuture is a deferred value that resolves to a versionstamp
 // after the transaction commits. When popped from the stack, it calls
@@ -76,8 +80,18 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 			arg = inst[1]
 		}
 
+		stackDepth := len(sm.stack)
 		if err := sm.execute(ctx, i, op, arg); err != nil {
 			return fmt.Errorf("instruction %d (%s): %w", i, op, err)
+		}
+		if traceEnabled {
+			newDepth := len(sm.stack)
+			fmt.Fprintf(os.Stderr, "[TRACE] #%d %s: stack %d→%d", i, op, stackDepth, newDepth)
+			if newDepth > 0 {
+				top := sm.stack[newDepth-1]
+				fmt.Fprintf(os.Stderr, " top=(%T, pushed@%d)", top.value, top.idx)
+			}
+			fmt.Fprintln(os.Stderr)
 		}
 	}
 
