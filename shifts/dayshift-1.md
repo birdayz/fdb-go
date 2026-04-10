@@ -1,8 +1,8 @@
 # Dayshift-1 Handover
 
-**Date:** 2026-04-10 09:00 — 15:30 (CEST)
-**PR:** #24 (squash-merged to master)
-**Branch:** `dayshift-1` (merged, can be deleted)
+**Date:** 2026-04-10 09:00 — 16:30 (CEST)
+**PRs:** #24 + #25 (both squash-merged to master)
+**Commits:** `b24ddae` (PR #24), `8e1a997` (PR #25)
 
 ## Objective
 
@@ -53,6 +53,17 @@ Previously skipped `TestSetReadVersionOld_CPort` and `TestSetReadVersionFuture_C
 ### Database-Level Transaction Defaults
 
 Implemented `FDB_DB_OPTION_TRANSACTION_TIMEOUT`, `_RETRY_LIMIT`, `_MAX_RETRY_DELAY`, `_SIZE_LIMIT`. Previously all no-ops. Now stored on the Database and applied to every transaction. Two new tests verify timeout and size limit at DB level.
+
+### System Key Access Control (PR #25)
+
+Client-side `\xff` system key enforcement matching C++ `ReadYourWritesTransaction`:
+- `getMaxReadKey()` / `getMaxWriteKey()` — returns `\xff` without option, `\xff\xff` with it
+- `metadataVersionKey` (`\xff/metadataVersion`) exempt from both read and write checks
+- `SetReadSystemKeys()` — allows reading `\xff/*` keys
+- `SetAccessSystemKeys()` — allows reading AND writing `\xff/*` keys
+- Record layer sets `ReadSystemKeys` on all 4 transaction creation paths
+- Tenant CRUD uses `AccessSystemKeys` (replaces bare `SetLockAware`)
+- 4 new C binding port tests: cannot read/write, read/write with option
 
 ### Write Path Investigation
 

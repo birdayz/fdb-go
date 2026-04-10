@@ -1774,7 +1774,7 @@ Import swap: all `pkg/recordlayer/`, `example/`, `conformance/` use `pkg/fdbgo/f
 
 **C code is the source of truth for the client.** Development is test-driven from the C binding tests:
 
-1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 39 ported so far)
+1. **Port tests** from `bindings/c/test/unit/unit_tests.cpp` (81 tests, 43 ported so far)
 2. **Add functionality** only when a test needs it — no speculative API additions
 3. **Principles first** — if a test needs a feature, port it COMPLETELY, not a stub
 4. **Tests are authoritative** — if Go behavior differs from C, Go is wrong
@@ -1799,6 +1799,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] RYW disable, Snapshot RYW enable/disable (dayshift-1)
 - [x] SizeLimit (too small, too large, minimum valid) (dayshift-1)
 - [x] Watch with RYW disabled (dayshift-1)
+- [x] System key access: cannot read, read with option, cannot write, write with option (dayshift-1)
 
 **Next to port (need API additions):**
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
