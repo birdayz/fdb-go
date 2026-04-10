@@ -3112,6 +3112,50 @@ func TestDatabaseLevelTimeout_CPort(t *testing.T) {
 	}
 }
 
+// TestDatabaseLevelRetryLimit_CPort verifies that database-level retry limit
+// is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
+func TestDatabaseLevelRetryLimit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set retry limit of 0 at database level — no retries allowed.
+	db.SetTransactionRetryLimit(0)
+
+	tx := db.CreateTransaction()
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err == nil {
+		t.Fatal("expected OnError to fail with retry limit 0 from database default")
+	}
+}
+
+// TestDatabaseLevelSizeLimit_CPort verifies that database-level size limit
+// is applied to all new transactions.
+// Ported from unit_tests.cpp FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
+func TestDatabaseLevelSizeLimit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// Set a tiny size limit at database level.
+	db.SetTransactionSizeLimit(32) // minimum valid
+
+	tx := db.CreateTransaction()
+	// Write enough data to exceed 32 bytes.
+	tx.Set([]byte("big_key_that_is_definitely_over_32_bytes"), []byte("a value"))
+	err := tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("expected commit to fail with size limit exceeded")
+	}
+	var fdbErr *wire.FDBError
+	if errors.As(err, &fdbErr) && fdbErr.Code != 2101 {
+		t.Errorf("expected error 2101 (transaction_too_large), got %d", fdbErr.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // OnError retry semantics
 // ---------------------------------------------------------------------------
