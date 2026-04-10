@@ -1859,7 +1859,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
   - [ ] **Codegen: stop emitting dead DirectWriter methods**: The C++ extractor emits `blobSize`, `writeBlob`, `measureEndOff`, `writeDirect` methods that are never called (MarshalFDB uses `precomputeSize`+`writeToBuffer` exclusively). The `CommitTransactionRef` versions still contain the empty-vector-reloff bug. Fix the generator to stop emitting these methods — they add ~230 lines of buggy dead code per type.
   - ~~Arena field missing from codegen~~ — FALSE ALARM. `scalar_traits<Arena>::size = 0`, save is a no-op. Arena is FDB's zero-copy memory management: on deserialize, `context.addArena(arena)` transfers buffer ownership so `StringRef` fields can point into raw received bytes without copying. On serialize, Arena contributes zero bytes. Our codegen correctly skips it.
 - [x] **Cross-client interop tests** — nightshift-1: 8 tests in bench/interop_test.go (GoWrite/CGoRead, CGoWrite/GoRead, MixedWrite, AtomicAdd, ClearRange, GetRange, Versionstamp, ConflictDetection).
-- [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
+- [x] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
 
 **Debug tooling (done):**
 - [x] `FDB_WIRE_LOG` env var captures all frames to binary file
