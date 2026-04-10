@@ -283,6 +283,9 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
+	if bytes.Compare(selectorKey, s.tx.maxReadKey()) > 0 {
+		return nil, &wire.FDBError{Code: 2004}
+	}
 	return s.tx.getKey(ctx, selectorKey, orEqual, offset)
 }
 
@@ -479,6 +482,10 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
 	}
+	// C++ RYW::getKey: if (key.getKey() > getMaxReadKey()) → key_outside_legal_range
+	if bytes.Compare(selectorKey, tx.maxReadKey()) > 0 {
+		return nil, &wire.FDBError{Code: 2004}
+	}
 	if !isSystemKey(selectorKey) {
 		tx.addReadConflictForKey(selectorKey)
 	}
@@ -663,6 +670,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		if bytes.Compare(m.Key, maxWrite) >= 0 {
 			tx.state = txStateErrored
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
+		}
+		// ClearRange: also check end key (stored in Value).
+		// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
+		if m.Type == MutClearRange && bytes.Compare(m.Value, maxWrite) > 0 {
+			tx.state = txStateErrored
+			return &wire.FDBError{Code: 2004}
 		}
 	}
 
