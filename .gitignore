@@ -36,7 +36,6 @@ service-account*.json
 
 # OS files
 .DS_Store
-.claude
 fdb-record-layer
 
 # SIFT-1M benchmark data
@@ -52,3 +51,5 @@ bazel-fdb-record-layer-go
 pkg/fdbgo/wire/types/v5/
 binding-stress-out/
 binding-stress-report.txt
+.claude/worktrees/
+.claude/scheduled_tasks.lock

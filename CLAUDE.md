@@ -26,51 +26,9 @@ We require **very high and thorough test coverage**. Every new feature, bug fix,
 
 **All tests MUST call `t.Parallel()`**. Each test must be safe to run concurrently — use unique key prefixes or subspaces for isolation, never rely on shared mutable state. This is critical for fast test execution on beefy CPUs.
 
-## Vollkonti shift system
+## Shift system
 
-This project runs a **Vollkontinuierliches Schichtsystem** (continuous shift operation) — 24/7 coverage with 3 × 8-hour shifts. Each shift is one Claude session.
-
-### Shift types
-
-| Shift | Hours (CEST) | Name pattern |
-|---|---|---|
-| Day shift | 06:00 — 14:00 | `dayshift-N` |
-| Swing shift | 14:00 — 22:00 | `swingshift-N` |
-| Night shift | 22:00 — 06:00 | `nightshift-N` |
-
-The number `N` increments globally across all shift types (not per type). Example sequence: `nightshift-1`, `dayshift-1`, `swingshift-1`, `nightshift-2`, ...
-
-### Starting a shift
-
-1. **Read the latest handover**: `ls -t shifts/*.md | head -1` — read it to understand current state, what was done, what to work on next.
-2. **Create branch**: `git checkout -b {shift-name} master`
-3. **Open draft PR**: `gh pr create --draft --title "{shift-name}: {one-line goal}"`
-4. **Work**: implement, test, commit, push to branch. Each commit through pre-commit hooks.
-5. **Use `/loop 15m keep working until shift over`** to maintain momentum.
-
-### Ending a shift
-
-1. **Write handover**: create `shifts/{shift-name}.md` with: date/time, PR number, what was done, current state, known issues, what to work on next.
-2. **Final commit + push**: include the handover doc.
-3. **Wait for CI green**.
-4. **Merge PR**: `gh pr merge --squash`
-5. **Clean up**: close stale PRs, delete remote branches.
-
-### Identifying shift state
-
-- Look at `shifts/` folder — newest file is the latest shift
-- Check `gh pr list --state open` — open PR means shift in progress
-- If all PRs merged and no open PRs → new shift needed
-- The handover doc tells the next shift exactly where to pick up
-
-### Rules
-
-- **One PR per shift.** All work goes to the shift branch. Merge at end.
-- **Never push directly to master** (except docs-only fixes). Always go through a PR.
-- **Never force-push master.** If you need to amend, do it on the branch.
-- **Always verify branch** before commit --amend or push --force: `git branch --show-current`
-- **Handover is mandatory.** The next shift has zero context — the handover doc is their only briefing.
-- **CI must be green** before merge. No exceptions.
+This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` to start a shift. Handovers live in `shifts/`. Each shift gets one branch, one PR, merged at end.
 
 ## Work tracking & workflow
 
