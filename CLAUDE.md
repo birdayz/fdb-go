@@ -294,6 +294,12 @@ typedStore := NewTypedFDBRecordStore[*MyRecord](store)
 record, err := typedStore.LoadRecord(ctx, primaryKey)
 ```
 
+### Pure Go FDB client performance (vs CGo)
+
+Reads: **Go beats CGo** (192us vs 209us single Get). Writes: CGo wins by ~15% (1876us vs 2164us Set+Commit). The write gap is structural — goroutine coordination overhead (channel-based multiplexing) vs C's single-threaded event loop with direct callbacks. 95.5% of time is I/O-bound; micro-optimizations (pooling, fewer allocs) won't close it. The gap is acceptable given Go client's advantages (no CGo, simpler deployment, better pipelining on reads).
+
+TCP connections use `SetLinger(0)` (RST on close, prevents TIME_WAIT port reuse) and `SetKeepAlive(10s)` (faster dead connection detection). This eliminates the FDB server ASSERT crash from stale Peer entries under Docker/CI load.
+
 ### FDB constraints to respect
 
 - 5-second transaction time limit → cursors need `TimeScanLimiter` and continuations
