@@ -81,10 +81,23 @@ All 10 fuzz targets run for 30s each: **409M total executions, 0 crashes.**
 
 3 new integration tests: LocalityGetBoundaryKeys, GetClientStatus, Transaction Reset through fdb facade.
 
+### 14. CRITICAL: OrEqual wire protocol fix (commit `82c283f`)
+
+**Found and fixed a real correctness bug** in the fdb facade's `GetKey` and `resolveSelector`. The Apple Go binding convention and the C++ wire protocol have INVERTED semantics for the `OrEqual` field in key selectors:
+
+- Apple binding: `OrEqual=true` → "greater or equal" (inclusive)
+- C++ wire: `OrEqual=true` → "strictly greater" (exclusive)
+
+The Apple C binding inverts `OrEqual` before sending to the server. Our fdb facade was passing it directly — causing `FirstGreaterOrEqual` to skip exact matches. Found via 3 new cross-client interop tests comparing Go `GetKey` against CGo on identical data.
+
+### 15. Cross-client interop tests (commit `82c283f`)
+
+3 new tests: reverse range scan, key selector resolution, limited range scan. All compare pure Go client results against CGo client on identical data.
+
 ## Current state
 
 - **Master:** clean (`b71680f`)
-- **Branch:** `swingshift-1` (14 commits ahead of master)
+- **Branch:** `swingshift-1` (16 commits ahead of master)
 - **Open PRs:** 1 (#29, draft)
 - **All 13 Bazel test targets pass**
 - **Binding stress:** 100/100 seeds + extended 1h (332 seeds, 332K ops), 0 failures, 0 FDB deaths
