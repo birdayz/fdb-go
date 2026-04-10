@@ -274,3 +274,50 @@ func TestDirectoryLayerDuplicateCreate(t *testing.T) {
 
 	dir.Remove(db, []string{"dup_test"})
 }
+
+// TestDirectoryLayerConcurrent tests that concurrent directory creation
+// via the HCA produces unique prefixes without conflicts.
+func TestDirectoryLayerConcurrent(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	const n = 20
+	type result struct {
+		prefix []byte
+		err    error
+	}
+	results := make(chan result, n)
+
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			path := []string{"concurrent_test", fmt.Sprintf("dir_%03d", idx)}
+			ds, err := dir.CreateOrOpen(db, path, nil)
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			results <- result{prefix: ds.Bytes()}
+		}(i)
+	}
+
+	prefixes := make(map[string]int)
+	for i := 0; i < n; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Errorf("concurrent create %d: %v", i, r.err)
+			continue
+		}
+		key := string(r.prefix)
+		if prev, exists := prefixes[key]; exists {
+			t.Errorf("duplicate prefix %x: dirs %d and %d", r.prefix, prev, i)
+		}
+		prefixes[key] = i
+	}
+
+	if len(prefixes) != n {
+		t.Errorf("expected %d unique prefixes, got %d", n, len(prefixes))
+	}
+
+	dir.Remove(db, []string{"concurrent_test"})
+}
