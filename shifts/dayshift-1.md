@@ -1,8 +1,8 @@
 # Dayshift-1 Handover
 
-**Date:** 2026-04-10 09:00 — ongoing (CEST)
-**PR:** #24 (draft, dayshift-1 branch)
-**Branch:** `dayshift-1` (4 commits ahead of master)
+**Date:** 2026-04-10 09:00 — 15:30 (CEST)
+**PR:** #24 (squash-merged to master)
+**Branch:** `dayshift-1` (merged, can be deleted)
 
 ## Objective
 
@@ -65,11 +65,12 @@ Profiled Go vs CGo Set+Commit:
 
 ## Current state
 
-- **dayshift-1 branch:** 4 commits ahead of master, CI should be green
-- **All 13 Bazel test targets pass** (verified by pre-commit hooks on each commit)
-- **Binding stress test**: 100/100 seeds × 1000 ops pass, 0 failures, 0 FDB deaths (17m48s)
-- **CI**: 8+ runs SUCCESS (all green, zero flakes)
-- **PR #24**: draft, ready for review
+- **Master:** clean, CI green
+- **All 13 Bazel test targets pass**
+- **Binding stress**: 100/100 seeds × 1000 ops, 0 failures, 0 FDB deaths
+- **CI**: all runs SUCCESS, zero flakes
+- **Zero behavioral test skips** in entire codebase
+- **Open issues:** 1 (#2 — upstream tuple.Unpack panic, tracked only)
 
 ## What to work on next
 
