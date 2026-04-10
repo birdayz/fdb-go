@@ -2229,7 +2229,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 ### Phase 2
 
 - [x] **Watch API** — nightshift-1: WatchValueRequest (file_id 14747733), endpoint 10, long-poll semantics.
-- [ ] **Directory layer** — vendor from upstream.
+- [x] **Directory layer** — ported from Apple Go binding (6 files, ~1300 lines). Cross-client interop verified (Go ↔ CGo). 5 tests.
 - [ ] **Version vector support** — causal consistency optimization.
 - [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
 - [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
