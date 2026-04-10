@@ -334,10 +334,10 @@ Additional Go-specific optimizations (from RFC 007):
 ### 6. New cursor types
 
 - [ ] **AggregateCursor** — Accumulator-based aggregation over cursor results. New continuation format (4.4–4.5). **LOW** (needed for query planner, not basic CRUD).
-- [ ] **ComparatorCursor** — Custom comparator ordering. **LOW**.
-- [ ] **UnorderedUnionCursor** — Union without order preservation. **LOW**.
-- [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking during group operations. **LOW**.
-- [ ] **BloomFilterCursorContinuation** — Bloom filter optimization for large result sets. **LOW**.
+- [ ] **ComparatorCursor** — Custom comparator ordering. Needs query planner. **LOW**.
+- [ ] **UnorderedUnionCursor** — Union without order preservation. Needs query planner. **LOW**.
+- [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking. Needs query planner. **LOW**.
+- [ ] **BloomFilterCursorContinuation** — Bloom filter optimization. Needs query planner. **LOW**.
 
 ### 7. New index scan types
 
@@ -1334,10 +1334,10 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 - [ ] **`UnorderedUnionCursor`** — Union without order preservation. **LOW**.
 - [ ] **`MapPipelinedCursor`** — Async pipelined map (no Go equivalent of CompletableFuture). **LOW**.
-- [ ] **`filterAsync()`** — Pipelined async filter. Not applicable to Go's sync model. **LOW**.
-- [ ] **`mapEffect()` / `mapContinuation()`** — Side-effect map, continuation rewriting. **LOW**.
-- [ ] **`forEachResult()` / `forEachAsync()`** — Result-level iteration. **LOW**.
-- [ ] **`reduce()` with stop condition** — Conditional reduction. **LOW**.
+- [x] **`filterAsync()`** — WONTFIX: Java async pipeline. Go has `Filter` cursor combinator.
+- [x] **`mapEffect()` / `mapContinuation()`** — WONTFIX: Java async pipeline. Go has `MapCursor`.
+- [x] **`forEachResult()` / `forEachAsync()`** — WONTFIX: Java async iteration. Go uses `for HasNext()` loop.
+- [x] **`reduce()` with stop condition** — WONTFIX: Java async pattern. Go has `Reduce()` standalone function.
 - [ ] **`AggregateCursor`** — Accumulator-based aggregation. **LOW**.
 - [ ] **`ComparatorCursor`** — Custom comparison ordering. **LOW**.
 - [ ] **`ProbableIntersectionCursor`** — Bloom filter intersection. **LOW**.
@@ -1353,16 +1353,16 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### FDBDatabase — missing methods
 
-- [ ] **`openContext()` (6 overloads)** — Go uses Run()/RunWithVersionstamp() exclusively. **LOW**.
-- [ ] **`performNoOp()` / `performNoOpAsync()`** — No-op transaction testing. **LOW**.
-- [ ] **`clearCaches()` / `close()`** — Cache/lifecycle management. **LOW**.
+- [x] **`openContext()` (6 overloads)** — Go uses Run()/RunWithVersionstamp() exclusively. **LOW**.
+- [x] **`performNoOp()` / `performNoOpAsync()`** — No-op transaction testing. **LOW**.
+- [x] **`clearCaches()` / `close()`** — Cache/lifecycle management. **LOW**.
 - [x] **`FDBDatabaseFactory`** — Implemented: caches FDBDatabase by cluster file path.
-- [ ] **`setDatacenterId()` / `getLocalityProvider()`** — Datacenter affinity. **LOW**.
+- [x] **`setDatacenterId()` / `getLocalityProvider()`** — Datacenter affinity. **LOW**.
 
 ### FDBRecordContext — missing methods
 
-- [ ] **`getConfig()` / `getTransactionId()` / `getTimeoutMillis()`** — Context introspection. **LOW**.
-- [ ] **`getTransactionAge()`** — Transaction timing. **LOW**.
+- [x] **`getConfig()` / `getTransactionId()` / `getTimeoutMillis()`** — Context introspection. **LOW**.
+- [x] **`getTransactionAge()`** — Transaction timing. **LOW**.
 - [ ] **`getCommitCheck()` / `removeCommitChecks()`** — Hook management post-add. **LOW**.
 - [ ] **`removePostCommit()` / `addPostCloseHook()`** — Hook removal. **LOW**.
 - [ ] **`WeakReadSemantics`** — Causal read risky / version staleness bounds. **LOW**.
