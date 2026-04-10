@@ -2493,3 +2493,39 @@ func TestSizeLimitMinimum_CPort(t *testing.T) {
 		t.Errorf("error code: got %d, want 2101 (transaction_too_large)", fdbErr.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Watch with RYW disabled
+// ---------------------------------------------------------------------------
+
+// TestWatchRYWDisable_CPort verifies that creating a watch on a transaction
+// with RYW disabled returns watches_disabled (1034) immediately.
+// Ported from unit_tests.cpp line 1973
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L1973
+func TestWatchRYWDisable_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+	tx.SetReadYourWritesDisable()
+
+	err = tx.Watch(ctx, []byte("c_wryw_foo"))
+	if err == nil {
+		t.Fatal("expected watches_disabled error, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 1034 {
+		t.Errorf("error code: got %d, want 1034 (watches_disabled)", fdbErr.Code)
+	}
+}
