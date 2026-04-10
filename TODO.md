@@ -815,7 +815,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **Missing key expression types** — AtomKE (LOW, Java interface only). Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE, OrderFunctionKE, CollateFunctionKE. See 4.10.6.0 upgrade assessment §3.
+- [x] **Missing key expression types** — AtomKE (LOW, Java interface only). Done: GroupingKE, LiteralKE, KeyWithValueKE, VersionKE, FunctionKE, SplitKE, ListKE, LongArithmeticKE, DimensionsKE, OrderFunctionKE, CollateFunctionKE. See 4.10.6.0 upgrade assessment §3.
 
 - [ ] **Synthetic record types** — Computed/joined/unnested record types. Large feature.
 
@@ -1315,7 +1315,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [x] **`getIndexFromSubspaceKey()`** — Added `GetIndexFromSubspaceKey()` with normalized integer comparison. **LOW**.
 - [x] **`getUnionDescriptor()` / `getUnionFieldForRecordType()`** — Added `GetUnionDescriptor()` and `GetUnionFieldForRecordType()`. Union descriptor stored during Build(). **LOW**.
 - [x] **`commonPrimaryKey()` / `commonPrimaryKeyLength()` static helpers** — Added `CommonPrimaryKey()` (structural equality via keyExpressionEquals) and `CommonPrimaryKeyLength()`. **LOW**.
-- [ ] **`getIndexesSince(version)` with RecordType mapping** — Go returns Index list only. **LOW**.
+- [x] **`getIndexesSince(version)` with RecordType mapping** — WONTFIX: Go returns Index list. RecordType mapping is query planner infrastructure.
 - [x] **`getFormerIndexesSince(version)`** — Added `GetFormerIndexesSince()`. **LOW**.
 - [x] **Builder query methods** — Added `GetVersion()`, `IsSplitLongRecords()`, `IsStoreRecordVersions()`, `GetRecordCountKey()`, `GetRecordTypes()` on builder. **LOW**.
 - [x] **`build(false)` skip-validation variant** — Go always validates. **LOW**.
