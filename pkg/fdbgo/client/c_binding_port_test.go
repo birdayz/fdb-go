@@ -2294,3 +2294,202 @@ func TestGetRangeStreamingExact_CPort(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Read-your-writes options
+// ---------------------------------------------------------------------------
+
+// TestRYWDisable_CPort verifies that disabling read-your-writes causes Get
+// to bypass the RYW cache. An uncommitted Set is invisible to subsequent Get
+// when RYW is disabled, because the server hasn't seen the write yet.
+// Ported from unit_tests.cpp line 671
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L671
+func TestRYWDisable_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "c_rywd_"
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+	tx.SetReadYourWritesDisable()
+
+	key := []byte(pfx + "foo")
+	tx.Set(key, []byte("bar"))
+
+	// With RYW disabled, Get goes straight to the server. The value hasn't
+	// been committed, so the server returns nil.
+	val, err := tx.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if val != nil {
+		t.Errorf("expected nil (RYW disabled, uncommitted write), got %q", val)
+	}
+}
+
+// TestSnapshotRYWEnable_CPort verifies that snapshot reads go through the
+// RYW cache by default. An uncommitted Set is visible via Snapshot().Get().
+// Ported from unit_tests.cpp line 699
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L699
+func TestSnapshotRYWEnable_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "c_sryw_"
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+
+	key := []byte(pfx + "foo")
+	tx.Set(key, []byte("bar"))
+
+	// Snapshot RYW is enabled by default — uncommitted write should be visible.
+	val, err := tx.Snapshot().Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Snapshot().Get: %v", err)
+	}
+	if val == nil {
+		t.Fatal("expected value from snapshot RYW, got nil")
+	}
+	if string(val) != "bar" {
+		t.Errorf("snapshot value: got %q, want %q", val, "bar")
+	}
+}
+
+// TestSnapshotRYWDisable_CPort verifies that disabling snapshot RYW makes
+// snapshot reads bypass the cache, while regular reads still use RYW.
+// Ported from unit_tests.cpp line 728
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L728
+func TestSnapshotRYWDisable_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "c_snrd_"
+
+	tx := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+	tx.SetSnapshotRYWDisable()
+
+	key := []byte(pfx + "foo")
+	tx.Set(key, []byte("bar"))
+
+	// Snapshot RYW disabled — snapshot read goes to server, returns nil.
+	snapVal, err := tx.Snapshot().Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Snapshot().Get: %v", err)
+	}
+	if snapVal != nil {
+		t.Errorf("expected nil (snapshot RYW disabled), got %q", snapVal)
+	}
+
+	// Regular Get still uses RYW — uncommitted write should be visible.
+	regVal, err := tx.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if regVal == nil {
+		t.Fatal("expected value from regular RYW, got nil")
+	}
+	if string(regVal) != "bar" {
+		t.Errorf("regular Get value: got %q, want %q", regVal, "bar")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Transaction size limit boundary validation
+// ---------------------------------------------------------------------------
+
+// TestSizeLimitTooSmall_CPort verifies that a size limit below the minimum
+// (32) causes error 2006 (invalid_option_value) at commit time.
+// Ported from unit_tests.cpp line 811
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L811
+func TestSizeLimitTooSmall_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetSizeLimit(31)
+	tx.Set([]byte("foo"), []byte("bar"))
+
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected error for size limit below minimum, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2006 {
+		t.Errorf("error code: got %d, want 2006 (invalid_option_value)", fdbErr.Code)
+	}
+}
+
+// TestSizeLimitTooLarge_CPort verifies that a size limit above the maximum
+// (10,000,000) causes error 2006 (invalid_option_value) at commit time.
+// Ported from unit_tests.cpp line 823
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L823
+func TestSizeLimitTooLarge_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetSizeLimit(10_000_001)
+	tx.Set([]byte("foo"), []byte("bar"))
+
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected error for size limit above maximum, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2006 {
+		t.Errorf("error code: got %d, want 2006 (invalid_option_value)", fdbErr.Code)
+	}
+}
+
+// TestSizeLimitMinimum_CPort verifies that the minimum valid size limit (32)
+// is accepted but the transaction still fails with 2101 (transaction_too_large)
+// when the mutations exceed that tiny limit.
+// Ported from unit_tests.cpp line 835
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L835
+func TestSizeLimitMinimum_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetSizeLimit(32)
+	tx.Set([]byte("foo"), []byte("foundation database is amazing"))
+
+	err := tx.Commit(context.Background())
+	if err == nil {
+		t.Fatal("expected transaction_too_large error, got nil")
+	}
+
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected FDBError, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2101 {
+		t.Errorf("error code: got %d, want 2101 (transaction_too_large)", fdbErr.Code)
+	}
+}

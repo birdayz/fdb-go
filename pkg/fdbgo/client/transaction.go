@@ -200,7 +200,17 @@ type Transaction struct {
 	readLockAware bool
 
 	// sizeLimit: if > 0, enforced before commit. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
+	// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 	sizeLimit int64
+
+	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
+	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+	rywDisabled bool
+
+	// snapshotRYWDisabled: when true, Snapshot.Get/GetRange bypass the RYW cache.
+	// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE. Note: by default, snapshot
+	// reads DO go through the RYW cache (matching FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE).
+	snapshotRYWDisabled bool
 
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
@@ -242,10 +252,13 @@ type Snapshot struct {
 }
 
 // Get reads a key without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getValue(ctx, key)
 	}
 	return s.tx.ryw.get(ctx, key, s.tx.getValue)
 }
@@ -259,19 +272,25 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 }
 
 // GetRange reads a range without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getRange(ctx, begin, end, limit, false)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, false, s.tx.getRange)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
-// Snapshot reads still go through the RYW cache so pending writes are visible.
+// Snapshot reads go through the RYW cache unless snapshotRYWDisabled is set.
 func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
 		return nil, false, err
+	}
+	if s.tx.snapshotRYWDisabled {
+		return s.tx.getRange(ctx, begin, end, limit, true)
 	}
 	return s.tx.ryw.getRange(ctx, begin, end, limit, true, s.tx.getRange)
 }
@@ -312,6 +331,9 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// them internally without going through the resolver conflict map.
 	if !isSystemKey(key) {
 		tx.addReadConflictForKey(key)
+	}
+	if tx.rywDisabled {
+		return tx.getValue(ctx, key)
 	}
 	return tx.ryw.get(ctx, key, tx.getValue)
 }
@@ -449,6 +471,9 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 		tx.addReadConflict(begin, end)
 	}
 
+	if tx.rywDisabled {
+		return tx.getRange(ctx, begin, end, limit, reverse)
+	}
 	return tx.ryw.getRange(ctx, begin, end, limit, reverse, tx.getRange)
 }
 
@@ -529,6 +554,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	}
 	if err := tx.checkTimeout(); err != nil {
 		return err
+	}
+
+	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
+	// Out-of-range values return invalid_option_value (2006) at commit time.
+	if tx.sizeLimit > 0 && (tx.sizeLimit < 32 || tx.sizeLimit > 10_000_000) {
+		tx.state = txStateErrored
+		return &wire.FDBError{Code: 2006} // invalid_option_value
 	}
 
 	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
@@ -844,10 +876,25 @@ func (tx *Transaction) SetReadLockAware(v bool) {
 }
 
 // SetSizeLimit sets the maximum transaction size in bytes.
-// If the transaction exceeds this size, commit returns an error.
+// If the transaction exceeds this size, commit returns error 2101.
+// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 // A value of 0 disables the limit.
 func (tx *Transaction) SetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
+}
+
+// SetReadYourWritesDisable disables RYW for regular (non-snapshot) reads.
+// When set, Get/GetRange always read from the server, ignoring uncommitted writes.
+// Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
+func (tx *Transaction) SetReadYourWritesDisable() {
+	tx.rywDisabled = true
+}
+
+// SetSnapshotRYWDisable disables RYW for snapshot reads.
+// When set, Snapshot.Get/GetRange always read from the server.
+// Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE.
+func (tx *Transaction) SetSnapshotRYWDisable() {
+	tx.snapshotRYWDisabled = true
 }
 
 // SetTenantId sets the tenant for this transaction. All operations will
@@ -950,7 +997,7 @@ func (tx *Transaction) reset() {
 	}
 	// Preserved across reset (match C++ option re-application on retry):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit, tenantId.
+	// lockAware, readLockAware, sizeLimit, rywDisabled, snapshotRYWDisabled, tenantId.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows

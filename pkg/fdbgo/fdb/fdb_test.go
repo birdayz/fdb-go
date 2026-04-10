@@ -788,8 +788,8 @@ func TestSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
-	// Set a tiny size limit
-	if err := tr.Options().SetSizeLimit(10); err != nil {
+	// Set a small but valid size limit (min 32, max 10_000_000).
+	if err := tr.Options().SetSizeLimit(32); err != nil {
 		t.Fatalf("SetSizeLimit: %v", err)
 	}
 	// Write more data than the limit
