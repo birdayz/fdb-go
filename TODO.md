@@ -42,7 +42,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
   **Ground truth sizes: 10/10 match.** Byte diffs = reply token only (expected). Binding tester: **145 seeds × 1000 ops = 0 failures, 0 FDB deaths.**
 
   **Remaining (LOW):**
-  - [ ] C++ `emptyVector` re-use optimization missing — no test vector currently fails from this.
+  - [x] C++ `emptyVector` re-use optimization — already implemented via `PrecomputeSize.EmptyVectorOffset` in `serializer.go`.
 - [x] **CRITICAL** — `metadata.go`: `Build()` never computes `primaryKeyComponentPositions` for multi-type indexes (`rt.multiTypeIndexes`). Fixed: added loop over `rt.multiTypeIndexes` matching single-type pattern. 2 regression tests. Found 2026-03-26 via 10-agent audit.
 - [x] **~~HIGH~~** — `cursor_combinators.go:578-586`: `FlatMapPipelinedCursor` priorOuterCont nil on first outer value — **FALSE ALARM**. `priorOuterCont=nil` correctly means "outer started from beginning." On resume, `outerFactory(nil)` restarts outer, `hasPending=true` causes first outer value to be consumed (not emitted) while inner resumes from saved continuation. No duplicates occur. Verified by detailed trace-through. Found+dismissed 2026-03-26.
 - [x] **HIGH** — Missing cross-cutting test matrix. Fixed: `index_registration_matrix_test.go` with 3×7 matrix (21 specs, 1 skipped). **Found and fixed another bug**: `DeleteRecordsWhere` fully cleared multi-type indexes instead of scoping by PK prefix. Added `hasRecordTypeKeyPrefix()` helper + scoped clear for multi-type indexes with RecordTypeKey prefix, error for multi-type without. Matches Java's `canDeleteWhereForIndexOnStoredTypes`.
