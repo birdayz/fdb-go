@@ -1533,3 +1533,148 @@ func TestSetTimeout_CommitCheck(t *testing.T) {
 		t.Errorf("expected error 1031 from Commit, got: %v", err)
 	}
 }
+
+// TestGetApproximateSize_CPort verifies GetApproximateSize tracks mutation size.
+// C binding: fdb_transaction_get_approximate_size
+func TestGetApproximateSize_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+
+	// Empty transaction should have zero size.
+	if size := tx.GetApproximateSize(); size != 0 {
+		t.Errorf("empty tx size: got %d, want 0", size)
+	}
+
+	// Add a mutation and verify size increases.
+	tx.Set([]byte("key123"), []byte("value456"))
+	size1 := tx.GetApproximateSize()
+	if size1 == 0 {
+		t.Error("size should be non-zero after Set")
+	}
+
+	// Add more mutations.
+	tx.Set([]byte("another_key"), []byte("another_value"))
+	tx.Clear([]byte("cleared_key"))
+	size2 := tx.GetApproximateSize()
+	if size2 <= size1 {
+		t.Errorf("size should increase: %d <= %d", size2, size1)
+	}
+
+	// Add conflict ranges.
+	tx.AddReadConflictKey([]byte("conflict_read"))
+	tx.AddWriteConflictKey([]byte("conflict_write"))
+	size3 := tx.GetApproximateSize()
+	if size3 <= size2 {
+		t.Errorf("size should increase with conflict ranges: %d <= %d", size3, size2)
+	}
+}
+
+// TestGetRangeReverse_Full verifies full reverse range scan returns keys in descending order.
+// C binding: fdb_transaction_get_range with reverse=true, limit=0 (unlimited)
+func TestGetRangeReverse_Full(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	prefix := "reverse_full_"
+	keys := make([]string, 20)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("%s%04d", prefix, i)
+	}
+
+	// Write 20 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, k := range keys {
+			tx.Set([]byte(k), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Read all in reverse.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRangeReverse(ctx,
+			[]byte(prefix+"0000"),
+			[]byte(prefix+"9999"),
+			0, // unlimited
+		)
+		return kvs, err
+	})
+	if err != nil {
+		t.Fatalf("reverse range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 20 {
+		t.Fatalf("got %d keys, want 20", len(kvs))
+	}
+
+	// Verify descending order.
+	for i := 0; i < len(kvs)-1; i++ {
+		if bytes.Compare(kvs[i].Key, kvs[i+1].Key) <= 0 {
+			t.Errorf("not descending at %d: %q >= %q", i, kvs[i].Key, kvs[i+1].Key)
+		}
+	}
+}
+
+// TestGetKey_AllSelectors verifies all key selector types against real FDB.
+// C binding: fdb_transaction_get_key
+func TestGetKey_AllSelectors(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	prefix := "getkey_sel_"
+	// Write keys: 10, 20, 30, 40, 50
+	vals := []string{"10", "20", "30", "40", "50"}
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, v := range vals {
+			tx.Set([]byte(prefix+v), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		key     string
+		orEqual bool
+		offset  int32
+		want    string
+	}{
+		// firstGreaterOrEqual("30") → "30"
+		{"FGE exact", prefix + "30", false, 1, prefix + "30"},
+		// firstGreaterOrEqual("25") → "30"
+		{"FGE between", prefix + "25", false, 1, prefix + "30"},
+		// firstGreaterThan("30") → "40"
+		{"FGT exact", prefix + "30", true, 1, prefix + "40"},
+		// lastLessOrEqual("30") → "30"
+		{"LLE exact", prefix + "30", true, 0, prefix + "30"},
+		// lastLessThan("30") → "20"
+		{"LLT exact", prefix + "30", false, 0, prefix + "20"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				return tx.GetKey(ctx, []byte(tc.key), tc.orEqual, tc.offset)
+			})
+			if err != nil {
+				t.Fatalf("GetKey: %v", err)
+			}
+			got := string(result.([]byte))
+			if got != tc.want {
+				t.Errorf("GetKey(%q, orEqual=%v, offset=%d) = %q, want %q",
+					tc.key, tc.orEqual, tc.offset, got, tc.want)
+			}
+		})
+	}
+}

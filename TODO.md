@@ -1801,8 +1801,8 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] **Tenant** — tenantId threaded through wire requests, location cache tenant-aware, Tenant facade. (PR #18 merged)
 - [x] **RYW disable** — `SetReadYourWritesDisable()` intentional no-op (Go client has no client-side write cache).
 - [x] **GetRange reverse** — full implementation with `RangeOptions{Reverse: true}`, integration tests.
-- [ ] **Watch** — `fdb_transaction_watch` (~4 tests). Needs: WatchValueRequest wire type.
-- [ ] **GetApproximateSize** — 1 test. Needs: new wire type.
+- [x] **Watch** — `fdb_transaction_watch` (~4 tests). Implemented in nightshift-1: WatchValueRequest wire type + Transaction.Watch() + integration test.
+- [ ] **GetApproximateSize** — 1 test. Already implemented (`GetApproximateSize()` on Transaction), just needs C binding port test.
 
 **Not applicable (internal/niche):**
 - System key read/write (server-level permissions)
@@ -2190,16 +2190,16 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 #### Tier 2: Buffer pooling (HIGH, ~30% of allocs)
 
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`.
-- [ ] **Pool frame write buffers** — `WriteFrame` allocates `make([]byte, headerSize+payloadLen)` per request. Pool via `sync.Pool`.
-- [ ] **Pool reply channels** — `PrepareReply` allocates `make(chan Response, 1)` per RPC. Pool via `sync.Pool`.
+- [x] **Pool frame write buffers** — nightshift-1: sync.Pool for WriteFrame buffers (*[]byte).
+- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. (Tricky: consumers hold slices into payload.)
+- [x] **Pool reply channels** — nightshift-1: sync.Pool for cancelled PrepareReply channels + error channels for SendFrame/Flush.
 - [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (Low priority — 1 alloc at 56ns.)
 
 #### Tier 3: Reduce syscalls and scheduling (HIGH, main latency source)
 
-- [ ] **Batch TCP writes** — each RPC does a separate `net.Conn.Write` syscall. Buffer multiple frames and flush once (like `bufio.Writer` but frame-aware).
-- [ ] **Avoid `context.WithDeadline` per RPC** — creates a timer + goroutine per call. Use a shared deadline from the parent transaction context, or check `time.Now()` manually.
-- [ ] **Avoid `time.NewTimer` per RPC timeout** — pool timers via `sync.Pool` with `timer.Reset()`.
+- [x] **Batch TCP writes** — nightshift-1: writeLoop goroutine with channel-based coalescing. N concurrent writes → 1 flush.
+- [x] **Avoid `context.WithDeadline` per RPC** — nightshift-1: replaced with sync.Pool'd time.Timer on 6 hot-path RPC sites.
+- [x] **Avoid `time.NewTimer` per RPC timeout** — nightshift-1: timerPool in rpc.go.
 
 #### Tier 4: Reduce round trips (CRITICAL, main latency source)
 
@@ -2209,7 +2209,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 #### Tier 5: Generated code improvements (HIGH, scales with data size)
 
-- [ ] **ParseKeyValueRefStringVector zero-copy** — Generator emits `make([]byte, n)` + `copy` per KV pair (2 allocs/element). Should slice into data buffer instead: `elem.Key = data[pos:pos+n:pos+n]`. Drops 100-KV parse from 201 allocs to 1. Generator fix in `cmd/fdb-schema-extract/main.cpp`.
+- [x] **ParseKeyValueRefStringVector zero-copy** — Already zero-copy: `data[pos:pos+n:pos+n]` slices into buffer. Only 1 allocation for result slice.
 - [ ] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. Low priority — requests are not on the unmarshal hot path.
 
 ### LOW — Missing primitives
@@ -2218,10 +2218,10 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 ### Phase 2
 
-- [ ] **Watch API** — `WatchValueRequest` long-poll to storage server.
+- [x] **Watch API** — nightshift-1: WatchValueRequest (file_id 14747733), endpoint 10, long-poll semantics.
 - [ ] **Directory layer** — vendor from upstream.
 - [ ] **Version vector support** — causal consistency optimization.
-- [ ] **Tenant API** — `Tenant.CreateTransaction()`, `Tenant.Transact()`.
+- [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
 - [ ] **TLS support** — `crypto/tls` for TLS connections.
 - [ ] **Tag throttling** — client-side throttle enforcement.
 

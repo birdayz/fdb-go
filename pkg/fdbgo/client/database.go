@@ -245,6 +245,44 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 	return c, true, nil
 }
 
+// warmConnections pre-establishes TCP connections to all known proxies.
+// Called after bootstrap to eliminate cold-start latency on first transaction.
+// Dials GRV and commit proxies in parallel. Errors are silently ignored —
+// connections will be established on demand if pre-warming fails.
+func (db *database) warmConnections(ctx context.Context) {
+	info := db.dbInfo.Load()
+	if info == nil {
+		return
+	}
+
+	// Collect unique addresses from all proxy types.
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, p := range info.GRVProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+	for _, p := range info.CommitProxies {
+		if !seen[p.Address] {
+			seen[p.Address] = true
+			addrs = append(addrs, p.Address)
+		}
+	}
+
+	// Dial all in parallel.
+	var wg sync.WaitGroup
+	for _, addr := range addrs {
+		wg.Add(1)
+		go func(a string) {
+			defer wg.Done()
+			db.getOrDial(ctx, a)
+		}(addr)
+	}
+	wg.Wait()
+}
+
 // bootstrap connects to coordinators and fetches initial cluster topology.
 // Tries all coordinators in parallel — first success wins. Retries with
 // backoff on transient errors (e.g., failed_to_progress 1216).
@@ -364,6 +402,11 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		cancel()
 		return nil, fmt.Errorf("connect to cluster: %w", err)
 	}
+
+	// Pre-warm connections to all known proxies. The first transaction
+	// would dial lazily, but pre-warming saves ~5-10ms on first RPC.
+	// Errors are ignored — connections will be established on demand.
+	db.warmConnections(ctx)
 
 	// Start topology monitor goroutine.
 	db.wg.Add(1)
