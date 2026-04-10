@@ -930,7 +930,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **FDBDatabaseFactory** — Implemented: caches FDBDatabase by cluster file path. 2 tests.
 - [x] **Weak read semantics** — `WeakReadSemantics` struct + `RunWithWeakReads()`. IsCausalReadRisky sets FDB_TR_OPTION_CAUSAL_READ_RISKY. 2 tests.
 - [ ] **Directory layer caching** — Multi-tenant keyspace management.
-- [ ] **Transaction ID / MDC / logging** — Transaction tracing and structured logging.
+- [x] **Transaction ID** — `TransactionID()` on `FDBRecordContext`. Auto-incremented int64. MDC/structured logging deferred (application concern).
 - [x] **Latency injection** — WONTFIX: Java-specific test harness. Go uses ChaosTransactor for fault injection instead.
 
 ---
@@ -1665,7 +1665,7 @@ Systematic hardening of deserialization paths, panic elimination, fuzz testing, 
 
 ### Phase 4: Additional hardening
 
-- [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison.
+- [ ] **LOW — Schema validation cross-language conformance** — MetaDataValidator/MetaDataEvolutionValidator cross-language error comparison. (Duplicate of line 450.)
 - [x] **LOW — Continuation token fuzzing per cursor type** — 3 new fuzz targets: `FuzzConcatContinuation`, `FuzzFlatMapContinuation`, `FuzzDedupContinuation`. Each exercises proto UnmarshalVT + factory fallback with random bytes. 15s continuous fuzzing each (~22M executions) — all clean. Union/Intersection don't have deserialization factories yet; passthrough combinators (Filter, Skip, Limit, Map) have no continuation parsing to fuzz.
 
 ---
