@@ -53,13 +53,21 @@ Pre-commit hook time dropped from ~12min to ~2min.
 
 `just binding-stress` (100 seeds × 1000 ops): 0 failures, 0 FDB deaths, 17m54s.
 
+### 7. SetSkipPossiblyRebuild builder option (commit `865eae9`)
+
+New `StoreBuilder.SetSkipPossiblyRebuild(bool)` option that skips `checkPossiblyRebuild` during Open/CreateOrOpen. Useful for callers managing index states independently. Not used by OnlineIndexer (needs the auto-rebuild for proper index state detection).
+
+### 8. Extended binding stress
+
+1-hour binding stress test running in background. At time of handover: 50+ seeds, 0 failures, 0 FDB deaths.
+
 ## Current state
 
 - **Master:** clean (`b71680f`)
-- **Branch:** `swingshift-1` (5 commits ahead of master)
+- **Branch:** `swingshift-1` (7 commits ahead of master)
 - **Open PRs:** 1 (#29, draft)
 - **All 13 Bazel test targets pass** (total test time ~90s with shared container)
-- **Binding stress:** 100/100 seeds × 1000 ops, 0 failures, 0 FDB deaths
+- **Binding stress:** 100/100 seeds × 1000 ops + extended 1h run, 0 failures, 0 FDB deaths
 - **C binding port tests:** 78 test functions (was 56)
 - **Client test time:** ~45s (was ~700s)
 
