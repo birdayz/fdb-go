@@ -841,3 +841,34 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 	// Reset timeout (disable).
 	db.Options().SetTransactionTimeout(0)
 }
+
+// TestDatabaseTransactionSizeLimit verifies that FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
+// applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:888.
+func TestDatabaseTransactionSizeLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Set tiny size limit at database level.
+	if err := db.Options().SetTransactionSizeLimit(32); err != nil {
+		t.Fatalf("SetTransactionSizeLimit: %v", err)
+	}
+
+	// Transaction with mutations exceeding the limit should fail.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("foo"), []byte("foundation database is amazing"))
+		return nil, nil
+	})
+	if err == nil {
+		t.Fatal("expected transaction_too_large error")
+	}
+	fdbErr, ok := err.(fdb.Error)
+	if !ok {
+		t.Fatalf("expected fdb.Error, got %T: %v", err, err)
+	}
+	if fdbErr.Code != 2101 {
+		t.Fatalf("expected error code 2101 (transaction_too_large), got %d", fdbErr.Code)
+	}
+
+	// Reset to default.
+	db.Options().SetTransactionSizeLimit(0)
+}
