@@ -718,6 +718,25 @@ func (tx *Transaction) GetApproximateSize() int64 {
 	return size
 }
 
+// GetLocations returns all shard location entries overlapping [begin, end).
+func (tx *Transaction) GetLocations(ctx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
+	return tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId)
+}
+
+// GetAddressesForKey returns the addresses of storage servers responsible for
+// the given key. Uses the location cache (queries cluster on miss).
+func (tx *Transaction) GetAddressesForKey(ctx context.Context, key []byte) ([]string, error) {
+	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+	if err != nil {
+		return nil, fmt.Errorf("locate key: %w", err)
+	}
+	addrs := make([]string, len(loc.Servers))
+	for i, s := range loc.Servers {
+		addrs[i] = s.Address
+	}
+	return addrs, nil
+}
+
 // checkTimeout returns a timeout error if the deadline has passed.
 func (tx *Transaction) checkTimeout() error {
 	if tx.timeout > 0 && time.Now().After(tx.deadline) {

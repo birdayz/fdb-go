@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -881,4 +882,44 @@ func TestEmptyRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRange: %v", err)
 	}
+}
+
+// TestGetAddressesForKey verifies that GetAddressesForKey returns at least
+// one storage server address for an existing key.
+func TestGetAddressesForKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("locality_test_key")
+
+	// Write a key so the shard is populated.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Get addresses for the key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetAddressesForKey(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("GetAddressesForKey: %v", err)
+	}
+	addrs := result.([]string)
+	if len(addrs) == 0 {
+		t.Fatal("expected at least one address")
+	}
+	// Verify address format (host:port).
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			t.Errorf("address %q doesn't look like host:port", addr)
+		}
+	}
+	t.Logf("addresses for key: %v", addrs)
 }

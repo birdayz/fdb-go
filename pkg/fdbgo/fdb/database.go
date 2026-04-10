@@ -297,9 +297,22 @@ func (db Database) GetClientStatus() ([]byte, error) {
 	), nil
 }
 
-// LocalityGetBoundaryKeys is not yet implemented.
-func (db Database) LocalityGetBoundaryKeys(_ ExactRange, _ int, _ int64) ([]Key, error) {
-	return nil, errNotSupported
+// LocalityGetBoundaryKeys returns shard boundary keys within the given range.
+// Uses the location cache to find shard boundaries. The limit and readVersion
+// parameters match the Apple binding signature but are advisory.
+func (db Database) LocalityGetBoundaryKeys(r ExactRange, limit int, _ int64) ([]Key, error) {
+	begin, end := r.FDBRangeKeys()
+	ctx := db.d.ctx
+	tx := db.d.inner.CreateTransaction()
+	locs, err := tx.GetLocations(ctx, begin.FDBKey(), end.FDBKey(), limit)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]Key, 0, len(locs)+1)
+	for _, loc := range locs {
+		keys = append(keys, Key(loc.ShardBegin))
+	}
+	return keys, nil
 }
 
 // RebootWorker is not yet implemented.

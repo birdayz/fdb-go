@@ -383,9 +383,27 @@ func (tr Transaction) ListTenants() ([]Key, error) {
 	return tr.t.db.ListTenants()
 }
 
-// LocalityGetAddressesForKey is not yet implemented.
-func (tr Transaction) LocalityGetAddressesForKey(_ KeyConvertible) FutureStringSlice {
-	return newReadyFutureStringSlice(nil, errNotSupported)
+// LocalityGetAddressesForKey returns the addresses of storage servers that
+// hold the given key. Uses the location cache, querying the cluster on miss.
+func (tr Transaction) LocalityGetAddressesForKey(key KeyConvertible) FutureStringSlice {
+	inner, ctx := tr.t.inner, tr.t.ctx
+	return newFutureStringSlice(func() ([]string, error) {
+		addrs, err := inner.GetAddressesForKey(ctx, key.FDBKey())
+		if err != nil {
+			return nil, convertError(err)
+		}
+		return addrs, nil
+	})
+}
+
+func newFutureStringSlice(fn func() ([]string, error)) FutureStringSlice {
+	f := &futureStringSlice{}
+	f.init()
+	go func() {
+		defer close(f.done)
+		f.val, f.err = fn()
+	}()
+	return f
 }
 
 // Transact implements Transactor for composability.
