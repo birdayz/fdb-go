@@ -698,6 +698,48 @@ func TestInterop_GetRangeWithLimit(t *testing.T) {
 	}
 }
 
+// TestInterop_SnapshotGetKey verifies that Snapshot.GetKey resolves key
+// selectors identically across Go and CGo clients.
+func TestInterop_SnapshotGetKey(t *testing.T) {
+	prefix := "interop_sks_"
+
+	// Seed via Go.
+	_, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set(gofdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte("v"))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Resolve via Snapshot.GetKey on Go client.
+	goClient.InvalidateGRVCache()
+	goResult, err := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		return tx.Snapshot().GetKey(gofdb.FirstGreaterOrEqual(gofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("go snapshot getkey: %v", err)
+	}
+
+	cgoResult, err := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		return tx.Snapshot().GetKey(cgofdb.FirstGreaterOrEqual(cgofdb.Key(prefix + "02"))).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("cgo snapshot getkey: %v", err)
+	}
+
+	goKey := goResult.(gofdb.Key)
+	cgoKey := cgoResult.(cgofdb.Key)
+	if !bytes.Equal(goKey, cgoKey) {
+		t.Errorf("snapshot key selector mismatch: go=%q, cgo=%q", goKey, cgoKey)
+	}
+	if string(goKey) != prefix+"02" {
+		t.Errorf("expected %q, got %q", prefix+"02", goKey)
+	}
+}
+
 // errorAs is a generic helper that avoids importing errors for a simple
 // type assertion (both Error types are concrete structs, not wrapped).
 func errorAs[T any](err error, target *T) bool {
