@@ -447,7 +447,7 @@ Architectural decision: Java exception class = Go error struct. Use `errors.As()
 - [x] **Store lock errors cross-language** — FORBID_RECORD_UPDATE prevents save in both Go and Java.
 - [x] **Cross-language error propagation** — Go creates record, Java insert duplicate gets RecordAlreadyExistsException.
 - [x] **Unique index violation cross-language** — 6 conformance specs: READABLE violation detection (Go→Java, Java→Go), index entry scanning, WRITE_ONLY violation wire format with existingKey.
-- [ ] **Schema validation cross-language** — deferred (MetaDataValidator gaps need to be addressed first).
+- [ ] **Schema validation cross-language** — MetaDataValidator gaps are all addressed. Needs Java conformance server additions for cross-language error comparison.
 
 ---
 
