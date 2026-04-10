@@ -1383,12 +1383,12 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 
 ### OnlineIndexer — missing config options
 
-- [ ] **`setIndexStatePrecondition()`** — State pre-check. **LOW**.
-- [ ] **`setTimeLimitMillis()`** — Per-batch time limits. **LOW**.
-- [ ] **`setCommitCheckIntervalCount()`** — **LOW**.
-- [ ] **`setMaxWriteRetries()`** — Handled implicitly via FDBDatabaseRunner. **LOW**.
-- [ ] **`setDesiredRecordsPerSecond()`** — Rate limiting. **LOW**.
-- [ ] **`addStatisticsCollector()`** — Statistics collection. **LOW**.
+- [x] **`setIndexStatePrecondition()`** — State pre-check. **LOW**.
+- [x] **`setTimeLimitMillis()`** — Per-batch time limits. **LOW**.
+- [x] **`setCommitCheckIntervalCount()`** — WONTFIX: commit check is per-transaction in Go.
+- [x] **`setMaxWriteRetries()`** — Handled implicitly via FDBDatabaseRunner. **LOW**.
+- [x] **`setDesiredRecordsPerSecond()`** — Rate limiting. **LOW**.
+- [x] **`addStatisticsCollector()`** — Statistics collection. **LOW**.
 
 ### Convenience methods — not implemented
 
