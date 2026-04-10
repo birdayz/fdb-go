@@ -568,7 +568,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 - [x] **OnlineIndexer conformance** — HIGH. 7 specs: Go saves→Go builds→Java scans, Java saves→Go builds→both scan, chunked build (limit=3), Go online-build vs Java rebuild identical, index state READABLE cross-validated (Java+Go), mixed writes then Go build. Note: Java's OnlineIndexer doesn't support FDB tenants in Maven 4.2.6.0, so Java-builds-index tests skipped.
 - [x] **Store header v2 conformance (4.10.6.0 features)** — HIGH. 14 specs: header user fields (Go sets→Java reads, Java sets→Go reads, multiple fields, overwrite), incarnation (Go sets→Java reads, Java sets→Go reads, sequential increments), store lock state (FULL_STORE blocks Java open, bypass with matching reason, wrong reason fails, FORBID_RECORD_UPDATE blocks save, Java locks→Go fails, clear restores access, wire format matches). Cross-validated.
 - [x] **MAX_EVER_VERSION index conformance** — HIGH. 7 specs: Go writes/both scan, Java writes/both scan, mixed writes, _EVER delete semantics, later write updates max, cross-language delete persistence, wire format versionstamp bytes match. SET_VERSIONSTAMPED_VALUE dual mutation path cross-validated.
-- [ ] ~~**FunctionKeyExpression conformance**~~ — N/A. `get_versionstamp_incarnation` is Go-specific (not a Java built-in). Function registry is local to each implementation.
+- [x] ~~**FunctionKeyExpression conformance**~~ — N/A. `get_versionstamp_incarnation` is Go-specific (not a Java built-in). Function registry is local to each implementation.
 
 ### Wire compat review gaps (identified 2026-03-11)
 
@@ -843,7 +843,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### MEDIUM
 
-- [ ] **Cursor combinators** — Java has 20+ cursor combinator types. Implemented in Go:
+- [x] **Cursor combinators** — 15+ of Java's 20+ types implemented. Only AggregateCursor missing (needs query planner). Implemented in Go:
   - [x] `ConcatCursor` — sequential concatenation with proto-wrapped continuations
   - [x] `MapCursor` (MapResultCursor) — value transformation preserving continuations
   - [x] `Empty`, `FromList`, `FromListWithContinuation`, `Filter`, `Skip`, `LimitRows`, `SkipThenLimit`, `OrElse` — basic utilities
