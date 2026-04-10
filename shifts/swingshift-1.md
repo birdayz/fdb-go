@@ -57,18 +57,26 @@ Pre-commit hook time dropped from ~12min to ~2min.
 
 New `StoreBuilder.SetSkipPossiblyRebuild(bool)` option that skips `checkPossiblyRebuild` during Open/CreateOrOpen. Useful for callers managing index states independently. Not used by OnlineIndexer (needs the auto-rebuild for proper index state detection).
 
-### 8. Extended binding stress
+### 8. Database-level retry/size limit tests (commit `c8b38c1`)
 
-1-hour binding stress test running in background. At time of handover: 50+ seeds, 0 failures, 0 FDB deaths.
+2 more C binding port tests matching C++ `FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT` and `FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT` unit tests.
+
+### 9. Shared container for fdb package tests (commit `1c1af5b`)
+
+Same TestMain pattern applied to `pkg/fdbgo/fdb/` test package. Tenant tests keep own container (need tenant config).
+
+### 10. Extended binding stress
+
+1-hour binding stress test: 100+ seeds at 18 min mark, 0 failures, 0 FDB deaths. Running until ~21:28 CEST.
 
 ## Current state
 
 - **Master:** clean (`b71680f`)
-- **Branch:** `swingshift-1` (7 commits ahead of master)
+- **Branch:** `swingshift-1` (10 commits ahead of master)
 - **Open PRs:** 1 (#29, draft)
-- **All 13 Bazel test targets pass** (total test time ~90s with shared container)
-- **Binding stress:** 100/100 seeds × 1000 ops + extended 1h run, 0 failures, 0 FDB deaths
-- **C binding port tests:** 78 test functions (was 56)
+- **All 13 Bazel test targets pass**
+- **Binding stress:** 100/100 seeds + extended 1h run (100+ seeds), 0 failures, 0 FDB deaths
+- **C binding port tests:** 80 test functions (was 56)
 - **Client test time:** ~45s (was ~700s)
 
 ## Known issues
@@ -78,13 +86,13 @@ None discovered. All existing tests pass, binding stress clean.
 ## What to work on next
 
 ### High impact
-- **Port more C binding tests** — 78/81 ported (remaining: `fdb_transaction_get_total_cost` needs server-side cost tracking, `fdb_transaction_get_tag_throttled_duration` needs throttle metrics, `fdb_database_get_server_protocol` needs protocol version API)
-- **Binding stress-duration** — run `just binding-stress-duration 2h` for extended reliability validation
+- **Extended binding stress** — the 1h run should finish by ~21:28 CEST. Check final result.
+- **Port more C binding tests** — 80/81 ported from unit_tests.cpp (remaining 3 need server-side cost/throttle/protocol APIs)
 
 ### Medium impact
 - **Directory layer** — needed by some FDB applications, significant feature
 - **GetTotalCost()** — enables 1 more C binding test, requires tracking read costs from server responses
-- **OnlineIndexer skip-rebuild option** — `online_indexer.go:677` TODO: store builder option to skip `checkPossiblyRebuild` (matches Java's `IndexMaintenanceFilter.NONE`)
+- **GetServerProtocol()** — could add by extracting protocol version from coordinator response
 
 ### Low priority
 - Wire type MEDIUM items (#11, #14) — edge cases
