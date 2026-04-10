@@ -1788,7 +1788,7 @@ This workflow already found 2 critical bugs on first run: 13 wrong mutation type
 
 Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 
-**Ported (39 tests) — `c_binding_port_test.go`:**
+**Ported (71 tests) — `c_binding_port_test.go`:**
 - [x] GetRange (forward, reverse, limit, empty, streaming modes, exact)
 - [x] All 12 atomic ops (ADD, AND, OR, XOR, CompareAndClear, AppendIfFits, Max, Min, ByteMax, ByteMin, SetVersionstampedKey, SetVersionstampedValue) + MultipleAtomicOps
 - [x] SetReadVersion old/future, GetCommittedVersion (read-only + write)
@@ -1800,6 +1800,11 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
 - [x] SizeLimit (too small, too large, minimum valid) (dayshift-1)
 - [x] Watch with RYW disabled (dayshift-1)
 - [x] System key access: cannot read, read with option, cannot write, write with option (dayshift-1)
+- [x] Versionstamp invalid index (key, value, too-short), valid boundary offset (swingshift-1)
+- [x] Transaction Reset (basic reuse, retry count clear, read version clear, cancel→reset) (swingshift-1)
+- [x] GetLocations, write-write conflict detection (swingshift-1)
+- [x] Transaction reuse after commit, database-level AccessSystemKeys (swingshift-1)
+- [x] OnError retry semantics (retry limit, non-retryable, non-FDB errors) (swingshift-1)
 
 **Next to port (need API additions):**
 - [x] **Transaction options** — `SetTimeout`, `SetRetryLimit`, priority, lock-aware reads. Wired through to GRV request. (PR #10 + review rounds)
