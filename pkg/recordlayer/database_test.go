@@ -283,6 +283,30 @@ var _ = Describe("FDBDatabase", func() {
 		})
 	})
 
+	Describe("FDBDatabaseFactory", func() {
+		It("returns the same instance for the same cluster file", func() {
+			factory := NewFDBDatabaseFactory()
+			db1, err := factory.GetDatabase(clusterTmpFilePath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(db1).NotTo(BeNil())
+
+			db2, err := factory.GetDatabase(clusterTmpFilePath)
+			Expect(err).NotTo(HaveOccurred())
+			// Same pointer — cached instance.
+			Expect(db2).To(BeIdenticalTo(db1))
+		})
+
+		It("supports custom store state cache factory", func() {
+			factory := NewFDBDatabaseFactory()
+			factory.StoreStateCacheFactory = func() FDBRecordStoreStateCache {
+				return PassThroughStoreStateCache()
+			}
+			db, err := factory.GetDatabase(clusterTmpFilePath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(db).NotTo(BeNil())
+		})
+	})
+
 	Describe("NewFDBDatabaseWithTransactor", func() {
 		It("uses the custom transactor for Run", func() {
 			// Create a wrapping transactor that records whether Transact was called.

@@ -51,6 +51,48 @@ type FDBDatabase struct {
 	storeStateCache FDBRecordStoreStateCache
 }
 
+// FDBDatabaseFactory caches FDBDatabase instances by cluster file path.
+// Thread-safe. Matches Java's FDBDatabaseFactory.getDatabase(clusterFile).
+type FDBDatabaseFactory struct {
+	mu        sync.Mutex
+	databases map[string]*FDBDatabase
+
+	// StoreStateCacheFactory creates a store state cache for each new database.
+	// If nil, PassThroughStoreStateCache is used.
+	StoreStateCacheFactory func() FDBRecordStoreStateCache
+}
+
+// NewFDBDatabaseFactory creates a factory for caching database instances.
+func NewFDBDatabaseFactory() *FDBDatabaseFactory {
+	return &FDBDatabaseFactory{
+		databases: make(map[string]*FDBDatabase),
+	}
+}
+
+// GetDatabase returns a cached FDBDatabase for the given cluster file path.
+// Creates a new one on first call for each unique path.
+// Matches Java's FDBDatabaseFactory.getDatabase(clusterFile).
+func (f *FDBDatabaseFactory) GetDatabase(clusterFile string) (*FDBDatabase, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if db, ok := f.databases[clusterFile]; ok {
+		return db, nil
+	}
+
+	rawDB, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		return nil, fmt.Errorf("open database %q: %w", clusterFile, err)
+	}
+
+	db := NewFDBDatabase(rawDB)
+	if f.StoreStateCacheFactory != nil {
+		db.SetStoreStateCache(f.StoreStateCacheFactory())
+	}
+	f.databases[clusterFile] = db
+	return db, nil
+}
+
 // NewFDBDatabase creates a new FDBDatabase wrapping the core FDB database
 func NewFDBDatabase(db fdb.Database) *FDBDatabase {
 	// Record layer reads \xff/metadataVersion — set ReadSystemKeys as default
