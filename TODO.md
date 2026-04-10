@@ -2203,7 +2203,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [x] **Pool frame write buffers** — nightshift-1: sync.Pool for WriteFrame buffers (*[]byte).
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. (Tricky: consumers hold slices into payload.)
 - [x] **Pool reply channels** — nightshift-1: sync.Pool for cancelled PrepareReply channels + error channels for SendFrame/Flush.
-- [ ] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (Low priority — 1 alloc at 56ns.)
+- [x] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (WONTFIX: Low priority — 1 alloc at 56ns.)
 
 #### Tier 3: Reduce syscalls and scheduling (HIGH, main latency source)
 
@@ -2220,7 +2220,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 #### Tier 5: Generated code improvements (HIGH, scales with data size)
 
 - [x] **ParseKeyValueRefStringVector zero-copy** — Already zero-copy: `data[pos:pos+n:pos+n]` slices into buffer. Only 1 allocation for result slice.
-- [ ] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. Low priority — requests are not on the unmarshal hot path.
+- [x] **Unmarshal nested struct allocs** — Each `ReadNestedReader` heap-allocates a `*Reader` (4-5 allocs for request types). Could use value-type `Reader` returned by value, but requires API change. WONTFIX: Low priority — requests are not on the unmarshal hot path.
 
 ### LOW — Missing primitives
 
