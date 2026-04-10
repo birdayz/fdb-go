@@ -125,6 +125,9 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return nil
 	}
 
+	// Version changed — set the flag (matches Java's versionChanged field).
+	store.versionChanged = true
+
 	// Clean up data for former indexes (dropped since old version).
 	// Matches Java's checkRebuild() which calls removeFormerIndex() for each,
 	// clearing INDEX_KEY, INDEX_SECONDARY_SPACE_KEY, INDEX_RANGE_SPACE_KEY,

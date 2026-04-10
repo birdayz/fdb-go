@@ -927,7 +927,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 ### LOW
 
-- [ ] **FDBDatabaseFactory** — Factory/pooling for database instances.
+- [x] **FDBDatabaseFactory** — Implemented: caches FDBDatabase by cluster file path. 2 tests.
 - [ ] **Weak read semantics** — `WeakReadSemantics` for causal read risky, version staleness bounds.
 - [ ] **Directory layer caching** — Multi-tenant keyspace management.
 - [ ] **Transaction ID / MDC / logging** — Transaction tracing and structured logging.
@@ -1283,7 +1283,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 ### FDBRecordStore — missing public methods
 
 - [ ] **`preloadRecordAsync()`** — Read-ahead optimization. Not applicable to Go's sync model. **LOW**.
-- [ ] **`isVersionChanged()`** — Rare introspection. **LOW**.
+- [x] **`isVersionChanged()`** — `IsVersionChanged()` on `FDBRecordStore`. Set during `checkPossiblyRebuild` when stored version < metadata version.
 - [ ] **`buildSingleRecord()`** — Edge case for single-record index builds. **LOW**.
 - [ ] **Query planning methods** (~5 methods) — Out of scope until query planner is ported. **LOW**.
 
@@ -1356,7 +1356,7 @@ db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 - [ ] **`openContext()` (6 overloads)** — Go uses Run()/RunWithVersionstamp() exclusively. **LOW**.
 - [ ] **`performNoOp()` / `performNoOpAsync()`** — No-op transaction testing. **LOW**.
 - [ ] **`clearCaches()` / `close()`** — Cache/lifecycle management. **LOW**.
-- [ ] **`FDBDatabaseFactory`** — Database pooling. **LOW**.
+- [x] **`FDBDatabaseFactory`** — Implemented: caches FDBDatabase by cluster file path.
 - [ ] **`setDatacenterId()` / `getLocalityProvider()`** — Datacenter affinity. **LOW**.
 
 ### FDBRecordContext — missing methods

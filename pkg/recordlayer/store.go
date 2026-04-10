@@ -94,6 +94,15 @@ type FDBRecordStore struct {
 	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu            sync.RWMutex             // protects storeHeader + indexStates
+	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
+}
+
+// IsVersionChanged returns true if the metadata version changed during
+// the most recent Open/CreateOrOpen (i.e., checkPossiblyRebuild detected
+// that the stored version < current metadata version).
+// Matches Java's FDBRecordStore.isVersionChanged().
+func (store *FDBRecordStore) IsVersionChanged() bool {
+	return store.versionChanged
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.
