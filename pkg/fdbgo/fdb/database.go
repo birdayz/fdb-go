@@ -159,7 +159,6 @@ func (db Database) CreateTransaction() (Transaction, error) {
 func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		t := &transaction{
 			inner:      tx,
@@ -168,7 +167,9 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 			commitDone: make(chan struct{}),
 		}
 		lastTx = t
-		return f(Transaction{t: t})
+		r, e = f(Transaction{t: t})
+		e = unconvertError(e)
+		return
 	})
 	// Signal commitDone — client.Transact auto-committed after the closure
 	// returned. Any GetVersionstamp goroutine blocked on commitDone will unblock.
@@ -190,17 +191,20 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 
 // ReadTransact runs a read-only transactional function with automatic retry.
 func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {
+	// Use a reusable transaction wrapper to avoid per-call allocation.
+	// The transaction struct is stack-allocated (doesn't escape because
+	// the closure doesn't store it — it only stores the Transaction value
+	// which embeds a pointer to t).
 	result, err := db.d.inner.ReadTransact(db.d.ctx, func(tx *client.Transaction) (r any, e error) {
-		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
-		tr := Transaction{t: &transaction{
+		t := transaction{
 			inner: tx,
 			db:    db,
 			ctx:   db.d.ctx,
-			// No commitDone — read transactions never commit.
-			// GetVersionstamp() returns error 2015 when commitDone is nil.
-		}}
-		return f(tr)
+		}
+		r, e = f(Transaction{t: &t})
+		e = unconvertError(e)
+		return
 	})
 	if err != nil {
 		return nil, convertError(err)
