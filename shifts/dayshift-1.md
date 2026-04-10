@@ -40,6 +40,16 @@ The nightshift said "can't fix client-side" — but RST-on-close eliminates the 
 
 **VecSerStrategy parser OOM** — All three vector parsers (`ParseKeyRefStringVector`, `ParseKeyRangeRefStringVector`, `ParseKeyValueRefStringVector`) used the wire count directly as `make()` capacity. Crafted count of `0xFFFFFFFF` → 32GB allocation attempt → OOM. Fix: clamp capacity to `remaining_bytes / min_element_size`.
 
+### C++ Behavioral Alignment
+
+**Client-side validateVersion** — Matching C++ `DatabaseContext::validateVersion()`:
+- `transaction_too_old` (1007): reject `SetReadVersion` below `minAcceptableReadVersion` (tracked from every GRV response)
+- `future_version` (1009): reject absurd versions (>10^15) client-side
+
+Previously skipped `TestSetReadVersionOld_CPort` and `TestSetReadVersionFuture_CPort` — both now pass. Zero behavioral skips remaining.
+
+**RYW wrapper wiring bug** — `SetReadYourWritesDisable()` and `SetSnapshotRywDisable()` on the fdb wrapper were no-ops. Now properly delegate to inner Transaction.
+
 ### Write Path Investigation
 
 Profiled Go vs CGo Set+Commit:
