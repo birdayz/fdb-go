@@ -13,7 +13,7 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ### Correctness audit (2026-04-10) — fdb facade audit
 
-- [x] **HIGH** — `OrEqual` wire protocol mismatch in fdb facade. Apple Go binding convention (`OrEqual=true` = inclusive) is INVERTED from C++ wire protocol (`orEqual=true` = exclusive). The Apple C binding inverts `OrEqual` before sending to the server, but our fdb facade was passing it directly. Result: `GetKey(FirstGreaterOrEqual(key))` skipped exact matches. Fixed in 3 sites: `Transaction.GetKey`, `Snapshot.GetKey`, `resolveSelector` (used by range queries with non-trivial selectors). Affected bunched map (TEXT index) via `LastLessOrEqual`/`LastLessThan` selectors. Found via cross-client interop tests (Go vs CGo). 3 new interop tests added.
+- [x] **HIGH** — `OrEqual` values wrong in `FirstGreaterOrEqual`/`FirstGreaterThan` key selector definitions. Our `range.go` had `FGE={OrEqual:true}` and `FGT={OrEqual:false}`, but the Apple Go binding (and C++ wire protocol) uses the opposite: `FGE={OrEqual:false}`, `FGT={OrEqual:true}`. The Apple C binding does NOT invert OrEqual (confirmed by reading `fdb_c.cpp` source). Root cause was wrong definitions, not a missing inversion. Fixed at the definition level in `range.go` + updated `isTrivialSelector` and `resolveSelector` optimizations. Affected all 4 key selectors through the fdb facade. Found via cross-client interop tests (Go vs CGo). 5 new interop tests added.
 
 ### Correctness audit (2026-04-09) — C++ alignment sweep
 

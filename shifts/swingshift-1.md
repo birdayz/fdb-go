@@ -81,18 +81,22 @@ All 10 fuzz targets run for 30s each: **409M total executions, 0 crashes.**
 
 3 new integration tests: LocalityGetBoundaryKeys, GetClientStatus, Transaction Reset through fdb facade.
 
-### 14. CRITICAL: OrEqual wire protocol fix (commit `82c283f`)
+### 14. CRITICAL: KeySelector OrEqual fix (commits `82c283f` → `f2e06dc`)
 
-**Found and fixed a real correctness bug** in the fdb facade's `GetKey` and `resolveSelector`. The Apple Go binding convention and the C++ wire protocol have INVERTED semantics for the `OrEqual` field in key selectors:
+**Found and fixed a real correctness bug** in key selector definitions. Our `FirstGreaterOrEqual` and `FirstGreaterThan` had SWAPPED `OrEqual` values compared to the Apple Go binding and C++ wire protocol:
 
-- Apple binding: `OrEqual=true` → "greater or equal" (inclusive)
-- C++ wire: `OrEqual=true` → "strictly greater" (exclusive)
+- Ours (wrong): `FGE={OrEqual:true}`, `FGT={OrEqual:false}`
+- Apple/C++:    `FGE={OrEqual:false}`, `FGT={OrEqual:true}`
 
-The Apple C binding inverts `OrEqual` before sending to the server. Our fdb facade was passing it directly — causing `FirstGreaterOrEqual` to skip exact matches. Found via 3 new cross-client interop tests comparing Go `GetKey` against CGo on identical data.
+The Apple C binding does NOT invert OrEqual (confirmed by reading `fdb_c.cpp` source). Root cause was wrong definitions in `range.go`, not a missing inversion. Initial fix attempted `!ks.OrEqual` inversions at the facade layer, but this broke `LastLessOrEqual`/`LastLessThan`. Correct fix: match Apple Go binding definitions directly.
 
-### 15. Cross-client interop tests (commit `82c283f`)
+### 15. Cross-client interop tests (5 new tests)
 
-3 new tests: reverse range scan, key selector resolution, limited range scan. All compare pure Go client results against CGo client on identical data.
+- Reverse range scan, key selector resolution (FGE), limited range scan
+- LastLessOrEqual + LastLessThan cross-client verification
+- Snapshot.GetKey cross-client verification
+
+All compare pure Go client results against CGo client on identical data. These tests caught the OrEqual bug immediately.
 
 ## Current state
 
