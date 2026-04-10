@@ -50,6 +50,10 @@ Previously skipped `TestSetReadVersionOld_CPort` and `TestSetReadVersionFuture_C
 
 **RYW wrapper wiring bug** — `SetReadYourWritesDisable()` and `SetSnapshotRywDisable()` on the fdb wrapper were no-ops. Now properly delegate to inner Transaction.
 
+### Database-Level Transaction Defaults
+
+Implemented `FDB_DB_OPTION_TRANSACTION_TIMEOUT`, `_RETRY_LIMIT`, `_MAX_RETRY_DELAY`, `_SIZE_LIMIT`. Previously all no-ops. Now stored on the Database and applied to every transaction. Two new tests verify timeout and size limit at DB level.
+
 ### Write Path Investigation
 
 Profiled Go vs CGo Set+Commit:
