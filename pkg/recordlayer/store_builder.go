@@ -465,6 +465,7 @@ type StoreBuilder struct {
 	bypassFullStoreLockReason string
 	storeStateCache           FDBRecordStoreStateCache // per-store override; nil = use db cache
 	database                  *FDBDatabase             // for inheriting cache
+	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 }
 
 // NewStoreBuilder creates a new store builder
@@ -519,6 +520,15 @@ func (b *StoreBuilder) SetStoreStateCache(cache FDBRecordStoreStateCache) *Store
 // Matches Java's FDBRecordStore.Builder.setDatabase().
 func (b *StoreBuilder) SetDatabase(db *FDBDatabase) *StoreBuilder {
 	b.database = db
+	return b
+}
+
+// SetSkipPossiblyRebuild disables automatic index rebuild checks during Open/CreateOrOpen.
+// When set, the store will not call checkPossiblyRebuild even if the metadata version changed.
+// This is used by OnlineIndexer which manages index states independently.
+// Matches Java's IndexMaintenanceFilter.NONE behavior.
+func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
+	b.skipPossiblyRebuild = skip
 	return b
 }
 
@@ -621,8 +631,10 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	}
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
-	if err := store.checkPossiblyRebuild(store.storeHeader); err != nil {
-		return nil, err
+	if !b.skipPossiblyRebuild {
+		if err := store.checkPossiblyRebuild(store.storeHeader); err != nil {
+			return nil, err
+		}
 	}
 
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
@@ -669,7 +681,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 	}
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
-	if exists {
+	if exists && !b.skipPossiblyRebuild {
 		if err := store.checkPossiblyRebuild(store.storeHeader); err != nil {
 			return nil, err
 		}

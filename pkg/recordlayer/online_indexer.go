@@ -673,8 +673,8 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 //
 // Note: Java's OnlineIndexer opens stores with IndexMaintenanceFilter.NONE
 // (no auto-rebuild), so it can skip READABLE indexes. Our openStore() uses
-// plain Open() which may auto-rebuild, so we always proceed to WRITE_ONLY.
-// TODO: Add a store builder option to skip checkPossiblyRebuild for OnlineIndexer.
+// plain Open() which auto-rebuilds via checkPossiblyRebuild, ensuring new
+// indexes are properly detected and transitioned to WRITE_ONLY/DISABLED.
 func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		store, err := oi.openStore(rtx)
