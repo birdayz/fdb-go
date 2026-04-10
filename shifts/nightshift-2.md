@@ -69,7 +69,7 @@ Resolved 24 items:
 
 ### High impact
 - **Binding tester directory extension** — implement DIRECTORY_* stack machine operations to pass the binding tester's directory test suite (~21 operations, ~400 lines)
-- **FDBMetaDataStore** — dynamic schema storage in FDB (~580 lines Java). Enables runtime schema evolution without redeployment. Key for production deployments.
+- **FDBMetaDataStore** — dynamic schema storage in FDB (~580 lines Java). Enables runtime schema evolution. **CAUTION**: `FutureByteSlice.Get()` inside `Transact` has panic recovery issues — investigate before implementing. The fdb facade wraps panics from MustGet but Get() also has edge cases with nil keys.
 - **Performance benchmarking** — real workload benchmarks (bulk inserts, index-heavy saves, large scans, OnlineIndexer throughput). Compare with Java.
 
 ### Medium impact
