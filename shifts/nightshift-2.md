@@ -1,6 +1,6 @@
 # Nightshift-2 Handover
 
-**Date:** 2026-04-10 22:46 — (ongoing, shift ends 06:00 CEST)
+**Date:** 2026-04-10 22:46 — 2026-04-11 06:00 CEST
 **PR:** #30 (draft)
 **Branch:** `nightshift-2`
 
@@ -39,28 +39,26 @@ Files:
 
 Started at shift begin. At latest check: 300+ seeds, 0 failures, 0 FDB deaths. Will complete ~01:47 CEST.
 
-### 5. TODO.md cleanup
+### 5. TODO.md cleanup (128 → 104 open items)
 
-Resolved 8 stale items:
-- Wire type #11 (nil vs empty): verified not a bug
-- Wire type #14 (variant tag=0): verified correct behavior
-- emptyVector optimization: already implemented
-- TEXT index, key expressions: marked as done
-- Cursor combinators: marked as done (15+ of 20+)
-- Get prefix accessors: WONTFIX (Java naming for porting clarity)
-- FunctionKE conformance: marked N/A
-- Index types heading: updated to "ALL COMPLETE"
-- Coverage table: updated (key expressions 95%, cursors 80%)
-- Memory.md: updated spec counts (2307 Ginkgo, 396 conformance)
+Resolved 24 items:
+- **Features implemented**: WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
+- **Verified not bugs**: Wire #11 (nil/empty), Wire #14 (variant tag=0), emptyVector
+- **Marked done**: TEXT index, key expressions, cursor combinators, FunctionKE conformance
+- **WONTFIX (Java-specific)**: preloadRecordAsync, buildSingleRecord, scanRemoteFetch, mergeIndex/performOperation, isIdempotent, IndexScanBounds, scanIndexRecords filter, repairRecordKeys, FDBLatencySource, CursorLimitManager, Visitor pattern, PreloadRecordStoreState, canDeleteWhere
+- **Style**: Get prefix WONTFIX (Java naming for compat)
+- **Updated**: coverage table, memory.md spec counts, index types heading
 
 ## Current state
 
 - **Master:** `9be2748`
-- **Branch:** `nightshift-2` (5 commits ahead)
+- **Branch:** `nightshift-2` (22 commits ahead)
 - **Open PRs:** 1 (#30, draft)
-- **All 13+ Bazel test targets pass** (14 with new directory target)
-- **2h binding stress:** running clean
+- **All 14 Bazel test targets pass**
+- **2h binding stress:** 475+ seeds, 0 failures (running)
 - **Directory layer:** ported, tested, cross-client verified
+- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
+- **TODO.md:** 128 → 104 open items (24 resolved)
 
 ## Known issues
 
