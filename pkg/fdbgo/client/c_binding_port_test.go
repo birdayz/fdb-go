@@ -3189,3 +3189,215 @@ func TestOnErrorNonFDBError_CPort(t *testing.T) {
 		t.Fatal("expected commit to fail on errored transaction")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// RYW cache edge cases
+// ---------------------------------------------------------------------------
+
+// TestRYWAtomicAdd_CPort verifies that an atomic ADD followed by a Get within
+// the same transaction returns the correct accumulated value via RYW.
+func TestRYWAtomicAdd_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_atomic_add")
+
+	// Seed with initial value 100 (8-byte LE).
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		buf := make([]byte, 8)
+		binary.LittleEndian.PutUint64(buf, 100)
+		tx.Set(key, buf)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Atomic ADD +50 and +25 in same tx, then read.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		add50 := make([]byte, 8)
+		binary.LittleEndian.PutUint64(add50, 50)
+		tx.Atomic(MutAddValue, key, add50)
+
+		add25 := make([]byte, 8)
+		binary.LittleEndian.PutUint64(add25, 25)
+		tx.Atomic(MutAddValue, key, add25)
+
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("atomic add + get: %v", err)
+	}
+	val := result.([]byte)
+	if len(val) != 8 {
+		t.Fatalf("expected 8 bytes, got %d", len(val))
+	}
+	got := binary.LittleEndian.Uint64(val)
+	if got != 175 {
+		t.Errorf("expected 175 (100+50+25), got %d", got)
+	}
+}
+
+// TestRYWClearThenGet_CPort verifies that Clear followed by Get in the same
+// transaction returns nil (the key was logically deleted).
+func TestRYWClearThenGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_clear_get")
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("exists"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear then Get in same tx.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Clear(key)
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("clear + get: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Errorf("expected nil after clear, got %q", result)
+	}
+}
+
+// TestRYWSetClearGet_CPort verifies that Set then Clear then Get returns nil.
+func TestRYWSetClearGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_scg")
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v1"))
+		tx.Clear(key)
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("set+clear+get: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Errorf("expected nil after set+clear, got %q", result)
+	}
+}
+
+// TestRYWClearSetGet_CPort verifies that Clear then Set then Get returns the
+// new value (Set overwrites the pending Clear).
+func TestRYWClearSetGet_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte("ryw_csg")
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("old"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Clear(key)
+		tx.Set(key, []byte("new"))
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("clear+set+get: %v", err)
+	}
+	if string(result.([]byte)) != "new" {
+		t.Errorf("expected 'new', got %q", result)
+	}
+}
+
+// TestRYWClearRangeGetRange_CPort verifies that ClearRange removes keys
+// from GetRange results within the same transaction.
+func TestRYWClearRangeGetRange_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "ryw_crg_"
+
+	// Seed 5 keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Clear keys 1-3, then GetRange — should only see 0 and 4.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.ClearRange([]byte(pfx+"1"), []byte(pfx+"4"))
+		kvs, _, rangeErr := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
+		return kvs, rangeErr
+	})
+	if err != nil {
+		t.Fatalf("clear range + get range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 2 {
+		for i, kv := range kvs {
+			t.Logf("kv[%d] = %q → %q", i, kv.Key, kv.Value)
+		}
+		t.Fatalf("expected 2 keys after clear range, got %d", len(kvs))
+	}
+	if string(kvs[0].Key) != pfx+"0" || string(kvs[1].Key) != pfx+"4" {
+		t.Errorf("wrong keys: got %q and %q", kvs[0].Key, kvs[1].Key)
+	}
+}
+
+// TestRYWSetNewKeysGetRange_CPort verifies that new keys Set within a
+// transaction appear in GetRange results via RYW.
+func TestRYWSetNewKeysGetRange_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := "ryw_sng_"
+
+	// No seed — start empty.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte(pfx+"b"), []byte("2"))
+		tx.Set([]byte(pfx+"a"), []byte("1"))
+		tx.Set([]byte(pfx+"c"), []byte("3"))
+		kvs, _, rangeErr := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
+		return kvs, rangeErr
+	})
+	if err != nil {
+		t.Fatalf("set + get range: %v", err)
+	}
+	kvs := result.([]KeyValue)
+	if len(kvs) != 3 {
+		t.Fatalf("expected 3 keys, got %d", len(kvs))
+	}
+	// Should be sorted.
+	expected := []string{pfx + "a", pfx + "b", pfx + "c"}
+	for i, kv := range kvs {
+		if string(kv.Key) != expected[i] {
+			t.Errorf("key[%d]: got %q, want %q", i, kv.Key, expected[i])
+		}
+	}
+}
