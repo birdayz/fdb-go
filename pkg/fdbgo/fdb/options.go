@@ -89,8 +89,8 @@ func (o TransactionOptions) SetSizeLimit(limit int64) error {
 	return nil
 }
 
-func (o TransactionOptions) SetMaxRetryDelay(_ int64) error {
-	// TODO: configurable max retry delay
+func (o TransactionOptions) SetMaxRetryDelay(ms int64) error {
+	o.tx.inner.SetMaxRetryDelay(ms)
 	return nil
 }
 

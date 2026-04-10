@@ -203,6 +203,10 @@ type Transaction struct {
 	// Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 	sizeLimit int64
 
+	// maxRetryDelay: if > 0, caps the exponential backoff. Default: 1s (maxBackoff).
+	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
+	maxRetryDelay time.Duration
+
 	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
@@ -883,6 +887,12 @@ func (tx *Transaction) SetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
 }
 
+// SetMaxRetryDelay caps the exponential backoff between retries.
+// Value in milliseconds. Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
+func (tx *Transaction) SetMaxRetryDelay(ms int64) {
+	tx.maxRetryDelay = time.Duration(ms) * time.Millisecond
+}
+
 // SetReadYourWritesDisable disables RYW for regular (non-snapshot) reads.
 // When set, Get/GetRange always read from the server, ignoring uncommitted writes.
 // Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
@@ -997,7 +1007,7 @@ func (tx *Transaction) reset() {
 	}
 	// Preserved across reset (match C++ option re-application on retry):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit, rywDisabled, snapshotRYWDisabled, tenantId.
+	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled, snapshotRYWDisabled, tenantId.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
@@ -1008,6 +1018,10 @@ func (tx *Transaction) nextBackoff() time.Duration {
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
 	delay := time.Duration(float64(tx.backoff) * rand.Float64())
-	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(maxBackoff)))
+	cap := maxBackoff
+	if tx.maxRetryDelay > 0 {
+		cap = tx.maxRetryDelay
+	}
+	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(cap)))
 	return delay
 }
