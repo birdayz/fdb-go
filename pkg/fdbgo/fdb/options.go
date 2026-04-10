@@ -223,18 +223,43 @@ func (o TransactionOptions) SetExpensiveClearCostEstimationEnable() error {
 }
 
 // DatabaseOptions is a handle for setting options that affect a Database.
-type DatabaseOptions struct{}
+type DatabaseOptions struct {
+	db *internalDB
+}
 
-func (o DatabaseOptions) SetLocationCacheSize(_ int64) error                     { return nil }
-func (o DatabaseOptions) SetMaxWatches(_ int64) error                            { return nil }
-func (o DatabaseOptions) SetDatacenterId(_ string) error                         { return nil }
-func (o DatabaseOptions) SetMachineId(_ string) error                            { return nil }
-func (o DatabaseOptions) SetSnapshotRywEnable() error                            { return nil }
-func (o DatabaseOptions) SetSnapshotRywDisable() error                           { return nil }
-func (o DatabaseOptions) SetTransactionTimeout(_ int64) error                    { return nil }
-func (o DatabaseOptions) SetTransactionRetryLimit(_ int64) error                 { return nil }
-func (o DatabaseOptions) SetTransactionMaxRetryDelay(_ int64) error              { return nil }
-func (o DatabaseOptions) SetTransactionSizeLimit(_ int64) error                  { return nil }
+func (o DatabaseOptions) SetLocationCacheSize(_ int64) error { return nil }
+func (o DatabaseOptions) SetMaxWatches(_ int64) error        { return nil }
+func (o DatabaseOptions) SetDatacenterId(_ string) error     { return nil }
+func (o DatabaseOptions) SetMachineId(_ string) error        { return nil }
+func (o DatabaseOptions) SetSnapshotRywEnable() error        { return nil }
+func (o DatabaseOptions) SetSnapshotRywDisable() error       { return nil }
+func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
+	if o.db != nil {
+		o.db.txDefaults.timeout = ms
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionRetryLimit(retries int64) error {
+	if o.db != nil {
+		o.db.txDefaults.retryLimit = retries
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionMaxRetryDelay(ms int64) error {
+	if o.db != nil {
+		o.db.txDefaults.maxRetryDelay = ms
+	}
+	return nil
+}
+
+func (o DatabaseOptions) SetTransactionSizeLimit(bytes int64) error {
+	if o.db != nil {
+		o.db.txDefaults.sizeLimit = bytes
+	}
+	return nil
+}
 func (o DatabaseOptions) SetTransactionCausalReadRisky() error                   { return nil }
 func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error      { return nil }
 func (o DatabaseOptions) SetTransactionReportConflictingKeys() error             { return nil }

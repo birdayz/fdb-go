@@ -49,10 +49,21 @@ func GetAPIVersion() (int, error) {
 	return int(v), nil
 }
 
+// txDefaults holds database-level transaction option defaults.
+// Applied to every new transaction created by Transact/ReadTransact.
+// Matches C++ FDB_DB_OPTION_TRANSACTION_* options.
+type txDefaults struct {
+	timeout       int64 // milliseconds, 0 = disabled
+	retryLimit    int64 // -1 = unlimited, 0 = no retries
+	maxRetryDelay int64 // milliseconds, 0 = use default
+	sizeLimit     int64 // bytes, 0 = disabled
+}
+
 // internalDB wraps client.Database with a context for async operations.
 type internalDB struct {
-	inner *client.Database
-	ctx   context.Context
+	inner      *client.Database
+	ctx        context.Context
+	txDefaults txDefaults
 }
 
 // Database is a handle to a FoundationDB database.
@@ -166,6 +177,7 @@ func (db Database) Transact(f func(Transaction) (any, error)) (any, error) {
 			ctx:        db.d.ctx,
 			commitDone: make(chan struct{}),
 		}
+		db.applyTxDefaults(t)
 		lastTx = t
 		r, e = f(Transaction{t: t})
 		e = unconvertError(e)
@@ -202,6 +214,7 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 			db:    db,
 			ctx:   db.d.ctx,
 		}
+		db.applyTxDefaults(&t)
 		r, e = f(Transaction{t: &t})
 		e = unconvertError(e)
 		return
@@ -212,9 +225,27 @@ func (db Database) ReadTransact(f func(ReadTransaction) (any, error)) (any, erro
 	return result, nil
 }
 
-// Options returns a DatabaseOptions handle (currently a no-op).
+// applyTxDefaults applies database-level transaction option defaults.
+// Matches C++ FDB_DB_OPTION_TRANSACTION_* behavior.
+func (db Database) applyTxDefaults(t *transaction) {
+	d := &db.d.txDefaults
+	if d.timeout > 0 {
+		t.inner.SetTimeout(d.timeout)
+	}
+	if d.retryLimit != 0 {
+		t.inner.SetRetryLimit(d.retryLimit)
+	}
+	if d.maxRetryDelay > 0 {
+		t.inner.SetMaxRetryDelay(d.maxRetryDelay)
+	}
+	if d.sizeLimit > 0 {
+		t.inner.SetSizeLimit(d.sizeLimit)
+	}
+}
+
+// Options returns a DatabaseOptions handle for setting database-level defaults.
 func (db Database) Options() DatabaseOptions {
-	return DatabaseOptions{}
+	return DatabaseOptions{db: db.d}
 }
 
 // InvalidateGRVCache forces the next transaction to fetch a fresh read version
