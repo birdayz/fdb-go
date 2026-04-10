@@ -392,13 +392,13 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
 // Returns (keyValues, more, error).
 func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	r, err := wire.ReadErrorOr(data)
+	if err != nil {
 		return nil, false, fmt.Errorf("GetKeyValues: %w", err)
 	}
+	// Reuse the Reader from ReadErrorOr instead of creating a new one via UnmarshalFDB.
 	var reply types.GetKeyValuesReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, false, fmt.Errorf("unmarshal GetKeyValuesReply: %w", err)
-	}
+	reply.UnmarshalFromReader(r)
 
 	kvs := types.ParseKeyValueRefStringVector(reply.Data)
 	return kvs, reply.More, nil
@@ -442,13 +442,13 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
 func parseGetValueReply(data []byte) ([]byte, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	r, err := wire.ReadErrorOr(data)
+	if err != nil {
 		return nil, fmt.Errorf("GetValue: %w", err)
 	}
+	// Reuse the Reader from ReadErrorOr instead of creating a new one via UnmarshalFDB.
 	var reply types.GetValueReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return nil, fmt.Errorf("unmarshal GetValueReply: %w", err)
-	}
+	reply.UnmarshalFromReader(r)
 	if !reply.HasValue {
 		return nil, nil // key not found
 	}

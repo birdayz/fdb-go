@@ -384,12 +384,11 @@ func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.
 // Returns (version, rkDefaultThrottled, rkBatchThrottled, error).
 func parseGetReadVersionReply(data []byte) (int64, bool, bool, error) {
-	if _, err := wire.ReadErrorOr(data); err != nil {
+	r, err := wire.ReadErrorOr(data)
+	if err != nil {
 		return 0, false, false, fmt.Errorf("GRV: %w", err)
 	}
 	var reply types.GetReadVersionReply
-	if err := reply.UnmarshalFDB(data); err != nil {
-		return 0, false, false, fmt.Errorf("unmarshal GRV reply: %w", err)
-	}
+	reply.UnmarshalFromReader(r)
 	return reply.Version, reply.RkDefaultThrottled, reply.RkBatchThrottled, nil
 }
