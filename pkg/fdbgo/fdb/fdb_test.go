@@ -807,3 +807,37 @@ func TestSizeLimit(t *testing.T) {
 		t.Fatalf("expected error code 2101 (transaction_too_large), got %d", fdbErr.Code)
 	}
 }
+
+// TestDatabaseTransactionTimeout verifies that FDB_DB_OPTION_TRANSACTION_TIMEOUT
+// applies to transactions created by Transact. Matching C++ test at unit_tests.cpp:787.
+func TestDatabaseTransactionTimeout(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Set 1ms database-level timeout.
+	if err := db.Options().SetTransactionTimeout(1); err != nil {
+		t.Fatalf("SetTransactionTimeout: %v", err)
+	}
+
+	// Run transactions until one times out. With 1ms timeout, it should
+	// happen almost immediately (the GRV round-trip alone takes >1ms).
+	var timedOut bool
+	for i := 0; i < 100; i++ {
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(fdb.Key("foo")).MustGet(), nil
+		})
+		if err != nil {
+			fdbErr, ok := err.(fdb.Error)
+			if ok && fdbErr.Code == 1031 { // transaction_timed_out
+				timedOut = true
+				break
+			}
+		}
+	}
+	if !timedOut {
+		t.Fatal("expected transaction_timed_out (1031) with 1ms database timeout")
+	}
+
+	// Reset timeout (disable).
+	db.Options().SetTransactionTimeout(0)
+}
