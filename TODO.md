@@ -825,7 +825,8 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **Subspace key counter** — `EnableCounterBasedSubspaceKeys()` on builder. Auto-assigns incrementing int64 subspace keys to indexes instead of using index name strings.
 
-- [ ] **Extension options processing** — Processing protobuf schema extension options.
+- [x] **FDBMetaDataStore** — Basic: save/load MetaData proto with version history. 4 tests.
+- [ ] **Extension options processing** — Advanced FDBMetaDataStore feature for proto extension options.
 
 ---
 
