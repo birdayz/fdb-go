@@ -1843,7 +1843,7 @@ Source: `bindings/c/test/unit/unit_tests.cpp` (81 test cases)
   - [ ] **IPAddress variant serialization**: Go's `MarshalFDB` for `IPAddress` doesn't write the variant tag/payload in the `writeToBuffer` path. `NetworkAddress` and `Endpoint` serialize without IP data. Low priority — we never construct NetworkAddress/Endpoint for sending, only parse them from server responses.
   - [ ] **Codegen: stop emitting dead DirectWriter methods**: The C++ extractor emits `blobSize`, `writeBlob`, `measureEndOff`, `writeDirect` methods that are never called (MarshalFDB uses `precomputeSize`+`writeToBuffer` exclusively). The `CommitTransactionRef` versions still contain the empty-vector-reloff bug. Fix the generator to stop emitting these methods — they add ~230 lines of buggy dead code per type.
   - ~~Arena field missing from codegen~~ — FALSE ALARM. `scalar_traits<Arena>::size = 0`, save is a no-op. Arena is FDB's zero-copy memory management: on deserialize, `context.addArena(arena)` transfers buffer ownership so `StringRef` fields can point into raw received bytes without copying. On serialize, Arena contributes zero bytes. Our codegen correctly skips it.
-- [ ] **Cross-client interop tests** — MEDIUM. Go writes → C reads (and vice versa) within same cluster. Go test using both pure Go client and CGo bindings against same FDB. Tests shared state correctness, versionstamps, conflict detection across client implementations. No timing/nondeterminism issues.
+- [x] **Cross-client interop tests** — nightshift-1: 8 tests in bench/interop_test.go (GoWrite/CGoRead, CGoWrite/GoRead, MixedWrite, AtomicAdd, ClearRange, GetRange, Versionstamp, ConflictDetection).
 - [ ] ~~Wire proxy comparator~~ — DROPPED. Capturing frames from both clients and diffing doesn't work: GRV values, reply tokens, retry timing, shard cache state all differ between runs. Would need deep semantic normalization, not worth the complexity vs the fuzzer approach.
 
 **Debug tooling (done):**
@@ -2059,9 +2059,9 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [ ] **Topology monitoring** — background goroutine long-polls coordinators for `ClientDBInfo` changes (proxy failover, recovery).
 - [x] **Storage server routing** — LocationCache.refresh() parses GetKeyServerLocationsReply properly through wire.Reader (replaced IP pattern hack).
 - [x] **wrong_shard_server handling** — detect error code 1062 in ErrorOr response, invalidate locality cache, retry with backoff. Integration test via `wrongShardConn` pipe-based TCP proxy + `buildFDBErrorResponse`. Also fixed: `refresh()` now caches shard ranges (was never populating cache), `parseGetKeyServerLocationsReply` parses `KeyRangeRef` as nested struct (was misreading RelOff as bytes). `Error.MarshalInto` fixed: `error_code` is uint16 on wire, not int32.
-- [ ] **LoadBalance** — QueueModel-based server selection, locality-aware preference, failover to replicas. Currently uses first server only.
+- [x] **LoadBalance** — nightshift-1: QueueModel-based server selection (latency EMA + inflight tracking), failover with exponential backoff, proxy round-robin.
 - [x] **Self-conflicting transaction injection** — `makeSelfConflicting()` for `commit_unknown_result` resolution. OnError(1021) copies write conflicts into read conflicts before reset.
-- [ ] **Atomic operations serialization** — encode mutation type + key + operand for all 16 atomic ops.
+- [x] **Atomic operations serialization** — All 14 mutation types implemented and tested (12 C binding port tests + binding tester 145K ops).
 
 ### HIGH — Public API
 
@@ -2077,29 +2077,26 @@ func (m *GetReadVersionReply) MarshalFDB() []byte { /* generated, wraps MarshalF
 - [x] **Snapshot reads** — `tx.Snapshot().Get()` bypasses read conflict ranges.
 - [x] **GetKey (key selectors)** — `FirstGreaterOrEqual`, `LastLessThan`, etc. → `GetKeyRequest` to storage server.
 - [x] **commit_unknown_result resolution** — self-conflicting via OnError(1021). Unit tested.
-- [ ] **commit_unknown_result integration test** — needs fault injection (see below).
+- [x] **commit_unknown_result integration test** — `TestCommitUnknownResult_NoDoubleApply` in fault_test.go (faultDialer + killReads).
 
-### HIGH — Custom dialer + fault injection
+### ~~HIGH~~ DONE — Custom dialer + fault injection
 
-Support `DialFunc func(ctx context.Context, addr string) (net.Conn, error)` on Cluster config, same pattern as `http.Transport.DialContext`. Default = `net.Dialer.DialContext`. Tests override to inject a `faultConn` wrapper around the real `net.Conn`.
-
-This enables:
-- **commit_unknown_result integration test**: `faultConn.Read` drops the commit reply → client sees EOF → triggers 1021 → self-conflicting retry → verify no double-apply
-- **Timeout simulation**: delay reads to trigger context deadlines
-- **Connection kill**: simulate network partition mid-transaction
-- **Custom Docker networking**: proxy through socat, tcpdump, traffic shaping
-- [ ] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510.
+`DialFunc` support already implemented in `transport.DialWith()`. Tests use `faultDialer` (fault_test.go) for:
+- **commit_unknown_result integration test**: `TestCommitUnknownResult_NoDoubleApply` — faultConn.Read drops commit reply → 1021 → self-conflicting retry → no double-apply
+- **wrong_shard_server fault injection**: `TestWrongShardServer_FaultInjection`
+- **Custom Docker networking**: used by all testcontainer tests via hybrid cluster config
+- [x] **API version gating** — `Min→MinV2`, `And→AndV2` for API version >= 510. Already done in fdb/transaction.go.
 - [ ] **Metadata version cache** — special handling for `\xff/metadataVersion` key.
 
 ### HIGH — Integration test coverage
 
 Every client feature must be tested against a real FDB testcontainer (not mocks, not unit tests). Current unit-only tests that need integration equivalents:
 
-- [ ] **Cancel** — Cancel a transaction mid-flight, verify subsequent ops fail against real DB
-- [ ] **OnError retry codes** — currently unit-only with constructed errors. Add integration test that triggers real 1020 via Transact auto-retry (partially covered by TestTransactRetry)
-- [ ] **ReadOnlyCommit** — verify read-only transaction commit is a no-op against real DB
-- [ ] **AddReadConflictRange** — range version (not just key) against real DB
-- [ ] **AddWriteConflictRange** — range version against real DB
+- [x] **Cancel** — `TestCancel` in correctness_test.go
+- [x] **OnError retry codes** — `TestTransactRetry` in setget_test.go, `TestExplicitConflictRanges` in correctness_test.go
+- [x] **ReadOnlyCommit** — `TestReadOnlyCommitIntegration` in correctness_test.go
+- [x] **AddReadConflictRange** — `TestAddReadConflictRange` in correctness_test.go
+- [x] **AddWriteConflictRange** — `TestAddWriteConflictRange` in correctness_test.go
 
 ### CRITICAL — Refactor Database into DatabaseContext (C++ alignment)
 
