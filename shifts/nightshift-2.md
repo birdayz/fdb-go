@@ -37,7 +37,21 @@ Files:
 
 ### 4. 2h binding stress (running)
 
-Started at shift begin. At handover: ~170+ seeds, 0 failures, 0 FDB deaths.
+Started at shift begin. At latest check: 300+ seeds, 0 failures, 0 FDB deaths. Will complete ~01:47 CEST.
+
+### 5. TODO.md cleanup
+
+Resolved 8 stale items:
+- Wire type #11 (nil vs empty): verified not a bug
+- Wire type #14 (variant tag=0): verified correct behavior
+- emptyVector optimization: already implemented
+- TEXT index, key expressions: marked as done
+- Cursor combinators: marked as done (15+ of 20+)
+- Get prefix accessors: WONTFIX (Java naming for porting clarity)
+- FunctionKE conformance: marked N/A
+- Index types heading: updated to "ALL COMPLETE"
+- Coverage table: updated (key expressions 95%, cursors 80%)
+- Memory.md: updated spec counts (2307 Ginkgo, 396 conformance)
 
 ## Current state
 
