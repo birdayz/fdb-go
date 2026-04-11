@@ -1021,7 +1021,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ## Infrastructure
 
 - [x] Bazel migration, nogo linting, CI pipeline, justfile — all done
-- [x] **Binding tester directory extension** — All 21 DIRECTORY_* stack machine operations implemented. Passes `--test-name directory` (50 seeds × 500 ops = 0 failures) and `--test-name directory_hca` (5 seeds = 0 failures). `WrapTransaction`/`WrapDatabase` bridge pure Go client to fdb facade for directory layer interop.
+- [x] **Binding tester directory extension** — All 21 DIRECTORY_* stack machine operations implemented. Passes `--test-name directory` (30 seeds × 100-500 ops = 0 failures) and `--test-name directory_hca` (4/5 pass, 1 timeout from HCA contention). `WrapTransaction`/`WrapDatabase` bridge pure Go client to fdb facade for directory layer interop. 14 unit tests for the directory layer itself (edge cases: layer check, non-existent remove, recursive remove, data isolation, custom DirectoryLayer, manual prefix).
 - [ ] **KeySpace/KeySpacePath** — Enterprise key management. LOW priority.
 - [x] **ScanLimiter** — TimeScanLimiter, ByteScanLimiter, RecordScanLimiter all enforced in both `keyValueCursor` and `indexCursor`. Time limit uses free initial pass (first record always succeeds). Continuation returned for cross-transaction resumption.
 
