@@ -183,10 +183,15 @@ func main() {
 func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) SeedResult {
 	r := SeedResult{Seed: seed}
 
-	// Tear down any leftover container. Wait for removal to complete.
-	exec.Command("docker", "rm", "-f", containerName).Run()
-	// Docker rm -f is async on the port release; brief wait avoids "port already allocated".
-	time.Sleep(1 * time.Second)
+	// Tear down any leftover container. Retry until the name is free.
+	for attempt := 0; attempt < 5; attempt++ {
+		exec.Command("docker", "rm", "-f", containerName).Run()
+		time.Sleep(1 * time.Second)
+		// Check if container is gone.
+		if err := exec.Command("docker", "inspect", containerName).Run(); err != nil {
+			break // container is gone
+		}
+	}
 
 	// Start FDB.
 	out, err := runOutput("docker", "run", "-d", "--name", containerName,
