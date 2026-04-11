@@ -169,7 +169,11 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 			},
 		},
 		Entrypoint: []string{"/entrypoint-tc.sh"},
-		// Don't wait here - we'll wait after injecting config
+		// Mount tmpfs over /var/fdb/data to suppress the anonymous volume
+		// created by the VOLUME directive in the FDB Docker image.
+		// Without this, every container leaks ~90MB anonymous volume that
+		// persists after container removal. 5000 test runs = 450GB leaked.
+		Tmpfs: map[string]string{"/var/fdb/data": ""},
 	}
 
 	fdbGenericReq := testcontainers.GenericContainerRequest{
