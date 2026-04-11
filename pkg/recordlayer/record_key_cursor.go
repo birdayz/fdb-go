@@ -90,7 +90,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
 
 		// Unpack the key relative to the records subspace: (pk..., suffix)
-		keyTuple, err := recordsSubspace.Unpack(kv.Key)
+		keyTuple, err := fastSubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
 		if err != nil || len(keyTuple) < 2 {
 			continue // skip unparseable keys
 		}
@@ -154,7 +154,7 @@ func (c *recordKeyCursor) initIterator() error {
 
 		// Initialize lastPK from continuation for split record dedup.
 		// Continuation is tuple-packed (pk..., suffix) — strip the last element.
-		if contTuple, err := tuple.Unpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
+		if contTuple, err := fastUnpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
 			c.lastPK = tuple.Tuple(contTuple[:len(contTuple)-1])
 		}
 	}

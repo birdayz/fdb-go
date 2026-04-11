@@ -236,6 +236,103 @@ var _ = Describe("EvaluateAggregateFunction Conformance", func() {
 			result := s.EvaluateMaxEverJava(ctx)
 			Expect(result).To(Equal(int64(300)))
 		})
+
+		It("Java writes, Go evaluates MAX_EVER = 300", func() {
+			s.SaveOrdersJava(ctx, 100, 200, 300)
+			result := s.EvaluateMaxEverGo(ctx)
+			Expect(result).To(Equal(int64(300)))
+		})
+	})
+
+	// ========== Cross-language: Java writes, Go evaluates ==========
+	Describe("Java writes, Go evaluates COUNT", func() {
+		var (
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			tenantName := fmt.Sprintf("agg_jcount_%s", uuid.New().String())
+			var err error
+			env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+			Expect(err).NotTo(HaveOccurred())
+			s, err = NewAggregateConformanceStore(env, AggTypeCount)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if env != nil {
+				_ = env.Cleanup(ctx)
+			}
+		})
+
+		It("Java writes 3, Go evaluates COUNT = 3", func() {
+			s.SaveOrdersJava(ctx, 100, 200, 300)
+			result := s.EvaluateCountGo(ctx)
+			Expect(result).To(Equal(int64(3)))
+		})
+	})
+
+	Describe("Java writes, Go evaluates SUM", func() {
+		var (
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			tenantName := fmt.Sprintf("agg_jsum_%s", uuid.New().String())
+			var err error
+			env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+			Expect(err).NotTo(HaveOccurred())
+			s, err = NewAggregateConformanceStore(env, AggTypeSum)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if env != nil {
+				_ = env.Cleanup(ctx)
+			}
+		})
+
+		It("Java writes 3, Go evaluates SUM = 600", func() {
+			s.SaveOrdersJava(ctx, 100, 200, 300)
+			result := s.EvaluateSumGo(ctx)
+			Expect(result).To(Equal(int64(600)))
+		})
+	})
+
+	Describe("Java writes, Go evaluates MIN_EVER", func() {
+		var (
+			ctx context.Context
+			env *TenantEnvironment
+			s   *AggregateConformanceStore
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			tenantName := fmt.Sprintf("agg_jminever_%s", uuid.New().String())
+			var err error
+			env, err = SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+			Expect(err).NotTo(HaveOccurred())
+			s, err = NewAggregateConformanceStore(env, AggTypeMinEver)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if env != nil {
+				_ = env.Cleanup(ctx)
+			}
+		})
+
+		It("Java writes 3, Go evaluates MIN_EVER = 100", func() {
+			s.SaveOrdersJava(ctx, 100, 200, 300)
+			result := s.EvaluateMinEverGo(ctx)
+			Expect(result).To(Equal(int64(100)))
+		})
 	})
 })
 

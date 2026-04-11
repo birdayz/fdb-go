@@ -73,6 +73,10 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
+# Run Go vs Java performance comparison benchmark
+bench-compare:
+    bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=Performance Comparison" --test_arg="--ginkgo.v" --test_output=streamed --cache_test_results=no
+
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
 # Two Bazel genrules: fdb_cmake_build (cached on FDB version) → generate_wire_types (cached on generator code).
 generate-wire-types:

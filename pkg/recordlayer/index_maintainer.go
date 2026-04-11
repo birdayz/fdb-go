@@ -264,7 +264,7 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	indexColCount := len(entry.key)
 
 	for _, kv := range kvs {
-		existingTuple, err := m.indexSubspace.Unpack(kv.Key)
+		existingTuple, err := fastSubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
 		if err != nil {
 			return fmt.Errorf("unpack existing index entry: %w", err)
 		}

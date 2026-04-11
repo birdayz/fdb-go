@@ -623,7 +623,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 	if lowScoreBytes == nil {
 		return nil, nil
 	}
-	lowScore, err := tuple.Unpack(lowScoreBytes)
+	lowScore, err := fastUnpack(lowScoreBytes)
 	if err != nil {
 		return nil, fmt.Errorf("unpack low score: %w", err)
 	}
@@ -635,7 +635,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 			return nil, err
 		}
 		if highScoreBytes != nil {
-			highScore, err = tuple.Unpack(highScoreBytes)
+			highScore, err = fastUnpack(highScoreBytes)
 			if err != nil {
 				return nil, fmt.Errorf("unpack high score: %w", err)
 			}
@@ -1112,7 +1112,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 			}
 			return nil, fmt.Errorf("rank %d out of range", rankVal)
 		}
-		score, err := tuple.Unpack(scoreBytes)
+		score, err := fastUnpack(scoreBytes)
 		if err != nil {
 			return nil, err
 		}

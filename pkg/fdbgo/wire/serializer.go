@@ -11,7 +11,10 @@
 
 package wire
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"sync"
+)
 
 // RightAlign — C++ flat_buffers.h:58
 func RightAlign(offset, alignment int) int {
@@ -34,8 +37,25 @@ type PrecomputeSize struct {
 	EmptyVectorOffset int // -1 = not yet allocated
 }
 
+var precomputeSizePool = sync.Pool{
+	New: func() any {
+		return &PrecomputeSize{
+			WriteToOffsets: make([]int, 0, 32),
+		}
+	},
+}
+
 func NewPrecomputeSize() *PrecomputeSize {
-	return &PrecomputeSize{EmptyVectorOffset: -1}
+	ps := precomputeSizePool.Get().(*PrecomputeSize)
+	ps.CurrentBufferSize = 0
+	ps.WriteToOffsets = ps.WriteToOffsets[:0]
+	ps.EmptyVectorOffset = -1
+	return ps
+}
+
+// ReleasePrecomputeSize returns a PrecomputeSize to the pool for reuse.
+func ReleasePrecomputeSize(ps *PrecomputeSize) {
+	precomputeSizePool.Put(ps)
 }
 
 // Write — C++ PrecomputeSize::write (flat_buffers.h:512)

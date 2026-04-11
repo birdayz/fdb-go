@@ -208,6 +208,19 @@ func (sm *StackMachine) popInt64() int64 {
 	case *big.Int:
 		return v.Int64()
 	default:
+		// Dump stack state for debugging before panicking.
+		fmt.Fprintf(os.Stderr, "\n=== STACK DUMP (popInt64 type mismatch) ===\n")
+		if b, ok := e.value.([]byte); ok {
+			fmt.Fprintf(os.Stderr, "Popped: idx=%d type=[]byte ascii=%q\n", e.idx, string(b))
+		} else {
+			fmt.Fprintf(os.Stderr, "Popped: idx=%d type=%T value=%v\n", e.idx, e.value, e.value)
+		}
+		fmt.Fprintf(os.Stderr, "Stack depth: %d\n", len(sm.stack))
+		for i := len(sm.stack) - 1; i >= max(0, len(sm.stack)-10); i-- {
+			se := sm.stack[i]
+			fmt.Fprintf(os.Stderr, "  [%d] idx=%d type=%T value=%v\n", i, se.idx, se.value, se.value)
+		}
+		fmt.Fprintf(os.Stderr, "=== END STACK DUMP ===\n\n")
 		panic(fmt.Sprintf("expected int64, got %T: %v", e.value, e.value))
 	}
 }

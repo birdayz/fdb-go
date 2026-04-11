@@ -200,7 +200,7 @@ func loadWithSplit(
 	// Validate sequential indices and concatenate
 	expectedIndex := startSplitRecord + 1
 	for _, kv := range kvs {
-		keyTuple, unpackErr := recordSubspace.Unpack(kv.Key)
+		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(recordSubspace.Bytes()))
 		if unpackErr != nil {
 			return nil, fmt.Errorf("failed to unpack split key: %w", unpackErr)
 		}

@@ -464,7 +464,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 	colCount := index.RootExpression.ColumnSize()
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
-		t, err := violationSubspace.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
 		if err != nil {
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}
@@ -475,7 +475,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 				PrimaryKey: tuple.Tuple(t[colCount:]),
 			}
 			if len(kv.Value) > 0 {
-				existingKey, err := tuple.Unpack(kv.Value)
+				existingKey, err := fastUnpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}

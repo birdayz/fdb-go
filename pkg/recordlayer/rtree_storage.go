@@ -32,7 +32,7 @@ func (s *rtreeStorage) fetchLeafNode(tx fdb.ReadTransaction, nodeID []byte) (*le
 	if data == nil {
 		return nil, nil
 	}
-	t, err := tuple.Unpack(data)
+	t, err := fastUnpack(data)
 	if err != nil {
 		return nil, fmt.Errorf("rtree: unpack leaf node: %w", err)
 	}
@@ -67,7 +67,7 @@ func (s *rtreeStorage) fetchIntermediateNode(tx fdb.ReadTransaction, nodeID []by
 	if data == nil {
 		return nil, nil
 	}
-	t, err := tuple.Unpack(data)
+	t, err := fastUnpack(data)
 	if err != nil {
 		return nil, fmt.Errorf("rtree: unpack intermediate node: %w", err)
 	}
@@ -102,7 +102,7 @@ func (s *rtreeStorage) fetchNode(tx fdb.ReadTransaction, nodeID []byte) (*leafNo
 	if data == nil {
 		return nil, nil, nil
 	}
-	t, err := tuple.Unpack(data)
+	t, err := fastUnpack(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("rtree: unpack node: %w", err)
 	}

@@ -278,7 +278,7 @@ func indexFromProto(p *gen.Index) (*Index, error) {
 
 	// SubspaceKey: decode tuple-packed bytes
 	if len(p.SubspaceKey) > 0 {
-		t, err := tuple.Unpack(p.SubspaceKey)
+		t, err := fastUnpack(p.SubspaceKey)
 		if err != nil {
 			return nil, fmt.Errorf("subspace key: %w", err)
 		}
@@ -336,7 +336,7 @@ func formerIndexFromProto(p *gen.FormerIndex) (*FormerIndex, error) {
 		AddedVersion:   int(p.GetAddedVersion()),
 	}
 	if len(p.SubspaceKey) > 0 {
-		t, err := tuple.Unpack(p.SubspaceKey)
+		t, err := fastUnpack(p.SubspaceKey)
 		if err != nil {
 			return nil, fmt.Errorf("subspace key: %w", err)
 		}

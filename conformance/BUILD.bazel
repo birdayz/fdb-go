@@ -42,6 +42,7 @@ go_test(
     size = "large",
     srcs = [
         "aggregate_conformance_test.go",
+        "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "clear_when_zero_conformance_test.go",
         "composite_index_conformance_test.go",

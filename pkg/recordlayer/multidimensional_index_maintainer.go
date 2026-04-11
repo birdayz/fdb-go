@@ -285,7 +285,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 				}
 				if cont.LastKey != nil {
 					var tupErr error
-					lastKey, tupErr = tuple.Unpack(cont.LastKey)
+					lastKey, tupErr = fastUnpack(cont.LastKey)
 					if tupErr != nil {
 						return &errorCursor[*IndexEntry]{
 							err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, tupErr),
@@ -309,7 +309,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 			}
 			if cont.LastKey != nil {
 				var err error
-				lastKey, err = tuple.Unpack(cont.LastKey)
+				lastKey, err = fastUnpack(cont.LastKey)
 				if err != nil {
 					return &errorCursor[*IndexEntry]{
 						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),
@@ -707,7 +707,7 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	}
 
 	// Unpack the key relative to the index subspace.
-	t, err := c.m.indexSubspace.Unpack(kvs[0].Key)
+	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))
 	if err != nil {
 		// Key is not in our subspace — shouldn't happen, but skip gracefully.
 		return nil, false, nil

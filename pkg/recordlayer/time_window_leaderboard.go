@@ -77,7 +77,7 @@ func newLeaderboardDirectoryFromProto(pb *gen.TimeWindowLeaderboardDirectory) (*
 			NLevels:        int(lbpb.GetNlevels()),
 		}
 		if lbpb.SubspaceKey != nil {
-			sk, err := tuple.Unpack(lbpb.SubspaceKey)
+			sk, err := fastUnpack(lbpb.SubspaceKey)
 			if err != nil {
 				return nil, fmt.Errorf("leaderboard directory: unpack subspace key: %w", err)
 			}

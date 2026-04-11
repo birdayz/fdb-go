@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -47,6 +49,7 @@ type FDBRecordStoreStateCacheEntry struct {
 	subspace             subspace.Subspace
 	recordStoreState     *RecordStoreState
 	metaDataVersionStamp []byte // nullable — nil if dirty during load
+	shared               bool   // true if entry is shared via a cache (needs clone on use)
 }
 
 // GetRecordStoreState returns the cached store state.
@@ -75,19 +78,37 @@ func (e *FDBRecordStoreStateCacheEntry) handleCachedState(ctx *FDBRecordContext,
 	return checkStoreHeaderExistence(e.recordStoreState.StoreHeader, existenceCheck)
 }
 
-// loadCacheEntry loads store state + metadata version stamp from FDB in parallel.
+// loadCacheEntry loads store state + metadata version stamp from FDB.
+// Fires the metadata version stamp read before resolving store state reads,
+// allowing all 3 FDB reads to pipeline.
 // Matches Java's FDBRecordStoreStateCacheEntry.load().
 func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*FDBRecordStoreStateCacheEntry, error) {
-	// Load store state (header + index states).
+	// Fire metadata version stamp read early (snapshot) so it pipelines
+	// with the store state reads. Only resolve after store state is done.
+	var metaDataFuture fdb.FutureByteSlice
+	if !store.context.dirtyMetaDataVersionStamp.Load() {
+		metaDataFuture = store.context.Transaction().Snapshot().Get(fdb.Key(metaDataVersionKey))
+	}
+
+	// Load store state (header + index states — fires 2 reads in parallel).
 	state, err := loadRecordStoreState(store, existenceCheck)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read metadata version stamp at snapshot isolation.
-	metaDataVersionStamp, err := store.context.GetMetaDataVersionStamp()
-	if err != nil {
-		return nil, err
+	// Resolve metadata version stamp.
+	var metaDataVersionStamp []byte
+	if metaDataFuture != nil {
+		metaDataVersionStamp, err = metaDataFuture.Get()
+		if err != nil {
+			var fdbErr fdb.Error
+			if errors.As(err, &fdbErr) && fdbErr.Code == 1036 {
+				store.context.dirtyMetaDataVersionStamp.Store(true)
+				// Stamp is dirty — treat as nil.
+			} else {
+				return nil, err
+			}
+		}
 	}
 
 	return &FDBRecordStoreStateCacheEntry{
@@ -99,24 +120,84 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 }
 
 // loadRecordStoreState reads store header + index states from FDB.
+// Issues both GetRange calls (store info + index states) in parallel using
+// FDB's future-based API, then resolves sequentially.
 // This is a pure function — it does NOT mutate store fields.
 // The caller is responsible for setting store.storeHeader and store.indexStates.
 func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
-	exists, header, err := store.checkStoreExists()
+	tx := store.context.Transaction()
+
+	// Fire both range reads in parallel. Index states use snapshot isolation
+	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).
+	// By issuing both before resolving either, the FDB client can pipeline them.
+	storeBegin, storeEnd := store.subspace.FDBRangeKeys()
+	storeInfoFuture := tx.GetRange(fdb.KeyRange{Begin: storeBegin, End: storeEnd}, fdb.RangeOptions{Limit: 1})
+
+	isSubspace := store.subspace.Sub(IndexStateSpaceKey)
+	isBegin, isEnd := isSubspace.FDBRangeKeys()
+	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: isBegin, End: isEnd}, fdb.RangeOptions{})
+
+	// Resolve store info.
+	storeKVs, err := storeInfoFuture.GetSliceWithError()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read store range: %v", err)
+	}
+
+	var exists bool
+	var header *gen.DataStoreInfo
+	if len(storeKVs) > 0 {
+		firstKV := storeKVs[0]
+		expectedStoreInfoKey := store.subspace.Pack(tuple.Tuple{StoreInfoKey})
+		if !bytes.Equal(firstKV.Key, expectedStoreInfoKey) {
+			return nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: firstKV.Key}
+		}
+		header = &gen.DataStoreInfo{}
+		if err := header.UnmarshalVT(firstKV.Value); err != nil {
+			return nil, fmt.Errorf("failed to parse store header: %v", err)
+		}
+		exists = true
 	}
 
 	if err := checkStoreHeaderExistence(header, existenceCheck); err != nil {
 		return nil, err
 	}
 
+	// Resolve index states.
 	var indexStates map[string]IndexState
 	if exists {
-		var err error
-		indexStates, err = readIndexStates(store.context.Transaction(), store.subspace)
+		indexKVs, err := indexStatesFuture.GetSliceWithError()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load index states: %w", err)
+		}
+		indexStates = make(map[string]IndexState, len(indexKVs))
+		for _, kv := range indexKVs {
+			t, err := fastSubspaceUnpack(kv.Key, len(isSubspace.Bytes()))
+			if err != nil {
+				return nil, fmt.Errorf("failed to unpack index state key: %w", err)
+			}
+			if len(t) == 0 {
+				continue
+			}
+			indexName, ok := t[0].(string)
+			if !ok {
+				continue
+			}
+			valueTuple, err := fastUnpack(kv.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
+			}
+			if len(valueTuple) == 0 {
+				continue
+			}
+			code, ok := valueTuple[0].(int64)
+			if !ok {
+				continue
+			}
+			state, err := indexStateFromCode(code)
+			if err != nil {
+				return nil, fmt.Errorf("invalid index state for %q: %w", indexName, err)
+			}
+			indexStates[indexName] = state
 		}
 	} else {
 		indexStates = make(map[string]IndexState)
@@ -154,9 +235,18 @@ func PassThroughStoreStateCache() FDBRecordStoreStateCache {
 	return passThroughInstance
 }
 
-// Get always loads fresh state from FDB.
+// Get always loads fresh state from FDB. Skips the metadata version stamp
+// read since PassThrough has no cache to validate against.
 func (c *PassThroughRecordStoreStateCache) Get(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*FDBRecordStoreStateCacheEntry, error) {
-	return loadCacheEntry(store, existenceCheck)
+	state, err := loadRecordStoreState(store, existenceCheck)
+	if err != nil {
+		return nil, err
+	}
+	return &FDBRecordStoreStateCacheEntry{
+		subspaceKey:      string(store.subspace.Bytes()),
+		subspace:         store.subspace,
+		recordStoreState: state,
+	}, nil
 }
 
 // Clear is a no-op.
@@ -265,6 +355,7 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 	if err := existing.handleCachedState(ctx, existenceCheck); err != nil {
 		return nil, err
 	}
+	existing.shared = true // Shared via cache — must clone on use
 	return existing, nil
 }
 
@@ -295,9 +386,12 @@ func (c *MetaDataVersionStampStoreStateCache) addToCache(key string, entry *FDBR
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	entry.shared = true // Will be returned to multiple callers from cache
+
 	if existing, ok := c.entries[key]; ok {
 		newer := getNewerEntry(existing.entry, entry)
 		if newer.recordStoreState.StoreHeader != nil && newer.recordStoreState.StoreHeader.GetCacheable() {
+			newer.shared = true
 			c.entries[key] = &cacheItem{entry: newer, lastAccess: time.Now()}
 		} else {
 			delete(c.entries, key)

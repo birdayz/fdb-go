@@ -507,7 +507,7 @@ func evaluateRankAggregate(
 			}
 			return nil, nil
 		}
-		scoreTuple, err := tuple.Unpack(scoreBytes)
+		scoreTuple, err := fastUnpack(scoreBytes)
 		if err != nil {
 			return nil, fmt.Errorf("evaluate %s: unpack score: %w", fn.Name, err)
 		}

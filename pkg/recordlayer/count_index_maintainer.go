@@ -162,8 +162,12 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index scan: %w", err)
 	}
 
-	// Unpack key to get grouping tuple
-	keyTuple, err := c.indexSubspace.Unpack(kv.Key)
+	// Unpack key using fastUnpack for zero-alloc integer decode.
+	prefixLen := len(c.indexSubspace.Bytes())
+	if len(kv.Key) < prefixLen {
+		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("count index key shorter than subspace prefix")
+	}
+	keyTuple, err := fastUnpack(kv.Key[prefixLen:])
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack count index key: %w", err)
 	}
@@ -174,7 +178,7 @@ func (c *countKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEntr
 		// TUPLE variants: decode value as tuple-packed bytes
 		if len(kv.Value) > 0 {
 			var err2 error
-			valueTuple, err2 = tuple.Unpack(kv.Value)
+			valueTuple, err2 = fastUnpack(kv.Value)
 			if err2 != nil {
 				return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack tuple value: %w", err2)
 			}

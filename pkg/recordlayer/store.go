@@ -1446,14 +1446,20 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 		return err
 	}
 
-	// Clone cached state so store mutations don't corrupt the cache entry.
-	// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
 	cachedState := entry.GetRecordStoreState()
 	store.stateMu.Lock()
-	store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
-	store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
-	for k, v := range cachedState.IndexStates {
-		store.indexStates[k] = v
+	if entry.shared {
+		// Clone cached state so store mutations don't corrupt the shared cache entry.
+		// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
+		store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
+		store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
+		for k, v := range cachedState.IndexStates {
+			store.indexStates[k] = v
+		}
+	} else {
+		// Non-shared entry (e.g., PassThrough cache) — safe to use directly.
+		store.storeHeader = cachedState.StoreHeader
+		store.indexStates = cachedState.IndexStates
 	}
 	store.stateMu.Unlock()
 	return nil
@@ -1538,7 +1544,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
-		t, err := violationSubspace.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
 		if err != nil {
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}
@@ -1553,7 +1559,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 			// Value contains the conflicting PK (matching Java's wire format).
 			// Empty value means no cross-reference was stored.
 			if len(kv.Value) > 0 {
-				existingKey, err := tuple.Unpack(kv.Value)
+				existingKey, err := fastUnpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}
