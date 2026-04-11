@@ -48,6 +48,10 @@ type StackMachine struct {
 	dirList       []dirEntry
 	dirIndex      int
 	dirErrorIndex int
+
+	// Ring buffer of last 50 operations for crash diagnostics.
+	opRing    [50]string
+	opRingIdx int
 }
 
 // NewStackMachine creates a stack machine with the given prefix.
@@ -91,6 +95,9 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 		if err := sm.execute(ctx, i, op, arg); err != nil {
 			return fmt.Errorf("instruction %d (%s): %w", i, op, err)
 		}
+		// Ring buffer of last 50 operations for crash diagnostics.
+		sm.opRing[sm.opRingIdx%len(sm.opRing)] = fmt.Sprintf("#%d %s: stack %d→%d", i, op, stackDepth, len(sm.stack))
+		sm.opRingIdx++
 		if traceEnabled {
 			newDepth := len(sm.stack)
 			fmt.Fprintf(os.Stderr, "[TRACE] #%d %s: stack %d→%d", i, op, stackDepth, newDepth)
@@ -221,6 +228,17 @@ func (sm *StackMachine) popInt64() int64 {
 			fmt.Fprintf(os.Stderr, "  [%d] idx=%d type=%T value=%v\n", i, se.idx, se.value, se.value)
 		}
 		fmt.Fprintf(os.Stderr, "=== END STACK DUMP ===\n\n")
+		// Dump last 50 operations from ring buffer.
+		fmt.Fprintf(os.Stderr, "=== LAST %d OPERATIONS ===\n", min(sm.opRingIdx, len(sm.opRing)))
+		start := 0
+		if sm.opRingIdx > len(sm.opRing) {
+			start = sm.opRingIdx % len(sm.opRing)
+		}
+		count := min(sm.opRingIdx, len(sm.opRing))
+		for i := 0; i < count; i++ {
+			fmt.Fprintf(os.Stderr, "  %s\n", sm.opRing[(start+i)%len(sm.opRing)])
+		}
+		fmt.Fprintf(os.Stderr, "=== END OPERATIONS ===\n\n")
 		panic(fmt.Sprintf("expected int64, got %T: %v", e.value, e.value))
 	}
 }
