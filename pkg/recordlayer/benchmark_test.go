@@ -80,6 +80,21 @@ func benchMetaData(b *testing.B) *RecordMetaData {
 	return md
 }
 
+// benchMetaDataWithValueIndex builds metadata with a VALUE index on price.
+func benchMetaDataWithValueIndex(b *testing.B) *RecordMetaData {
+	b.Helper()
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+	md, err := builder.Build()
+	if err != nil {
+		b.Fatalf("failed to build metadata: %v", err)
+	}
+	return md
+}
+
 // benchMetaDataWithCountKey builds metadata with ungrouped record counting enabled.
 func benchMetaDataWithCountKey(b *testing.B) *RecordMetaData {
 	b.Helper()
@@ -761,6 +776,116 @@ func BenchmarkSaveRecordWithCountAndIndex(b *testing.B) {
 		})
 		if err != nil {
 			b.Fatalf("save %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkSaveRecordBatch measures saving 10 records in a single transaction.
+// This is a common real-world pattern: batch inserts amortize tx overhead.
+func BenchmarkSaveRecordBatch(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaDataWithValueIndex(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		base := int64(i * 10)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			for j := int64(0); j < 10; j++ {
+				if _, err := store.SaveRecord(benchOrder(base+j, int32((base+j)%100))); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		if err != nil {
+			b.Fatalf("batch %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkScanWithContinuation measures paged scanning with continuation tokens.
+// Scans 100 records in pages of 10, resuming from continuation each time.
+func BenchmarkScanWithContinuation(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	// Pre-populate with 100 records.
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := NewStoreBuilder().
+			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		for i := int64(1); i <= 100; i++ {
+			if _, err := store.SaveRecord(benchOrder(i, int32(i%50))); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var continuation []byte
+		totalScanned := 0
+		for {
+			result, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				cursor := store.ScanRecords(continuation, ScanProperties{
+					ExecuteProperties: ExecuteProperties{
+						ReturnedRowLimit: 10,
+					},
+					CursorStreamingMode: StreamingModeWantAll,
+				})
+				records, cont, err := AsListWithContinuation(ctx, cursor)
+				if err != nil {
+					return nil, err
+				}
+				return []any{len(records), cont}, nil
+			})
+			if err != nil {
+				b.Fatalf("scan page: %v", err)
+			}
+			page := result.([]any)
+			pageCount := page[0].(int)
+			pageCont := page[1].([]byte)
+			totalScanned += pageCount
+			continuation = pageCont
+			if len(continuation) == 0 || pageCount == 0 {
+				break
+			}
+		}
+		if totalScanned != 100 {
+			b.Fatalf("expected 100 records, got %d", totalScanned)
 		}
 	}
 }
