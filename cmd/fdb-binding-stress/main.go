@@ -32,10 +32,8 @@ const (
 
 // Per-process unique names to allow concurrent stress runs.
 var (
-	containerName  = fmt.Sprintf("fdb-stress-%d", os.Getpid())
-	hostPort       = fmt.Sprintf("%d", 4500+os.Getpid()%1000)
-	clusterFile    = fmt.Sprintf("/tmp/fdb-stress-%d.cluster", os.Getpid())
-	clusterContent = fmt.Sprintf("docker:docker@127.0.0.1:%s", hostPort)
+	containerName = fmt.Sprintf("fdb-stress-%d", os.Getpid())
+	clusterFile   = fmt.Sprintf("/tmp/fdb-stress-%d.cluster", os.Getpid())
 )
 
 // SeedResult is the per-seed result written to the JSON report.
@@ -197,9 +195,10 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 		}
 	}
 
-	// Start FDB.
-	out, err := runOutput("docker", "run", "-d", "--name", containerName,
-		"-p", hostPort+":4500", fdbImage)
+	// Start FDB without port mapping. Connect via container IP directly.
+	// Port mapping causes Docker DNAT which confuses FDB's canonicalRemotePort
+	// tracking, triggering assertion spam at FlowTransport.actor.cpp:1545.
+	out, err := runOutput("docker", "run", "-d", "--name", containerName, fdbImage)
 	if err != nil {
 		r.Error = "docker run failed: " + strings.TrimSpace(string(out))
 		return r
@@ -231,6 +230,14 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 		return r
 	}
 
+	// Get container IP for direct connectivity (no DNAT).
+	containerIP, ipErr := runOutput("docker", "inspect", "-f",
+		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", containerName)
+	if ipErr != nil || strings.TrimSpace(string(containerIP)) == "" {
+		r.Error = "failed to get container IP"
+		return r
+	}
+	clusterContent := fmt.Sprintf("docker:docker@%s:4500", strings.TrimSpace(string(containerIP)))
 	os.WriteFile(clusterFile, []byte(clusterContent), 0o644)
 
 	// Run bindingtester with a context timeout.
