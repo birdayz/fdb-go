@@ -164,6 +164,28 @@ var _ = Describe("Record Count Conformance", func() {
 		})
 	})
 
+	Describe("Count after Java delete", func() {
+		It("should decrement count when Java deletes", func() {
+			for i := int64(1); i <= 3; i++ {
+				saveOrderWithGoCounting(StandardOrder(i))
+			}
+			Expect(getGoRecordCount()).To(Equal(int64(3)))
+
+			// Java deletes record 2.
+			params := buildJavaParams()
+			params["orderID"] = int64(2)
+			var deleted bool
+			err := java.InvokeAs(ctx, "deleteOrderCounting", params, &deleted)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			goCount := getGoRecordCount()
+			javaCount := getJavaRecordCount()
+			Expect(goCount).To(Equal(int64(2)))
+			Expect(javaCount).To(Equal(int64(2)))
+		})
+	})
+
 	Describe("Count not incremented on update", func() {
 		It("should not change count when saving existing record", func() {
 			saveOrderWithGoCounting(StandardOrder(1))
