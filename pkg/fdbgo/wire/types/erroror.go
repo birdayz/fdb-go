@@ -131,6 +131,8 @@ func (m *VoidReply) MarshalFDB() []byte {
 		footerW.WriteScalar(b[:], 4)
 	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
 	return buf
 }
 
@@ -230,5 +232,7 @@ func (m *ErrorOrError) MarshalFDB() []byte {
 	footerW.WriteRelativeOffset(rootStart, 0)
 	// FileID = 0 for ErrorOrError (response, not a request).
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
 	return buf
 }
