@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	appletuple "github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -72,13 +73,51 @@ func (sm *StackMachine) popTupleAsPath() []string {
 
 // popTupleRaw pops a count and then that many elements from the stack,
 // returning them as our internal ourtuple.Tuple (for subspace/directory ops).
+// Recursively converts Apple tuple types to our tuple types.
 func (sm *StackMachine) popTupleRaw() ourtuple.Tuple {
 	count := int(sm.popInt64())
 	t := make(ourtuple.Tuple, count)
 	for i := 0; i < count; i++ {
-		t[i] = sm.pop().value
+		t[i] = convertTupleElement(sm.pop().value)
 	}
 	return t
+}
+
+// convertTupleElement converts Apple binding tuple types to our tuple types.
+func convertTupleElement(v any) any {
+	switch val := v.(type) {
+	case appletuple.Tuple:
+		out := make(ourtuple.Tuple, len(val))
+		for i, e := range val {
+			out[i] = convertTupleElement(e)
+		}
+		return out
+	case appletuple.UUID:
+		return ourtuple.UUID(val)
+	case appletuple.Versionstamp:
+		return ourtuple.Versionstamp{
+			TransactionVersion: val.TransactionVersion,
+			UserVersion:        val.UserVersion,
+		}
+	default:
+		return v
+	}
+}
+
+// popBytesOrNil pops a value that may be nil (Python NONE) or bytes.
+func (sm *StackMachine) popBytesOrNil() []byte {
+	e := sm.pop()
+	if e.value == nil {
+		return nil
+	}
+	switch v := e.value.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	default:
+		panic(fmt.Sprintf("expected bytes or nil, got %T", e.value))
+	}
 }
 
 // fdbDB returns an fdb.Database wrapping the stack machine's client.Database.
@@ -150,10 +189,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE_OR_OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytes()
-		if len(layer) == 0 {
-			layer = nil
-		}
+		layer := sm.popBytesOrNil()
 		tr := sm.getTransactor(isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
@@ -171,14 +207,8 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "CREATE":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytes()
-		if len(layer) == 0 {
-			layer = nil
-		}
-		prefix := sm.popBytes()
-		if len(prefix) == 0 {
-			prefix = nil
-		}
+		layer := sm.popBytesOrNil()
+		prefix := sm.popBytesOrNil()
 		tr := sm.getTransactor(isDatabase)
 		d := sm.currentDir()
 		if d.dir == nil {
@@ -202,10 +232,7 @@ func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op stri
 
 	case "OPEN":
 		path := sm.popTupleAsPath()
-		layer := sm.popBytes()
-		if len(layer) == 0 {
-			layer = nil
-		}
+		layer := sm.popBytesOrNil()
 		rt := sm.getReadTransactor(isDatabase, isSnapshot)
 		d := sm.currentDir()
 		if d.dir == nil {

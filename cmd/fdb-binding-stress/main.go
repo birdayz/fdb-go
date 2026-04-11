@@ -62,6 +62,7 @@ func main() {
 	duration := flag.Duration("duration", 0, "run for this long (e.g. 2h); overrides -seeds")
 	seedStart := flag.Int("seed-start", 1, "first seed number")
 	outDir := flag.String("out", "", "output directory (default: binding-stress-out/<timestamp>)")
+	testName := flag.String("test-name", "api", "binding tester test name (api, directory, directory_hca)")
 	flag.Parse()
 
 	stacktester, btRunDir := setup()
@@ -103,7 +104,7 @@ func main() {
 		os.MkdirAll(seedDir, 0o755)
 
 		t0 := time.Now()
-		r := runSeed(seed, *ops, stacktester, btRunDir, seedDir)
+		r := runSeed(seed, *ops, *testName, stacktester, btRunDir, seedDir)
 		r.Duration = time.Since(t0).Seconds()
 
 		// Always collect logs.
@@ -179,7 +180,7 @@ func main() {
 	}
 }
 
-func runSeed(seed, ops int, stacktester, btRunDir, seedDir string) SeedResult {
+func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) SeedResult {
 	r := SeedResult{Seed: seed}
 
 	// Tear down any leftover container. Wait for removal to complete.
@@ -208,7 +209,7 @@ func runSeed(seed, ops int, stacktester, btRunDir, seedDir string) SeedResult {
 	cmd := exec.CommandContext(ctx, "python3",
 		filepath.Join(btRunDir, "bindingtester/bindingtester.py"),
 		"--cluster-file", clusterFile,
-		"--test-name", "api",
+		"--test-name", testName,
 		"--api-version", "730",
 		"--num-ops", fmt.Sprintf("%d", ops),
 		"--seed", fmt.Sprintf("%d", seed),
