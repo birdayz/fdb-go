@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("Delete Conformance", func() {
@@ -217,6 +218,67 @@ var _ = Describe("Delete Conformance", func() {
 			deleted, err = store.DeleteRecord(ctx, 501)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(deleted).To(BeTrue())
+		})
+	})
+
+	Describe("Cross-language Delete", func() {
+		It("Go inserts, Java deletes, Go verifies gone", func() {
+			// Go writes a record.
+			order := StandardOrder(700)
+			err := store.SaveRecord(ctx, order)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Java deletes it.
+			java := NewJavaInvoker()
+			clusterFile, cfErr := sharedContainer.ClusterFile(ctx)
+			Expect(cfErr).NotTo(HaveOccurred())
+			var deleted bool
+			err = java.InvokeAs(ctx, "deleteOrder", map[string]any{
+				"clusterFile": clusterFile,
+				"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
+				"orderID":     int64(700),
+				"tenantName":  env.TenantName,
+			}, &deleted)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Go confirms it's gone.
+			exists, err := store.RecordExists(ctx, 700)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
+		})
+
+		It("Java inserts, Go deletes, Java verifies gone", func() {
+			// Java writes a record.
+			java := NewJavaInvoker()
+			clusterFile, cfErr := sharedContainer.ClusterFile(ctx)
+			Expect(cfErr).NotTo(HaveOccurred())
+			err := java.InvokeAs(ctx, "saveOrder", map[string]any{
+				"clusterFile": clusterFile,
+				"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
+				"order": &gen.Order{
+					OrderId: proto.Int64(701),
+					Price:   proto.Int32(999),
+				},
+				"tenantName": env.TenantName,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Go deletes it.
+			deleted, err := store.DeleteRecord(ctx, 701)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			// Java confirms it's gone.
+			var exists bool
+			err = java.InvokeAs(ctx, "recordExists", map[string]any{
+				"clusterFile": clusterFile,
+				"subspace":    BytesToIntArray(env.Keyspace.Bytes()),
+				"orderID":     int64(701),
+				"tenantName":  env.TenantName,
+			}, &exists)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse())
 		})
 	})
 })
