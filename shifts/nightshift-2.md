@@ -106,9 +106,10 @@ Resolved 71 items:
 
 ### 11. Binding stress (all tests)
 
-- **API:** 673/673 (prior shift) + 20/20 regression check this shift = 0 failures
+- **API:** 673/673 (prior shift) + 337/337 (1-hour endurance, this shift) = 0 failures
 - **Directory:** 100/100 × 1000 ops = 100K directory operations, 0 failures
 - **Directory HCA:** 4/5 (1 timeout from HCA contention, not a bug)
+- **Total this shift:** 437K operations, 0 failures, 0 FDB deaths
 
 ## Current state
 
