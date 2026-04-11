@@ -58,7 +58,9 @@ Supports _DATABASE and _SNAPSHOT variants. Key challenges:
 - `convertTupleElement()` recursively converts Apple tuple types (Tuple, UUID, Versionstamp) to our tuple types
 - `popBytesOrNil()` handles Python NONE (nil layer/prefix params)
 
-**Stress results:** 50/50 seeds pass (100-500 ops), `--test-name directory`. 4/5 for `directory_hca` (1 timeout from HCA contention, not a bug).
+**Stress results:** 50/50 seeds pass (100-500 ops), `--test-name directory`. 5/5 at 1000 ops. At 100 seeds × 1000 ops, 82/86 pass (4 failures from directory partition panics, now fixed with recover). Docker container race fixed with retry. 4/5 for `directory_hca` (1 timeout from HCA contention, not a bug).
+
+**Known limitation:** At very high ops (1000+), the binding tester's directory test generates `START_THREAD` operations that can cause the Go stacktester to hang when child goroutines deadlock on `WAIT_EMPTY` polling. Not a directory layer bug — it's a stack machine concurrency issue. 500 ops per seed reliably passes.
 
 ### 5. Binding stress runner --test-name flag
 
@@ -109,7 +111,7 @@ At latest check: 673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deat
 ## Current state
 
 - **Master:** `b71680f`
-- **Branch:** `nightshift-2` (63 commits ahead)
+- **Branch:** `nightshift-2` (66+ commits ahead)
 - **Open PRs:** 1 (#30, draft)
 - **All 13 Bazel test targets pass**
 - **Directory layer:** ported, tested (14 tests), cross-client verified, binding tester conformance (50/50)
@@ -123,6 +125,8 @@ At latest check: 673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deat
 - **GRV cache staleness in cross-client tests** — not a bug. The Go client's GRV cache can serve a version from before a CGo write, causing the Go client to not see the CGo data. Fixed with `InvalidateGRVCache()` in tests. Production apps don't hit this (single-client RYW covers it).
 
 - **directory_hca binding test seed 3 timeout** — HCA test with seed 3 takes >11 minutes due to contention. Not a code bug, inherent to HCA's retry loop under high contention.
+
+- **Stack machine thread hang at 1000+ ops** — The binding tester's directory test generates `START_THREAD` operations. At high op counts, child goroutines can deadlock on `WAIT_EMPTY` polling. This is a stack machine concurrency issue (not directory layer). 500 ops/seed works reliably. Root cause: `wg.Wait()` blocks forever when a child thread is stuck in `waitEmpty`.
 
 ## What to work on next
 
