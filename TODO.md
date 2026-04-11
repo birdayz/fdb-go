@@ -11,6 +11,10 @@ Conformance audit performed 2026-03-08 comparing Go implementation method-by-met
 
 ## Bugs
 
+### Binding tester fix (2026-04-11) — _DATABASE read operations
+
+- [x] **HIGH** — Stacktester missing `_DATABASE` handling for 4 read operations: `GET_KEY`, `GET_RANGE`, `GET_RANGE_STARTS_WITH`, `GET_RANGE_SELECTOR`. When the binding tester generated `_DATABASE` variants, these ran on the current transaction (which could be cancelled/errored) instead of a fresh auto-commit transaction via `db.Transact()`. Caused stack misalignment → panics ("expected int64, got RESULT_NOT_PRESENT"). Root cause of intermittent binding stress failures on seeds 51, 52, 53, 58. After fix: seed 58 passes 10/10 (was ~30% failure rate). Found by investigating a "flake" that turned out to be a real conformance bug.
+
 ### Correctness audit (2026-04-10) — fdb facade audit
 
 - [x] **HIGH** — `OrEqual` values wrong in `FirstGreaterOrEqual`/`FirstGreaterThan` key selector definitions. Our `range.go` had `FGE={OrEqual:true}` and `FGT={OrEqual:false}`, but the Apple Go binding (and C++ wire protocol) uses the opposite: `FGE={OrEqual:false}`, `FGT={OrEqual:true}`. The Apple C binding does NOT invert OrEqual (confirmed by reading `fdb_c.cpp` source). Root cause was wrong definitions, not a missing inversion. Fixed at the definition level in `range.go` + updated `isTrivialSelector` and `resolveSelector` optimizations. Affected all 4 key selectors through the fdb facade. Found via cross-client interop tests (Go vs CGo). 5 new interop tests added.
