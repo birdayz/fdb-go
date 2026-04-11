@@ -55,6 +55,30 @@ func (store *FDBRecordStore) GetEnabledIndexes() []*Index {
 	return result
 }
 
+// GetReadableUniversalIndexes returns universal indexes in READABLE state.
+// Matches Java's FDBRecordStore.getReadableUniversalIndexes().
+func (store *FDBRecordStore) GetReadableUniversalIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetUniversalIndexes() {
+		if store.GetIndexState(idx.Name).IsScannable() {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// GetEnabledUniversalIndexes returns universal indexes NOT in DISABLED state.
+// Matches Java's FDBRecordStore.getEnabledUniversalIndexes().
+func (store *FDBRecordStore) GetEnabledUniversalIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetUniversalIndexes() {
+		if !store.GetIndexState(idx.Name).IsDisabled() {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
 // GetAllIndexStates returns a map of all index names to their current states.
 // Indexes without an explicit state entry default to READABLE.
 // Matches Java's FDBRecordStore.getAllIndexStates().
