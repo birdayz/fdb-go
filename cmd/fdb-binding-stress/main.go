@@ -27,11 +27,15 @@ import (
 
 const (
 	fdbImage       = "foundationdb/foundationdb:7.3.75"
-	containerName  = "fdb-stress"
-	hostPort       = "4500"
-	clusterFile    = "/tmp/fdb-stress.cluster"
-	clusterContent = "docker:docker@127.0.0.1:4500"
 	perSeedTimeout = 5 * time.Minute
+)
+
+// Per-process unique names to allow concurrent stress runs.
+var (
+	containerName  = fmt.Sprintf("fdb-stress-%d", os.Getpid())
+	hostPort       = fmt.Sprintf("%d", 4500+os.Getpid()%1000)
+	clusterFile    = fmt.Sprintf("/tmp/fdb-stress-%d.cluster", os.Getpid())
+	clusterContent = fmt.Sprintf("docker:docker@127.0.0.1:%s", hostPort)
 )
 
 // SeedResult is the per-seed result written to the JSON report.
