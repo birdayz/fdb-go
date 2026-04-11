@@ -115,6 +115,10 @@ binding-stress runs="100" ops="1000":
 binding-stress-duration duration ops="1000":
     bazelisk run //cmd/fdb-binding-stress -- -duration {{duration}} -ops {{ops}}
 
+# Directory layer binding stress: N seeds × M ops
+binding-stress-directory runs="50" ops="500":
+    bazelisk run //cmd/fdb-binding-stress -- -seeds {{runs}} -ops {{ops}} -test-name directory
+
 # Run tests with coverage
 coverage:
     bazelisk coverage //...
