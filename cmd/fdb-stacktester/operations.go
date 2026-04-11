@@ -588,6 +588,9 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
 	end := strinc(prefix)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, _, err := tx.GetRange(ctx, prefix, end, 1)
 			return kvs, err
