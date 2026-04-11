@@ -1022,6 +1022,53 @@ private:
 
         fprintf(f, "\treturn buf\n");
         fprintf(f, "}\n\n");
+
+        // MarshalFDBPooled — same as MarshalFDB but reuses a caller-provided buffer.
+        fprintf(f, "// MarshalFDBPooled is like MarshalFDB but reuses dst if capacity is sufficient.\n");
+        fprintf(f, "func (m *%s) MarshalFDBPooled(dst []byte) []byte {\n", typeName);
+        fprintf(f, "\tt := %sTemplate\n", typeName);
+        fprintf(f, "\tpackedVT := t.PackedVTables()\n\n");
+
+        fprintf(f, "\tps := wire.NewPrecomputeSize()\n");
+        fprintf(f, "\tvtNoop := ps.GetMessageWriter(len(packedVT))\n");
+        fprintf(f, "\tm.precomputeSize(ps)\n");
+        fprintf(f, "\t{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+4, 4)+4) }\n");
+        fprintf(f, "\tvtNoop.WriteTo(ps)\n");
+        fprintf(f, "\tvtableStart := ps.CurrentBufferSize\n");
+        fprintf(f, "\t{ n := ps.GetMessageWriter(8); n.WriteToAt(ps, wire.RightAlign(ps.CurrentBufferSize+8, 8)) }\n");
+        fprintf(f, "\ttotalSize := ps.CurrentBufferSize\n\n");
+
+        fprintf(f, "\tvar buf []byte\n");
+        fprintf(f, "\tif cap(dst) >= totalSize {\n");
+        fprintf(f, "\t\tbuf = dst[:totalSize]\n");
+        fprintf(f, "\t\tfor i := range buf { buf[i] = 0 }\n");
+        fprintf(f, "\t} else {\n");
+        fprintf(f, "\t\tbuf = make([]byte, totalSize)\n");
+        fprintf(f, "\t}\n\n");
+
+        fprintf(f, "\twb := wire.NewWriteToBuffer(buf, vtableStart, ps.WriteToOffsets)\n");
+        fprintf(f, "\tvtW := wb.GetMessageWriter(len(packedVT), false)\n");
+        fprintf(f, "\tvtW.WriteScalar(packedVT, 0)\n");
+        fprintf(f, "\trootStart := m.writeToBuffer(wb, vtableStart, t)\n\n");
+
+        fprintf(f, "\tfakeRootW := wb.GetMessageWriter(8, true)\n");
+        fprintf(f, "\tfakeRootStart := fakeRootW.FinalLocation\n");
+        fprintf(f, "\tfakeRootW.WriteRelativeOffset(rootStart, int(wire.FakeRootVTable[2]))\n");
+        fprintf(f, "\t{ soff := int32(vtableStart - t.VTableOffset(wire.FakeRootVTable) - fakeRootStart); ");
+        fprintf(f, "var b [4]byte; binary.LittleEndian.PutUint32(b[:], uint32(soff)); fakeRootW.WriteScalar(b[:], 0) }\n");
+        fprintf(f, "\tfakeRootW.WriteToAt(fakeRootStart)\n\n");
+
+        fprintf(f, "\tvtW.WriteTo()\n");
+        fprintf(f, "\tfooterW := wb.GetMessageWriter(8, false)\n");
+        fprintf(f, "\tfooterW.WriteRelativeOffset(fakeRootStart, 0)\n");
+        fprintf(f, "\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], %sFileID); footerW.WriteScalar(b[:], 4) }\n", typeName);
+        fprintf(f, "\tfooterW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))\n");
+
+        fprintf(f, "\twire.ReleaseWriteToBuffer(wb)\n");
+        fprintf(f, "\twire.ReleasePrecomputeSize(ps)\n");
+
+        fprintf(f, "\treturn buf\n");
+        fprintf(f, "}\n\n");
     }
 
     // ---- FlatBuffers vector parser (same as v4) ----

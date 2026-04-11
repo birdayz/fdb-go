@@ -3,6 +3,7 @@ package conformance_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
@@ -18,23 +19,25 @@ var (
 
 var _ = BeforeSuite(func() {
 	suiteCtx = context.Background()
+	setupCtx, setupCancel := context.WithTimeout(suiteCtx, 2*time.Minute)
+	defer setupCancel()
 	var err error
 
 	GinkgoWriter.Println("🚀 Starting shared FDB container for test suite...")
 
 	// Start ONE container per parallel node
-	sharedContainer, err = foundationdbtc.Run(suiteCtx, "",
+	sharedContainer, err = foundationdbtc.Run(setupCtx, "",
 		foundationdbtc.WithAPIVersion(720),
 	)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = sharedContainer.InitializeDatabase(suiteCtx)
+	err = sharedContainer.InitializeDatabase(setupCtx)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Open ONE database connection for the entire suite.
 	// Pure Go client bootstrap is expensive (~1-2s per connection).
 	// Reusing avoids 422 × bootstrap = 633s+ overhead.
-	sharedDB, err = openGoDatabase(suiteCtx, sharedContainer)
+	sharedDB, err = openGoDatabase(setupCtx, sharedContainer)
 	Expect(err).NotTo(HaveOccurred())
 
 	GinkgoWriter.Println("✅ Shared FDB container + database ready")

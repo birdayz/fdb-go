@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -18,10 +19,11 @@ import (
 )
 
 func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
-	ctx := context.Background()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer setupCancel()
 
 	// Start FoundationDB testcontainer
-	container, err := foundationdb.Run(ctx, "",
+	container, err := foundationdb.Run(setupCtx, "",
 		foundationdb.WithDatabase("testcontainer_conformance"),
 		foundationdb.WithAPIVersion(720),
 	)
@@ -29,13 +31,13 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 		t.Fatalf("Failed to start FoundationDB container: %v", err)
 	}
 	defer func() {
-		if err := container.Terminate(ctx); err != nil {
+		if err := container.Terminate(context.Background()); err != nil {
 			t.Logf("Failed to terminate container: %v", err)
 		}
 	}()
 
 	// Initialize database
-	err = container.InitializeDatabase(ctx)
+	err = container.InitializeDatabase(setupCtx)
 	if err != nil {
 		t.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -43,7 +45,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	// Test socat proxy setup
 	t.Logf("Testing FoundationDB with socat proxy...")
 
-	path, err := container.ClusterFilePath(ctx)
+	path, err := container.ClusterFilePath(setupCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,40 +100,41 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 }
 
 func TestMultipleContainersIsolation(t *testing.T) {
-	ctx := context.Background()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer setupCancel()
 
 	// Start two separate FoundationDB containers
-	container1, err := foundationdb.Run(ctx, "",
+	container1, err := foundationdb.Run(setupCtx, "",
 		foundationdb.WithDatabase("test_db_1"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start first container: %v", err)
 	}
 	defer func() {
-		if err := container1.Terminate(ctx); err != nil {
+		if err := container1.Terminate(context.Background()); err != nil {
 			t.Logf("Failed to terminate container1: %v", err)
 		}
 	}()
 
-	container2, err := foundationdb.Run(ctx, "",
+	container2, err := foundationdb.Run(setupCtx, "",
 		foundationdb.WithDatabase("test_db_2"),
 	)
 	if err != nil {
 		t.Fatalf("Failed to start second container: %v", err)
 	}
 	defer func() {
-		if err := container2.Terminate(ctx); err != nil {
+		if err := container2.Terminate(context.Background()); err != nil {
 			t.Logf("Failed to terminate container2: %v", err)
 		}
 	}()
 
 	// Verify containers are isolated
-	connStr1, err := container1.ConnectionString(ctx)
+	connStr1, err := container1.ConnectionString(setupCtx)
 	if err != nil {
 		t.Fatalf("Failed to get connection string 1: %v", err)
 	}
 
-	connStr2, err := container2.ConnectionString(ctx)
+	connStr2, err := container2.ConnectionString(setupCtx)
 	if err != nil {
 		t.Fatalf("Failed to get connection string 2: %v", err)
 	}
@@ -218,10 +221,11 @@ func readTestDataWithGoContainer(recordDB *recordlayer.FDBDatabase, metaData *re
 }
 
 func TestFoundationDBContainerConfiguration(t *testing.T) {
-	ctx := context.Background()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer setupCancel()
 
 	// Test with custom configuration
-	container, err := foundationdb.Run(ctx, "",
+	container, err := foundationdb.Run(setupCtx, "",
 		foundationdb.WithDatabase("custom_test_db"),
 		foundationdb.WithAPIVersion(720),
 		foundationdb.WithMemory("2GB"),
@@ -233,7 +237,7 @@ func TestFoundationDBContainerConfiguration(t *testing.T) {
 		t.Fatalf("Failed to start container with custom config: %v", err)
 	}
 	defer func() {
-		if err := container.Terminate(ctx); err != nil {
+		if err := container.Terminate(context.Background()); err != nil {
 			t.Logf("Failed to terminate container: %v", err)
 		}
 	}()
@@ -247,7 +251,7 @@ func TestFoundationDBContainerConfiguration(t *testing.T) {
 	}
 
 	// Verify connection works
-	connStr, err := container.ConnectionString(ctx)
+	connStr, err := container.ConnectionString(setupCtx)
 	if err != nil {
 		t.Fatalf("Failed to get connection string: %v", err)
 	}

@@ -3,25 +3,27 @@ package foundationdb_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
 func TestFoundationDBDatabaseConnection(t *testing.T) {
-	ctx := context.Background()
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer setupCancel()
 
-	container, err := foundationdb.Run(ctx, "")
+	container, err := foundationdb.Run(setupCtx, "")
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer container.Terminate(ctx)
+	defer container.Terminate(context.Background())
 
-	if err := container.InitializeDatabase(ctx); err != nil {
+	if err := container.InitializeDatabase(setupCtx); err != nil {
 		t.Fatal(err)
 	}
 
-	path, err := container.ClusterFilePath(ctx)
+	path, err := container.ClusterFilePath(setupCtx)
 	if err != nil {
 		t.Fatal(err)
 	}
