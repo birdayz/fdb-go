@@ -305,10 +305,14 @@ func readIndexStates(tx fdb.Transaction, ss subspace.Subspace) (map[string]Index
 		return nil, fmt.Errorf("failed to load index states: %w", err)
 	}
 
+	prefixLen := len(isSubspace.Bytes())
 	states := make(map[string]IndexState)
 	for _, kv := range kvs {
-		// Unpack key to get index name
-		t, err := isSubspace.Unpack(kv.Key)
+		// Unpack key to get index name using fastUnpack.
+		if len(kv.Key) < prefixLen {
+			continue
+		}
+		t, err := fastUnpack(kv.Key[prefixLen:])
 		if err != nil {
 			return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 		}
@@ -320,8 +324,8 @@ func readIndexStates(tx fdb.Transaction, ss subspace.Subspace) (map[string]Index
 			continue
 		}
 
-		// Unpack value to get state code
-		valueTuple, err := tuple.Unpack(kv.Value)
+		// Unpack value to get state code.
+		valueTuple, err := fastUnpack(kv.Value)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
 		}
