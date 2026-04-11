@@ -707,7 +707,7 @@ func (c *prefixSkipScanCursor) findNextPrefix() (tuple.Tuple, bool, error) {
 	}
 
 	// Unpack the key relative to the index subspace.
-	t, err := c.m.indexSubspace.Unpack(kvs[0].Key)
+	t, err := fastSubspaceUnpack(kvs[0].Key, len(c.m.indexSubspace.Bytes()))
 	if err != nil {
 		// Key is not in our subspace — shouldn't happen, but skip gracefully.
 		return nil, false, nil

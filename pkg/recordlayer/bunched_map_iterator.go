@@ -37,7 +37,7 @@ func NewTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns in
 // SubspaceOf extracts the subspace for a given FDB key by taking the first
 // groupingColumns elements of the unpacked tuple.
 func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, error) {
-	t, err := s.indexSubspace.Unpack(fdb.Key(keyBytes))
+	t, err := fastSubspaceUnpack(keyBytes, len(s.indexSubspace.Bytes()))
 	if err != nil {
 		return nil, &BunchedSerializationError{
 			Message: fmt.Sprintf("TextSubspaceSplitter: unable to unpack key: %v", err),
@@ -57,7 +57,7 @@ func (s *TextSubspaceSplitter) SubspaceOf(keyBytes []byte) (subspace.Subspace, e
 
 // SubspaceTag returns the grouping key tuple for a subspace.
 func (s *TextSubspaceSplitter) SubspaceTag(ss subspace.Subspace) (tuple.Tuple, error) {
-	t, err := s.indexSubspace.Unpack(fdb.Key(ss.Bytes()))
+	t, err := fastSubspaceUnpack(ss.Bytes(), len(s.indexSubspace.Bytes()))
 	if err != nil {
 		return nil, &BunchedSerializationError{
 			Message: fmt.Sprintf("TextSubspaceSplitter: unable to unpack subspace tag: %v", err),
