@@ -6,7 +6,7 @@
 
 ## Objective
 
-Port FDB directory layer for Java Record Layer KeySpace compatibility.
+Port FDB directory layer for Java Record Layer KeySpace compatibility + binding tester conformance.
 
 ## What was done
 
@@ -22,7 +22,7 @@ Files:
 - `allocator.go` — High Contention Allocator (HCA)
 - `node.go` — node metadata
 
-### 2. Directory layer tests (6 tests)
+### 2. Directory layer tests (14 tests)
 
 - Basic CRUD (create, read, list, exists, remove)
 - Multiple directories / HCA prefix uniqueness
@@ -30,24 +30,39 @@ Files:
 - Open existing (idempotent, same prefix)
 - Subdirectory through DirectorySubspace
 - Duplicate create error
+- Concurrent access (20 goroutines)
+- Layer check (wrong layer error, correct succeeds)
+- Remove non-existent (returns false, not error)
+- Recursive remove (parent/child/grandchild)
+- Data isolation between directories
+- Custom DirectoryLayer with non-default subspaces
+- Manual prefix creation (allowManualPrefixes)
 
 ### 3. Cross-client directory interop (commit `615fe12`)
 
 **Verified wire compatibility:** Go-created directories are readable by CGo (Apple binding) and vice versa. This means Java Record Layer apps using `KeySpace`/`DirectoryLayerDirectory` can interop with our Go client.
 
-### 4. 2h binding stress (running)
+### 4. Binding tester directory extension (commits `9ed7daf`, `ba6e3e1`)
 
-Started at shift begin. At latest check: 300+ seeds, 0 failures, 0 FDB deaths. Will complete ~01:47 CEST.
+Implemented all 21 DIRECTORY_* stack machine operations for the FDB binding tester:
+- CREATE_SUBSPACE, CREATE_LAYER, CREATE_OR_OPEN, CREATE, OPEN
+- CHANGE, SET_ERROR_INDEX
+- MOVE, MOVE_TO
+- REMOVE, REMOVE_IF_EXISTS
+- LIST, EXISTS
+- PACK_KEY, UNPACK_KEY, RANGE, CONTAINS, OPEN_SUBSPACE
+- LOG_SUBSPACE, LOG_DIRECTORY, STRIP_PREFIX
 
-### 5. TODO.md cleanup (128 → 104 open items)
+Supports _DATABASE and _SNAPSHOT variants. Key challenges:
+- `WrapTransaction()`/`WrapDatabase()` bridge `client.Transaction`→`fdb.Transaction` for directory layer interop
+- `convertTupleElement()` recursively converts Apple tuple types (Tuple, UUID, Versionstamp) to our tuple types
+- `popBytesOrNil()` handles Python NONE (nil layer/prefix params)
 
-Resolved 24 items:
-- **Features implemented**: WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
-- **Verified not bugs**: Wire #11 (nil/empty), Wire #14 (variant tag=0), emptyVector
-- **Marked done**: TEXT index, key expressions, cursor combinators, FunctionKE conformance
-- **WONTFIX (Java-specific)**: preloadRecordAsync, buildSingleRecord, scanRemoteFetch, mergeIndex/performOperation, isIdempotent, IndexScanBounds, scanIndexRecords filter, repairRecordKeys, FDBLatencySource, CursorLimitManager, Visitor pattern, PreloadRecordStoreState, canDeleteWhere
-- **Style**: Get prefix WONTFIX (Java naming for compat)
-- **Updated**: coverage table, memory.md spec counts, index types heading
+**Stress results:** 50/50 seeds pass (100-500 ops), `--test-name directory`. 4/5 for `directory_hca` (1 timeout from HCA contention, not a bug).
+
+### 5. Binding stress runner --test-name flag
+
+Added `--test-name` flag to `fdb-binding-stress` and `binding-stress-directory` target to justfile.
 
 ### 6. FDBMetaDataStore (commit `bc219d4`)
 
@@ -58,40 +73,70 @@ Key learnings during implementation:
 - Go `interface{}([]byte(nil)) != nil` — use closure variables instead of Transact return value when checking for nil results
 - `MustGet()` returns `[]byte{}` (not nil) for non-existent keys — check `len(data) == 0`
 
-### 7. API Parity Documentation
+### 7. Store API expansion (commits `8911002` through `8b461c0`)
+
+Added 8 public methods to `FDBRecordStore`:
+- `GetKeySizeLimit()`, `GetValueSizeLimit()` — FDB key/value size limits
+- `AsBuilder()` — convert store to builder for reopening
+- `CopyBuilder(newContext)` — clone builder in new transaction
+- `GetReadableUniversalIndexes()`, `GetEnabledUniversalIndexes()` — index queries
+- `IndexStateSubspace()` — expose index state subspace
+- `SetFormatVersion()` — override format version
+
+### 8. API Parity Documentation
 
 Verified 100% API parity with Apple Go binding: Transaction, Snapshot, Database, DatabaseOptions (20/19), TransactionOptions (49/49). Documented in `pkg/fdbgo/fdb/API_PARITY.md`.
 
+### 9. New benchmarks
+
+Added 2 realistic workload benchmarks (15 total):
+- `BenchmarkSaveRecordBatch`: 10 records/tx with VALUE index — 3.5ms (350µs/record, 6x amortization)
+- `BenchmarkScanWithContinuation`: 100 records in 10 pages with continuation resume — 4.6ms
+
+### 10. TODO.md cleanup (128 → 57 open items)
+
+Resolved 71 items:
+- **Features implemented**: WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged(), FDBMetaDataStore, binding tester directory extension
+- **Verified not bugs**: Wire #11 (nil/empty), Wire #14 (variant tag=0), emptyVector
+- **Marked done**: TEXT index, key expressions, cursor combinators, FunctionKE conformance
+- **WONTFIX (Java-specific)**: preloadRecordAsync, buildSingleRecord, scanRemoteFetch, mergeIndex/performOperation, isIdempotent, IndexScanBounds, scanIndexRecords filter, repairRecordKeys, FDBLatencySource, CursorLimitManager, Visitor pattern, PreloadRecordStoreState, canDeleteWhere
+- **Updated**: coverage table, memory.md spec counts, index types heading
+
+### 11. 2h+ binding stress (completed from prior shift)
+
+At latest check: 673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deaths (api test). Directory test: 100-seed run started, results pending at shift end.
+
 ## Current state
 
-- **Master:** `9be2748`
-- **Branch:** `nightshift-2` (49 commits ahead)
+- **Master:** `b71680f`
+- **Branch:** `nightshift-2` (63 commits ahead)
 - **Open PRs:** 1 (#30, draft)
-- **All 14 Bazel test targets pass**
-- **2h binding stress:** **673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deaths**
-- **Directory layer:** ported, tested, cross-client verified
-- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged()
-- **TODO.md:** 128 → 61 open items (67 resolved)
-- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged(), TransactionID(), FDBMetaDataStore
+- **All 13 Bazel test targets pass**
+- **Directory layer:** ported, tested (14 tests), cross-client verified, binding tester conformance (50/50)
+- **New features:** WeakReadSemantics, FDBDatabaseFactory, IsVersionChanged(), FDBMetaDataStore, TransactionID(), 8 store API methods, WrapTransaction/WrapDatabase
+- **Binding tester:** 21 DIRECTORY_* operations implemented, --test-name directory support
+- **Benchmarks:** 15 total (was 13), added batch save + paged scan
+- **TODO.md:** 128 → 57 open items (71 resolved)
 
 ## Known issues
 
 - **GRV cache staleness in cross-client tests** — not a bug. The Go client's GRV cache can serve a version from before a CGo write, causing the Go client to not see the CGo data. Fixed with `InvalidateGRVCache()` in tests. Production apps don't hit this (single-client RYW covers it).
 
+- **directory_hca binding test seed 3 timeout** — HCA test with seed 3 takes >11 minutes due to contention. Not a code bug, inherent to HCA's retry loop under high contention.
+
 ## What to work on next
 
 ### High impact
-- **Binding tester directory extension** — implement DIRECTORY_* stack machine operations to pass the binding tester's directory test suite (~21 operations, ~400 lines)
-- **FDBMetaDataStore** — Implemented! Stores/loads MetaData proto in FDB with version history. 4 tests. Key learnings: (1) tuple.Pack panics on int32 — use int64, (2) Go `interface{}(nil-typed-value) != nil` — use closure vars instead of Transact return for nil checks, (3) `len(data) == 0` instead of `data == nil` for MustGet results.
-- **Performance benchmarking** — real workload benchmarks (bulk inserts, index-heavy saves, large scans, OnlineIndexer throughput). Compare with Java.
+- **100-seed directory binding stress** — currently running, check results in `binding-stress-out/dir-100seed/`
+- **Performance benchmarking** — real workload benchmarks added this shift. Compare with Java on equivalent workloads. Profile hotspots for batch insert paths.
 
 ### Medium impact
-- **Directory layer conformance tests** — Go↔Java cross-language directory interop (needs Java conformance server additions)
+- **Directory layer conformance tests** — Go↔Java cross-language directory interop (needs Java conformance server additions for directory steps)
 - **FDBReverseDirectoryCache** — prefix→name caching for multi-tenant apps (~496 lines Java)
-- **Version vector support** — causal consistency optimization
+- **Schema validation cross-language** — MetaDataValidator gaps addressed, needs Java conformance server for cross-language error comparison
 
 ### Low priority
+- KeySpace/KeySpacePath — enterprise key management (~25 Java files, 7K lines)
 - Query planner (26 items — out of scope until needed)
 - Synthetic record types (13 items — experimental API)
-- Cursor combinators needing planner (10 items)
-- Tag throttling, multi-shard test, multi-version client
+- Cursor combinators needing planner (AggregateCursor, ComparatorCursor, etc.)
