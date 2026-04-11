@@ -1016,6 +1016,10 @@ private:
         fprintf(f, "\t{ var b [4]byte; binary.LittleEndian.PutUint32(b[:], %sFileID); footerW.WriteScalar(b[:], 4) }\n", typeName);
         fprintf(f, "\tfooterW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))\n");
 
+        // Release pooled objects before returning.
+        fprintf(f, "\twire.ReleaseWriteToBuffer(wb)\n");
+        fprintf(f, "\twire.ReleasePrecomputeSize(ps)\n");
+
         fprintf(f, "\treturn buf\n");
         fprintf(f, "}\n\n");
     }

@@ -129,6 +129,8 @@ func (m *Error) MarshalFDB() []byte {
 		footerW.WriteScalar(b[:], 4)
 	}
 	footerW.WriteToAt(wire.RightAlign(wb.CurrentBufferSize+8, 8))
+	wire.ReleaseWriteToBuffer(wb)
+	wire.ReleasePrecomputeSize(ps)
 	return buf
 }
 
