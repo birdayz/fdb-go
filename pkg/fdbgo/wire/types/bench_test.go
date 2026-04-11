@@ -78,6 +78,38 @@ func BenchmarkMarshal_CommitTransactionRequest(b *testing.B) {
 	}
 }
 
+func BenchmarkMarshal_CommitTransactionRequest_Pooled(b *testing.B) {
+	mutations := make([]MutationRef, 5)
+	for i := range mutations {
+		mutations[i] = MutationRef{MutType: 0x06, Param1: []byte("set_key_xxxxxxxx"), Param2: []byte("set_value_yyyyyyyy")}
+	}
+	readCRs := make([]KeyRangeRef, 5)
+	for i := range readCRs {
+		readCRs[i] = KeyRangeRef{Begin: []byte("read_begin"), End: []byte("read_end")}
+	}
+	writeCRs := make([]KeyRangeRef, 5)
+	for i := range writeCRs {
+		writeCRs[i] = KeyRangeRef{Begin: []byte("write_begin"), End: []byte("write_end")}
+	}
+
+	req := CommitTransactionRequest{
+		Transaction: CommitTransactionRef{
+			ReadConflictRanges:  readCRs,
+			WriteConflictRanges: writeCRs,
+			Mutations:           mutations,
+			ReadSnapshot:        12345678900,
+		},
+		Reply:      ReplyPromise{Token: wire.UIDFromParts(0xAAAAAAAA, 0xBBBBBBBB)},
+		TenantInfo: TenantInfo{TenantId: -1},
+	}
+	var buf []byte
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf = req.MarshalFDBPooled(buf)
+	}
+}
+
 func BenchmarkMarshal_GetReadVersionRequest(b *testing.B) {
 	req := GetReadVersionRequest{
 		TransactionCount: 1,
