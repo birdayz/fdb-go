@@ -40,6 +40,7 @@ go_test(
         ":fdb",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb/directory",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/testcontainers/foundationdb",
     ],

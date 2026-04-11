@@ -1,11 +1,13 @@
 package fdb_test
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
@@ -320,4 +322,330 @@ func TestDirectoryLayerConcurrent(t *testing.T) {
 	}
 
 	dir.Remove(db, []string{"concurrent_test"})
+}
+
+// TestDirectoryLayerLayerCheck verifies that opening a directory with a
+// mismatched layer returns an error, and that opening with the correct
+// layer succeeds.
+func TestDirectoryLayerLayerCheck(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	path := []string{"layer_check_test"}
+
+	// Create with a specific layer.
+	ds, err := dir.Create(db, path, []byte("my_layer"))
+	if err != nil {
+		t.Fatalf("Create with layer: %v", err)
+	}
+	t.Logf("created directory with prefix %x, layer=%q", ds.Bytes(), ds.GetLayer())
+
+	// Open with wrong layer — should fail.
+	_, err = dir.Open(db, path, []byte("wrong_layer"))
+	if err == nil {
+		t.Fatal("expected error opening directory with wrong layer")
+	}
+	t.Logf("correctly got error for wrong layer: %v", err)
+
+	// Open with correct layer — should succeed.
+	ds2, err := dir.Open(db, path, []byte("my_layer"))
+	if err != nil {
+		t.Fatalf("Open with correct layer: %v", err)
+	}
+	if string(ds2.Bytes()) != string(ds.Bytes()) {
+		t.Errorf("prefix mismatch: create=%x, open=%x", ds.Bytes(), ds2.Bytes())
+	}
+
+	// Open with nil layer (no check) — should also succeed.
+	ds3, err := dir.Open(db, path, nil)
+	if err != nil {
+		t.Fatalf("Open with nil layer: %v", err)
+	}
+	if string(ds3.Bytes()) != string(ds.Bytes()) {
+		t.Errorf("prefix mismatch: create=%x, open-nil=%x", ds.Bytes(), ds3.Bytes())
+	}
+
+	dir.Remove(db, path)
+}
+
+// TestDirectoryLayerRemoveNonExistent verifies that removing a directory
+// path that does not exist returns (false, nil) — not an error.
+func TestDirectoryLayerRemoveNonExistent(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	removed, err := dir.Remove(db, []string{"remove_nonexistent_test", "does_not_exist"})
+	if err != nil {
+		t.Fatalf("Remove non-existent: unexpected error: %v", err)
+	}
+	if removed {
+		t.Error("Remove non-existent: expected false, got true")
+	}
+}
+
+// TestDirectoryLayerRecursiveRemove verifies that removing a parent
+// directory also removes all children and grandchildren.
+func TestDirectoryLayerRecursiveRemove(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	// Create parent/child/grandchild.
+	_, err := dir.CreateOrOpen(db, []string{"recursive_rm_test", "child", "grandchild"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen grandchild: %v", err)
+	}
+
+	// Also create a sibling child for completeness.
+	_, err = dir.CreateOrOpen(db, []string{"recursive_rm_test", "child2"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen child2: %v", err)
+	}
+
+	// Verify they exist.
+	for _, path := range [][]string{
+		{"recursive_rm_test"},
+		{"recursive_rm_test", "child"},
+		{"recursive_rm_test", "child", "grandchild"},
+		{"recursive_rm_test", "child2"},
+	} {
+		exists, err := dir.Exists(db, path)
+		if err != nil {
+			t.Fatalf("Exists %v: %v", path, err)
+		}
+		if !exists {
+			t.Errorf("directory %v should exist before removal", path)
+		}
+	}
+
+	// Remove parent — should wipe everything.
+	removed, err := dir.Remove(db, []string{"recursive_rm_test"})
+	if err != nil {
+		t.Fatalf("Remove parent: %v", err)
+	}
+	if !removed {
+		t.Error("Remove parent: expected true, got false")
+	}
+
+	// Verify all are gone.
+	for _, path := range [][]string{
+		{"recursive_rm_test"},
+		{"recursive_rm_test", "child"},
+		{"recursive_rm_test", "child", "grandchild"},
+		{"recursive_rm_test", "child2"},
+	} {
+		exists, err := dir.Exists(db, path)
+		if err != nil {
+			t.Fatalf("Exists %v after removal: %v", path, err)
+		}
+		if exists {
+			t.Errorf("directory %v should not exist after parent removal", path)
+		}
+	}
+}
+
+// TestDirectoryLayerDataIsolation verifies that two directories get
+// different prefixes and that data written in one is invisible in the other.
+func TestDirectoryLayerDataIsolation(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	dsA, err := dir.CreateOrOpen(db, []string{"isolation_test", "dir_a"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen dir_a: %v", err)
+	}
+	dsB, err := dir.CreateOrOpen(db, []string{"isolation_test", "dir_b"}, nil)
+	if err != nil {
+		t.Fatalf("CreateOrOpen dir_b: %v", err)
+	}
+
+	// Prefixes must differ.
+	if bytes.Equal(dsA.Bytes(), dsB.Bytes()) {
+		t.Fatalf("directories have same prefix: %x", dsA.Bytes())
+	}
+
+	// Write data into both directories.
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(dsA.Pack(tuple.Tuple{"shared_key"}), []byte("from_a"))
+		tr.Set(dsB.Pack(tuple.Tuple{"shared_key"}), []byte("from_b"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	// Read from dir_a — should see "from_a".
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(dsA.Pack(tuple.Tuple{"shared_key"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read dir_a: %v", err)
+	}
+	if string(result.([]byte)) != "from_a" {
+		t.Errorf("dir_a: got %q, want %q", result, "from_a")
+	}
+
+	// Read from dir_b — should see "from_b".
+	result, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(dsB.Pack(tuple.Tuple{"shared_key"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read dir_b: %v", err)
+	}
+	if string(result.([]byte)) != "from_b" {
+		t.Errorf("dir_b: got %q, want %q", result, "from_b")
+	}
+
+	// Read dir_a's key from dir_b's subspace — should be nil (isolated).
+	result, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		val := tr.Get(dsB.Pack(tuple.Tuple{"only_in_a"})).MustGet()
+		return val, nil
+	})
+	if err != nil {
+		t.Fatalf("cross-read: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Errorf("cross-directory read should be nil, got %q", result)
+	}
+
+	dir.Remove(db, []string{"isolation_test"})
+}
+
+// TestDirectoryLayerNewDirectoryLayer verifies that a custom DirectoryLayer
+// with non-default node/content subspaces works independently of the root.
+func TestDirectoryLayerNewDirectoryLayer(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Create a custom directory layer rooted at a unique subspace.
+	nodeSS := subspace.Sub("custom_dl_test", "nodes")
+	contentSS := subspace.Sub("custom_dl_test", "content")
+	customDL := directory.NewDirectoryLayer(nodeSS, contentSS, false)
+
+	// Create a directory in the custom layer.
+	ds, err := customDL.CreateOrOpen(db, []string{"app", "data"}, nil)
+	if err != nil {
+		t.Fatalf("custom DL CreateOrOpen: %v", err)
+	}
+
+	// Write and read data.
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(ds.Pack(tuple.Tuple{"k1"}), []byte("v1"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(ds.Pack(tuple.Tuple{"k1"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(result.([]byte)) != "v1" {
+		t.Errorf("got %q, want %q", result, "v1")
+	}
+
+	// The custom DL should NOT see directories from the root DL and vice versa.
+	rootDir := directory.Root()
+
+	// Create something in root.
+	_, err = rootDir.CreateOrOpen(db, []string{"custom_dl_root_check"}, nil)
+	if err != nil {
+		t.Fatalf("root CreateOrOpen: %v", err)
+	}
+
+	// Custom DL should not see root's directory.
+	exists, err := customDL.Exists(db, []string{"custom_dl_root_check"})
+	if err != nil {
+		t.Fatalf("custom Exists: %v", err)
+	}
+	if exists {
+		t.Error("custom DL should not see root DL's directories")
+	}
+
+	// Root should not see custom DL's directory.
+	exists, err = rootDir.Exists(db, []string{"app", "data"})
+	if err != nil {
+		t.Fatalf("root Exists: %v", err)
+	}
+	if exists {
+		t.Error("root DL should not see custom DL's directories")
+	}
+
+	// Clean up.
+	customDL.Remove(db, []string{"app"})
+	rootDir.Remove(db, []string{"custom_dl_root_check"})
+
+	// Also clear the custom DL's metadata subspaces.
+	_, _ = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.ClearRange(nodeSS)
+		tr.ClearRange(contentSS)
+		return nil, nil
+	})
+}
+
+// TestDirectoryLayerCreatePrefix verifies that a DirectoryLayer with
+// allowManualPrefixes=true accepts a manually specified prefix via
+// CreatePrefix, and that the returned DirectorySubspace uses that prefix.
+func TestDirectoryLayerCreatePrefix(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Must use a custom DL with allowManualPrefixes=true.
+	// The default root DL does not allow manual prefixes.
+	nodeSS := subspace.Sub("prefix_dl_test", "nodes")
+	contentSS := subspace.Sub("prefix_dl_test", "content")
+	customDL := directory.NewDirectoryLayer(nodeSS, contentSS, true)
+
+	manualPrefix := []byte{0xAB, 0xCD}
+
+	ds, err := customDL.CreatePrefix(db, []string{"manual_prefix_dir"}, nil, manualPrefix)
+	if err != nil {
+		t.Fatalf("CreatePrefix: %v", err)
+	}
+
+	// The returned subspace should use the manual prefix.
+	if !bytes.Equal(ds.Bytes(), manualPrefix) {
+		t.Errorf("prefix mismatch: got %x, want %x", ds.Bytes(), manualPrefix)
+	}
+
+	// Write and read data at the manual prefix to verify it works.
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(ds.Pack(tuple.Tuple{"test"}), []byte("manual"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(ds.Pack(tuple.Tuple{"test"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(result.([]byte)) != "manual" {
+		t.Errorf("got %q, want %q", result, "manual")
+	}
+
+	// Verify CreatePrefix on the default root DL fails (manual prefixes not allowed).
+	rootDir := directory.Root()
+	_, err = rootDir.CreatePrefix(db, []string{"should_fail_prefix"}, nil, []byte{0xFF})
+	if err == nil {
+		t.Fatal("expected error using CreatePrefix on default root DL (manual prefixes disallowed)")
+		rootDir.Remove(db, []string{"should_fail_prefix"})
+	}
+
+	// Clean up.
+	customDL.Remove(db, []string{"manual_prefix_dir"})
+	_, _ = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.ClearRange(nodeSS)
+		tr.ClearRange(contentSS)
+		return nil, nil
+	})
 }
