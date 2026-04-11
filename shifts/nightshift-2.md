@@ -60,7 +60,7 @@ Supports _DATABASE and _SNAPSHOT variants. Key challenges:
 
 **Stress results:** 50/50 seeds pass (100-500 ops), `--test-name directory`. 5/5 at 1000 ops. At 100 seeds × 1000 ops, 82/86 pass (4 failures from directory partition panics, now fixed with recover). Docker container race fixed with retry. 4/5 for `directory_hca` (1 timeout from HCA contention, not a bug).
 
-**Known limitation:** At very high ops (1000+), the binding tester's directory test generates `START_THREAD` operations that can cause the Go stacktester to hang when child goroutines deadlock on `WAIT_EMPTY` polling. Not a directory layer bug — it's a stack machine concurrency issue. 500 ops per seed reliably passes.
+**Final results (with timeout + partition panic fixes):** **100/100 seeds × 1000 ops = 100,000 directory operations, 0 failures.** Thread timeout fix prevents hangs. Partition panic recovery prevents crashes.
 
 ### 5. Binding stress runner --test-name flag
 
