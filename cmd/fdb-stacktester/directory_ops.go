@@ -153,11 +153,23 @@ func (sm *StackMachine) getReadTransactor(isDatabase, isSnapshot bool) gofdb.Rea
 
 // executeDirectoryOp handles DIRECTORY_* operations. Returns true if
 // the operation was handled, false if it's not a directory operation.
-func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op string, isDatabase, isSnapshot bool) (bool, error) {
+func (sm *StackMachine) executeDirectoryOp(ctx context.Context, idx int, op string, isDatabase, isSnapshot bool) (handled bool, err error) {
 	// Strip DIRECTORY_ prefix for dispatch.
 	if !strings.HasPrefix(op, "DIRECTORY_") {
 		return false, nil
 	}
+
+	// Catch panics from directory partition operations (Sub, Pack, Bytes, etc.
+	// all panic when called on the root of a directory partition).
+	// The binding tester expects DIRECTORY_ERROR, not a crash.
+	defer func() {
+		if r := recover(); r != nil {
+			sm.push(idx, []byte("DIRECTORY_ERROR"))
+			handled = true
+			err = nil
+		}
+	}()
+
 	dirOp := strings.TrimPrefix(op, "DIRECTORY_")
 
 	switch dirOp {
