@@ -930,7 +930,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 
 - [x] **FDBDatabaseFactory** — Implemented: caches FDBDatabase by cluster file path. 2 tests.
 - [x] **Weak read semantics** — `WeakReadSemantics` struct + `RunWithWeakReads()`. IsCausalReadRisky sets FDB_TR_OPTION_CAUSAL_READ_RISKY. 2 tests.
-- [ ] **Directory layer caching** — Multi-tenant keyspace management.
+- [ ] **FDBReverseDirectoryCache** — Reverse prefix→name caching (~496 lines Java). LOW priority.
 - [x] **Transaction ID** — `TransactionID()` on `FDBRecordContext`. Auto-incremented int64. MDC/structured logging deferred (application concern).
 - [x] **Latency injection** — WONTFIX: Java-specific test harness. Go uses ChaosTransactor for fault injection instead.
 
@@ -1021,6 +1021,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
 ## Infrastructure
 
 - [x] Bazel migration, nogo linting, CI pipeline, justfile — all done
+- [x] **Binding tester directory extension** — All 21 DIRECTORY_* stack machine operations implemented. Passes `--test-name directory` (50 seeds × 500 ops = 0 failures) and `--test-name directory_hca` (5 seeds = 0 failures). `WrapTransaction`/`WrapDatabase` bridge pure Go client to fdb facade for directory layer interop.
 - [ ] **KeySpace/KeySpacePath** — Enterprise key management. LOW priority.
 - [x] **ScanLimiter** — TimeScanLimiter, ByteScanLimiter, RecordScanLimiter all enforced in both `keyValueCursor` and `indexCursor`. Time limit uses free initial pass (first record always succeeds). Continuation returned for cross-transaction resumption.
 

@@ -29,7 +29,20 @@ All operations required by `--test-name api`:
 - **Tuples**: TUPLE_PACK, TUPLE_UNPACK, TUPLE_RANGE, TUPLE_SORT, ENCODE_FLOAT, ENCODE_DOUBLE, DECODE_FLOAT, DECODE_DOUBLE, TUPLE_PACK_WITH_VERSIONSTAMP
 - **Misc**: ON_ERROR, GET_APPROXIMATE_SIZE, GET_ESTIMATED_RANGE_SIZE, GET_RANGE_SPLIT_POINTS, WAIT_FUTURE, WAIT_EMPTY, START_THREAD, UNIT_TESTS
 
-Not implemented (out of scope): Directory layer, Tenant operations.
+Not implemented (out of scope): Tenant operations.
+
+## Directory layer operations
+
+All 21 DIRECTORY_* operations are implemented for `--test-name directory`:
+
+- **Management**: CREATE_SUBSPACE, CREATE_LAYER, CHANGE, SET_ERROR_INDEX
+- **CRUD**: CREATE_OR_OPEN, CREATE, OPEN (_DATABASE, _SNAPSHOT variants)
+- **Move**: MOVE, MOVE_TO (_DATABASE variant)
+- **Remove**: REMOVE, REMOVE_IF_EXISTS (_DATABASE variant)
+- **Query**: LIST, EXISTS (_DATABASE, _SNAPSHOT variants)
+- **Subspace**: PACK_KEY, UNPACK_KEY, RANGE, CONTAINS, OPEN_SUBSPACE
+- **Logging**: LOG_SUBSPACE, LOG_DIRECTORY
+- **Misc**: STRIP_PREFIX
 
 ## Key learnings
 
