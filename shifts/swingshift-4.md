@@ -1,73 +1,74 @@
 # Swingshift-4 Handover
 
 **Date:** 2026-04-11 14:00 — 22:00 CEST
-**PR:** #32 (draft)
+**PR:** #32
 **Branch:** `swingshift-4`
 
 ## Objective
 
-Performance optimization (serialization buffer pooling) + binding stress validation + failure investigation + fix.
+Performance optimization (serialization buffer pooling) + binding stress validation + test infrastructure fixes.
 
 ## What was done
 
-### 1. Commit path serialization buffer pooling (commit `f8c2b8b`)
+### 1. Commit path serialization buffer pooling
 
-`MarshalFDBPooled` for CommitTransactionRequest: reuses a caller-provided byte buffer when capacity is sufficient.
+`MarshalFDBPooled` for CommitTransactionRequest: 25% faster, 0 allocs (was 4 allocs, 1555 B/op).
 
-**Benchmark (5 mutations, 5 read/write CRs):**
-- MarshalFDB:       2090 ns/op, 1555 B/op, 4 allocs/op
-- MarshalFDBPooled: 1563 ns/op,    0 B/op, 0 allocs/op
-- **25% faster, zero allocations**
+### 2. Fix pool leak in ALL MarshalFDB methods
 
-### 2. Fix pool leak in ALL MarshalFDB methods (commit `e78755d`)
+Updated code generator to emit `ReleaseWriteToBuffer`/`ReleasePrecomputeSize`. All 26 MarshalFDB methods: 4→1 allocs, 13% faster.
 
-Updated code generator to emit `ReleaseWriteToBuffer(wb)` and `ReleasePrecomputeSize(ps)` at end of every `MarshalFDB`. All 26 MarshalFDB methods now return pooled objects: 4→1 allocs per marshal, 13% faster.
+### 3. Generated MarshalFDBPooled for all wire types
 
-### 3. Read path serialization buffer pooling (commit `10bd57f`)
+Code generator now emits `MarshalFDBPooled` alongside `MarshalFDB` for all 24 generated types. Read path (GetValue, GetKeyValues, GetKey) wired to use pooled variants.
 
-Added `MarshalFDBPooled` to GetValueRequest, GetKeyValuesRequest, GetKeyRequest. Every Get, GetKey, and GetRange now reuses serialization buffers. Note: `SendFrameDeferred` (pipelined Get) can't use pooling because the writeLoop holds a reference.
+### 4. Fix binding stress ASSERT issue
 
-### 4. Fix binding stress ASSERT issue (commit `1cb6609`)
+Docker port mapping caused FDB `canonicalRemotePort` assertion spam. Fix: connect via container bridge IP (no DNAT). **300/300 seeds pass (0-99, 300-399, 500-599).**
 
-**Root cause:** Docker port mapping (`-p hostPort:4500`) causes DNAT which confuses FDB's `canonicalRemotePort` tracking, triggering assertion spam at `FlowTransport.actor.cpp:1545`. The Python binding tester's C client (libfdb_c) causes rapid port reuse through Docker NAT.
+### 5. Root cause analysis: test hang bug
 
-**Fix:** Connect directly to the Docker container's bridge IP instead of using port mapping. No DNAT = real source ports = zero assertions.
+**Ultimate root cause: 481GB leaked Docker volumes filled disk to 97%.** FDB rate limiter throttled all writes to 0 TPS. Combined with missing context timeouts, tests hung for 100+ minutes.
 
-**Before:** seed 331 timed out at 5 minutes (300+ assertions)
-**After:** seed 331 passes in ~10 seconds (0 assertions)
+**5 Whys:**
+1. Tests hang → Go FDB client retries against throttled FDB
+2. FDB throttles → TPSLimit=0 from rate limiter detecting low disk
+3. Disk full → 481GB of leaked Docker anonymous volumes (5208 volumes!)
+4. Volumes leak → testcontainers create anonymous volumes, never pruned
+5. No timeout → container setup used bare `context.Background()`
 
-### 5. Binding stress unique container naming (commit `7a90bf8`)
+**Fixes:**
+- `docker volume prune` freed 449.5GB (97%→49% disk usage)
+- 2-minute timeout on ALL container setup contexts (6 test files)
+- `--local_test_jobs=4` in `.bazelrc` limits parallel container creation
+- Documented in CLAUDE.md
 
-PID-unique container names and ports. Multiple concurrent stress runs no longer conflict.
+### 6. Binding stress unique container naming + crash diagnostics
 
-### 6. Crash diagnostics ring buffer (commit `7a90bf8`)
-
-Ring buffer of last 50 operations in stacktester for crash diagnosis.
+PID-unique container names. Ring buffer of last 50 operations for crash diagnostics.
 
 ## Current state
 
-- **Master:** `55bfe2e`
-- **Branch:** `swingshift-4` (9 commits ahead)
+- **Branch:** `swingshift-4` (12 commits ahead of master)
 - **PR:** #32
-- **All 13 Bazel test targets pass**
-- **Binding stress:** 100/100 clean (seeds 0-99), 100 more running (seeds 300-399, 41/41 so far)
-- **Total binding stress this shift:** 200+ seeds, 0 failures
+- **All 13 Bazel test targets pass** (101 seconds after disk cleanup)
+- **Binding stress:** 300/300 clean (seeds 0-99, 300-399, 500-599)
+- **Disk:** `/` at 49% (was 97%), `/home` at 90% (was 100%)
 
 ## Known issues
 
-- **ScanIndex 2.5x slower than Java** — Structural. Per-entry heap allocs + JVM JIT advantage. Not fixable without API redesign.
-- **SendFrameDeferred can't use pooled buffers** — writeLoop holds reference to body bytes. Pipelined Gets still allocate.
+- **Docker volume leak is recurring** — testcontainers create anonymous volumes that persist. Run `docker volume prune -f` periodically. Consider adding to pre-commit hook or a cron job.
+- **ScanIndex 2.5x slower than Java** — structural, per-entry heap allocs
 
 ## What to work on next
 
 ### High priority
-- **Merge PR #32** — 9 solid commits, all tests pass, 200+ binding stress seeds clean
-- **Run Go vs Java benchmark comparison** with pooling improvements
+- **Merge PR #32** — 12 solid commits, all tests pass
+- **Add `docker volume prune` to test cleanup** — prevent volume leak recurrence
 
 ### Medium priority
-- **DatabaseContext refactor** — Consolidate Database/GRVBatcher/LocationCache/Cluster into single struct matching C++ DatabaseContext
-- **Pool frame read buffers** — `ReadFrame` allocates per response (tricky: consumers hold slices)
+- **DatabaseContext refactor** — consolidate Database/GRVBatcher/LocationCache/Cluster
+- **Pool frame read buffers**
 
 ### Low priority
-- **FDBReverseDirectoryCache** — ~496 lines Java
-- **KeySpace/KeySpacePath** — 25 Java files, 7K lines
+- **FDBReverseDirectoryCache**, **KeySpace/KeySpacePath**
