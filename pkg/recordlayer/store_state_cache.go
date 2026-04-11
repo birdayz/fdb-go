@@ -216,9 +216,18 @@ func PassThroughStoreStateCache() FDBRecordStoreStateCache {
 	return passThroughInstance
 }
 
-// Get always loads fresh state from FDB.
+// Get always loads fresh state from FDB. Skips the metadata version stamp
+// read since PassThrough has no cache to validate against.
 func (c *PassThroughRecordStoreStateCache) Get(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*FDBRecordStoreStateCacheEntry, error) {
-	return loadCacheEntry(store, existenceCheck)
+	state, err := loadRecordStoreState(store, existenceCheck)
+	if err != nil {
+		return nil, err
+	}
+	return &FDBRecordStoreStateCacheEntry{
+		subspaceKey:      string(store.subspace.Bytes()),
+		subspace:         store.subspace,
+		recordStoreState: state,
+	}, nil
 }
 
 // Clear is a no-op.
