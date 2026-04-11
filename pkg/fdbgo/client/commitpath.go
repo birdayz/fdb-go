@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -56,20 +57,29 @@ var metadataVersionKey = []byte("\xff/metadataVersion")
 
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
+// Pools for commit request construction. Avoids per-commit slice allocations.
+var (
+	mutationSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 16); return &s }}
+	crSlicePool       = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
+)
+
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
-	mutations := make([]types.MutationRef, len(tx.mutations))
-	for i, m := range tx.mutations {
-		mutations[i] = types.MutationRef{MutType: uint8(m.Type), Param1: m.Key, Param2: m.Value}
+	mutSlice := mutationSlicePool.Get().(*[]types.MutationRef)
+	mutations := (*mutSlice)[:0]
+	for _, m := range tx.mutations {
+		mutations = append(mutations, types.MutationRef{MutType: uint8(m.Type), Param1: m.Key, Param2: m.Value})
 	}
 
-	readCRs := make([]types.KeyRangeRef, len(tx.readConflicts))
-	for i, kr := range tx.readConflicts {
-		readCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
+	readCRSlice := crSlicePool.Get().(*[]types.KeyRangeRef)
+	readCRs := (*readCRSlice)[:0]
+	for _, kr := range tx.readConflicts {
+		readCRs = append(readCRs, types.KeyRangeRef{Begin: kr.Begin, End: kr.End})
 	}
 
-	writeCRs := make([]types.KeyRangeRef, len(tx.writeConflicts))
-	for i, kr := range tx.writeConflicts {
-		writeCRs[i] = types.KeyRangeRef{Begin: kr.Begin, End: kr.End}
+	writeCRSlice := crSlicePool.Get().(*[]types.KeyRangeRef)
+	writeCRs := (*writeCRSlice)[:0]
+	for _, kr := range tx.writeConflicts {
+		writeCRs = append(writeCRs, types.KeyRangeRef{Begin: kr.Begin, End: kr.End})
 	}
 
 	// C++ applyTenantPrefix: when a tenant is set, prepend 8-byte big-endian tenant ID
@@ -133,7 +143,17 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 	}
 
-	return req.MarshalFDB()
+	result := req.MarshalFDB()
+
+	// Return pooled slices.
+	*mutSlice = mutations
+	mutationSlicePool.Put(mutSlice)
+	*readCRSlice = readCRs
+	crSlicePool.Put(readCRSlice)
+	*writeCRSlice = writeCRs
+	crSlicePool.Put(writeCRSlice)
+
+	return result
 }
 
 // parseCommitReply parses an ErrorOr<CommitID> response.
