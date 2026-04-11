@@ -26,6 +26,12 @@ We require **very high and thorough test coverage**. Every new feature, bug fix,
 
 **All tests MUST call `t.Parallel()`**. Each test must be safe to run concurrently — use unique key prefixes or subspaces for isolation, never rely on shared mutable state. This is critical for fast test execution on beefy CPUs.
 
+**CRITICAL: Container setup MUST have timeouts.** Always use `context.WithTimeout(context.Background(), 2*time.Minute)` when calling `foundationdbtc.Run()` or `container.InitializeDatabase()`. NEVER pass a bare `context.Background()` — blocks forever when Docker is slow.
+
+**CRITICAL: Never run binding stress concurrently with `just test`.** Both create Docker containers. The pre-commit hook runs `just test`, so committing while binding stress runs WILL cause problems. Always wait for one to finish.
+
+**CRITICAL: Test hang root cause (diagnosed swingshift-4).** When `bazelisk test //...` runs, 9 test targets create FDB containers in parallel. If Docker is loaded, some containers start but FDB becomes unreachable mid-test. The chaos test suite has 200 tests with `t.Parallel()` running serially (`-test.parallel=1`). Each test attempts an FDB transaction, times out after 30 seconds, fails, and the next test starts. 200 × 30s = **100+ minutes of cascading timeouts** that look like a hang. `.bazelrc` now has `--local_test_jobs=4` to limit concurrent container creation. If a test suite hangs, check: (1) is the FDB container still alive? (2) are tests cascading through individual timeouts? Kill the test, don't wait.
+
 ## Shift system
 
 This project uses a Vollkonti (continuous 24/7) shift system. Run `/vollkonti` to start a shift. Handovers live in `shifts/`. Each shift gets one branch, one PR, merged at end.

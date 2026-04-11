@@ -17,3 +17,9 @@ test --test_env=FDB_VERSION=7.3.75
 # Override eternal timeout slot (default 900s → 3600s).
 # client_test spawns ~40 FDB containers and needs ~7 min.
 test --test_timeout=60,300,900,3600
+
+# Limit concurrent test targets to prevent Docker socket contention.
+# 9 test targets all create FDB testcontainers (socat + FDB + network each).
+# Docker socket can't handle 9× parallel container creation → timeouts/hangs.
+# 4 concurrent test targets works well on machines with 12+ cores.
+test --local_test_jobs=4

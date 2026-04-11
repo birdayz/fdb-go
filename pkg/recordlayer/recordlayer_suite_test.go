@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -27,7 +28,8 @@ func specSubspace() subspace.Subspace {
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
 	container, err := foundationdbtc.Run(ctx, "",
 		foundationdbtc.WithAPIVersion(720),

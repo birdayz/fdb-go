@@ -39,17 +39,18 @@ func ensureVectorBenchDB(tb testing.TB) {
 		if vectorBenchDB != nil {
 			return
 		}
-		ctx := context.Background()
-		container, err := foundationdbtc.Run(ctx, "",
+		setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer setupCancel()
+		container, err := foundationdbtc.Run(setupCtx, "",
 			foundationdbtc.WithAPIVersion(720),
 		)
 		if err != nil {
 			tb.Fatalf("failed to start FDB container: %v", err)
 		}
-		if err := container.InitializeDatabase(ctx); err != nil {
+		if err := container.InitializeDatabase(setupCtx); err != nil {
 			tb.Fatalf("failed to init FDB: %v", err)
 		}
-		clusterFile, err := container.ClusterFile(ctx)
+		clusterFile, err := container.ClusterFile(setupCtx)
 		if err != nil {
 			tb.Fatalf("failed to get cluster file: %v", err)
 		}
