@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "directory",
+    srcs = [
+        "allocator.go",
+        "directory.go",
+        "directoryLayer.go",
+        "directoryPartition.go",
+        "directorySubspace.go",
+        "node.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/directory",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)

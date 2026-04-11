@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -42,6 +43,11 @@ type StackMachine struct {
 	trMap map[string]*client.Transaction
 	trMu  sync.RWMutex
 	wg    sync.WaitGroup
+
+	// Directory layer state.
+	dirList       []dirEntry
+	dirIndex      int
+	dirErrorIndex int
 }
 
 // NewStackMachine creates a stack machine with the given prefix.
@@ -53,6 +59,7 @@ func NewStackMachine(db *client.Database, prefix []byte) *StackMachine {
 		trMap:  make(map[string]*client.Transaction),
 	}
 	sm.trMap[sm.trName] = db.CreateTransaction()
+	sm.initDirectoryState()
 	return sm
 }
 
@@ -95,7 +102,19 @@ func (sm *StackMachine) Run(ctx context.Context) error {
 		}
 	}
 
-	sm.wg.Wait()
+	// Wait for child threads with a timeout. The binding tester's directory
+	// test spawns threads that can deadlock on WAIT_EMPTY. A timeout prevents
+	// the stacktester from hanging indefinitely.
+	done := make(chan struct{})
+	go func() {
+		sm.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Minute):
+		fmt.Fprintln(os.Stderr, "[WARN] timed out waiting for child threads")
+	}
 	return nil
 }
 

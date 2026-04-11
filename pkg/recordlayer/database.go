@@ -13,6 +13,25 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 )
 
+// WeakReadSemantics configures relaxed read consistency for a transaction.
+// When provided, the transaction may read at a slightly stale version,
+// reducing GRV latency at the cost of freshness.
+// Matches Java's FDBDatabase.WeakReadSemantics.
+type WeakReadSemantics struct {
+	// MinVersion is the minimum read version acceptable. If the cached read
+	// version is >= MinVersion, it will be reused without a GRV round-trip.
+	MinVersion int64
+
+	// StalenessBoundMillis is the maximum staleness (in ms) of a cached read
+	// version. If the cached version is older than this, a fresh GRV is fetched.
+	StalenessBoundMillis int64
+
+	// IsCausalReadRisky sets the FDB_TR_OPTION_CAUSAL_READ_RISKY flag.
+	// This allows the transaction to read from any storage replica, not
+	// just the one with the latest committed data.
+	IsCausalReadRisky bool
+}
+
 // FDBDatabase provides access to the underlying FoundationDB database or tenant
 // and manages transaction execution with retry logic.
 // This is the Record Layer equivalent of Java's FDBDatabase.
@@ -30,6 +49,48 @@ type FDBDatabase struct {
 	// Default: PassThroughRecordStoreStateCache (no caching).
 	// Matches Java's FDBDatabase.storeStateCache field.
 	storeStateCache FDBRecordStoreStateCache
+}
+
+// FDBDatabaseFactory caches FDBDatabase instances by cluster file path.
+// Thread-safe. Matches Java's FDBDatabaseFactory.getDatabase(clusterFile).
+type FDBDatabaseFactory struct {
+	mu        sync.Mutex
+	databases map[string]*FDBDatabase
+
+	// StoreStateCacheFactory creates a store state cache for each new database.
+	// If nil, PassThroughStoreStateCache is used.
+	StoreStateCacheFactory func() FDBRecordStoreStateCache
+}
+
+// NewFDBDatabaseFactory creates a factory for caching database instances.
+func NewFDBDatabaseFactory() *FDBDatabaseFactory {
+	return &FDBDatabaseFactory{
+		databases: make(map[string]*FDBDatabase),
+	}
+}
+
+// GetDatabase returns a cached FDBDatabase for the given cluster file path.
+// Creates a new one on first call for each unique path.
+// Matches Java's FDBDatabaseFactory.getDatabase(clusterFile).
+func (f *FDBDatabaseFactory) GetDatabase(clusterFile string) (*FDBDatabase, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if db, ok := f.databases[clusterFile]; ok {
+		return db, nil
+	}
+
+	rawDB, err := fdb.OpenDatabase(clusterFile)
+	if err != nil {
+		return nil, fmt.Errorf("open database %q: %w", clusterFile, err)
+	}
+
+	db := NewFDBDatabase(rawDB)
+	if f.StoreStateCacheFactory != nil {
+		db.SetStoreStateCache(f.StoreStateCacheFactory())
+	}
+	f.databases[clusterFile] = db
+	return db, nil
 }
 
 // NewFDBDatabase creates a new FDBDatabase wrapping the core FDB database
@@ -86,8 +147,9 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
-			tx:  tx,
-			ctx: ctx,
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
 		}
 		lastCtx = recordCtx
 
@@ -117,6 +179,43 @@ func (d *FDBDatabase) Run(ctx context.Context, fn func(rtx *FDBRecordContext) (a
 	return result, nil
 }
 
+// RunWithWeakReads is like Run but applies weak read semantics to the transaction.
+// If IsCausalReadRisky is set, the transaction reads from any replica.
+// Matches Java's FDBDatabase.openContext(config, timer, weakReadSemantics, ...).
+func (d *FDBDatabase) RunWithWeakReads(ctx context.Context, weak WeakReadSemantics, fn func(rtx *FDBRecordContext) (any, error)) (any, error) {
+	var lastCtx *FDBRecordContext
+	result, err := d.transactor.Transact(func(tx fdb.Transaction) (any, error) {
+		tx.Options().SetReadSystemKeys()
+		if weak.IsCausalReadRisky {
+			tx.Options().SetCausalReadRisky()
+		}
+		recordCtx := &FDBRecordContext{
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
+		}
+		lastCtx = recordCtx
+
+		result, err := fn(recordCtx)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := recordCtx.runCommitChecks(); err != nil {
+			return nil, err
+		}
+		recordCtx.flushVersionMutations()
+		return result, nil
+	})
+	if err != nil {
+		return result, err
+	}
+	if lastCtx != nil {
+		lastCtx.runPostCommits()
+	}
+	return result, nil
+}
+
 // RunWithVersionstamp is like Run but also returns the committed versionstamp.
 // Use this when you need the versionstamp after commit (e.g. for record versioning).
 // Returns (result, versionstamp, error). Versionstamp is nil for read-only transactions.
@@ -132,8 +231,9 @@ func (d *FDBDatabase) RunWithVersionstamp(ctx context.Context, fn func(rtx *FDBR
 
 		tx.Options().SetReadSystemKeys()
 		recordCtx := &FDBRecordContext{
-			tx:  tx,
-			ctx: ctx,
+			transactionID: nextTransactionID.Add(1),
+			tx:            tx,
+			ctx:           ctx,
 		}
 		lastCtx = recordCtx
 
@@ -233,9 +333,13 @@ type versionMutation struct {
 // lockRegistry. Multiple goroutines may safely operate on the same context
 // within a single FDB transaction (matching Java's CompletableFuture model).
 // Matches Java's FDBRecordContext.
+// nextTransactionID generates unique IDs for FDBRecordContext instances.
+var nextTransactionID atomic.Int64
+
 type FDBRecordContext struct {
-	tx  fdb.Transaction
-	ctx context.Context
+	tx            fdb.Transaction
+	ctx           context.Context
+	transactionID int64 // unique ID for logging/tracing
 
 	// Version management — matches Java's FDBRecordContext.
 	// Java uses AtomicInteger + ConcurrentSkipListMap.
@@ -283,6 +387,12 @@ func NewFDBRecordContext(tx fdb.Transaction) *FDBRecordContext {
 // Transaction returns the underlying FDB transaction
 func (rc *FDBRecordContext) Transaction() fdb.Transaction {
 	return rc.tx
+}
+
+// TransactionID returns a unique ID for this record context.
+// Useful for logging and tracing. Matches Java's FDBRecordContext transaction ID.
+func (rc *FDBRecordContext) TransactionID() int64 {
+	return rc.transactionID
 }
 
 // Context returns the Go context

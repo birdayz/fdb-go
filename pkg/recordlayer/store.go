@@ -94,6 +94,42 @@ type FDBRecordStore struct {
 	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu            sync.RWMutex             // protects storeHeader + indexStates
+	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
+}
+
+// IsVersionChanged returns true if the metadata version changed during
+// the most recent Open/CreateOrOpen (i.e., checkPossiblyRebuild detected
+// that the stored version < current metadata version).
+// Matches Java's FDBRecordStore.isVersionChanged().
+func (store *FDBRecordStore) IsVersionChanged() bool {
+	return store.versionChanged
+}
+
+// AsBuilder creates a new StoreBuilder pre-configured with this store's
+// subspace, metadata, and index rebuild policy. Uses the same context.
+// Matches Java's FDBRecordStore.asBuilder().
+func (store *FDBRecordStore) AsBuilder() *StoreBuilder {
+	return &StoreBuilder{
+		context:            store.context,
+		metaData:           store.metaData,
+		subspace:           store.subspace,
+		indexRebuildPolicy: store.indexRebuildPolicy,
+		storeStateCache:    store.storeStateCache,
+	}
+}
+
+// CopyBuilder creates a new StoreBuilder with this store's configuration
+// but for a different context (transaction). Used to open the same store
+// in a new transaction.
+// Matches Java's FDBRecordStore.copyBuilder().
+func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBuilder {
+	return &StoreBuilder{
+		context:            newContext,
+		metaData:           store.metaData,
+		subspace:           store.subspace,
+		indexRebuildPolicy: store.indexRebuildPolicy,
+		storeStateCache:    store.storeStateCache,
+	}
 }
 
 // validateRecordUpdateAllowed checks if the store allows record mutations.

@@ -67,9 +67,23 @@ const (
 	// maxRecordsForRebuild is the maximum records for rebuild operations
 	maxRecordsForRebuild = 200
 
-	// keySizeLimit is the maximum key size in bytes
+	// keySizeLimit is the maximum key size in bytes.
+	// Matches Java's FDBRecordStore.KEY_SIZE_LIMIT.
 	keySizeLimit = 10_000
 
-	// valueSizeLimit is the maximum value size in bytes
+	// valueSizeLimit is the maximum value size in bytes.
+	// Matches Java's FDBRecordStore.VALUE_SIZE_LIMIT.
 	valueSizeLimit = 100_000
 )
+
+// GetKeySizeLimit returns the maximum key size in bytes for index entries.
+// Matches Java's FDBRecordStore.getKeySizeLimit().
+func (store *FDBRecordStore) GetKeySizeLimit() int {
+	return keySizeLimit
+}
+
+// GetValueSizeLimit returns the maximum value size in bytes for index entries.
+// Matches Java's FDBRecordStore.getValueSizeLimit().
+func (store *FDBRecordStore) GetValueSizeLimit() int {
+	return valueSizeLimit
+}

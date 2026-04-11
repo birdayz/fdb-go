@@ -116,6 +116,13 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *client.ClusterFile) (Databa
 	return Database{d: &internalDB{inner: db, ctx: context.Background()}}, nil
 }
 
+// WrapDatabase wraps an existing client.Database as an fdb.Database.
+// This is useful when code already has a client.Database handle and needs
+// to use the fdb facade layer (e.g., for the directory layer).
+func WrapDatabase(db *client.Database) Database {
+	return Database{d: &internalDB{inner: db, ctx: context.Background()}}
+}
+
 // Open opens a database. The dbName parameter is ignored (legacy API compatibility).
 func Open(clusterFile string, _ []byte) (Database, error) {
 	return OpenDatabase(clusterFile)

@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library")
 go_library(
     name = "fdb-stacktester_lib",
     srcs = [
+        "directory_ops.go",
         "machine.go",
         "main.go",
         "operations.go",
@@ -11,6 +12,10 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/directory",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/fdbgo/wire",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",

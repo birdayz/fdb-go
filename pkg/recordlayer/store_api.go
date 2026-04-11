@@ -55,6 +55,49 @@ func (store *FDBRecordStore) GetEnabledIndexes() []*Index {
 	return result
 }
 
+// GetReadableUniversalIndexes returns universal indexes in READABLE state.
+// Matches Java's FDBRecordStore.getReadableUniversalIndexes().
+func (store *FDBRecordStore) GetReadableUniversalIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetUniversalIndexes() {
+		if store.GetIndexState(idx.Name).IsScannable() {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// GetEnabledUniversalIndexes returns universal indexes NOT in DISABLED state.
+// Matches Java's FDBRecordStore.getEnabledUniversalIndexes().
+func (store *FDBRecordStore) GetEnabledUniversalIndexes() []*Index {
+	var result []*Index
+	for _, idx := range store.metaData.GetUniversalIndexes() {
+		if !store.GetIndexState(idx.Name).IsDisabled() {
+			result = append(result, idx)
+		}
+	}
+	return result
+}
+
+// SetFormatVersion updates the store's format version in the header.
+// This is used during store migration to enable new features.
+// Matches Java's FDBRecordStore.setFormatVersion().
+func (store *FDBRecordStore) SetFormatVersion(version int32) error {
+	store.stateMu.Lock()
+	defer store.stateMu.Unlock()
+	if store.storeHeader == nil {
+		return &RecordStoreStateNotLoadedError{}
+	}
+	store.storeHeader.FormatVersion = &version
+	return store.writeStoreHeader(store.storeHeader)
+}
+
+// IndexStateSubspace returns the subspace where index states are stored.
+// Matches Java's FDBRecordStore.indexStateSubspace().
+func (store *FDBRecordStore) IndexStateSubspace() subspace.Subspace {
+	return store.subspace.Sub(IndexStateSpaceKey)
+}
+
 // GetAllIndexStates returns a map of all index names to their current states.
 // Indexes without an explicit state entry default to READABLE.
 // Matches Java's FDBRecordStore.getAllIndexStates().

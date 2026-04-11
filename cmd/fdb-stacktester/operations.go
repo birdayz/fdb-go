@@ -515,8 +515,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "START_THREAD":
 		prefix := sm.popBytes()
 		child := NewStackMachine(sm.db, prefix)
-		// Share transaction map.
+		// Share transaction map and directory list (binding tester spec).
 		child.trMap = sm.trMap
+		child.dirList = sm.dirList
+		child.dirIndex = sm.dirIndex
+		child.dirErrorIndex = sm.dirErrorIndex
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
@@ -539,6 +542,14 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		// No-op for now. Binding-specific smoke tests.
 
 	default:
+		// Try directory operations.
+		handled, err := sm.executeDirectoryOp(ctx, idx, baseOp, isDatabase, isSnapshot)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
 		return fmt.Errorf("unimplemented operation: %s", op)
 	}
 
@@ -577,6 +588,9 @@ func (sm *StackMachine) logStack(ctx context.Context, idx int, prefix []byte) {
 func (sm *StackMachine) waitEmpty(ctx context.Context, prefix []byte) {
 	end := strinc(prefix)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		result, err := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
 			kvs, _, err := tx.GetRange(ctx, prefix, end, 1)
 			return kvs, err

@@ -30,6 +30,7 @@ go_test(
     name = "fdb_test",
     timeout = "long",
     srcs = [
+        "directory_test.go",
         "fdb_test.go",
         "ryw_test.go",
         "tenant_test.go",
@@ -38,6 +39,9 @@ go_test(
     deps = [
         ":fdb",
         "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb/directory",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
         "//pkg/testcontainers/foundationdb",
     ],
 )
