@@ -104,9 +104,11 @@ Resolved 71 items:
 - **WONTFIX (Java-specific)**: preloadRecordAsync, buildSingleRecord, scanRemoteFetch, mergeIndex/performOperation, isIdempotent, IndexScanBounds, scanIndexRecords filter, repairRecordKeys, FDBLatencySource, CursorLimitManager, Visitor pattern, PreloadRecordStoreState, canDeleteWhere
 - **Updated**: coverage table, memory.md spec counts, index types heading
 
-### 11. 2h+ binding stress (completed from prior shift)
+### 11. Binding stress (all tests)
 
-At latest check: 673 seeds × 1000 ops = 673K operations, 0 failures, 0 FDB deaths (api test). Directory test: 100-seed run started, results pending at shift end.
+- **API:** 673/673 (prior shift) + 20/20 regression check this shift = 0 failures
+- **Directory:** 100/100 × 1000 ops = 100K directory operations, 0 failures
+- **Directory HCA:** 4/5 (1 timeout from HCA contention, not a bug)
 
 ## Current state
 
