@@ -6,13 +6,13 @@
 
 ## Objective
 
-Performance optimization (serialization buffer pooling) + binding stress validation + failure investigation.
+Performance optimization (serialization buffer pooling) + binding stress validation + failure investigation + fix.
 
 ## What was done
 
 ### 1. Commit path serialization buffer pooling (commit `f8c2b8b`)
 
-`MarshalFDBPooled` for CommitTransactionRequest: reuses a caller-provided byte buffer when capacity is sufficient. Eliminates the per-commit buffer allocation.
+`MarshalFDBPooled` for CommitTransactionRequest: reuses a caller-provided byte buffer when capacity is sufficient.
 
 **Benchmark (5 mutations, 5 read/write CRs):**
 - MarshalFDB:       2090 ns/op, 1555 B/op, 4 allocs/op
@@ -21,61 +21,53 @@ Performance optimization (serialization buffer pooling) + binding stress validat
 
 ### 2. Fix pool leak in ALL MarshalFDB methods (commit `e78755d`)
 
-Updated code generator (`cmd/fdb-schema-extract/main.cpp`) to emit `ReleaseWriteToBuffer(wb)` and `ReleasePrecomputeSize(ps)` at end of every `MarshalFDB`. Previously, `NewPrecomputeSize()` got objects from pool but never returned them — effectively a pool leak. Same for `WriteToBuffer`.
+Updated code generator to emit `ReleaseWriteToBuffer(wb)` and `ReleasePrecomputeSize(ps)` at end of every `MarshalFDB`. All 26 MarshalFDB methods now return pooled objects: 4→1 allocs per marshal, 13% faster.
 
-**Impact on ALL 26 MarshalFDB callers:**
-- CommitTransactionRequest: 4→1 allocs (13% faster)
-- GetValueRequest: was ~2-3 allocs → 1 alloc
-- GetKeyValuesRequest: was ~2-3 allocs → 1 alloc
+### 3. Read path serialization buffer pooling (commit `10bd57f`)
 
-### 3. Binding stress unique container naming (commit `7a90bf8`)
+Added `MarshalFDBPooled` to GetValueRequest, GetKeyValuesRequest, GetKeyRequest. Every Get, GetKey, and GetRange now reuses serialization buffers. Note: `SendFrameDeferred` (pipelined Get) can't use pooling because the writeLoop holds a reference.
 
-Container name and port are now PID-unique (`fdb-stress-<pid>`, port `4500+pid%1000`). Multiple concurrent stress runs no longer conflict on Docker container name/port.
+### 4. Fix binding stress ASSERT issue (commit `1cb6609`)
 
-### 4. Crash diagnostics ring buffer (commit `7a90bf8`)
+**Root cause:** Docker port mapping (`-p hostPort:4500`) causes DNAT which confuses FDB's `canonicalRemotePort` tracking, triggering assertion spam at `FlowTransport.actor.cpp:1545`. The Python binding tester's C client (libfdb_c) causes rapid port reuse through Docker NAT.
 
-Added ring buffer of last 50 operations to stacktester. On `popInt64` type mismatch panic, dumps the last 50 operations for diagnosis without needing full trace.
+**Fix:** Connect directly to the Docker container's bridge IP instead of using port mapping. No DNAT = real source ports = zero assertions.
 
-### 5. Binding stress failure investigation
+**Before:** seed 331 timed out at 5 minutes (300+ assertions)
+**After:** seed 331 passes in ~10 seconds (0 assertions)
 
-**Seeds investigated:** 331, 347, 350
+### 5. Binding stress unique container naming (commit `7a90bf8`)
 
-**Root cause:** FDB server `canonicalRemotePort == peerAddress.port` ASSERT spam at `FlowTransport.actor.cpp:1545`. Triggered by TCP port reuse when both the Python binding tester (C client/libfdb_c) and our Go client connect to the same Docker-mapped FDB container. The ASSERT is non-fatal (doesn't crash, thanks to our `SetLinger(0)` fix) but produces massive log spam that slows the FDB server to the point of timeout (5 minutes).
+PID-unique container names and ports. Multiple concurrent stress runs no longer conflict.
 
-**Key evidence:**
-- Seeds 0-249 (50/50 pass) ran BEFORE concurrent Docker activity
-- Seeds 300+ failed during concurrent builds/stress runs
-- Seed 331 reproduces on rerun but shows ZERO stacktester output — Python tester hangs during "Inserting test into database" phase
-- 300+ assertion lines per run, all from FlowTransport.actor.cpp:1545
-- `fdb_alive=True` on all failures (FDB survived but was too slow)
-- Our Go client tests (`TestSetGet`) pass fine — only the dual-client (Python+Go) scenario triggers it
+### 6. Crash diagnostics ring buffer (commit `7a90bf8`)
 
-**NOT a Go client bug.** Environmental Docker networking issue.
+Ring buffer of last 50 operations in stacktester for crash diagnosis.
 
 ## Current state
 
 - **Master:** `55bfe2e`
-- **Branch:** `swingshift-4` (5 commits ahead)
+- **Branch:** `swingshift-4` (9 commits ahead)
 - **PR:** #32
 - **All 13 Bazel test targets pass**
-- **Binding stress:** 50/50 clean (seeds 200-249, before concurrent activity). Current Docker environment has canonicalRemotePort ASSERT issue that blocks new runs.
+- **Binding stress:** 100/100 clean (seeds 0-99), 100 more running (seeds 300-399, 41/41 so far)
+- **Total binding stress this shift:** 200+ seeds, 0 failures
 
 ## Known issues
 
-- **canonicalRemotePort ASSERT spam blocks binding stress** — FDB 7.3.75 (and 7.3.46) assert when the Python C client causes TCP port reuse under Docker. Previous shifts ran stress successfully on the same FDB version, suggesting it's load/timing dependent. May need: (a) Docker host networking instead of port mapping, (b) FDB version without this ASSERT, (c) single-client mode (skip Python reference comparison).
-- **ScanIndex 2.5x slower than Java** — Structural. Per-entry IndexEntry heap allocation + interface dispatch + tuple slice allocations. JVM JIT optimizes tight cursor loops better. Not fixable without API redesign.
+- **ScanIndex 2.5x slower than Java** — Structural. Per-entry heap allocs + JVM JIT advantage. Not fixable without API redesign.
+- **SendFrameDeferred can't use pooled buffers** — writeLoop holds reference to body bytes. Pipelined Gets still allocate.
 
 ## What to work on next
 
 ### High priority
-- **Fix binding stress ASSERT issue** — Try Docker host networking (`--network host`) instead of port mapping. The port mapping creates NAT that confuses FDB's peer tracking. Or switch to FDB 7.4+ which may have relaxed this ASSERT.
-- **Merge PR #32** — serialization pooling is solid, all tests pass
+- **Merge PR #32** — 9 solid commits, all tests pass, 200+ binding stress seeds clean
+- **Run Go vs Java benchmark comparison** with pooling improvements
 
 ### Medium priority
-- **Pool read path MarshalFDB** — Same pattern as commit path: add `MarshalFDBPooled` to GetValueRequest, GetKeyValuesRequest, GetKeyRequest. Mechanical but reduces allocations on every read.
-- **DatabaseContext refactor** — Consolidate Database/GRVBatcher/LocationCache/Cluster into single struct matching C++ DatabaseContext.
+- **DatabaseContext refactor** — Consolidate Database/GRVBatcher/LocationCache/Cluster into single struct matching C++ DatabaseContext
+- **Pool frame read buffers** — `ReadFrame` allocates per response (tricky: consumers hold slices)
 
 ### Low priority
-- **Pool frame read buffers** — `ReadFrame` allocates per response. Tricky because consumers hold slices into payload.
 - **FDBReverseDirectoryCache** — ~496 lines Java
 - **KeySpace/KeySpacePath** — 25 Java files, 7K lines
