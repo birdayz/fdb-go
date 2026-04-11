@@ -1544,7 +1544,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 
 	var violations []UniquenessViolation
 	for _, kv := range kvs {
-		t, err := violationSubspace.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(violationSubspace.Bytes()))
 		if err != nil {
 			return nil, fmt.Errorf("unpack violation key: %w", err)
 		}

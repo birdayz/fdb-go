@@ -89,7 +89,7 @@ func (store *FDBRecordStore) ValidateIndex(ctx context.Context, index *Index) (*
 
 	for _, kv := range kvs {
 		result.TotalEntriesScanned++
-		t, err := indexSub.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(indexSub.Bytes()))
 		if err != nil {
 			continue
 		}

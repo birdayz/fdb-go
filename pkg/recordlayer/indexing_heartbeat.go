@@ -84,7 +84,7 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.Transaction, storeSubspace sub
 	now := time.Now().UnixMilli()
 	for _, kv := range kvs {
 		// Extract the UUID from the key.
-		t, err := hbSub.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(hbSub.Bytes()))
 		if err != nil || len(t) == 0 {
 			continue
 		}
@@ -185,7 +185,7 @@ func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, ind
 	var heartbeats []*gen.IndexBuildHeartbeat
 	var indexerIDs []string
 	for _, kv := range kvs {
-		t, err := hbSub.Unpack(kv.Key)
+		t, err := fastSubspaceUnpack(kv.Key, len(hbSub.Bytes()))
 		if err != nil || len(t) == 0 {
 			continue
 		}

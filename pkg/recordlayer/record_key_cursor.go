@@ -90,7 +90,7 @@ func (c *recordKeyCursor) OnNext(ctx context.Context) (RecordCursorResult[tuple.
 		c.bytesScanned += int64(len(kv.Key) + len(kv.Value))
 
 		// Unpack the key relative to the records subspace: (pk..., suffix)
-		keyTuple, err := recordsSubspace.Unpack(kv.Key)
+		keyTuple, err := fastSubspaceUnpack(kv.Key, len(recordsSubspace.Bytes()))
 		if err != nil || len(keyTuple) < 2 {
 			continue // skip unparseable keys
 		}
