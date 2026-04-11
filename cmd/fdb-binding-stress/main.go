@@ -201,10 +201,31 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 		return r
 	}
 
-	time.Sleep(5 * time.Second)
+	// Wait for FDB process to start, then configure, then wait for healthy.
+	time.Sleep(3 * time.Second)
 
 	run("docker", "exec", containerName, "fdbcli", "--exec",
 		"configure new single memory tenant_mode=optional_experimental")
+
+	// Wait for FDB to become healthy after configuration.
+	fdbReady := false
+	for attempt := 0; attempt < 15; attempt++ {
+		time.Sleep(2 * time.Second)
+		healthCtx, healthCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(healthCtx, "docker", "exec", containerName,
+			"fdbcli", "--exec", "status minimal")
+		healthOut, healthErr := cmd.CombinedOutput()
+		healthCancel()
+		if healthErr == nil && (strings.Contains(string(healthOut), "available") || strings.Contains(string(healthOut), "Healthy")) {
+			fdbReady = true
+			break
+		}
+	}
+	if !fdbReady {
+		r.Error = "FDB container did not become healthy within 30s"
+		r.FDBAlive = false
+		return r
+	}
 
 	os.WriteFile(clusterFile, []byte(clusterContent), 0o644)
 
