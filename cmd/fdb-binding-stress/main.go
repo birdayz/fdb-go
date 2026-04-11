@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	fdbImage       = "foundationdb/foundationdb:7.3.75"
+	fdbImage       = "foundationdb/foundationdb:7.3.46"
 	perSeedTimeout = 5 * time.Minute
 )
 
