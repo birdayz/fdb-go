@@ -432,7 +432,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
+		_ = poolBuf
 		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
 			cancelReply()
 			tx.db.handleConnError(server.Address)

@@ -6,11 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
+)
+
+// marshalBufPools for read-path request types.
+var (
+	getKeyBufPool       = sync.Pool{New: func() any { b := make([]byte, 0, 512); return &b }}
+	getValueBufPool     = sync.Pool{New: func() any { b := make([]byte, 0, 512); return &b }}
+	getKeyValuesBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 512); return &b }}
 )
 
 const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
@@ -67,18 +75,22 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			req.HasOptions = true
 			req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 		}
-		reqData := req.MarshalFDB()
+		bufp := getKeyBufPool.Get().(*[]byte)
+		reqData := req.MarshalFDBPooled(*bufp)
+		*bufp = reqData
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 
 		tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
+			getKeyBufPool.Put(bufp)
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		getKeyBufPool.Put(bufp)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
@@ -151,17 +163,19 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
 		tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(server.Token, body); err != nil {
+			getValueBufPool.Put(poolBuf)
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		getValueBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
@@ -339,18 +353,20 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+		body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
 		tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkvToken, body); err != nil {
+			getKeyValuesBufPool.Put(poolBuf)
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
+		getKeyValuesBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
 			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
@@ -380,7 +396,7 @@ func isAllAlternativesFailed(err error) bool {
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
 }
 
-func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetKeyValuesRequest{
 		Begin:                  types.KeySelectorRef{Key: begin, OrEqual: false, Offset: 1}, // firstGreaterOrEqual(begin)
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
@@ -395,7 +411,10 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 		req.HasOptions = true
 		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 	}
-	return req.MarshalFDB()
+	bufp := getKeyValuesBufPool.Get().(*[]byte)
+	result := req.MarshalFDBPooled(*bufp)
+	*bufp = result
+	return result, bufp
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
@@ -433,7 +452,7 @@ var emptyVersionVector = func() []byte {
 	return b
 }()
 
-func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) []byte {
+func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
 	req := types.GetValueRequest{
 		Key:                    key,
 		Version:                version,
@@ -445,7 +464,10 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 		req.HasOptions = true
 		req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
 	}
-	return req.MarshalFDB()
+	bufp := getValueBufPool.Get().(*[]byte)
+	result := req.MarshalFDBPooled(*bufp)
+	*bufp = result
+	return result, bufp
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
