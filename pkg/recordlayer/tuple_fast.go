@@ -280,6 +280,16 @@ func fastUnpack(b []byte) (tuple.Tuple, error) {
 	return t, err
 }
 
+// fastSubspaceUnpack strips the subspace prefix and decodes the remainder using
+// fastUnpack. Drop-in replacement for subspace.Unpack() with zero-alloc integer
+// decode. Returns error if key is shorter than prefix.
+func fastSubspaceUnpack(key []byte, prefixLen int) (tuple.Tuple, error) {
+	if len(key) < prefixLen {
+		return nil, fmt.Errorf("key (%d bytes) shorter than subspace prefix (%d bytes)", len(key), prefixLen)
+	}
+	return fastUnpack(key[prefixLen:])
+}
+
 func fastDecodeTuple(b []byte, nested bool) (tuple.Tuple, int, error) {
 	var t tuple.Tuple
 	i := 0

@@ -223,7 +223,7 @@ func (rs *RangeSet) InsertRange(tr fdb.Transaction, begin, end []byte, requireEm
 	for _, kv := range afterKVs {
 		if bytes.Compare(lastSeen, kv.Key) < 0 {
 			// Gap: fill from lastSeen to this entry's start.
-			unpackedKey, unpackErr := rs.subspace.Unpack(fdb.Key(kv.Key))
+			unpackedKey, unpackErr := fastSubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
 			if unpackErr != nil {
 				return false, unpackErr
 			}
@@ -327,7 +327,7 @@ func (rs *RangeSet) MissingRanges(tr fdb.Transaction, begin, end []byte, limit i
 
 	var results []RangeSetRange
 	for _, kv := range afterKVs {
-		unpackedKey, unpackErr := rs.subspace.Unpack(fdb.Key(kv.Key))
+		unpackedKey, unpackErr := fastSubspaceUnpack(kv.Key, len(rs.subspace.Bytes()))
 		if unpackErr != nil {
 			return nil, unpackErr
 		}

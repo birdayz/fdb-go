@@ -1427,7 +1427,7 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 
 		// Extract primary key from the FDB key.
 		// Key format: dataSubspace + (layer, nestedPK)
-		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil {
 			return nil, nil, unpackErr
 		}
@@ -1595,7 +1595,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		foundAnyKV = true
 
 		// Unpack the key to get (layer, sourcePK, neighborPK).
-		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil || len(keyTuple) < 3 {
 			// Sentinel KV at (layer, pk) has only 2 elements — skip it.
 			// This marks the node's existence with 0 neighbors.
@@ -1686,7 +1686,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 			return fmt.Errorf("hnsw: preload inlining layer %d get kv: %w", layer, err)
 		}
 
-		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil || len(keyTuple) < 3 {
 			continue
 		}
@@ -1756,7 +1756,7 @@ func (s *hnswStorage) findAnyNodeAtLayerInlining(tx fdb.ReadTransaction, layer i
 			return nil, nil, getErr
 		}
 
-		keyTuple, unpackErr := s.dataSubspace.Unpack(kv.Key)
+		keyTuple, unpackErr := fastSubspaceUnpack(kv.Key, len(s.dataSubspace.Bytes()))
 		if unpackErr != nil || len(keyTuple) < 2 {
 			return nil, nil, fmt.Errorf("hnsw: inlining key too short at layer %d", layer)
 		}

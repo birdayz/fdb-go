@@ -566,7 +566,7 @@ func (c *bitmapKVCursor) OnNext(_ context.Context) (RecordCursorResult[*IndexEnt
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("bitmap index scan: %w", err)
 	}
 
-	keyTuple, err := c.indexSubspace.Unpack(kv.Key)
+	keyTuple, err := fastSubspaceUnpack(kv.Key, len(c.indexSubspace.Bytes()))
 	if err != nil {
 		return RecordCursorResult[*IndexEntry]{}, fmt.Errorf("unpack bitmap index key: %w", err)
 	}

@@ -171,7 +171,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 		}
 		indexStates = make(map[string]IndexState, len(indexKVs))
 		for _, kv := range indexKVs {
-			t, err := isSubspace.Unpack(kv.Key)
+			t, err := fastSubspaceUnpack(kv.Key, len(isSubspace.Bytes()))
 			if err != nil {
 				return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 			}
