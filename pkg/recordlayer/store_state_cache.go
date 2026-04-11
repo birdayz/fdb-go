@@ -163,7 +163,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 			if !ok {
 				continue
 			}
-			valueTuple, err := tuple.Unpack(kv.Value)
+			valueTuple, err := fastUnpack(kv.Value)
 			if err != nil {
 				return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
 			}
