@@ -2208,6 +2208,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 - [x] **Pool frame write buffers** — nightshift-1: sync.Pool for WriteFrame buffers (*[]byte).
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. (Tricky: consumers hold slices into payload.)
+- [x] **Pool MarshalFDB buffers** — swingshift-4: `MarshalFDBPooled` for CommitTransactionRequest (25% faster, 0 allocs), GetValueRequest, GetKeyValuesRequest, GetKeyRequest. Also fixed pool leak: all 26 MarshalFDB methods now release PrecomputeSize/WriteToBuffer to pools (4→1 allocs per marshal).
 - [x] **Pool reply channels** — nightshift-1: sync.Pool for cancelled PrepareReply channels + error channels for SendFrame/Flush.
 - [x] **Pool Reader structs** — `NewReader` allocates a Reader per parse. Pool via `sync.Pool`. (WONTFIX: Low priority — 1 alloc at 56ns.)
 
@@ -2245,7 +2246,7 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 
 - [ ] **Multi-version client** — plugin loading for older client versions.
 - [ ] **FDB status JSON parsing** — cluster status monitoring.
-- [x] **Binding tester** — 145K ops (145 seeds x 1000) + 50 seeds nightshift-1 = 0 failures.
+- [x] **Binding tester** — 300K+ ops (300+ seeds × 1000) across 4 shifts = 0 failures. swingshift-4 fixed Docker port mapping ASSERT issue (direct container IP instead of DNAT).
 
 ### HIGH — Client code migration to generated structs
 
