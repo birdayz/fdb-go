@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -77,19 +78,37 @@ func (e *FDBRecordStoreStateCacheEntry) handleCachedState(ctx *FDBRecordContext,
 	return checkStoreHeaderExistence(e.recordStoreState.StoreHeader, existenceCheck)
 }
 
-// loadCacheEntry loads store state + metadata version stamp from FDB in parallel.
+// loadCacheEntry loads store state + metadata version stamp from FDB.
+// Fires the metadata version stamp read before resolving store state reads,
+// allowing all 3 FDB reads to pipeline.
 // Matches Java's FDBRecordStoreStateCacheEntry.load().
 func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*FDBRecordStoreStateCacheEntry, error) {
-	// Load store state (header + index states).
+	// Fire metadata version stamp read early (snapshot) so it pipelines
+	// with the store state reads. Only resolve after store state is done.
+	var metaDataFuture fdb.FutureByteSlice
+	if !store.context.dirtyMetaDataVersionStamp.Load() {
+		metaDataFuture = store.context.Transaction().Snapshot().Get(fdb.Key(metaDataVersionKey))
+	}
+
+	// Load store state (header + index states — fires 2 reads in parallel).
 	state, err := loadRecordStoreState(store, existenceCheck)
 	if err != nil {
 		return nil, err
 	}
 
-	// Read metadata version stamp at snapshot isolation.
-	metaDataVersionStamp, err := store.context.GetMetaDataVersionStamp()
-	if err != nil {
-		return nil, err
+	// Resolve metadata version stamp.
+	var metaDataVersionStamp []byte
+	if metaDataFuture != nil {
+		metaDataVersionStamp, err = metaDataFuture.Get()
+		if err != nil {
+			var fdbErr fdb.Error
+			if errors.As(err, &fdbErr) && fdbErr.Code == 1036 {
+				store.context.dirtyMetaDataVersionStamp.Store(true)
+				// Stamp is dirty — treat as nil.
+			} else {
+				return nil, err
+			}
+		}
 	}
 
 	return &FDBRecordStoreStateCacheEntry{
