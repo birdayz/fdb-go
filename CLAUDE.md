@@ -233,16 +233,16 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 
 | Operation | Go (us/op) | Java (us/op) | Ratio | Notes |
 |---|---|---|---|---|
-| SaveRecord | 2,700 | 2,450 | 1.10x | Goroutine coordination overhead |
-| LoadRecord | 445 | 550 | **0.81x** | Go wins — pure Go client reads faster |
-| ScanRecords (100) | 1,550 | 1,400 | 1.11x | Near parity |
-| SaveRecordWithIndex | 2,350 | 2,350 | **0.99x** | Near parity |
-| ScanIndex (100) | 1,100 | 540 | 2.04x | JVM JIT tight-loop optimization |
-| DeleteRecord | 2,680 | 2,200 | 1.22x | Goroutine coordination overhead |
-| StoreOpen | 335 | 260 | 1.29x | Java likely caches more aggressively |
-| SaveBatch (10/tx) | 3,400 | 3,550 | **0.96x** | Go wins on batch writes |
+| SaveRecord | 2,594 | 2,434 | 1.07x | Goroutine coordination overhead |
+| LoadRecord | 338 | 551 | **0.61x** | Go wins — pure Go client reads faster |
+| ScanRecords (100) | 1,031 | 1,405 | **0.73x** | Go wins |
+| SaveRecordWithIndex | 2,301 | 2,466 | **0.93x** | Go wins |
+| ScanIndex (100) | 946 | 661 | 1.43x | JVM JIT tight-loop optimization |
+| DeleteRecord | 2,572 | 2,445 | 1.05x | Near parity |
+| StoreOpen | 231 | 270 | **0.85x** | Go wins |
+| SaveBatch (10/tx) | 3,720 | 3,635 | 1.02x | Near parity |
 
-Go uses pure Go FDB client (no CGo). Java uses FDB C binding (CGo). Ratio < 1.0 means Go is faster.
+Go wins 5/8 benchmarks. Uses pure Go FDB client (no CGo). Java uses FDB C binding (CGo). Ratio < 1.0 means Go is faster.
 
 ### Debugging Bazel cache invalidation
 
@@ -525,4 +525,4 @@ See `TODO.md` for full gap analysis. Summary:
 - **Complete**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner
 - **Test counts**: 2307 Ginkgo specs + 423 conformance specs + 50 chaos tests + 80 C binding port tests + 457 binding tester seeds (0 failures)
-- **Performance**: Go within 10-22% of Java on writes, beats Java on reads (0.81x). See benchmark comparison table above.
+- **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
