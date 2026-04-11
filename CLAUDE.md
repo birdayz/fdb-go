@@ -183,7 +183,7 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 
 ### Benchmarks
 
-`benchmark_test.go` contains 13 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
+`benchmark_test.go` contains 15 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
 
 ```sh
 just bench                          # All benchmarks (~60s)
@@ -207,6 +207,8 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkStoreOpenCached` | Open with state cache enabled |
 | `BenchmarkDeleteRecord` | Delete by primary key |
 | `BenchmarkSaveRecordWithCountAndIndex` | Save with COUNT + VALUE index |
+| `BenchmarkSaveRecordBatch` | 10 records/tx with VALUE index |
+| `BenchmarkScanWithContinuation` | Paged scan (100 records, 10 pages, continuations) |
 
 **Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer, 2026-03-28):
 
