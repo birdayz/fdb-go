@@ -57,7 +57,7 @@ Replaced blind 5-second sleep with proper FDB health check. Polls `fdbcli status
 - **Open PRs:** 1 (#31, draft)
 - **All 13 Bazel test targets pass**
 - **Conformance tests:** 430 specs
-- **Binding stress:** 30/30 clean run post-fix, 50-seed run in progress
+- **Binding stress:** 30/30 clean run post-fix. All previously-failing seeds (51, 52, 53, 55, 58) pass individually. Second 30/30 run confirms.
 - **Fuzz testing:** 140M fastUnpack executions, 66M roundtrip, 92M continuation = 0 failures
 
 ## Known issues
