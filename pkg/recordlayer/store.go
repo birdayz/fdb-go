@@ -1446,14 +1446,20 @@ func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, 
 		return err
 	}
 
-	// Clone cached state so store mutations don't corrupt the cache entry.
-	// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
 	cachedState := entry.GetRecordStoreState()
 	store.stateMu.Lock()
-	store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
-	store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
-	for k, v := range cachedState.IndexStates {
-		store.indexStates[k] = v
+	if entry.shared {
+		// Clone cached state so store mutations don't corrupt the shared cache entry.
+		// Matches Java's RecordStoreState.toImmutable() which returns an unmodifiable copy.
+		store.storeHeader = proto.Clone(cachedState.StoreHeader).(*gen.DataStoreInfo)
+		store.indexStates = make(map[string]IndexState, len(cachedState.IndexStates))
+		for k, v := range cachedState.IndexStates {
+			store.indexStates[k] = v
+		}
+	} else {
+		// Non-shared entry (e.g., PassThrough cache) — safe to use directly.
+		store.storeHeader = cachedState.StoreHeader
+		store.indexStates = cachedState.IndexStates
 	}
 	store.stateMu.Unlock()
 	return nil

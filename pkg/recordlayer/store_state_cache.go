@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"time"
 
@@ -47,6 +48,7 @@ type FDBRecordStoreStateCacheEntry struct {
 	subspace             subspace.Subspace
 	recordStoreState     *RecordStoreState
 	metaDataVersionStamp []byte // nullable — nil if dirty during load
+	shared               bool   // true if entry is shared via a cache (needs clone on use)
 }
 
 // GetRecordStoreState returns the cached store state.
@@ -99,24 +101,84 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 }
 
 // loadRecordStoreState reads store header + index states from FDB.
+// Issues both GetRange calls (store info + index states) in parallel using
+// FDB's future-based API, then resolves sequentially.
 // This is a pure function — it does NOT mutate store fields.
 // The caller is responsible for setting store.storeHeader and store.indexStates.
 func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
-	exists, header, err := store.checkStoreExists()
+	tx := store.context.Transaction()
+
+	// Fire both range reads in parallel. Index states use snapshot isolation
+	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).
+	// By issuing both before resolving either, the FDB client can pipeline them.
+	storeBegin, storeEnd := store.subspace.FDBRangeKeys()
+	storeInfoFuture := tx.GetRange(fdb.KeyRange{Begin: storeBegin, End: storeEnd}, fdb.RangeOptions{Limit: 1})
+
+	isSubspace := store.subspace.Sub(IndexStateSpaceKey)
+	isBegin, isEnd := isSubspace.FDBRangeKeys()
+	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: isBegin, End: isEnd}, fdb.RangeOptions{})
+
+	// Resolve store info.
+	storeKVs, err := storeInfoFuture.GetSliceWithError()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read store range: %v", err)
+	}
+
+	var exists bool
+	var header *gen.DataStoreInfo
+	if len(storeKVs) > 0 {
+		firstKV := storeKVs[0]
+		expectedStoreInfoKey := store.subspace.Pack(tuple.Tuple{StoreInfoKey})
+		if !bytes.Equal(firstKV.Key, expectedStoreInfoKey) {
+			return nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: firstKV.Key}
+		}
+		header = &gen.DataStoreInfo{}
+		if err := header.UnmarshalVT(firstKV.Value); err != nil {
+			return nil, fmt.Errorf("failed to parse store header: %v", err)
+		}
+		exists = true
 	}
 
 	if err := checkStoreHeaderExistence(header, existenceCheck); err != nil {
 		return nil, err
 	}
 
+	// Resolve index states.
 	var indexStates map[string]IndexState
 	if exists {
-		var err error
-		indexStates, err = readIndexStates(store.context.Transaction(), store.subspace)
+		indexKVs, err := indexStatesFuture.GetSliceWithError()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load index states: %w", err)
+		}
+		indexStates = make(map[string]IndexState, len(indexKVs))
+		for _, kv := range indexKVs {
+			t, err := isSubspace.Unpack(kv.Key)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unpack index state key: %w", err)
+			}
+			if len(t) == 0 {
+				continue
+			}
+			indexName, ok := t[0].(string)
+			if !ok {
+				continue
+			}
+			valueTuple, err := tuple.Unpack(kv.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unpack index state value for %q: %w", indexName, err)
+			}
+			if len(valueTuple) == 0 {
+				continue
+			}
+			code, ok := valueTuple[0].(int64)
+			if !ok {
+				continue
+			}
+			state, err := indexStateFromCode(code)
+			if err != nil {
+				return nil, fmt.Errorf("invalid index state for %q: %w", indexName, err)
+			}
+			indexStates[indexName] = state
 		}
 	} else {
 		indexStates = make(map[string]IndexState)
@@ -265,6 +327,7 @@ func (c *MetaDataVersionStampStoreStateCache) Get(store *FDBRecordStore, existen
 	if err := existing.handleCachedState(ctx, existenceCheck); err != nil {
 		return nil, err
 	}
+	existing.shared = true // Shared via cache — must clone on use
 	return existing, nil
 }
 
@@ -295,9 +358,12 @@ func (c *MetaDataVersionStampStoreStateCache) addToCache(key string, entry *FDBR
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	entry.shared = true // Will be returned to multiple callers from cache
+
 	if existing, ok := c.entries[key]; ok {
 		newer := getNewerEntry(existing.entry, entry)
 		if newer.recordStoreState.StoreHeader != nil && newer.recordStoreState.StoreHeader.GetCacheable() {
+			newer.shared = true
 			c.entries[key] = &cacheItem{entry: newer, lastAccess: time.Now()}
 		} else {
 			delete(c.entries, key)
