@@ -515,8 +515,11 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 	case "START_THREAD":
 		prefix := sm.popBytes()
 		child := NewStackMachine(sm.db, prefix)
-		// Share transaction map.
+		// Share transaction map and directory list (binding tester spec).
 		child.trMap = sm.trMap
+		child.dirList = sm.dirList
+		child.dirIndex = sm.dirIndex
+		child.dirErrorIndex = sm.dirErrorIndex
 		sm.wg.Add(1)
 		go func() {
 			defer sm.wg.Done()
