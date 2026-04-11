@@ -114,7 +114,15 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		prefix := sm.popBytes()
 		var result []byte
 		var err error
-		if isSnapshot {
+		if isDatabase {
+			r, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+				return tx.GetKey(ctx, key, orEqual, offset)
+			})
+			if e == nil && r != nil {
+				result = r.([]byte)
+			}
+			err = e
+		} else if isSnapshot {
 			result, err = sm.currentTr().Snapshot().GetKey(ctx, key, orEqual, offset)
 		} else {
 			result, err = sm.currentTr().GetKey(ctx, key, orEqual, offset)
@@ -140,7 +148,22 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 
 		var kvs []client.KeyValue
 		var err error
-		if reverse {
+		if isDatabase {
+			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+				var kv []client.KeyValue
+				var rangeErr error
+				if reverse {
+					kv, _, rangeErr = tx.GetRangeReverse(ctx, begin, end, limit)
+				} else {
+					kv, _, rangeErr = tx.GetRange(ctx, begin, end, limit)
+				}
+				return kv, rangeErr
+			})
+			if e == nil && result != nil {
+				kvs = result.([]client.KeyValue)
+			}
+			err = e
+		} else if reverse {
 			if isSnapshot {
 				kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, begin, end, limit)
 			} else {
@@ -173,10 +196,33 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		end := strinc(prefix)
 		var kvs []client.KeyValue
 		var err error
-		if reverse {
-			kvs, _, err = sm.currentTr().GetRangeReverse(ctx, prefix, end, limit)
+		if isDatabase {
+			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+				var kv []client.KeyValue
+				var rangeErr error
+				if reverse {
+					kv, _, rangeErr = tx.GetRangeReverse(ctx, prefix, end, limit)
+				} else {
+					kv, _, rangeErr = tx.GetRange(ctx, prefix, end, limit)
+				}
+				return kv, rangeErr
+			})
+			if e == nil && result != nil {
+				kvs = result.([]client.KeyValue)
+			}
+			err = e
+		} else if reverse {
+			if isSnapshot {
+				kvs, _, err = sm.currentTr().Snapshot().GetRangeReverse(ctx, prefix, end, limit)
+			} else {
+				kvs, _, err = sm.currentTr().GetRangeReverse(ctx, prefix, end, limit)
+			}
 		} else {
-			kvs, _, err = sm.currentTr().GetRange(ctx, prefix, end, limit)
+			if isSnapshot {
+				kvs, _, err = sm.currentTr().Snapshot().GetRange(ctx, prefix, end, limit)
+			} else {
+				kvs, _, err = sm.currentTr().GetRange(ctx, prefix, end, limit)
+			}
 		}
 		if err != nil {
 			sm.pushError(idx, err)
@@ -200,7 +246,51 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		_ = sm.popInt64() // streaming_mode
 		prefix := sm.popBytes()
 
-		// Resolve key selectors to actual keys.
+		// Resolve key selectors to actual keys + range read.
+		// For _DATABASE variant, everything runs in one auto-commit transaction.
+		if isDatabase {
+			type rangeResult struct {
+				kvs []client.KeyValue
+			}
+			result, e := sm.db.Transact(ctx, func(tx *client.Transaction) (any, error) {
+				b, bErr := tx.GetKey(ctx, beginKey, beginOrEqual, beginOffset)
+				if bErr != nil {
+					return nil, bErr
+				}
+				en, eErr := tx.GetKey(ctx, endKey, endOrEqual, endOffset)
+				if eErr != nil {
+					return nil, eErr
+				}
+				// Clamp to prefix.
+				if bytes.Compare(b, prefix) < 0 {
+					b = prefix
+				}
+				prefixEnd := strinc(prefix)
+				if bytes.Compare(en, prefixEnd) > 0 {
+					en = prefixEnd
+				}
+				var kv []client.KeyValue
+				var rangeErr error
+				if reverse {
+					kv, _, rangeErr = tx.GetRangeReverse(ctx, b, en, limit)
+				} else {
+					kv, _, rangeErr = tx.GetRange(ctx, b, en, limit)
+				}
+				return &rangeResult{kvs: kv}, rangeErr
+			})
+			if e != nil {
+				sm.pushError(idx, e)
+			} else {
+				rr := result.(*rangeResult)
+				t := make(tuple.Tuple, 0, len(rr.kvs)*2)
+				for _, kv := range rr.kvs {
+					t = append(t, kv.Key, kv.Value)
+				}
+				sm.push(idx, t.Pack())
+			}
+			return nil
+		}
+
 		var begin, end []byte
 		var err error
 		if isSnapshot {
