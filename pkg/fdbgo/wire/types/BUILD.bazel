@@ -8,6 +8,7 @@ go_library(
         "commitproxyinterface_generated.go",
         "committransactionref_generated.go",
         "committransactionrequest_generated.go",
+        "committransactionrequest_pool.go",
         "doc.go",
         "endpoint_generated.go",
         "error_generated.go",

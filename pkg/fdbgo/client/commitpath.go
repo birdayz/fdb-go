@@ -30,14 +30,17 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	}
 
 	replyToken, replyCh, cancelReply := conn.PrepareReply()
-	body := buildCommitTransactionRequest(tx, replyToken)
+	body, poolBuf := buildCommitTransactionRequest(tx, replyToken)
 
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
+		marshalBufPool.Put(poolBuf)
 		cancelReply()
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
+	// body is copied into WriteFrame's own buffer — safe to return to pool.
+	marshalBufPool.Put(poolBuf)
 
 	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 	if err != nil {
@@ -63,7 +66,18 @@ var (
 	crSlicePool       = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 )
 
-func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []byte {
+// marshalBufPool pools the serialization buffer for CommitTransactionRequest.
+// Avoids ~11% of total commit-path allocations. Uses *[]byte to avoid
+// interface boxing allocation (same pattern as writeFramePool).
+var marshalBufPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, 4096)
+	return &b
+}}
+
+// buildCommitTransactionRequest constructs the full request. Returns the
+// serialized body and a pool handle — caller MUST call releaseMarshalBuf
+// after the body is no longer needed (after SendFrame).
+func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (body []byte, poolBuf *[]byte) {
 	mutSlice := mutationSlicePool.Get().(*[]types.MutationRef)
 	mutations := (*mutSlice)[:0]
 	for _, m := range tx.mutations {
@@ -143,7 +157,10 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 		TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 	}
 
-	result := req.MarshalFDB()
+	// Marshal with pooled buffer.
+	bufp := marshalBufPool.Get().(*[]byte)
+	result := req.MarshalFDBPooled(*bufp)
+	*bufp = result // track capacity for pool reuse
 
 	// Return pooled slices.
 	*mutSlice = mutations
@@ -153,7 +170,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) []
 	*writeCRSlice = writeCRs
 	crSlicePool.Put(writeCRSlice)
 
-	return result
+	return result, bufp
 }
 
 // parseCommitReply parses an ErrorOr<CommitID> response.

@@ -1,6 +1,7 @@
 package types
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -338,6 +339,97 @@ func TestCommitTransactionRequestMarshalFooter(t *testing.T) {
 			if decoded.TenantInfo.TenantId != tc.req.TenantInfo.TenantId {
 				t.Errorf("TenantId mismatch: got %d, want %d",
 					decoded.TenantInfo.TenantId, tc.req.TenantInfo.TenantId)
+			}
+		})
+	}
+}
+
+// TestMarshalFDBPooled_ByteIdentical verifies that MarshalFDBPooled produces
+// byte-identical output to MarshalFDB for various request configurations.
+func TestMarshalFDBPooled_ByteIdentical(t *testing.T) {
+	cases := []struct {
+		name string
+		req  CommitTransactionRequest
+	}{
+		{
+			name: "empty transaction",
+			req: CommitTransactionRequest{
+				Reply:      ReplyPromise{Token: [16]byte{0x01}},
+				TenantInfo: TenantInfo{TenantId: -1},
+			},
+		},
+		{
+			name: "single mutation",
+			req: CommitTransactionRequest{
+				Transaction: CommitTransactionRef{
+					ReadSnapshot: 12345,
+					Mutations:    []MutationRef{{MutType: 0x06, Param1: []byte("key"), Param2: []byte("val")}},
+				},
+				Reply:      ReplyPromise{Token: [16]byte{0xAA, 0xBB}},
+				TenantInfo: TenantInfo{TenantId: 42},
+			},
+		},
+		{
+			name: "multiple mutations and conflict ranges",
+			req: CommitTransactionRequest{
+				Transaction: CommitTransactionRef{
+					ReadSnapshot: 99999,
+					Mutations: []MutationRef{
+						{MutType: 0x06, Param1: []byte("key1"), Param2: []byte("val1")},
+						{MutType: 0x06, Param1: []byte("key2"), Param2: []byte("val2_longer_value")},
+						{MutType: 0x0E, Param1: []byte("clear_begin"), Param2: []byte("clear_end")},
+					},
+					ReadConflictRanges:  []KeyRangeRef{{Begin: []byte("rb"), End: []byte("re")}},
+					WriteConflictRanges: []KeyRangeRef{{Begin: []byte("wb"), End: []byte("we")}},
+				},
+				Flags:      1,
+				Reply:      ReplyPromise{Token: [16]byte{0xDE, 0xAD}},
+				TenantInfo: TenantInfo{TenantId: -1},
+			},
+		},
+		{
+			name: "system key mutations",
+			req: CommitTransactionRequest{
+				Transaction: CommitTransactionRef{
+					ReadSnapshot: 70000,
+					Mutations: []MutationRef{
+						{MutType: 0, Param1: []byte("\xff/tenant/lastId"), Param2: []byte{3, 0, 0, 0, 0, 0, 0, 0}},
+					},
+				},
+				Flags:      1,
+				Reply:      ReplyPromise{Token: [16]byte{0x01, 0x02}},
+				TenantInfo: TenantInfo{TenantId: -1},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			original := tc.req.MarshalFDB()
+
+			// Pooled with nil buffer (forces allocation)
+			pooled1 := tc.req.MarshalFDBPooled(nil)
+			if !bytes.Equal(original, pooled1) {
+				t.Errorf("MarshalFDBPooled(nil) differs from MarshalFDB\n  original: %x\n  pooled:   %x", original, pooled1)
+			}
+
+			// Pooled with pre-allocated buffer (reuse path)
+			buf := make([]byte, 8192)
+			pooled2 := tc.req.MarshalFDBPooled(buf)
+			if !bytes.Equal(original, pooled2) {
+				t.Errorf("MarshalFDBPooled(buf) differs from MarshalFDB\n  original: %x\n  pooled:   %x", original, pooled2)
+			}
+
+			// Pooled with exact-size buffer
+			pooled3 := tc.req.MarshalFDBPooled(make([]byte, len(original)))
+			if !bytes.Equal(original, pooled3) {
+				t.Errorf("MarshalFDBPooled(exact) differs from MarshalFDB\n  original: %x\n  pooled:   %x", original, pooled3)
+			}
+
+			// Pooled with too-small buffer (forces new allocation)
+			pooled4 := tc.req.MarshalFDBPooled(make([]byte, 1))
+			if !bytes.Equal(original, pooled4) {
+				t.Errorf("MarshalFDBPooled(small) differs from MarshalFDB\n  original: %x\n  pooled:   %x", original, pooled4)
 			}
 		})
 	}

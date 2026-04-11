@@ -135,14 +135,29 @@ type WriteToBuffer struct {
 	EmptyVectorOffset int // -1 = not yet allocated
 }
 
+var writeToBufferPool = sync.Pool{
+	New: func() any {
+		return &WriteToBuffer{}
+	},
+}
+
 func NewWriteToBuffer(buf []byte, vtableStart int, offsets []int) *WriteToBuffer {
-	return &WriteToBuffer{
-		Buf:               buf,
-		BufferLength:      len(buf),
-		VTableStart:       vtableStart,
-		WriteToOffsets:    offsets,
-		EmptyVectorOffset: -1,
-	}
+	wb := writeToBufferPool.Get().(*WriteToBuffer)
+	wb.Buf = buf
+	wb.BufferLength = len(buf)
+	wb.VTableStart = vtableStart
+	wb.CurrentBufferSize = 0
+	wb.WriteToOffsets = offsets
+	wb.WriteToIdx = 0
+	wb.EmptyVectorOffset = -1
+	return wb
+}
+
+// ReleaseWriteToBuffer returns a WriteToBuffer to the pool for reuse.
+func ReleaseWriteToBuffer(wb *WriteToBuffer) {
+	wb.Buf = nil // don't hold reference to large buffer
+	wb.WriteToOffsets = nil
+	writeToBufferPool.Put(wb)
 }
 
 // Write — C++ WriteToBuffer::write (flat_buffers.h:569)
