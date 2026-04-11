@@ -300,14 +300,14 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 
 	if !bytes.Equal(r.Begin, rangeSetFirstKey) {
 		var err error
-		rangeStart, err = tuple.Unpack(r.Begin)
+		rangeStart, err = fastUnpack(r.Begin)
 		if err != nil {
 			return 0, fmt.Errorf("mutual indexer: unpack range begin: %w", err)
 		}
 	}
 	if !bytes.Equal(r.End, rangeSetFinalKey) {
 		var err error
-		rangeEnd, err = tuple.Unpack(r.End)
+		rangeEnd, err = fastUnpack(r.End)
 		if err != nil {
 			return 0, fmt.Errorf("mutual indexer: unpack range end: %w", err)
 		}

@@ -1559,7 +1559,7 @@ func (store *FDBRecordStore) ScanUniquenessViolations(index *Index) ([]Uniquenes
 			// Value contains the conflicting PK (matching Java's wire format).
 			// Empty value means no cross-reference was stored.
 			if len(kv.Value) > 0 {
-				existingKey, err := tuple.Unpack(kv.Value)
+				existingKey, err := fastUnpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}

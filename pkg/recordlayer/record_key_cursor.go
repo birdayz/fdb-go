@@ -154,7 +154,7 @@ func (c *recordKeyCursor) initIterator() error {
 
 		// Initialize lastPK from continuation for split record dedup.
 		// Continuation is tuple-packed (pk..., suffix) — strip the last element.
-		if contTuple, err := tuple.Unpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
+		if contTuple, err := fastUnpack(fdb.Key(innerCont)); err == nil && len(contTuple) >= 2 {
 			c.lastPK = tuple.Tuple(contTuple[:len(contTuple)-1])
 		}
 	}

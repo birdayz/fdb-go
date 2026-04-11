@@ -285,7 +285,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 				}
 				if cont.LastKey != nil {
 					var tupErr error
-					lastKey, tupErr = tuple.Unpack(cont.LastKey)
+					lastKey, tupErr = fastUnpack(cont.LastKey)
 					if tupErr != nil {
 						return &errorCursor[*IndexEntry]{
 							err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, tupErr),
@@ -309,7 +309,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 			}
 			if cont.LastKey != nil {
 				var err error
-				lastKey, err = tuple.Unpack(cont.LastKey)
+				lastKey, err = fastUnpack(cont.LastKey)
 				if err != nil {
 					return &errorCursor[*IndexEntry]{
 						err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation lastKey: %w", m.index.Name, err),

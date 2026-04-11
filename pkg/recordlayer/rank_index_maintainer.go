@@ -375,7 +375,7 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 		return nil, err
 	}
 	if lowScoreBytes != nil {
-		lowScore, err = tuple.Unpack(lowScoreBytes)
+		lowScore, err = fastUnpack(lowScoreBytes)
 		if err != nil {
 			return nil, fmt.Errorf("unpack low score: %w", err)
 		}
@@ -392,7 +392,7 @@ func (m *rankIndexMaintainer) rankRangeToScoreRange(rankRange TupleRange) (*Tupl
 			return nil, err
 		}
 		if highScoreBytes != nil {
-			highScore, err = tuple.Unpack(highScoreBytes)
+			highScore, err = fastUnpack(highScoreBytes)
 			if err != nil {
 				return nil, fmt.Errorf("unpack high score: %w", err)
 			}
@@ -489,7 +489,7 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	if scoreBytes == nil {
 		return nil, nil
 	}
-	return tuple.Unpack(scoreBytes)
+	return fastUnpack(scoreBytes)
 }
 
 // extractRankValue extracts the rank value from a scan range tuple.

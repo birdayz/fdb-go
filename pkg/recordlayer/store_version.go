@@ -71,7 +71,7 @@ func packVersion(version *FDBRecordVersion) ([]byte, error) {
 // unpackVersion unpacks a stored version value (a packed Tuple with a Versionstamp)
 // into an FDBRecordVersion. Matches Java's SplitHelper.unpackVersion().
 func unpackVersion(value []byte) (*FDBRecordVersion, error) {
-	t, err := tuple.Unpack(fdb.Key(value))
+	t, err := fastUnpack(fdb.Key(value))
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack version tuple: %w", err)
 	}

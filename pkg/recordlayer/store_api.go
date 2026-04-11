@@ -475,7 +475,7 @@ func (store *FDBRecordStore) ScanUniquenessViolationsForValue(
 				PrimaryKey: tuple.Tuple(t[colCount:]),
 			}
 			if len(kv.Value) > 0 {
-				existingKey, err := tuple.Unpack(kv.Value)
+				existingKey, err := fastUnpack(kv.Value)
 				if err == nil {
 					v.ExistingKey = existingKey
 				}

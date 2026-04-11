@@ -125,7 +125,7 @@ func (m *textIndexMaintainer) getRecordTokenizerVersion(primaryKey tuple.Tuple) 
 	if rawVersion == nil {
 		return 0, nil // GLOBAL_MIN_VERSION
 	}
-	t, err := tuple.Unpack(rawVersion)
+	t, err := fastUnpack(rawVersion)
 	if err != nil {
 		return 0, nil
 	}

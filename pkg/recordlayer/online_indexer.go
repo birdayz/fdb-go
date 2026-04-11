@@ -888,13 +888,13 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 		// Convert byte boundaries to TupleRange for record scanning.
 		var rangeStart, rangeEnd tuple.Tuple
 		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
-			rangeStart, err = tuple.Unpack(missing.Begin)
+			rangeStart, err = fastUnpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
 		if !bytes.Equal(missing.End, rangeSetFinalKey) {
-			rangeEnd, err = tuple.Unpack(missing.End)
+			rangeEnd, err = fastUnpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
 			}
@@ -1084,13 +1084,13 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 		// Convert byte boundaries to TupleRange for source index scanning.
 		var rangeStart, rangeEnd tuple.Tuple
 		if !bytes.Equal(missing.Begin, rangeSetFirstKey) {
-			rangeStart, err = tuple.Unpack(missing.Begin)
+			rangeStart, err = fastUnpack(missing.Begin)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range start: %w", err)
 			}
 		}
 		if !bytes.Equal(missing.End, rangeSetFinalKey) {
-			rangeEnd, err = tuple.Unpack(missing.End)
+			rangeEnd, err = fastUnpack(missing.End)
 			if err != nil {
 				return nil, fmt.Errorf("unpack range end: %w", err)
 			}

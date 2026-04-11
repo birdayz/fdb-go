@@ -72,7 +72,7 @@ func tupleOrderingUnpack(packed []byte, dir OrderDirection) (tuple.Tuple, error)
 	if dir.counterflowNulls {
 		return unpackNullsLast(data)
 	}
-	t, err := tuple.Unpack(data)
+	t, err := fastUnpack(data)
 	if err != nil {
 		return nil, fmt.Errorf("unpack: %w", err)
 	}
@@ -110,7 +110,7 @@ func unpackNullsLast(data []byte) (tuple.Tuple, error) {
 		if err != nil {
 			return nil, fmt.Errorf("at offset %d: %w", pos, err)
 		}
-		elemTuple, err := tuple.Unpack(data[pos:endPos])
+		elemTuple, err := fastUnpack(data[pos:endPos])
 		if err != nil {
 			return nil, fmt.Errorf("unpack element at offset %d: %w", pos, err)
 		}

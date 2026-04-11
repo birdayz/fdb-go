@@ -589,11 +589,11 @@ func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, i
 
 	entries := make([]*IndexEntry, 0, len(contProto.IndexEntries))
 	for _, ie := range contProto.IndexEntries {
-		key, err := tuple.Unpack(ie.GetKey())
+		key, err := fastUnpack(ie.GetKey())
 		if err != nil {
 			return nil, 0
 		}
-		value, err := tuple.Unpack(ie.GetValue())
+		value, err := fastUnpack(ie.GetValue())
 		if err != nil {
 			return nil, 0
 		}
@@ -606,7 +606,7 @@ func parseVectorScanContinuation(data []byte, _ []*IndexEntry) ([]*IndexEntry, i
 	// Parse inner continuation (position).
 	innerPos := 0
 	if inner := contProto.GetInnerContinuation(); len(inner) > 0 {
-		t, err := tuple.Unpack(inner)
+		t, err := fastUnpack(inner)
 		if err == nil && len(t) > 0 {
 			if pos, ok := t[0].(int64); ok {
 				innerPos = int(pos)

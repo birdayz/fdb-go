@@ -1034,7 +1034,7 @@ func (s *hnswStorage) saveNodeLayer(tx fdb.Transaction, layer int, primaryKey tu
 // parseNodeValue parses the raw FDB value bytes for a node into vector bytes
 // and neighbor PKs. Factored out of loadNodeLayer for reuse by batch loading.
 func parseNodeValue(data []byte) (vectorBytes []byte, neighbors []tuple.Tuple, err error) {
-	t, err := tuple.Unpack(data)
+	t, err := fastUnpack(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("hnsw: unpack node layer: %w", err)
 	}
@@ -1309,7 +1309,7 @@ func (s *hnswStorage) parseAccessInfo(data []byte) (*hnswAccessInfo, error) {
 		return nil, fmt.Errorf("hnsw: no entry point")
 	}
 
-	t, unpackErr := tuple.Unpack(data)
+	t, unpackErr := fastUnpack(data)
 	if unpackErr != nil {
 		return nil, fmt.Errorf("hnsw: unpack access info: %w", unpackErr)
 	}
@@ -1439,7 +1439,7 @@ func (s *hnswStorage) findAnyNodeAtLayer(tx fdb.ReadTransaction, layer int) (pk 
 		}
 
 		// Parse the value for vector bytes.
-		t, valErr := tuple.Unpack(kv.Value)
+		t, valErr := fastUnpack(kv.Value)
 		if valErr != nil {
 			return nil, nil, valErr
 		}
@@ -1608,7 +1608,7 @@ func (s *hnswStorage) loadNodeLayerInlining(tx fdb.ReadTransaction, layer int, p
 		}
 
 		// Value is tuple-packed neighbor vector bytes.
-		valueTuple, valErr := tuple.Unpack(kv.Value)
+		valueTuple, valErr := fastUnpack(kv.Value)
 		if valErr != nil || len(valueTuple) < 1 {
 			continue
 		}
@@ -1700,7 +1700,7 @@ func (s *hnswStorage) preloadLayerInlining(tx fdb.ReadTransaction, layer int) er
 			continue
 		}
 
-		valueTuple, valErr := tuple.Unpack(kv.Value)
+		valueTuple, valErr := fastUnpack(kv.Value)
 		if valErr != nil || len(valueTuple) < 1 {
 			continue
 		}
