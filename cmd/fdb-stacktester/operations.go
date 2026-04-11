@@ -539,6 +539,14 @@ func (sm *StackMachine) execute(ctx context.Context, idx int, op string, arg any
 		// No-op for now. Binding-specific smoke tests.
 
 	default:
+		// Try directory operations.
+		handled, err := sm.executeDirectoryOp(ctx, idx, baseOp, isDatabase, isSnapshot)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
 		return fmt.Errorf("unimplemented operation: %s", op)
 	}
 

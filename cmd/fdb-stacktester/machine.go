@@ -42,6 +42,11 @@ type StackMachine struct {
 	trMap map[string]*client.Transaction
 	trMu  sync.RWMutex
 	wg    sync.WaitGroup
+
+	// Directory layer state.
+	dirList       []dirEntry
+	dirIndex      int
+	dirErrorIndex int
 }
 
 // NewStackMachine creates a stack machine with the given prefix.
@@ -53,6 +58,7 @@ func NewStackMachine(db *client.Database, prefix []byte) *StackMachine {
 		trMap:  make(map[string]*client.Transaction),
 	}
 	sm.trMap[sm.trName] = db.CreateTransaction()
+	sm.initDirectoryState()
 	return sm
 }
 

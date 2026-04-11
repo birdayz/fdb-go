@@ -422,6 +422,18 @@ func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any,
 	return f(tr)
 }
 
+// WrapTransaction wraps an existing client.Transaction as an fdb.Transaction.
+// This is useful when you need to pass a client.Transaction to code that
+// expects the fdb facade types (e.g., the directory layer).
+func WrapTransaction(tx *client.Transaction, db Database) Transaction {
+	return Transaction{t: &transaction{
+		inner:      tx,
+		db:         db,
+		ctx:        db.d.ctx,
+		commitDone: make(chan struct{}),
+	}}
+}
+
 // panicToError catches error panics and converts them to returned errors.
 // Apple's binding only catches fdb.Error (since the C client only produces
 // those), but our pure Go client can surface arbitrary errors (network,
