@@ -7,6 +7,10 @@ build --java_runtime_version=remotejdk_21
 test --test_output=errors
 test --test_summary=terse
 
+# Verbose test output for report generation. Per-test timing in test.log.
+# Does not affect cache keys (output verbosity is not an input).
+test --test_arg="-test.v"
+
 # Testcontainers need Docker socket and HOME for config
 test --test_env=HOME
 

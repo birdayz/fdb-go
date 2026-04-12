@@ -123,6 +123,12 @@ binding-stress-duration duration ops="1000":
 binding-stress-directory runs="50" ops="500":
     bazelisk run //cmd/fdb-binding-stress -- -seeds {{runs}} -ops {{ops}} -test-name directory
 
+# Generate HTML test report from the latest bazel test run.
+# Run `just test` first to produce test.log files.
+report:
+    bazelisk run //cmd/test-report -- bazel-testlogs > test-report.html
+    @echo "Report: test-report.html"
+
 # Run tests with coverage
 coverage:
     bazelisk coverage //...
