@@ -831,8 +831,7 @@ func (tx *Transaction) OnError(err error) error {
 
 	case ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
 		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
-		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
-		ErrAllProxiesUnreachable:
+		ErrBlobGranuleRequestFailed, ErrAllProxiesUnreachable:
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
@@ -840,9 +839,12 @@ func (tx *Transaction) OnError(err error) error {
 		tx.reset()
 		return nil
 
-	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
+		ErrThrottledHotShard, ErrRangeLocked:
 		// Resource-constrained: higher backoff cap (30s vs 1s).
-		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF.
+		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF for all four codes.
+		// hot_shard and range_locked use the same 30s cap to avoid
+		// hammering the hot shard with aggressive retries.
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff(fdbErr.Code))
 		tx.reset()
@@ -1264,7 +1266,8 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	// user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two branches are
 	// mutually exclusive — no min/max combining.
 	var cap time.Duration
-	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
+	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit ||
+		errCode == ErrThrottledHotShard || errCode == ErrRangeLocked {
 		cap = resourceConstrainedMaxBackoff
 	} else {
 		cap = maxBackoff
