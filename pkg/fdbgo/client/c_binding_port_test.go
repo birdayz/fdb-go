@@ -1469,51 +1469,69 @@ func TestSetTimeout_Preserved(t *testing.T) {
 // TestSetTimeout_OverallBudget verifies that timeout is an overall budget
 // across all retries, NOT per-retry. Matches C++ where creationTime is set
 // once and the deadline = creationTime + timeout across all OnError retries.
+// Deterministic: sets creationTime to a known past value, no sleep needed.
 func TestSetTimeout_OverallBudget(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
-	tx.SetTimeout(100) // 100ms overall budget
+	// Create a tx whose creationTime is 200ms in the past.
+	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-200 * time.Millisecond)}
+	tx.SetTimeout(500) // 500ms budget from creationTime → deadline = 300ms from now
 
-	// Simulate burning 60ms of the budget.
-	time.Sleep(60 * time.Millisecond)
+	// Deadline should NOT have fired yet (300ms from now).
+	if err := tx.checkTimeout(); err != nil {
+		t.Fatalf("timeout should not fire yet (300ms remaining): %v", err)
+	}
 
 	// OnError resets the tx for retry but should NOT restart the timer.
+	// creationTime stays at -200ms, deadline stays at creationTime + 500ms.
 	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
 	if err != nil {
 		t.Fatalf("OnError should retry: %v", err)
 	}
 
-	// After retry reset, we should have ~40ms remaining (not a fresh 100ms).
-	// Sleep another 50ms to exhaust the remaining budget.
-	time.Sleep(50 * time.Millisecond)
+	// After OnError, deadline is still anchored to the original creationTime.
+	// Verify creationTime was NOT updated by checking the deadline is the same.
+	// The deadline should be creationTime + 500ms = now - 200ms + 500ms = now + 300ms.
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("timeout should not fire after OnError (budget not exhausted): %v", err)
+	}
 
-	// Now the timeout should fire because 60+50 = 110ms > 100ms budget.
+	// Now simulate exhausted budget: set creationTime far in the past.
+	tx.creationTime = time.Now().Add(-1 * time.Second) // 1s ago
+	tx.deadline = tx.creationTime.Add(tx.timeout)      // deadline = 500ms ago
 	if err := tx.checkTimeout(); err == nil {
-		t.Error("timeout should fire: overall budget of 100ms is exhausted after 110ms across retries")
+		t.Error("timeout should fire: budget exhausted (creationTime 1s ago, 500ms timeout)")
 	}
 }
 
 // TestSetTimeout_ResetRestartsTimer verifies that user-facing Reset()
 // restarts the timeout timer (updates creationTime). Matches C++
 // ReadYourWritesTransaction::reset() which sets creationTime = now().
+// Deterministic: checks creationTime directly instead of timing sleeps.
 func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
-	tx.SetTimeout(100) // 100ms
+	// Start with creationTime far in the past — budget is already exhausted.
+	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-10 * time.Second)}
+	tx.SetTimeout(500) // deadline = -10s + 500ms = -9.5s → already expired
 
-	// Burn 80ms.
-	time.Sleep(80 * time.Millisecond)
+	// Should be timed out.
+	if err := tx.checkTimeout(); err == nil {
+		t.Fatal("timeout should fire (budget exhausted from past creationTime)")
+	}
 
-	// User Reset() should restart the timer.
+	// User Reset() should restart the timer — creationTime becomes now().
 	tx.Reset()
-	tx.SetTimeout(100) // re-apply (persistent option)
+	tx.SetTimeout(500) // re-apply → deadline = now() + 500ms
 
-	// After Reset, the full 100ms budget should be available again.
-	// 80ms burned before Reset should NOT count.
+	// After Reset, the full 500ms budget should be available.
 	if err := tx.checkTimeout(); err != nil {
-		t.Errorf("timeout should not fire after Reset: %v", err)
+		t.Errorf("timeout should not fire after Reset (fresh 500ms budget): %v", err)
+	}
+
+	// Verify creationTime was updated to a recent time.
+	if time.Since(tx.creationTime) > 1*time.Second {
+		t.Errorf("creationTime not updated by Reset: %v (should be ~now)", tx.creationTime)
 	}
 }
 

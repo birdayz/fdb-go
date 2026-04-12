@@ -1211,14 +1211,17 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
 	delay := time.Duration(float64(tx.backoff) * rand.Float64())
-	cap := maxBackoff
-	if tx.maxRetryDelay > 0 {
-		cap = tx.maxRetryDelay
-	}
-	// C++: proxy memory errors use RESOURCE_CONSTRAINED_MAX_BACKOFF (30s).
+	// C++ getBackoff(): proxy memory errors use RESOURCE_CONSTRAINED_MAX_BACKOFF
+	// exclusively (user's maxRetryDelay is IGNORED). All other errors use
+	// user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two branches are
+	// mutually exclusive — no min/max combining.
+	var cap time.Duration
 	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
-		if cap < resourceConstrainedMaxBackoff {
-			cap = resourceConstrainedMaxBackoff
+		cap = resourceConstrainedMaxBackoff
+	} else {
+		cap = maxBackoff
+		if tx.maxRetryDelay > 0 {
+			cap = tx.maxRetryDelay
 		}
 	}
 	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(cap)))

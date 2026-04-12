@@ -232,11 +232,8 @@ func (c *rywCache) getRange(
 	// we approximate by restricting local writes to the fetched range.
 	var serverBoundary []byte
 	if serverMore && len(serverKVs) > 0 {
-		if reverse {
-			serverBoundary = serverKVs[len(serverKVs)-1].Key // lowest key fetched
-		} else {
-			serverBoundary = serverKVs[len(serverKVs)-1].Key // highest key fetched
-		}
+		// Last key in the batch: highest (forward) or lowest (reverse) key fetched.
+		serverBoundary = serverKVs[len(serverKVs)-1].Key
 	}
 
 	// Build a map from server results for fast lookup.
@@ -329,18 +326,18 @@ func (c *rywCache) getRange(
 		more = true
 	} else if serverMore {
 		// Server had more data beyond what we fetched. Propagate `more`
-		// only if we actually have room for more results (len(result) > 0
-		// or there are excluded local writes beyond the boundary).
-		// Without this guard, a range that's entirely cleared locally
-		// would return more=true, 0 results → infinite loop.
+		// only if we have results to return. Without this guard, a range
+		// that's entirely cleared locally would return more=true with 0
+		// results → callers loop forever with no progress.
+		//
+		// Trade-off: if serverMore=true and all fetched results are locally
+		// cleared, we return more=false, result=[]. This may silently
+		// truncate the scan — keys beyond the over-fetch boundary that
+		// were NOT cleared will be missed. A proper segment-tree iterator
+		// (like C++ RYWIterator) would handle this correctly.
 		if len(result) > 0 {
 			more = true
 		}
-		// If result is empty but serverMore=true, the caller needs to
-		// advance the range. This is safe because the server range was
-		// non-empty — the merged result being empty means all server
-		// keys were cleared. The caller's continuation mechanism will
-		// advance begin past the cleared region.
 	}
 
 	return result, more, nil
