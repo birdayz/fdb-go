@@ -24,6 +24,19 @@ The Record Layer gives you structured records, secondary indexes, and transactio
 schema evolution on top of FoundationDB's ordered key-value store. This port brings
 that to Go without sacrificing interoperability with existing Java deployments.
 
+## Performance
+
+Includes a **pure Go FDB client** that talks the FDB wire protocol directly — no CGo, no C library dependency.
+
+| Operation | Pure Go | Apple CGo binding | Speedup |
+|---|---|---|---|
+| Single Get (100B) | 60 us | 218 us | **3.6x** |
+| GetRange (100 keys) | 92 us | 363 us | **3.9x** |
+| Sustained read throughput | 430 MB/s | 191 MB/s | **2.25x** |
+| Set + Commit | 1,008 us | 1,005 us | 1.0x |
+
+Both clients return byte-identical results (`TestBenchmarkSanity`). The read advantage comes from eliminating the C library's actor event loop — the pure Go client routes requests directly through goroutines and channels instead of crossing the CGo boundary into the C++ `Flow` runtime. Writes show parity because commit latency is dominated by the network round-trip. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the full analysis.
+
 ## Usage
 
 ```go
