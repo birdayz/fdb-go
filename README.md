@@ -26,16 +26,31 @@ that to Go without sacrificing interoperability with existing Java deployments.
 
 ## Performance
 
-Includes a **pure Go FDB client** that talks the FDB wire protocol directly — no CGo, no C library dependency.
+Includes a **pure Go FDB client** that speaks the FDB wire protocol directly — no CGo, no C library dependency. Reads are **2-4x faster** than the official Apple CGo binding.
 
-| Operation | Pure Go | Apple CGo binding | Speedup |
-|---|---|---|---|
-| Single Get (100B) | 60 us | 218 us | **3.6x** |
-| GetRange (100 keys) | 92 us | 363 us | **3.9x** |
-| Sustained read throughput | 430 MB/s | 191 MB/s | **2.25x** |
-| Set + Commit | 1,008 us | 1,005 us | 1.0x |
+### fdb-go vs Apple CGo binding
 
-Both clients return byte-identical results (`TestBenchmarkSanity`). The read advantage comes from eliminating the C library's actor event loop — the pure Go client routes requests directly through goroutines and channels instead of crossing the CGo boundary into the C++ `Flow` runtime. Writes show parity because commit latency is dominated by the network round-trip. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the full analysis.
+| Operation | fdb-go | Apple CGo | Speedup |
+|---|---:|---:|---|
+| **Single Get** (100 B value) | 60 us | 218 us | **3.6x faster** |
+| **Single Get** (10 KB value) | 69 us | 217 us | **3.1x faster** |
+| **GetRange** (100 keys) | 92 us | 363 us | **3.9x faster** |
+| **Sustained read throughput** | 430 MB/s | 191 MB/s | **2.25x faster** |
+| **Set + Commit** (100 B value) | 1,008 us | 1,005 us | parity |
+| **Sustained write throughput** | 10.0 MB/s | 9.7 MB/s | parity |
+
+<sub>Ryzen 9 3900X, FDB 7.3.46 testcontainer, same process, same keys. Sustained benchmarks run 30 s each.
+Both clients return byte-identical results ([`TestBenchmarkSanity`](pkg/fdbgo/bench/bench_test.go)).</sub>
+
+### Why reads are faster
+
+The Apple CGo binding routes every operation through the C library's single-threaded actor event loop. Each `Get` crosses the CGo boundary 4+ times and blocks on a `sync.Mutex` until the C network thread fires a callback — two thread context switches per read.
+
+fdb-go eliminates all of that. Requests go straight from the calling goroutine to a buffered TCP write loop; responses arrive on a dedicated read loop and are delivered via a pre-allocated channel. No CGo boundary, no C event loop, no cross-thread mutex signaling.
+
+Writes show parity because commit latency is dominated by the ~500 us network round-trip — the ~100 us per-request overhead is negligible for writes but dominant for 40 us reads.
+
+See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the full analysis with per-component overhead breakdown.
 
 ## Usage
 
