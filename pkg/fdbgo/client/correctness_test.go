@@ -1215,7 +1215,8 @@ func TestReadWriteConflict(t *testing.T) {
 	}
 
 	// txA tries to commit — should conflict because txB wrote into its read range.
-	// Even a write to an unrelated key triggers the conflict check.
+	// txA must write something to force a real commit; without writes,
+	// FDB may short-circuit commit and skip conflict detection.
 	txA.Set([]byte("conflict_rw_unrelated"), []byte("x"))
 	err = txA.Commit(ctx)
 	if err == nil {
