@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1310,5 +1311,100 @@ func TestGetRangeWithSelectorRangeReverse(t *testing.T) {
 		if string(kv.Key) != expected {
 			t.Errorf("kvs[%d]: got %q, want %q", i, kv.Key, expected)
 		}
+	}
+}
+
+// TestTransactionRetryLimit verifies that SetRetryLimit actually caps retries.
+func TestTransactionRetryLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	var callCount int32
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		atomic.AddInt32(&callCount, 1)
+		tr.Options().SetRetryLimit(2)
+		// Force a retryable error (not_committed) by writing a conflict.
+		return nil, fdb.Error{Code: 1020}
+	})
+	// After 2 retries (3 total calls), the error should propagate.
+	if err == nil {
+		t.Fatal("expected error after retry limit exceeded")
+	}
+	// Should have been called exactly 3 times (initial + 2 retries).
+	got := atomic.LoadInt32(&callCount)
+	if got != 3 {
+		t.Errorf("expected 3 calls (1 + 2 retries), got %d", got)
+	}
+}
+
+// TestMultipleWatchesSameKey verifies that two watches on the same key
+// both fire when the key changes.
+func TestMultipleWatchesSameKey(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	key := fdb.Key("multi_watch_key")
+
+	// Seed.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Start two watches from separate transactions.
+	var w1, w2 fdb.FutureNil
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		w1 = tr.Watch(key)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("watch1: %v", err)
+	}
+
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		w2 = tr.Watch(key)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("watch2: %v", err)
+	}
+
+	// Modify the key.
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("changed"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// Both watches should fire.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch1 := make(chan error, 1)
+	ch2 := make(chan error, 1)
+	go func() { ch1 <- w1.Get() }()
+	go func() { ch2 <- w2.Get() }()
+
+	select {
+	case err := <-ch1:
+		if err != nil {
+			t.Errorf("watch1 error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("watch1 did not fire within 10s")
+	}
+
+	select {
+	case err := <-ch2:
+		if err != nil {
+			t.Errorf("watch2 error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("watch2 did not fire within 10s")
 	}
 }
