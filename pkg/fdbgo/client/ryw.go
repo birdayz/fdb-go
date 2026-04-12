@@ -200,6 +200,7 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 			}
 			if cleared {
 				delete(c.writes, k)
+				c.sortedKeys = nil // key removed, invalidate sorted index
 				c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
 				c.mu.Unlock()
 				return nil, nil
