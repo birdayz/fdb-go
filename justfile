@@ -136,7 +136,8 @@ report:
     bazelisk build //cmd/test-report
     BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
     "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
-    echo "Report: test-report.html ($(grep -c '<tr class=' test-report.html || echo 0) tests)"
+    TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
+    echo "Report: test-report.html ($TOTAL tests)"
 
 # Run tests with coverage
 coverage:

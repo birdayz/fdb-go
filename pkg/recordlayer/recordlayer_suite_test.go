@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -10,7 +11,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
-	"github.com/onsi/ginkgo/v2/reporters"
+	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
 
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
@@ -80,13 +81,50 @@ func TestRecordLayer(t *testing.T) {
 	RunSpecs(t, "Record Layer Suite")
 }
 
-// Write Ginkgo's per-spec JUnit XML report to Bazel's undeclared test outputs
-// directory. This gives the test-report tool individual spec granularity —
-// Bazel's rules_go wrapper only sees the single TestRecordLayer bootstrap function.
-var _ = ReportAfterSuite("ginkgo junit report", func(report Report) {
+// Write a tree-structured JSON report to Bazel's undeclared test outputs.
+// Preserves Ginkgo's Describe/Context/It hierarchy for tree rendering in
+// the test-report tool. JUnit XML flattens this hierarchy — we need it intact.
+var _ = ReportAfterSuite("ginkgo tree report", func(report Report) {
 	dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if dir == "" {
 		return
 	}
-	reporters.GenerateJUnitReport(report, dir+"/ginkgo-report.xml")
+	writeGinkgoTreeReport(report, dir+"/ginkgo-report.json")
 })
+
+// ginkgoTreeSpec is a single spec with its container hierarchy preserved.
+type ginkgoTreeSpec struct {
+	// Containers is the Describe/Context path, e.g. ["SaveRecord", "with indexes"]
+	Containers []string `json:"containers"`
+	// Name is the leaf node text, e.g. "creates a new record"
+	Name string `json:"name"`
+	// State is "passed", "failed", "skipped", "pending", etc.
+	State string `json:"state"`
+	// DurationMs is the spec duration in milliseconds.
+	DurationMs float64 `json:"duration_ms"`
+}
+
+func writeGinkgoTreeReport(report Report, path string) {
+	var specs []ginkgoTreeSpec
+	for _, spec := range report.SpecReports {
+		if spec.LeafNodeType == types.NodeTypeBeforeSuite ||
+			spec.LeafNodeType == types.NodeTypeAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeSynchronizedBeforeSuite ||
+			spec.LeafNodeType == types.NodeTypeSynchronizedAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeReportAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeCleanupAfterSuite {
+			continue // skip infrastructure nodes
+		}
+		specs = append(specs, ginkgoTreeSpec{
+			Containers: spec.ContainerHierarchyTexts,
+			Name:       spec.LeafNodeText,
+			State:      spec.State.String(),
+			DurationMs: float64(spec.RunTime.Milliseconds()),
+		})
+	}
+	data, err := json.Marshal(specs)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
+}

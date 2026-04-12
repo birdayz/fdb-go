@@ -2,6 +2,7 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -9,7 +10,7 @@ import (
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
-	"github.com/onsi/ginkgo/v2/reporters"
+	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
 )
 
@@ -59,11 +60,43 @@ func TestConformance(t *testing.T) {
 	RunSpecs(t, "Java/Go Conformance Suite")
 }
 
-// Write Ginkgo's per-spec JUnit XML report to Bazel's undeclared test outputs.
-var _ = ReportAfterSuite("ginkgo junit report", func(report Report) {
+// Write a tree-structured JSON report to Bazel's undeclared test outputs.
+var _ = ReportAfterSuite("ginkgo tree report", func(report Report) {
 	dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if dir == "" {
 		return
 	}
-	reporters.GenerateJUnitReport(report, dir+"/ginkgo-report.xml")
+	writeGinkgoTreeReport(report, dir+"/ginkgo-report.json")
 })
+
+type ginkgoTreeSpec struct {
+	Containers []string `json:"containers"`
+	Name       string   `json:"name"`
+	State      string   `json:"state"`
+	DurationMs float64  `json:"duration_ms"`
+}
+
+func writeGinkgoTreeReport(report Report, path string) {
+	var specs []ginkgoTreeSpec
+	for _, spec := range report.SpecReports {
+		if spec.LeafNodeType == types.NodeTypeBeforeSuite ||
+			spec.LeafNodeType == types.NodeTypeAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeSynchronizedBeforeSuite ||
+			spec.LeafNodeType == types.NodeTypeSynchronizedAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeReportAfterSuite ||
+			spec.LeafNodeType == types.NodeTypeCleanupAfterSuite {
+			continue
+		}
+		specs = append(specs, ginkgoTreeSpec{
+			Containers: spec.ContainerHierarchyTexts,
+			Name:       spec.LeafNodeText,
+			State:      spec.State.String(),
+			DurationMs: float64(spec.RunTime.Milliseconds()),
+		})
+	}
+	data, err := json.Marshal(specs)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o644)
+}

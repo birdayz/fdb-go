@@ -33,6 +33,144 @@ import (
 	"time"
 )
 
+// ---- Ginkgo tree types ----
+
+// TreeNode is a node in the Ginkgo container hierarchy.
+type TreeNode struct {
+	Name     string      // container text (e.g. "SaveRecord") or leaf name
+	Children []*TreeNode // sub-containers
+	Leaf     *TestResult // nil for containers, set for leaf specs
+}
+
+// TreeCounts returns aggregate pass/fail/skip counts for this node and all descendants.
+func (n *TreeNode) TreeCounts() (passed, failed, skipped int) {
+	if n.Leaf != nil {
+		switch n.Leaf.Status {
+		case StatusPass:
+			return 1, 0, 0
+		case StatusFail:
+			return 0, 1, 0
+		case StatusSkip:
+			return 0, 0, 1
+		}
+		return 0, 0, 0
+	}
+	for _, c := range n.Children {
+		p, f, s := c.TreeCounts()
+		passed += p
+		failed += f
+		skipped += s
+	}
+	return
+}
+
+// TreeTotal returns the total spec count under this node.
+func (n *TreeNode) TreeTotal() int {
+	p, f, s := n.TreeCounts()
+	return p + f + s
+}
+
+// TreeHasFailures returns true if any descendant spec failed.
+func (n *TreeNode) TreeHasFailures() bool {
+	_, f, _ := n.TreeCounts()
+	return f > 0
+}
+
+// TreeBadgeClass returns the CSS class for this node's badge.
+func (n *TreeNode) TreeBadgeClass() string {
+	if n.TreeHasFailures() {
+		return "badge-fail"
+	}
+	return "badge-pass"
+}
+
+// TreeBadgeText returns the badge text for this container node.
+func (n *TreeNode) TreeBadgeText() string {
+	p, f, s := n.TreeCounts()
+	total := p + f + s
+	if f > 0 {
+		return fmt.Sprintf("%d/%d failed", f, total)
+	}
+	if s > 0 {
+		return fmt.Sprintf("%d/%d passed, %d skipped", p, total, s)
+	}
+	return fmt.Sprintf("%d/%d passed", p, total)
+}
+
+// ginkgoJSONSpec is a single spec entry in ginkgo-report.json.
+type ginkgoJSONSpec struct {
+	Containers []string `json:"containers"`
+	Name       string   `json:"name"`
+	State      string   `json:"state"`
+	DurationMs float64  `json:"duration_ms"`
+}
+
+// parseGinkgoTreeJSON reads a ginkgo-report.json file and returns both a flat
+// list of TestResult (for summary counting) and a TreeNode hierarchy for
+// rendering.
+func parseGinkgoTreeJSON(path string) ([]TestResult, *TreeNode, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var specs []ginkgoJSONSpec
+	if err := json.Unmarshal(data, &specs); err != nil {
+		return nil, nil, fmt.Errorf("parsing ginkgo JSON: %w", err)
+	}
+
+	if len(specs) == 0 {
+		return nil, nil, nil
+	}
+
+	root := &TreeNode{Name: "root"}
+	var results []TestResult
+
+	for _, spec := range specs {
+		status := StatusPass
+		switch spec.State {
+		case "failed", "panicked", "interrupted", "aborted":
+			status = StatusFail
+		case "skipped", "pending":
+			status = StatusSkip
+		}
+
+		tr := TestResult{
+			Name:     spec.Name,
+			Status:   status,
+			Duration: time.Duration(spec.DurationMs * float64(time.Millisecond)),
+		}
+		results = append(results, tr)
+
+		// Build/find the path in the tree.
+		node := root
+		for _, container := range spec.Containers {
+			found := false
+			for _, child := range node.Children {
+				if child.Name == container && child.Leaf == nil {
+					node = child
+					found = true
+					break
+				}
+			}
+			if !found {
+				child := &TreeNode{Name: container}
+				node.Children = append(node.Children, child)
+				node = child
+			}
+		}
+
+		// Add the leaf spec.
+		leaf := &TreeNode{
+			Name: spec.Name,
+			Leaf: &tr,
+		}
+		node.Children = append(node.Children, leaf)
+	}
+
+	return results, root, nil
+}
+
 // ---- BEP JSON types (subset we care about) ----
 
 type bepEvent struct {
@@ -129,6 +267,7 @@ type TargetResult struct {
 	Target    string // Bazel label, e.g. "//pkg/foo:foo_test"
 	Tests     []TestResult
 	SuiteTime time.Duration
+	Tree      *TreeNode // non-nil for Ginkgo targets with hierarchical specs
 }
 
 func (t *TargetResult) Passed() int {
@@ -297,13 +436,15 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		}
 
 		if info.xmlPath != "" {
-			// Check for Ginkgo's per-spec JUnit report alongside the standard test.xml.
-			// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.xml which
+			// Check for Ginkgo's tree-structured JSON report alongside the standard test.xml.
+			// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.json which
 			// Bazel collects into test.outputs/ next to test.xml. This has individual spec
-			// names and durations — the standard test.xml only sees the bootstrap function.
-			ginkgoPath := filepath.Join(filepath.Dir(info.xmlPath), "test.outputs", "ginkgo-report.xml")
-			if ginkgoCases, err := parseJUnitXML(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
+			// names, durations, and Describe/Context hierarchy — the standard test.xml only
+			// sees the bootstrap function.
+			ginkgoPath := filepath.Join(filepath.Dir(info.xmlPath), "test.outputs", "ginkgo-report.json")
+			if ginkgoCases, tree, err := parseGinkgoTreeJSON(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
 				tr.Tests = ginkgoCases
+				tr.Tree = tree
 			} else {
 				cases, err := parseJUnitXML(info.xmlPath)
 				if err != nil {
@@ -564,6 +705,40 @@ tr:hover td { background: #f8f9ff; }
 .icon.fail { color: #e74c3c; }
 .icon.skip { color: #f39c12; }
 
+/* Tree styles for Ginkgo hierarchical specs */
+.tree-container { padding: 8px 0; }
+.tree-node { padding-left: 20px; }
+.tree-node details {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  border-left: 2px solid #dde1ec;
+  margin: 2px 0;
+}
+.tree-node details.has-fail { border-left: 2px solid #e74c3c; }
+.tree-node details.has-pass { border-left: 2px solid #27ae60; }
+.tree-node summary { padding: 6px 12px; }
+.tree-node .container-name {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: #2c3e50;
+  flex: 1;
+}
+.tree-leaf {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  gap: 8px;
+  border-bottom: 1px solid #f0f1f7;
+}
+.tree-leaf:last-child { border-bottom: none; }
+.tree-leaf.row-fail { background: #fff8f8; }
+.tree-leaf.row-skip { background: #fffdf5; color: #7f8c8d; }
+.tree-leaf .col-name { flex: 1; }
+.tree-leaf .col-status { width: 40px; text-align: center; flex-shrink: 0; }
+.tree-leaf .col-duration { width: 80px; text-align: right; flex-shrink: 0; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 12px; color: #7f8c8d; }
+
 footer {
   padding: 20px 32px;
   text-align: center;
@@ -600,7 +775,13 @@ footer {
     <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
     <span class="chevron">&#9654;</span>
   </summary>
-  {{if .Tests}}
+  {{- if .Tree}}
+  <div class="tree-container">
+    {{- range .Tree.Children}}
+    {{template "treenode" .}}
+    {{- end}}
+  </div>
+  {{- else if .Tests}}
   <table>
     <thead>
       <tr><th>Test</th><th style="text-align:center">Status</th><th style="text-align:right">Duration</th></tr>
@@ -615,7 +796,7 @@ footer {
     {{- end}}
     </tbody>
   </table>
-  {{end}}
+  {{- end}}
 </details>
 {{- end}}
 </div>
@@ -624,6 +805,29 @@ footer {
 
 </body>
 </html>
+
+{{define "treenode"}}
+{{- if .Leaf}}
+<div class="tree-leaf {{.Leaf.RowClass}}">
+  <span class="col-name">{{.Leaf.Name}}</span>
+  <span class="col-status">{{.Leaf.StatusIcon}}</span>
+  <span class="col-duration">{{.Leaf.DurationStr}}</span>
+</div>
+{{- else}}
+<div class="tree-node">
+  <details {{if .TreeHasFailures}}class="has-fail" open{{else}}class="has-pass"{{end}}>
+    <summary>
+      <span class="container-name">{{.Name}}</span>
+      <span class="badge {{.TreeBadgeClass}}">{{.TreeBadgeText}}</span>
+      <span class="chevron">&#9654;</span>
+    </summary>
+    {{- range .Children}}
+    {{template "treenode" .}}
+    {{- end}}
+  </details>
+</div>
+{{- end}}
+{{end}}
 `
 
 // ---- main ----
