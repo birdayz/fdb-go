@@ -252,7 +252,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 }
 ```
 
-**`commitDummyTransaction` deliberately skipped.** C++ uses it to confirm whether the original committed before throwing `commit_unknown_result`. We skip it because `OnError`'s self-conflicting mechanism (`makeSelfConflicting` equivalent — copy write conflicts to read conflicts) provides the same safety: if the original committed, the retry conflicts. This is a deliberate simplification. The self-conflicting mechanism is the actual safety net in both C++ and Go.
+**`commitDummyTransaction` now implemented (nightshift-9).** Runs a synchronization barrier after `commit_unknown_result`: creates a dummy transaction with conflict ranges overlapping the original, commits it. When the dummy succeeds, the original is no longer in-flight. This is defense-in-depth on top of `OnError`'s self-conflicting mechanism (copy write→read conflicts). Both mechanisms together match C++ exactly.
 
 **Commit timeout → `commit_unknown_result`**: If the commit proxy is slow (not dead), the timeout fires. The server may still commit. Treating this as `commit_unknown_result` is correct and matches C++ behavior (timeouts in Flow produce `timed_out` which is handled similarly to `broken_promise` in the commit path).
 
@@ -432,7 +432,7 @@ func (db *database) getCommitProxies() []ProxyInfo {
 | # | C++ feature | Go approach | Rationale | Phase |
 |---|---|---|---|---|
 | 1 | `basicLoadBalance` blocks via `quorum(ok,1)` when all proxies down | Return `ErrAllProxiesUnreachable`, let `Transact` retry | Go can't block goroutine indefinitely; topology kick + Transact retry achieves same result | 1 |
-| 2 | `commitDummyTransaction` confirms original before retrying | Skip; self-conflicting in OnError is the safety net | Both C++ and Go rely on self-conflicting as the actual mechanism; dummy tx is defense-in-depth | 1 |
+| 2 | `commitDummyTransaction` confirms original before retrying | Implemented: dummy transaction sync barrier in commit path | Matches C++; defense-in-depth on top of self-conflicting | 0 |
 | 3 | `loadBalance` speculative second request after ~0.5ms | Sequential replica iteration | p99 optimization, not correctness | 2 |
 | 4 | `allAlternativesFailedDelay` (50ms-1s) for storage reads | Immediate retry via `Transact` | Graceful rolling restart optimization | 2 |
 | 5 | `connectionMonitor` outbound PING | No outbound PING; dead conns detected on next RPC | Detection latency 5s vs 2s | 2 |
@@ -519,7 +519,7 @@ func (db *database) getCommitProxies() []ProxyInfo {
 |---|---|---|
 | C1 | "All proxies unreachable" must be retryable, not fatal | `ErrAllProxiesUnreachable` (1200) added to OnError retryable set |
 | C2 | `not_committed` wrong for conn errors — server-side conflict only | All commit conn errors → `commit_unknown_result` (no `not_committed` for conn) |
-| C3 | `commitDummyTransaction` skipped | Documented as deliberate divergence; self-conflicting is the safety net |
+| C3 | `commitDummyTransaction` | Implemented in nightshift-9; matches C++ behavior |
 | C4 | "All servers unreachable" must be `*wire.FDBError` not `fmt.Errorf` | `ErrAllAlternativesFailed` (1006) as typed FDB error |
 | C5 | TCP socket fd leak if readLoop exits without `Close()` | `readLoop` defers `c.conn.Close()` |
 | H1 | Per-replica 5s timeout too long | Phase 2: shorter timeout + speculative second |
