@@ -367,12 +367,21 @@ func (c *rywCache) isCleared(key []byte) bool {
 }
 
 func (c *rywCache) isClearedLocked(key []byte) bool {
-	for _, r := range c.cleared {
-		if bytes.Compare(key, r.begin) >= 0 && bytes.Compare(key, r.end) < 0 {
-			return true
-		}
+	// Binary search: cleared is sorted by begin, non-overlapping.
+	// Find the last range whose begin <= key, then check key < end.
+	n := len(c.cleared)
+	if n == 0 {
+		return false
 	}
-	return false
+	i := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, key) > 0
+	})
+	// i is the first range with begin > key. Check i-1.
+	if i == 0 {
+		return false
+	}
+	r := c.cleared[i-1]
+	return bytes.Compare(key, r.end) < 0
 }
 
 func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
@@ -386,11 +395,22 @@ func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
 }
 
 func (c *rywCache) hasClearsInRangeLocked(begin, end []byte) bool {
-	for _, r := range c.cleared {
-		// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
-		if bytes.Compare(r.begin, end) < 0 && bytes.Compare(begin, r.end) < 0 {
-			return true
-		}
+	// Binary search: find the last cleared range that could overlap [begin, end).
+	// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
+	// Cleared ranges are sorted by begin and non-overlapping.
+	n := len(c.cleared)
+	if n == 0 {
+		return false
+	}
+	// Find the first range with begin >= end (definitely can't overlap).
+	i := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, end) >= 0
+	})
+	// The candidate is the range just before i (largest begin < end).
+	// Since ranges are non-overlapping and sorted, if this one doesn't
+	// overlap, no earlier range can either (their end <= this one's begin).
+	if i > 0 && bytes.Compare(c.cleared[i-1].end, begin) > 0 {
+		return true
 	}
 	return false
 }
