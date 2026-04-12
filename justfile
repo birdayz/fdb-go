@@ -126,11 +126,8 @@ binding-stress-directory runs="50" ops="500":
 # Generate HTML test report from the latest bazel test run.
 # Run `just test` first to produce test.log files with -test.v.
 report:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    TESTLOGS=$(readlink -f bazel-testlogs)
-    bazelisk run //cmd/test-report -- "$TESTLOGS" 2>/dev/null > test-report.html
-    echo "Report: test-report.html ($(wc -c < test-report.html) bytes)"
+    bazelisk run //cmd/test-report -- bazel-testlogs > test-report.html
+    @echo "Report: test-report.html"
 
 # Run tests with coverage
 coverage:

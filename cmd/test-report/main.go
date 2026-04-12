@@ -195,6 +195,7 @@ func parseTestLog(path string, rootDir string) (*TargetResult, error) {
 	}
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1MB max line — FDB test logs can have large stack traces
 	lineNum := 0
 	isGinkgo := false
 	hasSuiteSummary := false
@@ -346,6 +347,7 @@ func parseTestLog(path string, rootDir string) (*TargetResult, error) {
 // lastMeaningfulLine returns the last non-empty, non-whitespace line from f.
 func lastMeaningfulLine(f *os.File) string {
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1MB max line — FDB test logs can have large stack traces
 	last := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(stripANSI(scanner.Text()))
@@ -658,11 +660,7 @@ func run() error {
 	}
 
 	if _, err := os.Stat(rootDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "test-report: directory %q not found\n\n", rootDir)
-		fmt.Fprintf(os.Stderr, "Usage: test-report [dir]\n")
-		fmt.Fprintf(os.Stderr, "  dir defaults to bazel-testlogs/ in the current directory\n")
-		fmt.Fprintf(os.Stderr, "  Run 'bazelisk test //...' first to populate test logs.\n")
-		os.Exit(1)
+		return fmt.Errorf("directory %q not found — run 'bazelisk test //...' first to populate test logs", rootDir)
 	}
 
 	// Resolve symlinks so walk() and parseTestLog() operate on consistent paths.
