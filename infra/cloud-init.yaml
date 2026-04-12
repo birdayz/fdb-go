@@ -31,6 +31,10 @@ runcmd:
   # Just (task runner, pinned)
   - curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin --tag 1.48.1
 
+  # MinIO client (for uploading test reports to Hetzner Object Storage)
+  - curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+  - chmod +x /usr/local/bin/mc
+
   # Runner user
   - useradd -m -s /bin/bash runner
   - usermod -aG docker runner
