@@ -2240,7 +2240,8 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [ ] **Version vector support** — causal consistency optimization.
 - [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
 - [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
-- [x] **Tag throttling** — tag throttle duration tracking from GRV reply. `parseTagThrottleInfo` deserializes wire format, `tagThrottleState` stores per-priority tag throttle data, `nextBackoff` uses server-supplied duration for `tag_throttled` (1213) errors. Simplified vs C++ (no Smoother). Done swingshift-7.
+- [x] **Tag throttling** — tag throttle duration tracking from GRV reply. `parseTagThrottleInfo` deserializes wire format, `tagThrottleState` stores per-priority tag throttle data, `nextBackoff` uses server-supplied duration for `tag_throttled` (1213) errors. Done swingshift-7. Fixed swingshift-8: `throttleDuration` now returns `1/tpsRate` (one TPS slot) instead of full remaining time (was 500x over-throttle at 100 TPS).
+- [x] **Mid-commit proxy change detection** — `waitReplyOrProxiesChanged` monitors proxy topology broadcast channel during commit reply wait. If proxies change mid-commit, returns `commit_unknown_result` immediately instead of waiting for RPC timeout. Matches C++ `onProxiesChanged`. Done swingshift-8.
 - [ ] **LOW — `proxyTagThrottledDuration` send path** — accumulated per-transaction but not yet sent back to proxy in GRV request metadata (C++ sends it so the proxy can adjust throttle decisions). Not a correctness issue — only affects throttle tuning accuracy.
 
 ### Phase 3
