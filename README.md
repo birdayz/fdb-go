@@ -24,6 +24,31 @@ The Record Layer gives you structured records, secondary indexes, and transactio
 schema evolution on top of FoundationDB's ordered key-value store. This port brings
 that to Go without sacrificing interoperability with existing Java deployments.
 
+## Performance
+
+Includes a **pure Go FDB client** that speaks the FDB wire protocol directly — no CGo, no C library dependency.
+
+Both clients run in the same process against the same FDB testcontainer, same keys. [`TestBenchmarkSanity`](pkg/fdbgo/bench/bench_test.go) verifies byte-identical results.
+
+| Benchmark | fdb-go | Apple CGo | Diff |
+|---|---:|---:|---|
+| Get (100 B) | 60 us | 218 us | **3.6x** |
+| Get (1 KB) | 61 us | 209 us | **3.4x** |
+| Get (10 KB) | 69 us | 217 us | **3.1x** |
+| GetRange (100 keys) | 92 us | 363 us | **3.9x** |
+| Sustained read throughput | 430 MB/s | 191 MB/s | **2.3x** |
+| Set + Commit | 1,008 us | 1,005 us | 1.0x |
+
+With simulated network latency ([tc netem](pkg/fdbgo/bench/bench_test.go)):
+
+| RTT | fdb-go | Apple CGo | Diff |
+|---|---:|---:|---|
+| 2 ms | 1,080 us | 2,726 us | **2.5x** |
+| 10 ms | 5,254 us | 12,635 us | **2.4x** |
+| 1,000 ms | 1,005 ms | 1,006 ms | 1.0x |
+
+Reads 2-4x faster on localhost, **still 2.4x at 10 ms RTT**, converges to parity at extreme latency. Writes at parity. See [`PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
+
 ## Usage
 
 ```go

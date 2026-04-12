@@ -111,10 +111,13 @@ type database struct {
 
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
-	dbInfo     atomic.Pointer[DBInfo]
-	proxiesGen atomic.Uint64
+	dbInfo atomic.Pointer[DBInfo]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send
+	// Broadcast: closed when proxy list changes, then replaced with a fresh channel.
+	// Commit monitors this to detect mid-commit proxy changes (C++ onProxiesChanged).
+	proxiesChangedMu sync.Mutex
+	proxiesChanged   chan struct{}
 
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
 	connMu   sync.RWMutex
@@ -315,10 +318,12 @@ func (db *database) bootstrap(ctx context.Context) error {
 			return nil
 		}
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("failed to connect to any coordinator: %w", err)
-		case <-time.After(backoff):
+		case <-timer.C:
 			if backoff < BootstrapMaxBackoff {
 				backoff *= 2
 			}
@@ -398,15 +403,16 @@ func OpenDatabase(ctx context.Context, clusterFilePath string) (*Database, error
 func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) (*Database, error) {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	db := &database{
-		clusterFile:  cf,
-		dialFn:       dialFn,
-		connPool:     make(map[string]*transport.Conn),
-		topologyKick: make(chan struct{}, 1),
-		connected:    make(chan struct{}),
-		ctx:          bgCtx,
-		cancel:       cancel,
-		failMon:      newFailureMonitor(),
-		queueModel:   newQueueModel(),
+		clusterFile:    cf,
+		dialFn:         dialFn,
+		connPool:       make(map[string]*transport.Conn),
+		topologyKick:   make(chan struct{}, 1),
+		proxiesChanged: make(chan struct{}),
+		connected:      make(chan struct{}),
+		ctx:            bgCtx,
+		cancel:         cancel,
+		failMon:        newFailureMonitor(),
+		queueModel:     newQueueModel(),
 		locCache: locationCache{
 			maxSize: 600_000,
 		},

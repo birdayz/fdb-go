@@ -239,32 +239,7 @@ func (b *grvBatcher) flush(db *database) {
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
-		// Update cache with fresh version.
-		db.grvCache.update(requestTime, version)
-		db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
-		// Track minimum version for client-side validateVersion().
-		updateMinAcceptable(&db.minAcceptableReadVersion, version)
-
-		// Track ratekeeper throttle state.
-		if rkDefault {
-			db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
-		}
-		if rkBatch {
-			db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
-		}
-
-		// Update tag throttle state from GRV reply.
-		// C++ NativeAPI.actor.cpp: updateCachedReadVersionShared() merges tagThrottleInfo.
-		if len(tagThrottleInfoBytes) > 0 {
-			parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
-			if parsed != nil {
-				// Collect all tags from pending requests in this batch.
-				// The batcher doesn't have per-request tags, so we update
-				// the database-level state which transactions query later.
-				priority := grvPriorityToPriority(b.priority)
-				db.tagThrottles.replace(priority, parsed)
-			}
-		}
+		b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 	}
 
 	// Adaptive batch window.
@@ -309,26 +284,36 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
 				refreshCancel()
 				if err == nil {
-					db.grvCache.update(requestTime, version)
-					db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
-					if rkDefault {
-						db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
-					}
-					if rkBatch {
-						db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
-					}
-					// Update tag throttle state from background refresh too.
-					if len(tagThrottleInfoBytes) > 0 {
-						parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
-						if parsed != nil {
-							priority := grvPriorityToPriority(b.priority)
-							db.tagThrottles.replace(priority, parsed)
-						}
-					}
+					b.applyGRVReply(db, requestTime, version, rkDefault, rkBatch, tagThrottleInfoBytes)
 				}
 			}
 		case <-db.ctx.Done():
 			return
+		}
+	}
+}
+
+// applyGRVReply updates all database state from a successful GRV response:
+// version cache, proxy contact time, minAcceptableReadVersion, ratekeeper
+// throttle state, and tag throttle info.
+// Called from both flush() (batched request) and backgroundRefresher().
+func (b *grvBatcher) applyGRVReply(db *database, requestTime time.Time, version int64, rkDefault, rkBatch bool, tagThrottleInfoBytes []byte) {
+	db.grvCache.update(requestTime, version)
+	db.grvCache.lastProxyContact.Store(time.Now().UnixNano())
+	updateMinAcceptable(&db.minAcceptableReadVersion, version)
+
+	if rkDefault {
+		db.grvCache.lastRkDefault.Store(time.Now().UnixNano())
+	}
+	if rkBatch {
+		db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
+	}
+
+	if len(tagThrottleInfoBytes) > 0 {
+		parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
+		if parsed != nil {
+			priority := grvPriorityToPriority(b.priority)
+			db.tagThrottles.replace(priority, parsed)
 		}
 	}
 }

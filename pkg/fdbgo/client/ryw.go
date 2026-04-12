@@ -21,6 +21,11 @@ type rywCache struct {
 	// entry.value == nil means the key was Set to empty bytes, NOT cleared.
 	writes map[string]rywEntry
 
+	// sortedKeys is a lazily-maintained sorted copy of write map keys.
+	// Set to nil when writes changes (dirty). Rebuilt on demand for getRange
+	// to enable O(log N) binary search instead of O(N) linear scan.
+	sortedKeys []string
+
 	// cleared is a sorted, non-overlapping list of [begin, end) byte ranges
 	// that were ClearRange'd.
 	cleared []rywRange
@@ -51,7 +56,25 @@ func (c *rywCache) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.writes = nil
+	c.sortedKeys = nil
 	c.cleared = nil
+}
+
+// ensureSortedLocked rebuilds sortedKeys from the writes map if dirty (nil).
+// Must be called under c.mu.
+func (c *rywCache) ensureSortedLocked() {
+	if c.sortedKeys != nil {
+		return
+	}
+	if len(c.writes) == 0 {
+		c.sortedKeys = []string{}
+		return
+	}
+	c.sortedKeys = make([]string, 0, len(c.writes))
+	for k := range c.writes {
+		c.sortedKeys = append(c.sortedKeys, k)
+	}
+	sort.Strings(c.sortedKeys)
 }
 
 // set records a Set operation.
@@ -67,6 +90,7 @@ func (c *rywCache) set(key, value []byte) {
 	copied := make([]byte, len(value))
 	copy(copied, value)
 	c.writes[string(key)] = rywEntry{value: copied}
+	c.sortedKeys = nil // invalidate sorted index
 	// A Set after ClearRange wins — no need to remove from cleared, because
 	// get() checks writes before cleared.
 }
@@ -76,7 +100,10 @@ func (c *rywCache) clear(key []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Remove from writes.
-	delete(c.writes, string(key))
+	if _, existed := c.writes[string(key)]; existed {
+		delete(c.writes, string(key))
+		c.sortedKeys = nil // invalidate sorted index
+	}
 	// Add [key, key+\x00) to cleared.
 	end := make([]byte, len(key)+1)
 	copy(end, key)
@@ -88,11 +115,16 @@ func (c *rywCache) clear(key []byte) {
 func (c *rywCache) clearRange(begin, end []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Remove all writes in [begin, end).
-	for k := range c.writes {
-		kb := []byte(k)
-		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
-			delete(c.writes, k)
+	// Remove all writes in [begin, end) using sorted keys for O(log N + k).
+	if len(c.writes) > 0 {
+		c.ensureSortedLocked()
+		wStart := sort.SearchStrings(c.sortedKeys, string(begin))
+		wEnd := sort.SearchStrings(c.sortedKeys, string(end))
+		if wStart < wEnd {
+			for i := wStart; i < wEnd; i++ {
+				delete(c.writes, c.sortedKeys[i])
+			}
+			c.sortedKeys = nil // invalidate sorted index
 		}
 	}
 	c.addClearedRangeLocked(begin, end)
@@ -112,6 +144,7 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 		val, clr := applyAtomic(op, entry.value, param)
 		if clr {
 			delete(c.writes, k)
+			c.sortedKeys = nil // key removed, invalidate sorted index
 			c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
 		} else {
 			entry.value = val
@@ -124,6 +157,7 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 		val, clr := applyAtomic(op, nil, param)
 		if !clr {
 			c.writes[k] = rywEntry{value: val}
+			c.sortedKeys = nil // new key added, invalidate sorted index
 		}
 		// If clr, key stays cleared — no action needed.
 		return
@@ -131,6 +165,9 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	// Either no entry (unknown base, server-dependent) or already an atomics list — append.
 	entry.hasAtomics = true
 	entry.atomics = append(entry.atomics, rywMutation{typ: op, param: append([]byte(nil), param...)})
+	if !exists {
+		c.sortedKeys = nil // new key added, invalidate sorted index
+	}
 	c.writes[k] = entry
 }
 
@@ -163,6 +200,7 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 			}
 			if cleared {
 				delete(c.writes, k)
+				c.sortedKeys = nil // key removed, invalidate sorted index
 				c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
 				c.mu.Unlock()
 				return nil, nil
@@ -277,6 +315,9 @@ func (c *rywCache) getRange(
 // mergeBatch merges a batch of server results with local writes and clears.
 // boundary is the knowledge boundary (last fetched key); nil means the entire
 // range is known. Returns sorted key-value pairs.
+//
+// Uses sorted write keys + two-pointer merge for O(k + S) instead of the
+// previous O(W + S log S) where W = total writes, k = writes in range, S = server results.
 func (c *rywCache) mergeBatch(
 	serverKVs []KeyValue,
 	rangeBegin, rangeEnd []byte,
@@ -286,35 +327,69 @@ func (c *rywCache) mergeBatch(
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Build map from server results, filtering out cleared keys.
-	merged := make(map[string][]byte, len(serverKVs))
+	c.ensureSortedLocked()
+
+	// Phase 1: Filter server results — remove cleared keys.
+	// Server results are already sorted in scan direction.
+	filteredServer := make([]KeyValue, 0, len(serverKVs))
+	// Build server key lookup only if needed for atomic resolution.
+	// Most Record Layer transactions have no atomics — skip the map allocation.
+	var serverValues map[string][]byte
 	for _, kv := range serverKVs {
 		if !c.isClearedLocked(kv.Key) {
-			merged[string(kv.Key)] = kv.Value
+			filteredServer = append(filteredServer, kv)
 		}
 	}
 
-	// Add local writes within the known range.
-	for k, entry := range c.writes {
-		kb := []byte(k)
-		if bytes.Compare(kb, rangeBegin) < 0 || bytes.Compare(kb, rangeEnd) >= 0 {
-			continue // outside requested range
-		}
-		// When server had more data, restrict writes to the fetched boundary.
-		if boundary != nil {
-			if reverse {
-				if bytes.Compare(kb, boundary) < 0 {
-					continue
-				}
-			} else {
-				if bytes.Compare(kb, boundary) > 0 {
-					continue
-				}
+	// atomicCleared tracks keys where atomic resolution resulted in deletion.
+	// These must be excluded from filteredServer during the merge phase,
+	// because the atomic was resolved AFTER building filteredServer.
+	var atomicCleared map[string]bool
+
+	// Phase 2: Find write keys in the effective range using binary search.
+	// For forward scans: include writes in [rangeBegin, boundary] (inclusive).
+	// For reverse scans: include writes in [boundary, rangeEnd) (inclusive begin).
+	effectiveBegin := string(rangeBegin)
+	effectiveEnd := string(rangeEnd)
+
+	if boundary != nil {
+		if reverse {
+			// Include writes >= boundary.
+			if string(boundary) > effectiveBegin {
+				effectiveBegin = string(boundary)
+			}
+		} else {
+			// Include writes <= boundary. Use boundary+"\x00" as exclusive end
+			// so sort.SearchStrings returns an index that includes boundary itself
+			// (the boundary key is the last fetched server key — safe to include).
+			boundaryAfter := string(append(append([]byte(nil), boundary...), 0))
+			if boundaryAfter < effectiveEnd {
+				effectiveEnd = boundaryAfter
 			}
 		}
+	}
+
+	wStart := sort.SearchStrings(c.sortedKeys, effectiveBegin)
+	wEnd := sort.SearchStrings(c.sortedKeys, effectiveEnd)
+
+	// Process writes in range: resolve atomics, collect into sorted slice.
+	writeKVs := make([]KeyValue, 0, wEnd-wStart)
+	for i := wStart; i < wEnd; i++ {
+		k := c.sortedKeys[i]
+		entry, exists := c.writes[k]
+		if !exists {
+			continue // phantom key (deleted by prior atomic caching)
+		}
 		if entry.hasAtomics {
+			// Lazily build server values map on first atomic encounter.
+			if serverValues == nil {
+				serverValues = make(map[string][]byte, len(serverKVs))
+				for _, kv := range serverKVs {
+					serverValues[string(kv.Key)] = kv.Value
+				}
+			}
 			// Resolve atomics against server base.
-			base := merged[k]
+			base := serverValues[k]
 			cleared := false
 			for _, m := range entry.atomics {
 				base, cleared = applyAtomic(m.typ, base, m.param)
@@ -322,40 +397,79 @@ func (c *rywCache) mergeBatch(
 					base = nil
 				}
 			}
-			if cleared {
-				delete(merged, k)
-			} else {
-				merged[k] = base
-			}
 			// Cache resolved value.
-			if c.writes == nil {
-				c.writes = make(map[string]rywEntry)
-			}
 			if cleared {
 				delete(c.writes, k)
 				c.addClearedRangeLocked([]byte(k), append([]byte(k), 0))
+				// Track for merge phase: this key must also be excluded
+				// from filteredServer (it was built before atomic resolution).
+				if atomicCleared == nil {
+					atomicCleared = make(map[string]bool)
+				}
+				atomicCleared[k] = true
+				// Note: sortedKeys is intentionally NOT invalidated here.
+				// We're mid-iteration over sortedKeys; the deleted key leaves
+				// a phantom that's handled by the `if !exists { continue }`
+				// guard at the top of this loop. Future mergeBatch calls
+				// will rebuild sortedKeys via ensureSortedLocked if needed.
 			} else {
 				c.writes[k] = rywEntry{value: base}
+				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})
 			}
 		} else if entry.value != nil {
-			merged[k] = entry.value
+			writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: entry.value})
+		}
+	}
+	// writeKVs is sorted ascending (from sortedKeys iteration).
+
+	// Phase 3: Two-pointer merge.
+	// filteredServer: sorted in scan direction (forward=ascending, reverse=descending).
+	// writeKVs: sorted ascending. Reverse it for reverse scans.
+	if reverse {
+		for i, j := 0, len(writeKVs)-1; i < j; i, j = i+1, j-1 {
+			writeKVs[i], writeKVs[j] = writeKVs[j], writeKVs[i]
 		}
 	}
 
-	// Collect and sort.
-	result := make([]KeyValue, 0, len(merged))
-	for k, v := range merged {
-		result = append(result, KeyValue{Key: []byte(k), Value: v})
+	result := make([]KeyValue, 0, len(filteredServer)+len(writeKVs))
+	si, wi := 0, 0
+
+	for si < len(filteredServer) || wi < len(writeKVs) {
+		if si >= len(filteredServer) {
+			result = append(result, writeKVs[wi:]...)
+			break
+		}
+		if wi >= len(writeKVs) {
+			// Append remaining server entries, skipping any cleared by atomics.
+			for ; si < len(filteredServer); si++ {
+				if !atomicCleared[string(filteredServer[si].Key)] {
+					result = append(result, filteredServer[si])
+				}
+			}
+			break
+		}
+
+		// Skip server entries cleared by atomic resolution.
+		if atomicCleared[string(filteredServer[si].Key)] {
+			si++
+			continue
+		}
+
+		cmp := bytes.Compare(filteredServer[si].Key, writeKVs[wi].Key)
+		if cmp == 0 {
+			// Write shadows server — take write value, skip server.
+			result = append(result, writeKVs[wi])
+			si++
+			wi++
+		} else if (reverse && cmp > 0) || (!reverse && cmp < 0) {
+			result = append(result, filteredServer[si])
+			si++
+		} else {
+			result = append(result, writeKVs[wi])
+			wi++
+		}
 	}
-	if reverse {
-		sort.Slice(result, func(i, j int) bool {
-			return bytes.Compare(result[i].Key, result[j].Key) > 0
-		})
-	} else {
-		sort.Slice(result, func(i, j int) bool {
-			return bytes.Compare(result[i].Key, result[j].Key) < 0
-		})
-	}
+
 	return result
 }
 
@@ -385,13 +499,14 @@ func (c *rywCache) isClearedLocked(key []byte) bool {
 }
 
 func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
-	for k := range c.writes {
-		kb := []byte(k)
-		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
-			return true
-		}
+	c.ensureSortedLocked()
+	if len(c.sortedKeys) == 0 {
+		return false
 	}
-	return false
+	// Binary search: find the first key >= begin.
+	i := sort.SearchStrings(c.sortedKeys, string(begin))
+	// If that key is < end, there's a write in range.
+	return i < len(c.sortedKeys) && c.sortedKeys[i] < string(end)
 }
 
 func (c *rywCache) hasClearsInRangeLocked(begin, end []byte) bool {
@@ -424,32 +539,60 @@ func (c *rywCache) addClearedRange(begin, end []byte) {
 }
 
 func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
-	newRange := rywRange{
-		begin: append([]byte(nil), begin...),
-		end:   append([]byte(nil), end...),
+	n := len(c.cleared)
+	if n == 0 {
+		c.cleared = []rywRange{{
+			begin: append([]byte(nil), begin...),
+			end:   append([]byte(nil), end...),
+		}}
+		return
 	}
 
-	// Find all existing ranges that overlap or are adjacent to [begin, end).
-	var merged []rywRange
-	for _, r := range c.cleared {
-		// r overlaps/adjacent if r.begin <= end && begin <= r.end
-		if bytes.Compare(r.begin, end) <= 0 && bytes.Compare(begin, r.end) <= 0 {
-			// Merge: extend newRange.
-			if bytes.Compare(r.begin, newRange.begin) < 0 {
-				newRange.begin = r.begin
-			}
-			if bytes.Compare(r.end, newRange.end) > 0 {
-				newRange.end = r.end
-			}
-		} else {
-			merged = append(merged, r)
+	// Binary search to find the overlap window.
+	// Ranges are sorted by begin, non-overlapping.
+	// A range r overlaps/is-adjacent to [begin, end) if r.begin <= end && begin <= r.end.
+
+	// First overlapping range: last range with begin <= end.
+	// We find the first range with begin > end, then look back.
+	hiIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, end) > 0
+	})
+	// Last overlapping range: first range with end >= begin.
+	// We find the first range whose end > begin, starting from 0.
+	// Since ranges are sorted and non-overlapping, end values are also sorted.
+	loIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].end, begin) >= 0
+	})
+
+	// [loIdx, hiIdx) are the ranges that overlap or are adjacent.
+	newBegin := append([]byte(nil), begin...)
+	newEnd := append([]byte(nil), end...)
+
+	for i := loIdx; i < hiIdx; i++ {
+		if bytes.Compare(c.cleared[i].begin, newBegin) < 0 {
+			newBegin = c.cleared[i].begin
+		}
+		if bytes.Compare(c.cleared[i].end, newEnd) > 0 {
+			newEnd = c.cleared[i].end
 		}
 	}
-	merged = append(merged, newRange)
-	sort.Slice(merged, func(i, j int) bool {
-		return bytes.Compare(merged[i].begin, merged[j].begin) < 0
-	})
-	c.cleared = merged
+
+	// Replace [loIdx, hiIdx) with the merged range.
+	merged := rywRange{begin: newBegin, end: newEnd}
+	overlapCount := hiIdx - loIdx
+	if overlapCount == 0 {
+		// No overlaps — insert at loIdx.
+		c.cleared = append(c.cleared, rywRange{})
+		copy(c.cleared[loIdx+1:], c.cleared[loIdx:])
+		c.cleared[loIdx] = merged
+	} else if overlapCount == 1 {
+		// Replace single overlapping range in-place.
+		c.cleared[loIdx] = merged
+	} else {
+		// Replace multiple overlapping ranges with one.
+		c.cleared[loIdx] = merged
+		c.cleared = append(c.cleared[:loIdx+1], c.cleared[hiIdx:]...)
+	}
 }
 
 // applyAtomic applies an atomic mutation to a base value, mirroring the C++

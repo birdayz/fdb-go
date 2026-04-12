@@ -60,9 +60,23 @@ func (db *database) refreshTopology() {
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return // no change
 	}
-	// ORDER MATTERS: bump generation BEFORE swapping dbInfo.
-	db.proxiesGen.Add(1)
 	db.dbInfo.Store(newInfo)
+
+	// Broadcast proxy change to in-flight commits. Close the old channel
+	// to wake all waiters, create a fresh one for the next change.
+	db.proxiesChangedMu.Lock()
+	close(db.proxiesChanged)
+	db.proxiesChanged = make(chan struct{})
+	db.proxiesChangedMu.Unlock()
+}
+
+// waitProxiesChanged returns a channel that is closed when the proxy list
+// changes. Each change creates a fresh channel. Used by commit to detect
+// mid-commit proxy changes (C++ onProxiesChanged).
+func (db *database) waitProxiesChanged() <-chan struct{} {
+	db.proxiesChangedMu.Lock()
+	defer db.proxiesChangedMu.Unlock()
+	return db.proxiesChanged
 }
 
 // handleConnError evicts a dead connection from the pool and marks the

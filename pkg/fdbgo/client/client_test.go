@@ -356,17 +356,53 @@ func TestReadOnlyCommit(t *testing.T) {
 	}
 }
 
+// TestProxiesChangedBroadcast verifies the close-and-replace broadcast
+// pattern used for mid-commit proxy change detection.
+func TestProxiesChangedBroadcast(t *testing.T) {
+	t.Parallel()
+	db := &database{
+		proxiesChanged: make(chan struct{}),
+	}
+
+	// Capture channel before signal.
+	ch1 := db.waitProxiesChanged()
+
+	// Signal proxy change.
+	db.proxiesChangedMu.Lock()
+	close(db.proxiesChanged)
+	db.proxiesChanged = make(chan struct{})
+	db.proxiesChangedMu.Unlock()
+
+	// ch1 should be closed (readable without blocking).
+	select {
+	case <-ch1:
+		// good — signal received
+	default:
+		t.Fatal("proxiesChanged channel should be closed after signal")
+	}
+
+	// New channel should NOT be closed.
+	ch2 := db.waitProxiesChanged()
+	select {
+	case <-ch2:
+		t.Fatal("new proxiesChanged channel should not be closed")
+	default:
+		// good — not closed
+	}
+}
+
 // newTestDatabaseStub creates a minimal Database for unit tests that don't
 // need real FDB connectivity (e.g., testing mutation buffering, state transitions).
 func newTestDatabaseStub() *Database {
 	ctx, cancel := context.WithCancel(context.Background())
 	db := &database{
-		clusterFile:  &ClusterFile{Coordinators: []string{"127.0.0.1:4500"}},
-		connPool:     make(map[string]*transport.Conn),
-		topologyKick: make(chan struct{}, 1),
-		connected:    make(chan struct{}),
-		ctx:          ctx,
-		cancel:       cancel,
+		clusterFile:    &ClusterFile{Coordinators: []string{"127.0.0.1:4500"}},
+		connPool:       make(map[string]*transport.Conn),
+		topologyKick:   make(chan struct{}, 1),
+		proxiesChanged: make(chan struct{}),
+		connected:      make(chan struct{}),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 	return &Database{db: db}
 }

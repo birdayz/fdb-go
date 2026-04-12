@@ -32,6 +32,13 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	replyToken, replyCh, cancelReply := conn.PrepareReply()
 	body, poolBuf := buildCommitTransactionRequest(tx, replyToken)
 
+	// Capture the proxy-change channel BEFORE sending the commit frame.
+	// C++ captures onProxiesChanged before dispatch. If we captured after
+	// SendFrame, a topology change between send and capture would close
+	// the old channel and replace it — we'd get the fresh (unclosed)
+	// channel and miss the change.
+	proxiesChanged := tx.db.waitProxiesChanged()
+
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
 		marshalBufPool.Put(poolBuf)
 		cancelReply()
@@ -42,7 +49,8 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
 	marshalBufPool.Put(poolBuf)
 
-	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	// Wait for reply or proxy-change (commit_unknown_result either way).
+	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
 	if err != nil {
 		cancelReply()
 		return &wire.FDBError{Code: ErrCommitUnknownResult}

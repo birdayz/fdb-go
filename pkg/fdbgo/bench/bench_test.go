@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -14,22 +15,31 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	tc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
 var (
-	goClient  gofdb.Database
-	cgoClient cgofdb.Database
+	goClient      gofdb.Database
+	cgoClient     cgofdb.Database
+	testContainer *tc.Container
 )
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tc.Run(ctx, "", tc.WithStorageEngine("ssd"), tc.WithDirectIP())
+	container, err := tc.Run(ctx, "", tc.WithStorageEngine("ssd"), tc.WithDirectIP(),
+		testcontainers.WithHostConfigModifier(func(hc *dockercontainer.HostConfig) {
+			hc.CapAdd = append(hc.CapAdd, "NET_ADMIN")
+		}),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start container: %v\n", err)
 		os.Exit(1)
 	}
+	testContainer = container
 	defer container.Terminate(context.Background())
 
 	// Cluster file
@@ -319,6 +329,308 @@ func BenchmarkRYW(b *testing.B) {
 			cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
 				tx.Set(cgofdb.Key("bench_ryw"), []byte("v"))
 				return tx.Get(cgofdb.Key("bench_ryw")).MustGet(), nil
+			})
+		}
+	})
+}
+
+// TestBenchmarkSanity verifies both clients return identical results for
+// every operation used in the benchmarks. If this fails, the benchmarks
+// are not comparing the same thing.
+func TestBenchmarkSanity(t *testing.T) {
+	t.Parallel()
+
+	// Single Get: same key, same bytes.
+	for _, key := range []string{"bench_key_100b", "bench_key_1kb", "bench_key_10kb"} {
+		goResult, err := goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+			return tx.Get(gofdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("go Get %s: %v", key, err)
+		}
+		cgoResult, err := cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+			return tx.Get(cgofdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("cgo Get %s: %v", key, err)
+		}
+		goBytes := goResult.([]byte)
+		cgoBytes := cgoResult.([]byte)
+		if len(goBytes) != len(cgoBytes) {
+			t.Errorf("Get %s: Go len=%d, CGo len=%d", key, len(goBytes), len(cgoBytes))
+		} else if !bytes.Equal(goBytes, cgoBytes) {
+			t.Errorf("Get %s: bytes differ", key)
+		}
+	}
+
+	// GetRange: same range, same keys and values.
+	for _, n := range []int{10, 100} {
+		end := fmt.Sprintf("bench_range_%04d", n)
+		goResult, _ := goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+			rr := tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key("bench_range_0000"), End: gofdb.Key(end)}, gofdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		cgoResult, _ := cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+			rr := tx.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key("bench_range_0000"), End: cgofdb.Key(end)}, cgofdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		goKVs := goResult.([]gofdb.KeyValue)
+		cgoKVs := cgoResult.([]cgofdb.KeyValue)
+		if len(goKVs) != len(cgoKVs) {
+			t.Fatalf("GetRange %d: Go %d keys, CGo %d keys", n, len(goKVs), len(cgoKVs))
+		}
+		for i := range goKVs {
+			if !bytes.Equal(goKVs[i].Key, cgoKVs[i].Key) {
+				t.Errorf("GetRange %d key[%d]: Go=%q CGo=%q", n, i, goKVs[i].Key, cgoKVs[i].Key)
+			}
+			if !bytes.Equal(goKVs[i].Value, cgoKVs[i].Value) {
+				t.Errorf("GetRange %d val[%d]: Go=%q CGo=%q", n, i, goKVs[i].Value, cgoKVs[i].Value)
+			}
+		}
+	}
+
+	// RYW: Set + Get in same tx returns identical bytes.
+	goRYW, _ := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		tx.Set(gofdb.Key("bench_sanity_ryw"), []byte("sanity"))
+		return tx.Get(gofdb.Key("bench_sanity_ryw")).MustGet(), nil
+	})
+	cgoRYW, _ := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		tx.Set(cgofdb.Key("bench_sanity_ryw"), []byte("sanity"))
+		return tx.Get(cgofdb.Key("bench_sanity_ryw")).MustGet(), nil
+	})
+	if !bytes.Equal(goRYW.([]byte), cgoRYW.([]byte)) {
+		t.Errorf("RYW: Go=%q CGo=%q", goRYW, cgoRYW)
+	}
+
+	t.Log("sanity check passed: Go and CGo return identical bytes for all benchmark operations")
+}
+
+// BenchmarkThroughputRead measures sustained read throughput (MB/s).
+// Reads 1KB values sequentially within a single transaction to measure
+// raw data throughput, not per-transaction overhead.
+func BenchmarkThroughputRead(b *testing.B) {
+	const valueSize = 1024 // 1KB values
+	const batchSize = 100  // keys per transaction
+
+	// Seed with 1000 keys of 1KB each.
+	for batch := 0; batch < 10; batch++ {
+		goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			for i := 0; i < batchSize; i++ {
+				key := fmt.Sprintf("bench_tp_%04d", batch*batchSize+i)
+				tx.Set(gofdb.Key(key), make([]byte, valueSize))
+			}
+			return nil, nil
+		})
+	}
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize)) // report MB/s
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				rr := tx.GetRange(
+					gofdb.KeyRange{Begin: gofdb.Key("bench_tp_0000"), End: gofdb.Key("bench_tp_0100")},
+					gofdb.RangeOptions{},
+				)
+				kvs, err := rr.GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				if len(kvs) != batchSize {
+					b.Fatalf("expected %d keys, got %d", batchSize, len(kvs))
+				}
+				return nil, nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				rr := tx.GetRange(
+					cgofdb.KeyRange{Begin: cgofdb.Key("bench_tp_0000"), End: cgofdb.Key("bench_tp_0100")},
+					cgofdb.RangeOptions{},
+				)
+				kvs, err := rr.GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				if len(kvs) != batchSize {
+					b.Fatalf("expected %d keys, got %d", batchSize, len(kvs))
+				}
+				return nil, nil
+			})
+		}
+	})
+}
+
+// BenchmarkThroughputWrite measures sustained write throughput (MB/s).
+// Writes batches of 1KB values per transaction.
+func BenchmarkThroughputWrite(b *testing.B) {
+	const valueSize = 1024
+	const batchSize = 10 // keys per transaction (within 10MB tx limit)
+
+	val := make([]byte, valueSize)
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				for j := 0; j < batchSize; j++ {
+					key := fmt.Sprintf("bench_tpw_%d_%04d", i, j)
+					tx.Set(gofdb.Key(key), val)
+				}
+				return nil, nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+				for j := 0; j < batchSize; j++ {
+					key := fmt.Sprintf("bench_tpw_%d_%04d", i, j)
+					tx.Set(cgofdb.Key(key), val)
+				}
+				return nil, nil
+			})
+		}
+	})
+}
+
+// execTC runs a tc command inside the container. Returns error if it fails.
+func execTC(ctx context.Context, args ...string) error {
+	exitCode, reader, err := testContainer.Exec(ctx, args, tcexec.Multiplexed())
+	if err != nil {
+		return fmt.Errorf("exec %v: %w", args, err)
+	}
+	if exitCode != 0 {
+		out, _ := io.ReadAll(reader)
+		return fmt.Errorf("tc exit %d: %s", exitCode, out)
+	}
+	return nil
+}
+
+// BenchmarkLatencyGet measures Go vs CGo with simulated 2ms RTT.
+// Injects 1ms delay each way via tc netem inside the container.
+func BenchmarkLatencyGet(b *testing.B) {
+	ctx := context.Background()
+
+	// Install iproute-tc (for tc). Rocky 9 splits tc into a separate package.
+	exitCode, installOut, _ := testContainer.Exec(ctx, []string{
+		"sh", "-c", "command -v tc > /dev/null 2>&1 || microdnf install -y iproute-tc > /dev/null 2>&1 || yum install -y iproute > /dev/null 2>&1",
+	}, tcexec.Multiplexed())
+	if exitCode != 0 {
+		out, _ := io.ReadAll(installOut)
+		b.Skipf("yum install iproute failed: exit=%d out=%s", exitCode, out)
+	}
+
+	// Add 1ms delay (1ms each way = 2ms RTT). Requires NET_ADMIN capability.
+	tcBin := "/usr/sbin/tc" // Rocky 9 path; CentOS 7 uses /sbin/tc
+	if err := execTC(ctx, tcBin, "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "1ms"); err != nil {
+		b.Skipf("tc netem failed (need NET_ADMIN): %v", err)
+	}
+	b.Cleanup(func() {
+		execTC(context.Background(), tcBin, "qdisc", "del", "dev", "eth0", "root")
+	})
+
+	// Verify delay is active.
+	_, verifyReader, _ := testContainer.Exec(ctx, []string{tcBin, "qdisc", "show", "dev", "eth0"}, tcexec.Multiplexed())
+	out, _ := io.ReadAll(verifyReader)
+	b.Logf("tc qdisc: %s", strings.TrimSpace(string(out)))
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+}
+
+// BenchmarkLatencyGet500ms measures Go vs CGo with 1s RTT (500ms each way).
+func BenchmarkLatencyGet500ms(b *testing.B) {
+	ctx := context.Background()
+
+	exitCode, installOut, _ := testContainer.Exec(ctx, []string{
+		"sh", "-c", "command -v tc > /dev/null 2>&1 || microdnf install -y iproute-tc > /dev/null 2>&1 || yum install -y iproute > /dev/null 2>&1",
+	}, tcexec.Multiplexed())
+	if exitCode != 0 {
+		out, _ := io.ReadAll(installOut)
+		b.Skipf("install iproute-tc failed: exit=%d out=%s", exitCode, out)
+	}
+
+	tcBin := "/usr/sbin/tc"
+	if err := execTC(ctx, tcBin, "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "500ms"); err != nil {
+		b.Skipf("tc netem failed: %v", err)
+	}
+	b.Cleanup(func() {
+		execTC(context.Background(), tcBin, "qdisc", "del", "dev", "eth0", "root")
+	})
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+}
+
+// BenchmarkLatencyGet5ms measures Go vs CGo with 10ms RTT (5ms each way).
+func BenchmarkLatencyGet5ms(b *testing.B) {
+	ctx := context.Background()
+
+	exitCode, installOut, _ := testContainer.Exec(ctx, []string{
+		"sh", "-c", "command -v tc > /dev/null 2>&1 || microdnf install -y iproute-tc > /dev/null 2>&1 || yum install -y iproute > /dev/null 2>&1",
+	}, tcexec.Multiplexed())
+	if exitCode != 0 {
+		out, _ := io.ReadAll(installOut)
+		b.Skipf("install iproute-tc failed: exit=%d out=%s", exitCode, out)
+	}
+
+	tcBin := "/usr/sbin/tc"
+	if err := execTC(ctx, tcBin, "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "5ms"); err != nil {
+		b.Skipf("tc netem failed: %v", err)
+	}
+	b.Cleanup(func() {
+		execTC(context.Background(), tcBin, "qdisc", "del", "dev", "eth0", "root")
+	})
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
 			})
 		}
 	})

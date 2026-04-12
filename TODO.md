@@ -669,7 +669,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Transaction boundaries: each `buildRange` = one transaction. Continuation = last processed PK (matches Java: boundary records re-scanned, safe for idempotent indexes).
    - [x] Record type filtering: `shouldIndexRecord()` checks if record type has this index defined.
    - [x] 8 integration tests: basic build, composite index with PK dedup, empty store, post-build maintenance, small limit chunking, unique index, record type filtering, builder validation.
-   - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned. Not yet implemented (optimization, not wire-format critical).
+   - [x] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned via `AddBuildProgress()`. Tracks per-target-index in `buildRange()` and `buildRangeByIndex()`.
    - [x] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. `SaveIndexingTypeStamp`/`LoadIndexingTypeStamp` + BY_RECORDS/BY_INDEX methods.
    - [x] **Stamp-aware resume** — `markWriteOnly()` checks if index is already WRITE_ONLY with matching stamp before clearing. Matching stamp → resume build without clearing existing entries (preserves WRITE_ONLY maintenance entries). No stamp + empty range set → write stamp and continue. Stamp mismatch → clear and restart. Matches Java's `IndexingBase.handleIndexingState()` + `setIndexingTypeOrThrow()`. 5 new tests.
 
@@ -2240,7 +2240,8 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [ ] **Version vector support** — causal consistency optimization.
 - [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
 - [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
-- [x] **Tag throttling** — tag throttle duration tracking from GRV reply. `parseTagThrottleInfo` deserializes wire format, `tagThrottleState` stores per-priority tag throttle data, `nextBackoff` uses server-supplied duration for `tag_throttled` (1213) errors. Simplified vs C++ (no Smoother). Done swingshift-7.
+- [x] **Tag throttling** — tag throttle duration tracking from GRV reply. `parseTagThrottleInfo` deserializes wire format, `tagThrottleState` stores per-priority tag throttle data, `nextBackoff` uses server-supplied duration for `tag_throttled` (1213) errors. Done swingshift-7. Fixed swingshift-8: `throttleDuration` now returns `1/tpsRate` (one TPS slot) instead of full remaining time (was 500x over-throttle at 100 TPS).
+- [x] **Mid-commit proxy change detection** — `waitReplyOrProxiesChanged` monitors proxy topology broadcast channel during commit reply wait. If proxies change mid-commit, returns `commit_unknown_result` immediately instead of waiting for RPC timeout. Matches C++ `onProxiesChanged`. Done swingshift-8.
 - [ ] **LOW — `proxyTagThrottledDuration` send path** — accumulated per-transaction but not yet sent back to proxy in GRV request metadata (C++ sends it so the proxy can adjust throttle decisions). Not a correctness issue — only affects throttle tuning accuracy.
 
 ### Phase 3
