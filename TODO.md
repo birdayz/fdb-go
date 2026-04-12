@@ -669,7 +669,7 @@ The conformance framework (HTTP bridge to Java Record Layer) validates all core 
    - [x] Transaction boundaries: each `buildRange` = one transaction. Continuation = last processed PK (matches Java: boundary records re-scanned, safe for idempotent indexes).
    - [x] Record type filtering: `shouldIndexRecord()` checks if record type has this index defined.
    - [x] 8 integration tests: basic build, composite index with PK dedup, empty store, post-build maintenance, small limit chunking, unique index, record type filtering, builder validation.
-   - [ ] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned. Not yet implemented (optimization, not wire-format critical).
+   - [x] Progress tracking at `[9, indexSubspaceKey, 1]` (INDEX_BUILD_SPACE) — atomic ADD of records scanned via `AddBuildProgress()`. Tracks per-target-index in `buildRange()` and `buildRangeByIndex()`.
    - [x] Indexing stamp at `[9, indexSubspaceKey, 2]` — proto `IndexBuildIndexingStamp` for resume detection. `SaveIndexingTypeStamp`/`LoadIndexingTypeStamp` + BY_RECORDS/BY_INDEX methods.
    - [x] **Stamp-aware resume** — `markWriteOnly()` checks if index is already WRITE_ONLY with matching stamp before clearing. Matching stamp → resume build without clearing existing entries (preserves WRITE_ONLY maintenance entries). No stamp + empty range set → write stamp and continue. Stamp mismatch → clear and restart. Matches Java's `IndexingBase.handleIndexingState()` + `setIndexingTypeOrThrow()`. 5 new tests.
 
