@@ -55,10 +55,10 @@ _No known open bugs. Binding tester: 169 seeds × 1000 ops = 0 failures. 92 C bi
 
 | # | Area | Type | Description |
 |---|---|---|---|
-| 1 | `future_version` backoff | BEHAVIOR | C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)` respecting user's `SetMaxRetryDelay`. Go uses flat 10ms ignoring user's cap. Only matters if user sets maxRetryDelay < 10ms. |
+| 1 | ~~`future_version` backoff~~ | ~~BEHAVIOR~~ FIXED | ~~C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)`.~~ Fixed: Go now respects user's `maxRetryDelay`. |
 | 2 | `makeSelfConflicting` | BEHAVIOR | C++ adds random key to `\xFF/SC/` when write/read conflicts don't intersect. Go uses `writeConflicts[0].Begin` in `commitDummyTransaction`. Functionally equivalent for common cases. |
 | 3 | Watch cancellation on Reset | MISSING | C++ `resetRyow()` cancels pending watches. Go's `Reset()` does not. Users must use context cancellation. |
-| 4 | GRV cache ratekeeper per-priority | BEHAVIOR | C++ checks `lastRkBatchThrottleTime` for BATCH, `lastRkDefaultThrottleTime` for DEFAULT. Go only checks `lastRkDefault` for all priorities. BATCH requests may be served from stale cache when BATCH-throttled. |
+| 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
 | 5 | RYW SnapshotCache | BEHAVIOR | C++ caches server reads for reuse within a transaction. Go re-fetches on every `getRange` with writes/clears. Correct but more I/O for repeated reads of the same range. |
 | 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
 | 7 | `getRange` RYW merge | DESIGN | C++ segment-tree `RYWIterator`. Go iterative fetch+merge loop. Functionally equivalent. |
