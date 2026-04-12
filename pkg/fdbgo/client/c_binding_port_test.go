@@ -3968,4 +3968,13 @@ func TestGetKeyBoundaryShortCircuit_CPort(t *testing.T) {
 	if len(key) != 0 {
 		t.Errorf("GetKey empty offset=-1: expected empty, got %q", key)
 	}
+
+	// Empty key with positive offset does NOT short-circuit — it reaches
+	// the storage server. FirstGreaterOrEqual("") with offset=1 resolves
+	// to the first key in the database (or empty if DB is empty).
+	// We just verify it doesn't error — the result depends on DB state.
+	_, err = tx.GetKey(ctx, []byte{}, false, 1)
+	if err != nil {
+		t.Fatalf("GetKey empty offset=1 (non-short-circuit): %v", err)
+	}
 }
