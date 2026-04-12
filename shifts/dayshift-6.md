@@ -109,10 +109,15 @@ New tool `cmd/test-report` that generates self-contained HTML test report from `
 **Status:** Tool works, generates correct report (1884 tests, 0 failures). `.bazelrc` updated with `--test_arg="-test.v"` for per-test granularity. Review complete, fixes applied. Frame pooling investigation: `ReadFrame` payload pooling doesn't help (body shares backing array, pooling adds a copy → worse B/op).
 
 **Next steps for next shift:**
-- Wire into CI (GH Actions) — run `just test && just report` on every PR/merge
-- Publish `test-report.html` to GH Pages
+- **Make test-report Bazel-native.** Current approach (`cmd/test-report` reading `bazel-testlogs/` symlink) breaks under `bazelisk run` sandbox. Two proper approaches:
+  1. **Bazel aspect** — write an aspect that attaches to all `go_test` targets, consumes their `test.xml`/`test.log` outputs, and produces the HTML report as a build artifact. This is the cleanest Bazel-native approach.
+  2. **`--build_event_json_file`** — use Bazel's Build Event Protocol to get test result events (per-target pass/fail + path to test.log), then post-process. Add `build --build_event_json_file=build_events.json` to `.bazelrc`, write a tool that reads events + referenced test.logs.
+  3. **GH Actions `--profile`** — Bazel's `--profile` flag generates a Chrome trace JSON. Not useful for test reports but worth knowing about.
+- Wire into CI (GH Actions) — produce report as build artifact on every PR/merge
+- Publish to GH Pages on merge to master (permanent URL)
 - Consider adding benchmark results to the report
 - Consider adding trend tracking (compare with previous run)
+- The `just report` recipe currently broken (sandbox can't see `bazel-testlogs`). Fix as part of the Bazel-native rewrite.
 
 ## Known issues
 
