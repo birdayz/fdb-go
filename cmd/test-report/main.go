@@ -217,6 +217,7 @@ type bepTestResult struct {
 	TestActionOutput []bepOutputFile `json:"testActionOutput"`
 	Status           string          `json:"status"` // PASSED, FAILED, TIMEOUT, FLAKY, etc.
 	DurationMillis   string          `json:"testAttemptDurationMillis"`
+	CachedLocally    bool            `json:"cachedLocally"`
 }
 
 type bepOutputFile struct {
@@ -288,7 +289,15 @@ type TargetResult struct {
 	Target    string // Bazel label, e.g. "//pkg/foo:foo_test"
 	Tests     []TestResult
 	SuiteTime time.Duration
+	Cached    bool      // true if Bazel served this target from cache
 	Tree      *TreeNode // non-nil for Ginkgo targets with hierarchical specs
+}
+
+func (t *TargetResult) CachedLabel() string {
+	if t.Cached {
+		return "cached"
+	}
+	return "executed"
 }
 
 func (t *TargetResult) Passed() int {
@@ -413,6 +422,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		logPath    string
 		status     string
 		durationMs int64
+		cached     bool
 	}
 	targets := make(map[string]*targetInfo)
 
@@ -428,6 +438,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 			info := &targetInfo{
 				label:  label,
 				status: ev.TestResult.Status,
+				cached: ev.TestResult.CachedLocally,
 			}
 			if ms, _ := strconv.ParseInt(ev.TestResult.DurationMillis, 10, 64); ms > 0 {
 				info.durationMs = ms
@@ -454,6 +465,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		tr := &TargetResult{
 			Target:    info.label,
 			SuiteTime: time.Duration(info.durationMs) * time.Millisecond,
+			Cached:    info.cached,
 		}
 
 		if info.xmlPath != "" {
@@ -691,6 +703,7 @@ details[open] .chevron { transform: rotate(90deg); }
 }
 .badge-pass { background: #eafaf1; color: #1e8449; }
 .badge-fail { background: #fdedec; color: #c0392b; }
+.badge-cached { background: #eef0f5; color: #8fa3b1; font-weight: 400; }
 
 table {
   width: 100%;
@@ -794,6 +807,7 @@ footer {
   <summary>
     <span class="target-label">{{.Target}}</span>
     <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
+    {{if .Cached}}<span class="badge badge-cached">cached</span>{{end}}
     <span class="chevron">&#9654;</span>
   </summary>
   {{- if .Tree}}
