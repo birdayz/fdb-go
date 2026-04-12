@@ -26,31 +26,35 @@ that to Go without sacrificing interoperability with existing Java deployments.
 
 ## Performance
 
-Includes a **pure Go FDB client** that speaks the FDB wire protocol directly — no CGo, no C library dependency. Reads are **2-4x faster** than the official Apple CGo binding.
+Includes a **pure Go FDB client** that speaks the FDB wire protocol directly — no CGo, no C library dependency.
 
-### fdb-go vs Apple CGo binding
+Both clients run in the same process against the same FDB testcontainer, same keys. `TestBenchmarkSanity` verifies byte-identical results.
 
-| Operation | fdb-go | Apple CGo | Speedup |
-|---|---:|---:|---|
-| **Single Get** (100 B value) | 60 us | 218 us | **3.6x faster** |
-| **Single Get** (10 KB value) | 69 us | 217 us | **3.1x faster** |
-| **GetRange** (100 keys) | 92 us | 363 us | **3.9x faster** |
-| **Sustained read throughput** | 430 MB/s | 191 MB/s | **2.25x faster** |
-| **Set + Commit** (100 B value) | 1,008 us | 1,005 us | parity |
-| **Sustained write throughput** | 10.0 MB/s | 9.7 MB/s | parity |
+```
+goos: linux
+goarch: amd64
+cpu: AMD Ryzen 9 3900X 12-Core Processor
 
-<sub>Ryzen 9 3900X, FDB 7.3.46 testcontainer, same process, same keys. Sustained benchmarks run 30 s each.
-Both clients return byte-identical results ([`TestBenchmarkSanity`](pkg/fdbgo/bench/bench_test.go)).</sub>
+BenchmarkGet/Go/100B          19974       60498 ns/op
+BenchmarkGet/CGo/100B          6063      217687 ns/op
 
-### Why reads are faster
+BenchmarkGet/Go/1KB           19790       60785 ns/op
+BenchmarkGet/CGo/1KB           5762      209001 ns/op
 
-The Apple CGo binding routes every operation through the C library's single-threaded actor event loop. Each `Get` crosses the CGo boundary 4+ times and blocks on a `sync.Mutex` until the C network thread fires a callback — two thread context switches per read.
+BenchmarkGet/Go/10KB          17772       69122 ns/op
+BenchmarkGet/CGo/10KB          5563      217169 ns/op
 
-fdb-go eliminates all of that. Requests go straight from the calling goroutine to a buffered TCP write loop; responses arrive on a dedicated read loop and are delivered via a pre-allocated channel. No CGo boundary, no C event loop, no cross-thread mutex signaling.
+BenchmarkGetRange/Go/100      14403       92111 ns/op
+BenchmarkGetRange/CGo/100      3267      363106 ns/op
 
-Writes show parity because commit latency is dominated by the ~500 us network round-trip — the ~100 us per-request overhead is negligible for writes but dominant for 40 us reads.
+BenchmarkSet/Go/100B           1200     1007742 ns/op
+BenchmarkSet/CGo/100B          1191     1005018 ns/op
 
-See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the full analysis with per-component overhead breakdown.
+BenchmarkThroughputRead/Go    168990      238278 ns/op    429.75 MB/s
+BenchmarkThroughputRead/CGo    69626      536341 ns/op    190.92 MB/s
+```
+
+Reads 2-4x faster. Writes at parity. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
 
 ## Usage
 
