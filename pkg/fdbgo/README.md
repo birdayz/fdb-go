@@ -19,7 +19,7 @@ Working and tested against real FDB 7.3.75:
 - Snapshot reads, Watch (long-poll), Versionstamp, Tenants (CRUD via system keys)
 - Transaction options: RYW disable, snapshot RYW disable, size limit, timeout, retry limit, lock-aware
 - `GetPipelined` for true request pipelining (no goroutine per Get)
-- TLS support (mutual auth + CA cert), QueueModel load balancing, connection keep-warm
+- TLS support (mutual auth + CA cert), QueueModel load balancing (C++ Smoother + server penalty), connection keep-warm
 - Read-your-writes cache with full atomic op merging (all 14 types mirror C++ `Atomic.h`)
 - `LocalityGetAddressesForKey`, `LocalityGetBoundaryKeys`, `OpenWithConnectionString`, `GetClientStatus`
 
@@ -154,7 +154,7 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
   --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
 ```
 
-Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 88 C binding port tests + correctness tests + fault injection tests + benchmarks. Binding stress: 100 seeds × 1000 ops validated.
+Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 92 C binding port tests + 22 correctness tests + fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Binding stress: 100 seeds × 1000 ops validated (0 failures).
 
 ## Benchmarks
 
