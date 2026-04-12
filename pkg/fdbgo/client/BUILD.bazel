@@ -42,6 +42,7 @@ go_test(
         "loadbalance_test.go",
         "locality_test.go",
         "nil_shard_end_test.go",
+        "ryw_test.go",
         "setget_test.go",
         "testmain_test.go",
     ],
