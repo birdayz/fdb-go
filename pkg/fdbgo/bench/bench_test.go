@@ -559,3 +559,41 @@ func BenchmarkLatencyGet(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkLatencyGet5ms measures Go vs CGo with 10ms RTT (5ms each way).
+func BenchmarkLatencyGet5ms(b *testing.B) {
+	ctx := context.Background()
+
+	exitCode, installOut, _ := testContainer.Exec(ctx, []string{
+		"sh", "-c", "command -v tc > /dev/null 2>&1 || microdnf install -y iproute-tc > /dev/null 2>&1 || yum install -y iproute > /dev/null 2>&1",
+	}, tcexec.Multiplexed())
+	if exitCode != 0 {
+		out, _ := io.ReadAll(installOut)
+		b.Skipf("install iproute-tc failed: exit=%d out=%s", exitCode, out)
+	}
+
+	tcBin := "/usr/sbin/tc"
+	if err := execTC(ctx, tcBin, "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "5ms"); err != nil {
+		b.Skipf("tc netem failed: %v", err)
+	}
+	b.Cleanup(func() {
+		execTC(context.Background(), tcBin, "qdisc", "del", "dev", "eth0", "root")
+	})
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+}
