@@ -13,7 +13,15 @@ The pure Go FDB client is **2–3.5x faster on reads** than the Apple CGo bindin
 | Set+Commit 100B | 1,008 us | 1,005 us | 1.0x |
 | Sustained write throughput | 10.0 MB/s | 9.7 MB/s | 1.0x |
 
-Measured on Ryzen 9 3900X, FDB 7.3.46, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.
+### With simulated network latency (2 ms RTT via tc netem)
+
+| Operation | Go | CGo | Ratio |
+|---|---|---|---|
+| Get 100B | 1,080 us | 2,726 us | **2.5x** |
+
+The advantage narrows from 3.6x to 2.5x with added latency, as expected — network time becomes a larger fraction. But the pure Go client remains significantly faster because the CGo overhead (~110 us) is additive, not proportional.
+
+<sub>Ryzen 9 3900X, FDB 7.3.75, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.</sub>
 
 ## Root Cause
 
