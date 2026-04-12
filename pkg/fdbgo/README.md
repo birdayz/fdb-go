@@ -239,7 +239,7 @@ When `OnError` receives error 1021, the transaction MAY have committed on the se
 4. Since the ORIGINAL commit wrote to those ranges, the check fails → `not_committed` (1020)
 5. The retry does NOT apply mutations — no double-apply
 
-This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()` + `commitDummyTransaction`, but via a simpler mechanism (direct conflict copy vs dummy transaction). Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
+This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()`. Additionally, `commitDummyTransaction` runs a synchronization barrier before returning `commit_unknown_result` — a separate transaction that conflicts with the original, confirming it's no longer in-flight at the commit proxy. Both mechanisms combined match C++ exactly. Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
 
 ## Known divergences from C++ (audited 2026-04-12)
 
@@ -247,9 +247,9 @@ Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYour
 
 | Area | C++ behavior | Go behavior | Impact |
 |---|---|---|---|
-| Self-conflicting (1021) | `commitDummyTransaction` + `makeSelfConflicting` random range at `\xFF/SC/` | Copy write→read conflicts in `OnError` | Same safety guarantee, simpler mechanism |
+| Self-conflicting (1021) | `commitDummyTransaction` + `makeSelfConflicting` random range at `\xFF/SC/` | `commitDummyTransaction` (sync barrier) + copy write→read conflicts in `OnError` | Matching C++: dummy confirms original is out of system, self-conflicting prevents double-apply |
 | Auto-reset after commit | No auto-reset at API >= 410 | `postCommitReset()` clears state for reuse | Design choice: Go API expects tx reuse after commit |
-| `onProxiesChanged` mid-commit | Races proxy topology change vs commit reply | Full `DefaultRPCTimeout` before detecting stale proxy | Liveness only, not safety; eventual commit_unknown_result |
+| `onProxiesChanged` | Wakes commit/GRV/location on proxy topology change | `proxiesChanged` broadcast wakes commit reply + GRV/location backoff loops | Matching C++: immediate wake-up on proxy failover |
 | `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
 | `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Iterative fetch+merge loop with boundary tracking | Correct: loops when clears consume all results (no silent truncation). Not a full segment-tree port but functionally equivalent. |
 | `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Same (implemented dayshift-6b) | Matching C++ |
