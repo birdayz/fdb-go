@@ -332,14 +332,13 @@ func (c *rywCache) mergeBatch(
 	// Phase 1: Filter server results — remove cleared keys.
 	// Server results are already sorted in scan direction.
 	filteredServer := make([]KeyValue, 0, len(serverKVs))
-	// Build server key lookup for atomic resolution.
-	serverValues := make(map[string][]byte, len(serverKVs))
+	// Build server key lookup only if needed for atomic resolution.
+	// Most Record Layer transactions have no atomics — skip the map allocation.
+	var serverValues map[string][]byte
 	for _, kv := range serverKVs {
 		if !c.isClearedLocked(kv.Key) {
 			filteredServer = append(filteredServer, kv)
 		}
-		// Always store server values — atomics need the base even for cleared keys.
-		serverValues[string(kv.Key)] = kv.Value
 	}
 
 	// atomicCleared tracks keys where atomic resolution resulted in deletion.
@@ -382,6 +381,13 @@ func (c *rywCache) mergeBatch(
 			continue // phantom key (deleted by prior atomic caching)
 		}
 		if entry.hasAtomics {
+			// Lazily build server values map on first atomic encounter.
+			if serverValues == nil {
+				serverValues = make(map[string][]byte, len(serverKVs))
+				for _, kv := range serverKVs {
+					serverValues[string(kv.Key)] = kv.Value
+				}
+			}
 			// Resolve atomics against server base.
 			base := serverValues[k]
 			cleared := false
