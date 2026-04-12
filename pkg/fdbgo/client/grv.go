@@ -350,6 +350,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				timer.Stop()
 				backoff = 0
 				continue
+			case <-db.waitProxiesChanged():
+				timer.Stop()
+				backoff = 0
+				continue
 			case <-ctx.Done():
 				timer.Stop()
 				return 0, false, false, nil, 0, ctx.Err()
@@ -392,7 +396,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			return parseGetReadVersionReply(resp.Body)
 		}
 
-		// All proxies exhausted — backoff with recovery wakeup.
+		// All proxies exhausted — backoff with recovery/topology wakeup.
 		db.kickTopology()
 		if backoff == 0 {
 			backoff = loadBalanceStartBackoff
@@ -404,6 +408,9 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 		select {
 		case <-timer.C:
 		case <-db.failMon.waitForRecovery():
+			timer.Stop()
+			backoff = 0
+		case <-db.waitProxiesChanged():
 			timer.Stop()
 			backoff = 0
 		case <-ctx.Done():
