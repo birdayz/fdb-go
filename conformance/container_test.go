@@ -32,13 +32,6 @@ func SetupTestEnvironment(ctx context.Context, dbName string) (*TestEnvironment,
 		return nil, fmt.Errorf("failed to start FDB container: %w", err)
 	}
 
-	// Initialize the database
-	err = container.InitializeDatabase(ctx)
-	if err != nil {
-		_ = container.Terminate(ctx)
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
-	}
-
 	// Get pure Go FDB database connection
 	db, err := openGoDatabase(ctx, container)
 	if err != nil {

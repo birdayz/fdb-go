@@ -25,32 +25,12 @@ func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tc.Run(ctx, "")
+	container, err := tc.Run(ctx, "", tc.WithStorageEngine("ssd"), tc.WithDirectIP())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start container: %v\n", err)
 		os.Exit(1)
 	}
 	defer container.Terminate(context.Background())
-
-	// Configure — exact same as fdb_test.go openTestDB
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		fmt.Fprintf(os.Stderr, "configure: exit %d\n", exitCode)
-		os.Exit(1)
-	}
-	for i := 0; i < 30; i++ {
-		time.Sleep(1 * time.Second)
-		code, reader, execErr := container.Exec(ctx, []string{"fdbcli", "--exec", "status minimal"})
-		if execErr != nil || reader == nil {
-			continue
-		}
-		if code == 0 {
-			out, _ := io.ReadAll(reader)
-			if strings.Contains(string(out), "Healthy") {
-				break
-			}
-		}
-	}
 
 	// Cluster file
 	connStr, err := container.ClusterFile(ctx)

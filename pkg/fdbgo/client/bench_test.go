@@ -61,7 +61,7 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		b.Fatalf("start container: %v", err)
 	}
@@ -71,12 +71,6 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 	if err != nil {
 		b.Fatalf("cluster file: %v", err)
 	}
-
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		b.Fatalf("configure: exit %d", exitCode)
-	}
-	time.Sleep(2 * time.Second)
 
 	clusterFile := b.TempDir() + "/fdb.cluster"
 	if err := os.WriteFile(clusterFile, []byte(connStr), 0o644); err != nil {
@@ -113,7 +107,7 @@ func BenchmarkGetValue_CGo(b *testing.B) {
 func openBenchDB(b *testing.B, ctx context.Context) *Database {
 	b.Helper()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		b.Fatalf("start FDB container: %v", err)
 	}
@@ -128,12 +122,6 @@ func openBenchDB(b *testing.B, ctx context.Context) *Database {
 	if err != nil {
 		b.Fatalf("parse cluster string: %v", err)
 	}
-
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		b.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	time.Sleep(2 * time.Second)
 
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	if err != nil {

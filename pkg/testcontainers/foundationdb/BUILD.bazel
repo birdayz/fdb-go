@@ -3,21 +3,17 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "foundationdb",
     srcs = [
-        "embed.go",
         "foundationdb.go",
         "options.go",
-    ],
-    embedsrcs = [
-        "mounts/fdb-entrypoint.sh",
-        "mounts/socat-entrypoint.sh",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb",
     visibility = ["//visibility:public"],
     deps = [
+        "@com_github_docker_docker//client",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//exec",
         "@com_github_testcontainers_testcontainers_go//network",
         "@com_github_testcontainers_testcontainers_go//wait",
-        "@com_github_testcontainers_testcontainers_go_modules_socat//:socat",
     ],
 )
 
@@ -36,7 +32,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
-        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//proto",
     ],
 )

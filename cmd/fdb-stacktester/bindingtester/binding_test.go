@@ -36,16 +36,18 @@ func TestBindingTester(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	// 1. Start FDB container.
-	fdbContainer, err := tcfdb.Run(ctx, "")
+	// 1. Create shared network + start FDB container.
+	nw, err := tcfdb.CreateNetwork(ctx)
+	if err != nil {
+		t.Fatalf("create network: %v", err)
+	}
+	defer nw.Remove(ctx)
+
+	fdbContainer, err := tcfdb.Run(ctx, "", tcfdb.WithNetwork(nw))
 	if err != nil {
 		t.Fatalf("start FDB: %v", err)
 	}
 	defer fdbContainer.Terminate(ctx)
-
-	if err := fdbContainer.InitializeDatabase(ctx); err != nil {
-		t.Fatalf("init DB: %v", err)
-	}
 
 	clusterFile := fdbContainer.InternalClusterFile()
 	networkName := fdbContainer.NetworkName()

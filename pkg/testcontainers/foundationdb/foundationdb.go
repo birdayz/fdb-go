@@ -1,12 +1,29 @@
 // Package foundationdb provides a testcontainers module for FoundationDB.
 //
-// This module creates a FoundationDB container with proper networking using socat proxy
-// to solve Docker port mapping issues. It provides an easy way to start FoundationDB
-// containers for testing Go applications that use the FoundationDB Record Layer.
+// This module creates a single FoundationDB container (no socat proxy) and
+// provides two connectivity modes:
 //
-// The module handles the complex networking setup required by FoundationDB's strict
-// port matching requirements while providing a simple API for container creation
-// and database initialization.
+//   - External (host/sandbox): via Docker port mapping (localhost:mappedPort).
+//     Works from Bazel sandboxes, CI runners, Docker Desktop, etc.
+//   - Internal (cross-container): via Docker bridge IP (containerIP:4500).
+//     Used by sidecar containers on the same Docker network.
+//
+// The container is auto-initialized by default (configured for single-node
+// operation with tenant support). Use [WithoutInit] to skip.
+//
+// Basic usage:
+//
+//	container, err := foundationdb.Run(ctx, "")
+//	clusterFile, _ := container.ClusterFile(ctx)
+//	db, _ := fdb.OpenDatabase(writeToFile(clusterFile))
+//
+// Multi-container usage (e.g., binding tester):
+//
+//	nw, _ := foundationdb.CreateNetwork(ctx)
+//	fdb, _ := foundationdb.Run(ctx, "", foundationdb.WithNetwork(nw))
+//	// Attach another container to the same network:
+//	otherReq.Networks = []string{fdb.NetworkName()}
+//	// Use InternalClusterFile() for the other container's cluster file.
 package foundationdb
 
 import (
@@ -17,16 +34,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/client"
 	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/socat"
-	"github.com/testcontainers/testcontainers-go/network"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 const (
 	defaultImage      = "foundationdb/foundationdb"
-	defaultClientPort = "4500/tcp"
+	defaultFDBPort    = 4500
 	defaultAPIVersion = 730
+	fdbPortProto      = "4500/tcp"
 )
 
 // fdbVersion returns the FDB version from the FDB_VERSION env var
@@ -35,277 +53,196 @@ func fdbVersion() string {
 	if v := os.Getenv("FDB_VERSION"); v != "" {
 		return v
 	}
-	return "7.3.75" // fallback for non-Bazel runs
+	return "7.3.75"
 }
 
-// Container represents a FoundationDB container instance with socat proxy.
-// Use ClusterFile() to get the connection string, then open your own client:
+// Container represents a running FoundationDB container.
 //
-//	clusterFile, _ := container.ClusterFile(ctx)
-//	// Pure Go: gofdb.OpenDatabase(writeToFile(clusterFile))
-//	// Apple CGo: applefdb.OpenDatabase(writeToFile(clusterFile))
+// External clients (host, Bazel sandbox) connect via localhost:mappedPort.
+// Internal clients (containers on the same Docker network) connect via containerIP:4500.
 type Container struct {
 	testcontainers.Container
-	socatContainer testcontainers.Container
-	network        *testcontainers.DockerNetwork
-	config         Config
-	externalPort   int
+	network     *testcontainers.DockerNetwork // user-provided network, nil if default bridge
+	clusterFile string                        // external cluster file (localhost:mappedPort)
+	internalCF  string                        // internal cluster file (containerIP:4500)
+	containerIP string                        // cached bridge IP
+	mappedPort  int                           // host port mapped to container's 4500
+	config      options
 }
 
-// Config holds the configuration for the FoundationDB container
-type Config struct {
-	Database   string
-	APIVersion int
-	Memory     string
-	Version    string
-}
-
-// Run creates and starts a FoundationDB container using socat proxy pattern
+// Run creates, starts, and (by default) initializes a FoundationDB container.
+//
+// The container exposes FDB port 4500 via Docker port mapping. External clients
+// (including Bazel sandbox tests) connect via localhost:mappedPort. For cross-container
+// communication, use [InternalClusterFile] with a shared network via [WithNetwork].
+//
+// By default, the database is auto-initialized for single-node operation with
+// tenant_mode=optional_experimental. Use [WithoutInit] to skip initialization.
+//
+// The image parameter can be empty ("") to use the default image with the version
+// from FDB_VERSION env var or the built-in default.
 func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
-	config := Config{
-		Database:   "test",
-		APIVersion: defaultAPIVersion,
-		Memory:     "4GB",
-		Version:    fdbVersion(),
-	}
+	cfg := defaultOptions()
 
-	// Process config customizers first to get version
+	// Apply our module options to extract config.
 	for _, opt := range opts {
-		if customizer, ok := opt.(*configCustomizer); ok {
-			customizer.customize(&config)
+		if o, ok := opt.(Option); ok {
+			if err := o.apply(&cfg); err != nil {
+				return nil, fmt.Errorf("apply option: %w", err)
+			}
 		}
 	}
 
 	if img == "" {
-		img = fmt.Sprintf("%s:%s", defaultImage, config.Version)
+		img = fmt.Sprintf("%s:%s", defaultImage, cfg.version)
 	}
 
-	// Step 1: Create a dedicated network
-	nw, err := network.New(ctx, network.WithDriver("bridge"))
-	if err != nil {
-		return nil, fmt.Errorf("create network: %w", err)
+	// Build the container request.
+	// Port mapping for external access (localhost:randomPort → container:4500).
+	// No custom entrypoint — the FDB image's default entrypoint handles everything.
+	env := map[string]string{}
+	if cfg.fdbPort != defaultFDBPort {
+		env["FDB_PORT"] = fmt.Sprintf("%d", cfg.fdbPort)
 	}
 
-	// Step 2: Create custom socat container with custom entrypoint (waits for config)
-	socatEntrypoint, err := mountsFS.ReadFile("mounts/socat-entrypoint.sh")
-	if err != nil {
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("read socat entrypoint: %w", err)
-	}
-
-	socatReq := testcontainers.ContainerRequest{
-		Image:        socat.DefaultImage,
-		ExposedPorts: []string{"4500/tcp"}, // We'll map this dynamically
-		Files: []testcontainers.ContainerFile{
-			{
-				Reader:            strings.NewReader(string(socatEntrypoint)),
-				ContainerFilePath: "/entrypoint-tc.sh",
-				FileMode:          0o755,
-			},
-		},
-		Entrypoint: []string{"/entrypoint-tc.sh"},
-	}
-
-	socatGenericReq := testcontainers.GenericContainerRequest{
-		ContainerRequest: socatReq,
-		Started:          false,
-	}
-
-	// Add to network
-	socatGenericReq.Networks = []string{nw.Name}
-	socatGenericReq.NetworkAliases = map[string][]string{
-		nw.Name: {"socat"},
-	}
-
-	socatContainer, err := testcontainers.GenericContainer(ctx, socatGenericReq)
-	if err != nil {
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("create socat container: %w", err)
-	}
-
-	// Step 3: Start socat container to get mapped port
-	err = socatContainer.Start(ctx)
-	if err != nil {
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("start socat container: %w", err)
-	}
-
-	// Get mapped port from socat container
-	mappedPort, err := socatContainer.MappedPort(ctx, "4500/tcp")
-	if err != nil {
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("get socat mapped port: %w", err)
-	}
-
-	// Use the external mapped port as the internal port that both containers will use
-	sharedPort := mappedPort.Int()
-
-	// Step 4: Inject socat configuration (listen on internal port 4500, forward to foundationdb on shared port)
-	socatConfig := fmt.Sprintf("# Injected by testcontainers\nTARGET_PORT=%d", sharedPort)
-	err = socatContainer.CopyToContainer(ctx, []byte(socatConfig), "/tmp/socat.conf", 0o644)
-	if err != nil {
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("copy socat config: %w", err)
-	}
-
-	// Step 5: Create FoundationDB container with custom entrypoint
-	fdbEntrypoint, err := mountsFS.ReadFile("mounts/fdb-entrypoint.sh")
-	if err != nil {
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("read FDB entrypoint: %w", err)
-	}
-
-	fdbReq := testcontainers.ContainerRequest{
-		Image: img,
-		Files: []testcontainers.ContainerFile{
-			{
-				Reader:            strings.NewReader(string(fdbEntrypoint)),
-				ContainerFilePath: "/entrypoint-tc.sh",
-				FileMode:          0o755,
-			},
-		},
-		Entrypoint: []string{"/entrypoint-tc.sh"},
-		// Mount tmpfs over /var/fdb/data to suppress the anonymous volume
-		// created by the VOLUME directive in the FDB Docker image.
-		// Without this, every container leaks ~90MB anonymous volume that
-		// persists after container removal. 5000 test runs = 450GB leaked.
+	portStr := fmt.Sprintf("%d/tcp", cfg.fdbPort)
+	req := testcontainers.ContainerRequest{
+		Image:        img,
+		Env:          env,
+		ExposedPorts: []string{portStr},
+		// Mount tmpfs over /var/fdb/data to prevent the VOLUME directive in the
+		// FDB Docker image from creating anonymous volumes that leak on removal.
+		// Without this, every container leaks ~90MB that persists after termination.
 		Tmpfs: map[string]string{"/var/fdb/data": ""},
+		WaitingFor: wait.ForLog("FDBD joined cluster").
+			WithStartupTimeout(cfg.startupTimeout),
 	}
 
-	fdbGenericReq := testcontainers.GenericContainerRequest{
-		ContainerRequest: fdbReq,
-		Started:          false,
-	}
-
-	// Apply custom options
-	for _, opt := range opts {
-		if _, ok := opt.(*configCustomizer); ok {
-			continue
+	// Attach to custom network if provided.
+	if cfg.network != nil {
+		aliases := []string{"foundationdb"}
+		aliases = append(aliases, cfg.networkAliases...)
+		req.Networks = []string{cfg.network.Name}
+		req.NetworkAliases = map[string][]string{
+			cfg.network.Name: aliases,
 		}
-		if err := opt.Customize(&fdbGenericReq); err != nil {
-			_ = socatContainer.Terminate(ctx)
-			_ = nw.Remove(ctx)
+	}
+
+	genReq := testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	}
+
+	// Apply testcontainers-native customizers (WithEnv, WithCmd, etc.)
+	for _, opt := range opts {
+		if _, ok := opt.(Option); ok {
+			continue // already applied above
+		}
+		if err := opt.Customize(&genReq); err != nil {
 			return nil, fmt.Errorf("customize request: %w", err)
 		}
 	}
 
-	// Add to network
-	fdbGenericReq.Networks = []string{nw.Name}
-	fdbGenericReq.NetworkAliases = map[string][]string{
-		nw.Name: {"foundationdb"},
+	ctr, err := testcontainers.GenericContainer(ctx, genReq)
+	if err != nil {
+		return nil, fmt.Errorf("create container: %w", err)
 	}
 
-	container, err := testcontainers.GenericContainer(ctx, fdbGenericReq)
+	// Get the host-mapped port for external connectivity.
+	mapped, err := ctr.MappedPort(ctx, "4500/tcp")
 	if err != nil {
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("create FDB container: %w", err)
+		_ = ctr.Terminate(ctx)
+		return nil, fmt.Errorf("get mapped port: %w", err)
 	}
 
-	// Step 6: Start FDB container
-	err = container.Start(ctx)
+	host, err := ctr.Host(ctx)
 	if err != nil {
-		_ = container.Terminate(ctx)
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("start FDB container: %w", err)
+		_ = ctr.Terminate(ctx)
+		return nil, fmt.Errorf("get host: %w", err)
 	}
 
-	// Step 7: Inject FDB configuration with the shared port (same as socat)
-	fdbConfig := fmt.Sprintf("# Injected by testcontainers\nFDB_PORT=%d", sharedPort)
-	err = container.CopyToContainer(ctx, []byte(fdbConfig), "/tmp/fdb.conf", 0o644)
+	// Get the container's bridge IP for internal (cross-container) connectivity.
+	containerIP, err := ctr.ContainerIP(ctx)
 	if err != nil {
-		_ = container.Terminate(ctx)
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("copy FDB config: %w", err)
+		_ = ctr.Terminate(ctx)
+		return nil, fmt.Errorf("get container IP: %w", err)
 	}
 
-	// Wait for FoundationDB to be ready
-	waitStrategy := wait.ForLog("FDBD joined cluster").WithStartupTimeout(30 * time.Second)
-	err = waitStrategy.WaitUntilReady(ctx, container)
+	// Read the cluster file description:id from inside the container.
+	// FDB generates "docker:docker@containerIP:port" — we need the "docker:docker" prefix
+	// to construct compatible cluster files for both external and internal use.
+	rawCF, err := readContainerFile(ctx, ctr, "/var/fdb/fdb.cluster")
 	if err != nil {
-		// Capture container logs before cleanup for diagnostics.
-		logCtx, logCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		logs, logErr := container.Logs(logCtx)
-		logCancel()
-		if logErr == nil && logs != nil {
-			logBytes, _ := io.ReadAll(logs)
-			if len(logBytes) > 4000 {
-				logBytes = logBytes[len(logBytes)-4000:]
-			}
-			_ = container.Terminate(ctx)
-			_ = socatContainer.Terminate(ctx)
-			_ = nw.Remove(ctx)
-			return nil, fmt.Errorf("wait for FDB: %w\n--- container logs (last 4000 bytes) ---\n%s", err, string(logBytes))
+		_ = ctr.Terminate(ctx)
+		return nil, fmt.Errorf("read cluster file: %w", err)
+	}
+
+	// Parse cluster file: "description:id@coordinator1,coordinator2,..."
+	// Keep the "description:id@" prefix, replace coordinators.
+	atIdx := strings.Index(rawCF, "@")
+	if atIdx < 0 {
+		_ = ctr.Terminate(ctx)
+		return nil, fmt.Errorf("malformed cluster file: %q", rawCF)
+	}
+	prefix := rawCF[:atIdx+1] // "docker:docker@"
+
+	// External: use localhost:mappedPort (works from Bazel sandbox, CI, Docker Desktop)
+	externalCF := fmt.Sprintf("%s%s:%s", prefix, host, mapped.Port())
+
+	// Internal: use containerIP:port (works from containers on same Docker network)
+	internalCF := rawCF // already has containerIP:port
+
+	// WithDirectIP: use internal (bridge IP) cluster file for external clients too.
+	// Avoids DNAT assertion spam but requires direct bridge IP routing.
+	primaryCF := externalCF
+	if cfg.directIP {
+		primaryCF = internalCF
+	}
+
+	c := &Container{
+		Container:   ctr,
+		network:     cfg.network,
+		clusterFile: primaryCF,
+		internalCF:  internalCF,
+		containerIP: containerIP,
+		mappedPort:  mapped.Int(),
+		config:      cfg,
+	}
+
+	// Auto-initialize unless disabled.
+	if cfg.autoInit {
+		if err := c.InitializeDatabase(ctx); err != nil {
+			_ = c.Terminate(ctx)
+			return nil, fmt.Errorf("initialize database: %w", err)
 		}
-		_ = container.Terminate(ctx)
-		_ = socatContainer.Terminate(ctx)
-		_ = nw.Remove(ctx)
-		return nil, fmt.Errorf("wait for FDB: %w", err)
 	}
 
-	return &Container{
-		Container:      container,
-		socatContainer: socatContainer,
-		network:        nw,
-		config:         config,
-		externalPort:   sharedPort, // This is the shared port for client connections
-	}, nil
+	return c, nil
 }
 
-// ConnectionString returns the connection string to connect to the FoundationDB cluster via socat
-func (c *Container) ConnectionString(ctx context.Context) (string, error) {
-	// Get socat container host and mapped port
-	host, err := c.socatContainer.Host(ctx)
-	if err != nil {
-		return "", fmt.Errorf("get socat host: %w", err)
-	}
-
-	// Get the mapped port for our socat container
-	port, err := c.socatContainer.MappedPort(ctx, "4500/tcp")
-	if err != nil {
-		return "", fmt.Errorf("get socat mapped port: %w", err)
-	}
-
-	return fmt.Sprintf("%s:%s", host, port.Port()), nil
+// ClusterFile returns the cluster file content for external clients.
+// Uses localhost:mappedPort, which works from Bazel sandboxes, CI runners, etc.
+func (c *Container) ClusterFile(_ context.Context) (string, error) {
+	return c.clusterFile, nil
 }
 
-// ClusterFile returns the cluster file content for external Go client via socat
-func (c *Container) ClusterFile(ctx context.Context) (string, error) {
-	// Get socat container host and mapped port
-	host, err := c.socatContainer.Host(ctx)
+// MustClusterFile returns the cluster file content, panicking on error.
+func (c *Container) MustClusterFile(ctx context.Context) string {
+	cf, err := c.ClusterFile(ctx)
 	if err != nil {
-		return "", fmt.Errorf("get socat host: %w", err)
+		panic(fmt.Sprintf("ClusterFile: %v", err))
 	}
-
-	// Get the mapped port for our socat container
-	port, err := c.socatContainer.MappedPort(ctx, "4500/tcp")
-	if err != nil {
-		return "", fmt.Errorf("get socat mapped port: %w", err)
-	}
-
-	// Return cluster file content (format must match Java: "docker:docker@host:port")
-	return fmt.Sprintf("docker:docker@%s:%s", host, port.Port()), nil
+	return cf
 }
 
 // ClusterFilePath writes the cluster file to a temp file and returns the path.
-// The caller can pass this directly to fdb.OpenDatabase(path).
-// The file is cleaned up when the container is terminated.
-func (c *Container) ClusterFilePath(ctx context.Context) (string, error) {
-	content, err := c.ClusterFile(ctx)
-	if err != nil {
-		return "", err
-	}
+// The file persists until the caller removes it.
+func (c *Container) ClusterFilePath(_ context.Context) (string, error) {
 	f, err := os.CreateTemp("", "fdb_cluster_*.txt")
 	if err != nil {
-		return "", fmt.Errorf("create temp cluster file: %w", err)
+		return "", fmt.Errorf("create temp file: %w", err)
 	}
-	if _, err := f.WriteString(content); err != nil {
+	if _, err := f.WriteString(c.clusterFile); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return "", fmt.Errorf("write cluster file: %w", err)
@@ -314,111 +251,173 @@ func (c *Container) ClusterFilePath(ctx context.Context) (string, error) {
 	return f.Name(), nil
 }
 
-// NetworkName returns the Docker network name this container is on.
-// Use this to attach other containers to the same network.
+// ConnectionString returns "host:port" for the FDB server (external, port-mapped).
+func (c *Container) ConnectionString(_ context.Context) (string, error) {
+	host, err := c.Host(context.Background())
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:%d", host, c.mappedPort), nil
+}
+
+// NetworkName returns the Docker network name. Returns empty string if the container
+// is on the default bridge (no custom network). Use this to attach other containers
+// to the same network for inter-container communication.
 func (c *Container) NetworkName() string {
-	return c.network.Name
+	if c.network != nil {
+		return c.network.Name
+	}
+	return ""
 }
 
-// InternalAddress returns the FDB address reachable from within the Docker network.
-// Format: "foundationdb:<port>" — the container alias on the shared network.
+// InternalAddress returns the FDB address reachable from within Docker networks.
+// Uses the container's bridge IP: "containerIP:4500".
 func (c *Container) InternalAddress() string {
-	return fmt.Sprintf("foundationdb:%d", c.externalPort)
+	return fmt.Sprintf("%s:%d", c.containerIP, c.config.fdbPort)
 }
 
-// InternalClusterFile returns a cluster file string usable from within the Docker network.
+// InternalClusterFile returns a cluster file string usable from containers on the
+// same Docker network. Uses the container's bridge IP (no port mapping needed).
 func (c *Container) InternalClusterFile() string {
-	return fmt.Sprintf("docker:docker@%s", c.InternalAddress())
+	return c.internalCF
 }
 
-// Exec runs a command inside the FDB container.
-func (c *Container) Exec(ctx context.Context, cmd []string) (int, io.Reader, error) {
-	return c.Container.Exec(ctx, cmd)
-}
-
-// APIVersion returns the configured FDB API version
+// APIVersion returns the configured FDB API version.
 func (c *Container) APIVersion() int {
-	return c.config.APIVersion
+	return c.config.apiVersion
 }
 
-// Database returns the configured database name
+// Database returns the configured database name.
 func (c *Container) Database() string {
-	return c.config.Database
+	return c.config.database
 }
 
-// Version returns the configured FoundationDB version
+// Version returns the configured FoundationDB version.
 func (c *Container) Version() string {
-	return c.config.Version
+	return c.config.version
 }
 
-// InitializeDatabase configures the FoundationDB database for single-node operation
+// FDBPort returns the FDB port inside the container.
+func (c *Container) FDBPort() int {
+	return c.config.fdbPort
+}
+
+// MappedPort returns the host port mapped to FDB's container port.
+func (c *Container) MappedPort() int {
+	return c.mappedPort
+}
+
+// InitializeDatabase configures the database for single-node operation.
+// This is called automatically by [Run] unless [WithoutInit] is used.
+//
+// The configure command uses the storage engine and redundancy mode from options.
+// Default: "memory" engine, "single" redundancy, tenant_mode=optional_experimental.
+//
+// This method is idempotent — calling it on an already-configured database is safe.
 func (c *Container) InitializeDatabase(ctx context.Context) error {
-	// Check context before starting
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("context cancelled before initialization: %w", err)
+		return fmt.Errorf("context cancelled: %w", err)
 	}
 
-	// Add a timeout for the database initialization to prevent hanging
 	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Give FDB a moment to be fully ready after "FDBD joined cluster" log appears
-	time.Sleep(2 * time.Second)
+	// Give FDB a moment to stabilize after "FDBD joined cluster".
+	time.Sleep(1 * time.Second)
 
-	// Run fdbcli WITHOUT --cluster-file (it uses the default /etc/foundationdb/fdb.cluster)
-	// Enable tenant_mode=optional_experimental to support multi-tenancy
-	exitCode, output, err := c.Exec(initCtx, []string{
-		"/usr/bin/fdbcli", "--exec", "configure new single memory tenant_mode=optional_experimental",
-	})
+	cmd := fmt.Sprintf("configure new %s %s tenant_mode=%s",
+		c.config.redundancyMode, c.config.storageEngine, c.config.tenantMode)
 
-	outputBytes, _ := io.ReadAll(output)
-	outputStr := string(outputBytes)
-
+	output, err := c.FDBCLIExec(initCtx, cmd)
 	if err != nil {
-		// Check if it was a timeout
-		if initCtx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("timeout initializing database (60s exceeded), output: %s", outputStr)
+		// "Database already exists" is fine — idempotent.
+		if strings.Contains(output, "already exists") {
+			return nil
 		}
-		return fmt.Errorf("failed to run fdbcli: %w (output: %s)", err, outputStr)
-	}
-
-	if exitCode != 0 {
-		return fmt.Errorf("fdbcli exited with code %d: %s", exitCode, outputStr)
-	}
-
-	// Check for success message
-	if !strings.Contains(outputStr, "Database created") {
-		return fmt.Errorf("database not created, output: %s", outputStr)
+		return fmt.Errorf("fdbcli configure: %w (output: %s)", err, output)
 	}
 
 	return nil
 }
 
-// Terminate terminates both containers and cleans up the network.
+// FDBCLIExec runs an fdbcli command inside the container and returns the output.
+//
+// Example:
+//
+//	output, err := container.FDBCLIExec(ctx, "status details")
+func (c *Container) FDBCLIExec(ctx context.Context, command string) (string, error) {
+	exitCode, reader, err := c.Exec(ctx, []string{
+		"/usr/bin/fdbcli", "--exec", command,
+	}, tcexec.Multiplexed())
+	if err != nil {
+		return "", fmt.Errorf("exec fdbcli: %w", err)
+	}
+
+	outputBytes, _ := io.ReadAll(reader)
+	output := string(outputBytes)
+
+	if exitCode != 0 {
+		return output, fmt.Errorf("fdbcli exited with code %d", exitCode)
+	}
+
+	return output, nil
+}
+
+// Status returns the FDB cluster status output.
+func (c *Container) Status(ctx context.Context) (string, error) {
+	return c.FDBCLIExec(ctx, "status details")
+}
+
+// Pause freezes all processes in the container using Docker pause.
+// The container remains running but FDB becomes unreachable. TCP connections stay
+// open but will time out. Use this to simulate network partitions or FDB hangs.
+//
+// Call [Unpause] to resume.
+func (c *Container) Pause(ctx context.Context) error {
+	dockerClient, err := newDockerClient()
+	if err != nil {
+		return fmt.Errorf("docker client: %w", err)
+	}
+	defer dockerClient.Close()
+
+	return dockerClient.ContainerPause(ctx, c.GetContainerID())
+}
+
+// Unpause resumes a paused container. See [Pause].
+func (c *Container) Unpause(ctx context.Context) error {
+	dockerClient, err := newDockerClient()
+	if err != nil {
+		return fmt.Errorf("docker client: %w", err)
+	}
+	defer dockerClient.Close()
+
+	return dockerClient.ContainerUnpause(ctx, c.GetContainerID())
+}
+
+// Terminate terminates the container. The network, if user-provided via
+// [WithNetwork], is NOT removed — the caller owns it.
 func (c *Container) Terminate(ctx context.Context) error {
-	var errs []error
+	return c.Container.Terminate(ctx)
+}
 
-	// Terminate FoundationDB container
-	if err := c.Container.Terminate(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("terminate FDB container: %w", err))
+// readContainerFile reads a file from inside a running container.
+// Uses Multiplexed() to strip Docker exec stream headers from the output.
+func readContainerFile(ctx context.Context, ctr testcontainers.Container, path string) (string, error) {
+	exitCode, reader, err := ctr.Exec(ctx, []string{"cat", path}, tcexec.Multiplexed())
+	if err != nil {
+		return "", fmt.Errorf("exec cat %s: %w", path, err)
 	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", fmt.Errorf("read output: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("cat %s exited %d: %s", path, exitCode, string(data))
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
-	// Terminate socat container
-	if c.socatContainer != nil {
-		if err := c.socatContainer.Terminate(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("terminate socat container: %w", err))
-		}
-	}
-
-	// Remove network
-	if c.network != nil {
-		if err := c.network.Remove(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("remove network: %w", err))
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("cleanup errors: %v", errs)
-	}
-	return nil
+// newDockerClient creates a Docker API client using default environment config.
+func newDockerClient() (*client.Client, error) {
+	return client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 }

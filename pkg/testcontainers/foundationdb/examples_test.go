@@ -6,129 +6,77 @@ import (
 	"log"
 )
 
-// ExampleRun demonstrates how to start a FoundationDB container
 func ExampleRun() {
 	ctx := context.Background()
 
-	// Start a FoundationDB container with default settings
+	// Start a FoundationDB container — auto-initialized, ready to use.
 	container, err := Run(ctx, "")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Printf("Failed to terminate container: %v", err)
-		}
-	}()
+	defer container.Terminate(ctx)
 
-	// Get connection information
-	connStr, err := container.ConnectionString(ctx)
+	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("FoundationDB connection string: %s\n", connStr)
+	fmt.Printf("Cluster file: %s\n", clusterFile)
 }
 
-// ExampleRun_withCustomConfiguration demonstrates how to start a FoundationDB container with custom configuration
 func ExampleRun_withCustomConfiguration() {
 	ctx := context.Background()
 
-	// Start FoundationDB container with custom settings
 	container, err := Run(ctx, "",
 		WithDatabase("my_test_db"),
 		WithAPIVersion(720),
 		WithVersion("7.1.61"),
-		WithMemory("4GB"),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Printf("Failed to terminate container: %v", err)
-		}
-	}()
-
-	// Get cluster file content for FDB client
-	clusterFile, err := container.ClusterFile(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
+	defer container.Terminate(ctx)
 
 	fmt.Printf("Database: %s\n", container.Database())
 	fmt.Printf("API Version: %d\n", container.APIVersion())
 	fmt.Printf("Version: %s\n", container.Version())
-	fmt.Printf("Cluster file: %s\n", clusterFile)
 }
 
-// ExampleContainer_ConnectionString demonstrates how to get the connection string from a running container
-func ExampleContainer_ConnectionString() {
+func ExampleContainer_FDBCLIExec() {
 	ctx := context.Background()
 
 	container, err := Run(ctx, "")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Printf("Failed to terminate container: %v", err)
-		}
-	}()
+	defer container.Terminate(ctx)
 
-	// Get the connection string to connect to FoundationDB
-	connStr, err := container.ConnectionString(ctx)
+	output, err := container.FDBCLIExec(ctx, "status minimal")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("Connect to FoundationDB at: %s\n", connStr)
+	fmt.Printf("FDB status: %s\n", output)
 }
 
-// ExampleContainer_ClusterFile demonstrates how to get the cluster file content
-func ExampleContainer_ClusterFile() {
+func ExampleWithNetwork() {
 	ctx := context.Background()
 
-	container, err := Run(ctx, "")
+	// Create a shared network for multi-container setups.
+	nw, err := CreateNetwork(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Printf("Failed to terminate container: %v", err)
-		}
-	}()
+	defer nw.Remove(ctx)
 
-	// Get cluster file content for FDB client configuration
-	clusterFile, err := container.ClusterFile(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	fmt.Printf("Cluster file content: %s\n", clusterFile)
-
-	// This cluster file content can be written to a file or used directly
-	// with FDB client libraries that accept cluster file content
-}
-
-// ExampleWithVersion demonstrates how to run a specific FoundationDB version
-func ExampleWithVersion() {
-	ctx := context.Background()
-
-	// Run FoundationDB 7.1.61 (older version for compatibility testing)
 	container, err := Run(ctx, "",
-		WithVersion("7.1.61"),
-		WithAPIVersion(710),
+		WithNetwork(nw, "fdb-primary"),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer func() {
-		if err := container.Terminate(ctx); err != nil {
-			log.Printf("Failed to terminate container: %v", err)
-		}
-	}()
+	defer container.Terminate(ctx)
 
-	fmt.Printf("Running FoundationDB version: %s\n", container.Version())
-	fmt.Printf("Using API version: %d\n", container.APIVersion())
+	fmt.Printf("Network: %s\n", container.NetworkName())
+	fmt.Printf("Internal address: %s\n", container.InternalAddress())
 }

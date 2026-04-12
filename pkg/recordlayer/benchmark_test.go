@@ -34,9 +34,6 @@ func ensureBenchDB(b *testing.B) {
 		if err != nil {
 			b.Fatalf("failed to start FDB container: %v", err)
 		}
-		if err := container.InitializeDatabase(ctx); err != nil {
-			b.Fatalf("failed to init FDB: %v", err)
-		}
 		clusterFile, err := container.ClusterFile(ctx)
 		if err != nil {
 			b.Fatalf("failed to get cluster file: %v", err)

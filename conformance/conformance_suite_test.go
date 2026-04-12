@@ -28,10 +28,8 @@ var _ = BeforeSuite(func() {
 	// Start ONE container per parallel node
 	sharedContainer, err = foundationdbtc.Run(setupCtx, "",
 		foundationdbtc.WithAPIVersion(720),
+		foundationdbtc.WithDirectIP(),
 	)
-	Expect(err).NotTo(HaveOccurred())
-
-	err = sharedContainer.InitializeDatabase(setupCtx)
 	Expect(err).NotTo(HaveOccurred())
 
 	// Open ONE database connection for the entire suite.
