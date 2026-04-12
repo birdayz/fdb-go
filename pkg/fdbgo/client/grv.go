@@ -36,7 +36,10 @@ type grvCache struct {
 }
 
 // tryCache returns the cached version if it's fresh enough.
-func (c *grvCache) tryCache() (int64, bool) {
+// priority determines which ratekeeper throttle to check:
+// BATCH checks lastRkBatch, DEFAULT checks lastRkDefault.
+// Matches C++ DatabaseContext::getConsistentReadVersion throttle checks.
+func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 	v := c.version.Load()
 	if v == 0 {
 		return 0, false
@@ -48,8 +51,14 @@ func (c *grvCache) tryCache() (int64, bool) {
 		return 0, false // stale
 	}
 
-	// Check ratekeeper throttle cooldown (default priority).
-	lastThrottle := c.lastRkDefault.Load()
+	// Check ratekeeper throttle cooldown for the requesting priority.
+	// C++ checks lastRkBatchThrottleTime for BATCH, lastRkDefaultThrottleTime for DEFAULT.
+	var lastThrottle int64
+	if priority == grvPriorityBatch {
+		lastThrottle = c.lastRkBatch.Load()
+	} else {
+		lastThrottle = c.lastRkDefault.Load()
+	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {
 		return 0, false // throttled — must contact proxy
 	}
@@ -176,7 +185,7 @@ func (b *grvBatcher) getReadVersion(db *database, ctx context.Context, flags uin
 	// SYSTEM_IMMEDIATE bypasses cache — it needs a guaranteed-fresh version.
 	isImmediate := b.priority == grvPrioritySystemImmediate
 	if !isImmediate {
-		if v, ok := db.grvCache.tryCache(); ok {
+		if v, ok := db.grvCache.tryCache(b.priority); ok {
 			// Start background refresher on first cache hit.
 			b.refreshOnce.Do(func() {
 				db.wg.Add(1)
