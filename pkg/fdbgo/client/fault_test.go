@@ -106,7 +106,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -120,12 +120,6 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		t.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	time.Sleep(2 * time.Second)
 
 	_, internalReader, _ := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	internalBytes, _ := io.ReadAll(internalReader)
@@ -332,7 +326,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -346,12 +340,6 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		t.Fatalf("fdbcli configure exit: %d", exitCode)
-	}
-	time.Sleep(2 * time.Second)
 
 	_, internalReader, _ := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
 	internalBytes, _ := io.ReadAll(internalReader)

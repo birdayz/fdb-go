@@ -10,20 +10,18 @@ import (
 )
 
 func TestFoundationDBDatabaseConnection(t *testing.T) {
-	setupCtx, setupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer setupCancel()
+	t.Parallel()
 
-	container, err := foundationdb.Run(setupCtx, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	container, err := foundationdb.Run(ctx, "")
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
-	defer container.Terminate(context.Background())
+	defer container.Terminate(ctx)
 
-	if err := container.InitializeDatabase(setupCtx); err != nil {
-		t.Fatal(err)
-	}
-
-	path, err := container.ClusterFilePath(setupCtx)
+	path, err := container.ClusterFilePath(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +33,23 @@ func TestFoundationDBDatabaseConnection(t *testing.T) {
 	}
 	defer db.Close()
 
+	// Verify we can execute a transaction.
 	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
-		tr.Get(gofdb.Key("test_key")).MustGet()
+		tr.Set(gofdb.Key("test_key"), []byte("test_value"))
 		return nil, nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("write transaction: %v", err)
+	}
+
+	// Read it back.
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(gofdb.Key("test_key")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read transaction: %v", err)
+	}
+	if string(result.([]byte)) != "test_value" {
+		t.Fatalf("expected 'test_value', got %q", result)
 	}
 }

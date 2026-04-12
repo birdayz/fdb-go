@@ -48,7 +48,39 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 
-## Step 4: End shift
+## Step 4: Review loop
+
+When implementation is done and tests pass:
+
+1. **Push and mark PR ready for review:**
+   ```bash
+   git push origin {shift-name}
+   gh pr ready  # remove draft status
+   ```
+
+2. **Request review** by commenting on the PR:
+   ```bash
+   gh pr comment --body "@claude review"
+   ```
+
+3. **Wait for reviewer feedback.** Use `gh run watch <id>` to wait for the review job, then read comments:
+   ```bash
+   gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'
+   gh run watch <id> --exit-status
+   gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[-1].body'
+   ```
+
+4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a suggestion is wrong or unnecessary, explain why in a reply. For valid feedback:
+   - Fix the issue
+   - Commit, push
+   - **CRITICAL: Request re-review.** Comment on the PR summarizing what was fixed and tag `@claude` to trigger another review:
+     ```bash
+     gh pr comment --body "@claude Fixed X (commit abc123). Please review again."
+     ```
+
+5. **Wait for the new review** (step 3 again). Read the feedback. If new issues found, fix and re-request (step 4). **Keep iterating until the reviewer finds no new issues.** Only then is the PR merge-ready.
+
+## Step 5: End shift
 
 When the user says shift is over, or 8 hours have passed:
 
@@ -63,7 +95,7 @@ When the user says shift is over, or 8 hours have passed:
 
 3. **Wait for CI green.**
 
-4. **Merge PR:**
+4. **Merge PR** (only if review is approved):
    ```bash
    gh pr merge --squash --subject "{shift-name}: {summary}"
    ```

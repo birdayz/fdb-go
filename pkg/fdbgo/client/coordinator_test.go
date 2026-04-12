@@ -27,7 +27,7 @@ func TestCoordinatorBootstrap(t *testing.T) {
 	defer cancel()
 
 	// Start FDB testcontainer with version matching our wire protocol (7.3.75).
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -46,13 +46,6 @@ func TestCoordinatorBootstrap(t *testing.T) {
 		t.Fatalf("parse cluster string: %v", err)
 	}
 	t.Logf("coordinators: %v", cf.Coordinators)
-
-	// Configure the cluster.
-	exitCode, _, err := container.Exec(ctx, []string{
-		"fdbcli", "--exec", "configure new single ssd; status",
-	})
-	t.Logf("fdbcli configure+status exit: %d, err: %v", exitCode, err)
-	time.Sleep(2 * time.Second)
 
 	// Read the INTERNAL cluster file from the container.
 	_, internalReader, err := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})
@@ -295,7 +288,7 @@ func TestGetRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
@@ -309,11 +302,6 @@ func TestGetRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-
-	// Configure cluster.
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	t.Logf("fdbcli configure exit: %d", exitCode)
-	time.Sleep(2 * time.Second)
 
 	// Read internal cluster file.
 	_, internalReader, _ := container.Exec(ctx, []string{"cat", "/var/fdb/fdb.cluster"})

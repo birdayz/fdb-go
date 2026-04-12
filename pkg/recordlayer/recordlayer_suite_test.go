@@ -36,9 +36,6 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = container.InitializeDatabase(ctx)
-	Expect(err).NotTo(HaveOccurred())
-
 	clusterFile, err := container.ClusterFile(ctx)
 	Expect(err).NotTo(HaveOccurred())
 

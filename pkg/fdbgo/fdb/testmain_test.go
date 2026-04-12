@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tcfdb.Run(ctx, "")
+	container, err := tcfdb.Run(ctx, "", tcfdb.WithStorageEngine("ssd"), tcfdb.WithDirectIP())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start FDB container: %v\n", err)
 		os.Exit(1)
@@ -43,13 +43,6 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		container.Terminate(ctx)
 		fmt.Fprintf(os.Stderr, "parse cluster string: %v\n", err)
-		os.Exit(1)
-	}
-
-	exitCode, _, _ := container.Exec(ctx, []string{"fdbcli", "--exec", "configure new single ssd"})
-	if exitCode != 0 {
-		container.Terminate(ctx)
-		fmt.Fprintf(os.Stderr, "fdbcli configure exit: %d\n", exitCode)
 		os.Exit(1)
 	}
 	for i := 0; i < 30; i++ {

@@ -36,16 +36,18 @@ func TestBindingTester(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	// 1. Start FDB container.
-	fdbContainer, err := tcfdb.Run(ctx, "")
+	// 1. Create shared network + start FDB container.
+	nw, err := tcfdb.CreateNetwork(ctx)
+	if err != nil {
+		t.Fatalf("create network: %v", err)
+	}
+	defer nw.Remove(ctx)
+
+	fdbContainer, err := tcfdb.Run(ctx, "", tcfdb.WithNetwork(nw))
 	if err != nil {
 		t.Fatalf("start FDB: %v", err)
 	}
 	defer fdbContainer.Terminate(ctx)
-
-	if err := fdbContainer.InitializeDatabase(ctx); err != nil {
-		t.Fatalf("init DB: %v", err)
-	}
 
 	clusterFile := fdbContainer.InternalClusterFile()
 	networkName := fdbContainer.NetworkName()
@@ -143,7 +145,9 @@ func buildDockerContext(t *testing.T) (string, error) {
 	}
 
 	// Generate apiversion.py (cmake template → constant).
-	os.WriteFile(filepath.Join(dir, "python/fdb/apiversion.py"), []byte("LATEST_API_VERSION = 730\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "python/fdb/apiversion.py"), []byte("LATEST_API_VERSION = 730\n"), 0o644); err != nil {
+		return "", fmt.Errorf("write apiversion.py: %w", err)
+	}
 
 	// stacktester binary (//cmd/fdb-stacktester).
 	bin := filepath.Join(runfiles, ws, "cmd/fdb-stacktester/fdb-stacktester_/fdb-stacktester")

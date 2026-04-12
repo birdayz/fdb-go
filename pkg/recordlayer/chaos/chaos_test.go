@@ -34,10 +34,6 @@ func TestMain(m *testing.M) {
 		log.Fatalf("chaos: failed to start FDB container: %v", err)
 	}
 
-	if err := container.InitializeDatabase(ctx); err != nil {
-		log.Fatalf("chaos: failed to initialize FDB: %v", err)
-	}
-
 	clusterFile, err := container.ClusterFile(ctx)
 	if err != nil {
 		log.Fatalf("chaos: failed to get cluster file: %v", err)
