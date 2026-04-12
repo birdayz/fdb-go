@@ -43,3 +43,25 @@ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout t
 		return transport.Response{}, ctx.Err()
 	}
 }
+
+// waitReplyOrProxiesChanged is like waitReply but also wakes on proxy list
+// changes. Used by commit to detect mid-commit topology changes (C++
+// onProxiesChanged). If the proxy set changes, the commit result is unknown
+// — the proxy may have been removed before processing our commit.
+func waitReplyOrProxiesChanged(replyCh <-chan transport.Response, ctx context.Context, timeout time.Duration, proxiesChanged <-chan struct{}) (transport.Response, error) {
+	timer := getTimer(timeout)
+	select {
+	case resp := <-replyCh:
+		putTimer(timer)
+		return resp, nil
+	case <-proxiesChanged:
+		putTimer(timer)
+		return transport.Response{}, context.DeadlineExceeded
+	case <-timer.C:
+		putTimer(timer)
+		return transport.Response{}, context.DeadlineExceeded
+	case <-ctx.Done():
+		putTimer(timer)
+		return transport.Response{}, ctx.Err()
+	}
+}

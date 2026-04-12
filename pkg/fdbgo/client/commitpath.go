@@ -42,7 +42,13 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
 	marshalBufPool.Put(poolBuf)
 
-	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	// Monitor for proxy list changes while waiting for commit reply.
+	// C++ onProxiesChanged: if the proxy we committed to is no longer in the
+	// active set, the commit result is unknown. Detect this immediately instead
+	// of waiting for the RPC timeout.
+	proxiesChanged := tx.db.waitProxiesChanged()
+
+	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
 	if err != nil {
 		cancelReply()
 		return &wire.FDBError{Code: ErrCommitUnknownResult}
