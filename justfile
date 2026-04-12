@@ -16,9 +16,11 @@ ensure-buf:
     curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
     chmod +x "$BUF"
 
-# Generate protobuf code
+# Generate protobuf code (clean + regenerate all)
 generate: ensure-buf
+    rm -rf gen/
     .tools/buf generate
+    bazelisk run //:gazelle
 
 # Build all targets (includes nogo lint)
 build:

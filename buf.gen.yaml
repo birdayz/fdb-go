@@ -13,3 +13,12 @@ plugins:
     out: gen
     opt:
       - paths=source_relative
+  - local:
+      - bazelisk
+      - run
+      - "@com_github_planetscale_vtprotobuf//cmd/protoc-gen-go-vtproto"
+      - --
+    out: gen
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size+pool
