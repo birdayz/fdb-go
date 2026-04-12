@@ -358,8 +358,13 @@ func parseJUnitXML(path string) ([]TestResult, error) {
 			} else if tc.Skipped != nil {
 				status = StatusSkip
 			}
+			name := tc.Name
+			// Strip Ginkgo node type prefix — every spec has [It] and it's noise.
+			for _, prefix := range []string{"[It] ", "[Measure] "} {
+				name = strings.TrimPrefix(name, prefix)
+			}
 			results = append(results, TestResult{
-				Name:     tc.Name,
+				Name:     name,
 				Status:   status,
 				Duration: time.Duration(tc.Time * float64(time.Second)),
 			})
