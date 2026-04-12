@@ -117,35 +117,58 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	// for the retry, so any write key guarantees conflict detection.
 	key := tx.writeConflicts[0].Begin
 
-	dummy := &Transaction{
-		db:           tx.db,
-		state:        txStateActive,
-		tenantId:     NoTenantID, // dummy uses raw access
-		creationTime: time.Now(),
-		isDummy:      true, // prevents recursive commitDummyTransaction
-	}
-	// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
-	dummy.writeSystemKeys = true // RAW_ACCESS equivalent
-	dummy.readSystemKeys = true
-	dummy.lockAware = true
-
-	// Add the key as both read and write conflict, matching C++.
-	dummy.addReadConflictForKey(key)
-	dummy.addWriteConflictForKey(key)
-
 	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
-	// Bounded by the parent context (transaction timeout or caller cancel).
+	// Create a fresh dummy each iteration because OnError/reset clears conflict
+	// ranges, and the dummy must always carry the conflict key to serve as a
+	// synchronization barrier. Bounded by the parent context.
 	for retries := 0; retries < 10; retries++ {
 		if ctx.Err() != nil {
 			return // caller gave up, don't block forever
 		}
-		if err := dummy.commit(ctx); err != nil {
-			if retryErr := dummy.OnError(err); retryErr != nil {
-				return // non-retryable error, give up
+
+		dummy := &Transaction{
+			db:           tx.db,
+			state:        txStateActive,
+			tenantId:     NoTenantID, // dummy uses raw access
+			creationTime: time.Now(),
+			isDummy:      true, // prevents recursive commitDummyTransaction
+		}
+		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
+		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
+		dummy.readSystemKeys = true
+		dummy.lockAware = true
+
+		// Add the key as both read and write conflict, matching C++.
+		dummy.addReadConflictForKey(key)
+		dummy.addWriteConflictForKey(key)
+
+		// Use uppercase Commit() which calls ensureReadVersion() before
+		// sending the request. Without a read version, ReadSnapshot=0
+		// is sent to FDB which crashes the server.
+		if err := dummy.Commit(ctx); err != nil {
+			var fdbErr *wire.FDBError
+			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
+				time.Sleep(defaultBackoff)
+				continue
 			}
-			continue
+			return // non-retryable error, give up
 		}
 		return // dummy committed successfully — original is no longer in-flight
+	}
+}
+
+// isRetryable returns true if the FDB error code is retryable.
+func isRetryable(code int) bool {
+	switch code {
+	case ErrTransactionTooOld, ErrFutureVersion,
+		ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
+		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
+		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
+		ErrAllProxiesUnreachable, ErrCommitUnknownResult, ErrClusterVersionChanged,
+		ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+		return true
+	default:
+		return false
 	}
 }
 
