@@ -128,5 +128,5 @@ output "ssh_command" {
 }
 
 output "report_url" {
-  value = "https://${minio_s3_bucket.reports.bucket}.${var.s3_endpoint}/latest.html"
+  value = "https://${minio_s3_bucket.reports.bucket}.${var.s3_endpoint}/reports/master/latest.html"
 }

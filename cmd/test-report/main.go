@@ -84,27 +84,6 @@ func (n *TreeNode) TreeBadgeClass() string {
 	return "badge-pass"
 }
 
-// TreeDuration returns the aggregate duration of all descendant specs.
-func (n *TreeNode) TreeDuration() time.Duration {
-	if n.Leaf != nil {
-		return n.Leaf.Duration
-	}
-	var total time.Duration
-	for _, c := range n.Children {
-		total += c.TreeDuration()
-	}
-	return total
-}
-
-// TreeDurationStr returns the formatted aggregate duration.
-func (n *TreeNode) TreeDurationStr() string {
-	d := n.TreeDuration()
-	if d == 0 {
-		return ""
-	}
-	return formatDuration(d)
-}
-
 // TreeBadgeText returns the badge text for this container node.
 func (n *TreeNode) TreeBadgeText() string {
 	p, f, s := n.TreeCounts()
@@ -195,21 +174,15 @@ func parseGinkgoTreeJSON(path string) ([]TestResult, *TreeNode, error) {
 // ---- BEP JSON types (subset we care about) ----
 
 type bepEvent struct {
-	ID          bepID          `json:"id"`
-	TestResult  *bepTestResult `json:"testResult,omitempty"`
-	TestSummary *bepSummary    `json:"testSummary,omitempty"`
+	ID         bepID          `json:"id"`
+	TestResult *bepTestResult `json:"testResult,omitempty"`
 }
 
 type bepID struct {
-	TestResult  *bepTestResultID  `json:"testResult,omitempty"`
-	TestSummary *bepTestSummaryID `json:"testSummary,omitempty"`
+	TestResult *bepTestResultID `json:"testResult,omitempty"`
 }
 
 type bepTestResultID struct {
-	Label string `json:"label"`
-}
-
-type bepTestSummaryID struct {
 	Label string `json:"label"`
 }
 
@@ -223,11 +196,6 @@ type bepTestResult struct {
 type bepOutputFile struct {
 	Name string `json:"name"` // "test.xml", "test.log"
 	URI  string `json:"uri"`  // "file:///absolute/path"
-}
-
-type bepSummary struct {
-	OverallStatus      string `json:"overallStatus"`
-	TotalRunDurationMs string `json:"totalRunDurationMillis"`
 }
 
 // ---- JUnit XML types ----
@@ -419,7 +387,6 @@ func parseBEP(path string) ([]*TargetResult, error) {
 	type targetInfo struct {
 		label      string
 		xmlPath    string
-		logPath    string
 		status     string
 		durationMs int64
 		cached     bool
@@ -444,12 +411,8 @@ func parseBEP(path string) ([]*TargetResult, error) {
 				info.durationMs = ms
 			}
 			for _, out := range ev.TestResult.TestActionOutput {
-				path := uriToPath(out.URI)
-				switch out.Name {
-				case "test.xml":
-					info.xmlPath = path
-				case "test.log":
-					info.logPath = path
+				if out.Name == "test.xml" {
+					info.xmlPath = uriToPath(out.URI)
 				}
 			}
 			targets[label] = info
