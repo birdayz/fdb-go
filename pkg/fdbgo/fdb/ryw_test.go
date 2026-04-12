@@ -314,3 +314,135 @@ func TestReadYourOwnWrite_SetClearGetRangeReverse(t *testing.T) {
 		t.Fatalf("Transact: %v", err)
 	}
 }
+
+// TestReadYourOwnWrite_AtomicAddThenGet verifies that atomic Add is visible
+// to a subsequent Get in the same transaction via the RYW cache.
+func TestReadYourOwnWrite_AtomicAddThenGet(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Seed counter = 100.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		buf := make([]byte, 8)
+		buf[0] = 100
+		tr.Set(fdb.Key("ryw-atomic-add"), buf)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Add 7, then read in same tx.
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		param := make([]byte, 8)
+		param[0] = 7
+		tr.Add(fdb.Key("ryw-atomic-add"), param)
+
+		val := tr.Get(fdb.Key("ryw-atomic-add")).MustGet()
+		if val == nil {
+			t.Fatal("Get returned nil after Add")
+		}
+		got := int(val[0])
+		if got != 107 {
+			t.Errorf("expected 107 (100+7), got %d", got)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_SetThenAtomicAddThenGet verifies that Set followed by
+// atomic Add is correctly resolved by the RYW cache (no server round-trip needed).
+func TestReadYourOwnWrite_SetThenAtomicAddThenGet(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		buf := make([]byte, 8)
+		buf[0] = 50
+		tr.Set(fdb.Key("ryw-set-add"), buf)
+
+		param := make([]byte, 8)
+		param[0] = 25
+		tr.Add(fdb.Key("ryw-set-add"), param)
+
+		val := tr.Get(fdb.Key("ryw-set-add")).MustGet()
+		if val == nil {
+			t.Fatal("Get returned nil")
+		}
+		if int(val[0]) != 75 {
+			t.Errorf("expected 75 (50+25), got %d", val[0])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_MultipleAtomicsThenGet verifies that multiple atomic
+// operations on the same key accumulate correctly in the RYW cache.
+func TestReadYourOwnWrite_MultipleAtomicsThenGet(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		buf := make([]byte, 8)
+		buf[0] = 10
+		tr.Set(fdb.Key("ryw-multi-atomic"), buf)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		one := make([]byte, 8)
+		one[0] = 1
+		tr.Add(fdb.Key("ryw-multi-atomic"), one)
+		tr.Add(fdb.Key("ryw-multi-atomic"), one)
+		tr.Add(fdb.Key("ryw-multi-atomic"), one)
+
+		val := tr.Get(fdb.Key("ryw-multi-atomic")).MustGet()
+		if val == nil {
+			t.Fatal("Get returned nil")
+		}
+		if int(val[0]) != 13 {
+			t.Errorf("expected 13 (10+1+1+1), got %d", val[0])
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
+
+// TestReadYourOwnWrite_CompareAndClearThenGet verifies CompareAndClear
+// atomic is visible via RYW: if current value matches, key becomes absent.
+func TestReadYourOwnWrite_CompareAndClearThenGet(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key("ryw-cac"), []byte("match"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.CompareAndClear(fdb.Key("ryw-cac"), []byte("match"))
+
+		val := tr.Get(fdb.Key("ryw-cac")).MustGet()
+		if val != nil {
+			t.Errorf("expected nil after CompareAndClear, got %q", val)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+}
