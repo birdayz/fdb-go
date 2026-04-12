@@ -1466,6 +1466,57 @@ func TestSetTimeout_Preserved(t *testing.T) {
 	}
 }
 
+// TestSetTimeout_OverallBudget verifies that timeout is an overall budget
+// across all retries, NOT per-retry. Matches C++ where creationTime is set
+// once and the deadline = creationTime + timeout across all OnError retries.
+func TestSetTimeout_OverallBudget(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(100) // 100ms overall budget
+
+	// Simulate burning 60ms of the budget.
+	time.Sleep(60 * time.Millisecond)
+
+	// OnError resets the tx for retry but should NOT restart the timer.
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err != nil {
+		t.Fatalf("OnError should retry: %v", err)
+	}
+
+	// After retry reset, we should have ~40ms remaining (not a fresh 100ms).
+	// Sleep another 50ms to exhaust the remaining budget.
+	time.Sleep(50 * time.Millisecond)
+
+	// Now the timeout should fire because 60+50 = 110ms > 100ms budget.
+	if err := tx.checkTimeout(); err == nil {
+		t.Error("timeout should fire: overall budget of 100ms is exhausted after 110ms across retries")
+	}
+}
+
+// TestSetTimeout_ResetRestartsTimer verifies that user-facing Reset()
+// restarts the timeout timer (updates creationTime). Matches C++
+// ReadYourWritesTransaction::reset() which sets creationTime = now().
+func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive}
+	tx.SetTimeout(100) // 100ms
+
+	// Burn 80ms.
+	time.Sleep(80 * time.Millisecond)
+
+	// User Reset() should restart the timer.
+	tx.Reset()
+	tx.SetTimeout(100) // re-apply (persistent option)
+
+	// After Reset, the full 100ms budget should be available again.
+	// 80ms burned before Reset should NOT count.
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("timeout should not fire after Reset: %v", err)
+	}
+}
+
 // TestSetTimeout_Disabled verifies that timeout=0 disables the timeout.
 func TestSetTimeout_Disabled(t *testing.T) {
 	t.Parallel()
@@ -3231,6 +3282,54 @@ func TestOnErrorNonFDBError_CPort(t *testing.T) {
 	commitErr := tx.Commit(ctx)
 	if commitErr == nil {
 		t.Fatal("expected commit to fail on errored transaction")
+	}
+}
+
+// TestResourceConstrainedBackoff_CPort verifies that proxy memory errors
+// (1042, 1078) use RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) instead of
+// DEFAULT_MAX_BACKOFF (1s). Matches C++ NativeAPI.actor.cpp getBackoff().
+func TestResourceConstrainedBackoff_CPort(t *testing.T) {
+	t.Parallel()
+
+	// Test that after many retries, the backoff cap for proxy memory errors
+	// is higher than for normal errors.
+	txNormal := &Transaction{state: txStateActive, creationTime: time.Now()}
+	txProxy := &Transaction{state: txStateActive, creationTime: time.Now()}
+
+	// Drive both to max backoff by calling nextBackoff many times.
+	for i := 0; i < 20; i++ {
+		txNormal.nextBackoff(ErrNotCommitted)
+		txProxy.nextBackoff(ErrProxyMemoryLimitExceeded)
+	}
+
+	// Normal backoff should cap at 1s (DEFAULT_MAX_BACKOFF).
+	if txNormal.backoff > maxBackoff {
+		t.Errorf("normal backoff exceeds cap: %v > %v", txNormal.backoff, maxBackoff)
+	}
+
+	// Proxy memory backoff should cap at 30s (RESOURCE_CONSTRAINED_MAX_BACKOFF).
+	if txProxy.backoff > resourceConstrainedMaxBackoff {
+		t.Errorf("proxy backoff exceeds cap: %v > %v", txProxy.backoff, resourceConstrainedMaxBackoff)
+	}
+
+	// The proxy cap should be strictly higher than the normal cap.
+	if txProxy.backoff <= maxBackoff {
+		t.Errorf("proxy backoff should exceed normal cap: %v <= %v", txProxy.backoff, maxBackoff)
+	}
+}
+
+// TestBlobGranuleRetryable_CPort verifies that blob_granule_request_failed (1079)
+// is retryable. Matches C++ NativeAPI.actor.cpp onError().
+func TestBlobGranuleRetryable_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	err := tx.OnError(&wire.FDBError{Code: ErrBlobGranuleRequestFailed})
+	if err != nil {
+		t.Fatalf("blob_granule_request_failed should be retryable, got: %v", err)
+	}
+	if tx.retryCount != 1 {
+		t.Errorf("retryCount: got %d, want 1", tx.retryCount)
 	}
 }
 

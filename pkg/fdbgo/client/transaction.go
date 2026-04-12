@@ -33,13 +33,14 @@ const (
 	ErrProxyMemoryLimitExceeded  = 1042 // proxy_memory_limit_exceeded
 	ErrBatchTransactionThrottled = 1051 // batch_transaction_throttled
 	ErrGrvProxyMemoryLimit       = 1078 // grv_proxy_memory_limit_exceeded
+	ErrBlobGranuleRequestFailed  = 1079 // blob_granule_request_failed (retryable, C++ NativeAPI.actor.cpp)
 	ErrTagThrottled              = 1213 // tag_throttled
 	ErrProxyTagThrottled         = 1223 // proxy_tag_throttled
-	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard
-	ErrRangeLocked               = 1242 // transaction_rejected_range_locked
+	ErrThrottledHotShard         = 1235 // transaction_throttled_hot_shard (FDB 7.4+, future-proof)
+	ErrRangeLocked               = 1242 // transaction_rejected_range_locked (FDB 7.4+, future-proof)
 	ErrOperationFailed           = 4    // operation_failed (endpoint not supported)
 	ErrAllAlternativesFailed     = 1006 // all_alternatives_failed (Layer 2 only)
-	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2
+	ErrAllProxiesUnreachable     = 1200 // Go-internal: all proxies failed at Layer 2 (NOT C++ 1200=recruitment_failed)
 	ErrInvertedRange             = 2005 // inverted_range (begin > end)
 )
 
@@ -61,10 +62,11 @@ const (
 
 // Backoff constants — match C++ CLIENT_KNOBS.
 const (
-	defaultBackoff     = 10 * time.Millisecond // C++: DEFAULT_BACKOFF
-	backoffGrowthRate  = 2.0                   // C++: BACKOFF_GROWTH_RATE
-	maxBackoff         = 1 * time.Second       // C++: DEFAULT_MAX_BACKOFF
-	futureVersionDelay = 10 * time.Millisecond // C++: FUTURE_VERSION_RETRY_DELAY
+	defaultBackoff                = 10 * time.Millisecond // C++: DEFAULT_BACKOFF
+	backoffGrowthRate             = 2.0                   // C++: BACKOFF_GROWTH_RATE
+	maxBackoff                    = 1 * time.Second       // C++: DEFAULT_MAX_BACKOFF
+	resourceConstrainedMaxBackoff = 30 * time.Second      // C++: RESOURCE_CONSTRAINED_MAX_BACKOFF
+	futureVersionDelay            = 10 * time.Millisecond // C++: FUTURE_VERSION_RETRY_DELAY
 )
 
 // Endpoint indices from C++ interface definitions.
@@ -173,9 +175,13 @@ type Transaction struct {
 	tenantId int64
 
 	// Timeout: if non-zero, operations fail with ErrTransactionTimedOut
-	// after this duration from transaction creation (or last reset).
-	timeout  time.Duration
-	deadline time.Time
+	// after this duration from creation time (or last user Reset).
+	// C++ semantics: the timeout is an overall budget across all retries,
+	// NOT per-retry. Internal reset (OnError retry) does NOT restart the timer.
+	// Only user-facing Reset() restarts it by updating creationTime.
+	timeout      time.Duration
+	deadline     time.Time
+	creationTime time.Time // set on construction and user Reset(), NOT on OnError retry
 
 	// Retry limit: if hasRetryLimit is true, OnError will not retry
 	// when retryCount >= retryLimit.
@@ -742,6 +748,7 @@ func (tx *Transaction) Cancel() {
 // Unlike the internal reset() used by OnError (which preserves retryCount/backoff),
 // this clears everything including retry state. Options set via Set*() are preserved
 // across Reset, matching C++ ReadYourWritesTransaction::reset() + applyPersistentOptions.
+// Updates creationTime so the timeout budget restarts (matches C++ reset() behavior).
 //
 // Note: in-flight Watch() calls are NOT cancelled by Reset(). Use context cancellation
 // to cancel pending watches. This differs from C++ where reset triggers
@@ -749,6 +756,8 @@ func (tx *Transaction) Cancel() {
 func (tx *Transaction) Reset() {
 	tx.retryCount = 0
 	tx.backoff = 0
+	// C++ reset() updates creationTime = now(), restarting timeout window.
+	tx.creationTime = time.Now()
 	tx.reset()
 }
 
@@ -804,14 +813,22 @@ func (tx *Transaction) OnError(err error) error {
 		tx.reset()
 		return nil
 
-	case ErrNotCommitted, ErrDatabaseLocked, ErrProxyMemoryLimitExceeded,
-		ErrGrvProxyMemoryLimit, ErrProcessBehind, ErrBatchTransactionThrottled,
-		ErrTagThrottled, ErrProxyTagThrottled, ErrThrottledHotShard,
-		ErrRangeLocked, ErrAllProxiesUnreachable:
+	case ErrNotCommitted, ErrDatabaseLocked, ErrProcessBehind,
+		ErrBatchTransactionThrottled, ErrTagThrottled, ErrProxyTagThrottled,
+		ErrThrottledHotShard, ErrRangeLocked, ErrBlobGranuleRequestFailed,
+		ErrAllProxiesUnreachable:
 		// RETRYABLE_NOT_COMMITTED: exponential backoff.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_RETRYABLE_NOT_COMMITTED, code).
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff())
+		time.Sleep(tx.nextBackoff(fdbErr.Code))
+		tx.reset()
+		return nil
+
+	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit:
+		// Resource-constrained: higher backoff cap (30s vs 1s).
+		// C++ RESOURCE_CONSTRAINED_MAX_BACKOFF.
+		tx.retryCount++
+		time.Sleep(tx.nextBackoff(fdbErr.Code))
 		tx.reset()
 		return nil
 
@@ -822,7 +839,7 @@ func (tx *Transaction) OnError(err error) error {
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
 		copy(selfConflicts, tx.writeConflicts)
 		tx.retryCount++
-		time.Sleep(tx.nextBackoff())
+		time.Sleep(tx.nextBackoff(fdbErr.Code))
 		tx.reset()
 		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
 		return nil
@@ -850,8 +867,8 @@ func (tx *Transaction) SetReadVersion(version int64) {
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
-// If the transaction does not complete within this duration (from creation
-// or last reset), operations return ErrTransactionTimedOut (1031).
+// The timeout is an overall budget from creation time (or last user Reset),
+// NOT per-retry. OnError retries share the same deadline.
 // A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
 func (tx *Transaction) SetTimeout(ms int64) {
 	if ms <= 0 {
@@ -860,7 +877,12 @@ func (tx *Transaction) SetTimeout(ms int64) {
 		return
 	}
 	tx.timeout = time.Duration(ms) * time.Millisecond
-	tx.deadline = time.Now().Add(tx.timeout)
+	// Deadline is anchored to creationTime, matching C++:
+	// timebomb(options.timeoutInSeconds + creationTime, resetPromise)
+	if tx.creationTime.IsZero() {
+		tx.creationTime = time.Now()
+	}
+	tx.deadline = tx.creationTime.Add(tx.timeout)
 }
 
 // SetRetryLimit limits the number of retries in OnError.
@@ -876,21 +898,29 @@ func (tx *Transaction) SetRetryLimit(retries int64) {
 	tx.hasRetryLimit = true
 }
 
+// C++ sizeof constants for approximate size calculation.
+// MutationRef: uint8 type + 2×StringRef (16 bytes each) + Optional<uint32> + Optional<uint16> + bool ≈ 48 bytes.
+// KeyRangeRef: 2×StringRef (16 bytes each) = 32 bytes.
+const (
+	sizeofMutationRef = 48
+	sizeofKeyRangeRef = 32
+)
+
 // GetApproximateSize returns the approximate size of the transaction's mutations
-// and conflict ranges in bytes. Note: does not include per-mutation framing
-// overhead (~40 bytes/mutation in C++), so slightly underestimates near the
-// SetSizeLimit threshold. A transaction passing this check could still be
-// rejected server-side.
+// and conflict ranges in bytes. Matches C++ ReadYourWritesTransaction accounting:
+// each mutation includes sizeof(MutationRef), each conflict range includes
+// sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
+// key length again for the auto-generated write conflict range.
 func (tx *Transaction) GetApproximateSize() int64 {
 	var size int64
 	for _, m := range tx.mutations {
-		size += int64(len(m.Key)) + int64(len(m.Value))
+		size += int64(len(m.Key)) + int64(len(m.Value)) + sizeofMutationRef
 	}
 	for _, r := range tx.readConflicts {
-		size += int64(len(r.Begin)) + int64(len(r.End))
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
 	for _, r := range tx.writeConflicts {
-		size += int64(len(r.Begin)) + int64(len(r.End))
+		size += int64(len(r.Begin)) + int64(len(r.End)) + sizeofKeyRangeRef
 	}
 	return size
 }
@@ -1159,18 +1189,23 @@ func (tx *Transaction) reset() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.ryw.reset()
-	// Re-compute deadline from timeout (matches C++ option re-application).
+	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
+	// onError does NOT update creationTime, so the timeout is an overall
+	// budget across all retries. Only user-facing Reset() updates creationTime.
 	if tx.timeout > 0 {
-		tx.deadline = time.Now().Add(tx.timeout)
+		tx.deadline = tx.creationTime.Add(tx.timeout)
 	}
-	// Preserved across reset (match C++ option re-application on retry):
+	// Preserved across reset (match C++ persistent option re-application):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
-	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled, snapshotRYWDisabled, tenantId.
+	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled,
+	// snapshotRYWDisabled, tenantId, creationTime.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
 // the backoff for the next call. Matches C++ getBackoff in NativeAPI.actor.cpp.
-func (tx *Transaction) nextBackoff() time.Duration {
+// errCode determines the backoff cap: proxy memory errors (1042, 1078) use
+// RESOURCE_CONSTRAINED_MAX_BACKOFF (30s), all others use DEFAULT_MAX_BACKOFF (1s).
+func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	if tx.backoff == 0 {
 		tx.backoff = defaultBackoff
 	}
@@ -1179,6 +1214,12 @@ func (tx *Transaction) nextBackoff() time.Duration {
 	cap := maxBackoff
 	if tx.maxRetryDelay > 0 {
 		cap = tx.maxRetryDelay
+	}
+	// C++: proxy memory errors use RESOURCE_CONSTRAINED_MAX_BACKOFF (30s).
+	if errCode == ErrProxyMemoryLimitExceeded || errCode == ErrGrvProxyMemoryLimit {
+		if cap < resourceConstrainedMaxBackoff {
+			cap = resourceConstrainedMaxBackoff
+		}
 	}
 	tx.backoff = time.Duration(math.Min(float64(tx.backoff)*backoffGrowthRate, float64(cap)))
 	return delay
