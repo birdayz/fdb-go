@@ -58,7 +58,20 @@ RYW cache optimization (sorted-keys + two-pointer merge), FDB client correctness
 
 Extracted shared `queryLocations()` from `refresh()` and `refreshRange()` — both had ~100 lines of identical load-balance loop code. Now 5-line wrappers. -90 lines, zero behavioral change.
 
-### 6. Vollkonti shift system improvements
+### 6. Performance analysis and benchmarks
+
+- Sustained throughput benchmarks: Go 430 MB/s vs CGo 191 MB/s reads (30s sustained)
+- `TestBenchmarkSanity`: byte-exact correctness verification for all benchmarked operations
+- Root cause analysis: `fdb_future_block_until_ready` uses `sync.Mutex` for cross-thread signaling between Go goroutines and C network thread — 2 context switches per Get
+- Raw CGo call overhead measured: 27ns per boundary crossing
+- Written `pkg/fdbgo/bench/PERFORMANCE.md` with full breakdown
+
+### 7. Code cleanup
+
+- Location cache: deduplicated `refresh`/`refreshRange` into shared `queryLocations` (-90 lines)
+- Fixed `time.After` goroutine leaks in 4 backoff selects (location cache, bootstrap, runner)
+
+### 8. Vollkonti shift system improvements
 
 - Date in filenames: `swingshift-8_2026-04-12.md`
 - Active-shift check: `gh pr list --state open` before starting new shift
