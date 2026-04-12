@@ -428,8 +428,6 @@ func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) [
 	return results
 }
 
-// refreshRange queries commit proxies for locations overlapping [begin, end).
-// Returns all location entries from the response.
 // queryLocations is the shared load-balance loop for location queries.
 // Cycles all commit proxies with exponential backoff until success or ctx
 // cancellation. The buildRequest callback constructs the request body given
