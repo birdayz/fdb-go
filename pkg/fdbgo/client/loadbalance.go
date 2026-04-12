@@ -62,13 +62,6 @@ const (
 	penaltyBadThreshold      = 1.001
 )
 
-// Backoff constants for completely failed servers.
-const (
-	serverBackoffStart = 10 * time.Millisecond // LOAD_BALANCE_START_BACKOFF
-	serverBackoffMax   = 5 * time.Second       // LOAD_BALANCE_MAX_BACKOFF
-	serverBackoffRate  = 2.0                   // LOAD_BALANCE_BACKOFF_RATE
-)
-
 func newQueueModel() *QueueModel {
 	return &QueueModel{
 		servers: make(map[string]*queueData),
@@ -168,24 +161,26 @@ func (q *QueueModel) startRequest(addr string) float64 {
 }
 
 // endRequest decrements smoothOutstanding and updates latency/penalty/backoff.
+// delta is the value returned by startRequest (penalty at request time).
 // Matches C++ QueueModel::endRequest().
-func (q *QueueModel) endRequest(addr string, latency time.Duration, success bool) {
-	q.endRequestFull(addr, latency, success, false, -1.0)
+func (q *QueueModel) endRequest(addr string, delta float64, latency time.Duration, success bool) {
+	q.endRequestFull(addr, delta, latency, success, false, -1.0)
 }
 
 // endRequestFull is the full-featured version matching C++ signature.
+// delta is the value returned by startRequest (must match to keep smoothOutstanding balanced).
 // futureVersion=true for error codes 1009/1037.
 // penalty > 0 updates the server's penalty from the reply.
-func (q *QueueModel) endRequestFull(addr string, latency time.Duration, success bool, futureVersion bool, penalty float64) {
+func (q *QueueModel) endRequestFull(addr string, delta float64, latency time.Duration, success bool, futureVersion bool, penalty float64) {
 	now := nowSeconds()
 	lat := latency.Seconds()
 
 	q.mu.Lock()
 	d := q.getOrCreate(addr)
 
-	// Remove the penalty added at startRequest. Use current penalty as delta
-	// (C++ stores delta from addRequest; we approximate with current penalty).
-	d.smoothOutstanding.addDelta(-d.penalty, now)
+	// Remove exactly the delta added at startRequest time. C++ passes the
+	// delta through the ModelHolder; we pass it explicitly.
+	d.smoothOutstanding.addDelta(-delta, now)
 
 	if success {
 		d.latency = lat
@@ -248,13 +243,6 @@ func (s *smoother) update(now float64) {
 	}
 	s.time = now
 	s.estimate += (s.total - s.estimate) * (1.0 - math.Exp(-elapsed/s.eFoldingTime))
-}
-
-// reset sets the smoother to a specific value immediately.
-func (s *smoother) reset(value float64) {
-	s.time = 0
-	s.total = value
-	s.estimate = value
 }
 
 // loadBalanceOrder returns servers reordered with the chosen server first,

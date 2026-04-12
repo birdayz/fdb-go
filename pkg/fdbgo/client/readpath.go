@@ -98,12 +98,12 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		*bufp = reqData
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
 			getKeyBufPool.Put(bufp)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -111,16 +111,16 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		getKeyBufPool.Put(bufp)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 		return parseGetKeyReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -183,12 +183,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			getValueBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -196,16 +196,16 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		getValueBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 		return parseGetValueReply(resp.Body)
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -374,12 +374,12 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			getKeyValuesBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -387,16 +387,16 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		getKeyValuesBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 		return parseGetKeyValuesReply(resp.Body)
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -579,11 +579,11 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		reqData := req.MarshalFDB()
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(watchToken, reqData); err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -592,14 +592,14 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		select {
 		case resp := <-replyCh:
 			if resp.Err != nil {
-				tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				tx.db.handleConnError(server.Address)
 				continue
 			}
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 			return parseWatchValueReply(resp.Body)
 		case <-ctx.Done():
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			return ctx.Err()
 		}

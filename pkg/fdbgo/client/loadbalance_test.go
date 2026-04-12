@@ -34,10 +34,10 @@ func TestQueueModelPicksLeastLoaded(t *testing.T) {
 	// Simulate s1 having higher outstanding, s2 zero, s3 moderate.
 	// Add requests without ending them to build up smoothOutstanding.
 	for i := 0; i < 5; i++ {
-		qm.startRequest("s1:4500")
+		_ = qm.startRequest("s1:4500")
 	}
 	for i := 0; i < 2; i++ {
-		qm.startRequest("s3:4500")
+		_ = qm.startRequest("s3:4500")
 	}
 
 	s, _ := qm.chooseServer(servers)
@@ -92,16 +92,16 @@ func TestQueueModelSmootherDecay(t *testing.T) {
 
 	// Add 5 requests to s1, complete them with varying latency.
 	for i := 0; i < 5; i++ {
-		qm.startRequest("s1:4500")
-		qm.endRequest("s1:4500", 100*time.Microsecond, true)
+		d := qm.startRequest("s1:4500")
+		qm.endRequest("s1:4500", d, 100*time.Microsecond, true)
 	}
 	// s2 has never been used — smoothOutstanding=0.
 	// s1's smoothOutstanding should have decayed back toward 0
 	// since we started and ended requests.
 
 	// Add 1 outstanding to each and pick.
-	qm.startRequest("s1:4500")
-	qm.startRequest("s2:4500")
+	_ = qm.startRequest("s1:4500")
+	_ = qm.startRequest("s2:4500")
 
 	// Both have ~1 outstanding. The smoother decay means s1's estimate
 	// includes residual from the 5 completed requests. s2 should be
@@ -115,8 +115,8 @@ func TestQueueModelStartEndRequest(t *testing.T) {
 	qm := newQueueModel()
 
 	// Start 2 requests.
-	qm.startRequest("s1:4500")
-	qm.startRequest("s1:4500")
+	_ = qm.startRequest("s1:4500")
+	delta := qm.startRequest("s1:4500")
 
 	// smoothOutstanding.total should be ~2.0 (2 * penalty=1.0).
 	qm.mu.Lock()
@@ -126,16 +126,16 @@ func TestQueueModelStartEndRequest(t *testing.T) {
 	}
 	qm.mu.Unlock()
 
-	// End one request.
-	qm.endRequest("s1:4500", 1*time.Millisecond, true)
+	// End one request with a distinct latency (2ms, not 1ms which matches initial).
+	qm.endRequest("s1:4500", delta, 2*time.Millisecond, true)
 
 	qm.mu.Lock()
 	if d.smoothOutstanding.total < 0.5 {
 		t.Fatalf("expected outstanding total ~1.0, got %.2f", d.smoothOutstanding.total)
 	}
-	// Latency should be updated.
-	if d.latency != 0.001 {
-		t.Fatalf("expected latency=0.001, got %f", d.latency)
+	// Latency should be updated to 0.002 (2ms), not the initial 0.001.
+	if d.latency != 0.002 {
+		t.Fatalf("expected latency=0.002 after endRequest(2ms), got %f", d.latency)
 	}
 	qm.mu.Unlock()
 }
@@ -145,8 +145,8 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 	qm := newQueueModel()
 
 	// Simulate future_version error.
-	qm.startRequest("s1:4500")
-	qm.endRequestFull("s1:4500", time.Millisecond, false, true, -1.0)
+	d1 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d1, time.Millisecond, false, true, -1.0)
 
 	qm.mu.Lock()
 	d := qm.servers["s1:4500"]
@@ -162,8 +162,8 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 
 	// Second future_version: increaseBackoffTime was set to now+backoff,
 	// so now <= increaseBackoffTime → backoff does NOT grow (C++ guard).
-	qm.startRequest("s1:4500")
-	qm.endRequestFull("s1:4500", time.Millisecond, false, true, -1.0)
+	d2 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d2, time.Millisecond, false, true, -1.0)
 
 	qm.mu.Lock()
 	// Backoff should NOT have grown (still 2.0) because increaseBackoffTime hasn't elapsed.
@@ -177,8 +177,8 @@ func TestQueueModelFutureVersionBackoff(t *testing.T) {
 	qm.mu.Unlock()
 
 	// Third future_version: guard expired → backoff doubles: 2.0→4.0.
-	qm.startRequest("s1:4500")
-	qm.endRequestFull("s1:4500", time.Millisecond, false, true, -1.0)
+	d3 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d3, time.Millisecond, false, true, -1.0)
 
 	qm.mu.Lock()
 	expectedBackoff := futureVersionInitialBackoff * futureVersionBackoffGrowth * futureVersionBackoffGrowth
@@ -201,8 +201,8 @@ func TestQueueModelPenaltyFromServer(t *testing.T) {
 	qm.mu.Unlock()
 
 	// Server reports penalty=2.5 in response.
-	qm.startRequest("s1:4500")
-	qm.endRequestFull("s1:4500", time.Millisecond, true, false, 2.5)
+	dp := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", dp, time.Millisecond, true, false, 2.5)
 
 	qm.mu.Lock()
 	if d.penalty != 2.5 {
@@ -223,8 +223,8 @@ func TestQueueModelConcurrentSafe(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				s, _ := qm.chooseServer(servers)
-				qm.startRequest(s.Address)
-				qm.endRequest(s.Address, time.Millisecond, j%3 != 0)
+				d := qm.startRequest(s.Address)
+				qm.endRequest(s.Address, d, time.Millisecond, j%3 != 0)
 			}
 		}()
 	}
