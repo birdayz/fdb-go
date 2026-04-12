@@ -3581,3 +3581,225 @@ func TestRYWSetNewKeysGetRange_CPort(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Locality / addressing
+// ---------------------------------------------------------------------------
+
+// TestGetAddressesForKey_CPort verifies that GetAddressesForKey returns at
+// least one non-empty address for a key that exists on a storage server.
+// Ported from unit_tests.cpp line 2317
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2317
+func TestGetAddressesForKey_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_addr_key")
+
+	// Write the key so the shard is populated.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("addr_value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Get storage server addresses for the key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetAddressesForKey(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("GetAddressesForKey: %v", err)
+	}
+	addrs := result.([]string)
+	if len(addrs) == 0 {
+		t.Fatal("expected at least one address for existing key")
+	}
+	for i, addr := range addrs {
+		if len(addr) == 0 {
+			t.Errorf("addr[%d] is empty", i)
+		}
+		// Each address should look like host:port.
+		if bytes.IndexByte([]byte(addr), ':') < 0 {
+			t.Errorf("addr[%d] = %q: expected host:port format", i, addr)
+		}
+		t.Logf("addr[%d] = %q", i, addr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error predicate — RETRYABLE_NOT_COMMITTED vs MAYBE_COMMITTED
+// ---------------------------------------------------------------------------
+
+// TestErrorPredicateRetryableNotCommitted_CPort verifies the behavioral
+// distinction between RETRYABLE_NOT_COMMITTED (1020) and MAYBE_COMMITTED
+// (1021) error classes:
+//   - 1020 (not_committed): retryable, no self-conflict injection
+//   - 1021 (commit_unknown_result): retryable AND injects write→read
+//     self-conflicts on the reset transaction
+//   - 1036 (accessed_unreadable): not retryable
+//
+// Ported from unit_tests.cpp line 2432
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2432
+func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// 1020 (not_committed) is RETRYABLE_NOT_COMMITTED: OnError returns nil.
+	{
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		if err != nil {
+			t.Errorf("1020 (not_committed) should be retryable, got: %v", err)
+		}
+	}
+
+	// 1020 does NOT inject self-conflicts: write conflicts are dropped and
+	// readConflicts stays empty after reset.
+	{
+		tx := db.CreateTransaction()
+		tx.Set([]byte(t.Name()+"_sc_key"), []byte("val"))
+		if len(tx.writeConflicts) == 0 {
+			t.Fatal("Set should have added a write conflict")
+		}
+		_ = tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		if len(tx.readConflicts) != 0 {
+			t.Errorf("1020 must NOT inject self-conflicts, got %d readConflicts", len(tx.readConflicts))
+		}
+	}
+
+	// 1021 (commit_unknown_result) is MAYBE_COMMITTED: OnError returns nil.
+	{
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		if err != nil {
+			t.Errorf("1021 (commit_unknown_result) should be retryable, got: %v", err)
+		}
+	}
+
+	// 1021 DOES inject self-conflicts: previous write ranges become read
+	// conflict ranges on the reset transaction, preventing double-apply.
+	{
+		tx := db.CreateTransaction()
+		tx.Set([]byte(t.Name()+"_mc_key"), []byte("val"))
+		origWC := make([]KeyRange, len(tx.writeConflicts))
+		copy(origWC, tx.writeConflicts)
+		if len(origWC) == 0 {
+			t.Fatal("Set should have added a write conflict")
+		}
+		_ = tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		if len(tx.readConflicts) != len(origWC) {
+			t.Errorf("1021 self-conflict: got %d readConflicts, want %d",
+				len(tx.readConflicts), len(origWC))
+		}
+		for i, rc := range tx.readConflicts {
+			if string(rc.Begin) != string(origWC[i].Begin) || string(rc.End) != string(origWC[i].End) {
+				t.Errorf("readConflict[%d]: got [%q,%q), want [%q,%q)",
+					i, rc.Begin, rc.End, origWC[i].Begin, origWC[i].End)
+			}
+		}
+	}
+
+	// 1036 (accessed_unreadable) is NOT retryable: OnError returns an error.
+	{
+		const errAccessedUnreadable = 1036
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: errAccessedUnreadable})
+		if err == nil {
+			t.Error("1036 (accessed_unreadable) should NOT be retryable")
+		}
+		var fdbErr *wire.FDBError
+		if errors.As(err, &fdbErr) && fdbErr.Code != errAccessedUnreadable {
+			t.Errorf("expected error code 1036, got %d", fdbErr.Code)
+		}
+	}
+
+	_ = ctx // ctx used for openTestDB
+}
+
+// ---------------------------------------------------------------------------
+// Range metrics
+// ---------------------------------------------------------------------------
+
+// TestGetEstimatedRangeSizeBytes_CPort verifies that GetEstimatedRangeSizeBytes
+// returns a non-negative value for a populated key range.
+// Ported from unit_tests.cpp line 2500
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2500
+func TestGetEstimatedRangeSizeBytes_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := t.Name() + "_ersize_"
+
+	// Write 10 key-value pairs to give the storage server something to measure.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), bytes.Repeat([]byte("x"), 100))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetEstimatedRangeSizeBytes must not error, result must be >= 0.
+	// On a freshly written range the estimate may be 0 (storage server not yet
+	// compacted), which is acceptable — the C++ test only asserts no error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetEstimatedRangeSizeBytes(ctx, []byte(pfx), []byte(pfx+"~"))
+	})
+	if err != nil {
+		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
+	}
+	size := result.(int64)
+	t.Logf("estimated range size: %d bytes", size)
+	if size < 0 {
+		t.Fatalf("expected non-negative size, got %d", size)
+	}
+}
+
+// TestGetRangeSplitPoints_CPort verifies that GetRangeSplitPoints completes
+// without error for a populated key range. The result may be empty (no split
+// points) when the range fits within one chunk — that is correct behaviour.
+// Ported from unit_tests.cpp line 2530
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2530
+func TestGetRangeSplitPoints_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := t.Name() + "_splitpts_"
+
+	// Write a handful of keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), bytes.Repeat([]byte("y"), 100))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Call with a 100 000-byte chunk size. On small ranges the result will be
+	// empty; that is correct — the only requirement is no error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 100_000)
+	})
+	if err != nil {
+		t.Fatalf("GetRangeSplitPoints: %v", err)
+	}
+	points := result.([][]byte)
+	t.Logf("split points: %d", len(points))
+	for i, p := range points {
+		t.Logf("  split[%d]: %q", i, p)
+	}
+}
