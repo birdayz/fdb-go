@@ -262,15 +262,7 @@ func (b *grvBatcher) flush(db *database) {
 				// The batcher doesn't have per-request tags, so we update
 				// the database-level state which transactions query later.
 				priority := grvPriorityToPriority(b.priority)
-				// We don't have individual transaction tags here — the
-				// update will be consumed when transactions call
-				// db.tagThrottles.maxDuration() in nextBackoff().
-				// Store all parsed tags at this priority level.
-				allTags := make([]string, 0, len(parsed))
-				for tag := range parsed {
-					allTags = append(allTags, tag)
-				}
-				db.tagThrottles.update(priority, allTags, parsed)
+				db.tagThrottles.replace(priority, parsed)
 			}
 		}
 	}
@@ -330,11 +322,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 						parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
 						if parsed != nil {
 							priority := grvPriorityToPriority(b.priority)
-							allTags := make([]string, 0, len(parsed))
-							for tag := range parsed {
-								allTags = append(allTags, tag)
-							}
-							db.tagThrottles.update(priority, allTags, parsed)
+							db.tagThrottles.replace(priority, parsed)
 						}
 					}
 				}

@@ -194,7 +194,7 @@ func TestTagThrottleStateUpdateAndQuery(t *testing.T) {
 		"tag1": {tpsRate: 10, expiration: time.Now().Add(5 * time.Second)},
 		"tag2": {tpsRate: 0, expiration: time.Now().Add(2 * time.Second)},
 	}
-	state.update(PriorityDefault, []string{"tag1", "tag2"}, info)
+	state.replace(PriorityDefault, info)
 
 	// Query tag1 — should have ~5s duration.
 	d1 := state.maxDuration(PriorityDefault, []string{"tag1"})
@@ -213,11 +213,11 @@ func TestTagThrottleStateUpdateAndQuery(t *testing.T) {
 		t.Fatalf("expected 0 for different priority, got %v", d)
 	}
 
-	// Update to remove tag1 (absent from info).
+	// Replace with only tag2 — tag1 should be gone (server stopped throttling it).
 	info2 := map[string]clientTagThrottleLimits{
 		"tag2": {tpsRate: 0, expiration: time.Now().Add(10 * time.Second)},
 	}
-	state.update(PriorityDefault, []string{"tag1", "tag2"}, info2)
+	state.replace(PriorityDefault, info2)
 
 	// tag1 should be gone.
 	if d := state.maxDuration(PriorityDefault, []string{"tag1"}); d != 0 {
@@ -238,7 +238,7 @@ func TestNextBackoffTagThrottled(t *testing.T) {
 	info := map[string]clientTagThrottleLimits{
 		"slow": {tpsRate: 0, expiration: time.Now().Add(3 * time.Second)},
 	}
-	db.tagThrottles.update(PriorityDefault, []string{"slow"}, info)
+	db.tagThrottles.replace(PriorityDefault, info)
 
 	tx := &Transaction{
 		db:       db,

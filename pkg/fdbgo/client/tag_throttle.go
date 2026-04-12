@@ -87,28 +87,21 @@ type tagThrottleState struct {
 	tags map[TransactionPriority]map[string]*clientTagThrottleLimits
 }
 
-// update merges parsed tag throttle info for a given priority.
-// For each transaction tag: if the tag is present in info, update its limits;
-// if absent, remove its entry (throttle expired/cleared by server).
-func (s *tagThrottleState) update(priority TransactionPriority, txTags []string, info map[string]clientTagThrottleLimits) {
+// replace sets the tag throttle info for a given priority, replacing all
+// previous entries. Tags the server no longer reports are automatically
+// removed (the entire map is replaced, not merged).
+func (s *tagThrottleState) replace(priority TransactionPriority, info map[string]clientTagThrottleLimits) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tags == nil {
 		s.tags = make(map[TransactionPriority]map[string]*clientTagThrottleLimits)
 	}
-	priorityMap, ok := s.tags[priority]
-	if !ok {
-		priorityMap = make(map[string]*clientTagThrottleLimits)
-		s.tags[priority] = priorityMap
+	priorityMap := make(map[string]*clientTagThrottleLimits, len(info))
+	for tag, limits := range info {
+		copied := limits
+		priorityMap[tag] = &copied
 	}
-	for _, tag := range txTags {
-		if limits, found := info[tag]; found {
-			copied := limits
-			priorityMap[tag] = &copied
-		} else {
-			delete(priorityMap, tag)
-		}
-	}
+	s.tags[priority] = priorityMap
 }
 
 // maxDuration returns the maximum throttle duration across all given tags

@@ -2240,7 +2240,8 @@ Run: `bazelisk run //pkg/fdbgo/wire/types:types_test -- -test.run='^$' -test.ben
 - [ ] **Version vector support** — causal consistency optimization.
 - [x] **Tenant API** — Already complete: `Tenant.Transact()`, `CreateTransaction()`, CRUD via system keys.
 - [x] **TLS support** — nightshift-1: TLSConfig + DialWithTLS + upgradeTLS.
-- [ ] **Tag throttling** — client-side throttle enforcement.
+- [x] **Tag throttling** — tag throttle duration tracking from GRV reply. `parseTagThrottleInfo` deserializes wire format, `tagThrottleState` stores per-priority tag throttle data, `nextBackoff` uses server-supplied duration for `tag_throttled` (1213) errors. Simplified vs C++ (no Smoother). Done swingshift-7.
+- [ ] **LOW — `proxyTagThrottledDuration` send path** — accumulated per-transaction but not yet sent back to proxy in GRV request metadata (C++ sends it so the proxy can adjust throttle decisions). Not a correctness issue — only affects throttle tuning accuracy.
 
 ### Phase 3
 

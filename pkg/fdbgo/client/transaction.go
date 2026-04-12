@@ -236,7 +236,7 @@ type Transaction struct {
 
 	// proxyTagThrottledDuration: accumulated proxy tag throttle delay.
 	// Incremented from GRV reply's ProxyTagThrottledDuration field.
-	// C++: cx->transactionTagCounter (simplified — we only track duration).
+	// Accumulated but not yet sent back to proxy (see TODO.md).
 	proxyTagThrottledDuration float64
 
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending

@@ -211,6 +211,68 @@ func TestRYWGetRange_ReverseAllCleared(t *testing.T) {
 	}
 }
 
+// TestRYWGetRange_ReverseWriteBetweenBatches verifies that a local write
+// between two reverse server batches is correctly included once the
+// knowledge boundary advances past it.
+func TestRYWGetRange_ReverseWriteBetweenBatches(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Local write at "C" — between the two server batches.
+	c.set([]byte("C"), []byte("local-c"))
+
+	callCount := 0
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		if !reverse {
+			t.Fatal("expected reverse=true")
+		}
+		callCount++
+		switch callCount {
+		case 1:
+			// Reverse: highest keys first. E, D — boundary at D.
+			// C is below boundary, excluded from first batch.
+			return []KeyValue{
+				{Key: []byte("E"), Value: []byte("e")},
+				{Key: []byte("D"), Value: []byte("d")},
+			}, true, nil
+		case 2:
+			// Next batch: B, A. Now C is within [A, D) range.
+			return []KeyValue{
+				{Key: []byte("B"), Value: []byte("b")},
+				{Key: []byte("A"), Value: []byte("a")},
+			}, false, nil
+		default:
+			t.Fatalf("unexpected server call #%d", callCount)
+			return nil, false, nil
+		}
+	}
+
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, true, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if more {
+		t.Error("expected more=false")
+	}
+	// Reverse order: E, D, C (local write), B, A
+	if len(result) != 5 {
+		keys := make([]string, len(result))
+		for i, kv := range result {
+			keys[i] = string(kv.Key)
+		}
+		t.Fatalf("expected 5 results, got %d: %v", len(result), keys)
+	}
+	expect := []string{"E", "D", "C", "B", "A"}
+	for i, e := range expect {
+		if string(result[i].Key) != e {
+			t.Errorf("result[%d]: got %s, want %s", i, result[i].Key, e)
+		}
+	}
+	if string(result[2].Value) != "local-c" {
+		t.Errorf("result[2] value: got %q, want %q", result[2].Value, "local-c")
+	}
+}
+
 // TestRYWGetRange_AtomicResolution verifies that pending atomic mutations
 // are resolved against the server base value.
 func TestRYWGetRange_AtomicResolution(t *testing.T) {
