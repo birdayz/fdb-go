@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -16,6 +18,11 @@ import (
 // ALL connection errors → commit_unknown_result, matching C++ AtMostOnce::True.
 // No distinction between dial/send/response failure — C++ makes zero distinction
 // (all are broken_promise → request_maybe_delivered → commit_unknown_result).
+//
+// On commit_unknown_result, runs commitDummyTransaction as a synchronization
+// barrier before returning the error. This matches C++ NativeAPI.actor.cpp
+// tryCommit() which calls commitDummyTransaction to confirm the original
+// request is no longer in-flight before allowing OnError to retry.
 func (tx *Transaction) commit(ctx context.Context) error {
 	proxy, err := tx.db.getCommitProxy()
 	if err != nil {
@@ -26,7 +33,11 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	if err != nil {
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()
-		return &wire.FDBError{Code: ErrCommitUnknownResult}
+		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
+		if !tx.isDummy {
+			tx.commitDummyTransaction(ctx)
+		}
+		return commitErr
 	}
 
 	replyToken, replyCh, cancelReply := conn.PrepareReply()
@@ -44,7 +55,11 @@ func (tx *Transaction) commit(ctx context.Context) error {
 		cancelReply()
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()
-		return &wire.FDBError{Code: ErrCommitUnknownResult}
+		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
+		if !tx.isDummy {
+			tx.commitDummyTransaction(ctx)
+		}
+		return commitErr
 	}
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
 	marshalBufPool.Put(poolBuf)
@@ -53,14 +68,85 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
 	if err != nil {
 		cancelReply()
-		return &wire.FDBError{Code: ErrCommitUnknownResult}
+		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
+		if !tx.isDummy {
+			tx.commitDummyTransaction(ctx)
+		}
+		return commitErr
 	}
 	if resp.Err != nil {
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()
-		return &wire.FDBError{Code: ErrCommitUnknownResult}
+		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
+		if !tx.isDummy {
+			tx.commitDummyTransaction(ctx)
+		}
+		return commitErr
 	}
-	return tx.parseCommitReply(resp.Body)
+
+	commitErr := tx.parseCommitReply(resp.Body)
+	if commitErr != nil && !tx.isDummy {
+		var fdbErr *wire.FDBError
+		if errors.As(commitErr, &fdbErr) && (fdbErr.Code == ErrCommitUnknownResult || fdbErr.Code == ErrClusterVersionChanged) {
+			tx.commitDummyTransaction(ctx)
+		}
+	}
+	return commitErr
+}
+
+// commitDummyTransaction runs a dummy transaction as a synchronization barrier.
+// Matches C++ NativeAPI.actor.cpp:commitDummyTransaction (line 4225).
+//
+// Purpose: after commit_unknown_result, we don't know if the original commit
+// landed. The dummy transaction conflicts with the original (shares a conflict
+// key). When the dummy commits successfully, we know the original is no longer
+// in-flight at the commit proxy — either it committed or was discarded.
+// This is defense-in-depth on top of OnError's self-conflicting mechanism.
+//
+// The dummy uses the first write conflict key from the original transaction.
+// OnError will later copy write→read conflicts, so this key will be in both
+// the read and write conflict sets of the retry, ensuring detection.
+func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
+	if len(tx.writeConflicts) == 0 {
+		return // no write conflicts → read-only, nothing to synchronize
+	}
+
+	// Use the first write conflict range's begin key.
+	// C++ uses intersects(write_conflict_ranges, read_conflict_ranges).begin,
+	// but we can use any write conflict key — OnError will copy write→read
+	// for the retry, so any write key guarantees conflict detection.
+	key := tx.writeConflicts[0].Begin
+
+	dummy := &Transaction{
+		db:           tx.db,
+		state:        txStateActive,
+		tenantId:     NoTenantID, // dummy uses raw access
+		creationTime: time.Now(),
+		isDummy:      true, // prevents recursive commitDummyTransaction
+	}
+	// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
+	dummy.writeSystemKeys = true // RAW_ACCESS equivalent
+	dummy.readSystemKeys = true
+	dummy.lockAware = true
+
+	// Add the key as both read and write conflict, matching C++.
+	dummy.addReadConflictForKey(key)
+	dummy.addWriteConflictForKey(key)
+
+	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
+	// Bounded by the parent context (transaction timeout or caller cancel).
+	for retries := 0; retries < 10; retries++ {
+		if ctx.Err() != nil {
+			return // caller gave up, don't block forever
+		}
+		if err := dummy.commit(ctx); err != nil {
+			if retryErr := dummy.OnError(err); retryErr != nil {
+				return // non-retryable error, give up
+			}
+			continue
+		}
+		return // dummy committed successfully — original is no longer in-flight
+	}
 }
 
 // metadataVersionKey is \xff/metadataVersion — the only key exempt from tenant prefix.

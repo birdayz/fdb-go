@@ -99,6 +99,18 @@ type ProxyInfo struct {
 	Token   transport.UID
 }
 
+// TransactionDefaults holds database-level defaults applied to every new
+// transaction. Matches C++ DatabaseContext::transactionDefaults.
+type TransactionDefaults struct {
+	Timeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms), 0 = disabled
+	RetryLimit     int   // FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
+	MaxRetryDelay  int64 // FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY (ms), 0 = use default
+	SizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT, 0 = disabled
+	HasRetryLimit  bool
+	ReadSystemKeys bool // read \xff/* keys by default
+	AccessSysKeys  bool // read+write \xff/* keys by default
+}
+
 // database is the per-database state container (unexported).
 // Matches C++ DatabaseContext in fdbclient/DatabaseContext.h.
 // All per-database state lives here: topology, caches, connections, batchers.
@@ -149,13 +161,7 @@ type database struct {
 
 	// Transaction defaults — applied to every new transaction.
 	// Matches C++ DatabaseContext::transactionDefaults.
-	txDefaultTimeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms)
-	txDefaultRetryLimit     int   // FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT
-	txDefaultMaxRetryDelay  int64 // FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY (ms)
-	txDefaultSizeLimit      int64 // FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT
-	txDefaultHasRetryLimit  bool
-	txDefaultReadSystemKeys bool // read \xff/* keys by default
-	txDefaultAccessSysKeys  bool // read+write \xff/* keys by default
+	txDefaults TransactionDefaults
 
 	// Lifecycle.
 	ctx       context.Context
@@ -505,22 +511,23 @@ func (d *Database) CreateTransaction() *Transaction {
 		creationTime: time.Now(),
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults).
-	if d.db.txDefaultTimeout > 0 {
-		tx.SetTimeout(d.db.txDefaultTimeout)
+	td := &d.db.txDefaults
+	if td.Timeout > 0 {
+		tx.SetTimeout(td.Timeout)
 	}
-	if d.db.txDefaultHasRetryLimit {
-		tx.SetRetryLimit(int64(d.db.txDefaultRetryLimit))
+	if td.HasRetryLimit {
+		tx.SetRetryLimit(int64(td.RetryLimit))
 	}
-	if d.db.txDefaultMaxRetryDelay > 0 {
-		tx.SetMaxRetryDelay(d.db.txDefaultMaxRetryDelay)
+	if td.MaxRetryDelay > 0 {
+		tx.SetMaxRetryDelay(td.MaxRetryDelay)
 	}
-	if d.db.txDefaultSizeLimit > 0 {
-		tx.SetSizeLimit(d.db.txDefaultSizeLimit)
+	if td.SizeLimit > 0 {
+		tx.SetSizeLimit(td.SizeLimit)
 	}
-	if d.db.txDefaultReadSystemKeys {
+	if td.ReadSystemKeys {
 		tx.SetReadSystemKeys()
 	}
-	if d.db.txDefaultAccessSysKeys {
+	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
 	return tx
@@ -529,38 +536,38 @@ func (d *Database) CreateTransaction() *Transaction {
 // SetTransactionTimeout sets the default timeout (in milliseconds) for all
 // transactions created from this database. Matches FDB_DB_OPTION_TRANSACTION_TIMEOUT.
 func (d *Database) SetTransactionTimeout(ms int64) {
-	d.db.txDefaultTimeout = ms
+	d.db.txDefaults.Timeout = ms
 }
 
 // SetTransactionRetryLimit sets the default retry limit for all transactions.
 // Matches FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT.
 func (d *Database) SetTransactionRetryLimit(retries int64) {
-	d.db.txDefaultRetryLimit = int(retries)
-	d.db.txDefaultHasRetryLimit = true
+	d.db.txDefaults.RetryLimit = int(retries)
+	d.db.txDefaults.HasRetryLimit = true
 }
 
 // SetTransactionMaxRetryDelay sets the default max retry delay (ms) for all
 // transactions. Matches FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY.
 func (d *Database) SetTransactionMaxRetryDelay(ms int64) {
-	d.db.txDefaultMaxRetryDelay = ms
+	d.db.txDefaults.MaxRetryDelay = ms
 }
 
 // SetTransactionSizeLimit sets the default size limit for all transactions.
 // Matches FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT.
 func (d *Database) SetTransactionSizeLimit(limit int64) {
-	d.db.txDefaultSizeLimit = limit
+	d.db.txDefaults.SizeLimit = limit
 }
 
 // SetDefaultReadSystemKeys makes all new transactions automatically call
 // SetReadSystemKeys(), allowing reads of \xff-prefixed system keys.
 func (d *Database) SetDefaultReadSystemKeys() {
-	d.db.txDefaultReadSystemKeys = true
+	d.db.txDefaults.ReadSystemKeys = true
 }
 
 // SetDefaultAccessSystemKeys makes all new transactions automatically call
 // SetAccessSystemKeys(), allowing reads AND writes of \xff-prefixed system keys.
 func (d *Database) SetDefaultAccessSystemKeys() {
-	d.db.txDefaultAccessSysKeys = true
+	d.db.txDefaults.AccessSysKeys = true
 }
 
 // InvalidateGRVCache resets the GRV cache so the next transaction fetches
