@@ -120,8 +120,9 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
 	// Create a fresh dummy each iteration because OnError/reset clears conflict
 	// ranges, and the dummy must always carry the conflict key to serve as a
-	// synchronization barrier. Bounded by the parent context.
-	for retries := 0; retries < 10; retries++ {
+	// synchronization barrier. Loops until success or context cancellation,
+	// matching C++ which loops until the actor is cancelled.
+	for {
 		if ctx.Err() != nil {
 			return // caller gave up, don't block forever
 		}
