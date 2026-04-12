@@ -252,7 +252,7 @@ Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYour
 | `onProxiesChanged` mid-commit | Races proxy topology change vs commit reply | Full `DefaultRPCTimeout` before detecting stale proxy | Liveness only, not safety; eventual commit_unknown_result |
 | `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
 | `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Map-based merge with over-fetch heuristic | Correct for common cases; boundary-guard added for `serverMore=true` |
-| `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Always queries storage server | Extra round trip for edge selectors |
+| `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Same (implemented dayshift-6b) | Matching C++ |
 | `tag_throttled` custom delay | Uses server-supplied throttle duration from `cx->throttledTags` | Standard exponential backoff | Rate limiting efficiency differs, retry is safe |
 | `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration` for GRV | Standard exponential backoff | Same as above |
 | QueueModel key | `endpoint.token.first()` (uint64) | Address string (host:port) | Cosmetic; same server identity in practice |

@@ -45,6 +45,7 @@ var errorDescriptions = map[int]string{
 	1042: "proxy_memory_limit_exceeded",
 	1051: "batch_transaction_throttled",
 	1062: "wrong_shard_server",
+	1079: "blob_granule_request_failed",
 	1200: "all_alternatives_failed",
 	1213: "tag_throttled",
 	1223: "proxy_tag_throttled",
