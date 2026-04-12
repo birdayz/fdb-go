@@ -86,10 +86,12 @@ func (r *FDBDatabaseRunner) RunWithRetry(ctx context.Context, fn func(rtx *FDBRe
 	for attempt := 0; attempt < r.MaxAttempts; attempt++ {
 		if attempt > 0 {
 			delay := r.calculateDelay(attempt)
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
 			}
 		}
 
