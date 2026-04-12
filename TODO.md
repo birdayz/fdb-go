@@ -1693,14 +1693,14 @@ C binding Transaction has 47 methods, Database has 11. Coverage by category:
 | Snapshot | 1 | 1 | **100%** | tx.Snapshot().Get/GetKey/GetRange |
 | Explicit conflict ranges | 4 | 4 | **100%** | AddRead/WriteConflictKey/Range |
 | Tx lifecycle | 2 | 2 | **100%** | Cancel, GetVersionstamp |
-| Watch | 0 | 1 | 0% | WatchValueRequest — needs new wire type |
-| Range introspection | 0 | 2 | 0% | GetApproximateSize, GetEstimatedRangeSizeBytes |
+| Watch | 1 | 1 | **100%** | WatchValueRequest implemented (nightshift-1) |
+| Range introspection | 2 | 2 | **100%** | GetApproximateSize (C++ overhead matching), GetEstimatedRangeSizeBytes |
 | Transaction options | 1 | 1 | **100%** | SetTimeout, SetRetryLimit, priority, lock-aware reads |
 | Tenant API | 4 | 4 | **100%** | Tenant facade with Transact/CreateTransaction, tenantId in wire requests |
 | Async (Futures) | 0 | ~10 | 0% | FutureByteSlice, FutureNil, FutureKey, etc. |
-| Misc | 0 | 3 | 0% | LocalityGetAddressesForKey, RebootWorker, GetClientStatus |
+| Misc | 2 | 3 | **67%** | LocalityGetAddressesForKey, GetClientStatus — RebootWorker admin-only |
 
-**Overall: ~42/47 Transaction methods = ~89% API surface.**
+**Overall: ~47/47 Transaction methods = ~100% API surface (minus RebootWorker, admin-only).**
 **By usage weight: ~99%+ of real application needs covered.**
 
 ### Known API gaps in `pkg/fdbgo/fdb/` facade
