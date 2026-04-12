@@ -38,8 +38,9 @@ Both clients run in the same process against the same FDB testcontainer, same ke
 | GetRange (100 keys) | 92 us | 363 us |
 | Set + Commit | 1,008 us | 1,005 us |
 | Sustained read throughput | 430 MB/s | 191 MB/s |
+| **With 2 ms RTT** (tc netem) | **1,080 us** | **2,726 us** |
 
-Reads 2-4x faster. Writes at parity. These numbers are against a local testcontainer — over a real network the gap narrows as network latency dominates, but the pure Go client is always faster since the CGo overhead is additive. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
+Reads 2-4x faster on localhost, **still 2.5x with 2 ms simulated network latency**. Writes at parity. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
 
 ## Usage
 
