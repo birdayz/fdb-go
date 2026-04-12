@@ -1015,3 +1015,46 @@ func TestGetRangeWithSelectorRange(t *testing.T) {
 			kvs[0].Key, kvs[1].Key, prefix+"key2", prefix+"key3")
 	}
 }
+
+// TestPrefixRangeIntegration verifies the PrefixRange + GetRange pattern
+// end-to-end. This is the most common scan pattern in the record layer.
+// Ported from Apple Go binding ExamplePrefixRange.
+func TestPrefixRangeIntegration(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := t.Name() + "/alphabet"
+
+	// Seed keys with shared prefix.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key(prefix+"A"), []byte("1"))
+		tr.Set(fdb.Key(prefix+"B"), []byte("2"))
+		tr.Set(fdb.Key(prefix+"ize"), []byte("3"))
+		tr.Set(fdb.Key(t.Name()+"/beta"), []byte("4")) // different prefix
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// PrefixRange scan — should return only keys with the prefix.
+	pr, err := fdb.PrefixRange([]byte(prefix))
+	if err != nil {
+		t.Fatalf("PrefixRange: %v", err)
+	}
+
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		return rtr.GetRange(pr, fdb.RangeOptions{}).GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 3 {
+		t.Fatalf("expected 3 results (alphabetA/B/ize), got %d", len(kvs))
+	}
+	if string(kvs[0].Value) != "1" || string(kvs[1].Value) != "2" || string(kvs[2].Value) != "3" {
+		t.Errorf("values: got [%q, %q, %q], want [1, 2, 3]",
+			kvs[0].Value, kvs[1].Value, kvs[2].Value)
+	}
+}

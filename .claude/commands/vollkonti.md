@@ -52,6 +52,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
 - **Request review early** (mid-shift is fine) so feedback arrives while you still have time to address it. But do NOT merge until the shift ends.
+- **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 
 ## Step 4: Review loop
 
