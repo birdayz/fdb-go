@@ -524,32 +524,60 @@ func (c *rywCache) addClearedRange(begin, end []byte) {
 }
 
 func (c *rywCache) addClearedRangeLocked(begin, end []byte) {
-	newRange := rywRange{
-		begin: append([]byte(nil), begin...),
-		end:   append([]byte(nil), end...),
+	n := len(c.cleared)
+	if n == 0 {
+		c.cleared = []rywRange{{
+			begin: append([]byte(nil), begin...),
+			end:   append([]byte(nil), end...),
+		}}
+		return
 	}
 
-	// Find all existing ranges that overlap or are adjacent to [begin, end).
-	var merged []rywRange
-	for _, r := range c.cleared {
-		// r overlaps/adjacent if r.begin <= end && begin <= r.end
-		if bytes.Compare(r.begin, end) <= 0 && bytes.Compare(begin, r.end) <= 0 {
-			// Merge: extend newRange.
-			if bytes.Compare(r.begin, newRange.begin) < 0 {
-				newRange.begin = r.begin
-			}
-			if bytes.Compare(r.end, newRange.end) > 0 {
-				newRange.end = r.end
-			}
-		} else {
-			merged = append(merged, r)
+	// Binary search to find the overlap window.
+	// Ranges are sorted by begin, non-overlapping.
+	// A range r overlaps/is-adjacent to [begin, end) if r.begin <= end && begin <= r.end.
+
+	// First overlapping range: last range with begin <= end.
+	// We find the first range with begin > end, then look back.
+	hiIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, end) > 0
+	})
+	// Last overlapping range: first range with end >= begin.
+	// We find the first range whose end > begin, starting from 0.
+	// Since ranges are sorted and non-overlapping, end values are also sorted.
+	loIdx := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].end, begin) >= 0
+	})
+
+	// [loIdx, hiIdx) are the ranges that overlap or are adjacent.
+	newBegin := append([]byte(nil), begin...)
+	newEnd := append([]byte(nil), end...)
+
+	for i := loIdx; i < hiIdx; i++ {
+		if bytes.Compare(c.cleared[i].begin, newBegin) < 0 {
+			newBegin = c.cleared[i].begin
+		}
+		if bytes.Compare(c.cleared[i].end, newEnd) > 0 {
+			newEnd = c.cleared[i].end
 		}
 	}
-	merged = append(merged, newRange)
-	sort.Slice(merged, func(i, j int) bool {
-		return bytes.Compare(merged[i].begin, merged[j].begin) < 0
-	})
-	c.cleared = merged
+
+	// Replace [loIdx, hiIdx) with the merged range.
+	merged := rywRange{begin: newBegin, end: newEnd}
+	overlapCount := hiIdx - loIdx
+	if overlapCount == 0 {
+		// No overlaps — insert at loIdx.
+		c.cleared = append(c.cleared, rywRange{})
+		copy(c.cleared[loIdx+1:], c.cleared[loIdx:])
+		c.cleared[loIdx] = merged
+	} else if overlapCount == 1 {
+		// Replace single overlapping range in-place.
+		c.cleared[loIdx] = merged
+	} else {
+		// Replace multiple overlapping ranges with one.
+		c.cleared[loIdx] = merged
+		c.cleared = append(c.cleared[:loIdx+1], c.cleared[hiIdx:]...)
+	}
 }
 
 // applyAtomic applies an atomic mutation to a base value, mirroring the C++

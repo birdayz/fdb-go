@@ -878,6 +878,58 @@ func TestRYWGetRange_Limit1Reverse(t *testing.T) {
 	}
 }
 
+// TestRYWClearedRangeMerge verifies the optimized addClearedRangeLocked
+// correctly merges overlapping and adjacent ranges.
+func TestRYWClearedRangeMerge(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Add non-overlapping ranges: [A,C), [E,G), [I,K)
+	c.addClearedRange([]byte("A"), []byte("C"))
+	c.addClearedRange([]byte("E"), []byte("G"))
+	c.addClearedRange([]byte("I"), []byte("K"))
+
+	c.mu.Lock()
+	if len(c.cleared) != 3 {
+		t.Fatalf("expected 3 cleared ranges, got %d", len(c.cleared))
+	}
+	c.mu.Unlock()
+
+	// Merge overlapping: [D,F) overlaps [E,G) → should merge to [D,G)
+	c.addClearedRange([]byte("D"), []byte("F"))
+	c.mu.Lock()
+	if len(c.cleared) != 3 {
+		t.Fatalf("expected 3 cleared ranges after overlap merge, got %d", len(c.cleared))
+	}
+	c.mu.Unlock()
+
+	// Adjacent: [C,D) bridges [A,C) and [D,G) → should merge to [A,G)
+	c.addClearedRange([]byte("C"), []byte("D"))
+	c.mu.Lock()
+	if len(c.cleared) != 2 {
+		t.Fatalf("expected 2 cleared ranges after adjacent merge, got %d: %v", len(c.cleared), c.cleared)
+	}
+	// Verify: [A,G) and [I,K)
+	if string(c.cleared[0].begin) != "A" || string(c.cleared[0].end) != "G" {
+		t.Errorf("range[0]: expected [A,G), got [%s,%s)", c.cleared[0].begin, c.cleared[0].end)
+	}
+	if string(c.cleared[1].begin) != "I" || string(c.cleared[1].end) != "K" {
+		t.Errorf("range[1]: expected [I,K), got [%s,%s)", c.cleared[1].begin, c.cleared[1].end)
+	}
+	c.mu.Unlock()
+
+	// Span all: [A,Z) merges everything into one.
+	c.addClearedRange([]byte("A"), []byte("Z"))
+	c.mu.Lock()
+	if len(c.cleared) != 1 {
+		t.Fatalf("expected 1 cleared range after spanning merge, got %d", len(c.cleared))
+	}
+	if string(c.cleared[0].begin) != "A" || string(c.cleared[0].end) != "Z" {
+		t.Errorf("range[0]: expected [A,Z), got [%s,%s)", c.cleared[0].begin, c.cleared[0].end)
+	}
+	c.mu.Unlock()
+}
+
 // Benchmarks for RYW merge performance.
 
 // BenchmarkRYWMergeBatch_FewWrites benchmarks mergeBatch with 10 writes
@@ -1011,6 +1063,31 @@ func BenchmarkRYWHasWritesInRange(b *testing.B) {
 	for b.Loop() {
 		c.mu.Lock()
 		c.hasWritesInRangeLocked(begin, end)
+		c.mu.Unlock()
+	}
+}
+
+// BenchmarkRYWAddClearedRange benchmarks the optimized addClearedRangeLocked
+// with many existing non-overlapping ranges.
+func BenchmarkRYWAddClearedRange(b *testing.B) {
+	// Pre-populate with 1000 non-overlapping ranges.
+	c := &rywCache{}
+	for i := 0; i < 1000; i++ {
+		begin := []byte{byte(i / 256), byte(i % 256), 0}
+		end := []byte{byte(i / 256), byte(i % 256), 0xFF}
+		c.addClearedRange(begin, end)
+	}
+
+	// Benchmark: add a range that doesn't overlap any existing range.
+	newBegin := []byte{0xFF, 0, 0}
+	newEnd := []byte{0xFF, 0, 0xFF}
+
+	b.ResetTimer()
+	for b.Loop() {
+		c.addClearedRange(newBegin, newEnd)
+		// Remove it to keep the benchmark repeatable.
+		c.mu.Lock()
+		c.cleared = c.cleared[:len(c.cleared)-1]
 		c.mu.Unlock()
 	}
 }
