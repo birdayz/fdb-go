@@ -30,29 +30,14 @@ Includes a **pure Go FDB client** that speaks the FDB wire protocol directly —
 
 Both clients run in the same process against the same FDB testcontainer, same keys. `TestBenchmarkSanity` verifies byte-identical results.
 
-```
-goos: linux
-goarch: amd64
-cpu: AMD Ryzen 9 3900X 12-Core Processor
-
-BenchmarkGet/Go/100B          19974       60498 ns/op
-BenchmarkGet/CGo/100B          6063      217687 ns/op
-
-BenchmarkGet/Go/1KB           19790       60785 ns/op
-BenchmarkGet/CGo/1KB           5762      209001 ns/op
-
-BenchmarkGet/Go/10KB          17772       69122 ns/op
-BenchmarkGet/CGo/10KB          5563      217169 ns/op
-
-BenchmarkGetRange/Go/100      14403       92111 ns/op
-BenchmarkGetRange/CGo/100      3267      363106 ns/op
-
-BenchmarkSet/Go/100B           1200     1007742 ns/op
-BenchmarkSet/CGo/100B          1191     1005018 ns/op
-
-BenchmarkThroughputRead/Go    168990      238278 ns/op    429.75 MB/s
-BenchmarkThroughputRead/CGo    69626      536341 ns/op    190.92 MB/s
-```
+| Benchmark | fdb-go | Apple CGo |
+|---|---:|---:|
+| Get (100 B) | 60 us | 218 us |
+| Get (1 KB) | 61 us | 209 us |
+| Get (10 KB) | 69 us | 217 us |
+| GetRange (100 keys) | 92 us | 363 us |
+| Set + Commit | 1,008 us | 1,005 us |
+| Sustained read throughput | 430 MB/s | 191 MB/s |
 
 Reads 2-4x faster. Writes at parity. These numbers are against a local testcontainer — over a real network the gap narrows as network latency dominates, but the pure Go client is always faster since the CGo overhead is additive. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
 
