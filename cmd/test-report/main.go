@@ -26,6 +26,7 @@ import (
 	"html/template"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -296,11 +297,20 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		}
 
 		if info.xmlPath != "" {
-			cases, err := parseJUnitXML(info.xmlPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", info.label, err)
+			// Check for Ginkgo's per-spec JUnit report alongside the standard test.xml.
+			// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.xml which
+			// Bazel collects into test.outputs/ next to test.xml. This has individual spec
+			// names and durations — the standard test.xml only sees the bootstrap function.
+			ginkgoPath := filepath.Join(filepath.Dir(info.xmlPath), "test.outputs", "ginkgo-report.xml")
+			if ginkgoCases, err := parseJUnitXML(ginkgoPath); err == nil && len(ginkgoCases) > 0 {
+				tr.Tests = ginkgoCases
 			} else {
-				tr.Tests = cases
+				cases, err := parseJUnitXML(info.xmlPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: %s: %v\n", info.label, err)
+				} else {
+					tr.Tests = cases
+				}
 			}
 		}
 

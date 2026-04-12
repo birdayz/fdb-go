@@ -2,12 +2,14 @@ package conformance_test
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/reporters"
 	. "github.com/onsi/gomega"
 )
 
@@ -56,3 +58,12 @@ func TestConformance(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Java/Go Conformance Suite")
 }
+
+// Write Ginkgo's per-spec JUnit XML report to Bazel's undeclared test outputs.
+var _ = ReportAfterSuite("ginkgo junit report", func(report Report) {
+	dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if dir == "" {
+		return
+	}
+	reporters.GenerateJUnitReport(report, dir+"/ginkgo-report.xml")
+})

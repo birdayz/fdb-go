@@ -10,6 +10,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/reporters"
 	. "github.com/onsi/gomega"
 
 	foundationdbtc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
@@ -78,3 +79,14 @@ func TestRecordLayer(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Record Layer Suite")
 }
+
+// Write Ginkgo's per-spec JUnit XML report to Bazel's undeclared test outputs
+// directory. This gives the test-report tool individual spec granularity —
+// Bazel's rules_go wrapper only sees the single TestRecordLayer bootstrap function.
+var _ = ReportAfterSuite("ginkgo junit report", func(report Report) {
+	dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if dir == "" {
+		return
+	}
+	reporters.GenerateJUnitReport(report, dir+"/ginkgo-report.xml")
+})
