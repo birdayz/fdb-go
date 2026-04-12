@@ -52,9 +52,11 @@ func TestSetGetBasic(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	key := fdb.Key(t.Name() + "_key")
+
 	// Write
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("facade-test-key"), []byte("hello-facade"))
+		tr.Set(key, []byte("hello-facade"))
 		return nil, nil
 	})
 	if err != nil {
@@ -63,7 +65,7 @@ func TestSetGetBasic(t *testing.T) {
 
 	// Read
 	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		return tr.Get(fdb.Key("facade-test-key")).MustGet(), nil
+		return tr.Get(key).MustGet(), nil
 	})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -77,12 +79,14 @@ func TestGetRange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	// Seed data
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("range-a"), []byte("1"))
-		tr.Set(fdb.Key("range-b"), []byte("2"))
-		tr.Set(fdb.Key("range-c"), []byte("3"))
-		tr.Set(fdb.Key("range-d"), []byte("4"))
+		tr.Set(fdb.Key(pfx+"a"), []byte("1"))
+		tr.Set(fdb.Key(pfx+"b"), []byte("2"))
+		tr.Set(fdb.Key(pfx+"c"), []byte("3"))
+		tr.Set(fdb.Key(pfx+"d"), []byte("4"))
 		return nil, nil
 	})
 	if err != nil {
@@ -91,7 +95,7 @@ func TestGetRange(t *testing.T) {
 
 	// Forward range
 	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("range-a"), End: fdb.Key("range-e")}, fdb.RangeOptions{})
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "e")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
 	if err != nil {
@@ -101,13 +105,13 @@ func TestGetRange(t *testing.T) {
 	if len(kvs) != 4 {
 		t.Fatalf("forward range: got %d keys, want 4", len(kvs))
 	}
-	if string(kvs[0].Key) != "range-a" || string(kvs[3].Key) != "range-d" {
+	if string(kvs[0].Key) != pfx+"a" || string(kvs[3].Key) != pfx+"d" {
 		t.Fatalf("forward range order wrong: first=%q last=%q", kvs[0].Key, kvs[3].Key)
 	}
 
 	// Reverse range
 	result, err = db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("range-a"), End: fdb.Key("range-e")}, fdb.RangeOptions{Reverse: true})
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "e")}, fdb.RangeOptions{Reverse: true})
 		return rr.GetSliceWithError()
 	})
 	if err != nil {
@@ -117,13 +121,13 @@ func TestGetRange(t *testing.T) {
 	if len(kvs) != 4 {
 		t.Fatalf("reverse range: got %d keys, want 4", len(kvs))
 	}
-	if string(kvs[0].Key) != "range-d" || string(kvs[3].Key) != "range-a" {
+	if string(kvs[0].Key) != pfx+"d" || string(kvs[3].Key) != pfx+"a" {
 		t.Fatalf("reverse range order wrong: first=%q last=%q", kvs[0].Key, kvs[3].Key)
 	}
 
 	// Range with limit
 	result, err = db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("range-a"), End: fdb.Key("range-e")}, fdb.RangeOptions{Limit: 2})
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "e")}, fdb.RangeOptions{Limit: 2})
 		return rr.GetSliceWithError()
 	})
 	if err != nil {
@@ -257,7 +261,7 @@ func TestAtomicOps(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	key := fdb.Key("atomic-counter")
+	key := fdb.Key(t.Name() + "_counter")
 
 	// Atomic ADD
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
@@ -295,37 +299,39 @@ func TestClearRange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	// Seed
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("clear-a"), []byte("1"))
-		tr.Set(fdb.Key("clear-b"), []byte("2"))
-		tr.Set(fdb.Key("clear-c"), []byte("3"))
+		tr.Set(fdb.Key(pfx+"a"), []byte("1"))
+		tr.Set(fdb.Key(pfx+"b"), []byte("2"))
+		tr.Set(fdb.Key(pfx+"c"), []byte("3"))
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Clear range [clear-a, clear-c)
+	// Clear range [pfx+"a", pfx+"c")
 	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key("clear-a"), End: fdb.Key("clear-c")})
+		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "c")})
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("ClearRange: %v", err)
 	}
 
-	// Only clear-c should remain
+	// Only pfx+"c" should remain
 	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("clear-a"), End: fdb.Key("clear-d")}, fdb.RangeOptions{})
+		rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(pfx + "a"), End: fdb.Key(pfx + "d")}, fdb.RangeOptions{})
 		return rr.GetSliceWithError()
 	})
 	if err != nil {
 		t.Fatalf("GetRange: %v", err)
 	}
 	kvs := result.([]fdb.KeyValue)
-	if len(kvs) != 1 || string(kvs[0].Key) != "clear-c" {
-		t.Fatalf("after ClearRange: got %d keys, expected 1 (clear-c)", len(kvs))
+	if len(kvs) != 1 || string(kvs[0].Key) != pfx+"c" {
+		t.Fatalf("after ClearRange: got %d keys, expected 1 (%sc)", len(kvs), pfx)
 	}
 }
 
@@ -333,8 +339,10 @@ func TestSnapshot(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	key := fdb.Key(t.Name() + "_key")
+
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("snap-key"), []byte("snap-val"))
+		tr.Set(key, []byte("snap-val"))
 		return nil, nil
 	})
 	if err != nil {
@@ -343,7 +351,7 @@ func TestSnapshot(t *testing.T) {
 
 	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
 		snap := tr.Snapshot()
-		return snap.Get(fdb.Key("snap-key")).MustGet(), nil
+		return snap.Get(key).MustGet(), nil
 	})
 	if err != nil {
 		t.Fatalf("Snapshot Get: %v", err)
@@ -357,8 +365,10 @@ func TestGetCommittedVersion(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("ver-key"), []byte("val"))
+		tr.Set(fdb.Key(pfx+"key"), []byte("val"))
 		return nil, nil
 	})
 	_ = result
@@ -371,7 +381,7 @@ func TestGetCommittedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
-	tr.Set(fdb.Key("ver-key2"), []byte("val2"))
+	tr.Set(fdb.Key(pfx+"key2"), []byte("val2"))
 	if err := tr.Commit().Get(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -388,10 +398,12 @@ func TestTransactorInterface(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	key := fdb.Key(t.Name() + "_key")
+
 	// Verify Database satisfies Transactor
 	var transactor fdb.Transactor = db
 	_, err := transactor.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("iface-key"), []byte("iface-val"))
+		tr.Set(key, []byte("iface-val"))
 		return nil, nil
 	})
 	if err != nil {
@@ -401,7 +413,7 @@ func TestTransactorInterface(t *testing.T) {
 	// Verify Database satisfies ReadTransactor
 	var readTransactor fdb.ReadTransactor = db
 	result, err := readTransactor.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-		return tr.Get(fdb.Key("iface-key")).MustGet(), nil
+		return tr.Get(key).MustGet(), nil
 	})
 	if err != nil {
 		t.Fatalf("ReadTransactor.ReadTransact: %v", err)
@@ -481,7 +493,7 @@ func TestVersionstamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
-	tr.Set(fdb.Key("vs-key"), []byte("vs-val"))
+	tr.Set(fdb.Key(t.Name()+"_key"), []byte("vs-val"))
 	if err := tr.Commit().Get(); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -532,10 +544,12 @@ func TestFutureParallelism(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	// Seed two keys
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("par-a"), []byte("val-a"))
-		tr.Set(fdb.Key("par-b"), []byte("val-b"))
+		tr.Set(fdb.Key(pfx+"a"), []byte("val-a"))
+		tr.Set(fdb.Key(pfx+"b"), []byte("val-b"))
 		return nil, nil
 	})
 	if err != nil {
@@ -544,8 +558,8 @@ func TestFutureParallelism(t *testing.T) {
 
 	// Read both in parallel using futures
 	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		fa := tr.Get(fdb.Key("par-a"))
-		fb := tr.Get(fdb.Key("par-b"))
+		fa := tr.Get(fdb.Key(pfx + "a"))
+		fb := tr.Get(fdb.Key(pfx + "b"))
 		// Both reads should be in-flight now
 		a := fa.MustGet()
 		b := fb.MustGet()
@@ -567,15 +581,16 @@ func TestSetVersionstampedKey(t *testing.T) {
 	// SetVersionstampedKey: key contains incomplete versionstamp placeholder
 	// The last 4 bytes of param specify the offset where the versionstamp goes.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		// Key: "vs" + 10 zero bytes (placeholder) + offset=2 (little-endian uint32)
-		key := make([]byte, 2+10+4)
-		key[0] = 'v'
-		key[1] = 's'
-		// offset 2 in little-endian
-		key[12] = 2
-		key[13] = 0
-		key[14] = 0
-		key[15] = 0
+		pfx := []byte(t.Name() + "_")
+		// Key: pfx + 10 zero bytes (placeholder) + offset (little-endian uint32)
+		key := make([]byte, len(pfx)+10+4)
+		copy(key, pfx)
+		// offset = len(pfx) in little-endian
+		offsetPos := len(pfx) + 10
+		key[offsetPos] = byte(len(pfx))
+		key[offsetPos+1] = 0
+		key[offsetPos+2] = 0
+		key[offsetPos+3] = 0
 		tr.SetVersionstampedKey(fdb.Key(key), []byte("value"))
 		return nil, nil
 	})
@@ -602,7 +617,7 @@ func TestRetryLoopErrorConversion(t *testing.T) {
 			return nil, fdb.Error{Code: 1020} // not_committed
 		}
 		// Second attempt succeeds.
-		tr.Set(fdb.Key("retry-conv-key"), []byte("ok"))
+		tr.Set(fdb.Key(t.Name()+"_key"), []byte("ok"))
 		return "ok", nil
 	})
 	if err != nil {
@@ -627,7 +642,7 @@ func TestMustGetPanicRecovery(t *testing.T) {
 			// Simulate MustGet() panic with a retryable error.
 			panic(fdb.Error{Code: 1020}) // not_committed
 		}
-		tr.Set(fdb.Key("panic-recovery-key"), []byte("ok"))
+		tr.Set(fdb.Key(t.Name()+"_key"), []byte("ok"))
 		return "ok", nil
 	})
 	if err != nil {
@@ -770,7 +785,7 @@ func TestDatabaseTransactionTimeout(t *testing.T) {
 	var timedOut bool
 	for i := 0; i < 100; i++ {
 		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-			return tr.Get(fdb.Key("foo")).MustGet(), nil
+			return tr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
 		})
 		if err != nil {
 			fdbErr, ok := err.(fdb.Error)
@@ -801,7 +816,7 @@ func TestDatabaseTransactionSizeLimit(t *testing.T) {
 
 	// Transaction with mutations exceeding the limit should fail.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(fdb.Key("foo"), []byte("foundation database is amazing"))
+		tr.Set(fdb.Key(t.Name()+"_key"), []byte("foundation database is amazing"))
 		return nil, nil
 	})
 	if err == nil {
@@ -823,10 +838,12 @@ func TestLocalityGetBoundaryKeys(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	// Write some data.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 		for i := 0; i < 10; i++ {
-			tr.Set(fdb.Key(fmt.Sprintf("boundary_%02d", i)), []byte("v"))
+			tr.Set(fdb.Key(fmt.Sprintf("%s%02d", pfx, i)), []byte("v"))
 		}
 		return nil, nil
 	})
@@ -867,13 +884,15 @@ func TestReset(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
+	pfx := t.Name() + "_"
+
 	// Create a transaction, write, commit, reset, write again, commit.
 	tr, err := db.CreateTransaction()
 	if err != nil {
 		t.Fatalf("CreateTransaction: %v", err)
 	}
 
-	tr.Set(fdb.Key("reset_test_a"), []byte("1"))
+	tr.Set(fdb.Key(pfx+"a"), []byte("1"))
 	err = tr.Commit().Get()
 	if err != nil {
 		t.Fatalf("first commit: %v", err)
@@ -881,7 +900,7 @@ func TestReset(t *testing.T) {
 
 	tr.Reset()
 
-	tr.Set(fdb.Key("reset_test_b"), []byte("2"))
+	tr.Set(fdb.Key(pfx+"b"), []byte("2"))
 	err = tr.Commit().Get()
 	if err != nil {
 		t.Fatalf("second commit after reset: %v", err)
@@ -889,8 +908,8 @@ func TestReset(t *testing.T) {
 
 	// Verify both keys.
 	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
-		a := tr.Get(fdb.Key("reset_test_a")).MustGet()
-		b := tr.Get(fdb.Key("reset_test_b")).MustGet()
+		a := tr.Get(fdb.Key(pfx + "a")).MustGet()
+		b := tr.Get(fdb.Key(pfx + "b")).MustGet()
 		return [2][]byte{a, b}, nil
 	})
 	if err != nil {
@@ -898,10 +917,10 @@ func TestReset(t *testing.T) {
 	}
 	vals := result.([2][]byte)
 	if string(vals[0]) != "1" {
-		t.Errorf("reset_test_a: got %q, want %q", vals[0], "1")
+		t.Errorf("%sa: got %q, want %q", pfx, vals[0], "1")
 	}
 	if string(vals[1]) != "2" {
-		t.Errorf("reset_test_b: got %q, want %q", vals[1], "2")
+		t.Errorf("%sb: got %q, want %q", pfx, vals[1], "2")
 	}
 }
 
@@ -965,7 +984,7 @@ func TestReadTransactRetry(t *testing.T) {
 		if attempt == 1 {
 			return nil, fdb.Error{Code: 1007} // transaction_too_old → retryable
 		}
-		return rtr.Get(fdb.Key("readtransact_retry")).MustGet(), nil
+		return rtr.Get(fdb.Key(t.Name() + "_key")).MustGet(), nil
 	})
 	if err != nil {
 		t.Fatalf("ReadTransact should have retried, got: %v", err)
@@ -1155,7 +1174,7 @@ func TestAtomicAllTypes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		key := fdb.Key("atomic_all_" + tc.name)
+		key := fdb.Key(t.Name() + "_" + tc.name)
 
 		// Seed.
 		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
@@ -1196,7 +1215,7 @@ func TestKeyValueSizeLimits(t *testing.T) {
 
 	t.Run("max_value_100KB", func(t *testing.T) {
 		// FDB max value size is 100,000 bytes.
-		key := fdb.Key("size_limit_100kb")
+		key := fdb.Key(t.Name() + "_key")
 		val := make([]byte, 100_000)
 		for i := range val {
 			val[i] = byte(i % 256)
@@ -1224,7 +1243,7 @@ func TestKeyValueSizeLimits(t *testing.T) {
 	})
 
 	t.Run("empty_value", func(t *testing.T) {
-		key := fdb.Key("size_limit_empty")
+		key := fdb.Key(t.Name() + "_key")
 		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 			tr.Set(key, []byte{})
 			return nil, nil
@@ -1275,7 +1294,7 @@ func TestGetRangeWithSelectorRangeReverse(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	prefix := "selrange_rev_"
+	prefix := t.Name() + "_"
 	// Seed 10 keys.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 		for i := 0; i < 10; i++ {
@@ -1343,7 +1362,7 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	key := fdb.Key("multi_watch_key")
+	key := fdb.Key(t.Name() + "_key")
 
 	// Seed.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
@@ -1415,8 +1434,9 @@ func TestGetRangeEdgeCases(t *testing.T) {
 	db := openTestDB(t)
 
 	t.Run("empty_range_begin_equals_end", func(t *testing.T) {
+		key := fdb.Key(t.Name() + "_key")
 		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("same"), End: fdb.Key("same")}, fdb.RangeOptions{})
+			rr := tr.GetRange(fdb.KeyRange{Begin: key, End: key}, fdb.RangeOptions{})
 			return rr.GetSliceWithError()
 		})
 		if err != nil {
@@ -1428,10 +1448,11 @@ func TestGetRangeEdgeCases(t *testing.T) {
 	})
 
 	t.Run("no_matching_keys", func(t *testing.T) {
+		pfx := t.Name() + "_"
 		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
 			rr := tr.GetRange(fdb.KeyRange{
-				Begin: fdb.Key("edge_nonexist_aaa"),
-				End:   fdb.Key("edge_nonexist_zzz"),
+				Begin: fdb.Key(pfx + "aaa"),
+				End:   fdb.Key(pfx + "zzz"),
 			}, fdb.RangeOptions{})
 			return rr.GetSliceWithError()
 		})
@@ -1444,7 +1465,7 @@ func TestGetRangeEdgeCases(t *testing.T) {
 	})
 
 	t.Run("single_key_range", func(t *testing.T) {
-		key := fdb.Key("edge_single")
+		key := fdb.Key(t.Name() + "_key")
 		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 			tr.Set(key, []byte("v"))
 			return nil, nil
@@ -1454,20 +1475,20 @@ func TestGetRangeEdgeCases(t *testing.T) {
 		}
 
 		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
-			rr := tr.GetRange(fdb.KeyRange{Begin: key, End: fdb.Key("edge_single\x00")}, fdb.RangeOptions{})
+			rr := tr.GetRange(fdb.KeyRange{Begin: key, End: fdb.Key(string(key) + "\x00")}, fdb.RangeOptions{})
 			return rr.GetSliceWithError()
 		})
 		if err != nil {
 			t.Fatalf("GetRange single: %v", err)
 		}
 		kvs := result.([]fdb.KeyValue)
-		if len(kvs) != 1 || string(kvs[0].Key) != "edge_single" {
-			t.Errorf("expected 1 key 'edge_single', got %d keys", len(kvs))
+		if len(kvs) != 1 || string(kvs[0].Key) != string(key) {
+			t.Errorf("expected 1 key %q, got %d keys", string(key), len(kvs))
 		}
 	})
 
 	t.Run("limit_zero_means_unlimited", func(t *testing.T) {
-		prefix := "edge_unlimited_"
+		prefix := t.Name() + "_"
 		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 			for i := 0; i < 5; i++ {
 				tr.Set(fdb.Key(fmt.Sprintf("%s%d", prefix, i)), []byte("v"))
