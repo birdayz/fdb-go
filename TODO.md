@@ -1,6 +1,6 @@
 # fdb-record-layer-go TODO
 
-Restructured 2026-04-13 (nightshift-9). Previous version with full history: `git show HEAD~3:TODO.md`.
+Restructured 2026-04-13 (nightshift-9). Previous version: `git show 036697a:TODO.md`.
 Correctness audit performed 2026-04-13 against C++ NativeAPI.actor.cpp.
 
 Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
@@ -14,7 +14,7 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **getKey selector resolution across shard boundaries** — Go sent ONE request and returned the reply key, ignoring `orEqual` and `offset` fields from the `KeySelector` in the reply. C++ loops until `offset==0 && orEqual==true`. In multi-shard clusters, selectors crossing shard boundaries returned wrong keys. Fixed: full resolution loop matching C++. Not caught by tests (single-shard testcontainers).
 - [x] **hot_shard/range_locked backoff cap** — Go used `DEFAULT_MAX_BACKOFF` (1s) for `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242). C++ uses `RESOURCE_CONSTRAINED_MAX_BACKOFF` (30s). Caused over-aggressive retry under hot-shard conditions. Fixed: moved to resource-constrained group.
 
-_No known open bugs. Binding tester: 169 seeds × 1000 ops = 0 failures. 92 C binding port tests pass._
+_No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
 ### Features
 
