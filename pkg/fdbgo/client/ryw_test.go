@@ -649,3 +649,140 @@ func TestRYWGetRange_ServerMoreWithLimit(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d: %v", len(result), keys)
 	}
 }
+
+// Benchmarks for RYW merge performance.
+
+// BenchmarkRYWMergeBatch_FewWrites benchmarks mergeBatch with 10 writes
+// in the scan range and 50 server results.
+func BenchmarkRYWMergeBatch_FewWrites(b *testing.B) {
+	c := &rywCache{}
+	for i := 0; i < 10; i++ {
+		key := make([]byte, 4)
+		key[0] = 'B'
+		key[1] = byte('A' + i)
+		c.set(key, []byte("value"))
+	}
+
+	serverKVs := make([]KeyValue, 50)
+	for i := range serverKVs {
+		key := make([]byte, 4)
+		key[0] = 'A'
+		key[1] = byte(i)
+		serverKVs[i] = KeyValue{Key: key, Value: []byte("server")}
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		c.mergeBatch(serverKVs, []byte("A"), []byte("C"), nil, false)
+	}
+}
+
+// BenchmarkRYWMergeBatch_ManyWritesOutOfRange benchmarks the O(log N) advantage:
+// 10000 writes outside the scan range should not slow down merge.
+func BenchmarkRYWMergeBatch_ManyWritesOutOfRange(b *testing.B) {
+	c := &rywCache{}
+	// 10000 writes in Z* prefix.
+	for i := 0; i < 10000; i++ {
+		key := make([]byte, 6)
+		key[0] = 'Z'
+		key[1] = byte(i >> 16)
+		key[2] = byte(i >> 8)
+		key[3] = byte(i)
+		c.set(key, []byte("noise"))
+	}
+	// 5 writes in scan range.
+	for i := 0; i < 5; i++ {
+		key := []byte{byte('B'), byte('A' + i)}
+		c.set(key, []byte("value"))
+	}
+
+	serverKVs := make([]KeyValue, 20)
+	for i := range serverKVs {
+		key := []byte{byte('A'), byte(i)}
+		serverKVs[i] = KeyValue{Key: key, Value: []byte("server")}
+	}
+
+	b.ResetTimer()
+	for b.Loop() {
+		c.mergeBatch(serverKVs, []byte("A"), []byte("C"), nil, false)
+	}
+}
+
+// BenchmarkRYWMergeBatch_WithBoundary benchmarks merge with a knowledge
+// boundary (serverMore=true scenario).
+func BenchmarkRYWMergeBatch_WithBoundary(b *testing.B) {
+	c := &rywCache{}
+	for i := 0; i < 20; i++ {
+		key := []byte{byte('A' + i)}
+		c.set(key, []byte("value"))
+	}
+
+	serverKVs := make([]KeyValue, 10)
+	for i := range serverKVs {
+		key := []byte{byte('A' + i)}
+		serverKVs[i] = KeyValue{Key: key, Value: []byte("server")}
+	}
+	boundary := []byte{byte('A' + 9)} // boundary at key "J"
+
+	b.ResetTimer()
+	for b.Loop() {
+		c.mergeBatch(serverKVs, []byte("A"), []byte("Z"), boundary, false)
+	}
+}
+
+// BenchmarkRYWGetRange_WithClears benchmarks the iterative fetch+merge loop
+// when clears consume results.
+func BenchmarkRYWGetRange_WithClears(b *testing.B) {
+	c := &rywCache{}
+	// Clear first half of the range.
+	c.clearRange([]byte{0}, []byte{128})
+
+	calls := 0
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		calls++
+		if calls%2 == 1 {
+			// First call: return cleared keys.
+			kvs := make([]KeyValue, 10)
+			for i := range kvs {
+				kvs[i] = KeyValue{Key: []byte{byte(i)}, Value: []byte("cleared")}
+			}
+			return kvs, true, nil
+		}
+		// Second call: return surviving keys.
+		kvs := make([]KeyValue, 10)
+		for i := range kvs {
+			kvs[i] = KeyValue{Key: []byte{byte(128 + i)}, Value: []byte("live")}
+		}
+		return kvs, false, nil
+	}
+
+	ctx := context.Background()
+	b.ResetTimer()
+	for b.Loop() {
+		calls = 0
+		c.getRange(ctx, []byte{0}, []byte{255}, 10, false, mockServer)
+	}
+}
+
+// BenchmarkRYWHasWritesInRange benchmarks the binary search optimization
+// for checking if writes exist in a range.
+func BenchmarkRYWHasWritesInRange(b *testing.B) {
+	c := &rywCache{}
+	// 10000 writes spread across the keyspace.
+	for i := 0; i < 10000; i++ {
+		key := make([]byte, 4)
+		key[0] = byte(i >> 8)
+		key[1] = byte(i)
+		c.set(key, []byte("v"))
+	}
+
+	begin := []byte{0x80, 0}
+	end := []byte{0x80, 0xFF}
+
+	b.ResetTimer()
+	for b.Loop() {
+		c.mu.Lock()
+		c.hasWritesInRangeLocked(begin, end)
+		c.mu.Unlock()
+	}
+}
