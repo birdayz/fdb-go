@@ -332,7 +332,7 @@ func (t *TargetResult) SortedTests() []TestResult {
 
 func (r TestResult) DurationStr() string {
 	if r.Duration == 0 {
-		return "<1ms"
+		return "\u2014" // em dash — spec didn't run or no timing data
 	}
 	return formatDuration(r.Duration)
 }

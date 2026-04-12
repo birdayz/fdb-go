@@ -91,7 +91,7 @@ func writeGinkgoTreeReport(report Report, path string) {
 			Containers: spec.ContainerHierarchyTexts,
 			Name:       spec.LeafNodeText,
 			State:      spec.State.String(),
-			DurationMs: float64(spec.RunTime.Milliseconds()),
+			DurationMs: spec.RunTime.Seconds() * 1000,
 		})
 	}
 	data, err := json.Marshal(specs)
