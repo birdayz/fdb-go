@@ -57,7 +57,7 @@ _No known open bugs. Binding tester: 169 seeds × 1000 ops = 0 failures. 92 C bi
 |---|---|---|---|
 | 1 | ~~`future_version` backoff~~ | ~~BEHAVIOR~~ FIXED | ~~C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)`.~~ Fixed: Go now respects user's `maxRetryDelay`. |
 | 2 | `makeSelfConflicting` | BEHAVIOR | C++ adds random key to `\xFF/SC/` when write/read conflicts don't intersect. Go uses `writeConflicts[0].Begin` in `commitDummyTransaction`. Functionally equivalent for common cases. |
-| 3 | Watch cancellation on Reset | MISSING | C++ `resetRyow()` cancels pending watches. Go's `Reset()` does not. Users must use context cancellation. |
+| 3 | ~~Watch cancellation on Reset~~ | ~~MISSING~~ FIXED | ~~C++ cancels pending watches on reset.~~ Fixed: `cancelWatches()` on Reset/Cancel/reset via lazy `watchCtx`. |
 | 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
 | 5 | RYW SnapshotCache | BEHAVIOR | C++ caches server reads for reuse within a transaction. Go re-fetches on every `getRange` with writes/clears. Correct but more I/O for repeated reads of the same range. |
 | 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
