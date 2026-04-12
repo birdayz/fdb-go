@@ -170,16 +170,16 @@ bazelisk run //pkg/fdbgo/client:client_test -- \
 
 Both benchmarks read the same 100-byte key from FDB testcontainers. Measures the full path: GRV + locate + read + parse.
 
-**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-10):
+**Baseline** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-12):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `BenchmarkGet/Go/100B` | 192,000 | ~2,000 | 21 |
-| `BenchmarkGet/CGo/100B` | 209,000 | ~400 | 13 |
-| `BenchmarkSet/Go/100B` | 2,164,000 | 2,747 | 28 |
-| `BenchmarkSet/CGo/100B` | 1,876,000 | 200 | 9 |
+| `BenchmarkGet/Go/100B` | 58,000 | 1,785 | 18 |
+| `BenchmarkGet/CGo/100B` | 205,000 | ~400 | 14 |
+| `BenchmarkSet/Go/100B` | 1,005,000 | 1,919 | 20 |
+| `BenchmarkSet/CGo/100B` | 1,007,000 | 180 | 9 |
 
-**Reads: Go beats CGo by 8.5%.** Writes: CGo wins by ~15% (structural goroutine coordination overhead — channel-based multiplexing vs C's single-threaded event loop). 95.5% of write time is I/O-bound.
+**Reads: Go beats CGo by 3.5x.** Writes: parity (1.00x). The 18 allocs/op on Get is the structural floor — top allocators: ReadFrame payload (9%), PrepareReply channel (13% with pool miss), conflict range buffer (6%), transaction struct (5%). All already pooled or minimal. Frame buffer pooling investigated (dayshift-6c) — no improvement because body shares backing array with payload, pooling requires an extra copy.
 
 ## Fault injection
 
