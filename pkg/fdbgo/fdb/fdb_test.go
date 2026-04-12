@@ -973,3 +973,45 @@ func TestReadTransactRetry(t *testing.T) {
 	}
 	_ = result // value doesn't matter, just verifying retry happened
 }
+
+// TestGetRangeWithSelectorRange verifies that GetRange works with
+// non-trivial key selectors (LastLessOrEqual, FirstGreaterThan).
+// These require a GetKey round trip to resolve before the range scan.
+func TestGetRangeWithSelectorRange(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := t.Name() + "/"
+
+	// Seed 5 keys.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("%skey%d", prefix, i)), []byte(fmt.Sprintf("val%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetRange with SelectorRange: [LastLessOrEqual("key2"), FirstGreaterThan("key3"))
+	// Should return key2, key3.
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		rr := rtr.GetRange(fdb.SelectorRange{
+			Begin: fdb.LastLessOrEqual(fdb.Key(prefix + "key2")),
+			End:   fdb.FirstGreaterThan(fdb.Key(prefix + "key3")),
+		}, fdb.RangeOptions{})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(kvs))
+	}
+	if string(kvs[0].Key) != prefix+"key2" || string(kvs[1].Key) != prefix+"key3" {
+		t.Errorf("keys: got [%q, %q], want [%q, %q]",
+			kvs[0].Key, kvs[1].Key, prefix+"key2", prefix+"key3")
+	}
+}
