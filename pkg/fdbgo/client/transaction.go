@@ -239,6 +239,11 @@ type Transaction struct {
 	// Accumulated but not yet sent back to proxy (see TODO.md).
 	proxyTagThrottledDuration float64
 
+	// isDummy: true for dummy transactions created by commitDummyTransaction.
+	// Prevents recursive commitDummyTransaction calls when the dummy itself
+	// encounters commit_unknown_result.
+	isDummy bool
+
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
