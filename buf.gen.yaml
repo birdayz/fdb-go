@@ -5,7 +5,10 @@ managed:
     - file_option: go_package_prefix
       value: github.com/birdayz/fdb-record-layer-go/gen
 plugins:
-  - remote: buf.build/protocolbuffers/go:v1.34.2
+  - local:
+      - go
+      - run
+      - google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
     out: gen
     opt:
       - paths=source_relative
