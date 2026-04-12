@@ -51,7 +51,7 @@ const (
 	DefaultRPCTimeout          = 5 * time.Second
 	CoordinatorTimeout         = 30 * time.Second // OpenDatabaseCoordRequest + GRV batch context
 	BootstrapMaxBackoff        = 5 * time.Second  // bootstrap retry backoff cap
-	MaxWrongShardRetries       = 5
+	MaxWrongShardRetries       = 50               // C++ is unbounded (relies on tx 5s timeout); 50×10ms = 500ms, generous safety margin
 )
 
 // C++ version constants from flow/flow.h.
