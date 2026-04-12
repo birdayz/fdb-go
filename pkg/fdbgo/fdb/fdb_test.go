@@ -1,10 +1,12 @@
 package fdb_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1057,4 +1059,435 @@ func TestPrefixRangeIntegration(t *testing.T) {
 		t.Errorf("values: got [%q, %q, %q], want [1, 2, 3]",
 			kvs[0].Value, kvs[1].Value, kvs[2].Value)
 	}
+}
+
+// TestAtomicAllTypes tests all atomic mutation types in the fdb package.
+// Each sub-test seeds a value, applies an atomic mutation, commits, then
+// reads back and verifies the result.
+func TestAtomicAllTypes(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	tests := []struct {
+		name   string
+		seed   []byte
+		apply  func(tr fdb.Transaction, key fdb.Key, param []byte)
+		param  []byte
+		expect []byte
+	}{
+		{
+			name:   "Add",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Add(k, p) },
+			param:  []byte{5, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{15, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "BitOr",
+			seed:   []byte{0x0F},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitOr(k, p) },
+			param:  []byte{0xF0},
+			expect: []byte{0xFF},
+		},
+		{
+			name:   "BitAnd",
+			seed:   []byte{0xFF},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitAnd(k, p) },
+			param:  []byte{0x0F},
+			expect: []byte{0x0F},
+		},
+		{
+			name:   "BitXor",
+			seed:   []byte{0xFF},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitXor(k, p) },
+			param:  []byte{0x0F},
+			expect: []byte{0xF0},
+		},
+		{
+			name:   "Max",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Max(k, p) },
+			param:  []byte{20, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{20, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "Min",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Min(k, p) },
+			param:  []byte{5, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{5, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "ByteMax",
+			seed:   []byte("apple"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.ByteMax(k, p) },
+			param:  []byte("banana"),
+			expect: []byte("banana"),
+		},
+		{
+			name:   "ByteMin",
+			seed:   []byte("banana"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.ByteMin(k, p) },
+			param:  []byte("apple"),
+			expect: []byte("apple"),
+		},
+		{
+			name:   "AppendIfFits",
+			seed:   []byte("hello"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.AppendIfFits(k, p) },
+			param:  []byte(" world"),
+			expect: []byte("hello world"),
+		},
+		{
+			name:   "CompareAndClear_match",
+			seed:   []byte("match"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.CompareAndClear(k, p) },
+			param:  []byte("match"),
+			expect: nil, // cleared
+		},
+		{
+			name:   "CompareAndClear_nomatch",
+			seed:   []byte("keep"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.CompareAndClear(k, p) },
+			param:  []byte("different"),
+			expect: []byte("keep"), // unchanged
+		},
+	}
+
+	for _, tc := range tests {
+		key := fdb.Key("atomic_all_" + tc.name)
+
+		// Seed.
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, tc.seed)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("%s seed: %v", tc.name, err)
+		}
+
+		// Apply atomic.
+		_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+			tc.apply(tr, key, tc.param)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("%s apply: %v", tc.name, err)
+		}
+
+		// Verify.
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("%s read: %v", tc.name, err)
+		}
+		got := result.([]byte)
+		if !bytes.Equal(got, tc.expect) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.expect)
+		}
+	}
+}
+
+// TestKeyValueSizeLimits verifies behavior at FDB size boundaries.
+func TestKeyValueSizeLimits(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	t.Run("max_value_100KB", func(t *testing.T) {
+		// FDB max value size is 100,000 bytes.
+		key := fdb.Key("size_limit_100kb")
+		val := make([]byte, 100_000)
+		for i := range val {
+			val[i] = byte(i % 256)
+		}
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, val)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set 100KB: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get 100KB: %v", err)
+		}
+		got := result.([]byte)
+		if len(got) != 100_000 {
+			t.Fatalf("expected 100000 bytes, got %d", len(got))
+		}
+		if !bytes.Equal(got, val) {
+			t.Error("100KB value round-trip mismatch")
+		}
+	})
+
+	t.Run("empty_value", func(t *testing.T) {
+		key := fdb.Key("size_limit_empty")
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, []byte{})
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set empty: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get empty: %v", err)
+		}
+		got := result.([]byte)
+		if got == nil || len(got) != 0 {
+			t.Fatalf("expected empty []byte, got %v (nil=%v)", got, got == nil)
+		}
+	})
+
+	t.Run("long_key", func(t *testing.T) {
+		// FDB max key size is 10,000 bytes.
+		key := make([]byte, 9_000)
+		for i := range key {
+			key[i] = byte('A' + i%26)
+		}
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(fdb.Key(key), []byte("long_key_value"))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set long key: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(fdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get long key: %v", err)
+		}
+		if string(result.([]byte)) != "long_key_value" {
+			t.Errorf("long key: got %q", result)
+		}
+	})
+}
+
+// TestGetRangeWithSelectorRangeReverse tests reverse GetRange using
+// SelectorRange (FirstGreaterOrEqual, FirstGreaterThan as endpoints).
+func TestGetRangeWithSelectorRangeReverse(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := "selrange_rev_"
+	// Seed 10 keys.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Reverse scan using SelectorRange: keys [03, 07] → should return 07, 06, 05, 04, 03.
+	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+		begin := fdb.FirstGreaterOrEqual(fdb.Key(fmt.Sprintf("%s03", prefix)))
+		end := fdb.FirstGreaterThan(fdb.Key(fmt.Sprintf("%s07", prefix)))
+		rr := tr.GetRange(fdb.SelectorRange{Begin: begin, End: end}, fdb.RangeOptions{Reverse: true})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange reverse selector: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 5 {
+		names := make([]string, len(kvs))
+		for i, kv := range kvs {
+			names[i] = string(kv.Key)
+		}
+		t.Fatalf("expected 5 keys (07..03), got %d: %v", len(kvs), names)
+	}
+	// Verify reverse order: 07, 06, 05, 04, 03.
+	for i, kv := range kvs {
+		expected := fmt.Sprintf("%s%02d", prefix, 7-i)
+		if string(kv.Key) != expected {
+			t.Errorf("kvs[%d]: got %q, want %q", i, kv.Key, expected)
+		}
+	}
+}
+
+// TestTransactionRetryLimit verifies that SetRetryLimit actually caps retries.
+func TestTransactionRetryLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	var callCount int32
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		atomic.AddInt32(&callCount, 1)
+		tr.Options().SetRetryLimit(2)
+		// Force a retryable error (not_committed) by writing a conflict.
+		return nil, fdb.Error{Code: 1020}
+	})
+	// After 2 retries (3 total calls), the error should propagate.
+	if err == nil {
+		t.Fatal("expected error after retry limit exceeded")
+	}
+	// Should have been called exactly 3 times (initial + 2 retries).
+	got := atomic.LoadInt32(&callCount)
+	if got != 3 {
+		t.Errorf("expected 3 calls (1 + 2 retries), got %d", got)
+	}
+}
+
+// TestMultipleWatchesSameKey verifies that two watches on the same key
+// both fire when the key changes.
+func TestMultipleWatchesSameKey(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	key := fdb.Key("multi_watch_key")
+
+	// Seed.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Start two watches from separate transactions.
+	var w1, w2 fdb.FutureNil
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		w1 = tr.Watch(key)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("watch1: %v", err)
+	}
+
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		w2 = tr.Watch(key)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("watch2: %v", err)
+	}
+
+	// Modify the key.
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("changed"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("modify: %v", err)
+	}
+
+	// Both watches should fire.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch1 := make(chan error, 1)
+	ch2 := make(chan error, 1)
+	go func() { ch1 <- w1.Get() }()
+	go func() { ch2 <- w2.Get() }()
+
+	select {
+	case err := <-ch1:
+		if err != nil {
+			t.Errorf("watch1 error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("watch1 did not fire within 10s")
+	}
+
+	select {
+	case err := <-ch2:
+		if err != nil {
+			t.Errorf("watch2 error: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("watch2 did not fire within 10s")
+	}
+}
+
+// TestGetRangeEdgeCases tests boundary conditions for GetRange.
+func TestGetRangeEdgeCases(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	t.Run("empty_range_begin_equals_end", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("same"), End: fdb.Key("same")}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange begin==end: %v", err)
+		}
+		if len(result.([]fdb.KeyValue)) != 0 {
+			t.Errorf("expected 0 results for begin==end, got %d", len(result.([]fdb.KeyValue)))
+		}
+	})
+
+	t.Run("no_matching_keys", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{
+				Begin: fdb.Key("edge_nonexist_aaa"),
+				End:   fdb.Key("edge_nonexist_zzz"),
+			}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange no keys: %v", err)
+		}
+		if len(result.([]fdb.KeyValue)) != 0 {
+			t.Errorf("expected 0 results, got %d", len(result.([]fdb.KeyValue)))
+		}
+	})
+
+	t.Run("single_key_range", func(t *testing.T) {
+		key := fdb.Key("edge_single")
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, []byte("v"))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: key, End: fdb.Key("edge_single\x00")}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange single: %v", err)
+		}
+		kvs := result.([]fdb.KeyValue)
+		if len(kvs) != 1 || string(kvs[0].Key) != "edge_single" {
+			t.Errorf("expected 1 key 'edge_single', got %d keys", len(kvs))
+		}
+	})
+
+	t.Run("limit_zero_means_unlimited", func(t *testing.T) {
+		prefix := "edge_unlimited_"
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			for i := 0; i < 5; i++ {
+				tr.Set(fdb.Key(fmt.Sprintf("%s%d", prefix, i)), []byte("v"))
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}, fdb.RangeOptions{Limit: 0})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange limit=0: %v", err)
+		}
+		kvs := result.([]fdb.KeyValue)
+		if len(kvs) != 5 {
+			t.Errorf("limit=0 should be unlimited, got %d keys (want 5)", len(kvs))
+		}
+	})
 }

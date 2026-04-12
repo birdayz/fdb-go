@@ -1092,3 +1092,506 @@ func TestConcurrentGetRange(t *testing.T) {
 		t.Errorf("%d read errors", readErrors.Load())
 	}
 }
+
+func TestWriteWriteConflict(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("conflict_ww_key")
+
+	// Seed.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// tx1 and tx2 both start at the same read version.
+	tx1 := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx1.SetReadVersion(rv)
+
+	tx2 := db.CreateTransaction()
+	tx2.SetReadVersion(rv)
+
+	// Both read the key (establishes read conflicts).
+	_, err = tx1.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("tx1 Get: %v", err)
+	}
+	_, err = tx2.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("tx2 Get: %v", err)
+	}
+
+	// Both write different values.
+	tx1.Set(key, []byte("from_tx1"))
+	tx2.Set(key, []byte("from_tx2"))
+
+	// tx1 commits first — should succeed.
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit should succeed: %v", err)
+	}
+
+	// tx2 commits — should conflict (not_committed 1020).
+	err = tx2.Commit(ctx)
+	if err == nil {
+		t.Fatal("tx2 should conflict after tx1 committed")
+	}
+	t.Logf("tx2 conflict (expected): %v", err)
+
+	// Use OnError to reset tx2 for retry.
+	if retryErr := tx2.OnError(err); retryErr != nil {
+		t.Fatalf("OnError should allow retry: %v", retryErr)
+	}
+
+	// Retry tx2: read, write, commit.
+	_, err = tx2.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("tx2 retry Get: %v", err)
+	}
+	tx2.Set(key, []byte("from_tx2"))
+	if err := tx2.Commit(ctx); err != nil {
+		t.Fatalf("tx2 retry commit: %v", err)
+	}
+
+	// Final value should be from_tx2 (last writer wins after retry).
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if string(result.([]byte)) != "from_tx2" {
+		t.Fatalf("final value: got %q, want %q", result, "from_tx2")
+	}
+}
+
+func TestReadWriteConflict(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Seed keys in the range.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("conflict_rw_a"), []byte("1"))
+		tx.Set([]byte("conflict_rw_b"), []byte("2"))
+		tx.Set([]byte("conflict_rw_c"), []byte("3"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// txA reads a range — establishes read conflict on [conflict_rw_a, conflict_rw_d).
+	txA := db.CreateTransaction()
+	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	txA.SetReadVersion(rv)
+	_, _, err = txA.GetRange(ctx, []byte("conflict_rw_a"), []byte("conflict_rw_d"), 100)
+	if err != nil {
+		t.Fatalf("txA GetRange: %v", err)
+	}
+
+	// txB writes into that range and commits.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte("conflict_rw_b"), []byte("modified"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("txB: %v", err)
+	}
+
+	// txA tries to commit — should conflict because txB wrote into its read range.
+	// txA must write something to force a real commit; without writes,
+	// FDB may short-circuit commit and skip conflict detection.
+	txA.Set([]byte("conflict_rw_unrelated"), []byte("x"))
+	err = txA.Commit(ctx)
+	if err == nil {
+		t.Fatal("txA should conflict — txB wrote into its read range")
+	}
+	t.Logf("txA conflict (expected): %v", err)
+}
+
+func TestRetryCountIncrement(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("retry_cnt_key")
+
+	// Seed a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("initial"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Use Transact with a function that intentionally conflicts on the first
+	// attempt: it writes outside Transact before returning, forcing a conflict
+	// on the second call onwards. We track call count with an atomic counter.
+	var callCount atomic.Int64
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		n := callCount.Add(1)
+		_, err := tx.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		tx.Set(key, []byte(fmt.Sprintf("attempt_%d", n)))
+
+		if n == 1 {
+			// Cause a conflict: write the same key from another transaction
+			// before this one commits.
+			_, err := db.Transact(ctx, func(tx2 *Transaction) (any, error) {
+				tx2.Set(key, []byte("spoiler"))
+				return nil, nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("spoiler: %w", err)
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Transact: %v", err)
+	}
+
+	calls := callCount.Load()
+	if calls < 2 {
+		t.Fatalf("expected at least 2 calls (1 conflict + 1 retry), got %d", calls)
+	}
+	t.Logf("Transact completed after %d attempts", calls)
+
+	// Verify the key was written.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	val := string(result.([]byte))
+	if !strings.HasPrefix(val, "attempt_") {
+		t.Fatalf("final value: got %q, want attempt_N", val)
+	}
+	t.Logf("final value: %q", val)
+}
+
+func TestConcurrentWritesSameKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("concurrent_w_key")
+	const goroutines = 10
+
+	var wg sync.WaitGroup
+	var errCount atomic.Int64
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			val := []byte(fmt.Sprintf("writer_%d", id))
+			_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				tx.Set(key, val)
+				return nil, nil
+			})
+			if err != nil {
+				errCount.Add(1)
+				t.Errorf("goroutine %d: %v", id, err)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if errCount.Load() > 0 {
+		t.Fatalf("%d goroutines failed", errCount.Load())
+	}
+
+	// Read the final value — should be one of the 10 writer values.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	val := string(result.([]byte))
+	if !strings.HasPrefix(val, "writer_") {
+		t.Fatalf("final value: got %q, want writer_N", val)
+	}
+	t.Logf("final value (last writer wins): %q", val)
+}
+
+func TestAtomicAddConcurrent(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("atomic_conc_counter")
+	const goroutines = 10
+
+	// Initialize counter to 0.
+	var zeroBuf [8]byte
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, zeroBuf[:])
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	// 10 goroutines each atomically ADD 1.
+	var wg sync.WaitGroup
+	var addBuf [8]byte
+	binary.LittleEndian.PutUint64(addBuf[:], 1)
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				tx.Atomic(MutAddValue, key, addBuf[:])
+				return nil, nil
+			})
+			if err != nil {
+				t.Errorf("atomic ADD: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Read counter — should be exactly 10.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	counter := binary.LittleEndian.Uint64(result.([]byte))
+	if counter != goroutines {
+		t.Fatalf("counter: got %d, want %d", counter, goroutines)
+	}
+	t.Logf("counter after %d concurrent adds: %d", goroutines, counter)
+}
+
+func TestGetRangeReverseAllModes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	const count = 20
+
+	// Write 20 keys: reverse_mode_0000 to reverse_mode_0019.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < count; i++ {
+			k := []byte(fmt.Sprintf("reverse_mode_%04d", i))
+			tx.Set(k, []byte(fmt.Sprintf("val_%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Our API uses limit (not streaming mode), but we can exercise different
+	// limit values to test the reverse scan path thoroughly.
+	limits := []struct {
+		name  string
+		limit int
+	}{
+		{"unlimited", 0},
+		{"exact_20", 20},
+		{"small_5", 5},
+		{"medium_10", 10},
+		{"large_50", 50},
+		{"one", 1},
+		{"all_100", 100},
+	}
+
+	for _, tc := range limits {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				kvs, _, err := tx.GetRangeReverse(ctx,
+					[]byte("reverse_mode_"),
+					[]byte("reverse_mode_~"),
+					tc.limit)
+				return kvs, err
+			})
+			if err != nil {
+				t.Fatalf("GetRangeReverse(%s): %v", tc.name, err)
+			}
+			kvs := result.([]KeyValue)
+
+			// Determine expected count.
+			expected := count
+			if tc.limit > 0 && tc.limit < count {
+				expected = tc.limit
+			}
+			if len(kvs) != expected {
+				t.Fatalf("count: got %d, want %d", len(kvs), expected)
+			}
+
+			// Verify reverse order: keys must be strictly descending.
+			for i := 1; i < len(kvs); i++ {
+				if bytes.Compare(kvs[i-1].Key, kvs[i].Key) <= 0 {
+					t.Fatalf("not reverse at %d: %q <= %q", i, kvs[i-1].Key, kvs[i].Key)
+				}
+			}
+
+			// If we got all 20, verify first and last.
+			if len(kvs) == count {
+				if string(kvs[0].Key) != "reverse_mode_0019" {
+					t.Errorf("first key: got %q, want reverse_mode_0019", kvs[0].Key)
+				}
+				if string(kvs[count-1].Key) != "reverse_mode_0000" {
+					t.Errorf("last key: got %q, want reverse_mode_0000", kvs[count-1].Key)
+				}
+			}
+		})
+	}
+}
+
+func TestWatchClearRange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("watch_clear_key")
+
+	// Set initial value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("exists"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Start watch in a goroutine.
+	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer watchCancel()
+
+	watchErr := make(chan error, 1)
+	go func() {
+		_, err := db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+			_, err := tx.Get(watchCtx, key)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Watch(watchCtx, key)
+		})
+		watchErr <- err
+	}()
+
+	// Let the watch register, then ClearRange covering the key.
+	time.Sleep(500 * time.Millisecond)
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return nil, tx.ClearRange([]byte("watch_clear_"), []byte("watch_clear_~"))
+	})
+	if err != nil {
+		t.Fatalf("ClearRange: %v", err)
+	}
+
+	// Watch should fire.
+	select {
+	case err := <-watchErr:
+		if err != nil {
+			t.Fatalf("watch error: %v", err)
+		}
+	case <-watchCtx.Done():
+		t.Fatal("watch did not resolve within 10 seconds after ClearRange")
+	}
+
+	// Verify key is gone.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Fatalf("key should be cleared, got %q", result)
+	}
+}
+
+func TestWatchNonExistentKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte("watch_new_key")
+
+	// Key does NOT exist yet. Start a watch on it.
+	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer watchCancel()
+
+	watchErr := make(chan error, 1)
+	go func() {
+		_, err := db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+			// Read the key (nil) to establish watch version.
+			_, err := tx.Get(watchCtx, key)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Watch(watchCtx, key)
+		})
+		watchErr <- err
+	}()
+
+	// Let the watch register, then set the key from another transaction.
+	time.Sleep(500 * time.Millisecond)
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("now_exists"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	// Watch should fire.
+	select {
+	case err := <-watchErr:
+		if err != nil {
+			t.Fatalf("watch error: %v", err)
+		}
+	case <-watchCtx.Done():
+		t.Fatal("watch did not resolve within 10 seconds after setting non-existent key")
+	}
+
+	// Verify the key has the new value.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if string(result.([]byte)) != "now_exists" {
+		t.Fatalf("value: got %q, want %q", result, "now_exists")
+	}
+}

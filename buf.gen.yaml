@@ -5,7 +5,21 @@ managed:
     - file_option: go_package_prefix
       value: github.com/birdayz/fdb-record-layer-go/gen
 plugins:
-  - remote: buf.build/protocolbuffers/go:v1.34.2
+  - local:
+      - bazelisk
+      - run
+      - "@org_golang_google_protobuf//cmd/protoc-gen-go"
+      - --
     out: gen
     opt:
       - paths=source_relative
+  - local:
+      - bazelisk
+      - run
+      - "@com_github_planetscale_vtprotobuf//cmd/protoc-gen-go-vtproto"
+      - --
+    out: gen
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size+pool
+      - pool=github.com/birdayz/fdb-record-layer-go/gen.*
