@@ -2,6 +2,7 @@ package fdb_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -899,5 +900,52 @@ func TestReset(t *testing.T) {
 	}
 	if string(vals[1]) != "2" {
 		t.Errorf("reset_test_b: got %q, want %q", vals[1], "2")
+	}
+}
+
+// TestErrorWrapping verifies that errors returned from Transact/ReadTransact
+// pass through unchanged — both fdb.Error values and wrapped errors.
+// Ported from Apple Go binding errors_test.go.
+func TestErrorWrapping(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	testCases := []error{
+		nil,
+		fdb.Error{Code: 2007},
+		fmt.Errorf("wrapped: %w", fdb.Error{Code: 2007}),
+		errors.New("custom error"),
+	}
+
+	for _, inputErr := range testCases {
+		_, outputErr := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+			return nil, inputErr
+		})
+		if inputErr == nil {
+			if outputErr != nil {
+				t.Errorf("expected nil, got %v", outputErr)
+			}
+			continue
+		}
+		if outputErr == nil {
+			t.Errorf("expected %v, got nil", inputErr)
+			continue
+		}
+		// For fdb.Error, check code equality (Error is a value type, not pointer).
+		var inFDB, outFDB fdb.Error
+		if errors.As(inputErr, &inFDB) {
+			if !errors.As(outputErr, &outFDB) {
+				t.Errorf("input %T unwraps to fdb.Error but output %T does not", inputErr, outputErr)
+				continue
+			}
+			if inFDB.Code != outFDB.Code {
+				t.Errorf("error code mismatch: in=%d out=%d", inFDB.Code, outFDB.Code)
+			}
+		} else {
+			// Non-FDB errors should pass through as-is.
+			if outputErr.Error() != inputErr.Error() {
+				t.Errorf("error mismatch: in=%q out=%q", inputErr, outputErr)
+			}
+		}
 	}
 }
