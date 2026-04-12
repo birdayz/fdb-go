@@ -115,17 +115,17 @@ func (c *rywCache) clear(key []byte) {
 func (c *rywCache) clearRange(begin, end []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Remove all writes in [begin, end).
-	deleted := false
-	for k := range c.writes {
-		kb := []byte(k)
-		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
-			delete(c.writes, k)
-			deleted = true
+	// Remove all writes in [begin, end) using sorted keys for O(log N + k).
+	if len(c.writes) > 0 {
+		c.ensureSortedLocked()
+		wStart := sort.SearchStrings(c.sortedKeys, string(begin))
+		wEnd := sort.SearchStrings(c.sortedKeys, string(end))
+		if wStart < wEnd {
+			for i := wStart; i < wEnd; i++ {
+				delete(c.writes, c.sortedKeys[i])
+			}
+			c.sortedKeys = nil // invalidate sorted index
 		}
-	}
-	if deleted {
-		c.sortedKeys = nil // invalidate sorted index
 	}
 	c.addClearedRangeLocked(begin, end)
 }
@@ -339,6 +339,11 @@ func (c *rywCache) mergeBatch(
 		serverValues[string(kv.Key)] = kv.Value
 	}
 
+	// atomicCleared tracks keys where atomic resolution resulted in deletion.
+	// These must be excluded from filteredServer during the merge phase,
+	// because the atomic was resolved AFTER building filteredServer.
+	var atomicCleared map[string]bool
+
 	// Phase 2: Find write keys in the effective range using binary search.
 	// For forward scans: include writes in [rangeBegin, boundary] (inclusive).
 	// For reverse scans: include writes in [boundary, rangeEnd) (inclusive begin).
@@ -386,7 +391,12 @@ func (c *rywCache) mergeBatch(
 			if cleared {
 				delete(c.writes, k)
 				c.addClearedRangeLocked([]byte(k), append([]byte(k), 0))
-				// sortedKeys has a phantom — harmless, filtered by !exists above.
+				// Track for merge phase: this key must also be excluded
+				// from filteredServer (it was built before atomic resolution).
+				if atomicCleared == nil {
+					atomicCleared = make(map[string]bool)
+				}
+				atomicCleared[k] = true
 			} else {
 				c.writes[k] = rywEntry{value: base}
 				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})
@@ -415,8 +425,19 @@ func (c *rywCache) mergeBatch(
 			break
 		}
 		if wi >= len(writeKVs) {
-			result = append(result, filteredServer[si:]...)
+			// Append remaining server entries, skipping any cleared by atomics.
+			for ; si < len(filteredServer); si++ {
+				if !atomicCleared[string(filteredServer[si].Key)] {
+					result = append(result, filteredServer[si])
+				}
+			}
 			break
+		}
+
+		// Skip server entries cleared by atomic resolution.
+		if atomicCleared[string(filteredServer[si].Key)] {
+			si++
+			continue
 		}
 
 		cmp := bytes.Compare(filteredServer[si].Key, writeKVs[wi].Key)

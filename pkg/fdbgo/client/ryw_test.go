@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -647,6 +648,233 @@ func TestRYWGetRange_ServerMoreWithLimit(t *testing.T) {
 			keys[i] = string(kv.Key)
 		}
 		t.Fatalf("expected 2 results, got %d: %v", len(result), keys)
+	}
+}
+
+// Edge case tests for RYW correctness.
+
+// TestRYWGetRange_EmptyRange verifies that an empty scan range returns nothing.
+func TestRYWGetRange_EmptyRange(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	c.set([]byte("A"), []byte("v"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+
+	// begin >= end → empty range (should not return writes either)
+	result, more, err := c.getRange(context.Background(), []byte("Z"), []byte("A"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if more || len(result) != 0 {
+		t.Errorf("empty range: got %d results, more=%v", len(result), more)
+	}
+}
+
+// TestRYWGetRange_ClearRangeOptimized verifies that clearRange uses
+// sorted keys (O(log N + k)) to delete writes in the cleared range.
+func TestRYWGetRange_ClearRangeOptimized(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Set 100 keys A00..A99, then ClearRange [A30, A60).
+	for i := 0; i < 100; i++ {
+		key := []byte(fmt.Sprintf("A%02d", i))
+		c.set(key, []byte("v"))
+	}
+	c.clearRange([]byte("A30"), []byte("A60"))
+
+	// Verify: A30..A59 should be gone from writes.
+	c.mu.Lock()
+	for i := 30; i < 60; i++ {
+		key := fmt.Sprintf("A%02d", i)
+		if _, ok := c.writes[key]; ok {
+			t.Errorf("key %s should have been cleared from writes", key)
+		}
+	}
+	// A00..A29 and A60..A99 should still exist.
+	count := len(c.writes)
+	c.mu.Unlock()
+	if count != 70 {
+		t.Errorf("expected 70 remaining writes, got %d", count)
+	}
+}
+
+// TestRYWGetRange_WriteAtBoundaryKey verifies that a write at exactly
+// the boundary key is included in the merge.
+func TestRYWGetRange_WriteAtBoundaryKey(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Write at the exact key the server returns as the last result.
+	c.set([]byte("C"), []byte("write-c"))
+
+	callCount := 0
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			return []KeyValue{
+				{Key: []byte("A"), Value: []byte("a")},
+				{Key: []byte("B"), Value: []byte("b")},
+				{Key: []byte("C"), Value: []byte("server-c")},
+			}, true, nil // boundary = C
+		case 2:
+			// After advancing past C, no more data.
+			return []KeyValue{
+				{Key: []byte("D"), Value: []byte("d")},
+			}, false, nil
+		default:
+			t.Fatalf("unexpected server call #%d", callCount)
+			return nil, false, nil
+		}
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	// Write at C should override server value at C.
+	found := false
+	for _, kv := range result {
+		if string(kv.Key) == "C" {
+			found = true
+			if string(kv.Value) != "write-c" {
+				t.Errorf("write at boundary should override server: got %q", kv.Value)
+			}
+		}
+	}
+	if !found {
+		t.Error("boundary key C not in results")
+	}
+}
+
+// TestRYWGetRange_CompareAndClearInRange verifies that CompareAndClear
+// atomic mutations that resolve to "clear" are handled correctly.
+func TestRYWGetRange_CompareAndClearInRange(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// CompareAndClear: if server value == param, clear the key.
+	c.atomic(MutCompareAndClear, []byte("B"), []byte("match"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("a")},
+			{Key: []byte("B"), Value: []byte("match")}, // matches → cleared
+			{Key: []byte("C"), Value: []byte("c")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	// B should be cleared (CompareAndClear matched).
+	if len(result) != 2 {
+		keys := make([]string, len(result))
+		for i, kv := range result {
+			keys[i] = string(kv.Key)
+		}
+		t.Fatalf("expected 2 results (B cleared), got %d: %v", len(result), keys)
+	}
+	if string(result[0].Key) != "A" || string(result[1].Key) != "C" {
+		t.Errorf("expected [A, C], got [%s, %s]", result[0].Key, result[1].Key)
+	}
+}
+
+// TestRYWGetRange_SetThenClearRange verifies that ClearRange after Set
+// properly removes the write and the key doesn't appear in results.
+func TestRYWGetRange_SetThenClearRange(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.set([]byte("B"), []byte("written"))
+	c.clearRange([]byte("B"), []byte("C"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("a")},
+			{Key: []byte("B"), Value: []byte("server-b")},
+			{Key: []byte("C"), Value: []byte("c")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	// B should be cleared (ClearRange after Set).
+	if len(result) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(result))
+	}
+	if string(result[0].Key) != "A" || string(result[1].Key) != "C" {
+		t.Errorf("expected [A, C], got [%s, %s]", result[0].Key, result[1].Key)
+	}
+}
+
+// TestRYWGetRange_ClearThenSet verifies that Set after ClearRange wins
+// (write takes precedence over clear).
+func TestRYWGetRange_ClearThenSet(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.clearRange([]byte("A"), []byte("Z"))
+	c.set([]byte("B"), []byte("restored"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("a")},
+			{Key: []byte("C"), Value: []byte("c")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	// A and C cleared. B restored by Set after ClearRange.
+	if len(result) != 1 {
+		keys := make([]string, len(result))
+		for i, kv := range result {
+			keys[i] = string(kv.Key)
+		}
+		t.Fatalf("expected 1 result (B restored), got %d: %v", len(result), keys)
+	}
+	if string(result[0].Key) != "B" || string(result[0].Value) != "restored" {
+		t.Errorf("expected (B, restored), got (%s, %s)", result[0].Key, result[0].Value)
+	}
+}
+
+// TestRYWGetRange_Limit1Reverse verifies the PermutedMinMax pattern:
+// reverse scan with limit=1 to find the maximum key.
+func TestRYWGetRange_Limit1Reverse(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Local writes only, no server data.
+	c.set([]byte("A"), []byte("1"))
+	c.set([]byte("B"), []byte("2"))
+	c.set([]byte("C"), []byte("3"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 1, true, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(result))
+	}
+	if string(result[0].Key) != "C" {
+		t.Errorf("expected max key C, got %s", result[0].Key)
+	}
+	if !more {
+		t.Error("expected more=true (B, A remain)")
 	}
 }
 
