@@ -54,7 +54,7 @@ BenchmarkThroughputRead/Go    168990      238278 ns/op    429.75 MB/s
 BenchmarkThroughputRead/CGo    69626      536341 ns/op    190.92 MB/s
 ```
 
-Reads 2-4x faster. Writes at parity. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
+Reads 2-4x faster. Writes at parity. These numbers are against a local testcontainer — over a real network the gap narrows as network latency dominates, but the pure Go client is always faster since the CGo overhead is additive. See [`pkg/fdbgo/bench/PERFORMANCE.md`](pkg/fdbgo/bench/PERFORMANCE.md) for the analysis.
 
 ## Usage
 
