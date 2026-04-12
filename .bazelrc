@@ -7,6 +7,10 @@ build --java_runtime_version=remotejdk_21
 test --test_output=errors
 test --test_summary=terse
 
+# Produce Build Event Protocol JSONL for test report generation.
+# Read by cmd/test-report to generate HTML reports from JUnit XML.
+test --build_event_json_file=.bazel-bep.jsonl
+
 # Verbose test output for report generation. Per-test timing in test.log.
 # This IS part of the Bazel action fingerprint — invalidates cache once
 # on first run after adding, then stays stable.

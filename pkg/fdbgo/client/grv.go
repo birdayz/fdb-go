@@ -235,7 +235,7 @@ func (b *grvBatcher) flush(db *database) {
 	flags := b.priority | optionBits
 
 	requestTime := time.Now()
-	version, rkDefault, rkBatch, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
+	version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, batchCtx, flags, uint32(len(batch)))
 	elapsed := time.Since(requestTime)
 
 	if err == nil {
@@ -251,6 +251,19 @@ func (b *grvBatcher) flush(db *database) {
 		}
 		if rkBatch {
 			db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
+		}
+
+		// Update tag throttle state from GRV reply.
+		// C++ NativeAPI.actor.cpp: updateCachedReadVersionShared() merges tagThrottleInfo.
+		if len(tagThrottleInfoBytes) > 0 {
+			parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
+			if parsed != nil {
+				// Collect all tags from pending requests in this batch.
+				// The batcher doesn't have per-request tags, so we update
+				// the database-level state which transactions query later.
+				priority := grvPriorityToPriority(b.priority)
+				db.tagThrottles.replace(priority, parsed)
+			}
 		}
 	}
 
@@ -293,7 +306,7 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 				requestTime := time.Now()
 				refreshCtx, refreshCancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
 				// Background refresher uses default priority (8 << 24).
-				version, rkDefault, rkBatch, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
+				version, rkDefault, rkBatch, tagThrottleInfoBytes, _, err := b.sendGRVRequest(db, refreshCtx, grvPriorityDefault, 1)
 				refreshCancel()
 				if err == nil {
 					db.grvCache.update(requestTime, version)
@@ -303,6 +316,14 @@ func (b *grvBatcher) backgroundRefresher(db *database) {
 					}
 					if rkBatch {
 						db.grvCache.lastRkBatch.Store(time.Now().UnixNano())
+					}
+					// Update tag throttle state from background refresh too.
+					if len(tagThrottleInfoBytes) > 0 {
+						parsed := parseTagThrottleInfo(tagThrottleInfoBytes)
+						if parsed != nil {
+							priority := grvPriorityToPriority(b.priority)
+							db.tagThrottles.replace(priority, parsed)
+						}
 					}
 				}
 			}
@@ -324,7 +345,7 @@ const (
 // proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
-func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, err error) {
+func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32) (version int64, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []byte, proxyTagThrottledDuration float64, err error) {
 	var backoff time.Duration
 
 	for {
@@ -346,7 +367,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			case <-ctx.Done():
 				timer.Stop()
-				return 0, false, false, ctx.Err()
+				return 0, false, false, nil, 0, ctx.Err()
 			}
 		}
 
@@ -373,7 +394,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			if rpcErr != nil {
 				cancelReply()
 				if ctx.Err() != nil {
-					return 0, false, false, ctx.Err()
+					return 0, false, false, nil, 0, ctx.Err()
 				}
 				db.failMon.markFailed(proxy.Address)
 				continue
@@ -402,8 +423,20 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			backoff = 0
 		case <-ctx.Done():
 			timer.Stop()
-			return 0, false, false, ctx.Err()
+			return 0, false, false, nil, 0, ctx.Err()
 		}
+	}
+}
+
+// grvPriorityToPriority converts GRV wire priority bits to TransactionPriority.
+func grvPriorityToPriority(flags uint32) TransactionPriority {
+	switch flags & grvPriorityMask {
+	case grvPriorityBatch:
+		return PriorityBatch
+	case grvPrioritySystemImmediate:
+		return PrioritySystemImmediate
+	default:
+		return PriorityDefault
 	}
 }
 
@@ -418,13 +451,13 @@ func buildGetReadVersionRequest(replyToken transport.UID, flags uint32, txnCount
 }
 
 // parseGetReadVersionReply parses the ErrorOr-wrapped GRV response.
-// Returns (version, rkDefaultThrottled, rkBatchThrottled, error).
-func parseGetReadVersionReply(data []byte) (int64, bool, bool, error) {
+// Returns (version, rkDefaultThrottled, rkBatchThrottled, tagThrottleInfo, proxyTagThrottledDuration, error).
+func parseGetReadVersionReply(data []byte) (int64, bool, bool, []byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return 0, false, false, fmt.Errorf("GRV: %w", err)
+		return 0, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
 	}
 	var reply types.GetReadVersionReply
 	reply.UnmarshalFromReader(&r)
-	return reply.Version, reply.RkDefaultThrottled, reply.RkBatchThrottled, nil
+	return reply.Version, reply.RkDefaultThrottled, reply.RkBatchThrottled, reply.TagThrottleInfo, reply.ProxyTagThrottledDuration, nil
 }

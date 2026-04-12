@@ -123,11 +123,21 @@ binding-stress-duration duration ops="1000":
 binding-stress-directory runs="50" ops="500":
     bazelisk run //cmd/fdb-binding-stress -- -seeds {{runs}} -ops {{ops}} -test-name directory
 
-# Generate HTML test report from the latest bazel test run.
-# Run `just test` first to produce test.log files with -test.v.
+# Generate HTML test report from the latest Bazel test run.
+# Reads .bazel-bep.jsonl (produced automatically by every `just test` via .bazelrc).
+# Builds the tool then runs it outside the sandbox (needs access to BEP + test.xml files).
 report:
-    bazelisk run //cmd/test-report -- bazel-testlogs > test-report.html
-    @echo "Report: test-report.html"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f .bazel-bep.jsonl ]; then
+        echo "error: .bazel-bep.jsonl not found — run 'just test' first" >&2
+        exit 1
+    fi
+    bazelisk build //cmd/test-report
+    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
+    TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
+    echo "Report: test-report.html ($TOTAL tests)"
 
 # Run tests with coverage
 coverage:

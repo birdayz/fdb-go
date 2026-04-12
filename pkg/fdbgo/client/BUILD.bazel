@@ -15,6 +15,7 @@ go_library(
         "readpath.go",
         "rpc.go",
         "ryw.go",
+        "tag_throttle.go",
         "topology.go",
         "transaction.go",
     ],
@@ -42,7 +43,9 @@ go_test(
         "loadbalance_test.go",
         "locality_test.go",
         "nil_shard_end_test.go",
+        "ryw_test.go",
         "setget_test.go",
+        "tag_throttle_test.go",
         "testmain_test.go",
     ],
     args = [

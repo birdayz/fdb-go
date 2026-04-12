@@ -229,6 +229,16 @@ type Transaction struct {
 	readSystemKeys  bool // READ_SYSTEM_KEYS: allows reading \xff/* keys
 	writeSystemKeys bool // ACCESS_SYSTEM_KEYS: allows reading AND writing \xff/* keys
 
+	// tags: transaction tags for tag-based throttling.
+	// Set via SetTag(). Used in backoff calculation for tag_throttled errors.
+	// C++ keeps tags across retries (not cleared by internal reset).
+	tags []string
+
+	// proxyTagThrottledDuration: accumulated proxy tag throttle delay.
+	// Incremented from GRV reply's ProxyTagThrottledDuration field.
+	// Accumulated but not yet sent back to proxy (see TODO.md).
+	proxyTagThrottledDuration float64
+
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
@@ -1107,6 +1117,13 @@ func (tx *Transaction) TenantId() int64 {
 	return tx.tenantId
 }
 
+// SetTag adds a tag to this transaction for tag-based throttling.
+// Tags are used for throttle backoff calculation on tag_throttled errors.
+// Matches C++ FDB_TR_OPTION_AUTO_THROTTLE_TAG / FDB_TR_OPTION_DEBUG_TRANSACTION_IDENTIFIER usage.
+func (tx *Transaction) SetTag(tag string) {
+	tx.tags = append(tx.tags, tag)
+}
+
 // grvFlags returns the Flags field for GetReadVersionRequest.
 // Encodes priority and option flags into the uint32 bitmask.
 func (tx *Transaction) grvFlags() uint32 {
@@ -1196,10 +1213,13 @@ func (tx *Transaction) reset() {
 	if tx.timeout > 0 {
 		tx.deadline = tx.creationTime.Add(tx.timeout)
 	}
+	// Clear accumulated proxy tag throttle duration on retry.
+	// Tags themselves are preserved across reset (C++ keeps tags across retries).
+	tx.proxyTagThrottledDuration = 0
 	// Preserved across reset (match C++ persistent option re-application):
 	// retryCount, backoff, timeout, retryLimit, priority, causalReadRisky,
 	// lockAware, readLockAware, sizeLimit, maxRetryDelay, rywDisabled,
-	// snapshotRYWDisabled, tenantId, creationTime.
+	// snapshotRYWDisabled, tenantId, creationTime, tags.
 }
 
 // nextBackoff returns the current backoff duration with jitter, then grows
@@ -1212,6 +1232,28 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 	}
 	// C++ pattern: return current * jitter, then grow for next time.
 	delay := time.Duration(float64(tx.backoff) * rand.Float64())
+
+	// Tag throttle: use server-supplied duration for tag_throttled errors.
+	// C++ getBackoff(): max(backoff, min(TAG_THROTTLE_RECHECK_INTERVAL, tagThrottleDuration))
+	if errCode == ErrTagThrottled && len(tx.tags) > 0 && tx.db != nil {
+		tagDur := tx.db.tagThrottles.maxDuration(tx.priority, tx.tags)
+		if tagDur > 0 {
+			capped := tagDur
+			if capped > tagThrottleRecheckInterval {
+				capped = tagThrottleRecheckInterval
+			}
+			if capped > delay {
+				delay = capped
+			}
+		}
+	}
+
+	// For proxy_tag_throttled, accumulate duration.
+	// C++ NativeAPI.actor.cpp: trState->cx->throttledTags check in getBackoff.
+	if errCode == ErrProxyTagThrottled {
+		tx.proxyTagThrottledDuration += proxyMaxTagThrottleDuration.Seconds()
+	}
+
 	// C++ getBackoff(): proxy memory errors use RESOURCE_CONSTRAINED_MAX_BACKOFF
 	// exclusively (user's maxRetryDelay is IGNORED). All other errors use
 	// user's maxRetryDelay (or DEFAULT_MAX_BACKOFF). The two branches are

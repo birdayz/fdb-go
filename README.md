@@ -1,5 +1,8 @@
 # fdb-record-layer-go
 
+[![CI](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml/badge.svg)](https://github.com/birdayz/fdb-record-layer-go/actions/workflows/ci.yml)
+[![Test Report](https://img.shields.io/badge/test_report-latest-2980b9)](https://fdb-record-layer-go-reports.fsn1.your-objectstorage.com/reports/master/latest.html)
+
 Go port of Apple's [FoundationDB Record Layer](https://github.com/FoundationDB/fdb-record-layer).
 Wire-compatible with Java Record Layer 4.10.6.0 — Go and Java applications can read
 and write the same data on a shared FDB cluster.

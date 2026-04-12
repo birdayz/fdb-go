@@ -184,6 +184,12 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 }
 
 // getRange intercepts a range read and merges with pending writes/clears.
+//
+// Uses iterative fetching to avoid the silent truncation bug: when the server
+// has more data (serverMore=true) but all fetched results are locally cleared,
+// we advance the scan range and re-fetch instead of returning more=false.
+// This matches the spirit of C++'s RYWIterator which handles unknown ranges
+// by issuing server reads and continuing iteration.
 func (c *rywCache) getRange(
 	ctx context.Context,
 	begin, end []byte,
@@ -199,81 +205,116 @@ func (c *rywCache) getRange(
 		return serverGetRange(ctx, begin, end, limit, reverse)
 	}
 
-	// Slow path: fetch from server and merge with local writes/clears.
-	// Over-fetch to compensate for clears removing server results.
-	serverLimit := limit
+	// Slow path: iterative fetch + merge. Loop until we either fill
+	// the limit or the server is exhausted for the remaining range.
+	var result []KeyValue
+	remaining := limit
+	curBegin := begin
+	curEnd := end
+
+	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
+		// Fetch from server with headroom to compensate for clears.
+		fetchLimit := remaining * 2
+		if fetchLimit < 256 {
+			fetchLimit = 256
+		}
+		if fetchLimit > 10000 {
+			fetchLimit = 10000
+		}
+
+		serverKVs, serverMore, err := serverGetRange(ctx, curBegin, curEnd, fetchLimit, reverse)
+		if err != nil {
+			return nil, false, err
+		}
+
+		// Knowledge boundary: when serverMore=true, we only know the DB
+		// state up to the last returned key. Writes beyond this boundary
+		// MUST NOT be included — un-fetched server keys may interleave.
+		// When serverMore=false, boundary is nil → all writes in range
+		// are safe to include.
+		var boundary []byte
+		if serverMore && len(serverKVs) > 0 {
+			boundary = serverKVs[len(serverKVs)-1].Key
+		}
+
+		batch := c.mergeBatch(serverKVs, curBegin, curEnd, boundary, reverse)
+
+		take := len(batch)
+		if take > remaining {
+			take = remaining
+		}
+		result = append(result, batch[:take]...)
+		remaining -= take
+
+		if remaining <= 0 {
+			// Hit limit. More data exists if we truncated batch or server had more.
+			return result, take < len(batch) || serverMore, nil
+		}
+
+		if !serverMore {
+			// Server exhausted this range. All writes included. Done.
+			return result, false, nil
+		}
+
+		// Server had more data, but we still need results.
+		// Advance the scan range past the last fetched server key.
+		if len(serverKVs) == 0 {
+			break // Shouldn't happen: serverMore=true with 0 results.
+		}
+
+		if reverse {
+			curEnd = serverKVs[len(serverKVs)-1].Key // [curBegin, lastKey)
+		} else {
+			// keyAfter(lastKey): append \x00 to step past the last fetched key.
+			lastKey := serverKVs[len(serverKVs)-1].Key
+			curBegin = append(append([]byte{}, lastKey...), 0)
+		}
+	}
+
+	return result, false, nil
+}
+
+// mergeBatch merges a batch of server results with local writes and clears.
+// boundary is the knowledge boundary (last fetched key); nil means the entire
+// range is known. Returns sorted key-value pairs.
+func (c *rywCache) mergeBatch(
+	serverKVs []KeyValue,
+	rangeBegin, rangeEnd []byte,
+	boundary []byte,
+	reverse bool,
+) []KeyValue {
 	c.mu.Lock()
-	if c.hasClearsInRangeLocked(begin, end) {
-		// Clears can remove server results. Fetch more to compensate.
-		// Cap at 10000 to avoid unbounded fetches.
-		serverLimit = limit * 4
-		if serverLimit < 100 {
-			serverLimit = 100
-		}
-		if serverLimit > 10000 {
-			serverLimit = 10000
-		}
-	}
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
-	// Server call outside lock. Track the server's `more` flag so we can
-	// propagate it correctly: if clears remove results and server had more
-	// data, we must not claim the range is exhausted.
-	serverKVs, serverMore, err := serverGetRange(ctx, begin, end, serverLimit, reverse)
-	if err != nil {
-		return nil, false, err
-	}
-
-	// Determine the boundary of server-fetched data. When serverMore=true,
-	// we only know the DB state up to the last returned key. Local writes
-	// beyond this boundary MUST NOT be included — there may be un-fetched
-	// server keys between the boundary and those local writes.
-	// C++ avoids this entirely via segment-tree iterator (RYWIterator);
-	// we approximate by restricting local writes to the fetched range.
-	var serverBoundary []byte
-	if serverMore && len(serverKVs) > 0 {
-		// Last key in the batch: highest (forward) or lowest (reverse) key fetched.
-		serverBoundary = serverKVs[len(serverKVs)-1].Key
-	}
-
-	// Build a map from server results for fast lookup.
+	// Build map from server results, filtering out cleared keys.
 	merged := make(map[string][]byte, len(serverKVs))
 	for _, kv := range serverKVs {
-		merged[string(kv.Key)] = kv.Value
-	}
-
-	// Lock for merge with cache state.
-	c.mu.Lock()
-
-	// Remove cleared keys from server results.
-	for k := range merged {
-		if c.isClearedLocked([]byte(k)) {
-			delete(merged, k)
+		if !c.isClearedLocked(kv.Key) {
+			merged[string(kv.Key)] = kv.Value
 		}
 	}
 
-	// Apply writes: replace or add, but only within the server-fetched boundary.
+	// Add local writes within the known range.
 	for k, entry := range c.writes {
 		kb := []byte(k)
-		if bytes.Compare(kb, begin) < 0 || bytes.Compare(kb, end) >= 0 {
+		if bytes.Compare(kb, rangeBegin) < 0 || bytes.Compare(kb, rangeEnd) >= 0 {
 			continue // outside requested range
 		}
-		// When server had more data, only include writes within the fetched boundary.
-		// Beyond the boundary, un-fetched server keys may interleave with our writes.
-		if serverBoundary != nil {
+		// When server had more data, restrict writes to the fetched boundary.
+		if boundary != nil {
 			if reverse {
-				if bytes.Compare(kb, serverBoundary) < 0 {
-					continue // below the fetched boundary in reverse scan
+				if bytes.Compare(kb, boundary) < 0 {
+					continue
 				}
 			} else {
-				if bytes.Compare(kb, serverBoundary) > 0 {
-					continue // above the fetched boundary in forward scan
+				if bytes.Compare(kb, boundary) > 0 {
+					continue
 				}
 			}
 		}
 		if entry.hasAtomics {
 			// Resolve atomics against server base.
-			base := merged[k] // may be nil if not in server results
+			base := merged[k]
 			cleared := false
 			for _, m := range entry.atomics {
 				base, cleared = applyAtomic(m.typ, base, m.param)
@@ -297,14 +338,11 @@ func (c *rywCache) getRange(
 				c.writes[k] = rywEntry{value: base}
 			}
 		} else if entry.value != nil {
-			// Only add non-nil values (nil = key was cleared via CompareAndClear).
 			merged[k] = entry.value
 		}
 	}
 
-	c.mu.Unlock()
-
-	// Collect and sort (no lock needed — merged is local).
+	// Collect and sort.
 	result := make([]KeyValue, 0, len(merged))
 	for k, v := range merged {
 		result = append(result, KeyValue{Key: []byte(k), Value: v})
@@ -318,29 +356,7 @@ func (c *rywCache) getRange(
 			return bytes.Compare(result[i].Key, result[j].Key) < 0
 		})
 	}
-
-	// Apply limit. Track whether more data may exist beyond what we return.
-	more := false
-	if limit > 0 && len(result) > limit {
-		result = result[:limit]
-		more = true
-	} else if serverMore {
-		// Server had more data beyond what we fetched. Propagate `more`
-		// only if we have results to return. Without this guard, a range
-		// that's entirely cleared locally would return more=true with 0
-		// results → callers loop forever with no progress.
-		//
-		// Trade-off: if serverMore=true and all fetched results are locally
-		// cleared, we return more=false, result=[]. This may silently
-		// truncate the scan — keys beyond the over-fetch boundary that
-		// were NOT cleared will be missed. A proper segment-tree iterator
-		// (like C++ RYWIterator) would handle this correctly.
-		if len(result) > 0 {
-			more = true
-		}
-	}
-
-	return result, more, nil
+	return result
 }
 
 // isCleared returns true if key falls within any cleared range (acquires lock).
@@ -351,12 +367,21 @@ func (c *rywCache) isCleared(key []byte) bool {
 }
 
 func (c *rywCache) isClearedLocked(key []byte) bool {
-	for _, r := range c.cleared {
-		if bytes.Compare(key, r.begin) >= 0 && bytes.Compare(key, r.end) < 0 {
-			return true
-		}
+	// Binary search: cleared is sorted by begin, non-overlapping.
+	// Find the last range whose begin <= key, then check key < end.
+	n := len(c.cleared)
+	if n == 0 {
+		return false
 	}
-	return false
+	i := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, key) > 0
+	})
+	// i is the first range with begin > key. Check i-1.
+	if i == 0 {
+		return false
+	}
+	r := c.cleared[i-1]
+	return bytes.Compare(key, r.end) < 0
 }
 
 func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
@@ -370,11 +395,22 @@ func (c *rywCache) hasWritesInRangeLocked(begin, end []byte) bool {
 }
 
 func (c *rywCache) hasClearsInRangeLocked(begin, end []byte) bool {
-	for _, r := range c.cleared {
-		// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
-		if bytes.Compare(r.begin, end) < 0 && bytes.Compare(begin, r.end) < 0 {
-			return true
-		}
+	// Binary search: find the last cleared range that could overlap [begin, end).
+	// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
+	// Cleared ranges are sorted by begin and non-overlapping.
+	n := len(c.cleared)
+	if n == 0 {
+		return false
+	}
+	// Find the first range with begin >= end (definitely can't overlap).
+	i := sort.Search(n, func(i int) bool {
+		return bytes.Compare(c.cleared[i].begin, end) >= 0
+	})
+	// The candidate is the range just before i (largest begin < end).
+	// Since ranges are non-overlapping and sorted, if this one doesn't
+	// overlap, no earlier range can either (their end <= this one's begin).
+	if i > 0 && bytes.Compare(c.cleared[i-1].end, begin) > 0 {
+		return true
 	}
 	return false
 }
