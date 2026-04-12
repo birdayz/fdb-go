@@ -33,11 +33,8 @@ jobs:
       - name: Build all targets (includes nogo lint)
         run: bazelisk build //...
 
-      - name: Run tests
-        run: bazelisk test //... --test_summary=detailed
-
-      - name: Run binding tester
-        run: bazelisk test //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
+      - name: Run all tests (including binding tester)
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
 
       - name: Generate test report
         if: always()
