@@ -102,6 +102,18 @@ Complete rewrite of `loadbalance.go` to match C++ `QueueModel` + `Smoother`:
 - **Error descriptions**: added `blob_granule_request_failed` (1079) to description map
 - **Vollkonti process**: documented "don't merge early, work until shift ends"
 
+### 10. Test report generator (PR #37 / dayshift-6d — WIP)
+
+New tool `cmd/test-report` that generates self-contained HTML test report from `bazel-testlogs/`. Parses standard Go test output (per `func Test*`) and Ginkgo suite summaries. `just report` recipe added.
+
+**Status:** Tool works, generates correct report (1884 tests, 0 failures). `.bazelrc` updated with `--test_arg="-test.v"` for per-test granularity. Review complete, fixes applied. Frame pooling investigation: `ReadFrame` payload pooling doesn't help (body shares backing array, pooling adds a copy → worse B/op).
+
+**Next steps for next shift:**
+- Wire into CI (GH Actions) — run `just test && just report` on every PR/merge
+- Publish `test-report.html` to GH Pages
+- Consider adding benchmark results to the report
+- Consider adding trend tracking (compare with previous run)
+
 ## Known issues
 
 - **RYW getRange architecture**: Map-based merge with over-fetch heuristic vs C++'s segment-tree `RYWIterator`. Edge case: `serverMore=true` + all results locally cleared → `more=false`, silently truncates scan. Documented trade-off; proper iterator rewrite is a larger effort.

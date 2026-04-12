@@ -7,6 +7,11 @@ build --java_runtime_version=remotejdk_21
 test --test_output=errors
 test --test_summary=terse
 
+# Verbose test output for report generation. Per-test timing in test.log.
+# This IS part of the Bazel action fingerprint — invalidates cache once
+# on first run after adding, then stays stable.
+test --test_arg="-test.v"
+
 # Testcontainers need Docker socket and HOME for config
 test --test_env=HOME
 
