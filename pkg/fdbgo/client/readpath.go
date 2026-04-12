@@ -120,23 +120,28 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
-		return parseGetKeyReply(resp.Body)
+		key, penalty, err := parseGetKeyReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		return key, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func parseGetKeyReply(data []byte) ([]byte, error) {
+func parseGetKeyReply(data []byte) ([]byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, fmt.Errorf("GetKey: %w", err)
+		return nil, -1.0, fmt.Errorf("GetKey: %w", err)
+	}
+	penalty := -1.0
+	if r.FieldPresent(types.GetKeyReplySlotPenalty) {
+		penalty = r.ReadFloat64(types.GetKeyReplySlotPenalty)
 	}
 	// Navigate into the KeySelector nested struct (slot 3) to extract the key (inner slot 0).
 	selR, err := r.ReadNestedReader(types.GetKeyReplySlotSel)
 	if err != nil {
-		return nil, fmt.Errorf("read KeySelector: %w", err)
+		return nil, penalty, fmt.Errorf("read KeySelector: %w", err)
 	}
-	return selR.ReadBytes(types.KeySelectorRefSlotKey), nil
+	return selR.ReadBytes(types.KeySelectorRefSlotKey), penalty, nil
 }
 
 // getValue sends a GetValueRequest to the appropriate storage server.
@@ -205,8 +210,9 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
-		return parseGetValueReply(resp.Body)
+		val, penalty, err := parseGetValueReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		return val, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -396,8 +402,9 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
-		return parseGetKeyValuesReply(resp.Body)
+		kvs, more, penalty, err := parseGetKeyValuesReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		return kvs, more, err
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -436,17 +443,17 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
-// Returns (keyValues, more, error).
-func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
+// Returns (keyValues, more, penalty, error).
+func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, false, fmt.Errorf("GetKeyValues: %w", err)
+		return nil, false, -1.0, fmt.Errorf("GetKeyValues: %w", err)
 	}
 	var reply types.GetKeyValuesReply
 	reply.UnmarshalFromReader(&r)
 
 	kvs := types.ParseKeyValueRefStringVector(reply.Data)
-	return kvs, reply.More, nil
+	return kvs, reply.More, reply.Penalty, nil
 }
 
 // KeyValue is a key-value pair returned from reads.
@@ -489,17 +496,17 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
-func parseGetValueReply(data []byte) ([]byte, error) {
+func parseGetValueReply(data []byte) ([]byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, fmt.Errorf("GetValue: %w", err)
+		return nil, -1.0, fmt.Errorf("GetValue: %w", err)
 	}
 	var reply types.GetValueReply
 	reply.UnmarshalFromReader(&r)
 	if !reply.HasValue {
-		return nil, nil // key not found
+		return nil, reply.Penalty, nil // key not found
 	}
-	return reply.Value, nil
+	return reply.Value, reply.Penalty, nil
 }
 
 // Watch watches a key for changes. The server holds the connection open until
