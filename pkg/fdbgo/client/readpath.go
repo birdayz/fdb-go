@@ -121,7 +121,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			continue
 		}
 		key, penalty, err := parseGetKeyReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 		return key, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -211,7 +211,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			continue
 		}
 		val, penalty, err := parseGetValueReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 		return val, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -403,7 +403,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			continue
 		}
 		kvs, more, penalty, err := parseGetKeyValuesReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, false, penalty)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
 		return kvs, more, err
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
@@ -419,6 +419,17 @@ func isWrongShardServer(err error) bool {
 func isAllAlternativesFailed(err error) bool {
 	var fdbErr *wire.FDBError
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
+}
+
+// isFutureVersionOrProcessBehind returns true for errors that should trigger
+// future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
+// which passes futureVersion=true for future_version (1009) and process_behind (1037).
+func isFutureVersionOrProcessBehind(err error) bool {
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		return false
+	}
+	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
