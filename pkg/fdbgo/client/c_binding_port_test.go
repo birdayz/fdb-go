@@ -3934,3 +3934,38 @@ func TestPostCommitReset_CPort(t *testing.T) {
 		t.Errorf("key2: got %q, want %q", val2, "v2")
 	}
 }
+
+// TestGetKeyBoundaryShortCircuit_CPort verifies that getKey returns
+// correct results for boundary selectors without a network round trip.
+// Matches C++ NativeAPI.actor.cpp getKey() short-circuits.
+func TestGetKeyBoundaryShortCircuit_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	rv, err := tx.GetReadVersion(ctx)
+	if err != nil {
+		t.Fatalf("GRV: %v", err)
+	}
+	tx.SetReadVersion(rv)
+
+	// C++ short-circuit: empty key with offset <= 0 returns empty key.
+	key, err := tx.GetKey(ctx, []byte{}, false, 0)
+	if err != nil {
+		t.Fatalf("GetKey empty offset=0: %v", err)
+	}
+	if len(key) != 0 {
+		t.Errorf("GetKey empty offset=0: expected empty, got %q", key)
+	}
+
+	// C++ short-circuit: empty key with negative offset returns empty key.
+	key, err = tx.GetKey(ctx, []byte{}, false, -1)
+	if err != nil {
+		t.Fatalf("GetKey empty offset=-1: %v", err)
+	}
+	if len(key) != 0 {
+		t.Errorf("GetKey empty offset=-1: expected empty, got %q", key)
+	}
+}
