@@ -253,8 +253,8 @@ Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYour
 | `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
 | `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Iterative fetch+merge loop with boundary tracking | Correct: loops when clears consume all results (no silent truncation). Not a full segment-tree port but functionally equivalent. |
 | `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Same (implemented dayshift-6b) | Matching C++ |
-| `tag_throttled` custom delay | Uses server-supplied throttle duration from `cx->throttledTags` | Standard exponential backoff | Rate limiting efficiency differs, retry is safe |
-| `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration` for GRV | Standard exponential backoff | Same as above |
+| `tag_throttled` custom delay | Uses `cx->throttledTags` + TAG_THROTTLE_RECHECK_INTERVAL | `tagThrottles.maxDuration` with same capping | Matching C++: max(backoff, min(7s, tagDuration)) |
+| `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration`, sends back to proxy | Tracks duration but not yet sent back to proxy in GRV request | Rate feedback incomplete (LOW); throttle still works via standard backoff |
 | QueueModel key | `endpoint.token.first()` (uint64) | Address string (host:port) | Cosmetic; same server identity in practice |
 | Load balance secondDelay | Speculative second request after delay to hedge slow servers | Not implemented | Missing optimization; single-attempt per server |
 
