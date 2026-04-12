@@ -108,7 +108,8 @@ func (o TransactionOptions) SetAutoThrottleTag(_ string) error {
 	return nil
 }
 
-func (o TransactionOptions) SetTag(_ string) error {
+func (o TransactionOptions) SetTag(tag string) error {
+	o.tx.inner.SetTag(tag)
 	return nil
 }
 
