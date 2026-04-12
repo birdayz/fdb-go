@@ -124,10 +124,13 @@ binding-stress-directory runs="50" ops="500":
     bazelisk run //cmd/fdb-binding-stress -- -seeds {{runs}} -ops {{ops}} -test-name directory
 
 # Generate HTML test report from the latest bazel test run.
-# Run `just test` first to produce test.log files.
+# Run `just test` first to produce test.log files with -test.v.
 report:
-    bazelisk run //cmd/test-report -- bazel-testlogs > test-report.html
-    @echo "Report: test-report.html"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TESTLOGS=$(readlink -f bazel-testlogs)
+    bazelisk run //cmd/test-report -- "$TESTLOGS" 2>/dev/null > test-report.html
+    echo "Report: test-report.html ($(wc -c < test-report.html) bytes)"
 
 # Run tests with coverage
 coverage:

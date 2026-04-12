@@ -53,3 +53,4 @@ binding-stress-out/
 binding-stress-report.txt
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+test-report.html
