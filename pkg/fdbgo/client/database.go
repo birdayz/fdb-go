@@ -111,8 +111,7 @@ type database struct {
 
 	// Topology: atomically swapped on coordinator refresh.
 	// C++: clientInfo (AsyncVar<ClientDBInfo>)
-	dbInfo     atomic.Pointer[DBInfo]
-	proxiesGen atomic.Uint64
+	dbInfo atomic.Pointer[DBInfo]
 	// Kick this channel to trigger an immediate topology refresh.
 	topologyKick chan struct{} // buffered(1), non-blocking send
 

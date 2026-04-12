@@ -60,8 +60,6 @@ func (db *database) refreshTopology() {
 	if old != nil && dbInfoEqual(old, newInfo) {
 		return // no change
 	}
-	// ORDER MATTERS: bump generation BEFORE swapping dbInfo.
-	db.proxiesGen.Add(1)
 	db.dbInfo.Store(newInfo)
 }
 
