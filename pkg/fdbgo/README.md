@@ -154,7 +154,7 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
   --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
 ```
 
-Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 39 C binding port tests + correctness tests + fault injection tests + benchmarks. Binding stress: 100 seeds × 1000 ops validated.
+Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 88 C binding port tests + correctness tests + fault injection tests + benchmarks. Binding stress: 100 seeds × 1000 ops validated.
 
 ## Benchmarks
 
@@ -239,7 +239,25 @@ When `OnError` receives error 1021, the transaction MAY have committed on the se
 4. Since the ORIGINAL commit wrote to those ranges, the check fails → `not_committed` (1020)
 5. The retry does NOT apply mutations — no double-apply
 
-This matches C++ `NativeAPI::makeSelfConflicting()`. Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
+This achieves the same safety as C++ `NativeAPI::makeSelfConflicting()` + `commitDummyTransaction`, but via a simpler mechanism (direct conflict copy vs dummy transaction). Verified by `TestCommitUnknownResult_NoDoubleApply`: atomic ADD 5 to a counter, kill the reply, verify counter=15 (not 20).
+
+## Known divergences from C++ (audited 2026-04-12)
+
+Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYourWritesTransaction.actor.cpp`, and `Atomic.h`. All correctness bugs were fixed; these are intentional or architectural differences:
+
+| Area | C++ behavior | Go behavior | Impact |
+|---|---|---|---|
+| Self-conflicting (1021) | `commitDummyTransaction` + `makeSelfConflicting` random range at `\xFF/SC/` | Copy write→read conflicts in `OnError` | Same safety guarantee, simpler mechanism |
+| Auto-reset after commit | No auto-reset at API >= 410 | `postCommitReset()` clears state for reuse | Design choice: Go API expects tx reuse after commit |
+| `onProxiesChanged` mid-commit | Races proxy topology change vs commit reply | Full `DefaultRPCTimeout` before detecting stale proxy | Liveness only, not safety; eventual commit_unknown_result |
+| `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
+| `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Map-based merge with over-fetch heuristic | Correct for common cases; boundary-guard added for `serverMore=true` |
+| `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Always queries storage server | Extra round trip for edge selectors |
+| `tag_throttled` custom delay | Uses server-supplied throttle duration from `cx->throttledTags` | Standard exponential backoff | Rate limiting efficiency differs, retry is safe |
+| `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration` for GRV | Standard exponential backoff | Same as above |
+| QueueModel selection metric | `smoothOutstanding.smoothTotal()` (continuous decay, T=2s) + server penalty | `inflight * latencyEMA` (discrete EMA, α=0.1) | Different algorithm, same functional goal; suboptimal under asymmetric load |
+| QueueModel penalty | Server-reported overload weight in `LoadBalancedReply` | Not implemented | Missing signal for server overload; all replicas treated equally |
+| QueueModel key | `endpoint.token.first()` (uint64) | Address string (host:port) | Cosmetic; same server identity in practice |
 
 ## Adding a new request/response type
 
