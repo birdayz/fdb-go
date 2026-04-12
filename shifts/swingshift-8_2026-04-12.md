@@ -85,7 +85,7 @@ Extracted shared `queryLocations()` from `refresh()` and `refreshRange()` — bo
 - **Binding stress:** 100/100 API (1000 ops) + 10/10 API (5000 ops) + 50/50 directory (500 ops) = 225K ops, 0 failures
 - **Fuzz testing:** All 9 fuzz targets, 342 million executions, 0 crashes
 - **Race detector:** Clean on RYW tests
-- **CI:** Red due to Hetzner Object Storage outage (https://status.hetzner.com/de/incident/11642281-d3a7-491e-9c0e-eeb947f49656), tests pass
+- **CI:** Was red due to Hetzner Object Storage outage — now resolved (~19:30 CEST). Next push should go green.
 
 ## Known issues
 
