@@ -823,9 +823,13 @@ func (tx *Transaction) OnError(err error) error {
 	switch fdbErr.Code {
 	case ErrTransactionTooOld, ErrFutureVersion:
 		// Version-related: fixed delay, no backoff growth.
-		// C++ NativeAPI.actor.cpp: FUTURE_VERSION_RETRY_DELAY.
+		// C++ NativeAPI.actor.cpp: min(FUTURE_VERSION_RETRY_DELAY, maxBackoff).
+		delay := futureVersionDelay
+		if tx.maxRetryDelay > 0 && tx.maxRetryDelay < delay {
+			delay = tx.maxRetryDelay
+		}
 		tx.retryCount++
-		time.Sleep(futureVersionDelay)
+		time.Sleep(delay)
 		tx.reset()
 		return nil
 
