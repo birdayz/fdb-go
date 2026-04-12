@@ -84,17 +84,39 @@ func (n *TreeNode) TreeBadgeClass() string {
 	return "badge-pass"
 }
 
+// TreeDuration returns the aggregate duration of all descendant specs.
+func (n *TreeNode) TreeDuration() time.Duration {
+	if n.Leaf != nil {
+		return n.Leaf.Duration
+	}
+	var total time.Duration
+	for _, c := range n.Children {
+		total += c.TreeDuration()
+	}
+	return total
+}
+
+// TreeDurationStr returns the formatted aggregate duration.
+func (n *TreeNode) TreeDurationStr() string {
+	d := n.TreeDuration()
+	if d == 0 {
+		return ""
+	}
+	return formatDuration(d)
+}
+
 // TreeBadgeText returns the badge text for this container node.
 func (n *TreeNode) TreeBadgeText() string {
 	p, f, s := n.TreeCounts()
 	total := p + f + s
+	dur := n.TreeDurationStr()
 	if f > 0 {
-		return fmt.Sprintf("%d/%d failed", f, total)
+		return fmt.Sprintf("%d/%d failed  %s", f, total, dur)
 	}
 	if s > 0 {
-		return fmt.Sprintf("%d/%d passed, %d skipped", p, total, s)
+		return fmt.Sprintf("%d/%d passed  %s", p, total, dur)
 	}
-	return fmt.Sprintf("%d/%d passed", p, total)
+	return fmt.Sprintf("%d/%d passed  %s", p, total, dur)
 }
 
 // ginkgoJSONSpec is a single spec entry in ginkgo-report.json.
