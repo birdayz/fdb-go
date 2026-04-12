@@ -26,6 +26,19 @@ const (
 	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
 )
 
+// sleepCtx sleeps for the given duration but returns early if ctx is cancelled.
+// Returns ctx.Err() if the context was cancelled, nil otherwise.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		timer.Stop()
+		return ctx.Err()
+	}
+}
+
 // allKeysEnd is \xFF\xFF — the absolute end of the key space.
 var allKeysEnd = []byte{0xFF, 0xFF}
 
@@ -58,7 +71,9 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 		}
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(selectorKey, tx.tenantId)
-			time.Sleep(wrongShardRetryDelay)
+			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		return nil, err
@@ -166,7 +181,9 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(key, tx.tenantId)
-			time.Sleep(wrongShardRetryDelay)
+			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		// Other FDB error → bubble up for Transact retry.
@@ -284,7 +301,9 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 							tx.db.locCache.invalidateRange(shardBegin, curEnd, tx.tenantId)
 							curBegin = shardBegin
 						}
-						time.Sleep(wrongShardRetryDelay)
+						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+							return nil, false, err
+						}
 						relocated = true
 						break // break to outer loop for re-locate
 					}
@@ -565,7 +584,9 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 		}
 		if isWrongShardServer(watchErr) || isAllAlternativesFailed(watchErr) {
 			tx.db.locCache.invalidate(key, tx.tenantId)
-			time.Sleep(wrongShardRetryDelay)
+			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				return err
+			}
 			continue
 		}
 		return watchErr

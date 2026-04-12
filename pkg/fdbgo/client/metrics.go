@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire/types"
@@ -46,13 +45,17 @@ func (tx *Transaction) GetEstimatedRangeSizeBytes(ctx context.Context, begin, en
 			if err != nil {
 				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					time.Sleep(wrongShardRetryDelay)
+					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+						return 0, err
+					}
 					retry = true
 					break
 				}
 				// C++ catches future_version (1009), delays, and retries.
 				if isFutureVersion(err) {
-					time.Sleep(futureVersionDelay)
+					if err := sleepCtx(ctx, futureVersionDelay); err != nil {
+						return 0, err
+					}
 					retry = true
 					break
 				}
@@ -135,7 +138,9 @@ func (tx *Transaction) GetRangeSplitPoints(ctx context.Context, begin, end []byt
 		}
 		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(begin, tx.tenantId)
-			time.Sleep(wrongShardRetryDelay)
+			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		// operation_failed (4) = endpoint not supported (e.g., old FDB version).
