@@ -949,3 +949,112 @@ func TestErrorWrapping(t *testing.T) {
 		}
 	}
 }
+
+// TestReadTransactRetry verifies that ReadTransact retries on retryable errors.
+// The closure returns a retryable fdb.Error on the first attempt; ReadTransact
+// should call OnError, reset the transaction, and retry.
+func TestReadTransactRetry(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	attempt := 0
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		attempt++
+		if attempt == 1 {
+			return nil, fdb.Error{Code: 1007} // transaction_too_old → retryable
+		}
+		return rtr.Get(fdb.Key("readtransact_retry")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("ReadTransact should have retried, got: %v", err)
+	}
+	if attempt < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempt)
+	}
+	_ = result // value doesn't matter, just verifying retry happened
+}
+
+// TestGetRangeWithSelectorRange verifies that GetRange works with
+// non-trivial key selectors (LastLessOrEqual, FirstGreaterThan).
+// These require a GetKey round trip to resolve before the range scan.
+func TestGetRangeWithSelectorRange(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := t.Name() + "/"
+
+	// Seed 5 keys.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 5; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("%skey%d", prefix, i)), []byte(fmt.Sprintf("val%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetRange with SelectorRange: [LastLessOrEqual("key2"), FirstGreaterThan("key3"))
+	// Should return key2, key3.
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		rr := rtr.GetRange(fdb.SelectorRange{
+			Begin: fdb.LastLessOrEqual(fdb.Key(prefix + "key2")),
+			End:   fdb.FirstGreaterThan(fdb.Key(prefix + "key3")),
+		}, fdb.RangeOptions{})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(kvs))
+	}
+	if string(kvs[0].Key) != prefix+"key2" || string(kvs[1].Key) != prefix+"key3" {
+		t.Errorf("keys: got [%q, %q], want [%q, %q]",
+			kvs[0].Key, kvs[1].Key, prefix+"key2", prefix+"key3")
+	}
+}
+
+// TestPrefixRangeIntegration verifies the PrefixRange + GetRange pattern
+// end-to-end. This is the most common scan pattern in the record layer.
+// Ported from Apple Go binding ExamplePrefixRange.
+func TestPrefixRangeIntegration(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := t.Name() + "/alphabet"
+
+	// Seed keys with shared prefix.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(fdb.Key(prefix+"A"), []byte("1"))
+		tr.Set(fdb.Key(prefix+"B"), []byte("2"))
+		tr.Set(fdb.Key(prefix+"ize"), []byte("3"))
+		tr.Set(fdb.Key(t.Name()+"/beta"), []byte("4")) // different prefix
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// PrefixRange scan — should return only keys with the prefix.
+	pr, err := fdb.PrefixRange([]byte(prefix))
+	if err != nil {
+		t.Fatalf("PrefixRange: %v", err)
+	}
+
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		return rtr.GetRange(pr, fdb.RangeOptions{}).GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 3 {
+		t.Fatalf("expected 3 results (alphabetA/B/ize), got %d", len(kvs))
+	}
+	if string(kvs[0].Value) != "1" || string(kvs[1].Value) != "2" || string(kvs[2].Value) != "3" {
+		t.Errorf("values: got [%q, %q, %q], want [1, 2, 3]",
+			kvs[0].Value, kvs[1].Value, kvs[2].Value)
+	}
+}

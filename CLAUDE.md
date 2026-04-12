@@ -324,7 +324,7 @@ record, err := typedStore.LoadRecord(ctx, primaryKey)
 
 ### Pure Go FDB client performance (vs CGo)
 
-Reads: **Go beats CGo** (192us vs 209us single Get). Writes: CGo wins by ~15% (1876us vs 2164us Set+Commit). The write gap is structural — goroutine coordination overhead (channel-based multiplexing) vs C's single-threaded event loop with direct callbacks. 95.5% of time is I/O-bound; micro-optimizations (pooling, fewer allocs) won't close it. The gap is acceptable given Go client's advantages (no CGo, simpler deployment, better pipelining on reads).
+Reads: **Go 3.5x faster than CGo** (58us vs 205us single Get). Writes: **parity** (1005us vs 1007us Set+Commit). The read advantage comes from the pure Go network path (no CGo overhead, efficient channel-based multiplexing). Write parity achieved through QueueModel rewrite (C++ Smoother + server penalty) and commit path optimizations. 18 allocs/op on reads is the structural floor — top allocators all pooled or minimal.
 
 TCP connections use `SetLinger(0)` (RST on close, prevents TIME_WAIT port reuse) and `SetKeepAlive(10s)` (faster dead connection detection). This eliminates the FDB server ASSERT crash from stale Peer entries under Docker/CI load.
 

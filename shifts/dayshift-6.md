@@ -112,7 +112,7 @@ Complete rewrite of `loadbalance.go` to match C++ `QueueModel` + `Smoother`:
 ### High priority
 - ~~**QueueModel rewrite**~~ — DONE (PR #35). Smoother + penalty + futureVersion backoff + delta threading + server penalty wiring.
 - **RYW getRange proper iterator** — replace map-based merge with segment-tree approach matching C++ `RYWIterator`. Fixes the truncation edge case when serverMore=true and all fetched results are locally cleared.
-- **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. Tricky lifecycle: `body` slice references pooled buffer, consumer must release after processing. Sized pool (256B/1KB/4KB/16KB/64KB) would help.
+- ~~**Pool frame read buffers**~~ — INVESTIGATED: pooling `ReadFrame` payload buffer doesn't help. The body slice shares backing array with payload (one alloc), but pooling requires copying body out (two allocs). Benchmarked: B/op increased from 1785→2016. The single `make([]byte, payloadLen)` is already optimal. Would need a release-callback API to benefit, which complicates the consumer contract.
 
 ### Medium priority
 - **`getKey` boundary short-circuit** — return `""` or `\xFF\xFF` without network round trip for edge selectors.
