@@ -154,7 +154,7 @@ bazelisk test //pkg/fdbgo/client:client_test --test_arg="-test.run=TestSetGet" \
   --test_arg="-test.v" --test_output=streamed --strategy=TestRunner=local
 ```
 
-Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 92 C binding port tests + 22 correctness tests + fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Binding stress: 100 seeds × 1000 ops validated (0 failures).
+Client tests run against real FDB 7.3.75 via testcontainers-go (Docker required). 78 C binding port tests (96% of C test suite) + 30 correctness tests + 6 fault injection tests + 15 interop tests (Go↔CGo) + benchmarks. Line coverage: **72.4%** (client), **78.8%** (record layer). Binding stress: 200+ seeds × 1000 ops validated (0 failures). `just coverage` generates HTML report with per-package coverage.
 
 ## Benchmarks
 
