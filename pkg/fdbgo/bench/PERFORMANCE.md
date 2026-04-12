@@ -21,7 +21,9 @@ The pure Go FDB client is **2–3.5x faster on reads** than the Apple CGo bindin
 | 2 ms (netem 1ms) | 1,073 us | 2,744 us | **2.6x** |
 | 10 ms (netem 5ms) | 5,254 us | 12,635 us | **2.4x** |
 
-The advantage narrows from 3.6x to ~2.4x with added latency, as expected — network time becomes a larger fraction. But the pure Go client remains **2.4x faster even at 10ms RTT** because the CGo overhead is additive (constant ~110 us per request), not proportional.
+The advantage narrows from 3.6x to ~2.4x but stabilizes there — it does NOT converge to 1.0x as latency grows. This is because the bottleneck isn't just the ~110 us per-request CGo boundary crossing. The C library's `Flow` runtime is a **single-threaded event loop**: all requests serialize through one thread. With higher latency, more requests are in-flight simultaneously, and they all queue behind each other in the event loop. Go's goroutine model has no such serialization — each request runs independently on its own goroutine.
+
+At 10ms RTT, Go takes 5.3ms (roughly 5ms network + 0.3ms client) while CGo takes 12.6ms. The 7.3ms gap is event loop queuing, not boundary crossing.
 
 <sub>Ryzen 9 3900X, FDB 7.3.75, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.</sub>
 
