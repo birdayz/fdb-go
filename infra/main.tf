@@ -6,11 +6,23 @@ terraform {
       source  = "hetznercloud/hcloud"
       version = "~> 1.60"
     }
+    minio = {
+      source  = "aminueza/minio"
+      version = "~> 3.3"
+    }
   }
 }
 
 provider "hcloud" {
   # Set HCLOUD_TOKEN env var
+}
+
+# Hetzner Object Storage (S3-compatible).
+# Set MINIO_USER and MINIO_PASSWORD env vars (from Hetzner Console → S3 Credentials).
+provider "minio" {
+  minio_server = var.s3_endpoint
+  minio_region = var.location # fsn1
+  minio_ssl    = true
 }
 
 # --- Variables ---
@@ -57,7 +69,13 @@ variable "runner_labels" {
   default     = "self-hosted,linux,x64,hetzner"
 }
 
-# --- Resources ---
+variable "s3_endpoint" {
+  description = "Hetzner Object Storage endpoint (without https://)"
+  type        = string
+  default     = "fsn1.your-objectstorage.com"
+}
+
+# --- CI Runner ---
 
 resource "hcloud_ssh_key" "runner" {
   name       = "gh-runner"
@@ -79,6 +97,26 @@ resource "hcloud_server" "runner" {
   })
 }
 
+# --- Object Storage (test reports) ---
+
+resource "minio_s3_bucket" "reports" {
+  bucket = "fdb-record-layer-go-reports"
+  acl    = "public-read"
+}
+
+resource "minio_s3_bucket_policy" "reports_public_read" {
+  bucket = minio_s3_bucket.reports.bucket
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = ["s3:GetObject"]
+      Resource  = ["arn:aws:s3:::${minio_s3_bucket.reports.bucket}/*"]
+    }]
+  })
+}
+
 # --- Outputs ---
 
 output "server_ip" {
@@ -87,4 +125,8 @@ output "server_ip" {
 
 output "ssh_command" {
   value = "ssh root@${hcloud_server.runner.ipv4_address}"
+}
+
+output "report_url" {
+  value = "https://${minio_s3_bucket.reports.bucket}.${var.s3_endpoint}/latest.html"
 }
