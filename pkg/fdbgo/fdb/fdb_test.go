@@ -1267,3 +1267,48 @@ func TestKeyValueSizeLimits(t *testing.T) {
 		}
 	})
 }
+
+// TestGetRangeWithSelectorRangeReverse tests reverse GetRange using
+// SelectorRange (FirstGreaterOrEqual, FirstGreaterThan as endpoints).
+func TestGetRangeWithSelectorRangeReverse(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	prefix := "selrange_rev_"
+	// Seed 10 keys.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tr.Set(fdb.Key(fmt.Sprintf("%s%02d", prefix, i)), []byte(fmt.Sprintf("v%d", i)))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Reverse scan using SelectorRange: keys [03, 07] → should return 07, 06, 05, 04, 03.
+	result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+		begin := fdb.FirstGreaterOrEqual(fdb.Key(fmt.Sprintf("%s03", prefix)))
+		end := fdb.FirstGreaterThan(fdb.Key(fmt.Sprintf("%s07", prefix)))
+		rr := tr.GetRange(fdb.SelectorRange{Begin: begin, End: end}, fdb.RangeOptions{Reverse: true})
+		return rr.GetSliceWithError()
+	})
+	if err != nil {
+		t.Fatalf("GetRange reverse selector: %v", err)
+	}
+	kvs := result.([]fdb.KeyValue)
+	if len(kvs) != 5 {
+		names := make([]string, len(kvs))
+		for i, kv := range kvs {
+			names[i] = string(kv.Key)
+		}
+		t.Fatalf("expected 5 keys (07..03), got %d: %v", len(kvs), names)
+	}
+	// Verify reverse order: 07, 06, 05, 04, 03.
+	for i, kv := range kvs {
+		expected := fmt.Sprintf("%s%02d", prefix, 7-i)
+		if string(kv.Key) != expected {
+			t.Errorf("kvs[%d]: got %q, want %q", i, kv.Key, expected)
+		}
+	}
+}
