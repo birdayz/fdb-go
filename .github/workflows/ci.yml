@@ -56,6 +56,7 @@ jobs:
             echo "Hetzner Object Storage secrets not configured — skipping upload"
             exit 0
           fi
+          # mc is pre-installed via cloud-init; fallback download if missing
           if ! command -v mc &>/dev/null; then
             mkdir -p "$HOME/.local/bin"
             curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o "$HOME/.local/bin/mc"
