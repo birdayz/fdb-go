@@ -444,23 +444,29 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			if backoff == 0 {
 				backoff = loadBalanceStartBackoff
 			}
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
 			case <-db.ctx.Done():
+				timer.Stop()
 				return nil, db.ctx.Err()
 			}
 		}
 
 		if backoff > 0 {
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
 			case <-db.ctx.Done():
+				timer.Stop()
 				return nil, db.ctx.Err()
 			}
 		}

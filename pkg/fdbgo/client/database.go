@@ -318,10 +318,12 @@ func (db *database) bootstrap(ctx context.Context) error {
 			return nil
 		}
 
+		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("failed to connect to any coordinator: %w", err)
-		case <-time.After(backoff):
+		case <-timer.C:
 			if backoff < BootstrapMaxBackoff {
 				backoff *= 2
 			}
