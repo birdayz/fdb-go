@@ -263,108 +263,19 @@ func (lc *locationCache) invalidateRange(begin, end []byte, tenantId int64) {
 	lc.entries = lc.entries[:dst]
 }
 
-// refresh queries commit proxies for the location of a key, matching C++
-// basicLoadBalance with AtMostOnce::False. Cycles all proxies with backoff.
-// Loops until success or ctx cancellation.
+// refresh queries commit proxies for the location of a single key.
 func (lc *locationCache) refresh(db *database, ctx context.Context, key []byte, tenantId int64) (LocationResult, error) {
-	var backoff time.Duration
-
-	for {
-		proxies := db.getCommitProxies()
-		if len(proxies) == 0 {
-			db.kickTopology()
-			if backoff == 0 {
-				backoff = loadBalanceStartBackoff
-			}
-			select {
-			case <-time.After(backoff):
-				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
-				continue
-			case <-ctx.Done():
-				return LocationResult{}, ctx.Err()
-			case <-db.ctx.Done():
-				return LocationResult{}, db.ctx.Err()
-			}
-		}
-
-		if backoff > 0 {
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return LocationResult{}, ctx.Err()
-			case <-db.ctx.Done():
-				return LocationResult{}, db.ctx.Err()
-			}
-		}
-
-		cycledAll := true
-		for _, proxy := range proxies {
-			conn, err := db.getOrDial(ctx, proxy.Address)
-			if err != nil {
-				db.handleConnError(proxy.Address)
-				continue
-			}
-
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetKeyServerLocationsRequest(key, tenantId, replyToken)
-			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
-
-			if err := conn.SendFrame(locToken, body); err != nil {
-				cancelReply()
-				db.handleConnError(proxy.Address)
-				continue
-			}
-
-			rctx, rpcCancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-			select {
-			case resp := <-replyCh:
-				rpcCancel()
-				if resp.Err != nil {
-					db.handleConnError(proxy.Address)
-					continue
-				}
-				entries, err := parseGetKeyServerLocationsReply(resp.Body)
-				if err != nil {
-					continue
-				}
-				for i := range entries {
-					entries[i].tenantId = tenantId
-				}
-				// Proxy returns absolute shard boundaries (with tenant prefix).
-				// Strip prefix so cache uses tenant-relative keys.
-				stripTenantPrefix(entries, tenantId)
-				lc.mu.Lock()
-				lc.insertSorted(entries)
-				lc.evictIfNeeded()
-				lc.mu.Unlock()
-				if len(entries) > 0 {
-					return LocationResult{
-						Servers:    entries[0].servers,
-						ShardBegin: entries[0].begin,
-						ShardEnd:   entries[0].end,
-					}, nil
-				}
-			case <-rctx.Done():
-				rpcCancel()
-				cancelReply()
-				if ctx.Err() != nil {
-					return LocationResult{}, ctx.Err()
-				}
-				continue
-			}
-			cycledAll = false
-		}
-
-		// All proxies failed. Kick topology, grow backoff.
-		db.kickTopology()
-		if cycledAll {
-			if backoff == 0 {
-				backoff = loadBalanceStartBackoff
-			} else {
-				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
-			}
-		}
+	entries, err := lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
+		return buildGetKeyServerLocationsRequest(key, tenantId, replyToken)
+	})
+	if err != nil {
+		return LocationResult{}, err
 	}
+	return LocationResult{
+		Servers:    entries[0].servers,
+		ShardBegin: entries[0].begin,
+		ShardEnd:   entries[0].end,
+	}, nil
 }
 
 // evictIfNeeded removes random entries when the cache exceeds maxSize.
@@ -519,7 +430,11 @@ func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) [
 
 // refreshRange queries commit proxies for locations overlapping [begin, end).
 // Returns all location entries from the response.
-func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]locationEntry, error) {
+// queryLocations is the shared load-balance loop for location queries.
+// Cycles all commit proxies with exponential backoff until success or ctx
+// cancellation. The buildRequest callback constructs the request body given
+// a reply token. Used by both refresh (single key) and refreshRange (range).
+func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenantId int64, buildRequest func(replyToken transport.UID) []byte) ([]locationEntry, error) {
 	var backoff time.Duration
 
 	for {
@@ -559,7 +474,7 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 			}
 
 			replyToken, replyCh, cancelReply := conn.PrepareReply()
-			body := buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, replyToken)
+			body := buildRequest(replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 			if err := conn.SendFrame(locToken, body); err != nil {
@@ -602,7 +517,6 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 			cycledAll = false
 		}
 
-		// All proxies failed. Kick topology, grow backoff.
 		db.kickTopology()
 		if cycledAll {
 			if backoff == 0 {
@@ -612,6 +526,12 @@ func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, 
 			}
 		}
 	}
+}
+
+func (lc *locationCache) refreshRange(db *database, ctx context.Context, begin, end []byte, limit int, reverse bool, tenantId int64) ([]locationEntry, error) {
+	return lc.queryLocations(db, ctx, tenantId, func(replyToken transport.UID) []byte {
+		return buildGetKeyServerLocationsRangeRequest(begin, end, limit, reverse, tenantId, replyToken)
+	})
 }
 
 // buildGetKeyServerLocationsRequest constructs the request with embedded reply token.
