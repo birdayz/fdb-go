@@ -1187,3 +1187,83 @@ func TestAtomicAllTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyValueSizeLimits verifies behavior at FDB size boundaries.
+func TestKeyValueSizeLimits(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	t.Run("max_value_100KB", func(t *testing.T) {
+		// FDB max value size is 100,000 bytes.
+		key := fdb.Key("size_limit_100kb")
+		val := make([]byte, 100_000)
+		for i := range val {
+			val[i] = byte(i % 256)
+		}
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, val)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set 100KB: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get 100KB: %v", err)
+		}
+		got := result.([]byte)
+		if len(got) != 100_000 {
+			t.Fatalf("expected 100000 bytes, got %d", len(got))
+		}
+		if !bytes.Equal(got, val) {
+			t.Error("100KB value round-trip mismatch")
+		}
+	})
+
+	t.Run("empty_value", func(t *testing.T) {
+		key := fdb.Key("size_limit_empty")
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, []byte{})
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set empty: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get empty: %v", err)
+		}
+		got := result.([]byte)
+		if got == nil || len(got) != 0 {
+			t.Fatalf("expected empty []byte, got %v (nil=%v)", got, got == nil)
+		}
+	})
+
+	t.Run("long_key", func(t *testing.T) {
+		// FDB max key size is 10,000 bytes.
+		key := make([]byte, 9_000)
+		for i := range key {
+			key[i] = byte('A' + i%26)
+		}
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(fdb.Key(key), []byte("long_key_value"))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("Set long key: %v", err)
+		}
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(fdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("Get long key: %v", err)
+		}
+		if string(result.([]byte)) != "long_key_value" {
+			t.Errorf("long key: got %q", result)
+		}
+	})
+}
