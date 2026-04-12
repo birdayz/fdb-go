@@ -10,9 +10,20 @@ You are starting a shift in a Vollkontinuierliches Schichtsystem (continuous 24/
 | Swing shift | 14:00 — 22:00 | `swingshift-N` |
 | Night shift | 22:00 — 06:00 | `nightshift-N` |
 
-Determine which shift type matches the current time. The number N increments globally — check `ls -t shifts/*.md | head -1` to find the last shift number, then increment.
+Determine which shift type matches the current time. The number N increments globally — check `ls shifts/ | sort -t- -k2 -n | tail -1` to find the last shift number, then increment.
 
-## Step 1: Read handover
+**Filenames include the date:** `shifts/{shift-name}_YYYY-MM-DD.md` (e.g., `shifts/swingshift-8_2026-04-12.md`). This prevents confusion when a shift from today looks identical to one from yesterday.
+
+## Step 1: Check for active shift
+
+**Before anything else**, check if a shift is already in progress:
+```bash
+gh pr list --state open
+```
+- If there's an open PR → a shift is active. Read the PR, check out that branch, and **continue the shift** instead of starting a new one.
+- If no open PRs → start a new shift (Step 2).
+
+## Step 2: Read handover
 
 Read the latest handover document:
 ```
@@ -20,7 +31,7 @@ ls -t shifts/*.md | head -1
 ```
 Read it thoroughly. This is your ONLY briefing — you have zero prior context.
 
-## Step 2: Start shift
+## Step 3: Start shift
 
 GitHub won't create a PR with zero commits between branches. Use `--allow-empty` to bootstrap:
 
@@ -32,7 +43,7 @@ git push -u origin {shift-name}
 gh pr create --draft --title "{shift-name}: {one-line goal from handover priorities}"
 ```
 
-## Step 3: Work
+## Step 4: Work
 
 Set up the work loop:
 ```
@@ -54,7 +65,7 @@ Then start working on the highest-priority items from the handover. Follow the w
 - **Request review early** (mid-shift is fine) so feedback arrives while you still have time to address it. But do NOT merge until the shift ends.
 - **When the main task is done, keep working.** Write more tests, investigate performance, update docs, run binding stress, profile allocations, audit code you haven't touched. A foreman doesn't clock out early because the main job finished — there's always cleanup, testing, and prep for the next shift.
 
-## Step 4: Review loop
+## Step 5: Review loop
 
 When implementation is done and tests pass:
 
@@ -86,12 +97,12 @@ When implementation is done and tests pass:
 
 5. **Wait for the new review** (step 3 again). Read the feedback. If new issues found, fix and re-request (step 4). **Keep iterating until the reviewer finds no new issues.** Only then is the PR merge-ready.
 
-## Step 5: End shift
+## Step 6: End shift
 
 **Only when the shift clock runs out** (not when work feels "done"). Keep working until end of shift. Then, only after the reviewer approves (no new issues in the latest review round):
 
-1. **Write handover** — create `shifts/{shift-name}.md` with:
-   - Date, time range, PR number
+1. **Write handover** — create `shifts/{shift-name}_YYYY-MM-DD.md` with:
+   - Date, **actual** start and end times (not the planned window — record when you started and when you're writing the handover), PR number
    - What was done (grouped by category)
    - Current state (test counts, CI status, open issues)
    - Known issues / tech debt discovered
