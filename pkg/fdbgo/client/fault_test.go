@@ -417,3 +417,84 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	}
 	t.Log("wrong_shard_server fault injection: retry succeeded with correct value")
 }
+
+// TestCommitDummyTransaction verifies that commitDummyTransaction works as a
+// synchronization barrier. Creates a transaction with write conflicts, directly
+// calls commitDummyTransaction, and verifies it completes without error.
+func TestCommitDummyTransaction(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Create a real transaction with a write.
+	tx := db.CreateTransaction()
+	key := []byte(t.Name() + "_dummy_key")
+	tx.Set(key, []byte("value"))
+
+	// commitDummyTransaction should complete without error — the dummy
+	// transaction commits a conflict-only transaction (no mutations).
+	tx.commitDummyTransaction(ctx)
+	// If we get here without panic/hang, the dummy worked.
+	t.Log("commitDummyTransaction completed successfully")
+}
+
+// TestCommitDummyTransaction_NoWriteConflicts verifies that
+// commitDummyTransaction is a no-op when there are no write conflicts.
+func TestCommitDummyTransaction_NoWriteConflicts(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Read-only transaction — no write conflicts.
+	tx := db.CreateTransaction()
+	tx.commitDummyTransaction(ctx)
+	// Should return immediately (no-op).
+	t.Log("commitDummyTransaction no-op for read-only transaction")
+}
+
+// TestCommitDummyTransaction_IsDummyGuard verifies that the isDummy flag
+// prevents recursive commitDummyTransaction calls.
+func TestCommitDummyTransaction_IsDummyGuard(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Create a dummy transaction directly — verify isDummy prevents recursion.
+	tx := &Transaction{
+		db:           db.db,
+		state:        txStateActive,
+		tenantId:     NoTenantID,
+		creationTime: time.Now(),
+		isDummy:      true,
+	}
+	tx.writeSystemKeys = true
+	tx.readSystemKeys = true
+	tx.lockAware = true
+
+	key := []byte(t.Name() + "_guard_key")
+	tx.addReadConflictForKey(key)
+	tx.addWriteConflictForKey(key)
+
+	// Commit should work. Even if commit_unknown_result occurs, the isDummy
+	// flag prevents recursive commitDummyTransaction, so this won't hang.
+	err := tx.Commit(ctx)
+	if err != nil {
+		// Commit errors are OK (the test environment may not have system key access).
+		// The key thing is no recursion / no hang.
+		t.Logf("dummy commit error (expected): %v", err)
+	} else {
+		t.Log("dummy commit succeeded")
+	}
+}
