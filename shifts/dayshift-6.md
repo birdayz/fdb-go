@@ -106,7 +106,7 @@ Complete rewrite of `loadbalance.go` to match C++ `QueueModel` + `Smoother`:
 
 New tool `cmd/test-report` that generates self-contained HTML test report from `bazel-testlogs/`. Parses standard Go test output (per `func Test*`) and Ginkgo suite summaries. `just report` recipe added.
 
-**Status:** Tool works, generates correct report (1884 tests, 0 failures). `.bazelrc` updated with `--test_arg="-test.v"` for per-test granularity.
+**Status:** Tool works, generates correct report (1884 tests, 0 failures). `.bazelrc` updated with `--test_arg="-test.v"` for per-test granularity. Review complete, fixes applied. Frame pooling investigation: `ReadFrame` payload pooling doesn't help (body shares backing array, pooling adds a copy → worse B/op).
 
 **Next steps for next shift:**
 - Wire into CI (GH Actions) — run `just test && just report` on every PR/merge
