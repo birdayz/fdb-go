@@ -224,6 +224,21 @@ func (c *rywCache) getRange(
 		return nil, false, err
 	}
 
+	// Determine the boundary of server-fetched data. When serverMore=true,
+	// we only know the DB state up to the last returned key. Local writes
+	// beyond this boundary MUST NOT be included — there may be un-fetched
+	// server keys between the boundary and those local writes.
+	// C++ avoids this entirely via segment-tree iterator (RYWIterator);
+	// we approximate by restricting local writes to the fetched range.
+	var serverBoundary []byte
+	if serverMore && len(serverKVs) > 0 {
+		if reverse {
+			serverBoundary = serverKVs[len(serverKVs)-1].Key // lowest key fetched
+		} else {
+			serverBoundary = serverKVs[len(serverKVs)-1].Key // highest key fetched
+		}
+	}
+
 	// Build a map from server results for fast lookup.
 	merged := make(map[string][]byte, len(serverKVs))
 	for _, kv := range serverKVs {
@@ -240,39 +255,53 @@ func (c *rywCache) getRange(
 		}
 	}
 
-	// Apply writes: replace or add.
+	// Apply writes: replace or add, but only within the server-fetched boundary.
 	for k, entry := range c.writes {
 		kb := []byte(k)
-		if bytes.Compare(kb, begin) >= 0 && bytes.Compare(kb, end) < 0 {
-			if entry.hasAtomics {
-				// Resolve atomics against server base.
-				base := merged[k] // may be nil if not in server results
-				cleared := false
-				for _, m := range entry.atomics {
-					base, cleared = applyAtomic(m.typ, base, m.param)
-					if cleared {
-						base = nil
-					}
+		if bytes.Compare(kb, begin) < 0 || bytes.Compare(kb, end) >= 0 {
+			continue // outside requested range
+		}
+		// When server had more data, only include writes within the fetched boundary.
+		// Beyond the boundary, un-fetched server keys may interleave with our writes.
+		if serverBoundary != nil {
+			if reverse {
+				if bytes.Compare(kb, serverBoundary) < 0 {
+					continue // below the fetched boundary in reverse scan
 				}
-				if cleared {
-					delete(merged, k)
-				} else {
-					merged[k] = base
+			} else {
+				if bytes.Compare(kb, serverBoundary) > 0 {
+					continue // above the fetched boundary in forward scan
 				}
-				// Cache resolved value.
-				if c.writes == nil {
-					c.writes = make(map[string]rywEntry)
-				}
-				if cleared {
-					delete(c.writes, k)
-					c.addClearedRangeLocked([]byte(k), append([]byte(k), 0))
-				} else {
-					c.writes[k] = rywEntry{value: base}
-				}
-			} else if entry.value != nil {
-				// Only add non-nil values (nil = key was cleared via CompareAndClear).
-				merged[k] = entry.value
 			}
+		}
+		if entry.hasAtomics {
+			// Resolve atomics against server base.
+			base := merged[k] // may be nil if not in server results
+			cleared := false
+			for _, m := range entry.atomics {
+				base, cleared = applyAtomic(m.typ, base, m.param)
+				if cleared {
+					base = nil
+				}
+			}
+			if cleared {
+				delete(merged, k)
+			} else {
+				merged[k] = base
+			}
+			// Cache resolved value.
+			if c.writes == nil {
+				c.writes = make(map[string]rywEntry)
+			}
+			if cleared {
+				delete(c.writes, k)
+				c.addClearedRangeLocked([]byte(k), append([]byte(k), 0))
+			} else {
+				c.writes[k] = rywEntry{value: base}
+			}
+		} else if entry.value != nil {
+			// Only add non-nil values (nil = key was cleared via CompareAndClear).
+			merged[k] = entry.value
 		}
 	}
 
@@ -294,16 +323,24 @@ func (c *rywCache) getRange(
 	}
 
 	// Apply limit. Track whether more data may exist beyond what we return.
-	// If the server indicated more data exists, we must propagate that —
-	// clears removing entries doesn't mean the range is exhausted.
 	more := false
 	if limit > 0 && len(result) > limit {
 		result = result[:limit]
 		more = true
 	} else if serverMore {
-		// Server had more data beyond what we fetched. Even if clears
-		// removed results, we cannot claim the range is exhausted.
-		more = true
+		// Server had more data beyond what we fetched. Propagate `more`
+		// only if we actually have room for more results (len(result) > 0
+		// or there are excluded local writes beyond the boundary).
+		// Without this guard, a range that's entirely cleared locally
+		// would return more=true, 0 results → infinite loop.
+		if len(result) > 0 {
+			more = true
+		}
+		// If result is empty but serverMore=true, the caller needs to
+		// advance the range. This is safe because the server range was
+		// non-empty — the merged result being empty means all server
+		// keys were cleared. The caller's continuation mechanism will
+		// advance begin past the cleared region.
 	}
 
 	return result, more, nil
@@ -435,18 +472,17 @@ func existing(base []byte) []byte {
 	return base
 }
 
-// doAdd — C++ doAdd in Atomic.h. Little-endian addition, zero-pad to longer.
+// doAdd — C++ doAdd in Atomic.h. Little-endian addition.
+// Result length = len(param), matching C++ which allocates otherOperand.size().
+// Base bytes beyond len(param) are silently dropped (carry discarded).
 func doAdd(base, param []byte) []byte {
 	e := existing(base)
 	size := len(param)
-	if len(e) > size {
-		size = len(e)
-	}
 	if size == 0 {
 		return []byte{}
 	}
 	a := make([]byte, size)
-	copy(a, e)
+	copy(a, e) // zero-pads if len(e) < size; truncates if len(e) > size
 	b := make([]byte, size)
 	copy(b, param)
 

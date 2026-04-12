@@ -3337,6 +3337,43 @@ func TestBlobGranuleRetryable_CPort(t *testing.T) {
 // RYW cache edge cases
 // ---------------------------------------------------------------------------
 
+// TestRYWDoAddResultLength_CPort verifies that doAdd result length = len(param),
+// matching C++ Atomic.h doAdd() which allocates otherOperand.size().
+// If base is longer than param, high bytes are silently truncated.
+func TestRYWDoAddResultLength_CPort(t *testing.T) {
+	t.Parallel()
+
+	// Base = 4 bytes, param = 2 bytes → result should be 2 bytes.
+	base := []byte{0x01, 0x02, 0x03, 0x04}
+	param := []byte{0x05, 0x06}
+	result, _ := applyAtomic(MutAddValue, base, param)
+	if len(result) != len(param) {
+		t.Errorf("result length: got %d, want %d (len(param))", len(result), len(param))
+	}
+	// 0x01 + 0x05 = 0x06, 0x02 + 0x06 = 0x08
+	if result[0] != 0x06 || result[1] != 0x08 {
+		t.Errorf("result: got %x, want [06 08]", result)
+	}
+
+	// Base = 2 bytes, param = 4 bytes → result should be 4 bytes.
+	base2 := []byte{0xFF, 0x01}
+	param2 := []byte{0x01, 0x00, 0x00, 0x00}
+	result2, _ := applyAtomic(MutAddValue, base2, param2)
+	if len(result2) != len(param2) {
+		t.Errorf("result2 length: got %d, want %d", len(result2), len(param2))
+	}
+	// 0xFF + 0x01 = carry 1, 0x01 + 0x00 + carry = 0x02
+	if result2[0] != 0x00 || result2[1] != 0x02 || result2[2] != 0x00 || result2[3] != 0x00 {
+		t.Errorf("result2: got %x, want [00 02 00 00]", result2)
+	}
+
+	// Base absent (nil), param = 4 bytes → result should be copy of param.
+	result3, _ := applyAtomic(MutAddValue, nil, []byte{0x01, 0x02, 0x03, 0x04})
+	if !bytes.Equal(result3, []byte{0x01, 0x02, 0x03, 0x04}) {
+		t.Errorf("result3: got %x, want [01 02 03 04]", result3)
+	}
+}
+
 // TestRYWAtomicAdd_CPort verifies that an atomic ADD followed by a Get within
 // the same transaction returns the correct accumulated value via RYW.
 func TestRYWAtomicAdd_CPort(t *testing.T) {
