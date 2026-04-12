@@ -15,22 +15,31 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 	gofdb "github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	tc "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
+	dockercontainer "github.com/docker/docker/api/types/container"
+	"github.com/testcontainers/testcontainers-go"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
 var (
-	goClient  gofdb.Database
-	cgoClient cgofdb.Database
+	goClient      gofdb.Database
+	cgoClient     cgofdb.Database
+	testContainer *tc.Container
 )
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	container, err := tc.Run(ctx, "", tc.WithStorageEngine("ssd"), tc.WithDirectIP())
+	container, err := tc.Run(ctx, "", tc.WithStorageEngine("ssd"), tc.WithDirectIP(),
+		testcontainers.WithHostConfigModifier(func(hc *dockercontainer.HostConfig) {
+			hc.CapAdd = append(hc.CapAdd, "NET_ADMIN")
+		}),
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "start container: %v\n", err)
 		os.Exit(1)
 	}
+	testContainer = container
 	defer container.Terminate(context.Background())
 
 	// Cluster file
@@ -487,6 +496,65 @@ func BenchmarkThroughputWrite(b *testing.B) {
 					tx.Set(cgofdb.Key(key), val)
 				}
 				return nil, nil
+			})
+		}
+	})
+}
+
+// execTC runs a tc command inside the container. Returns error if it fails.
+func execTC(ctx context.Context, args ...string) error {
+	exitCode, reader, err := testContainer.Exec(ctx, args, tcexec.Multiplexed())
+	if err != nil {
+		return fmt.Errorf("exec %v: %w", args, err)
+	}
+	if exitCode != 0 {
+		out, _ := io.ReadAll(reader)
+		return fmt.Errorf("tc exit %d: %s", exitCode, out)
+	}
+	return nil
+}
+
+// BenchmarkLatencyGet measures Go vs CGo with simulated 2ms RTT.
+// Injects 1ms delay each way via tc netem inside the container.
+func BenchmarkLatencyGet(b *testing.B) {
+	ctx := context.Background()
+
+	// Install iproute-tc (for tc). Rocky 9 splits tc into a separate package.
+	exitCode, installOut, _ := testContainer.Exec(ctx, []string{
+		"sh", "-c", "command -v tc > /dev/null 2>&1 || microdnf install -y iproute-tc > /dev/null 2>&1 || yum install -y iproute > /dev/null 2>&1",
+	}, tcexec.Multiplexed())
+	if exitCode != 0 {
+		out, _ := io.ReadAll(installOut)
+		b.Skipf("yum install iproute failed: exit=%d out=%s", exitCode, out)
+	}
+
+	// Add 1ms delay (1ms each way = 2ms RTT). Requires NET_ADMIN capability.
+	tcBin := "/usr/sbin/tc" // Rocky 9 path; CentOS 7 uses /sbin/tc
+	if err := execTC(ctx, tcBin, "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "1ms"); err != nil {
+		b.Skipf("tc netem failed (need NET_ADMIN): %v", err)
+	}
+	b.Cleanup(func() {
+		execTC(context.Background(), tcBin, "qdisc", "del", "dev", "eth0", "root")
+	})
+
+	// Verify delay is active.
+	_, verifyReader, _ := testContainer.Exec(ctx, []string{tcBin, "qdisc", "show", "dev", "eth0"}, tcexec.Multiplexed())
+	out, _ := io.ReadAll(verifyReader)
+	b.Logf("tc qdisc: %s", strings.TrimSpace(string(out)))
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				return tx.Get(gofdb.Key("bench_key_100b")).MustGet(), nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				return tx.Get(cgofdb.Key("bench_key_100b")).MustGet(), nil
 			})
 		}
 	})

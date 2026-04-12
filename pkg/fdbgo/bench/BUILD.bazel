@@ -15,5 +15,8 @@ go_test(
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/directory",
         "@com_github_apple_foundationdb_bindings_go//src/fdb/tuple",
+        "@com_github_docker_docker//api/types/container",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//exec",
     ],
 )
