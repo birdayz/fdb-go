@@ -447,6 +447,10 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			case <-timer.C:
 				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 				continue
+			case <-db.waitProxiesChanged():
+				timer.Stop()
+				backoff = 0
+				continue
 			case <-ctx.Done():
 				timer.Stop()
 				return nil, ctx.Err()
@@ -460,6 +464,9 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			timer := time.NewTimer(backoff)
 			select {
 			case <-timer.C:
+			case <-db.waitProxiesChanged():
+				timer.Stop()
+				backoff = 0
 			case <-ctx.Done():
 				timer.Stop()
 				return nil, ctx.Err()
