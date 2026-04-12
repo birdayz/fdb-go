@@ -46,11 +46,12 @@ Then start working on the highest-priority items from the handover. Follow the w
 - Update TODO.md as work completes
 
 ### Rules during shift
-- **One PR per shift.** All work goes to the shift branch.
+- **One PR per shift.** All work goes to the shift branch. Do NOT merge early — the shift runs until the clock says it's over. Keep working, keep committing, keep pushing. Merge only at end-of-shift after review.
 - **Never push directly to master.** Always through the PR.
 - **Never force-push master.** Always verify branch before amend/force: `git branch --show-current`
 - **C++ is the spec.** If our Go client diverges from C++, fix our code. Never skip tests.
 - **CI must be green** on every push. Pre-commit hooks catch most issues.
+- **Request review early** (mid-shift is fine) so feedback arrives while you still have time to address it. But do NOT merge until the shift ends.
 
 ## Step 4: Review loop
 
@@ -86,7 +87,7 @@ When implementation is done and tests pass:
 
 ## Step 5: End shift
 
-Only after the reviewer approves (no new issues in the latest review round):
+**Only when the shift clock runs out** (not when work feels "done"). Keep working until end of shift. Then, only after the reviewer approves (no new issues in the latest review round):
 
 1. **Write handover** — create `shifts/{shift-name}.md` with:
    - Date, time range, PR number

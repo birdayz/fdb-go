@@ -255,9 +255,8 @@ Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYour
 | `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Always queries storage server | Extra round trip for edge selectors |
 | `tag_throttled` custom delay | Uses server-supplied throttle duration from `cx->throttledTags` | Standard exponential backoff | Rate limiting efficiency differs, retry is safe |
 | `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration` for GRV | Standard exponential backoff | Same as above |
-| QueueModel selection metric | `smoothOutstanding.smoothTotal()` (continuous decay, T=2s) + server penalty | `inflight * latencyEMA` (discrete EMA, α=0.1) | Different algorithm, same functional goal; suboptimal under asymmetric load |
-| QueueModel penalty | Server-reported overload weight in `LoadBalancedReply` | Not implemented | Missing signal for server overload; all replicas treated equally |
 | QueueModel key | `endpoint.token.first()` (uint64) | Address string (host:port) | Cosmetic; same server identity in practice |
+| Load balance secondDelay | Speculative second request after delay to hedge slow servers | Not implemented | Missing optimization; single-attempt per server |
 
 ## Adding a new request/response type
 
