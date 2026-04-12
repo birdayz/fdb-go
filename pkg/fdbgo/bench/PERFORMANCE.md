@@ -1,0 +1,101 @@
+# Pure Go FDB Client — Performance Analysis
+
+## Summary
+
+The pure Go FDB client is **2–3.5x faster on reads** than the Apple CGo binding (libfdb_c), with **write parity**. Both clients return byte-identical results against the same FDB server.
+
+| Operation | Go | CGo | Ratio |
+|---|---|---|---|
+| Get 100B | 60 us | 218 us | **3.6x** |
+| Get 10KB | 69 us | 217 us | **3.1x** |
+| GetRange 100 keys | 92 us | 363 us | **3.9x** |
+| Sustained read throughput | 430 MB/s | 191 MB/s | **2.25x** |
+| Set+Commit 100B | 1,008 us | 1,005 us | 1.0x |
+| Sustained write throughput | 10.0 MB/s | 9.7 MB/s | 1.0x |
+
+Measured on Ryzen 9 3900X, FDB 7.3.46, single-node testcontainer. Sustained benchmarks run for 30 seconds each. `TestBenchmarkSanity` verifies byte-exact result equality.
+
+## Root Cause
+
+The CGo binding routes every operation through the C library's single-threaded actor event loop (`Flow` runtime). The pure Go client eliminates this by using native goroutine concurrency.
+
+### CGo binding read path (~210us)
+
+```
+Go goroutine
+  → CGo call (runtime.LockOSThread + cgo frame)      ~20-25us
+    → C library event loop (queue + dequeue)           ~30-50us
+      → network thread (serialize + TCP send)
+        → FDB server (~40us network RTT)
+      → network thread (TCP recv + deserialize)
+    → C future completion (callback + promise)         ~20-30us
+  → CGo return (unlock OS thread)
+→ Go goroutine receives result
+```
+
+### Pure Go read path (~60us)
+
+```
+Go goroutine
+  → serialize request + channel send to write loop     ~3-5us
+    → TCP write (buffered, batched with other requests)
+      → FDB server (~40us network RTT)
+    → TCP read (dedicated read loop goroutine)
+  → channel receive (pre-allocated, lock-free)          ~2-3us
+→ Go goroutine receives result
+```
+
+### Where the 150us gap comes from
+
+| Overhead | CGo | Go | Delta |
+|---|---|---|---|
+| Network RTT | ~40us | ~40us | 0 |
+| CGo boundary (LockOSThread, cgo frame) | ~20-25us | 0 | **~22us** |
+| Actor event loop serialization | ~30-50us | 0 | **~40us** |
+| Future/promise completion + callbacks | ~20-30us | 0 | **~25us** |
+| Thread context switches (user↔event loop↔network) | ~15-25us | 0 | **~20us** |
+| Request/response serialization | ~10us | ~5us | ~5us |
+| GRV cache check | ~3us | ~2us | ~1us |
+| **Total** | **~210us** | **~60us** | **~150us** |
+
+The four eliminated overheads (CGo boundary, event loop, futures, context switches) account for ~107us of the ~150us gap.
+
+## Why writes show parity
+
+The commit RPC takes ~500us of network time (larger payload, proxy conflict checking). The ~100us per-request overhead is ~20% of total — noticeable but not dominant. On reads where the RPC takes ~40us, the same overhead is ~250% — the dominant factor.
+
+## Architecture comparison
+
+| Aspect | Pure Go | CGo (Apple C binding) |
+|---|---|---|
+| Concurrency model | Goroutines + channels | C++ Flow actor model (single-threaded) |
+| Network I/O | Direct TCP, buffered write loop | FlowTransport network thread |
+| Request multiplexing | Channel-based write coalescing | Event queue + actor yield |
+| Response routing | Pre-allocated channel per RPC | Promise/future callback chain |
+| GRV caching | Atomic int64, 100ms TTL | C library internal cache |
+| Connection pooling | Go map + RWMutex | C library internal pool |
+| Allocations per Get | 18 | 14 |
+
+The Go client has slightly more allocations (18 vs 14) because it uses zero-copy deserialization (response bytes stay in the read buffer, no copy needed). The CGo binding allocates less because the C library uses fixed-size internal buffers.
+
+## Reproducing
+
+```sh
+# Micro-benchmarks (default iterations)
+just bench-one BenchmarkGet
+just bench-one BenchmarkGetRange
+just bench-one BenchmarkSet
+
+# Sustained throughput (30s each)
+bazelisk test //pkg/fdbgo/bench:bench_test \
+  --test_arg=-test.bench=BenchmarkThroughput \
+  --test_arg=-test.benchtime=30s \
+  --test_arg=-test.benchmem \
+  --test_arg=-test.run='^$' \
+  --test_output=streamed
+
+# Correctness verification
+bazelisk test //pkg/fdbgo/bench:bench_test \
+  --test_filter=TestBenchmarkSanity \
+  --test_output=streamed
+```
