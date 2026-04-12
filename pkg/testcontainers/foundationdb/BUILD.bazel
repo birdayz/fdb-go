@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "@com_github_docker_docker//client",
+        "@com_github_docker_go_connections//nat",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//exec",
         "@com_github_testcontainers_testcontainers_go//network",

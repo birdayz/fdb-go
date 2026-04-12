@@ -27,8 +27,7 @@ func TestSomething(t *testing.T) {
     }
     defer container.Terminate(ctx)
 
-    // Get cluster file for your FDB client.
-    clusterFile := container.MustClusterFile(ctx)
+    // Get cluster file path for your FDB client.
     path, _ := container.ClusterFilePath(ctx)
     db, _ := fdb.OpenDatabase(path)
 }
@@ -117,7 +116,7 @@ err = container.Unpause(ctx)
 | `ClusterFilePath(ctx)` | `(string, error)` | Writes cluster file to temp file |
 | `ConnectionString(ctx)` | `(string, error)` | `host:port` string |
 | `NetworkName()` | `string` | Docker network name |
-| `InternalAddress()` | `string` | `foundationdb:4500` (Docker DNS) |
+| `InternalAddress()` | `string` | `containerIP:4500` (bridge IP) |
 | `InternalClusterFile()` | `string` | Cluster file for containers on same network |
 | `FDBCLIExec(ctx, cmd)` | `(string, error)` | Run fdbcli command |
 | `Status(ctx)` | `(string, error)` | FDB status details |

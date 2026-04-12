@@ -385,6 +385,7 @@ func TestOptionValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			cfg := defaultOptions()
 			err := tt.option.apply(&cfg)
 			if err == nil {

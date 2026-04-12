@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -44,7 +45,6 @@ const (
 	defaultImage      = "foundationdb/foundationdb"
 	defaultFDBPort    = 4500
 	defaultAPIVersion = 730
-	fdbPortProto      = "4500/tcp"
 )
 
 // fdbVersion returns the FDB version from the FDB_VERSION env var
@@ -149,7 +149,7 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 	}
 
 	// Get the host-mapped port for external connectivity.
-	mapped, err := ctr.MappedPort(ctx, "4500/tcp")
+	mapped, err := ctr.MappedPort(ctx, nat.Port(portStr))
 	if err != nil {
 		_ = ctr.Terminate(ctx)
 		return nil, fmt.Errorf("get mapped port: %w", err)
@@ -252,8 +252,8 @@ func (c *Container) ClusterFilePath(_ context.Context) (string, error) {
 }
 
 // ConnectionString returns "host:port" for the FDB server (external, port-mapped).
-func (c *Container) ConnectionString(_ context.Context) (string, error) {
-	host, err := c.Host(context.Background())
+func (c *Container) ConnectionString(ctx context.Context) (string, error) {
+	host, err := c.Host(ctx)
 	if err != nil {
 		return "", err
 	}
