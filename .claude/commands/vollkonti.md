@@ -10,7 +10,7 @@ You are starting a shift in a Vollkontinuierliches Schichtsystem (continuous 24/
 | Swing shift | 14:00 — 22:00 | `swingshift-N` |
 | Night shift | 22:00 — 06:00 | `nightshift-N` |
 
-Determine which shift type matches the current time. The number N increments globally — check `ls shifts/ | sort -t- -k2 -n | tail -1` to find the last shift number, then increment.
+Determine which shift type matches the current time. The number N increments globally — check `ls -t shifts/*.md | head -1` to find the last shift, extract the number, then increment.
 
 **Filenames include the date:** `shifts/{shift-name}_YYYY-MM-DD.md` (e.g., `shifts/swingshift-8_2026-04-12.md`). This prevents confusion when a shift from today looks identical to one from yesterday.
 
