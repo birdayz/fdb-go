@@ -251,7 +251,7 @@ Systematic audit against `foundationdb/fdbclient/NativeAPI.actor.cpp`, `ReadYour
 | Auto-reset after commit | No auto-reset at API >= 410 | `postCommitReset()` clears state for reuse | Design choice: Go API expects tx reuse after commit |
 | `onProxiesChanged` mid-commit | Races proxy topology change vs commit reply | Full `DefaultRPCTimeout` before detecting stale proxy | Liveness only, not safety; eventual commit_unknown_result |
 | `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
-| `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Map-based merge with over-fetch heuristic | Correct for common cases; boundary-guard added for `serverMore=true` |
+| `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch | Iterative fetch+merge loop with boundary tracking | Correct: loops when clears consume all results (no silent truncation). Not a full segment-tree port but functionally equivalent. |
 | `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Same (implemented dayshift-6b) | Matching C++ |
 | `tag_throttled` custom delay | Uses server-supplied throttle duration from `cx->throttledTags` | Standard exponential backoff | Rate limiting efficiency differs, retry is safe |
 | `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration` for GRV | Standard exponential backoff | Same as above |

@@ -140,6 +140,10 @@ type database struct {
 	// client-side, matching C++ DatabaseContext::validateVersion().
 	minAcceptableReadVersion atomic.Int64
 
+	// Tag throttle state — updated from GRV reply tagThrottleInfo.
+	// Maps priority -> (tag -> throttle limits). Matches C++ cx->throttledTags.
+	tagThrottles tagThrottleState
+
 	// Transaction defaults — applied to every new transaction.
 	// Matches C++ DatabaseContext::transactionDefaults.
 	txDefaultTimeout        int64 // FDB_DB_OPTION_TRANSACTION_TIMEOUT (ms)
