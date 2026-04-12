@@ -54,7 +54,11 @@ RYW cache optimization (sorted-keys + two-pointer merge), FDB client correctness
 - Extracted `applyGRVReply()` — deduplicated identical state mutation code in `flush()` and `backgroundRefresher()`
 - Removed dead `proxiesGen` field (atomic.Uint64 incremented but never read)
 
-### 5. Vollkonti shift system improvements
+### 5. Location cache deduplication
+
+Extracted shared `queryLocations()` from `refresh()` and `refreshRange()` — both had ~100 lines of identical load-balance loop code. Now 5-line wrappers. -90 lines, zero behavioral change.
+
+### 6. Vollkonti shift system improvements
 
 - Date in filenames: `swingshift-8_2026-04-12.md`
 - Active-shift check: `gh pr list --state open` before starting new shift
