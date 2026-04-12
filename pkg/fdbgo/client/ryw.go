@@ -144,6 +144,7 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 		val, clr := applyAtomic(op, entry.value, param)
 		if clr {
 			delete(c.writes, k)
+			c.sortedKeys = nil // key removed, invalidate sorted index
 			c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
 		} else {
 			entry.value = val
@@ -156,6 +157,7 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 		val, clr := applyAtomic(op, nil, param)
 		if !clr {
 			c.writes[k] = rywEntry{value: val}
+			c.sortedKeys = nil // new key added, invalidate sorted index
 		}
 		// If clr, key stays cleared — no action needed.
 		return
@@ -357,8 +359,9 @@ func (c *rywCache) mergeBatch(
 				effectiveBegin = string(boundary)
 			}
 		} else {
-			// Include writes <= boundary. boundary+"\x00" is the exclusive end
-			// so that SearchStrings includes boundary itself.
+			// Include writes <= boundary. Use boundary+"\x00" as exclusive end
+			// so sort.SearchStrings returns an index that includes boundary itself
+			// (the boundary key is the last fetched server key — safe to include).
 			boundaryAfter := string(append(append([]byte(nil), boundary...), 0))
 			if boundaryAfter < effectiveEnd {
 				effectiveEnd = boundaryAfter
@@ -397,6 +400,11 @@ func (c *rywCache) mergeBatch(
 					atomicCleared = make(map[string]bool)
 				}
 				atomicCleared[k] = true
+				// Note: sortedKeys is intentionally NOT invalidated here.
+				// We're mid-iteration over sortedKeys; the deleted key leaves
+				// a phantom that's handled by the `if !exists { continue }`
+				// guard at the top of this loop. Future mergeBatch calls
+				// will rebuild sortedKeys via ensureSortedLocked if needed.
 			} else {
 				c.writes[k] = rywEntry{value: base}
 				writeKVs = append(writeKVs, KeyValue{Key: []byte(k), Value: base})

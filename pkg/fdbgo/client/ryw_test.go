@@ -930,6 +930,41 @@ func TestRYWClearedRangeMerge(t *testing.T) {
 	c.mu.Unlock()
 }
 
+// TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys reproduces the bug
+// where atomic() on a cleared key adds a new write without invalidating
+// sortedKeys, causing getRange to miss the write via the fast path.
+func TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Step 1: set a key to force sorted keys to be built.
+	c.set([]byte("X"), []byte("x"))
+
+	// Step 2: trigger ensureSortedLocked via hasWritesInRangeLocked.
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil
+	}
+	c.getRange(context.Background(), []byte("X"), []byte("Z"), 10, false, mockServer)
+
+	// Step 3: clearRange [A, B) — no writes in range, sortedKeys stays valid.
+	c.clearRange([]byte("A"), []byte("B"))
+
+	// Step 4: atomic on cleared key "A" — resolves to new write.
+	c.atomic(MutAddValue, []byte("A"), []byte{5, 0, 0, 0, 0, 0, 0, 0})
+
+	// Step 5: getRange [A, B) must see the write at "A".
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("B"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result (atomic on cleared key), got %d", len(result))
+	}
+	if string(result[0].Key) != "A" {
+		t.Errorf("expected key A, got %s", result[0].Key)
+	}
+}
+
 // Benchmarks for RYW merge performance.
 
 // BenchmarkRYWMergeBatch_FewWrites benchmarks mergeBatch with 10 writes
