@@ -23,9 +23,11 @@ func TestClear(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	key := []byte(t.Name() + "_clear_me")
+
 	// Write a key.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("clear_me"), []byte("exists"))
+		tx.Set(key, []byte("exists"))
 		return nil, nil
 	})
 	if err != nil {
@@ -34,7 +36,7 @@ func TestClear(t *testing.T) {
 
 	// Verify it exists.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("clear_me"))
+		return tx.Get(ctx, key)
 	})
 	if err != nil {
 		t.Fatalf("Get before clear: %v", err)
@@ -45,7 +47,7 @@ func TestClear(t *testing.T) {
 
 	// Clear it.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Clear([]byte("clear_me"))
+		tx.Clear(key)
 		return nil, nil
 	})
 	if err != nil {
@@ -54,7 +56,7 @@ func TestClear(t *testing.T) {
 
 	// Verify it's gone.
 	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("clear_me"))
+		return tx.Get(ctx, key)
 	})
 	if err != nil {
 		t.Fatalf("Get after clear: %v", err)
@@ -71,10 +73,12 @@ func TestClearRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	// Write 5 keys: cr_a, cr_b, cr_c, cr_d, cr_e
+	pfx := t.Name() + "_"
+
+	// Write 5 keys: pfx+a through pfx+e
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for _, suffix := range []string{"a", "b", "c", "d", "e"} {
-			tx.Set([]byte("cr_"+suffix), []byte("v"))
+			tx.Set([]byte(pfx+suffix), []byte("v"))
 		}
 		return nil, nil
 	})
@@ -82,18 +86,18 @@ func TestClearRange(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Clear range [cr_b, cr_d) — should delete cr_b, cr_c.
+	// Clear range [pfx+b, pfx+d) — should delete b, c.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.ClearRange([]byte("cr_b"), []byte("cr_d"))
+		tx.ClearRange([]byte(pfx+"b"), []byte(pfx+"d"))
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("ClearRange: %v", err)
 	}
 
-	// Verify: cr_a and cr_d and cr_e survive.
+	// Verify: a and d and e survive.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		kvs, _, err := tx.GetRange(ctx, []byte("cr_"), []byte("cr_~"), 100)
+		kvs, _, err := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
 		return kvs, err
 	})
 	if err != nil {
@@ -104,7 +108,7 @@ func TestClearRange(t *testing.T) {
 	for i, kv := range kvs {
 		got[i] = string(kv.Key)
 	}
-	want := []string{"cr_a", "cr_d", "cr_e"}
+	want := []string{pfx + "a", pfx + "d", pfx + "e"}
 	if len(got) != len(want) {
 		t.Fatalf("keys: got %v, want %v", got, want)
 	}
@@ -122,7 +126,7 @@ func TestAtomicAdd(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("counter")
+	key := []byte(t.Name() + "_counter")
 
 	// Initialize counter to 10.
 	var buf [8]byte
@@ -165,10 +169,12 @@ func TestGetRangeWithLimit(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	// Write 10 keys.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < 10; i++ {
-			tx.Set([]byte("lim_"+string(rune('a'+i))), []byte{byte(i)})
+			tx.Set([]byte(pfx+string(rune('a'+i))), []byte{byte(i)})
 		}
 		return nil, nil
 	})
@@ -182,7 +188,7 @@ func TestGetRangeWithLimit(t *testing.T) {
 		more bool
 	}
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		kvs, more, err := tx.GetRange(ctx, []byte("lim_"), []byte("lim_~"), 3)
+		kvs, more, err := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 3)
 		return rangeResult{kvs, more}, err
 	})
 	if err != nil {
@@ -198,7 +204,7 @@ func TestGetRangeWithLimit(t *testing.T) {
 		t.Error("more: got false, want true")
 	}
 	if len(kvs) >= 3 {
-		if string(kvs[0].Key) != "lim_a" || string(kvs[2].Key) != "lim_c" {
+		if string(kvs[0].Key) != pfx+"a" || string(kvs[2].Key) != pfx+"c" {
 			t.Errorf("keys: first=%q last=%q", kvs[0].Key, kvs[2].Key)
 		}
 	}
@@ -211,10 +217,14 @@ func TestMultiKeyTransaction(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+	keyX := []byte(pfx + "x")
+	keyY := []byte(pfx + "y")
+
 	// Write two keys in one transaction, read both back in another.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("mk_x"), []byte("100"))
-		tx.Set([]byte("mk_y"), []byte("200"))
+		tx.Set(keyX, []byte("100"))
+		tx.Set(keyY, []byte("200"))
 		return nil, nil
 	})
 	if err != nil {
@@ -222,11 +232,11 @@ func TestMultiKeyTransaction(t *testing.T) {
 	}
 
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		x, err := tx.Get(ctx, []byte("mk_x"))
+		x, err := tx.Get(ctx, keyX)
 		if err != nil {
 			return nil, err
 		}
-		y, err := tx.Get(ctx, []byte("mk_y"))
+		y, err := tx.Get(ctx, keyY)
 		if err != nil {
 			return nil, err
 		}
@@ -248,8 +258,9 @@ func TestGetNonExistentKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	key := []byte(t.Name() + "_does_not_exist_ever")
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("does_not_exist_ever"))
+		return tx.Get(ctx, key)
 	})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -266,10 +277,12 @@ func TestGetKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	// Write keys: gk_a, gk_b, gk_c, gk_d, gk_e
+	pfx := t.Name() + "_"
+
+	// Write keys: pfx+a through pfx+e
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for _, s := range []string{"a", "b", "c", "d", "e"} {
-			tx.Set([]byte("gk_"+s), []byte("v"))
+			tx.Set([]byte(pfx+s), []byte("v"))
 		}
 		return nil, nil
 	})
@@ -277,48 +290,48 @@ func TestGetKey(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// firstGreaterOrEqual("gk_c") → should return "gk_c" (exact match)
+	// firstGreaterOrEqual(pfx+"c") → should return pfx+"c" (exact match)
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetKey(ctx, []byte("gk_c"), false, 1) // orEqual=false, offset=1 = firstGreaterOrEqual
+		return tx.GetKey(ctx, []byte(pfx+"c"), false, 1) // orEqual=false, offset=1 = firstGreaterOrEqual
 	})
 	if err != nil {
 		t.Fatalf("firstGreaterOrEqual: %v", err)
 	}
-	if string(result.([]byte)) != "gk_c" {
-		t.Errorf("firstGreaterOrEqual(gk_c): got %q, want %q", result, "gk_c")
+	if string(result.([]byte)) != pfx+"c" {
+		t.Errorf("firstGreaterOrEqual(%sc): got %q, want %q", pfx, result, pfx+"c")
 	}
 
-	// firstGreaterThan("gk_c") → should return "gk_d"
+	// firstGreaterThan(pfx+"c") → should return pfx+"d"
 	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetKey(ctx, []byte("gk_c"), true, 1) // orEqual=true, offset=1 = firstGreaterThan
+		return tx.GetKey(ctx, []byte(pfx+"c"), true, 1) // orEqual=true, offset=1 = firstGreaterThan
 	})
 	if err != nil {
 		t.Fatalf("firstGreaterThan: %v", err)
 	}
-	if string(result.([]byte)) != "gk_d" {
-		t.Errorf("firstGreaterThan(gk_c): got %q, want %q", result, "gk_d")
+	if string(result.([]byte)) != pfx+"d" {
+		t.Errorf("firstGreaterThan(%sc): got %q, want %q", pfx, result, pfx+"d")
 	}
 
-	// lastLessOrEqual("gk_c") → should return "gk_c"
+	// lastLessOrEqual(pfx+"c") → should return pfx+"c"
 	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetKey(ctx, []byte("gk_c"), true, 0) // orEqual=true, offset=0 = lastLessOrEqual
+		return tx.GetKey(ctx, []byte(pfx+"c"), true, 0) // orEqual=true, offset=0 = lastLessOrEqual
 	})
 	if err != nil {
 		t.Fatalf("lastLessOrEqual: %v", err)
 	}
-	if string(result.([]byte)) != "gk_c" {
-		t.Errorf("lastLessOrEqual(gk_c): got %q, want %q", result, "gk_c")
+	if string(result.([]byte)) != pfx+"c" {
+		t.Errorf("lastLessOrEqual(%sc): got %q, want %q", pfx, result, pfx+"c")
 	}
 
-	// lastLessThan("gk_c") → should return "gk_b"
+	// lastLessThan(pfx+"c") → should return pfx+"b"
 	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetKey(ctx, []byte("gk_c"), false, 0) // orEqual=false, offset=0 = lastLessThan
+		return tx.GetKey(ctx, []byte(pfx+"c"), false, 0) // orEqual=false, offset=0 = lastLessThan
 	})
 	if err != nil {
 		t.Fatalf("lastLessThan: %v", err)
 	}
-	if string(result.([]byte)) != "gk_b" {
-		t.Errorf("lastLessThan(gk_c): got %q, want %q", result, "gk_b")
+	if string(result.([]byte)) != pfx+"b" {
+		t.Errorf("lastLessThan(%sc): got %q, want %q", pfx, result, pfx+"b")
 	}
 }
 
@@ -329,9 +342,11 @@ func TestSnapshotRead(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	key := []byte(t.Name() + "_snap_key")
+
 	// Seed a key.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("snap_key"), []byte("v0"))
+		tx.Set(key, []byte("v0"))
 		return nil, nil
 	})
 	if err != nil {
@@ -341,7 +356,7 @@ func TestSnapshotRead(t *testing.T) {
 	// tx1: snapshot read + write (should NOT conflict)
 	// tx2: regular write to same key, committed between tx1's read and commit
 	//
-	// With regular read: tx1 would conflict (read conflict range includes snap_key).
+	// With regular read: tx1 would conflict (read conflict range includes key).
 	// With snapshot read: tx1 should succeed (no read conflict range).
 
 	tx1 := db.CreateTransaction()
@@ -349,7 +364,7 @@ func TestSnapshotRead(t *testing.T) {
 	tx1.SetReadVersion(rv)
 
 	// Snapshot read — no conflict range added.
-	val, err := tx1.Snapshot().Get(ctx, []byte("snap_key"))
+	val, err := tx1.Snapshot().Get(ctx, key)
 	if err != nil {
 		t.Fatalf("snapshot Get: %v", err)
 	}
@@ -359,7 +374,7 @@ func TestSnapshotRead(t *testing.T) {
 
 	// tx2 writes the same key and commits.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("snap_key"), []byte("v1"))
+		tx.Set(key, []byte("v1"))
 		return nil, nil
 	})
 	if err != nil {
@@ -368,7 +383,7 @@ func TestSnapshotRead(t *testing.T) {
 
 	// tx1 writes and commits — should succeed because snapshot read
 	// didn't add a read conflict range.
-	tx1.Set([]byte("snap_key"), []byte("v_from_tx1"))
+	tx1.Set(key, []byte("v_from_tx1"))
 	err = tx1.Commit(ctx)
 	if err != nil {
 		t.Fatalf("tx1 should NOT conflict after snapshot read, got: %v", err)
@@ -380,16 +395,16 @@ func TestSnapshotRead(t *testing.T) {
 	tx3.SetReadVersion(rv3)
 
 	// Regular read — adds conflict range.
-	_, _ = tx3.Get(ctx, []byte("snap_key"))
+	_, _ = tx3.Get(ctx, key)
 
 	// Another transaction writes the same key.
 	_, _ = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("snap_key"), []byte("v2"))
+		tx.Set(key, []byte("v2"))
 		return nil, nil
 	})
 
 	// tx3 should conflict.
-	tx3.Set([]byte("snap_key"), []byte("v_from_tx3"))
+	tx3.Set(key, []byte("v_from_tx3"))
 	err = tx3.Commit(ctx)
 	if err == nil {
 		t.Fatal("tx3 SHOULD conflict after regular read")
@@ -404,9 +419,15 @@ func TestExplicitConflictRanges(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+	keyMain := []byte(pfx + "key")
+	keyOther := []byte(pfx + "other")
+	keyWC := []byte(pfx + "wc")
+	keyDummy := []byte(pfx + "dummy")
+
 	// Seed.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("ecr_key"), []byte("v0"))
+		tx.Set(keyMain, []byte("v0"))
 		return nil, nil
 	})
 	if err != nil {
@@ -418,12 +439,12 @@ func TestExplicitConflictRanges(t *testing.T) {
 	tx1 := db.CreateTransaction()
 	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
-	tx1.AddReadConflictKey([]byte("ecr_key"))
-	tx1.Set([]byte("ecr_other"), []byte("unrelated"))
+	tx1.AddReadConflictKey(keyMain)
+	tx1.Set(keyOther, []byte("unrelated"))
 
 	// tx2 writes the conflicting key.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("ecr_key"), []byte("v1"))
+		tx.Set(keyMain, []byte("v1"))
 		return nil, nil
 	})
 	if err != nil {
@@ -444,12 +465,12 @@ func TestExplicitConflictRanges(t *testing.T) {
 
 	tx4 := db.CreateTransaction()
 	tx4.SetReadVersion(rv3)
-	_, _ = tx4.Get(ctx, []byte("ecr_wc")) // adds read conflict
-	tx4.Set([]byte("ecr_wc"), []byte("from_tx4"))
+	_, _ = tx4.Get(ctx, keyWC) // adds read conflict
+	tx4.Set(keyWC, []byte("from_tx4"))
 
-	// tx3 only has a write conflict (no mutation on ecr_wc, but conflict range covers it).
-	tx3.AddWriteConflictKey([]byte("ecr_wc"))
-	tx3.Set([]byte("ecr_dummy"), []byte("x")) // need a mutation to commit
+	// tx3 only has a write conflict (no mutation on keyWC, but conflict range covers it).
+	tx3.AddWriteConflictKey(keyWC)
+	tx3.Set(keyDummy, []byte("x")) // need a mutation to commit
 	err = tx3.Commit(ctx)
 	if err != nil {
 		t.Fatalf("tx3 should succeed: %v", err)
@@ -470,9 +491,11 @@ func TestCancel(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	key := []byte(t.Name() + "_cancel_key")
+
 	// Write a key so there's something to read.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("cancel_key"), []byte("exists"))
+		tx.Set(key, []byte("exists"))
 		return nil, nil
 	})
 	if err != nil {
@@ -481,7 +504,7 @@ func TestCancel(t *testing.T) {
 
 	// Create a real transaction, do a successful read, then cancel.
 	tx := db.CreateTransaction()
-	val, err := tx.Get(ctx, []byte("cancel_key"))
+	val, err := tx.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("Get before Cancel: %v", err)
 	}
@@ -492,13 +515,13 @@ func TestCancel(t *testing.T) {
 	tx.Cancel()
 
 	// Get after Cancel should fail.
-	_, err = tx.Get(ctx, []byte("cancel_key"))
+	_, err = tx.Get(ctx, key)
 	if err == nil {
 		t.Error("Get after Cancel should fail")
 	}
 
 	// Commit after Cancel should fail.
-	tx.Set([]byte("cancel_key"), []byte("modified"))
+	tx.Set(key, []byte("modified"))
 	err = tx.Commit(ctx)
 	if err == nil {
 		t.Error("Commit after Cancel should fail")
@@ -506,7 +529,7 @@ func TestCancel(t *testing.T) {
 
 	// Verify the key was NOT modified (cancel prevented commit).
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("cancel_key"))
+		return tx.Get(ctx, key)
 	})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -523,10 +546,14 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+	keyNonexistent := []byte(pfx + "nonexistent")
+	keyReadonly := []byte(pfx + "key")
+
 	// Transact with only reads, no writes — commit should be a no-op.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		// Read a non-existent key. No mutations.
-		_, err := tx.Get(ctx, []byte("readonly_nonexistent"))
+		_, err := tx.Get(ctx, keyNonexistent)
 		return nil, err
 	})
 	if err != nil {
@@ -535,7 +562,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 
 	// Seed a key, then read it in a read-only transaction.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("readonly_key"), []byte("val"))
+		tx.Set(keyReadonly, []byte("val"))
 		return nil, nil
 	})
 	if err != nil {
@@ -543,7 +570,7 @@ func TestReadOnlyCommitIntegration(t *testing.T) {
 	}
 
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("readonly_key"))
+		return tx.Get(ctx, keyReadonly)
 	})
 	if err != nil {
 		t.Fatalf("read-only Get: %v", err)
@@ -560,26 +587,28 @@ func TestAddReadConflictRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("rcr_a"), []byte("1"))
-		tx.Set([]byte("rcr_b"), []byte("2"))
-		tx.Set([]byte("rcr_c"), []byte("3"))
+		tx.Set([]byte(pfx+"a"), []byte("1"))
+		tx.Set([]byte(pfx+"b"), []byte("2"))
+		tx.Set([]byte(pfx+"c"), []byte("3"))
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// tx1: add read conflict range [rcr_a, rcr_d) — covers a, b, c.
+	// tx1: add read conflict range [pfx+a, pfx+d) — covers a, b, c.
 	tx1 := db.CreateTransaction()
 	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
-	tx1.AddReadConflictRange([]byte("rcr_a"), []byte("rcr_d"))
-	tx1.Set([]byte("rcr_unrelated"), []byte("x"))
+	tx1.AddReadConflictRange([]byte(pfx+"a"), []byte(pfx+"d"))
+	tx1.Set([]byte(pfx+"unrelated"), []byte("x"))
 
-	// tx2: write rcr_b (inside the conflict range).
+	// tx2: write pfx+b (inside the conflict range).
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("rcr_b"), []byte("modified"))
+		tx.Set([]byte(pfx+"b"), []byte("modified"))
 		return nil, nil
 	})
 	if err != nil {
@@ -601,18 +630,20 @@ func TestAddWriteConflictRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	// tx1 reads a key in the range [wcr_a, wcr_d).
+	pfx := t.Name() + "_"
+
+	// tx1 reads a key in the range [pfx+a, pfx+d).
 	tx1 := db.CreateTransaction()
 	rv, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx1.SetReadVersion(rv)
-	_, _ = tx1.Get(ctx, []byte("wcr_b")) // adds read conflict for wcr_b
-	tx1.Set([]byte("wcr_b"), []byte("from_tx1"))
+	_, _ = tx1.Get(ctx, []byte(pfx+"b")) // adds read conflict for pfx+b
+	tx1.Set([]byte(pfx+"b"), []byte("from_tx1"))
 
-	// tx2 adds a write conflict range covering [wcr_a, wcr_d).
+	// tx2 adds a write conflict range covering [pfx+a, pfx+d).
 	tx2 := db.CreateTransaction()
 	tx2.SetReadVersion(rv)
-	tx2.AddWriteConflictRange([]byte("wcr_a"), []byte("wcr_d"))
-	tx2.Set([]byte("wcr_other"), []byte("x")) // need a mutation to commit
+	tx2.AddWriteConflictRange([]byte(pfx+"a"), []byte(pfx+"d"))
+	tx2.Set([]byte(pfx+"other"), []byte("x")) // need a mutation to commit
 	err := tx2.Commit(ctx)
 	if err != nil {
 		t.Fatalf("tx2 should succeed: %v", err)
@@ -633,10 +664,15 @@ func TestReadTransact(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+	keyA := []byte(pfx + "a")
+	keyB := []byte(pfx + "b")
+	keyPhantom := []byte(pfx + "phantom")
+
 	// Seed keys.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("rt_a"), []byte("1"))
-		tx.Set([]byte("rt_b"), []byte("2"))
+		tx.Set(keyA, []byte("1"))
+		tx.Set(keyB, []byte("2"))
 		return nil, nil
 	})
 	if err != nil {
@@ -645,11 +681,11 @@ func TestReadTransact(t *testing.T) {
 
 	// ReadTransact: read two keys, return their values.
 	result, err := db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
-		a, err := tx.Get(ctx, []byte("rt_a"))
+		a, err := tx.Get(ctx, keyA)
 		if err != nil {
 			return nil, err
 		}
-		b, err := tx.Get(ctx, []byte("rt_b"))
+		b, err := tx.Get(ctx, keyB)
 		if err != nil {
 			return nil, err
 		}
@@ -666,7 +702,7 @@ func TestReadTransact(t *testing.T) {
 	// ReadTransact does NOT commit — verify by writing inside it
 	// and checking the write didn't persist.
 	_, err = db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("rt_phantom"), []byte("should_not_persist"))
+		tx.Set(keyPhantom, []byte("should_not_persist"))
 		return nil, nil
 	})
 	if err != nil {
@@ -675,7 +711,7 @@ func TestReadTransact(t *testing.T) {
 
 	// Verify the write didn't persist.
 	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("rt_phantom"))
+		return tx.Get(ctx, keyPhantom)
 	})
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -692,6 +728,8 @@ func TestGetVersionstamp(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	// Commit a transaction and get the versionstamp.
 	tx1 := db.CreateTransaction()
 	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
@@ -699,7 +737,7 @@ func TestGetVersionstamp(t *testing.T) {
 		t.Fatalf("GRV: %v", err)
 	}
 	tx1.SetReadVersion(rv)
-	tx1.Set([]byte("vs_key1"), []byte("val1"))
+	tx1.Set([]byte(pfx+"key1"), []byte("val1"))
 	if err := tx1.Commit(ctx); err != nil {
 		t.Fatalf("tx1 commit: %v", err)
 	}
@@ -724,7 +762,7 @@ func TestGetVersionstamp(t *testing.T) {
 	tx2 := db.CreateTransaction()
 	rv2, _ := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	tx2.SetReadVersion(rv2)
-	tx2.Set([]byte("vs_key2"), []byte("val2"))
+	tx2.Set([]byte(pfx+"key2"), []byte("val2"))
 	if err := tx2.Commit(ctx); err != nil {
 		t.Fatalf("tx2 commit: %v", err)
 	}
@@ -752,7 +790,7 @@ func TestWatch(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("watch_test_key")
+	key := []byte(t.Name() + "_watch_test_key")
 
 	// Set initial value.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -800,10 +838,12 @@ func TestGetEstimatedRangeSizeBytes(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	// Seed some data so the range is non-empty.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < 100; i++ {
-			k := []byte(fmt.Sprintf("est_%04d", i))
+			k := []byte(fmt.Sprintf("%s%04d", pfx, i))
 			tx.Set(k, bytes.Repeat([]byte("x"), 1000))
 		}
 		return nil, nil
@@ -814,7 +854,7 @@ func TestGetEstimatedRangeSizeBytes(t *testing.T) {
 
 	// GetEstimatedRangeSizeBytes should not error.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetEstimatedRangeSizeBytes(ctx, []byte("est_"), []byte("est_~"))
+		return tx.GetEstimatedRangeSizeBytes(ctx, []byte(pfx), []byte(pfx+"~"))
 	})
 	if err != nil {
 		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
@@ -834,10 +874,12 @@ func TestGetRangeSplitPoints(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	// Seed some data.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < 100; i++ {
-			k := []byte(fmt.Sprintf("split_%04d", i))
+			k := []byte(fmt.Sprintf("%s%04d", pfx, i))
 			tx.Set(k, bytes.Repeat([]byte("y"), 1000))
 		}
 		return nil, nil
@@ -849,7 +891,7 @@ func TestGetRangeSplitPoints(t *testing.T) {
 	// GetRangeSplitPoints should not error. With small data the result
 	// may be nil/empty (everything fits in one chunk), which is fine.
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.GetRangeSplitPoints(ctx, []byte("split_"), []byte("split_~"), 50000)
+		return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 50000)
 	})
 	if err != nil {
 		t.Fatalf("GetRangeSplitPoints: %v", err)
@@ -868,8 +910,9 @@ func TestEmptyRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		kvs, more, err := tx.GetRange(ctx, []byte("empty_range_prefix_"), []byte("empty_range_prefix_~"), 100)
+		kvs, more, err := tx.GetRange(ctx, []byte(pfx), []byte(pfx+"~"), 100)
 		if err != nil {
 			return nil, err
 		}
@@ -895,7 +938,7 @@ func TestGetAddressesForKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("locality_test_key")
+	key := []byte(t.Name() + "_locality_test_key")
 
 	// Write a key so the shard is populated.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -933,6 +976,7 @@ func TestConcurrentTransactions(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
 	const goroutines = 10
 	const txPerGoroutine = 50
 	var wg sync.WaitGroup
@@ -945,7 +989,7 @@ func TestConcurrentTransactions(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for i := 0; i < txPerGoroutine; i++ {
-				key := []byte(fmt.Sprintf("concurrent_%d_%d", id, i))
+				key := []byte(fmt.Sprintf("%s%d_%d", pfx, id, i))
 				val := []byte(fmt.Sprintf("value_%d_%d", id, i))
 				_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 					tx.Set(key, val)
@@ -995,7 +1039,7 @@ func TestConcurrentGetRange(t *testing.T) {
 	const writers = 5
 	const readers = 5
 	const opsPerWorker = 50
-	prefix := "cgr_"
+	prefix := t.Name() + "_"
 
 	// Seed initial data so readers have something to scan from the start.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -1100,7 +1144,7 @@ func TestWriteWriteConflict(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("conflict_ww_key")
+	key := []byte(t.Name() + "_key")
 
 	// Seed.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -1182,32 +1226,34 @@ func TestReadWriteConflict(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
+
 	// Seed keys in the range.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("conflict_rw_a"), []byte("1"))
-		tx.Set([]byte("conflict_rw_b"), []byte("2"))
-		tx.Set([]byte("conflict_rw_c"), []byte("3"))
+		tx.Set([]byte(pfx+"a"), []byte("1"))
+		tx.Set([]byte(pfx+"b"), []byte("2"))
+		tx.Set([]byte(pfx+"c"), []byte("3"))
 		return nil, nil
 	})
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// txA reads a range — establishes read conflict on [conflict_rw_a, conflict_rw_d).
+	// txA reads a range — establishes read conflict on [pfx+a, pfx+d).
 	txA := db.CreateTransaction()
 	rv, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault)
 	if err != nil {
 		t.Fatalf("GRV: %v", err)
 	}
 	txA.SetReadVersion(rv)
-	_, _, err = txA.GetRange(ctx, []byte("conflict_rw_a"), []byte("conflict_rw_d"), 100)
+	_, _, err = txA.GetRange(ctx, []byte(pfx+"a"), []byte(pfx+"d"), 100)
 	if err != nil {
 		t.Fatalf("txA GetRange: %v", err)
 	}
 
 	// txB writes into that range and commits.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("conflict_rw_b"), []byte("modified"))
+		tx.Set([]byte(pfx+"b"), []byte("modified"))
 		return nil, nil
 	})
 	if err != nil {
@@ -1217,7 +1263,7 @@ func TestReadWriteConflict(t *testing.T) {
 	// txA tries to commit — should conflict because txB wrote into its read range.
 	// txA must write something to force a real commit; without writes,
 	// FDB may short-circuit commit and skip conflict detection.
-	txA.Set([]byte("conflict_rw_unrelated"), []byte("x"))
+	txA.Set([]byte(pfx+"unrelated"), []byte("x"))
 	err = txA.Commit(ctx)
 	if err == nil {
 		t.Fatal("txA should conflict — txB wrote into its read range")
@@ -1232,7 +1278,7 @@ func TestRetryCountIncrement(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("retry_cnt_key")
+	key := []byte(t.Name() + "_key")
 
 	// Seed a key.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -1299,7 +1345,7 @@ func TestConcurrentWritesSameKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("concurrent_w_key")
+	key := []byte(t.Name() + "_key")
 	const goroutines = 10
 
 	var wg sync.WaitGroup
@@ -1347,7 +1393,7 @@ func TestAtomicAddConcurrent(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("atomic_conc_counter")
+	key := []byte(t.Name() + "_counter")
 	const goroutines = 10
 
 	// Initialize counter to 0.
@@ -1401,12 +1447,13 @@ func TestGetRangeReverseAllModes(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
+	pfx := t.Name() + "_"
 	const count = 20
 
-	// Write 20 keys: reverse_mode_0000 to reverse_mode_0019.
+	// Write 20 keys: pfx+0000 to pfx+0019.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < count; i++ {
-			k := []byte(fmt.Sprintf("reverse_mode_%04d", i))
+			k := []byte(fmt.Sprintf("%s%04d", pfx, i))
 			tx.Set(k, []byte(fmt.Sprintf("val_%d", i)))
 		}
 		return nil, nil
@@ -1434,8 +1481,8 @@ func TestGetRangeReverseAllModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 				kvs, _, err := tx.GetRangeReverse(ctx,
-					[]byte("reverse_mode_"),
-					[]byte("reverse_mode_~"),
+					[]byte(pfx),
+					[]byte(pfx+"~"),
 					tc.limit)
 				return kvs, err
 			})
@@ -1462,11 +1509,13 @@ func TestGetRangeReverseAllModes(t *testing.T) {
 
 			// If we got all 20, verify first and last.
 			if len(kvs) == count {
-				if string(kvs[0].Key) != "reverse_mode_0019" {
-					t.Errorf("first key: got %q, want reverse_mode_0019", kvs[0].Key)
+				wantFirst := fmt.Sprintf("%s0019", pfx)
+				wantLast := fmt.Sprintf("%s0000", pfx)
+				if string(kvs[0].Key) != wantFirst {
+					t.Errorf("first key: got %q, want %q", kvs[0].Key, wantFirst)
 				}
-				if string(kvs[count-1].Key) != "reverse_mode_0000" {
-					t.Errorf("last key: got %q, want reverse_mode_0000", kvs[count-1].Key)
+				if string(kvs[count-1].Key) != wantLast {
+					t.Errorf("last key: got %q, want %q", kvs[count-1].Key, wantLast)
 				}
 			}
 		})
@@ -1480,7 +1529,8 @@ func TestWatchClearRange(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("watch_clear_key")
+	pfx := t.Name() + "_"
+	key := []byte(pfx + "key")
 
 	// Set initial value.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -1510,7 +1560,7 @@ func TestWatchClearRange(t *testing.T) {
 	// Let the watch register, then ClearRange covering the key.
 	time.Sleep(500 * time.Millisecond)
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return nil, tx.ClearRange([]byte("watch_clear_"), []byte("watch_clear_~"))
+		return nil, tx.ClearRange([]byte(pfx), []byte(pfx+"~"))
 	})
 	if err != nil {
 		t.Fatalf("ClearRange: %v", err)
@@ -1545,7 +1595,7 @@ func TestWatchNonExistentKey(t *testing.T) {
 	db := openTestDB(t, ctx)
 	defer db.Close()
 
-	key := []byte("watch_new_key")
+	key := []byte(t.Name() + "_watch_new_key")
 
 	// Key does NOT exist yet. Start a watch on it.
 	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
