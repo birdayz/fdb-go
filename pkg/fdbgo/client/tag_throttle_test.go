@@ -168,13 +168,40 @@ func TestThrottleDuration(t *testing.T) {
 
 	t.Run("nonzero_rate", func(t *testing.T) {
 		t.Parallel()
+		// At 50 TPS, one slot = 1/50 = 20ms.
 		lim := &clientTagThrottleLimits{
 			tpsRate:    50,
 			expiration: time.Now().Add(2 * time.Second),
 		}
 		d := lim.throttleDuration()
-		if d < 1*time.Second || d > 3*time.Second {
-			t.Fatalf("expected ~2s for nonzero rate, got %v", d)
+		if d < 15*time.Millisecond || d > 25*time.Millisecond {
+			t.Fatalf("expected ~20ms (1/50 TPS slot), got %v", d)
+		}
+	})
+
+	t.Run("low_rate_capped_by_remaining", func(t *testing.T) {
+		t.Parallel()
+		// At 0.1 TPS, one slot = 10s, but only 2s remaining → capped at 2s.
+		lim := &clientTagThrottleLimits{
+			tpsRate:    0.1,
+			expiration: time.Now().Add(2 * time.Second),
+		}
+		d := lim.throttleDuration()
+		if d < 1500*time.Millisecond || d > 2500*time.Millisecond {
+			t.Fatalf("expected ~2s (capped by remaining), got %v", d)
+		}
+	})
+
+	t.Run("high_rate", func(t *testing.T) {
+		t.Parallel()
+		// At 1000 TPS, one slot = 1ms.
+		lim := &clientTagThrottleLimits{
+			tpsRate:    1000,
+			expiration: time.Now().Add(5 * time.Second),
+		}
+		d := lim.throttleDuration()
+		if d < 500*time.Microsecond || d > 2*time.Millisecond {
+			t.Fatalf("expected ~1ms (1/1000 TPS slot), got %v", d)
 		}
 	})
 }
@@ -196,16 +223,16 @@ func TestTagThrottleStateUpdateAndQuery(t *testing.T) {
 	}
 	state.replace(PriorityDefault, info)
 
-	// Query tag1 — should have ~5s duration.
+	// Query tag1 — at 10 TPS, one slot = 100ms.
 	d1 := state.maxDuration(PriorityDefault, []string{"tag1"})
-	if d1 < 4*time.Second || d1 > 6*time.Second {
-		t.Fatalf("expected ~5s for tag1, got %v", d1)
+	if d1 < 50*time.Millisecond || d1 > 150*time.Millisecond {
+		t.Fatalf("expected ~100ms for tag1 (1/10 TPS slot), got %v", d1)
 	}
 
-	// Query both — max should be ~5s (tag1 > tag2).
+	// Query both — max should be ~2s (tag2 has tpsRate=0, returns full remaining).
 	dBoth := state.maxDuration(PriorityDefault, []string{"tag1", "tag2"})
-	if dBoth < 4*time.Second || dBoth > 6*time.Second {
-		t.Fatalf("expected ~5s for max(tag1,tag2), got %v", dBoth)
+	if dBoth < 1500*time.Millisecond || dBoth > 2500*time.Millisecond {
+		t.Fatalf("expected ~2s for max(tag1,tag2) where tag2 is zero-rate, got %v", dBoth)
 	}
 
 	// Query at different priority — should return 0.

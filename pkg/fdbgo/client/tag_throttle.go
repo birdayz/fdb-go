@@ -24,8 +24,8 @@ type clientTagThrottleLimits struct {
 }
 
 // throttleDuration returns how long to wait for this tag's throttle.
-// Simplified vs C++ (no Smoother). Conservative: may over-throttle slightly
-// but never under-throttle.
+// Matches C++ TransactionTag throttle: wait 1/tpsRate seconds (one TPS slot),
+// capped by the remaining time until expiry.
 func (t *clientTagThrottleLimits) throttleDuration() time.Duration {
 	remaining := time.Until(t.expiration)
 	if remaining <= 0 {
@@ -34,9 +34,13 @@ func (t *clientTagThrottleLimits) throttleDuration() time.Duration {
 	if t.tpsRate == 0 {
 		return remaining // throttled indefinitely until expiry
 	}
-	// C++ uses Smoother-based capacity calculation. We simplify:
-	// use remaining time as duration. Conservative.
-	return remaining
+	// Wait one TPS slot: the time for one transaction at the allowed rate.
+	// At 100 TPS → 10ms, at 1 TPS → 1s, at 0.1 TPS → 10s (capped by remaining).
+	delay := time.Duration(float64(time.Second) / t.tpsRate)
+	if delay > remaining {
+		return remaining
+	}
+	return delay
 }
 
 // parseTagThrottleInfo deserializes the TagThrottleInfo bytes from a GRV reply.
