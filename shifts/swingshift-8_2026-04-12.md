@@ -64,7 +64,10 @@ Extracted shared `queryLocations()` from `refresh()` and `refreshRange()` — bo
 - `TestBenchmarkSanity`: byte-exact correctness verification for all benchmarked operations
 - Root cause analysis: `fdb_future_block_until_ready` uses `sync.Mutex` for cross-thread signaling between Go goroutines and C network thread — 2 context switches per Get
 - Raw CGo call overhead measured: 27ns per boundary crossing
+- **Latency curve via tc netem**: 0ms→3.6x, 2ms→2.6x, 10ms→2.4x, 1000ms→1.0x (parity)
+- Key finding: mid-latency advantage (2.4x at 10ms) comes from GRV cache avoiding a second network round-trip, not just CGo constant overhead
 - Written `pkg/fdbgo/bench/PERFORMANCE.md` with full breakdown
+- README performance section with table + latency data
 
 ### 7. Code cleanup
 
