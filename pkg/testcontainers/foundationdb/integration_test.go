@@ -57,7 +57,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	keyspace := subspace.FromBytes(tuple.Tuple{"testcontainer_conformance"}.Pack())
 
 	// Write test data.
-	_, err = recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
+	_, err = recordDB.Run(ctx, func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(ctx).
 			SetMetaDataProvider(recordMetaData).
@@ -83,7 +83,7 @@ func TestGoWriteGoReadWithTestcontainer(t *testing.T) {
 	}
 
 	// Read test data back.
-	result, err := recordDB.Run(context.Background(), func(ctx *recordlayer.FDBRecordContext) (any, error) {
+	result, err := recordDB.Run(ctx, func(ctx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(ctx).
 			SetMetaDataProvider(recordMetaData).
