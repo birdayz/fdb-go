@@ -109,14 +109,13 @@ func (n *TreeNode) TreeDurationStr() string {
 func (n *TreeNode) TreeBadgeText() string {
 	p, f, s := n.TreeCounts()
 	total := p + f + s
-	dur := n.TreeDurationStr()
 	if f > 0 {
-		return fmt.Sprintf("%d/%d failed  %s", f, total, dur)
+		return fmt.Sprintf("%d/%d failed", f, total)
 	}
 	if s > 0 {
-		return fmt.Sprintf("%d/%d passed  %s", p, total, dur)
+		return fmt.Sprintf("%d/%d passed, %d skipped", p, total, s)
 	}
-	return fmt.Sprintf("%d/%d passed  %s", p, total, dur)
+	return fmt.Sprintf("%d/%d passed", p, total)
 }
 
 // ginkgoJSONSpec is a single spec entry in ginkgo-report.json.
