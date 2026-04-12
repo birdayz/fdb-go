@@ -141,9 +141,19 @@ report:
     TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
     echo "Report: test-report.html ($TOTAL tests)"
 
-# Run tests with coverage
+# Run tests with coverage and generate HTML report
 coverage:
-    bazelisk coverage //...
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazelisk coverage //... --combined_report=lcov
+    LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
+    bazelisk build //cmd/test-report
+    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
+    TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
+    COV=$(grep -oP 'Coverage</span></div>' test-report.html || true)
+    COV_PCT=$(grep -oP 'style="color: #[0-9a-f]+">\K[0-9.]+%' test-report.html | head -1 || echo '?')
+    echo "Report: test-report.html ($TOTAL tests, $COV_PCT coverage)"
 
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
