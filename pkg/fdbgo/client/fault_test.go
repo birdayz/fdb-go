@@ -150,7 +150,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	var counterBuf [8]byte
 	binary.LittleEndian.PutUint64(counterBuf[:], 10)
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set([]byte("fault_counter"), counterBuf[:])
+		tx.Set([]byte(t.Name()+"_counter"), counterBuf[:])
 		return nil, nil
 	})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 	tx.SetReadVersion(rv)
 
 	binary.LittleEndian.PutUint64(counterBuf[:], 5)
-	tx.Atomic(MutAddValue, []byte("fault_counter"), counterBuf[:])
+	tx.Atomic(MutAddValue, []byte(t.Name()+"_counter"), counterBuf[:])
 
 	// Arm fault BEFORE commit — reply will be killed.
 	fd.arm()
@@ -192,7 +192,7 @@ func TestCommitUnknownResult_NoDoubleApply(t *testing.T) {
 
 	// Read the counter. It should be 15 (10 + 5, applied once by server).
 	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		return tx.Get(ctx, []byte("fault_counter"))
+		return tx.Get(ctx, []byte(t.Name()+"_counter"))
 	})
 	if err != nil {
 		t.Fatalf("verify Get: %v", err)
@@ -372,7 +372,7 @@ func TestWrongShardServer_FaultInjection(t *testing.T) {
 	db := newTestDatabase(t, ctx, connectCF, wd.dial)
 	defer db.Close()
 
-	key := []byte("fault_wss_key")
+	key := []byte(t.Name() + "_key")
 	expected := []byte("correct_value")
 
 	// Seed the key.
