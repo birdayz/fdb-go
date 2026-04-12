@@ -949,3 +949,27 @@ func TestErrorWrapping(t *testing.T) {
 		}
 	}
 }
+
+// TestReadTransactRetry verifies that ReadTransact retries on retryable errors.
+// The closure returns a retryable fdb.Error on the first attempt; ReadTransact
+// should call OnError, reset the transaction, and retry.
+func TestReadTransactRetry(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	attempt := 0
+	result, err := db.ReadTransact(func(rtr fdb.ReadTransaction) (any, error) {
+		attempt++
+		if attempt == 1 {
+			return nil, fdb.Error{Code: 1007} // transaction_too_old → retryable
+		}
+		return rtr.Get(fdb.Key("readtransact_retry")).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("ReadTransact should have retried, got: %v", err)
+	}
+	if attempt < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempt)
+	}
+	_ = result // value doesn't matter, just verifying retry happened
+}
