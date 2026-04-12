@@ -21,7 +21,10 @@ var (
 	getKeyValuesBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 512); return &b }}
 )
 
-const wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
+const (
+	wrongShardRetryDelay = 10 * time.Millisecond // CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY
+	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
+)
 
 // getKey resolves a key selector via the storage server.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
@@ -402,7 +405,7 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 		End:                    types.KeySelectorRef{Key: end, OrEqual: false, Offset: 1},   // firstGreaterOrEqual(end)
 		Version:                version,
 		Limit:                  limit,
-		LimitBytes:             UnlimitedBytes,
+		LimitBytes:             replyByteLimit,
 		Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
 		TenantInfo:             types.TenantInfo{TenantId: tenantId},
 		SsLatestCommitVersions: emptyVersionVector,

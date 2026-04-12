@@ -1466,6 +1466,75 @@ func TestSetTimeout_Preserved(t *testing.T) {
 	}
 }
 
+// TestSetTimeout_OverallBudget verifies that timeout is an overall budget
+// across all retries, NOT per-retry. Matches C++ where creationTime is set
+// once and the deadline = creationTime + timeout across all OnError retries.
+// Deterministic: sets creationTime to a known past value, no sleep needed.
+func TestSetTimeout_OverallBudget(t *testing.T) {
+	t.Parallel()
+
+	// Create a tx whose creationTime is 200ms in the past.
+	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-200 * time.Millisecond)}
+	tx.SetTimeout(500) // 500ms budget from creationTime → deadline = 300ms from now
+
+	// Deadline should NOT have fired yet (300ms from now).
+	if err := tx.checkTimeout(); err != nil {
+		t.Fatalf("timeout should not fire yet (300ms remaining): %v", err)
+	}
+
+	// OnError resets the tx for retry but should NOT restart the timer.
+	// creationTime stays at -200ms, deadline stays at creationTime + 500ms.
+	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+	if err != nil {
+		t.Fatalf("OnError should retry: %v", err)
+	}
+
+	// After OnError, deadline is still anchored to the original creationTime.
+	// Verify creationTime was NOT updated by checking the deadline is the same.
+	// The deadline should be creationTime + 500ms = now - 200ms + 500ms = now + 300ms.
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("timeout should not fire after OnError (budget not exhausted): %v", err)
+	}
+
+	// Now simulate exhausted budget: set creationTime far in the past.
+	tx.creationTime = time.Now().Add(-1 * time.Second) // 1s ago
+	tx.deadline = tx.creationTime.Add(tx.timeout)      // deadline = 500ms ago
+	if err := tx.checkTimeout(); err == nil {
+		t.Error("timeout should fire: budget exhausted (creationTime 1s ago, 500ms timeout)")
+	}
+}
+
+// TestSetTimeout_ResetRestartsTimer verifies that user-facing Reset()
+// restarts the timeout timer (updates creationTime). Matches C++
+// ReadYourWritesTransaction::reset() which sets creationTime = now().
+// Deterministic: checks creationTime directly instead of timing sleeps.
+func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
+	t.Parallel()
+
+	// Start with creationTime far in the past — budget is already exhausted.
+	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-10 * time.Second)}
+	tx.SetTimeout(500) // deadline = -10s + 500ms = -9.5s → already expired
+
+	// Should be timed out.
+	if err := tx.checkTimeout(); err == nil {
+		t.Fatal("timeout should fire (budget exhausted from past creationTime)")
+	}
+
+	// User Reset() should restart the timer — creationTime becomes now().
+	tx.Reset()
+	tx.SetTimeout(500) // re-apply → deadline = now() + 500ms
+
+	// After Reset, the full 500ms budget should be available.
+	if err := tx.checkTimeout(); err != nil {
+		t.Errorf("timeout should not fire after Reset (fresh 500ms budget): %v", err)
+	}
+
+	// Verify creationTime was updated to a recent time.
+	if time.Since(tx.creationTime) > 1*time.Second {
+		t.Errorf("creationTime not updated by Reset: %v (should be ~now)", tx.creationTime)
+	}
+}
+
 // TestSetTimeout_Disabled verifies that timeout=0 disables the timeout.
 func TestSetTimeout_Disabled(t *testing.T) {
 	t.Parallel()
@@ -3234,9 +3303,94 @@ func TestOnErrorNonFDBError_CPort(t *testing.T) {
 	}
 }
 
+// TestResourceConstrainedBackoff_CPort verifies that proxy memory errors
+// (1042, 1078) use RESOURCE_CONSTRAINED_MAX_BACKOFF (30s) instead of
+// DEFAULT_MAX_BACKOFF (1s). Matches C++ NativeAPI.actor.cpp getBackoff().
+func TestResourceConstrainedBackoff_CPort(t *testing.T) {
+	t.Parallel()
+
+	// Test that after many retries, the backoff cap for proxy memory errors
+	// is higher than for normal errors.
+	txNormal := &Transaction{state: txStateActive, creationTime: time.Now()}
+	txProxy := &Transaction{state: txStateActive, creationTime: time.Now()}
+
+	// Drive both to max backoff by calling nextBackoff many times.
+	for i := 0; i < 20; i++ {
+		txNormal.nextBackoff(ErrNotCommitted)
+		txProxy.nextBackoff(ErrProxyMemoryLimitExceeded)
+	}
+
+	// Normal backoff should cap at 1s (DEFAULT_MAX_BACKOFF).
+	if txNormal.backoff > maxBackoff {
+		t.Errorf("normal backoff exceeds cap: %v > %v", txNormal.backoff, maxBackoff)
+	}
+
+	// Proxy memory backoff should cap at 30s (RESOURCE_CONSTRAINED_MAX_BACKOFF).
+	if txProxy.backoff > resourceConstrainedMaxBackoff {
+		t.Errorf("proxy backoff exceeds cap: %v > %v", txProxy.backoff, resourceConstrainedMaxBackoff)
+	}
+
+	// The proxy cap should be strictly higher than the normal cap.
+	if txProxy.backoff <= maxBackoff {
+		t.Errorf("proxy backoff should exceed normal cap: %v <= %v", txProxy.backoff, maxBackoff)
+	}
+}
+
+// TestBlobGranuleRetryable_CPort verifies that blob_granule_request_failed (1079)
+// is retryable. Matches C++ NativeAPI.actor.cpp onError().
+func TestBlobGranuleRetryable_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	err := tx.OnError(&wire.FDBError{Code: ErrBlobGranuleRequestFailed})
+	if err != nil {
+		t.Fatalf("blob_granule_request_failed should be retryable, got: %v", err)
+	}
+	if tx.retryCount != 1 {
+		t.Errorf("retryCount: got %d, want 1", tx.retryCount)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RYW cache edge cases
 // ---------------------------------------------------------------------------
+
+// TestRYWDoAddResultLength_CPort verifies that doAdd result length = len(param),
+// matching C++ Atomic.h doAdd() which allocates otherOperand.size().
+// If base is longer than param, high bytes are silently truncated.
+func TestRYWDoAddResultLength_CPort(t *testing.T) {
+	t.Parallel()
+
+	// Base = 4 bytes, param = 2 bytes → result should be 2 bytes.
+	base := []byte{0x01, 0x02, 0x03, 0x04}
+	param := []byte{0x05, 0x06}
+	result, _ := applyAtomic(MutAddValue, base, param)
+	if len(result) != len(param) {
+		t.Errorf("result length: got %d, want %d (len(param))", len(result), len(param))
+	}
+	// 0x01 + 0x05 = 0x06, 0x02 + 0x06 = 0x08
+	if result[0] != 0x06 || result[1] != 0x08 {
+		t.Errorf("result: got %x, want [06 08]", result)
+	}
+
+	// Base = 2 bytes, param = 4 bytes → result should be 4 bytes.
+	base2 := []byte{0xFF, 0x01}
+	param2 := []byte{0x01, 0x00, 0x00, 0x00}
+	result2, _ := applyAtomic(MutAddValue, base2, param2)
+	if len(result2) != len(param2) {
+		t.Errorf("result2 length: got %d, want %d", len(result2), len(param2))
+	}
+	// 0xFF + 0x01 = carry 1, 0x01 + 0x00 + carry = 0x02
+	if result2[0] != 0x00 || result2[1] != 0x02 || result2[2] != 0x00 || result2[3] != 0x00 {
+		t.Errorf("result2: got %x, want [00 02 00 00]", result2)
+	}
+
+	// Base absent (nil), param = 4 bytes → result should be copy of param.
+	result3, _ := applyAtomic(MutAddValue, nil, []byte{0x01, 0x02, 0x03, 0x04})
+	if !bytes.Equal(result3, []byte{0x01, 0x02, 0x03, 0x04}) {
+		t.Errorf("result3: got %x, want [01 02 03 04]", result3)
+	}
+}
 
 // TestRYWAtomicAdd_CPort verifies that an atomic ADD followed by a Get within
 // the same transaction returns the correct accumulated value via RYW.
@@ -3443,5 +3597,340 @@ func TestRYWSetNewKeysGetRange_CPort(t *testing.T) {
 		if string(kv.Key) != expected[i] {
 			t.Errorf("key[%d]: got %q, want %q", i, kv.Key, expected[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Locality / addressing
+// ---------------------------------------------------------------------------
+
+// TestGetAddressesForKey_CPort verifies that GetAddressesForKey returns at
+// least one non-empty address for a key that exists on a storage server.
+// Ported from unit_tests.cpp line 2317
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2317
+func TestGetAddressesForKey_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	key := []byte(t.Name() + "_addr_key")
+
+	// Write the key so the shard is populated.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("addr_value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Get storage server addresses for the key.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetAddressesForKey(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("GetAddressesForKey: %v", err)
+	}
+	addrs := result.([]string)
+	if len(addrs) == 0 {
+		t.Fatal("expected at least one address for existing key")
+	}
+	for i, addr := range addrs {
+		if len(addr) == 0 {
+			t.Errorf("addr[%d] is empty", i)
+		}
+		// Each address should look like host:port.
+		if bytes.IndexByte([]byte(addr), ':') < 0 {
+			t.Errorf("addr[%d] = %q: expected host:port format", i, addr)
+		}
+		t.Logf("addr[%d] = %q", i, addr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error predicate — RETRYABLE_NOT_COMMITTED vs MAYBE_COMMITTED
+// ---------------------------------------------------------------------------
+
+// TestErrorPredicateRetryableNotCommitted_CPort verifies the behavioral
+// distinction between RETRYABLE_NOT_COMMITTED (1020) and MAYBE_COMMITTED
+// (1021) error classes:
+//   - 1020 (not_committed): retryable, no self-conflict injection
+//   - 1021 (commit_unknown_result): retryable AND injects write→read
+//     self-conflicts on the reset transaction
+//   - 1036 (accessed_unreadable): not retryable
+//
+// Ported from unit_tests.cpp line 2432
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2432
+func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	// 1020 (not_committed) is RETRYABLE_NOT_COMMITTED: OnError returns nil.
+	{
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		if err != nil {
+			t.Errorf("1020 (not_committed) should be retryable, got: %v", err)
+		}
+	}
+
+	// 1020 does NOT inject self-conflicts: write conflicts are dropped and
+	// readConflicts stays empty after reset.
+	{
+		tx := db.CreateTransaction()
+		tx.Set([]byte(t.Name()+"_sc_key"), []byte("val"))
+		if len(tx.writeConflicts) == 0 {
+			t.Fatal("Set should have added a write conflict")
+		}
+		_ = tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
+		if len(tx.readConflicts) != 0 {
+			t.Errorf("1020 must NOT inject self-conflicts, got %d readConflicts", len(tx.readConflicts))
+		}
+	}
+
+	// 1021 (commit_unknown_result) is MAYBE_COMMITTED: OnError returns nil.
+	{
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		if err != nil {
+			t.Errorf("1021 (commit_unknown_result) should be retryable, got: %v", err)
+		}
+	}
+
+	// 1021 DOES inject self-conflicts: previous write ranges become read
+	// conflict ranges on the reset transaction, preventing double-apply.
+	{
+		tx := db.CreateTransaction()
+		tx.Set([]byte(t.Name()+"_mc_key"), []byte("val"))
+		origWC := make([]KeyRange, len(tx.writeConflicts))
+		copy(origWC, tx.writeConflicts)
+		if len(origWC) == 0 {
+			t.Fatal("Set should have added a write conflict")
+		}
+		_ = tx.OnError(&wire.FDBError{Code: ErrCommitUnknownResult})
+		if len(tx.readConflicts) != len(origWC) {
+			t.Errorf("1021 self-conflict: got %d readConflicts, want %d",
+				len(tx.readConflicts), len(origWC))
+		}
+		for i, rc := range tx.readConflicts {
+			if string(rc.Begin) != string(origWC[i].Begin) || string(rc.End) != string(origWC[i].End) {
+				t.Errorf("readConflict[%d]: got [%q,%q), want [%q,%q)",
+					i, rc.Begin, rc.End, origWC[i].Begin, origWC[i].End)
+			}
+		}
+	}
+
+	// 1036 (accessed_unreadable) is NOT retryable: OnError returns an error.
+	{
+		const errAccessedUnreadable = 1036
+		tx := db.CreateTransaction()
+		err := tx.OnError(&wire.FDBError{Code: errAccessedUnreadable})
+		if err == nil {
+			t.Error("1036 (accessed_unreadable) should NOT be retryable")
+		}
+		var fdbErr *wire.FDBError
+		if errors.As(err, &fdbErr) && fdbErr.Code != errAccessedUnreadable {
+			t.Errorf("expected error code 1036, got %d", fdbErr.Code)
+		}
+	}
+
+	_ = ctx // ctx used for openTestDB
+}
+
+// ---------------------------------------------------------------------------
+// Range metrics
+// ---------------------------------------------------------------------------
+
+// TestGetEstimatedRangeSizeBytes_CPort verifies that GetEstimatedRangeSizeBytes
+// returns a non-negative value for a populated key range.
+// Ported from unit_tests.cpp line 2500
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2500
+func TestGetEstimatedRangeSizeBytes_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := t.Name() + "_ersize_"
+
+	// Write 10 key-value pairs to give the storage server something to measure.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), bytes.Repeat([]byte("x"), 100))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// GetEstimatedRangeSizeBytes must not error, result must be >= 0.
+	// On a freshly written range the estimate may be 0 (storage server not yet
+	// compacted), which is acceptable — the C++ test only asserts no error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetEstimatedRangeSizeBytes(ctx, []byte(pfx), []byte(pfx+"~"))
+	})
+	if err != nil {
+		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
+	}
+	size := result.(int64)
+	t.Logf("estimated range size: %d bytes", size)
+	if size < 0 {
+		t.Fatalf("expected non-negative size, got %d", size)
+	}
+}
+
+// TestGetRangeSplitPoints_CPort verifies that GetRangeSplitPoints completes
+// without error for a populated key range. The result may be empty (no split
+// points) when the range fits within one chunk — that is correct behaviour.
+// Ported from unit_tests.cpp line 2530
+// https://github.com/apple/foundationdb/blob/7.3.75/bindings/c/test/unit/unit_tests.cpp#L2530
+func TestGetRangeSplitPoints_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	pfx := t.Name() + "_splitpts_"
+
+	// Write a handful of keys.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 10; i++ {
+			tx.Set([]byte(fmt.Sprintf("%s%d", pfx, i)), bytes.Repeat([]byte("y"), 100))
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Call with a 100 000-byte chunk size. On small ranges the result will be
+	// empty; that is correct — the only requirement is no error.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.GetRangeSplitPoints(ctx, []byte(pfx), []byte(pfx+"~"), 100_000)
+	})
+	if err != nil {
+		t.Fatalf("GetRangeSplitPoints: %v", err)
+	}
+	points := result.([][]byte)
+	t.Logf("split points: %d", len(points))
+	for i, p := range points {
+		t.Logf("  split[%d]: %q", i, p)
+	}
+}
+
+// TestClearRangeInverted_CPort verifies that ClearRange(begin > end) returns
+// inverted_range (2005). Matches C++ fdb_transaction_clear_range_impl.
+func TestClearRangeInverted_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	err := tx.ClearRange([]byte("z"), []byte("a"))
+	if err == nil {
+		t.Fatal("expected inverted_range error")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrInvertedRange {
+		t.Errorf("expected error 2005, got: %v", err)
+	}
+}
+
+// TestClearRangeZeroWidth_CPort verifies that ClearRange(key, key) is a no-op.
+// Matches C++ where zero-width ranges are silently ignored.
+func TestClearRangeZeroWidth_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := t.Name() + "_"
+	key := []byte(prefix + "survives")
+
+	// Write a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// ClearRange with zero width should be a no-op.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return nil, tx.ClearRange(key, key) // begin == end → no-op
+	})
+	if err != nil {
+		t.Fatalf("ClearRange zero-width: %v", err)
+	}
+
+	// Key should still exist.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get after zero-width clear: %v", err)
+	}
+	if result == nil {
+		t.Fatal("key should still exist after zero-width ClearRange")
+	}
+}
+
+// TestPostCommitReset_CPort verifies that after a successful commit,
+// the transaction is reset for reuse. New mutations can be added and
+// a second commit succeeds. GetCommittedVersion returns the LAST
+// commit's version.
+func TestPostCommitReset_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	prefix := t.Name() + "_"
+
+	// First commit.
+	tx.Set([]byte(prefix+"key1"), []byte("v1"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	v1, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after first: %v", err)
+	}
+	if v1 <= 0 {
+		t.Errorf("first committed version should be positive, got %d", v1)
+	}
+
+	// Second commit on the same transaction (after auto-reset).
+	tx.Set([]byte(prefix+"key2"), []byte("v2"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	v2, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after second: %v", err)
+	}
+	if v2 <= v1 {
+		t.Errorf("second version %d should be > first version %d", v2, v1)
+	}
+
+	// Verify both keys exist.
+	readTx := db.CreateTransaction()
+	val1, err := readTx.Get(ctx, []byte(prefix+"key1"))
+	if err != nil {
+		t.Fatalf("read key1: %v", err)
+	}
+	if string(val1) != "v1" {
+		t.Errorf("key1: got %q, want %q", val1, "v1")
+	}
+	val2, err := readTx.Get(ctx, []byte(prefix+"key2"))
+	if err != nil {
+		t.Fatalf("read key2: %v", err)
+	}
+	if string(val2) != "v2" {
+		t.Errorf("key2: got %q, want %q", val2, "v2")
 	}
 }

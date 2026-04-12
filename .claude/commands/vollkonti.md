@@ -22,9 +22,13 @@ Read it thoroughly. This is your ONLY briefing — you have zero prior context.
 
 ## Step 2: Start shift
 
+GitHub won't create a PR with zero commits between branches. Use `--allow-empty` to bootstrap:
+
 ```bash
 # Determine shift name from current time + next number
 git checkout -b {shift-name} master
+git commit --allow-empty -m "{shift-name}: start shift"
+git push -u origin {shift-name}
 gh pr create --draft --title "{shift-name}: {one-line goal from handover priorities}"
 ```
 

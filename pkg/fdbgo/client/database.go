@@ -489,9 +489,10 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 // Database-level defaults (timeout, retry limit, system key access) are applied.
 func (d *Database) CreateTransaction() *Transaction {
 	tx := &Transaction{
-		db:       d.db,
-		state:    txStateActive,
-		tenantId: NoTenantID,
+		db:           d.db,
+		state:        txStateActive,
+		tenantId:     NoTenantID,
+		creationTime: time.Now(),
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults).
 	if d.db.txDefaultTimeout > 0 {
