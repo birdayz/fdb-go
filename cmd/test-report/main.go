@@ -348,6 +348,10 @@ func parseJUnitXML(path string) ([]TestResult, error) {
 	var results []TestResult
 	for _, suite := range suites.Suites {
 		for _, tc := range suite.Cases {
+			// Skip Ginkgo infrastructure nodes — not real tests.
+			if isGinkgoInfraNode(tc.Name) {
+				continue
+			}
 			status := StatusPass
 			if tc.Failure != nil || tc.Error != nil {
 				status = StatusFail
@@ -362,6 +366,20 @@ func parseJUnitXML(path string) ([]TestResult, error) {
 		}
 	}
 	return results, nil
+}
+
+// isGinkgoInfraNode returns true for Ginkgo setup/teardown nodes that
+// should be excluded from test reports (they're infrastructure, not tests).
+func isGinkgoInfraNode(name string) bool {
+	switch name {
+	case "[BeforeSuite]", "[AfterSuite]",
+		"[SynchronizedBeforeSuite]", "[SynchronizedAfterSuite]",
+		"[ReportAfterSuite]", "[ReportBeforeSuite]",
+		"[BeforeAll]", "[AfterAll]",
+		"[DeferCleanup]":
+		return true
+	}
+	return false
 }
 
 // uriToPath converts a file:// URI to a filesystem path.
