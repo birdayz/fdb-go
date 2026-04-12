@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -322,6 +323,77 @@ func BenchmarkRYW(b *testing.B) {
 			})
 		}
 	})
+}
+
+// TestBenchmarkSanity verifies both clients return identical results for
+// every operation used in the benchmarks. If this fails, the benchmarks
+// are not comparing the same thing.
+func TestBenchmarkSanity(t *testing.T) {
+	t.Parallel()
+
+	// Single Get: same key, same bytes.
+	for _, key := range []string{"bench_key_100b", "bench_key_1kb", "bench_key_10kb"} {
+		goResult, err := goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+			return tx.Get(gofdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("go Get %s: %v", key, err)
+		}
+		cgoResult, err := cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+			return tx.Get(cgofdb.Key(key)).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("cgo Get %s: %v", key, err)
+		}
+		goBytes := goResult.([]byte)
+		cgoBytes := cgoResult.([]byte)
+		if len(goBytes) != len(cgoBytes) {
+			t.Errorf("Get %s: Go len=%d, CGo len=%d", key, len(goBytes), len(cgoBytes))
+		} else if !bytes.Equal(goBytes, cgoBytes) {
+			t.Errorf("Get %s: bytes differ", key)
+		}
+	}
+
+	// GetRange: same range, same keys and values.
+	for _, n := range []int{10, 100} {
+		end := fmt.Sprintf("bench_range_%04d", n)
+		goResult, _ := goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+			rr := tx.GetRange(gofdb.KeyRange{Begin: gofdb.Key("bench_range_0000"), End: gofdb.Key(end)}, gofdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		cgoResult, _ := cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+			rr := tx.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key("bench_range_0000"), End: cgofdb.Key(end)}, cgofdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		goKVs := goResult.([]gofdb.KeyValue)
+		cgoKVs := cgoResult.([]cgofdb.KeyValue)
+		if len(goKVs) != len(cgoKVs) {
+			t.Fatalf("GetRange %d: Go %d keys, CGo %d keys", n, len(goKVs), len(cgoKVs))
+		}
+		for i := range goKVs {
+			if !bytes.Equal(goKVs[i].Key, cgoKVs[i].Key) {
+				t.Errorf("GetRange %d key[%d]: Go=%q CGo=%q", n, i, goKVs[i].Key, cgoKVs[i].Key)
+			}
+			if !bytes.Equal(goKVs[i].Value, cgoKVs[i].Value) {
+				t.Errorf("GetRange %d val[%d]: Go=%q CGo=%q", n, i, goKVs[i].Value, cgoKVs[i].Value)
+			}
+		}
+	}
+
+	// RYW: Set + Get in same tx returns identical bytes.
+	goRYW, _ := goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+		tx.Set(gofdb.Key("bench_sanity_ryw"), []byte("sanity"))
+		return tx.Get(gofdb.Key("bench_sanity_ryw")).MustGet(), nil
+	})
+	cgoRYW, _ := cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+		tx.Set(cgofdb.Key("bench_sanity_ryw"), []byte("sanity"))
+		return tx.Get(cgofdb.Key("bench_sanity_ryw")).MustGet(), nil
+	})
+	if !bytes.Equal(goRYW.([]byte), cgoRYW.([]byte)) {
+		t.Errorf("RYW: Go=%q CGo=%q", goRYW, cgoRYW)
+	}
+
+	t.Log("sanity check passed: Go and CGo return identical bytes for all benchmark operations")
 }
 
 // BenchmarkThroughputRead measures sustained read throughput (MB/s).
