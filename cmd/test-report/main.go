@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	"html/template"
 	"math"
@@ -549,6 +550,160 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm%.1fs", m, s)
 }
 
+// ---- LCOV coverage types ----
+
+// FileCoverage holds line coverage data for a single source file.
+type FileCoverage struct {
+	Path     string
+	LinesHit int
+	Lines    int
+}
+
+// PackageCoverage holds aggregated coverage for a package (directory).
+type PackageCoverage struct {
+	Package  string
+	LinesHit int
+	Lines    int
+}
+
+// Percent returns the coverage percentage.
+func (p *PackageCoverage) Percent() float64 {
+	if p.Lines == 0 {
+		return 0
+	}
+	return float64(p.LinesHit) / float64(p.Lines) * 100
+}
+
+// PercentStr returns the coverage percentage formatted as a string.
+func (p *PackageCoverage) PercentStr() string {
+	return fmt.Sprintf("%.1f%%", p.Percent())
+}
+
+// BarWidth returns the CSS width percentage for the coverage bar.
+func (p *PackageCoverage) BarWidth() string {
+	return fmt.Sprintf("%.1f%%", p.Percent())
+}
+
+// CoverageReport holds the parsed LCOV data aggregated by package.
+type CoverageReport struct {
+	Packages   []*PackageCoverage
+	TotalHit   int
+	TotalLines int
+}
+
+// Percent returns the overall coverage percentage.
+func (c *CoverageReport) Percent() float64 {
+	if c.TotalLines == 0 {
+		return 0
+	}
+	return float64(c.TotalHit) / float64(c.TotalLines) * 100
+}
+
+// PercentStr returns the overall coverage percentage as a string.
+func (c *CoverageReport) PercentStr() string {
+	return fmt.Sprintf("%.1f%%", c.Percent())
+}
+
+// CoverageColor returns the CSS color class for the overall coverage.
+func (c *CoverageReport) CoverageColor() string {
+	pct := c.Percent()
+	if pct >= 80 {
+		return "#27ae60" // green
+	}
+	if pct >= 60 {
+		return "#f39c12" // yellow
+	}
+	return "#e74c3c" // red
+}
+
+// parseLCOV reads an LCOV file and returns a CoverageReport.
+// Skips files in gen/ directories and test files (*_test.go).
+func parseLCOV(path string) (*CoverageReport, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Parse per-file coverage.
+	var files []FileCoverage
+	var currentFile string
+	var linesHit, linesTotal int
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "SF:"):
+			currentFile = strings.TrimPrefix(line, "SF:")
+			linesHit = 0
+			linesTotal = 0
+		case strings.HasPrefix(line, "DA:"):
+			// DA:linenum,execcount
+			parts := strings.SplitN(strings.TrimPrefix(line, "DA:"), ",", 2)
+			if len(parts) == 2 {
+				linesTotal++
+				if count, err := strconv.Atoi(parts[1]); err == nil && count > 0 {
+					linesHit++
+				}
+			}
+		case line == "end_of_record":
+			if currentFile != "" {
+				files = append(files, FileCoverage{
+					Path:     currentFile,
+					LinesHit: linesHit,
+					Lines:    linesTotal,
+				})
+				currentFile = ""
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning LCOV: %w", err)
+	}
+
+	// Aggregate by package, skipping gen/ and _test.go.
+	pkgMap := make(map[string]*PackageCoverage)
+	for _, fc := range files {
+		if strings.HasPrefix(fc.Path, "gen/") || strings.Contains(fc.Path, "/gen/") {
+			continue
+		}
+		if strings.HasSuffix(fc.Path, "_test.go") {
+			continue
+		}
+		pkg := filepath.Dir(fc.Path)
+		pc, ok := pkgMap[pkg]
+		if !ok {
+			pc = &PackageCoverage{Package: pkg}
+			pkgMap[pkg] = pc
+		}
+		pc.LinesHit += fc.LinesHit
+		pc.Lines += fc.Lines
+	}
+
+	// Sort packages alphabetically.
+	packages := make([]*PackageCoverage, 0, len(pkgMap))
+	for _, pc := range pkgMap {
+		packages = append(packages, pc)
+	}
+	sort.Slice(packages, func(i, j int) bool {
+		return packages[i].Package < packages[j].Package
+	})
+
+	// Compute totals.
+	var totalHit, totalLines int
+	for _, pc := range packages {
+		totalHit += pc.LinesHit
+		totalLines += pc.Lines
+	}
+
+	return &CoverageReport{
+		Packages:   packages,
+		TotalHit:   totalHit,
+		TotalLines: totalLines,
+	}, nil
+}
+
 // ---- HTML template ----
 
 type summaryData struct {
@@ -562,6 +717,7 @@ type summaryData struct {
 type templateData struct {
 	GeneratedAt string
 	Summary     summaryData
+	Coverage    *CoverageReport // nil if no LCOV file provided
 	Targets     []*TargetResult
 }
 
@@ -736,6 +892,86 @@ tr:hover td { background: #f8f9ff; }
 .tree-leaf .col-status { width: 40px; text-align: center; flex-shrink: 0; }
 .tree-leaf .col-duration { width: 80px; text-align: right; flex-shrink: 0; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 12px; color: #7f8c8d; }
 
+/* Coverage section */
+.coverage-section {
+  margin: 0 32px;
+  background: #fff;
+  border: 1px solid #dde1ec;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.coverage-section summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  gap: 12px;
+}
+.coverage-section summary::-webkit-details-marker { display: none; }
+.coverage-section summary::marker { display: none; }
+.coverage-section summary:hover { background: #f8f9ff; }
+.coverage-section .section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2c3e50;
+  flex: 1;
+}
+.coverage-bar-cell {
+  width: 200px;
+}
+.coverage-bar {
+  height: 10px;
+  background: #ecf0f1;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.coverage-bar-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: #27ae60;
+}
+.coverage-table { width: 100%; border-collapse: collapse; }
+.coverage-table th {
+  background: #f8f9ff;
+  padding: 8px 16px;
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8fa3b1;
+  border-bottom: 1px solid #dde1ec;
+  font-weight: 600;
+}
+.coverage-table td {
+  padding: 7px 16px;
+  border-bottom: 1px solid #f0f1f7;
+  vertical-align: middle;
+}
+.coverage-table tr:last-child td { border-bottom: none; }
+.coverage-table .col-pkg {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.coverage-table .col-num {
+  text-align: right;
+  width: 80px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  color: #7f8c8d;
+}
+.coverage-table .col-pct {
+  text-align: right;
+  width: 80px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+.coverage-table .col-bar { width: 200px; }
+
 footer {
   padding: 20px 32px;
   text-align: center;
@@ -762,7 +998,45 @@ footer {
   <div class="stat stat-skip"><span class="val">{{.Summary.Skipped}}</span><span class="lbl">Skipped</span></div>
   <div class="summary-divider"></div>
   <div class="stat stat-time"><span class="val">{{.Summary.Time}}</span><span class="lbl">Total Time</span></div>
+{{- if .Coverage}}
+  <div class="summary-divider"></div>
+  <div class="stat"><span class="val" style="color: {{.Coverage.CoverageColor}}">{{.Coverage.PercentStr}}</span><span class="lbl">Coverage</span></div>
+{{- end}}
 </div>
+
+{{- if .Coverage}}
+<div style="padding: 24px 32px 0 32px;">
+<details class="coverage-section">
+  <summary>
+    <span class="section-title">Coverage by Package</span>
+    <span class="badge badge-pass" style="background: {{.Coverage.CoverageColor}}22; color: {{.Coverage.CoverageColor}}">{{.Coverage.TotalHit}}/{{.Coverage.TotalLines}} lines &mdash; {{.Coverage.PercentStr}}</span>
+    <span class="chevron">&#9654;</span>
+  </summary>
+  <table class="coverage-table">
+    <thead>
+      <tr>
+        <th>Package</th>
+        <th style="text-align:right">Lines</th>
+        <th style="text-align:right">Hit</th>
+        <th style="text-align:right">Coverage</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{- range .Coverage.Packages}}
+      <tr>
+        <td class="col-pkg">{{.Package}}</td>
+        <td class="col-num">{{.Lines}}</td>
+        <td class="col-num">{{.LinesHit}}</td>
+        <td class="col-pct">{{.PercentStr}}</td>
+        <td class="col-bar"><div class="coverage-bar"><div class="coverage-bar-fill" style="width: {{.BarWidth}}"></div></div></td>
+      </tr>
+    {{- end}}
+    </tbody>
+  </table>
+</details>
+</div>
+{{- end}}
 
 <div class="targets">
 {{- range .Targets}}
@@ -831,9 +1105,12 @@ footer {
 // ---- main ----
 
 func run() error {
+	coveragePath := flag.String("coverage", "", "path to LCOV coverage file (optional)")
+	flag.Parse()
+
 	bepPath := ".bazel-bep.jsonl"
-	if len(os.Args) > 1 {
-		bepPath = os.Args[1]
+	if flag.NArg() > 0 {
+		bepPath = flag.Arg(0)
 	}
 
 	if _, err := os.Stat(bepPath); os.IsNotExist(err) {
@@ -878,6 +1155,17 @@ func run() error {
 		displayTime = time.Duration(math.Round(totalTime.Seconds())) * time.Second
 	}
 
+	// Parse LCOV coverage if provided.
+	var coverageReport *CoverageReport
+	if *coveragePath != "" {
+		cr, err := parseLCOV(*coveragePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: coverage: %v\n", err)
+		} else {
+			coverageReport = cr
+		}
+	}
+
 	data := templateData{
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
 		Summary: summaryData{
@@ -887,7 +1175,8 @@ func run() error {
 			Skipped: sumSkipped,
 			Time:    formatDuration(displayTime),
 		},
-		Targets: targets,
+		Coverage: coverageReport,
+		Targets:  targets,
 	}
 
 	tmpl, err := template.New("report").Parse(htmlTemplate)
