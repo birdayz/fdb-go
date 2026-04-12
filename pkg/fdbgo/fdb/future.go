@@ -309,8 +309,8 @@ func newFutureKeyArray(fn func() ([]Key, error)) FutureKeyArray {
 	f := &futureKeyArray{}
 	f.init()
 	go func() {
+		defer close(f.done)
 		f.val, f.err = fn()
-		close(f.done)
 	}()
 	return f
 }
