@@ -26,8 +26,23 @@ const (
 	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
 )
 
+// allKeysEnd is \xFF\xFF — the absolute end of the key space.
+var allKeysEnd = []byte{0xFF, 0xFF}
+
 // getKey resolves a key selector via the storage server.
+// Short-circuits for boundary selectors matching C++ NativeAPI.actor.cpp getKey().
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
+	// if key == "" && offset <= 0 → return "" (empty key)
+	if bytes.Equal(selectorKey, allKeysEnd) {
+		if offset > 0 {
+			return allKeysEnd, nil
+		}
+		orEqual = false // C++: k.orEqual = false
+	} else if len(selectorKey) == 0 && offset <= 0 {
+		return []byte{}, nil
+	}
+
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId)
 		if err != nil {
