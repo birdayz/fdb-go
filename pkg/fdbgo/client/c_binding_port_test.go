@@ -3803,3 +3803,116 @@ func TestGetRangeSplitPoints_CPort(t *testing.T) {
 		t.Logf("  split[%d]: %q", i, p)
 	}
 }
+
+// TestClearRangeInverted_CPort verifies that ClearRange(begin > end) returns
+// inverted_range (2005). Matches C++ fdb_transaction_clear_range_impl.
+func TestClearRangeInverted_CPort(t *testing.T) {
+	t.Parallel()
+
+	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	err := tx.ClearRange([]byte("z"), []byte("a"))
+	if err == nil {
+		t.Fatal("expected inverted_range error")
+	}
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrInvertedRange {
+		t.Errorf("expected error 2005, got: %v", err)
+	}
+}
+
+// TestClearRangeZeroWidth_CPort verifies that ClearRange(key, key) is a no-op.
+// Matches C++ where zero-width ranges are silently ignored.
+func TestClearRangeZeroWidth_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	prefix := t.Name() + "_"
+	key := []byte(prefix + "survives")
+
+	// Write a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// ClearRange with zero width should be a no-op.
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return nil, tx.ClearRange(key, key) // begin == end → no-op
+	})
+	if err != nil {
+		t.Fatalf("ClearRange zero-width: %v", err)
+	}
+
+	// Key should still exist.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("Get after zero-width clear: %v", err)
+	}
+	if result == nil {
+		t.Fatal("key should still exist after zero-width ClearRange")
+	}
+}
+
+// TestPostCommitReset_CPort verifies that after a successful commit,
+// the transaction is reset for reuse. New mutations can be added and
+// a second commit succeeds. GetCommittedVersion returns the LAST
+// commit's version.
+func TestPostCommitReset_CPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+
+	tx := db.CreateTransaction()
+	prefix := t.Name() + "_"
+
+	// First commit.
+	tx.Set([]byte(prefix+"key1"), []byte("v1"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	v1, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after first: %v", err)
+	}
+	if v1 <= 0 {
+		t.Errorf("first committed version should be positive, got %d", v1)
+	}
+
+	// Second commit on the same transaction (after auto-reset).
+	tx.Set([]byte(prefix+"key2"), []byte("v2"))
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("second commit: %v", err)
+	}
+	v2, err := tx.GetCommittedVersion()
+	if err != nil {
+		t.Fatalf("GetCommittedVersion after second: %v", err)
+	}
+	if v2 <= v1 {
+		t.Errorf("second version %d should be > first version %d", v2, v1)
+	}
+
+	// Verify both keys exist.
+	readTx := db.CreateTransaction()
+	val1, err := readTx.Get(ctx, []byte(prefix+"key1"))
+	if err != nil {
+		t.Fatalf("read key1: %v", err)
+	}
+	if string(val1) != "v1" {
+		t.Errorf("key1: got %q, want %q", val1, "v1")
+	}
+	val2, err := readTx.Get(ctx, []byte(prefix+"key2"))
+	if err != nil {
+		t.Fatalf("read key2: %v", err)
+	}
+	if string(val2) != "v2" {
+		t.Errorf("key2: got %q, want %q", val2, "v2")
+	}
+}
