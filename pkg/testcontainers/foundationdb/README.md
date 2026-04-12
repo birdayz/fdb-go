@@ -84,15 +84,19 @@ testcontainers.WithEnv(map[string]string{"KEY": "VALUE"})
 For tests that need multiple containers on the same network (e.g., binding tester):
 
 ```go
-fdb, _ := foundationdbtc.Run(ctx, "")
+// Create a shared network first.
+nw, _ := foundationdbtc.CreateNetwork(ctx)
+defer nw.Remove(ctx)
+
+fdb, _ := foundationdbtc.Run(ctx, "", foundationdbtc.WithNetwork(nw))
 
 // Attach another container to the same network.
 testerReq := testcontainers.ContainerRequest{
-    Networks:   []string{fdb.NetworkName()},
+    Networks: []string{fdb.NetworkName()},
 }
 
 // The other container can reach FDB via the internal cluster file.
-clusterFile := fdb.InternalClusterFile()  // "docker:docker@foundationdb:4500"
+clusterFile := fdb.InternalClusterFile()  // "docker:docker@172.17.0.2:4500"
 ```
 
 ## Chaos Testing
