@@ -599,8 +599,12 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 		return err
 	}
 
+	// Use the transaction's watch context so Reset()/Cancel() cancels in-flight watches.
+	// Matches C++ resetRyow() → resetPromise.sendError(transaction_cancelled).
+	watchCtx := tx.getWatchCtx(ctx)
+
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId)
+		loc, locErr := tx.db.locCache.locate(tx.db, watchCtx, key, tx.tenantId)
 		if locErr != nil {
 			return fmt.Errorf("locate key: %w", locErr)
 		}
@@ -608,13 +612,13 @@ func (tx *Transaction) Watch(ctx context.Context, key []byte) error {
 			return fmt.Errorf("no storage servers for key")
 		}
 
-		watchErr := tx.sendWatch(ctx, key, val, loc.Servers)
+		watchErr := tx.sendWatch(watchCtx, key, val, loc.Servers)
 		if watchErr == nil {
 			return nil
 		}
 		if isWrongShardServer(watchErr) || isAllAlternativesFailed(watchErr) {
 			tx.db.locCache.invalidate(key, tx.tenantId)
-			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+			if err := sleepCtx(watchCtx, wrongShardRetryDelay); err != nil {
 				return err
 			}
 			continue

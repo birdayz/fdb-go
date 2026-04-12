@@ -244,6 +244,12 @@ type Transaction struct {
 	// encounters commit_unknown_result.
 	isDummy bool
 
+	// watchCtx/watchCancel: cancellable context for in-flight Watch calls.
+	// Created lazily on first Watch(). Cancelled on Reset()/reset() to match
+	// C++ resetRyow() which sends transaction_cancelled to pending watches.
+	watchCtx    context.Context
+	watchCancel context.CancelFunc
+
 	// ryw: read-your-writes cache. Intercepts reads and merges with pending
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
@@ -757,6 +763,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 // Cancel cancels the transaction. All subsequent operations will return an error.
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
+	tx.cancelWatches()
 	tx.state = txStateCancelled
 }
 
@@ -775,6 +782,27 @@ func (tx *Transaction) Reset() {
 	// C++ reset() updates creationTime = now(), restarting timeout window.
 	tx.creationTime = time.Now()
 	tx.reset()
+}
+
+// cancelWatches cancels any in-flight Watch() calls by cancelling the
+// watch context. Matches C++ resetRyow() which sends transaction_cancelled
+// through resetPromise to cancel pending watches.
+func (tx *Transaction) cancelWatches() {
+	if tx.watchCancel != nil {
+		tx.watchCancel()
+		tx.watchCtx = nil
+		tx.watchCancel = nil
+	}
+}
+
+// getWatchCtx returns a context for Watch() calls that is cancelled on
+// reset/Reset. Created lazily — if no Watch is ever called, no context
+// is allocated.
+func (tx *Transaction) getWatchCtx(parent context.Context) context.Context {
+	if tx.watchCtx == nil {
+		tx.watchCtx, tx.watchCancel = context.WithCancel(parent)
+	}
+	return tx.watchCtx
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
@@ -1208,6 +1236,7 @@ func (tx *Transaction) postCommitReset() {
 }
 
 func (tx *Transaction) reset() {
+	tx.cancelWatches()
 	tx.state = txStateActive
 	tx.hasReadVersion = false
 	tx.readVersion = 0
