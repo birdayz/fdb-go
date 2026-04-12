@@ -192,7 +192,7 @@ func (t *TargetResult) SortedTests() []TestResult {
 
 func (r TestResult) DurationStr() string {
 	if r.Duration == 0 {
-		return "\u2014" // em dash
+		return "<1ms"
 	}
 	return formatDuration(r.Duration)
 }
