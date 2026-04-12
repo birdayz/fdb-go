@@ -21,4 +21,5 @@ plugins:
     out: gen
     opt:
       - paths=source_relative
-      - features=marshal+unmarshal+size+pool
+      - features=marshal+unmarshal+size
+      - pool=github.com/birdayz/fdb-record-layer-go/gen.*
