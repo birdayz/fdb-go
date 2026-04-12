@@ -63,17 +63,22 @@ When implementation is done and tests pass:
    gh pr comment --body "@claude review"
    ```
 
-3. **Wait for reviewer feedback.** The reviewer (bot or human) will comment on the PR. Read the feedback:
+3. **Wait for reviewer feedback.** Use `gh run watch <id>` to wait for the review job, then read comments:
    ```bash
-   gh api repos/{owner}/{repo}/issues/{pr}/comments
+   gh run list --branch {shift-name} --limit 1 --json databaseId --jq '.[0].databaseId'
+   gh run watch <id> --exit-status
+   gh api repos/{owner}/{repo}/issues/{pr}/comments --jq '.[-1].body'
    ```
 
 4. **Address feedback** — but stay critically thinking. Don't blindly apply every suggestion. If a suggestion is wrong or unnecessary, explain why in a reply. For valid feedback:
    - Fix the issue
-   - Reply to the reviewer's comment confirming the fix
    - Commit, push
+   - **CRITICAL: Request re-review.** Comment on the PR summarizing what was fixed and tag `@claude` to trigger another review:
+     ```bash
+     gh pr comment --body "@claude Fixed X (commit abc123). Please review again."
+     ```
 
-5. **Repeat** steps 3-4 until the reviewer approves or feedback is fully addressed.
+5. **Wait for the new review** (step 3 again). Read the feedback. If new issues found, fix and re-request (step 4). **Keep iterating until the reviewer finds no new issues.** Only then is the PR merge-ready.
 
 ## Step 5: End shift
 
