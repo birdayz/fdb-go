@@ -26,8 +26,23 @@ const (
 	replyByteLimit       = 80000                 // CLIENT_KNOBS->REPLY_BYTE_LIMIT
 )
 
+// allKeysEnd is \xFF\xFF — the absolute end of the key space.
+var allKeysEnd = []byte{0xFF, 0xFF}
+
 // getKey resolves a key selector via the storage server.
+// Short-circuits for boundary selectors matching C++ NativeAPI.actor.cpp getKey().
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
+	// if key == "" && offset <= 0 → return "" (empty key)
+	if bytes.Equal(selectorKey, allKeysEnd) {
+		if offset > 0 {
+			return allKeysEnd, nil
+		}
+		orEqual = false // C++: k.orEqual = false
+	} else if len(selectorKey) == 0 && offset <= 0 {
+		return []byte{}, nil
+	}
+
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
 		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId)
 		if err != nil {
@@ -83,12 +98,12 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		*bufp = reqData
 		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkToken, reqData); err != nil {
 			getKeyBufPool.Put(bufp)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -96,32 +111,37 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 		getKeyBufPool.Put(bufp)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
-		return parseGetKeyReply(resp.Body)
+		key, penalty, err := parseGetKeyReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+		return key, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func parseGetKeyReply(data []byte) ([]byte, error) {
+func parseGetKeyReply(data []byte) ([]byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, fmt.Errorf("GetKey: %w", err)
+		return nil, -1.0, fmt.Errorf("GetKey: %w", err)
+	}
+	penalty := -1.0
+	if r.FieldPresent(types.GetKeyReplySlotPenalty) {
+		penalty = r.ReadFloat64(types.GetKeyReplySlotPenalty)
 	}
 	// Navigate into the KeySelector nested struct (slot 3) to extract the key (inner slot 0).
 	selR, err := r.ReadNestedReader(types.GetKeyReplySlotSel)
 	if err != nil {
-		return nil, fmt.Errorf("read KeySelector: %w", err)
+		return nil, penalty, fmt.Errorf("read KeySelector: %w", err)
 	}
-	return selR.ReadBytes(types.KeySelectorRefSlotKey), nil
+	return selR.ReadBytes(types.KeySelectorRefSlotKey), penalty, nil
 }
 
 // getValue sends a GetValueRequest to the appropriate storage server.
@@ -168,12 +188,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		replyToken, replyCh, cancelReply := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(server.Token, body); err != nil {
 			getValueBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -181,17 +201,18 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		getValueBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
-		return parseGetValueReply(resp.Body)
+		val, penalty, err := parseGetValueReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+		return val, err
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -359,12 +380,12 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(gkvToken, body); err != nil {
 			getKeyValuesBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -372,17 +393,18 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 		getKeyValuesBufPool.Put(poolBuf)
 		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			continue
 		}
 		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
-		return parseGetKeyValuesReply(resp.Body)
+		kvs, more, penalty, err := parseGetKeyValuesReply(resp.Body)
+		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+		return kvs, more, err
 	}
 	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -397,6 +419,17 @@ func isWrongShardServer(err error) bool {
 func isAllAlternativesFailed(err error) bool {
 	var fdbErr *wire.FDBError
 	return errors.As(err, &fdbErr) && fdbErr.Code == ErrAllAlternativesFailed
+}
+
+// isFutureVersionOrProcessBehind returns true for errors that should trigger
+// future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
+// which passes futureVersion=true for future_version (1009) and process_behind (1037).
+func isFutureVersionOrProcessBehind(err error) bool {
+	var fdbErr *wire.FDBError
+	if !errors.As(err, &fdbErr) {
+		return false
+	}
+	return fdbErr.Code == ErrFutureVersion || fdbErr.Code == ErrProcessBehind
 }
 
 func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, lockAware bool, tenantId int64, replyToken transport.UID, _ transport.UID) ([]byte, *[]byte) {
@@ -421,17 +454,17 @@ func buildGetKeyValuesRequest(begin, end []byte, version int64, limit int32, loc
 }
 
 // parseGetKeyValuesReply parses the ErrorOr-wrapped GetKeyValuesReply.
-// Returns (keyValues, more, error).
-func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, error) {
+// Returns (keyValues, more, penalty, error).
+func parseGetKeyValuesReply(data []byte) ([]KeyValue, bool, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, false, fmt.Errorf("GetKeyValues: %w", err)
+		return nil, false, -1.0, fmt.Errorf("GetKeyValues: %w", err)
 	}
 	var reply types.GetKeyValuesReply
 	reply.UnmarshalFromReader(&r)
 
 	kvs := types.ParseKeyValueRefStringVector(reply.Data)
-	return kvs, reply.More, nil
+	return kvs, reply.More, reply.Penalty, nil
 }
 
 // KeyValue is a key-value pair returned from reads.
@@ -474,17 +507,17 @@ func buildGetValueRequest(key []byte, version int64, lockAware bool, tenantId in
 }
 
 // parseGetValueReply parses the ErrorOr-wrapped GetValueReply.
-func parseGetValueReply(data []byte) ([]byte, error) {
+func parseGetValueReply(data []byte) ([]byte, float64, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, fmt.Errorf("GetValue: %w", err)
+		return nil, -1.0, fmt.Errorf("GetValue: %w", err)
 	}
 	var reply types.GetValueReply
 	reply.UnmarshalFromReader(&r)
 	if !reply.HasValue {
-		return nil, nil // key not found
+		return nil, reply.Penalty, nil // key not found
 	}
-	return reply.Value, nil
+	return reply.Value, reply.Penalty, nil
 }
 
 // Watch watches a key for changes. The server holds the connection open until
@@ -564,11 +597,11 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		reqData := req.MarshalFDB()
 		watchToken := getAdjustedEndpoint(server.Token, EndpointWatchValue)
 
-		tx.db.queueModel.startRequest(server.Address)
+		delta := tx.db.queueModel.startRequest(server.Address)
 		start := time.Now()
 
 		if err := conn.SendFrame(watchToken, reqData); err != nil {
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			tx.db.handleConnError(server.Address)
 			continue
@@ -577,14 +610,14 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 		select {
 		case resp := <-replyCh:
 			if resp.Err != nil {
-				tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				tx.db.handleConnError(server.Address)
 				continue
 			}
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), true)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 			return parseWatchValueReply(resp.Body)
 		case <-ctx.Done():
-			tx.db.queueModel.endRequest(server.Address, time.Since(start), false)
+			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 			cancelReply()
 			return ctx.Err()
 		}

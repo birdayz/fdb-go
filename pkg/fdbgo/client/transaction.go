@@ -475,7 +475,8 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		if resp.Err != nil {
 			return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 		}
-		return parseGetValueReply(resp.Body)
+		val, _, err := parseGetValueReply(resp.Body)
+		return val, err
 	case <-p.timer.C:
 		p.cancelReply()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}

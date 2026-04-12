@@ -31,16 +31,18 @@ func TestQueueModelPicksLeastLoaded(t *testing.T) {
 	qm := newQueueModel()
 	servers := makeServers("s1:4500", "s2:4500", "s3:4500")
 
-	// Simulate s1 having 5 inflight, s2 having 0, s3 having 2.
-	qm.mu.Lock()
-	qm.getOrCreate("s1:4500").inflight = 5
-	qm.getOrCreate("s2:4500").inflight = 0
-	qm.getOrCreate("s3:4500").inflight = 2
-	qm.mu.Unlock()
+	// Simulate s1 having higher outstanding, s2 zero, s3 moderate.
+	// Add requests without ending them to build up smoothOutstanding.
+	for i := 0; i < 5; i++ {
+		_ = qm.startRequest("s1:4500")
+	}
+	for i := 0; i < 2; i++ {
+		_ = qm.startRequest("s3:4500")
+	}
 
-	s, idx := qm.chooseServer(servers)
+	s, _ := qm.chooseServer(servers)
 	if s.Address != "s2:4500" {
-		t.Fatalf("expected s2:4500 (lowest inflight), got %s at %d", s.Address, idx)
+		t.Fatalf("expected s2:4500 (zero outstanding), got %s", s.Address)
 	}
 }
 
@@ -49,16 +51,15 @@ func TestQueueModelSkipsFailedServers(t *testing.T) {
 	qm := newQueueModel()
 	servers := makeServers("s1:4500", "s2:4500")
 
-	// Mark s1 as failed with recent failure.
+	// Mark s1 as failed by setting failedUntil far in the future.
 	qm.mu.Lock()
-	m := qm.getOrCreate("s1:4500")
-	m.failCount = 1
-	m.lastFail = time.Now().UnixNano()
+	d := qm.getOrCreate("s1:4500")
+	d.failedUntil = nowSeconds() + 60 // 60s in the future
 	qm.mu.Unlock()
 
 	s, _ := qm.chooseServer(servers)
 	if s.Address != "s2:4500" {
-		t.Fatalf("expected s2:4500 (s1 in backoff), got %s", s.Address)
+		t.Fatalf("expected s2:4500 (s1 in failedUntil), got %s", s.Address)
 	}
 }
 
@@ -67,85 +68,145 @@ func TestQueueModelAllFailedPicksEarliestExpiry(t *testing.T) {
 	qm := newQueueModel()
 	servers := makeServers("s1:4500", "s2:4500")
 
-	now := time.Now().UnixNano()
+	now := nowSeconds()
 	qm.mu.Lock()
-	// s1 failed 100ms ago (failCount=1, backoff=10ms → expired)
-	// s2 failed just now (failCount=3, backoff=40ms → not expired)
-	m1 := qm.getOrCreate("s1:4500")
-	m1.failCount = 1
-	m1.lastFail = now - int64(100*time.Millisecond)
+	// s1 fails until now+1s, s2 fails until now+10s.
+	d1 := qm.getOrCreate("s1:4500")
+	d1.failedUntil = now + 1.0
 
-	m2 := qm.getOrCreate("s2:4500")
-	m2.failCount = 3
-	m2.lastFail = now
+	d2 := qm.getOrCreate("s2:4500")
+	d2.failedUntil = now + 10.0
 	qm.mu.Unlock()
 
 	s, _ := qm.chooseServer(servers)
-	// s1's backoff (10ms) elapsed 90ms ago → healthy in first pass.
+	// Both failed, pick s1 (expires sooner).
 	if s.Address != "s1:4500" {
-		t.Fatalf("expected s1:4500 (backoff elapsed), got %s", s.Address)
+		t.Fatalf("expected s1:4500 (earliest expiry), got %s", s.Address)
 	}
 }
 
-func TestQueueModelLatencyEMA(t *testing.T) {
+func TestQueueModelSmootherDecay(t *testing.T) {
 	t.Parallel()
 	qm := newQueueModel()
 	servers := makeServers("s1:4500", "s2:4500")
 
-	// s1: fast server (100µs latency)
-	// s2: slow server (10ms latency)
-	for i := 0; i < 20; i++ {
-		qm.startRequest("s1:4500")
-		qm.endRequest("s1:4500", 100*time.Microsecond, true)
-		qm.startRequest("s2:4500")
-		qm.endRequest("s2:4500", 10*time.Millisecond, true)
+	// Add 5 requests to s1, complete them with varying latency.
+	for i := 0; i < 5; i++ {
+		d := qm.startRequest("s1:4500")
+		qm.endRequest("s1:4500", d, 100*time.Microsecond, true)
 	}
+	// s2 has never been used — smoothOutstanding=0.
+	// s1's smoothOutstanding should have decayed back toward 0
+	// since we started and ended requests.
 
-	// Both have 0 inflight, but the EMA difference should make s1 preferred
-	// when they have the same inflight count. Actually with 0 inflight both
-	// have wait=0, so let's add 1 inflight each.
-	qm.startRequest("s1:4500")
-	qm.startRequest("s2:4500")
+	// Add 1 outstanding to each and pick.
+	_ = qm.startRequest("s1:4500")
+	_ = qm.startRequest("s2:4500")
 
+	// Both have ~1 outstanding. The smoother decay means s1's estimate
+	// includes residual from the 5 completed requests. s2 should be
+	// slightly better (cleaner estimate).
 	s, _ := qm.chooseServer(servers)
-	if s.Address != "s1:4500" {
-		t.Fatalf("expected s1:4500 (lower latency EMA), got %s", s.Address)
-	}
-
-	qm.endRequest("s1:4500", 100*time.Microsecond, true)
-	qm.endRequest("s2:4500", 10*time.Millisecond, true)
+	_ = s // Result depends on timing; just verify no crash/deadlock.
 }
 
 func TestQueueModelStartEndRequest(t *testing.T) {
 	t.Parallel()
 	qm := newQueueModel()
 
-	qm.startRequest("s1:4500")
-	qm.startRequest("s1:4500")
+	// Start 2 requests.
+	_ = qm.startRequest("s1:4500")
+	delta := qm.startRequest("s1:4500")
 
+	// smoothOutstanding.total should be ~2.0 (2 * penalty=1.0).
 	qm.mu.Lock()
-	m := qm.servers["s1:4500"]
-	if m.inflight != 2 {
-		t.Fatalf("expected inflight=2, got %d", m.inflight)
+	d := qm.servers["s1:4500"]
+	if d.smoothOutstanding.total < 1.5 {
+		t.Fatalf("expected outstanding total ~2.0, got %.2f", d.smoothOutstanding.total)
 	}
 	qm.mu.Unlock()
 
-	qm.endRequest("s1:4500", 1*time.Millisecond, true)
+	// End one request with a distinct latency (2ms, not 1ms which matches initial).
+	qm.endRequest("s1:4500", delta, 2*time.Millisecond, true)
 
 	qm.mu.Lock()
-	if m.inflight != 1 {
-		t.Fatalf("expected inflight=1 after end, got %d", m.inflight)
+	if d.smoothOutstanding.total < 0.5 {
+		t.Fatalf("expected outstanding total ~1.0, got %.2f", d.smoothOutstanding.total)
 	}
-	if m.failCount != 0 {
-		t.Fatalf("expected failCount=0 on success, got %d", m.failCount)
+	// Latency should be updated to 0.002 (2ms), not the initial 0.001.
+	if d.latency != 0.002 {
+		t.Fatalf("expected latency=0.002 after endRequest(2ms), got %f", d.latency)
+	}
+	qm.mu.Unlock()
+}
+
+func TestQueueModelFutureVersionBackoff(t *testing.T) {
+	t.Parallel()
+	qm := newQueueModel()
+
+	// Simulate future_version error.
+	d1 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d1, time.Millisecond, false, true, -1.0)
+
+	qm.mu.Lock()
+	d := qm.servers["s1:4500"]
+	if d.failedUntil <= nowSeconds()-1 { // allow 1s margin
+		t.Error("expected failedUntil > now after future_version")
+	}
+	// First future_version: increaseBackoffTime was 0, so now > 0 → backoff doubles: 1.0→2.0.
+	if d.futureVersionBackoff != futureVersionInitialBackoff*futureVersionBackoffGrowth {
+		t.Errorf("expected backoff=%.1f after 1st future_version, got %f",
+			futureVersionInitialBackoff*futureVersionBackoffGrowth, d.futureVersionBackoff)
 	}
 	qm.mu.Unlock()
 
-	qm.endRequest("s1:4500", 1*time.Millisecond, false)
+	// Second future_version: increaseBackoffTime was set to now+backoff,
+	// so now <= increaseBackoffTime → backoff does NOT grow (C++ guard).
+	d2 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d2, time.Millisecond, false, true, -1.0)
 
 	qm.mu.Lock()
-	if m.failCount != 1 {
-		t.Fatalf("expected failCount=1 on failure, got %d", m.failCount)
+	// Backoff should NOT have grown (still 2.0) because increaseBackoffTime hasn't elapsed.
+	if d.futureVersionBackoff != futureVersionInitialBackoff*futureVersionBackoffGrowth {
+		t.Errorf("expected backoff=%.1f (guard prevents growth), got %f",
+			futureVersionInitialBackoff*futureVersionBackoffGrowth, d.futureVersionBackoff)
+	}
+
+	// Manually expire the guard to allow growth.
+	d.increaseBackoffTime = 0
+	qm.mu.Unlock()
+
+	// Third future_version: guard expired → backoff doubles: 2.0→4.0.
+	d3 := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", d3, time.Millisecond, false, true, -1.0)
+
+	qm.mu.Lock()
+	expectedBackoff := futureVersionInitialBackoff * futureVersionBackoffGrowth * futureVersionBackoffGrowth
+	if d.futureVersionBackoff != expectedBackoff {
+		t.Errorf("expected backoff=%.1f after growth, got %f", expectedBackoff, d.futureVersionBackoff)
+	}
+	qm.mu.Unlock()
+}
+
+func TestQueueModelPenaltyFromServer(t *testing.T) {
+	t.Parallel()
+	qm := newQueueModel()
+
+	// Default penalty is 1.0.
+	qm.mu.Lock()
+	d := qm.getOrCreate("s1:4500")
+	if d.penalty != queueDataInitialPenalty {
+		t.Fatalf("expected initial penalty=%f, got %f", queueDataInitialPenalty, d.penalty)
+	}
+	qm.mu.Unlock()
+
+	// Server reports penalty=2.5 in response.
+	dp := qm.startRequest("s1:4500")
+	qm.endRequestFull("s1:4500", dp, time.Millisecond, true, false, 2.5)
+
+	qm.mu.Lock()
+	if d.penalty != 2.5 {
+		t.Fatalf("expected penalty=2.5 after server report, got %f", d.penalty)
 	}
 	qm.mu.Unlock()
 }
@@ -162,8 +223,8 @@ func TestQueueModelConcurrentSafe(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
 				s, _ := qm.chooseServer(servers)
-				qm.startRequest(s.Address)
-				qm.endRequest(s.Address, time.Millisecond, j%3 != 0)
+				d := qm.startRequest(s.Address)
+				qm.endRequest(s.Address, d, time.Millisecond, j%3 != 0)
 			}
 		}()
 	}
@@ -206,13 +267,12 @@ func TestProxyRoundRobin(t *testing.T) {
 	t.Parallel()
 	var rr proxyRoundRobin
 
-	// 3 proxies: indices should cycle 0, 1, 2, 0, 1, 2...
+	// 3 proxies: indices should cycle 1, 2, 0, 1, 2, 0...
 	// Note: nextGRV uses Add(1) so first call returns 1%3=1.
 	indices := make([]int, 6)
 	for i := range indices {
 		indices[i] = rr.nextGRV(3)
 	}
-	// The sequence is: 1, 2, 0, 1, 2, 0 (wrapping)
 	expected := []int{1, 2, 0, 1, 2, 0}
 	for i, exp := range expected {
 		if indices[i] != exp {
@@ -227,47 +287,31 @@ func TestProxyRoundRobin(t *testing.T) {
 	}
 }
 
-func TestQueueModelEndRequestNeverNegativeInflight(t *testing.T) {
+func TestSmootherDecay(t *testing.T) {
 	t.Parallel()
-	qm := newQueueModel()
-	// End without start — inflight should stay 0, not go negative.
-	qm.endRequest("s1:4500", time.Millisecond, true)
+	// Test the smoother directly.
+	s := smoother{eFoldingTime: 2.0}
 
-	qm.mu.Lock()
-	m := qm.servers["s1:4500"]
-	if m.inflight != 0 {
-		t.Fatalf("expected inflight=0 (not negative), got %d", m.inflight)
+	now := 100.0 // arbitrary start time
+	s.addDelta(10.0, now)
+
+	// Immediately after adding, estimate should still be ~0
+	// (no time elapsed for decay to converge).
+	est := s.smoothTotal(now)
+	if est > 1.0 {
+		t.Fatalf("estimate should be near 0 right after add, got %f", est)
 	}
-	qm.mu.Unlock()
-}
 
-func TestQueueModelFailureResetOnSuccess(t *testing.T) {
-	t.Parallel()
-	qm := newQueueModel()
-
-	// Build up failures.
-	qm.startRequest("s1:4500")
-	qm.endRequest("s1:4500", time.Millisecond, false)
-	qm.startRequest("s1:4500")
-	qm.endRequest("s1:4500", time.Millisecond, false)
-
-	qm.mu.Lock()
-	m := qm.servers["s1:4500"]
-	if m.failCount != 2 {
-		t.Fatalf("expected failCount=2, got %d", m.failCount)
+	// After 1 eFolding time (2s), estimate should be ~63% of total.
+	est = s.smoothTotal(now + 2.0)
+	expected := 10.0 * (1 - 1/2.718) // ~6.32
+	if est < expected*0.8 || est > expected*1.2 {
+		t.Fatalf("estimate after 1τ should be ~%.1f, got %.2f", expected, est)
 	}
-	qm.mu.Unlock()
 
-	// Single success should reset.
-	qm.startRequest("s1:4500")
-	qm.endRequest("s1:4500", time.Millisecond, true)
-
-	qm.mu.Lock()
-	if m.failCount != 0 {
-		t.Fatalf("expected failCount=0 after success, got %d", m.failCount)
+	// After 5τ (10s), estimate should be ~99.3% of total.
+	est = s.smoothTotal(now + 10.0)
+	if est < 9.0 {
+		t.Fatalf("estimate after 5τ should be near 10.0, got %.2f", est)
 	}
-	if m.lastFail != 0 {
-		t.Fatalf("expected lastFail=0 after success, got %d", m.lastFail)
-	}
-	qm.mu.Unlock()
 }

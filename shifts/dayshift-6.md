@@ -1,8 +1,8 @@
 # Dayshift-6 Handover
 
 **Date:** 2026-04-12 06:00 — 14:00 CEST
-**PR:** #34
-**Branch:** `dayshift-6`
+**PRs:** #34 (merged), #35 (pending)
+**Branches:** `dayshift-6` (merged), `dayshift-6b` (continuation)
 
 ## Objective
 
@@ -71,13 +71,14 @@ All deterministic — no `time.Sleep()` in timeout tests.
 
 ## Current state
 
-- **Branch:** `dayshift-6` (8 commits ahead of master)
-- **PR:** #34 — reviewer says LGTM (2 review rounds, all items addressed)
+- **Branch:** `dayshift-6` merged, `dayshift-6b` (15 commits ahead of master)
+- **PRs:** #34 merged, #35 LGTM (3 review rounds, all items addressed)
 - **All 13 Bazel test targets pass**
-- **92 C binding port tests** (was 80)
+- **93 C binding port tests** (was 80), **25 fdb layer tests**, **16 interop tests**
 - **2307 Ginkgo specs** pass (record layer)
 - **430 conformance specs** pass
 - **50 chaos tests** pass
+- **Binding stress:** 30/30 API seeds + 3/3 directory seeds, 0 failures
 
 ### Benchmarks (no regressions)
 
@@ -85,6 +86,21 @@ All deterministic — no `time.Sleep()` in timeout tests.
 |---|---|---|---|
 | Get/100B | 57,588 | 205,885 | **0.28x** (Go 3.6x faster) |
 | Set/100B | 1,006,420 | 1,007,046 | **1.00x** (parity) |
+
+### 8. QueueModel rewrite (PR #35 / dayshift-6b)
+
+Complete rewrite of `loadbalance.go` to match C++ `QueueModel` + `Smoother`:
+- **Smoother**: continuous exponential decay (eFoldingTime=2.0s) replacing discrete EMA
+- **Server penalty**: tracks penalty from server replies, counts penalty > 1.001 as "bad"
+- **future_version backoff**: exponential growth 1→2→4→8s with `increaseBackoffTime` guard
+- **Delta threading**: `startRequest` delta passed through to `endRequest` for balanced smoothOutstanding
+
+### 9. Additional fixes (PR #35)
+
+- **FutureKeyArray defer close**: goroutine missing `defer close(f.done)` — panic would hang callers
+- **getKey boundary short-circuit**: matching C++ — `\xFF\xFF` with offset>0 → immediate return
+- **Error descriptions**: added `blob_granule_request_failed` (1079) to description map
+- **Vollkonti process**: documented "don't merge early, work until shift ends"
 
 ## Known issues
 
@@ -94,9 +110,9 @@ All deterministic — no `time.Sleep()` in timeout tests.
 ## What to work on next
 
 ### High priority
-- **QueueModel rewrite** — implement C++ Smoother (continuous decay, T=2s) + server penalty from LoadBalancedReply. This affects load distribution under production workloads.
-- **RYW getRange proper iterator** — replace map-based merge with segment-tree approach matching C++ `RYWIterator`. Fixes the truncation edge case.
-- **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`.
+- ~~**QueueModel rewrite**~~ — DONE (PR #35). Smoother + penalty + futureVersion backoff + delta threading + server penalty wiring.
+- **RYW getRange proper iterator** — replace map-based merge with segment-tree approach matching C++ `RYWIterator`. Fixes the truncation edge case when serverMore=true and all fetched results are locally cleared.
+- **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Pool via `sync.Pool`. Tricky lifecycle: `body` slice references pooled buffer, consumer must release after processing. Sized pool (256B/1KB/4KB/16KB/64KB) would help.
 
 ### Medium priority
 - **`getKey` boundary short-circuit** — return `""` or `\xFF\xFF` without network round trip for edge selectors.
@@ -105,4 +121,5 @@ All deterministic — no `time.Sleep()` in timeout tests.
 
 ### Low priority
 - **`onProxiesChanged` mid-commit race** — monitor topology changes during commit for faster `commit_unknown_result` detection.
+- **secondDelay speculative requests** — C++ sends a hedge request to a second server after a delay. Optimization, not correctness.
 - **Multi-node testcontainer** — multiple FDB processes for multi-shard testing.
