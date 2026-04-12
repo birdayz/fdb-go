@@ -43,20 +43,26 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 var allKeysEnd = []byte{0xFF, 0xFF}
 
 // getKey resolves a key selector via the storage server.
-// Short-circuits for boundary selectors matching C++ NativeAPI.actor.cpp getKey().
+// Matches C++ NativeAPI.actor.cpp getKey(): loops until the selector is fully
+// resolved (offset==0 && orEqual==true). A storage server resolves the selector
+// within its shard; if the result crosses a shard boundary, it returns a partial
+// resolution (non-zero offset). The client must then locate the new shard and
+// re-issue the request with the updated selector.
 func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
-	// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
-	// if key == "" && offset <= 0 → return "" (empty key)
-	if bytes.Equal(selectorKey, allKeysEnd) {
-		if offset > 0 {
-			return allKeysEnd, nil
-		}
-		orEqual = false // C++: k.orEqual = false
-	} else if len(selectorKey) == 0 && offset <= 0 {
-		return []byte{}, nil
-	}
-
 	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
+		// if key == "" && offset <= 0 → return "" (empty key)
+		// These checks are INSIDE the loop (matching C++) because the selector
+		// key may be updated by a partial resolution from the previous iteration.
+		if bytes.Equal(selectorKey, allKeysEnd) {
+			if offset > 0 {
+				return allKeysEnd, nil
+			}
+			orEqual = false // C++: k.orEqual = false
+		} else if len(selectorKey) == 0 && offset <= 0 {
+			return []byte{}, nil
+		}
+
 		loc, err := tx.db.locCache.locate(tx.db, ctx, selectorKey, tx.tenantId)
 		if err != nil {
 			return nil, fmt.Errorf("locate key: %w", err)
@@ -65,23 +71,37 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 			return nil, fmt.Errorf("no storage servers for key")
 		}
 
-		key, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
-		if err == nil {
-			return key, nil
-		}
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			tx.db.locCache.invalidate(selectorKey, tx.tenantId)
-			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-				return nil, err
+		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, selectorKey, orEqual, offset, loc.Servers)
+		if err != nil {
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				tx.db.locCache.invalidate(selectorKey, tx.tenantId)
+				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					return nil, err
+				}
+				continue
 			}
-			continue
+			return nil, err
 		}
-		return nil, err
+
+		// C++ NativeAPI.actor.cpp:1823-1826: k = reply.sel; if (!k.offset && k.orEqual) return k.getKey();
+		// If offset==0 && orEqual==true, the selector is fully resolved.
+		// Otherwise, the storage server returned a partial resolution — the
+		// selector crossed a shard boundary. Update and loop.
+		if replyOffset == 0 && replyOrEqual {
+			return replyKey, nil
+		}
+		selectorKey = replyKey
+		orEqual = replyOrEqual
+		offset = replyOffset
 	}
 	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, error) {
+// sendGetKey sends a GetKeyRequest and returns the full KeySelector from the reply.
+// Returns (key, orEqual, offset, error). The caller must check offset==0 && orEqual
+// to determine if the selector is fully resolved. Matches C++ getKey() which uses
+// the reply's KeySelector to drive the resolution loop.
+func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
 	// Pick the least-loaded server, then fall back to remaining on failure.
 	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
 	order := loadBalanceOrder(servers, chosenIdx)
@@ -135,28 +155,38 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		key, penalty, err := parseGetKeyReply(resp.Body)
+		key, replyOrEqual, replyOffset, penalty, err := parseGetKeyReply(resp.Body)
 		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-		return key, err
+		return key, replyOrEqual, replyOffset, err
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	return nil, false, 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
-func parseGetKeyReply(data []byte) ([]byte, float64, error) {
+// parseGetKeyReply parses the ErrorOr<GetKeyReply> response.
+// Returns the full KeySelector fields (key, orEqual, offset) plus penalty.
+// C++ GetKeyReply contains a KeySelector (key + orEqual + offset), not just a key.
+func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, penalty float64, err error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return nil, -1.0, fmt.Errorf("GetKey: %w", err)
+		return nil, false, 0, -1.0, fmt.Errorf("GetKey: %w", err)
 	}
-	penalty := -1.0
+	penalty = -1.0
 	if r.FieldPresent(types.GetKeyReplySlotPenalty) {
 		penalty = r.ReadFloat64(types.GetKeyReplySlotPenalty)
 	}
-	// Navigate into the KeySelector nested struct (slot 3) to extract the key (inner slot 0).
-	selR, err := r.ReadNestedReader(types.GetKeyReplySlotSel)
-	if err != nil {
-		return nil, penalty, fmt.Errorf("read KeySelector: %w", err)
+	// Navigate into the KeySelector nested struct to extract all three fields.
+	selR, selErr := r.ReadNestedReader(types.GetKeyReplySlotSel)
+	if selErr != nil {
+		return nil, false, 0, penalty, fmt.Errorf("read KeySelector: %w", selErr)
 	}
-	return selR.ReadBytes(types.KeySelectorRefSlotKey), penalty, nil
+	key = selR.ReadBytes(types.KeySelectorRefSlotKey)
+	if selR.FieldPresent(types.KeySelectorRefSlotOrEqual) {
+		orEqual = selR.ReadBool(types.KeySelectorRefSlotOrEqual)
+	}
+	if selR.FieldPresent(types.KeySelectorRefSlotOffset) {
+		offset = selR.ReadInt32(types.KeySelectorRefSlotOffset)
+	}
+	return key, orEqual, offset, penalty, nil
 }
 
 // getValue sends a GetValueRequest to the appropriate storage server.
