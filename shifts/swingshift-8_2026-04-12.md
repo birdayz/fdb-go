@@ -82,7 +82,9 @@ Extracted shared `queryLocations()` from `refresh()` and `refreshRange()` — bo
 
 - **Branch:** `swingshift-8`, PR #40 (reviewer-approved)
 - **All 13 Bazel test targets pass** (cached)
-- **Binding stress:** 100/100 API (1000 ops/seed) + 50/50 directory (500 ops/seed) = 0 failures
+- **Binding stress:** 100/100 API (1000 ops) + 10/10 API (5000 ops) + 50/50 directory (500 ops) = 225K ops, 0 failures
+- **Fuzz testing:** All 9 fuzz targets, 342 million executions, 0 crashes
+- **Race detector:** Clean on RYW tests
 - **CI:** Red due to Hetzner Object Storage outage (https://status.hetzner.com/de/incident/11642281-d3a7-491e-9c0e-eeb947f49656), tests pass
 
 ## Known issues
