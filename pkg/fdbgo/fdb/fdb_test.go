@@ -1408,3 +1408,86 @@ func TestMultipleWatchesSameKey(t *testing.T) {
 		t.Fatal("watch2 did not fire within 10s")
 	}
 }
+
+// TestGetRangeEdgeCases tests boundary conditions for GetRange.
+func TestGetRangeEdgeCases(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	t.Run("empty_range_begin_equals_end", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key("same"), End: fdb.Key("same")}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange begin==end: %v", err)
+		}
+		if len(result.([]fdb.KeyValue)) != 0 {
+			t.Errorf("expected 0 results for begin==end, got %d", len(result.([]fdb.KeyValue)))
+		}
+	})
+
+	t.Run("no_matching_keys", func(t *testing.T) {
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{
+				Begin: fdb.Key("edge_nonexist_aaa"),
+				End:   fdb.Key("edge_nonexist_zzz"),
+			}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange no keys: %v", err)
+		}
+		if len(result.([]fdb.KeyValue)) != 0 {
+			t.Errorf("expected 0 results, got %d", len(result.([]fdb.KeyValue)))
+		}
+	})
+
+	t.Run("single_key_range", func(t *testing.T) {
+		key := fdb.Key("edge_single")
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, []byte("v"))
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: key, End: fdb.Key("edge_single\x00")}, fdb.RangeOptions{})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange single: %v", err)
+		}
+		kvs := result.([]fdb.KeyValue)
+		if len(kvs) != 1 || string(kvs[0].Key) != "edge_single" {
+			t.Errorf("expected 1 key 'edge_single', got %d keys", len(kvs))
+		}
+	})
+
+	t.Run("limit_zero_means_unlimited", func(t *testing.T) {
+		prefix := "edge_unlimited_"
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			for i := 0; i < 5; i++ {
+				tr.Set(fdb.Key(fmt.Sprintf("%s%d", prefix, i)), []byte("v"))
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		result, err := db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+			rr := tr.GetRange(fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(prefix + "\xff")}, fdb.RangeOptions{Limit: 0})
+			return rr.GetSliceWithError()
+		})
+		if err != nil {
+			t.Fatalf("GetRange limit=0: %v", err)
+		}
+		kvs := result.([]fdb.KeyValue)
+		if len(kvs) != 5 {
+			t.Errorf("limit=0 should be unlimited, got %d keys (want 5)", len(kvs))
+		}
+	})
+}
