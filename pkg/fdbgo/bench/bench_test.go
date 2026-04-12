@@ -323,3 +323,99 @@ func BenchmarkRYW(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkThroughputRead measures sustained read throughput (MB/s).
+// Reads 1KB values sequentially within a single transaction to measure
+// raw data throughput, not per-transaction overhead.
+func BenchmarkThroughputRead(b *testing.B) {
+	const valueSize = 1024 // 1KB values
+	const batchSize = 100  // keys per transaction
+
+	// Seed with 1000 keys of 1KB each.
+	for batch := 0; batch < 10; batch++ {
+		goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+			for i := 0; i < batchSize; i++ {
+				key := fmt.Sprintf("bench_tp_%04d", batch*batchSize+i)
+				tx.Set(gofdb.Key(key), make([]byte, valueSize))
+			}
+			return nil, nil
+		})
+	}
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize)) // report MB/s
+		for i := 0; i < b.N; i++ {
+			goClient.ReadTransact(func(tx gofdb.ReadTransaction) (any, error) {
+				rr := tx.GetRange(
+					gofdb.KeyRange{Begin: gofdb.Key("bench_tp_0000"), End: gofdb.Key("bench_tp_0100")},
+					gofdb.RangeOptions{},
+				)
+				kvs, err := rr.GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				if len(kvs) != batchSize {
+					b.Fatalf("expected %d keys, got %d", batchSize, len(kvs))
+				}
+				return nil, nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			cgoClient.ReadTransact(func(tx cgofdb.ReadTransaction) (any, error) {
+				rr := tx.GetRange(
+					cgofdb.KeyRange{Begin: cgofdb.Key("bench_tp_0000"), End: cgofdb.Key("bench_tp_0100")},
+					cgofdb.RangeOptions{},
+				)
+				kvs, err := rr.GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				if len(kvs) != batchSize {
+					b.Fatalf("expected %d keys, got %d", batchSize, len(kvs))
+				}
+				return nil, nil
+			})
+		}
+	})
+}
+
+// BenchmarkThroughputWrite measures sustained write throughput (MB/s).
+// Writes batches of 1KB values per transaction.
+func BenchmarkThroughputWrite(b *testing.B) {
+	const valueSize = 1024
+	const batchSize = 10 // keys per transaction (within 10MB tx limit)
+
+	val := make([]byte, valueSize)
+
+	b.Run("Go", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			goClient.Transact(func(tx gofdb.Transaction) (any, error) {
+				for j := 0; j < batchSize; j++ {
+					key := fmt.Sprintf("bench_tpw_%d_%04d", i, j)
+					tx.Set(gofdb.Key(key), val)
+				}
+				return nil, nil
+			})
+		}
+	})
+	b.Run("CGo", func(b *testing.B) {
+		b.ReportAllocs()
+		b.SetBytes(int64(batchSize * valueSize))
+		for i := 0; i < b.N; i++ {
+			cgoClient.Transact(func(tx cgofdb.Transaction) (any, error) {
+				for j := 0; j < batchSize; j++ {
+					key := fmt.Sprintf("bench_tpw_%d_%04d", i, j)
+					tx.Set(cgofdb.Key(key), val)
+				}
+				return nil, nil
+			})
+		}
+	})
+}
