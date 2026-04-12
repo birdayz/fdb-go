@@ -1,6 +1,7 @@
 package fdb_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -1056,5 +1057,133 @@ func TestPrefixRangeIntegration(t *testing.T) {
 	if string(kvs[0].Value) != "1" || string(kvs[1].Value) != "2" || string(kvs[2].Value) != "3" {
 		t.Errorf("values: got [%q, %q, %q], want [1, 2, 3]",
 			kvs[0].Value, kvs[1].Value, kvs[2].Value)
+	}
+}
+
+// TestAtomicAllTypes tests all atomic mutation types in the fdb package.
+// Each sub-test seeds a value, applies an atomic mutation, commits, then
+// reads back and verifies the result.
+func TestAtomicAllTypes(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	tests := []struct {
+		name   string
+		seed   []byte
+		apply  func(tr fdb.Transaction, key fdb.Key, param []byte)
+		param  []byte
+		expect []byte
+	}{
+		{
+			name:   "Add",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Add(k, p) },
+			param:  []byte{5, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{15, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "BitOr",
+			seed:   []byte{0x0F},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitOr(k, p) },
+			param:  []byte{0xF0},
+			expect: []byte{0xFF},
+		},
+		{
+			name:   "BitAnd",
+			seed:   []byte{0xFF},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitAnd(k, p) },
+			param:  []byte{0x0F},
+			expect: []byte{0x0F},
+		},
+		{
+			name:   "BitXor",
+			seed:   []byte{0xFF},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.BitXor(k, p) },
+			param:  []byte{0x0F},
+			expect: []byte{0xF0},
+		},
+		{
+			name:   "Max",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Max(k, p) },
+			param:  []byte{20, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{20, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "Min",
+			seed:   []byte{10, 0, 0, 0, 0, 0, 0, 0},
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.Min(k, p) },
+			param:  []byte{5, 0, 0, 0, 0, 0, 0, 0},
+			expect: []byte{5, 0, 0, 0, 0, 0, 0, 0},
+		},
+		{
+			name:   "ByteMax",
+			seed:   []byte("apple"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.ByteMax(k, p) },
+			param:  []byte("banana"),
+			expect: []byte("banana"),
+		},
+		{
+			name:   "ByteMin",
+			seed:   []byte("banana"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.ByteMin(k, p) },
+			param:  []byte("apple"),
+			expect: []byte("apple"),
+		},
+		{
+			name:   "AppendIfFits",
+			seed:   []byte("hello"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.AppendIfFits(k, p) },
+			param:  []byte(" world"),
+			expect: []byte("hello world"),
+		},
+		{
+			name:   "CompareAndClear_match",
+			seed:   []byte("match"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.CompareAndClear(k, p) },
+			param:  []byte("match"),
+			expect: nil, // cleared
+		},
+		{
+			name:   "CompareAndClear_nomatch",
+			seed:   []byte("keep"),
+			apply:  func(tr fdb.Transaction, k fdb.Key, p []byte) { tr.CompareAndClear(k, p) },
+			param:  []byte("different"),
+			expect: []byte("keep"), // unchanged
+		},
+	}
+
+	for _, tc := range tests {
+		key := fdb.Key("atomic_all_" + tc.name)
+
+		// Seed.
+		_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			tr.Set(key, tc.seed)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("%s seed: %v", tc.name, err)
+		}
+
+		// Apply atomic.
+		_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+			tc.apply(tr, key, tc.param)
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatalf("%s apply: %v", tc.name, err)
+		}
+
+		// Verify.
+		result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+			return tr.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("%s read: %v", tc.name, err)
+		}
+		got := result.([]byte)
+		if !bytes.Equal(got, tc.expect) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.expect)
+		}
 	}
 }
