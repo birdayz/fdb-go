@@ -420,6 +420,201 @@ func TestRYWGetRange_MultipleClearedBatches(t *testing.T) {
 	}
 }
 
+// TestRYWGetRange_InterleavedWritesAndServer verifies the two-pointer merge
+// correctly interleaves sorted server results with sorted writes.
+func TestRYWGetRange_InterleavedWritesAndServer(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Writes at B, D, F — interleaved with server results at A, C, E, G.
+	c.set([]byte("B"), []byte("write-b"))
+	c.set([]byte("D"), []byte("write-d"))
+	c.set([]byte("F"), []byte("write-f"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("server-a")},
+			{Key: []byte("C"), Value: []byte("server-c")},
+			{Key: []byte("E"), Value: []byte("server-e")},
+			{Key: []byte("G"), Value: []byte("server-g")},
+		}, false, nil
+	}
+
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if more {
+		t.Error("expected more=false")
+	}
+	expect := []struct{ key, val string }{
+		{"A", "server-a"},
+		{"B", "write-b"},
+		{"C", "server-c"},
+		{"D", "write-d"},
+		{"E", "server-e"},
+		{"F", "write-f"},
+		{"G", "server-g"},
+	}
+	if len(result) != len(expect) {
+		keys := make([]string, len(result))
+		for i, kv := range result {
+			keys[i] = string(kv.Key)
+		}
+		t.Fatalf("expected %d results, got %d: %v", len(expect), len(result), keys)
+	}
+	for i, e := range expect {
+		if string(result[i].Key) != e.key || string(result[i].Value) != e.val {
+			t.Errorf("result[%d]: got (%s, %s), want (%s, %s)", i, result[i].Key, result[i].Value, e.key, e.val)
+		}
+	}
+}
+
+// TestRYWGetRange_InterleavedReverse verifies two-pointer merge in reverse.
+func TestRYWGetRange_InterleavedReverse(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.set([]byte("B"), []byte("write-b"))
+	c.set([]byte("D"), []byte("write-d"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		if !reverse {
+			t.Fatal("expected reverse")
+		}
+		return []KeyValue{
+			{Key: []byte("E"), Value: []byte("server-e")},
+			{Key: []byte("C"), Value: []byte("server-c")},
+			{Key: []byte("A"), Value: []byte("server-a")},
+		}, false, nil
+	}
+
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, true, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if more {
+		t.Error("expected more=false")
+	}
+	// Reverse order: E, D, C, B, A
+	expect := []string{"E", "D", "C", "B", "A"}
+	if len(result) != len(expect) {
+		keys := make([]string, len(result))
+		for i, kv := range result {
+			keys[i] = string(kv.Key)
+		}
+		t.Fatalf("expected %d results, got %d: %v", len(expect), len(result), keys)
+	}
+	for i, e := range expect {
+		if string(result[i].Key) != e {
+			t.Errorf("result[%d]: got %s, want %s", i, result[i].Key, e)
+		}
+	}
+}
+
+// TestRYWGetRange_WriteOverridesServer verifies that writes at the same key
+// as server results take precedence (two-pointer merge shadow logic).
+func TestRYWGetRange_WriteOverridesServer(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Set the same keys the server will return.
+	c.set([]byte("A"), []byte("write-a"))
+	c.set([]byte("C"), []byte("write-c"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("server-a")},
+			{Key: []byte("B"), Value: []byte("server-b")},
+			{Key: []byte("C"), Value: []byte("server-c")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	expect := []struct{ key, val string }{
+		{"A", "write-a"}, {"B", "server-b"}, {"C", "write-c"},
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result))
+	}
+	for i, e := range expect {
+		if string(result[i].Key) != e.key || string(result[i].Value) != e.val {
+			t.Errorf("result[%d]: got (%s, %s), want (%s, %s)", i, result[i].Key, result[i].Value, e.key, e.val)
+		}
+	}
+}
+
+// TestRYWGetRange_ManyWritesFewInRange exercises the sorted-keys optimization:
+// 1000 writes outside the scan range should not slow down the range query.
+func TestRYWGetRange_ManyWritesFewInRange(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// 1000 writes in "Z" prefix (outside scan range).
+	for i := 0; i < 1000; i++ {
+		key := []byte("Z" + string(rune('A'+i%26)) + string(rune('A'+i/26)))
+		c.set(key, []byte("noise"))
+	}
+	// 2 writes in scan range.
+	c.set([]byte("B"), []byte("write-b"))
+	c.set([]byte("D"), []byte("write-d"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("a")},
+			{Key: []byte("C"), Value: []byte("c")},
+			{Key: []byte("E"), Value: []byte("e")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	expect := []string{"A", "B", "C", "D", "E"}
+	if len(result) != len(expect) {
+		t.Fatalf("expected %d results, got %d", len(expect), len(result))
+	}
+	for i, e := range expect {
+		if string(result[i].Key) != e {
+			t.Errorf("result[%d]: got %s, want %s", i, result[i].Key, e)
+		}
+	}
+}
+
+// TestRYWGetRange_HasWritesInRangeBinarySearch verifies the O(log N)
+// hasWritesInRangeLocked optimization.
+func TestRYWGetRange_HasWritesInRangeBinarySearch(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	// Only writes outside the scan range — fast path should trigger.
+	c.set([]byte("Z1"), []byte("out"))
+	c.set([]byte("Z2"), []byte("out"))
+	c.set([]byte("Z3"), []byte("out"))
+
+	serverCalled := false
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		serverCalled = true
+		return []KeyValue{{Key: []byte("B"), Value: []byte("b")}}, false, nil
+	}
+
+	// Scan [A, F) — no writes in range, but clears check needed.
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("F"), 10, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if !serverCalled {
+		t.Error("expected fast-path server call")
+	}
+	if len(result) != 1 || string(result[0].Key) != "B" {
+		t.Errorf("expected [B], got %v", result)
+	}
+}
+
 // TestRYWGetRange_ServerMoreWithLimit tests that when we hit the limit from
 // merged results of a batch where server had more, more is set correctly.
 func TestRYWGetRange_ServerMoreWithLimit(t *testing.T) {
