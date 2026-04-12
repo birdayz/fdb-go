@@ -82,7 +82,7 @@ When implementation is done and tests pass:
 
 ## Step 5: End shift
 
-When the user says shift is over, or 8 hours have passed:
+Only after the reviewer approves (no new issues in the latest review round):
 
 1. **Write handover** — create `shifts/{shift-name}.md` with:
    - Date, time range, PR number
@@ -91,18 +91,16 @@ When the user says shift is over, or 8 hours have passed:
    - Known issues / tech debt discovered
    - What to work on next (prioritized)
 
-2. **Final commit + push** the handover doc.
+2. **Commit + push** the handover doc.
 
-3. **Wait for CI green.**
-
-4. **Merge PR** (only if review is approved):
+3. **Merge PR** once CI is green (Bazel cache makes this fast):
    ```bash
    gh pr merge --squash --subject "{shift-name}: {summary}"
    ```
 
-5. **Clean up:**
+4. **Clean up:**
    ```bash
-   gh pr list --state open  # close any stale PRs
+   git checkout master && git pull origin master
    git push origin --delete {shift-name}  # delete remote branch
    ```
 
