@@ -45,6 +45,22 @@ Go goroutine
 → Go goroutine receives result
 ```
 
+### The critical bottleneck: `fdb_future_block_until_ready`
+
+The Apple Go binding's `MustGet()` calls `fdb_future_block_until_ready()` (futures.go:98-114), which:
+
+1. Makes a CGo call to check `fdb_future_is_ready()` — usually false
+2. Allocates a `sync.Mutex` as a signal
+3. Locks the mutex
+4. Makes a CGo call to `go_set_callback()` — registers a C callback that unlocks the mutex
+5. Locks the mutex **again** — blocks until the C library's network thread fires the callback
+
+This means every Get involves: Go goroutine blocks on mutex → C network thread processes response → C callback unlocks mutex → Go goroutine wakes up. Two cross-thread synchronization points plus the C library's internal event loop scheduling.
+
+The pure Go client instead: goroutine waits on pre-allocated channel → read loop goroutine receives TCP frame → sends on channel → original goroutine wakes up. One channel operation, same thread pool, no cross-language boundary.
+
+Raw CGo call overhead: **27ns** per boundary crossing (measured). A Get makes 4+ CGo calls (~108ns), but the real cost is the mutex-based blocking pattern adding ~100-150us of synchronization latency.
+
 ### Where the 150us gap comes from
 
 | Overhead | CGo | Go | Delta |
