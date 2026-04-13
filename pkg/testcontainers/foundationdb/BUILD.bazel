@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "foundationdb",
     srcs = [
+        "cluster.go",
         "foundationdb.go",
         "options.go",
     ],
@@ -21,6 +22,7 @@ go_library(
 go_test(
     name = "foundationdb_test",
     srcs = [
+        "cluster_test.go",
         "database_test.go",
         "examples_test.go",
         "foundationdb_test.go",
