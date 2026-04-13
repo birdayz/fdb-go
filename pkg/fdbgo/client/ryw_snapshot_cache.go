@@ -179,6 +179,10 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 	return nil, true // key is in known range but doesn't exist at server
 }
 
+// copyKVs makes a shallow copy of the KV slice. The Key/Value byte slices
+// alias the caller's backing arrays. This is safe because FDB response
+// buffers are not pooled — once parsed, the byte slices are stable for the
+// lifetime of the transaction.
 func copyKVs(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
 		return nil

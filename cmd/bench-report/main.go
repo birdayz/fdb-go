@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -265,7 +266,7 @@ func postOrUpdateComment(repo string, pr int, body string) error {
 		cmd := exec.Command("gh", "api", "--method", "PATCH",
 			fmt.Sprintf("repos/%s/issues/comments/%d", repo, existingID),
 			"--input", "-")
-		cmd.Stdin = strings.NewReader(string(payload))
+		cmd.Stdin = bytes.NewReader(payload)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
@@ -276,7 +277,7 @@ func postOrUpdateComment(repo string, pr int, body string) error {
 	cmd := exec.Command("gh", "api", "--method", "POST",
 		fmt.Sprintf("repos/%s/issues/%d/comments", repo, pr),
 		"--input", "-")
-	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

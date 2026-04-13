@@ -1,6 +1,6 @@
 # RFC 018: Benchmark Reports in CI
 
-## Status: Draft
+## Status: Implemented
 
 ## Problem
 

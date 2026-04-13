@@ -1024,7 +1024,7 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 	// already-split 51 shards. Large values trigger further DD activity.
 	const writers = 8
 	const opsPerWriter = 25
-	const bigValueSize = 8000 // 50KB max_shard_bytes → many splits
+	const bigValueSize = 8000 // 8KB per value; max_shard_bytes=50KB → many splits
 
 	type writeRecord struct {
 		key   string
