@@ -143,13 +143,33 @@ func FuzzRYWCache(f *testing.F) {
 		})
 
 		if len(gotKVs) != len(wantKVs) {
-			t.Errorf("getRange: got %d keys, want %d", len(gotKVs), len(wantKVs))
+			t.Errorf("forward getRange: got %d keys, want %d", len(gotKVs), len(wantKVs))
 			return
 		}
 		for i := range gotKVs {
 			if !bytes.Equal(gotKVs[i].Key, wantKVs[i].Key) || !bytes.Equal(gotKVs[i].Value, wantKVs[i].Value) {
-				t.Errorf("getRange[%d]: got {%q,%q}, want {%q,%q}",
+				t.Errorf("forward getRange[%d]: got {%q,%q}, want {%q,%q}",
 					i, gotKVs[i].Key, gotKVs[i].Value, wantKVs[i].Key, wantKVs[i].Value)
+			}
+		}
+
+		// Verify reverse GetRange — common source of bugs in merge logic.
+		gotRev, _, err := cache.getRange(ctx, []byte("k00"), []byte("k99"), 100, true, serverGetRange)
+		if err != nil {
+			t.Fatalf("reverse getRange: %v", err)
+		}
+		// Reverse should have same keys but in reverse order.
+		sort.Slice(wantKVs, func(i, j int) bool {
+			return bytes.Compare(wantKVs[i].Key, wantKVs[j].Key) > 0
+		})
+		if len(gotRev) != len(wantKVs) {
+			t.Errorf("reverse getRange: got %d keys, want %d", len(gotRev), len(wantKVs))
+			return
+		}
+		for i := range gotRev {
+			if !bytes.Equal(gotRev[i].Key, wantKVs[i].Key) || !bytes.Equal(gotRev[i].Value, wantKVs[i].Value) {
+				t.Errorf("reverse getRange[%d]: got {%q,%q}, want {%q,%q}",
+					i, gotRev[i].Key, gotRev[i].Value, wantKVs[i].Key, wantKVs[i].Value)
 			}
 		}
 	})
