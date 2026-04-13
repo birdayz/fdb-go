@@ -185,6 +185,9 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzConcatContinuation` | ConcatCursor proto continuation deserializer | Clean |
 | `FuzzFlatMapContinuation` | FlatMapPipelined proto continuation deserializer | Clean |
 | `FuzzDedupContinuation` | Dedup cursor proto continuation deserializer | Clean |
+| `FuzzRYWCache` | RYW cache Set/Clear/ClearRange/AtomicAdd vs map model (forward + reverse range) | Model bug found during development (ClearRange boundary) |
+
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
