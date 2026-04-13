@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"sort"
 	"testing"
 )
@@ -82,7 +83,7 @@ func FuzzRYWCache(f *testing.F) {
 			if pos+2 >= len(data) {
 				break
 			}
-			opType := data[pos] % 3
+			opType := data[pos] % 4
 			keyIdx := int(data[pos+1]) % len(keys)
 			valIdx := int(data[pos+2]) % len(values)
 			pos += 3
@@ -107,6 +108,21 @@ func FuzzRYWCache(f *testing.F) {
 				cache.clearRange([]byte(begin), []byte(end))
 				for _, k := range keys[keyIdx:endIdx] {
 					delete(model, k)
+				}
+			case 3: // AtomicAdd — add valIdx+1 to the key's value
+				k := keys[keyIdx]
+				addVal := int64(valIdx + 1) // 1..4
+				var param [8]byte
+				binary.LittleEndian.PutUint64(param[:], uint64(addVal))
+				cache.atomic(MutAddValue, []byte(k), param[:])
+
+				// Model: use the same applyAtomic function for exact match.
+				existing := model[k]
+				result, cleared := applyAtomic(MutAddValue, existing, param[:])
+				if cleared {
+					delete(model, k)
+				} else {
+					model[k] = result
 				}
 			}
 		}
