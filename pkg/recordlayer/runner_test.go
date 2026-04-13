@@ -188,9 +188,10 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			elapsed := time.Since(start)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(attempts).To(Equal(3))
-			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms minimum.
-			// Jitter adds 0.5x-1.5x, so range is ~15ms-45ms. Use 20ms as safe lower bound.
-			Expect(elapsed).To(BeNumerically(">", 20*time.Millisecond))
+			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms nominal.
+			// Jitter multiplier is 0.5x-1.5x, so minimum is ~15ms. Use 10ms as safe lower
+			// bound to avoid flakiness under load (jitter + scheduling jitter).
+			Expect(elapsed).To(BeNumerically(">", 10*time.Millisecond))
 		})
 
 		It("gives up after max attempts", func() {

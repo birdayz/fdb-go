@@ -163,6 +163,12 @@ type database struct {
 	// Matches C++ DatabaseContext::transactionDefaults.
 	txDefaults TransactionDefaults
 
+	// Speculative second request (hedge) control.
+	// When true, read RPCs send a hedge request to a second server after
+	// secondDelay if the primary is slow. Matches C++ BACKUP_REQUEST_DELAY.
+	// Default: true (always on, same as C++).
+	hedgeEnabled atomic.Bool
+
 	// Lifecycle.
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -392,6 +398,19 @@ type Database struct {
 	db *database
 }
 
+// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
+// When enabled (default), slow reads are rescued by sending a backup request
+// to a second server after max(10ms, 2×latency). Disable for debugging or
+// benchmarking the non-hedged path.
+func (d *Database) SetHedgeEnabled(enabled bool) {
+	d.db.hedgeEnabled.Store(enabled)
+}
+
+// HedgeEnabled returns whether speculative second requests are active.
+func (d *Database) HedgeEnabled() bool {
+	return d.db.hedgeEnabled.Load()
+}
+
 // OpenDatabase opens a database connection using a cluster file.
 // The provided ctx is used for the initial bootstrap (coordinator connection).
 // Background goroutines use an internal context cancelled by Close().
@@ -419,6 +438,7 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 		cancel:         cancel,
 		failMon:        newFailureMonitor(),
 		queueModel:     newQueueModel(),
+		// hedgeEnabled default: set after struct init (atomic.Bool zero = false)
 		locCache: locationCache{
 			maxSize: 600_000,
 		},
@@ -428,6 +448,8 @@ func OpenDatabaseFromConfig(ctx context.Context, cf *ClusterFile, dialFn transpo
 			grvBatcherSystemImmediate: {batchTime: 1 * time.Millisecond, priority: grvPrioritySystemImmediate},
 		},
 	}
+
+	db.hedgeEnabled.Store(true) // default: hedge on (matches C++)
 
 	if err := db.bootstrap(ctx); err != nil {
 		cancel()

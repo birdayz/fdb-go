@@ -103,6 +103,9 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 // the reply's KeySelector to drive the resolution loop.
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
+	if !tx.db.hedgeEnabled.Load() {
+		secondIdx = -1
+	}
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
@@ -242,6 +245,9 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
 	// Pick best + second-best for speculative hedge.
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
+	if !tx.db.hedgeEnabled.Load() {
+		secondIdx = -1 // disable hedge
+	}
 
 	// Build a sender closure for a given server.
 	makeSender := func(server ServerInfo) sendFunc {
@@ -505,6 +511,9 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	}
 
 	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
+	if !tx.db.hedgeEnabled.Load() {
+		secondIdx = -1
+	}
 
 	makeSender := func(server ServerInfo) sendFunc {
 		return func() inFlightRPC {
