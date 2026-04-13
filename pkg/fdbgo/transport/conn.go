@@ -402,6 +402,12 @@ func (c *Conn) SetDebug(enabled bool) {
 	c.debugWriter = os.Stderr
 }
 
+// BytesReceived returns the total bytes received on this connection.
+// Used by the connection monitor for dead-connection detection.
+func (c *Conn) BytesReceived() int64 {
+	return c.bytesReceived.Load()
+}
+
 // IsClosed returns true if the connection has been closed or the server
 // killed it. Uses context cancellation — works for both shutdown paths.
 func (c *Conn) IsClosed() bool {

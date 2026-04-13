@@ -37,6 +37,7 @@ go_test(
         "bench_test.go",
         "c_binding_port_test.go",
         "client_test.go",
+        "connmon_test.go",
         "coordinator_test.go",
         "correctness_test.go",
         "database_test.go",
