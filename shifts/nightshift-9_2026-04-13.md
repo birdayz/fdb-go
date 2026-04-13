@@ -1,6 +1,6 @@
 # Nightshift-9 Handover
 
-**Date:** 2026-04-13, started ~22:40 2026-04-12, ended ~TBD CEST
+**Date:** 2026-04-13, started ~22:40 2026-04-12, ended ~02:30 CEST
 **PR:** #42
 
 ## Objective
@@ -71,8 +71,9 @@ All test files using hardcoded FDB keys now use `t.Name()` prefixes:
 
 - **Branch:** `nightshift-9`, PR #42 (reviewer-approved after 1 round)
 - **All 13 Bazel test targets pass**
-- **Binding stress:** 30 seeds × 1000 ops = 0 failures (post-fix validation) + 1-hour soak test running (83+ seeds, 0 failures at time of handover)
+- **Binding stress:** 30 seeds × 1000 ops (post-fix) + 1-hour soak (281+ seeds, 0 failures) + 20 directory seeds (0 failures)
 - **Fuzz testing:** ~330M total executions across all 10 fuzz targets, 0 crashes
+- **Race detector:** Full client test suite passes with `-race` (0 data races)
 - **CI:** Green on all pushes
 - **Line coverage:** 72.4% client, 78.8% record layer
 
