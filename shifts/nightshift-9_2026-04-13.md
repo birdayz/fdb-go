@@ -72,7 +72,7 @@ All test files using hardcoded FDB keys now use `t.Name()` prefixes:
 - **Branch:** `nightshift-9`, PR #42 (reviewer-approved after 1 round)
 - **All 13 Bazel test targets pass**
 - **Binding stress:** 30 seeds × 1000 ops = 0 failures (post-fix validation) + 1-hour soak test running (83+ seeds, 0 failures at time of handover)
-- **Fuzz testing:** 37M executions on FuzzFastUnpack, 0 crashes
+- **Fuzz testing:** ~330M total executions across all 10 fuzz targets, 0 crashes
 - **CI:** Green on all pushes
 - **Line coverage:** 72.4% client, 78.8% record layer
 
