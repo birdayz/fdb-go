@@ -14,13 +14,15 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **getKey selector resolution across shard boundaries** — Go sent ONE request and returned the reply key, ignoring `orEqual` and `offset` fields from the `KeySelector` in the reply. C++ loops until `offset==0 && orEqual==true`. In multi-shard clusters, selectors crossing shard boundaries returned wrong keys. Fixed: full resolution loop matching C++. Not caught by tests (single-shard testcontainers).
 - [x] **hot_shard/range_locked backoff cap** — Go used `DEFAULT_MAX_BACKOFF` (1s) for `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242). C++ uses `RESOURCE_CONSTRAINED_MAX_BACKOFF` (30s). Caused over-aggressive retry under hot-shard conditions. Fixed: moved to resource-constrained group.
 
-_No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
+- [x] **RYW getRange: limit=0 (unlimited) skipped slow path** — `remaining := limit` with `limit=0` caused `for remaining > 0` to never execute. Fixed: `if remaining <= 0 { remaining = math.MaxInt }` matching `readpath.go`. Discovered dayshift-10 multi-shard test.
+
+_Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
 ### Features
 
 #### HIGH
 
-- [ ] **`proxyTagThrottledDuration` send path** — Accumulated per-transaction but not sent back to proxy in GRV request metadata. C++ sends it so the proxy can adjust throttle decisions. Not a correctness issue — throttle still works via standard backoff — but reduces throttle tuning accuracy.
+- [x] **`proxyTagThrottledDuration` send path** — Investigated: C++ `CommitProxyInterface.h:318` comments "Not serialized, because this field does not need to be sent to master." The field is reply-only (proxy→client), accumulated correctly in Go. No send path needed. Resolved dayshift-10.
 
 #### LOW
 
@@ -37,7 +39,7 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
 - [ ] **Speculative second request (secondDelay)** — C++ sends a hedge request to a second storage server after ~0.5ms delay to improve p99 latency. Currently we try servers sequentially.
-- [ ] **Outbound PING connection monitor** — C++ sends periodic PINGs to detect dead connections in ~2s. We rely on TCP keepalive (10s) + next-RPC detection (~5s). Phase 2 optimization.
+- [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
 #### LOW
 
@@ -49,14 +51,16 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 #### MEDIUM
 
-- [ ] **Multi-shard GetRange integration test** — Needs multi-node testcontainer support. Single-node = single shard, can't verify cross-shard continuation.
+- [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
+- [ ] **Multi-shard watch survival** — Watch a key, trigger shard move via DD, verify watch fires. Needs DD to move the shard while a watch is active.
+- [ ] **Multi-shard concurrent writes during DD** — Concurrent Set/Commit while DD is actively splitting/moving shards. Verify no data loss.
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
 
 | # | Area | Type | Description |
 |---|---|---|---|
 | 1 | ~~`future_version` backoff~~ | ~~BEHAVIOR~~ FIXED | ~~C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)`.~~ Fixed: Go now respects user's `maxRetryDelay`. |
-| 2 | `makeSelfConflicting` | BEHAVIOR | C++ adds random key to `\xFF/SC/` when write/read conflicts don't intersect. Go uses `writeConflicts[0].Begin` in `commitDummyTransaction`. Functionally equivalent for common cases. |
+| 2 | ~~`makeSelfConflicting`~~ | ~~BEHAVIOR~~ FIXED | ~~Go used `writeConflicts[0].Begin` in `commitDummyTransaction`.~~ Fixed: `intersectConflictRanges()` matches C++ `intersects()` — picks a key from the overlap of write+read conflict ranges. Falls back to `writes[0].Begin` if no intersection. |
 | 3 | ~~Watch cancellation on Reset~~ | ~~MISSING~~ FIXED | ~~C++ cancels pending watches on reset.~~ Fixed: `cancelWatches()` on Reset/Cancel/reset via lazy `watchCtx`. |
 | 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
 | 5 | RYW SnapshotCache | BEHAVIOR | C++ caches server reads for reuse within a transaction. Go re-fetches on every `getRange` with writes/clears. Correct but more I/O for repeated reads of the same range. |
@@ -73,7 +77,7 @@ All data-path functions implemented. Missing are observability/admin only:
 | C Function | Category | Assessment |
 |---|---|---|
 | `fdb_transaction_get_mapped_range` | Niche | Server-side index join. Record Layer doesn't use it. |
-| `fdb_transaction_get_tag_throttled_duration` | Observability | Returns cumulative tag-throttle delay. Enforcement works, reporting missing. |
+| ~~`fdb_transaction_get_tag_throttled_duration`~~ | ~~Observability~~ | ~~Returns cumulative tag-throttle delay.~~ Implemented as `GetTagThrottledDuration()` (dayshift-10). |
 | `fdb_transaction_get_total_cost` | Observability | Estimated transaction cost for rate limiting. |
 | `fdb_database_force_recovery_with_data_loss` | Admin | DR operation. |
 | `fdb_database_create_snapshot` | Admin | Disk-level backup. |

@@ -111,11 +111,11 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		return // no write conflicts → read-only, nothing to synchronize
 	}
 
-	// Use the first write conflict range's begin key.
-	// C++ uses intersects(write_conflict_ranges, read_conflict_ranges).begin,
-	// but we can use any write conflict key — OnError will copy write→read
-	// for the retry, so any write key guarantees conflict detection.
-	key := tx.writeConflicts[0].Begin
+	// C++ (NativeAPI.actor.cpp:6744) picks a key from the intersection of
+	// write and read conflict ranges to minimize false conflicts. If no
+	// intersection exists (shouldn't happen since makeSelfConflicting adds
+	// a shared range), fall back to the first write conflict key.
+	key := intersectConflictRanges(tx.writeConflicts, tx.readConflicts)
 
 	// Retry loop matching C++ commitDummyTransaction's catch/onError pattern.
 	// Create a fresh dummy each iteration because OnError/reset clears conflict
@@ -171,6 +171,28 @@ func isRetryable(code int) bool {
 	default:
 		return false
 	}
+}
+
+// intersectConflictRanges finds the begin key of a range that exists in both
+// write and read conflict sets. Returns it for use as the dummy transaction's
+// conflict key. Falls back to writes[0].Begin if no intersection found
+// (shouldn't happen with makeSelfConflicting). Matches C++ intersects()
+// at NativeAPI.actor.cpp:6745.
+func intersectConflictRanges(writes, reads []KeyRange) []byte {
+	for _, w := range writes {
+		for _, r := range reads {
+			// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
+			if bytes.Compare(w.Begin, r.End) < 0 && bytes.Compare(r.Begin, w.End) < 0 {
+				// Return the max of the two begins (start of the overlap).
+				if bytes.Compare(w.Begin, r.Begin) >= 0 {
+					return w.Begin
+				}
+				return r.Begin
+			}
+		}
+	}
+	// No intersection — fall back to first write conflict key.
+	return writes[0].Begin
 }
 
 // metadataVersionKey is \xff/metadataVersion — the only key exempt from tenant prefix.

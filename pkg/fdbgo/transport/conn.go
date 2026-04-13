@@ -47,6 +47,11 @@ type Conn struct {
 	pending   map[UID]chan Response
 	peerPkt   *ConnectPacket // peer's connect packet
 
+	// Connection monitor: counts bytes received so connectionMonitor() can
+	// detect dead connections in ~2s (vs 10s TCP keepalive).
+	// Matches C++ FlowTransport.actor.cpp connectionMonitor().
+	bytesReceived atomic.Int64
+
 	// Debug tracing (set before first use).
 	debugFrames bool
 	debugWriter io.Writer
@@ -173,10 +178,11 @@ func DialWithTLS(ctx context.Context, addr string, useTLS bool, dialFn DialFunc,
 		c.debugWriter = os.Stderr
 	}
 
-	// Start read and write loops.
-	c.loopWG.Add(2)
+	// Start read, write, and connection monitor loops.
+	c.loopWG.Add(3)
 	go c.readLoop()
 	go c.writeLoop()
+	go c.connectionMonitor()
 
 	return c, nil
 }
@@ -396,6 +402,12 @@ func (c *Conn) SetDebug(enabled bool) {
 	c.debugWriter = os.Stderr
 }
 
+// BytesReceived returns the total bytes received on this connection.
+// Used by the connection monitor for dead-connection detection.
+func (c *Conn) BytesReceived() int64 {
+	return c.bytesReceived.Load()
+}
+
 // IsClosed returns true if the connection has been closed or the server
 // killed it. Uses context cancellation — works for both shutdown paths.
 func (c *Conn) IsClosed() bool {
@@ -438,6 +450,9 @@ func (c *Conn) readLoop() {
 			c.failAllPending(err)
 			return
 		}
+
+		// Track bytes received for connection monitor dead-connection detection.
+		c.bytesReceived.Add(int64(len(body)))
 
 		LogRecv(token, body)
 
@@ -559,6 +574,168 @@ func extractPingReplyToken(body []byte) (UID, bool) {
 
 func buildVoidReply() []byte {
 	return (&types.VoidReply{}).MarshalFDB()
+}
+
+// connectionMonitor detects dead connections by sending outbound PINGs.
+// Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 641-721):
+//
+// Outer loop:
+//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (750ms)
+//  2. If no pending requests → check idle timeout (skip PING)
+//  3. Sleep again (jittered), then send PING
+//  4. Inner loop: wait CONNECTION_MONITOR_TIMEOUT (2s) per round
+//     - If bytesReceived unchanged → kill connection
+//     - If bytesReceived changed → update baseline, continue inner loop
+//     - If PING reply arrives → break (connection alive)
+//
+// The inner retry loop is key: a single 2s timeout with no bytes kills,
+// but if ANY bytes arrive (server PINGs, other responses), the baseline
+// resets and we wait another 2s. This tolerates slow-but-alive connections.
+func (c *Conn) connectionMonitor() {
+	defer c.loopWG.Done()
+
+	for {
+		// Outer loop: sleep, then decide whether to PING.
+		// C++ CONNECTION_MONITOR_LOOP_TIME = 0.75s
+		select {
+		case <-time.After(750 * time.Millisecond):
+		case <-c.ctx.Done():
+			return
+		}
+
+		// C++ checks peer->reliable.empty() && peer->unsent.empty() && peer->outstandingReplies == 0.
+		// If no pending requests, the connection is idle — skip PING, let TCP keepalive handle it.
+		c.pendingMu.RLock()
+		hasPending := len(c.pending) > 0
+		c.pendingMu.RUnlock()
+		if !hasPending {
+			continue
+		}
+
+		// C++ second delay (jittered) before sending PING.
+		select {
+		case <-time.After(750 * time.Millisecond):
+		case <-c.ctx.Done():
+			return
+		}
+
+		// Send PING and register for reply.
+		replyCh := c.sendPingWithReply()
+
+		// Inner loop: C++ lines 690-720.
+		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
+		startingBytes := c.bytesReceived.Load()
+		for {
+			timer := time.NewTimer(2 * time.Second)
+			select {
+			case <-replyCh:
+				// PING reply arrived — connection alive. C++ line 710-714.
+				timer.Stop()
+			case <-timer.C:
+				// 2s timeout. Check if ANY bytes arrived.
+				current := c.bytesReceived.Load()
+				if current == startingBytes {
+					// No bytes at all since PING was sent — connection is dead.
+					// C++ line 698-699: throw connection_failed.
+					c.cancel()
+					return
+				}
+				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
+				// C++ line 707-708: update baseline, loop again.
+				// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
+				// NOT for kill decisions — the kill condition is solely bytesReceived.
+				startingBytes = current
+				continue
+			case <-c.ctx.Done():
+				timer.Stop()
+				return
+			}
+			break
+		}
+	}
+}
+
+// sendPingWithReply sends a PingRequest and returns a channel that closes
+// when the PING reply arrives. Matches C++ pingRequest.reply.getFuture().
+// The reply is registered in the pending map so readLoop dispatches it.
+func (c *Conn) sendPingWithReply() <-chan struct{} {
+	done := make(chan struct{})
+	replyToken, replyCh, cancelReply := c.PrepareReply()
+	pingEP := WellKnownToken(WLTokenPingPacket)
+	body := BuildPingRequest(replyToken)
+	select {
+	case c.writeCh <- writeReq{token: pingEP, body: body}:
+	default:
+		// Write channel full — cancel and return closed channel
+		// so the inner loop falls through to bytesReceived check.
+		cancelReply()
+		close(done)
+		return done
+	}
+	// Wait for reply in background, then signal done.
+	go func() {
+		defer close(done)
+		select {
+		case <-replyCh:
+			// Reply arrived.
+		case <-c.ctx.Done():
+			cancelReply()
+		}
+	}()
+	return done
+}
+
+// PingRequest file identifier from C++ flow/genericactors.actor.h.
+const pingRequestFileID uint32 = 4707015
+
+// pingRequestVTable: PingRequest has 1 field (bytes/RelativeOffset, 4 bytes, align 4).
+// vtable[0] = 2*1+4 = 6 (vtable wire size)
+// vtable[1] = 4+4 = 8 (object size with soffset)
+// vtable[2] = 4 (field 0 offset)
+var pingRequestVTable = wire.VTable{6, 8, 4}
+
+var pingRequestVTableClosure = []wire.VTable{
+	{6, 8, 4}, // PingRequest
+	{6, 8, 4}, // FakeRoot
+}
+
+var pingRequestTemplate = wire.NewMessageTemplate(
+	pingRequestFileID, pingRequestVTable, 4, pingRequestVTableClosure,
+)
+
+// BuildPingRequest builds a PingRequest FlatBuffers body.
+// PingRequest has one field: ReplyPromise<Void> serialized as a bytes blob
+// (Standalone<StringRef>) containing the 16-byte reply token UID.
+// The server extracts this token and sends back a VoidReply to it.
+func BuildPingRequest(replyToken UID) []byte {
+	// The ReplyPromise is serialized via save/load trait → bytes blob.
+	// The blob contains the serialized Endpoint, which starts with the
+	// 16-byte token (two uint64 LE). This is the minimum the server
+	// needs to route the reply back.
+	var tokenBytes [16]byte
+	binary.LittleEndian.PutUint64(tokenBytes[0:8], replyToken.First)
+	binary.LittleEndian.PutUint64(tokenBytes[8:16], replyToken.Second)
+
+	return wire.MarshalDirect(
+		pingRequestTemplate,
+		func(endOff int) int {
+			// OOL: bytes blob = 4-byte length + 16-byte token + padding.
+			return wire.MeasureBytesOOL(endOff, tokenBytes[:])
+		},
+		func(dw *wire.DirectWriter) int {
+			// Write the bytes blob (OOL data).
+			blobPos := dw.WriteBytesOOL(tokenBytes[:])
+
+			// Write the PingRequest object.
+			objPos, obj := dw.WriteObject(pingRequestVTable, 4)
+
+			// Field 0: RelativeOffset to the bytes blob.
+			fieldOff := int(pingRequestVTable[2]) // offset 4
+			wire.PatchRelOff(obj, fieldOff, objPos, blobPos)
+
+			return objPos
+		},
+	)
 }
 
 // fastRNG is a per-goroutine fast PRNG for UID generation.

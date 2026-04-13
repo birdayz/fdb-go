@@ -1163,6 +1163,13 @@ func (tx *Transaction) SetTag(tag string) {
 	tx.tags = append(tx.tags, tag)
 }
 
+// GetTagThrottledDuration returns the total time this transaction was delayed
+// by proxy tag throttling across all GRV requests. Matches C++
+// Transaction::getTagThrottledDuration() (NativeAPI.actor.cpp:7594).
+func (tx *Transaction) GetTagThrottledDuration() float64 {
+	return tx.proxyTagThrottledDuration
+}
+
 // grvFlags returns the Flags field for GetReadVersionRequest.
 // Encodes priority and option flags into the uint32 bitmask.
 func (tx *Transaction) grvFlags() uint32 {

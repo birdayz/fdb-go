@@ -45,9 +45,9 @@ gh pr create --draft --title "{shift-name}: {one-line goal from handover priorit
 
 ## Step 4: Work
 
-Set up the work loop:
+Set up a 15-minute kick timer immediately:
 ```
-/loop 15m keep working until shift over
+/loop 15m get back to work
 ```
 
 Then start working on the highest-priority items from the handover. Follow the working rhythm in CLAUDE.md:

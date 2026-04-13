@@ -23,6 +23,8 @@ type options struct {
 	startupTimeout time.Duration
 	network        *testcontainers.DockerNetwork // user-provided network (nil = create one)
 	networkAliases []string
+	knobs          map[string]string // server knobs: --knob_NAME=VALUE
+	processCount   int               // fdbserver processes per container (default 1)
 }
 
 func defaultOptions() options {
@@ -36,6 +38,7 @@ func defaultOptions() options {
 		redundancyMode: "single",
 		autoInit:       true,
 		startupTimeout: 60 * time.Second,
+		processCount:   1,
 	}
 }
 
@@ -184,6 +187,59 @@ func WithNetwork(nw *testcontainers.DockerNetwork, aliases ...string) Option {
 func WithNetworkAliases(aliases ...string) Option {
 	return Option{applyFn: func(o *options) error {
 		o.networkAliases = append(o.networkAliases, aliases...)
+		return nil
+	}}
+}
+
+// WithProcessCount sets the number of fdbserver processes to run inside the
+// container. Default is 1. When n > 1, additional processes are started on
+// ports 4501..4500+n-1 after the primary process joins the cluster.
+//
+// Use with WithRedundancyMode("double") or ("triple") to enable data
+// replication across processes. Multiple storage servers enable shard splits,
+// which is required for testing cross-shard GetRange behavior.
+//
+// Example:
+//
+//	Run(ctx, "",
+//	    WithProcessCount(3),
+//	    WithRedundancyMode("double"),
+//	    WithKnob("min_shard_bytes", "40000"),
+//	)
+func WithProcessCount(n int) Option {
+	return Option{applyFn: func(o *options) error {
+		if n < 1 || n > 10 {
+			return fmt.Errorf("process count must be 1-10, got %d", n)
+		}
+		o.processCount = n
+		return nil
+	}}
+}
+
+// WithKnob sets a server-side FDB knob. Knobs are passed as --knob_NAME=VALUE
+// to the fdbserver process. This is useful for forcing shard splits
+// (e.g., WithKnob("min_shard_bytes", "40000")) or other server behavior changes.
+//
+// The knob is injected by modifying the entrypoint script inside the container.
+// Multiple WithKnob calls accumulate.
+func WithKnob(name, value string) Option {
+	return Option{applyFn: func(o *options) error {
+		// Validate: knob names must be alphanumeric + underscore (FDB convention).
+		// Values must not contain shell metacharacters (injected via sed).
+		for _, c := range name {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return fmt.Errorf("invalid knob name %q: must be [a-zA-Z0-9_]", name)
+			}
+		}
+		for _, c := range value {
+			if c == '\'' || c == '|' || c == ';' || c == '`' || c == '$' {
+				return fmt.Errorf("invalid knob value %q: contains shell metacharacter", value)
+			}
+		}
+		if o.knobs == nil {
+			o.knobs = make(map[string]string)
+		}
+		o.knobs[name] = value
 		return nil
 	}}
 }
