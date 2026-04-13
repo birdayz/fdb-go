@@ -176,6 +176,9 @@ func TestMultiShard(t *testing.T) {
 	t.Run("WatchClearRange", func(t *testing.T) {
 		testMultiShard_WatchClearRange(t, ctx, env)
 	})
+	t.Run("ConcurrentWritesDuringDD", func(t *testing.T) {
+		testMultiShard_ConcurrentWritesDuringDD(t, ctx, env)
+	})
 }
 
 // GetRange: full forward scan across all shards.
@@ -1007,4 +1010,101 @@ func testMultiShard_WatchClearRange(t *testing.T, ctx context.Context, env *mult
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 	g.Expect(result).To(gomega.BeNil())
 	t.Logf("watch fired after cross-shard ClearRange across %d shards", env.numShards)
+}
+
+// testMultiShard_ConcurrentWritesDuringDD verifies that concurrent writes
+// complete successfully while Data Distribution is actively splitting shards.
+// We inject a burst of large values to trigger splits, while simultaneously
+// writing smaller values on separate goroutines. After all writes finish,
+// we scan the entire range to verify no data was lost.
+func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// Write into the EXISTING key range (env.prefix) so writes hit the
+	// already-split 51 shards. Large values trigger further DD activity.
+	const writers = 8
+	const opsPerWriter = 25
+	const bigValueSize = 8000 // 50KB max_shard_bytes → many splits
+
+	type writeRecord struct {
+		key   string
+		value string
+	}
+	results := make([][]writeRecord, writers)
+
+	// Count shards before.
+	shardsBefore := env.numShards
+
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			var records []writeRecord
+			for i := 0; i < opsPerWriter; i++ {
+				// Keys interleave with existing data: ms_wd03_0012 sorts
+				// between ms_0030 and ms_0040, hitting different shards.
+				key := fmt.Sprintf("%swd%02d_%04d", env.prefix, workerID, i)
+				val := fmt.Sprintf("w%d-op%d", workerID, i)
+				paddedVal := val + string(bytes.Repeat([]byte{byte(workerID)}, bigValueSize))
+
+				_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+					tx.Set([]byte(key), []byte(paddedVal))
+					return nil, nil
+				})
+				if err != nil {
+					t.Errorf("worker %d op %d: %v", workerID, i, err)
+					return
+				}
+				records = append(records, writeRecord{key: key, value: paddedVal})
+			}
+			results[workerID] = records
+		}(w)
+	}
+
+	wg.Wait()
+
+	// Count shards after — new data should trigger further splits.
+	var shardsAfter int
+	env.db.db.locCache.invalidateRange(
+		[]byte(env.prefix), append([]byte(env.prefix), 0xFF), NoTenantID)
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.db.locCache.locateRange(tx.db, ctx,
+			[]byte(env.prefix), append([]byte(env.prefix), 0xFF), 500, false, tx.tenantId)
+	})
+	if err == nil {
+		shardsAfter = len(result.([]LocationResult))
+	}
+	t.Logf("shards: %d before → %d after (%d writers × %d ops × %dB values = %dKB injected)",
+		shardsBefore, shardsAfter, writers, opsPerWriter, bigValueSize,
+		writers*opsPerWriter*bigValueSize/1024)
+
+	// Verify: every committed key must exist with the correct value.
+	totalKeys := 0
+	for workerID, records := range results {
+		for _, rec := range records {
+			val, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+				return tx.Get(ctx, []byte(rec.key))
+			})
+			g.Expect(err).ToNot(gomega.HaveOccurred(), "worker %d key %s", workerID, rec.key)
+			g.Expect(val).ToNot(gomega.BeNil(), "worker %d key %s: missing after DD", workerID, rec.key)
+			g.Expect(val.([]byte)).To(gomega.Equal([]byte(rec.value)),
+				"worker %d key %s: value mismatch", workerID, rec.key)
+			totalKeys++
+		}
+	}
+
+	// Cross-check: full range scan for worker keys.
+	scanResult, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx,
+			[]byte(env.prefix+"wd"), append([]byte(env.prefix+"wd"), 0xFF), 0)
+		return kvs, err
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	scannedKVs := scanResult.([]KeyValue)
+	g.Expect(scannedKVs).To(gomega.HaveLen(totalKeys),
+		"range scan count mismatch: expected %d committed keys, got %d", totalKeys, len(scannedKVs))
+
+	t.Logf("verified %d keys across %d shards — no data lost during concurrent writes",
+		totalKeys, shardsAfter)
 }
