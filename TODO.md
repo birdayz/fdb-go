@@ -54,7 +54,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 - [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
 - [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
-- [ ] **Multi-shard concurrent writes during DD** — Concurrent Set/Commit while DD is actively splitting/moving shards. Verify no data loss.
+- [x] **Multi-shard concurrent writes during DD** — 8 goroutines × 25 ops write large values across 51 shards. Point read + scan cross-check verifies no data loss. nightshift-12.
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
