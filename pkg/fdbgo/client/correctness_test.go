@@ -1645,3 +1645,182 @@ func TestWatchNonExistentKey(t *testing.T) {
 		t.Fatalf("value: got %q, want %q", result, "now_exists")
 	}
 }
+
+// TestWatchTimeoutViaContext verifies that a Watch on an unchanging key
+// respects the context deadline and returns context.DeadlineExceeded.
+func TestWatchTimeoutViaContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_watch_timeout_key")
+
+	// Seed a key with a value.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("stable"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Watch with a short context deadline. Don't change the key.
+	watchCtx, watchCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer watchCancel()
+
+	start := time.Now()
+	_, err = db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+		// Read key to establish watch version.
+		_, err := tx.Get(watchCtx, key)
+		if err != nil {
+			return nil, err
+		}
+		return nil, tx.Watch(watchCtx, key)
+	})
+	elapsed := time.Since(start)
+
+	// Watch should have returned with a context deadline error.
+	if err == nil {
+		t.Fatal("Watch should have timed out, but returned nil")
+	}
+
+	// Check that the error is deadline-related.
+	if !strings.Contains(err.Error(), "deadline") && !strings.Contains(err.Error(), "canceled") && !strings.Contains(err.Error(), "context") {
+		t.Fatalf("expected context deadline/canceled error, got: %v", err)
+	}
+
+	// Should have waited roughly 2 seconds, not the full 120s.
+	if elapsed > 10*time.Second {
+		t.Fatalf("Watch took too long (%v) — context deadline should have cut it short", elapsed)
+	}
+	t.Logf("Watch timed out after %v (expected ~2s)", elapsed)
+}
+
+// TestWatchFiresOnAtomicMutation verifies that a Watch fires when the watched
+// key is mutated via an atomic operation (not just Set).
+func TestWatchFiresOnAtomicMutation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_watch_atomic_key")
+
+	// Seed key with counter=0.
+	var zeroBuf [8]byte
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, zeroBuf[:])
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Start watch in a goroutine.
+	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer watchCancel()
+
+	watchErr := make(chan error, 1)
+	go func() {
+		_, err := db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+			_, err := tx.Get(watchCtx, key)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Watch(watchCtx, key)
+		})
+		watchErr <- err
+	}()
+
+	// Let the watch register, then do an atomic ADD on the key.
+	time.Sleep(500 * time.Millisecond)
+	var addBuf [8]byte
+	binary.LittleEndian.PutUint64(addBuf[:], 42)
+	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Atomic(MutAddValue, key, addBuf[:])
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("atomic mutation: %v", err)
+	}
+
+	// Watch should fire.
+	select {
+	case err := <-watchErr:
+		if err != nil {
+			t.Fatalf("watch error: %v", err)
+		}
+	case <-watchCtx.Done():
+		t.Fatal("watch did not fire within 10 seconds after atomic mutation")
+	}
+
+	// Verify the value is 42.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	got := binary.LittleEndian.Uint64(result.([]byte))
+	if got != 42 {
+		t.Fatalf("counter: got %d, want 42", got)
+	}
+}
+
+// TestWatchCancellation verifies that cancelling the context returns
+// context.Canceled from the Watch.
+func TestWatchCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	key := []byte(t.Name() + "_watch_cancel_key")
+
+	// Seed a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("stable"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Create a cancellable context for the watch.
+	watchCtx, watchCancel := context.WithCancel(ctx)
+
+	watchErr := make(chan error, 1)
+	go func() {
+		_, err := db.Transact(watchCtx, func(tx *Transaction) (any, error) {
+			_, err := tx.Get(watchCtx, key)
+			if err != nil {
+				return nil, err
+			}
+			return nil, tx.Watch(watchCtx, key)
+		})
+		watchErr <- err
+	}()
+
+	// Let the watch register, then cancel the context.
+	time.Sleep(500 * time.Millisecond)
+	watchCancel()
+
+	// Watch should return with a cancellation error.
+	select {
+	case err := <-watchErr:
+		if err == nil {
+			t.Fatal("Watch should return error on context cancellation")
+		}
+		// The error should be context-related (Canceled or DeadlineExceeded).
+		if !strings.Contains(err.Error(), "canceled") && !strings.Contains(err.Error(), "context") {
+			t.Fatalf("expected context cancellation error, got: %v", err)
+		}
+		t.Logf("Watch cancellation (expected): %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Watch did not return within 10 seconds after context cancellation")
+	}
+}

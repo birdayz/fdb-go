@@ -57,11 +57,11 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
-- [ ] **Tenant isolation tests** — Zero coverage. Verify cross-tenant reads/writes are rejected. Test tenant prefix logic end-to-end.
-- [ ] **Watch edge cases** — Only basic fire tested. Need: timeout/cancellation, repeated triggers on same key, atomics triggering watches, watch on key that never changes.
-- [ ] **Snapshot read isolation (extensive)** — Only 1 test (Get doesn't conflict). Need: snapshot vs non-snapshot conflict behavior, snapshot + RYW edge cases (snapshot read after write, snapshot read after clear, snapshot range read with local mutations). Fuzz target for random snapshot/non-snapshot operation sequences.
-- [ ] **Transaction retry with RYW** — Real workload: txn fails mid-operation, retries via OnError, data changed by another txn in between. Verify conflict range preservation, RYW cache reset, retry semantics match C++. Fuzz target for random operation sequences with injected conflicts.
-- [ ] **Watch + atomic mutations** — Do atomics (ADD, OR, ByteMax, etc.) correctly trigger watches? Untested.
+- [x] **Tenant isolation tests** — Already covered in `fdb/tenant_test.go`: TestTenantCRUD (CRUD lifecycle) + TestTenantIsolation (cross-tenant key invisibility, shared key name different values, range scoping).
+- [x] **Watch edge cases** — 3 tests: timeout via context deadline, atomic mutation triggers watch, cancellation. swingshift-11d.
+- [x] **Snapshot read isolation (extensive)** — 5 tests: GetAfterClear, GetRangeAfterClearRange, GetRangeDoesNotConflict, GetAfterAtomicAdd, ConflictAsymmetry. swingshift-11d. Still TODO: fuzz target.
+- [x] **Transaction retry with RYW** — 4 tests: OnError resets RYW, new read version after OnError, conflict detection across retry, Transact automatic retry. swingshift-11d. Still TODO: fuzz target.
+- [x] **Watch + atomic mutations** — TestWatchFiresOnAtomicMutation verifies AtomicAdd triggers watch. swingshift-11d.
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
 
