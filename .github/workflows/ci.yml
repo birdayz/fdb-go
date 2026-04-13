@@ -155,7 +155,7 @@ jobs:
           PR_NUM=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
           bazelisk run //cmd/bench-report -- \
-            -old master-bench.txt \
-            -new bench-results.txt \
+            -old "$PWD/master-bench.txt" \
+            -new "$PWD/bench-results.txt" \
             -pr "$PR_NUM" \
             -repo "$REPO"
