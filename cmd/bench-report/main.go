@@ -21,9 +21,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -252,52 +253,84 @@ func fmtDelta(pct float64, status string) string {
 	}
 }
 
-// postOrUpdateComment posts or updates a PR comment via `gh api`.
+// postOrUpdateComment posts or updates a PR comment via GitHub REST API.
+// Uses GH_TOKEN env var for authentication (set by github.token in Actions).
 func postOrUpdateComment(repo string, pr int, body string) error {
-	// Find existing comment with marker.
-	existingID, err := findMarkerComment(repo, pr)
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		return fmt.Errorf("GH_TOKEN not set")
+	}
+
+	existingID, err := findMarkerComment(repo, pr, token)
 	if err != nil {
 		return fmt.Errorf("finding existing comment: %w", err)
 	}
 
+	payload, _ := json.Marshal(map[string]string{"body": body})
+
+	var url, method string
 	if existingID > 0 {
-		// Update existing comment.
-		payload, _ := json.Marshal(map[string]string{"body": body})
-		cmd := exec.Command("gh", "api", "--method", "PATCH",
-			fmt.Sprintf("repos/%s/issues/comments/%d", repo, existingID),
-			"--input", "-")
-		cmd.Stdin = bytes.NewReader(payload)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		url = fmt.Sprintf("https://api.github.com/repos/%s/issues/comments/%d", repo, existingID)
+		method = "PATCH"
+	} else {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/issues/%d/comments", repo, pr)
+		method = "POST"
 	}
 
-	// Create new comment.
-	payload, _ := json.Marshal(map[string]string{"body": body})
-	cmd := exec.Command("gh", "api", "--method", "POST",
-		fmt.Sprintf("repos/%s/issues/%d/comments", repo, pr),
-		"--input", "-")
-	cmd.Stdin = bytes.NewReader(payload)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	req, err := http.NewRequest(method, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GitHub API %s %s: %d %s", method, url, resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
-func findMarkerComment(repo string, pr int) (int64, error) {
-	cmd := exec.Command("gh", "api",
-		fmt.Sprintf("repos/%s/issues/%d/comments", repo, pr),
-		"--jq", fmt.Sprintf(`.[] | select(.body | startswith("%s")) | .id`, marker))
-	out, err := cmd.Output()
+func findMarkerComment(repo string, pr int, token string) (int64, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/issues/%d/comments?per_page=100", repo, pr)
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return 0, err
 	}
-	s := strings.TrimSpace(string(out))
-	if s == "" {
-		return 0, nil
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
 	}
-	// Multiple IDs possible if jq returns many; take the first.
-	lines := strings.Split(s, "\n")
-	return strconv.ParseInt(strings.TrimSpace(lines[0]), 10, 64)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("list comments: HTTP %d", resp.StatusCode)
+	}
+
+	var comments []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
+		return 0, err
+	}
+
+	for _, c := range comments {
+		if strings.HasPrefix(c.Body, marker) {
+			return c.ID, nil
+		}
+	}
+	return 0, nil
 }
 
 func main() {
