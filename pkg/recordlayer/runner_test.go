@@ -169,6 +169,60 @@ var _ = Describe("FDBDatabaseRunner", func() {
 		})
 	})
 
+	Describe("retry with backoff", func() {
+		It("retries with increasing delay on retryable errors", func() {
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(4).
+				SetInitialDelay(10 * time.Millisecond).
+				SetMaxDelay(1 * time.Second)
+
+			attempts := 0
+			start := time.Now()
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, fdb.Error{Code: 1020} // not_committed — retryable
+				}
+				return "done", nil
+			})
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(attempts).To(Equal(3))
+			// Should have had 2 delay periods (before attempt 2 and 3).
+			// InitialDelay=10ms, so minimum total delay ~20ms (10 + 10*2 exponential).
+			Expect(elapsed).To(BeNumerically(">", 15*time.Millisecond))
+		})
+
+		It("gives up after max attempts", func() {
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(3).
+				SetInitialDelay(1 * time.Millisecond)
+
+			attempts := 0
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
+				return nil, fdb.Error{Code: 1020} // always retryable
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(attempts).To(Equal(3))
+		})
+
+		It("cancels between retries when context is cancelled", func() {
+			cancelCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+			defer cancel()
+
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(100).
+				SetInitialDelay(100 * time.Millisecond) // Long delay so context cancels during wait
+
+			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
+				return nil, fdb.Error{Code: 1020} // retryable
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
+		})
+	})
+
 	Describe("Commit hooks with runner", func() {
 		It("runs pre-commit checks", func() {
 			runner := NewFDBDatabaseRunner(sharedDB)
