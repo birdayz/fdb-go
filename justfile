@@ -69,17 +69,18 @@ lint:
 
 # Run all benchmarks (skips Ginkgo specs, runs only Go benchmarks)
 bench:
-    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench=." --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
+    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.run=^$$" --test_arg="-test.bench=." --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
 # Run a specific benchmark by name regex
 bench-one NAME:
-    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
+    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.run=^$$" --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
 # Run all benchmarks for CI, capture results to bench-results.txt
 bench-ci:
     #!/usr/bin/env bash
     set -euo pipefail
     COMMON_ARGS=(
+        --test_arg="-test.run=^$"
         --test_arg="-test.bench=."
         --test_arg="-test.benchmem"
         --test_arg="-test.benchtime=3s"
