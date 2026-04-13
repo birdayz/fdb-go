@@ -223,45 +223,117 @@ func (tx *Transaction) getValue(ctx context.Context, key []byte) ([]byte, error)
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo) ([]byte, error) {
-	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
-	order := loadBalanceOrder(servers, chosenIdx)
+	// Pick best + second-best for speculative hedge.
+	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 
-	for _, server := range order {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
-		if err != nil {
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+	// Build a sender closure for a given server.
+	makeSender := func(server ServerInfo) sendFunc {
+		return func() inFlightRPC {
+			conn, err := tx.db.getOrDial(ctx, server.Address)
+			if err != nil {
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
-		delta := tx.db.queueModel.startRequest(server.Address)
-		start := time.Now()
+			delta := tx.db.queueModel.startRequest(server.Address)
+			start := time.Now()
 
-		if err := conn.SendFrame(server.Token, body); err != nil {
+			if err := conn.SendFrame(server.Token, body); err != nil {
+				getValueBufPool.Put(poolBuf)
+				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+				cancelReply()
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
 			getValueBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			tx.db.handleConnError(server.Address)
-			continue
+			return inFlightRPC{
+				replyCh: replyCh,
+				cancel:  cancelReply,
+				addr:    server.Address,
+				delta:   delta,
+				start:   start,
+			}
 		}
-		getValueBufPool.Put(poolBuf)
-		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
-		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			continue
-		}
-		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		val, penalty, err := parseGetValueReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-		return val, err
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+
+	primary := makeSender(servers[bestIdx])
+	var secondary sendFunc
+	if secondIdx >= 0 {
+		secondary = makeSender(servers[secondIdx])
+	}
+
+	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	// Process result.
+	if result.addr != "" {
+		if result.connErr {
+			tx.db.handleConnError(result.addr)
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		} else if result.err != nil {
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		}
+	}
+	if result.err != nil {
+		// Hedge failed — fall back to remaining servers sequentially.
+		for i, server := range servers {
+			if i == bestIdx || i == secondIdx {
+				continue // already tried
+			}
+			val, err := tx.sendGetValueToServer(ctx, key, server)
+			if err == nil {
+				return val, nil
+			}
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				return nil, err
+			}
+		}
+		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	}
+
+	val, penalty, err := parseGetValueReply(result.body)
+	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+	return val, err
+}
+
+// sendGetValueToServer sends a getValue RPC to a single specific server.
+// Used as fallback after hedge fails.
+func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo) ([]byte, error) {
+	conn, err := tx.db.getOrDial(ctx, server.Address)
+	if err != nil {
+		tx.db.handleConnError(server.Address)
+		return nil, err
+	}
+	replyToken, replyCh, cancelReply := conn.PrepareReply()
+	body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+
+	delta := tx.db.queueModel.startRequest(server.Address)
+	start := time.Now()
+
+	if err := conn.SendFrame(server.Token, body); err != nil {
+		getValueBufPool.Put(poolBuf)
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+		cancelReply()
+		tx.db.handleConnError(server.Address)
+		return nil, err
+	}
+	getValueBufPool.Put(poolBuf)
+	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
+	if err != nil {
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+		cancelReply()
+		return nil, err
+	}
+	if resp.Err != nil {
+		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+		tx.db.handleConnError(server.Address)
+		return nil, resp.Err
+	}
+	val, penalty, parseErr := parseGetValueReply(resp.Body)
+	tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), parseErr == nil, isFutureVersionOrProcessBehind(parseErr), penalty)
+	return val, parseErr
 }
 
 // getRange reads a key range [begin, end), fetching all overlapping shard locations
