@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"context"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -572,6 +573,36 @@ var _ = Describe("Index Scan Unit Tests", func() {
 			Expect(c.closed).To(BeFalse())
 			Expect(c.recordsRead).To(Equal(0))
 			Expect(c.bytesScanned).To(Equal(int64(0)))
+		})
+	})
+
+	Describe("ChainedCursor", func() {
+		It("returns exhausted after Close", func() {
+			counter := 0
+			cursor := Chained[int](
+				func(prev *int) (*int, error) {
+					counter++
+					v := counter
+					return &v, nil
+				},
+				nil, nil, nil,
+			)
+
+			// First call should return a value.
+			ctx := context.Background()
+			r1, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r1.HasNext()).To(BeTrue())
+			Expect(r1.GetValue()).To(Equal(1))
+
+			// Close the cursor.
+			Expect(cursor.Close()).NotTo(HaveOccurred())
+
+			// After Close, OnNext should return no-next with SourceExhausted.
+			r2, err := cursor.OnNext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(r2.HasNext()).To(BeFalse())
+			Expect(r2.GetNoNextReason()).To(Equal(SourceExhausted))
 		})
 	})
 })
