@@ -103,9 +103,9 @@ func FuzzRYWCache(f *testing.F) {
 					endIdx = len(keys)
 				}
 				begin := keys[keyIdx]
-				end := keys[endIdx-1] + "\x00" // exclusive end
+				end := keys[endIdx-1] + "\x00" // exclusive end (includes keys[endIdx-1])
 				cache.clearRange([]byte(begin), []byte(end))
-				for _, k := range keys[keyIdx : endIdx-1] {
+				for _, k := range keys[keyIdx:endIdx] {
 					delete(model, k)
 				}
 			}
