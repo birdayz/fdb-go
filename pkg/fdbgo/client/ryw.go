@@ -256,12 +256,13 @@ func (c *rywCache) getRange(
 
 	for remaining > 0 && bytes.Compare(curBegin, curEnd) < 0 {
 		// Fetch from server with headroom to compensate for clears.
-		fetchLimit := remaining * 2
-		if fetchLimit < 256 {
-			fetchLimit = 256
-		}
-		if fetchLimit > 10000 {
-			fetchLimit = 10000
+		// Cap at 10000 before doubling to avoid overflow when remaining=math.MaxInt.
+		fetchLimit := 10000
+		if remaining <= 5000 {
+			fetchLimit = remaining * 2
+			if fetchLimit < 256 {
+				fetchLimit = 256
+			}
 		}
 
 		serverKVs, serverMore, err := serverGetRange(ctx, curBegin, curEnd, fetchLimit, reverse)

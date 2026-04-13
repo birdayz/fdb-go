@@ -38,24 +38,17 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
 	g.Expect(err).ToNot(gomega.HaveOccurred())
+	t.Cleanup(func() { container.Terminate(context.Background()) })
 
 	connStr, err := container.ClusterFile(ctx)
-	if err != nil {
-		container.Terminate(ctx)
-	}
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	cf, err := ParseClusterString(connStr)
-	if err != nil {
-		container.Terminate(ctx)
-	}
 	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	db, err := OpenDatabaseFromConfig(ctx, cf, nil)
-	if err != nil {
-		container.Terminate(ctx)
-	}
 	g.Expect(err).ToNot(gomega.HaveOccurred())
+	t.Cleanup(func() { db.Close() })
 
 	prefix := "ms_"
 
@@ -104,11 +97,6 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 	}
 }
 
-func (e *multiShardEnv) cleanup(ctx context.Context) {
-	e.db.Close()
-	e.container.Terminate(ctx)
-}
-
 // TestMultiShard runs all cross-shard tests against a shared 3-process
 // FDB cluster with small shards (~35 shards for 1MB data).
 func TestMultiShard(t *testing.T) {
@@ -117,13 +105,14 @@ func TestMultiShard(t *testing.T) {
 	defer cancel()
 
 	env := setupMultiShardEnv(t, ctx)
-	defer env.cleanup(ctx)
+	// Cleanup via t.Cleanup registered in setupMultiShardEnv.
 
 	if env.numShards <= 1 {
 		t.Skip("shard splits did not occur — cannot test cross-shard behavior")
 	}
 	t.Logf("running cross-shard tests across %d shards", env.numShards)
 
+	// Sub-tests run sequentially: they share env state and some write to overlapping keys.
 	t.Run("GetRange", func(t *testing.T) {
 		testMultiShard_GetRange(t, ctx, env)
 	})
