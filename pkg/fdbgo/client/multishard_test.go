@@ -166,6 +166,12 @@ func TestMultiShard(t *testing.T) {
 	t.Run("TransactRetry", func(t *testing.T) {
 		testMultiShard_TransactRetry(t, ctx, env)
 	})
+	t.Run("Versionstamp", func(t *testing.T) {
+		testMultiShard_Versionstamp(t, ctx, env)
+	})
+	t.Run("ReadWriteConflictRanges", func(t *testing.T) {
+		testMultiShard_ReadWriteConflictRanges(t, ctx, env)
+	})
 }
 
 // GetRange: full forward scan across all shards.
@@ -645,4 +651,66 @@ func testMultiShard_TransactRetry(t *testing.T, ctx context.Context, env *multiS
 	g.Expect(len(val)).To(gomega.BeNumerically(">=", 3), // at least v0 + 1 append
 		"expected at least 3 bytes, got %d: %q", len(val), val)
 	t.Logf("transact retry: %d workers, final value %d bytes", workers, len(val))
+}
+
+// Versionstamp: committed version and versionstamp work across multi-shard cluster.
+// C++ ref: VersionStamp.actor.cpp validates versionstamps in distributed setting.
+func testMultiShard_Versionstamp(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	tx := env.db.CreateTransaction()
+	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tx.SetReadVersion(rv)
+
+	// Write to keys on different shards.
+	tx.Set([]byte(env.prefix+"vs_0010"), []byte("a"))
+	tx.Set([]byte(env.prefix+"vs_0050"), []byte("b"))
+	tx.Set([]byte(env.prefix+"vs_0090"), []byte("c"))
+
+	err = tx.Commit(ctx)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	ver, err := tx.GetCommittedVersion()
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	g.Expect(ver).To(gomega.BeNumerically(">", 0))
+
+	vs, err := tx.GetVersionstamp()
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	g.Expect(vs).To(gomega.HaveLen(10))
+
+	t.Logf("versionstamp across %d shards: version=%d stamp=%x", env.numShards, ver, vs)
+}
+
+// ReadWriteConflictRanges: explicit conflict ranges spanning multiple shards.
+// C++ ref: ConflictRange.actor.cpp tests explicit conflict range behavior.
+func testMultiShard_ReadWriteConflictRanges(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// tx1: add explicit read conflict on a range spanning multiple shards.
+	tx1 := env.db.CreateTransaction()
+	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tx1.SetReadVersion(rv)
+
+	// Explicit read conflict spanning from key 10 to key 90 — crosses many shards.
+	begin := []byte(env.prefix + "0010")
+	end := []byte(env.prefix + "0090")
+	err = tx1.AddReadConflictRange(begin, end)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// tx1 also writes something unrelated.
+	tx1.Set([]byte(env.prefix+"rw_test"), []byte("from_tx1"))
+
+	// tx2: write to a key in the middle of that conflict range.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte(env.prefix+"0050"), []byte("concurrent"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// tx1 should conflict because of the explicit read conflict range.
+	err = tx1.Commit(ctx)
+	g.Expect(err).To(gomega.HaveOccurred(), "expected conflict from explicit cross-shard read conflict range")
+	t.Logf("explicit read conflict range across %d shards: conflict detected", env.numShards)
 }
