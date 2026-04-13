@@ -117,6 +117,7 @@ go_test(
     timeout = "long",
     srcs = [
         "aggregate_function_test.go",
+        "aggregate_function_unit_test.go",
         "api_coverage2_test.go",
         "api_coverage_test.go",
         "benchmark_test.go",
@@ -265,7 +266,9 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
 
