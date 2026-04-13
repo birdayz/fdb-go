@@ -197,6 +197,18 @@ func WithNetworkAliases(aliases ...string) Option {
 // Multiple WithKnob calls accumulate.
 func WithKnob(name, value string) Option {
 	return Option{applyFn: func(o *options) error {
+		// Validate: knob names must be alphanumeric + underscore (FDB convention).
+		// Values must not contain shell metacharacters (injected via sed).
+		for _, c := range name {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return fmt.Errorf("invalid knob name %q: must be [a-zA-Z0-9_]", name)
+			}
+		}
+		for _, c := range value {
+			if c == '\'' || c == '|' || c == ';' || c == '`' || c == '$' {
+				return fmt.Errorf("invalid knob value %q: contains shell metacharacter", value)
+			}
+		}
 		if o.knobs == nil {
 			o.knobs = make(map[string]string)
 		}

@@ -625,14 +625,12 @@ func (c *Conn) connectionMonitor() {
 		// Inner loop: C++ lines 690-720.
 		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
 		startingBytes := c.bytesReceived.Load()
-		alive := false
-		for timeouts := 0; ; timeouts++ {
+		for {
 			timer := time.NewTimer(2 * time.Second)
 			select {
 			case <-replyCh:
 				// PING reply arrived — connection alive. C++ line 710-714.
 				timer.Stop()
-				alive = true
 			case <-timer.C:
 				// 2s timeout. Check if ANY bytes arrived.
 				current := c.bytesReceived.Load()
@@ -643,7 +641,9 @@ func (c *Conn) connectionMonitor() {
 					return
 				}
 				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
-				// C++ line 707-708: update baseline, increment timeouts, loop.
+				// C++ line 707-708: update baseline, loop again.
+				// C++ uses timeouts counter here only for logging (ConnectionSlowPing),
+				// NOT for kill decisions — the kill condition is solely bytesReceived.
 				startingBytes = current
 				continue
 			case <-c.ctx.Done():
@@ -652,7 +652,6 @@ func (c *Conn) connectionMonitor() {
 			}
 			break
 		}
-		_ = alive // used for clarity; break exits inner loop
 	}
 }
 
