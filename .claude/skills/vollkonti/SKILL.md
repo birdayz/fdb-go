@@ -1,3 +1,8 @@
+---
+name: vollkonti
+description: Start or continue a shift in the Vollkonti 24/7 shift system. Determines shift type (day/swing/night) from current time, reads handover, creates branch+PR.
+---
+
 # Vollkonti Shift System
 
 You are starting a shift in a Vollkontinuierliches Schichtsystem (continuous 24/7 shift operation). This project is industrialized — work is done in 8-hour shifts with structured handovers.
@@ -10,9 +15,9 @@ You are starting a shift in a Vollkontinuierliches Schichtsystem (continuous 24/
 | Swing shift | 14:00 — 22:00 | `swingshift-N` |
 | Night shift | 22:00 — 06:00 | `nightshift-N` |
 
-Determine which shift type matches the current time. The number N increments globally — check `ls -t shifts/*.md | head -1` to find the last shift, extract the number, then increment.
+Determine which shift type matches the current time. The number N increments globally — check `ls shifts/*.md | sort -r | head -1` to find the last shift, extract the number, then increment.
 
-**Filenames include the date:** `shifts/{shift-name}_YYYY-MM-DD.md` (e.g., `shifts/swingshift-8_2026-04-12.md`). This prevents confusion when a shift from today looks identical to one from yesterday.
+**Filenames are date-prefixed:** `shifts/YYYY-MM-DD-{shift-name}.md` (e.g., `shifts/2026-04-12-swingshift-8.md`). Date prefix means `ls | sort -r` gives reverse-chronological order instantly.
 
 ## Step 1: Check for active shift
 
@@ -27,7 +32,7 @@ gh pr list --state open
 
 Read the latest handover document:
 ```
-ls -t shifts/*.md | head -1
+ls shifts/*.md | sort -r | head -1
 ```
 Read it thoroughly. This is your ONLY briefing — you have zero prior context.
 
@@ -101,7 +106,7 @@ When implementation is done and tests pass:
 
 **Only when the shift clock runs out** (not when work feels "done"). Keep working until end of shift. Then, only after the reviewer approves (no new issues in the latest review round):
 
-1. **Write handover** — create `shifts/{shift-name}_YYYY-MM-DD.md` with:
+1. **Write handover** — create `shifts/YYYY-MM-DD-{shift-name}.md` with:
    - Date, **actual** start and end times (not the planned window — record when you started and when you're writing the handover), PR number
    - What was done (grouped by category)
    - Current state (test counts, CI status, open issues)
@@ -125,5 +130,5 @@ When implementation is done and tests pass:
 
 If you're unsure whether a shift is in progress:
 - `gh pr list --state open` — open PR = shift in progress
-- `ls -t shifts/*.md | head -1` — newest handover = last completed shift
+- `ls shifts/*.md | sort -r | head -1` — newest handover = last completed shift
 - If no open PRs → start a new shift
