@@ -1824,3 +1824,63 @@ func TestWatchCancellation(t *testing.T) {
 		t.Fatal("Watch did not return within 10 seconds after context cancellation")
 	}
 }
+
+// TestHedgeKnob verifies SetHedgeEnabled controls speculative requests.
+func TestHedgeKnob(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	db := openTestDB(t, ctx)
+	defer db.Close()
+
+	// Default: hedge enabled.
+	if !db.HedgeEnabled() {
+		t.Fatal("hedge should be enabled by default")
+	}
+
+	key := []byte(t.Name() + "_key")
+
+	// Write a key.
+	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("hedged"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	// Read with hedge enabled — should work.
+	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("get with hedge: %v", err)
+	}
+	if string(result.([]byte)) != "hedged" {
+		t.Fatalf("got %q, want %q", result, "hedged")
+	}
+
+	// Disable hedge.
+	db.SetHedgeEnabled(false)
+	if db.HedgeEnabled() {
+		t.Fatal("hedge should be disabled after SetHedgeEnabled(false)")
+	}
+
+	// Read with hedge disabled — should still work (just no hedging).
+	result, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, key)
+	})
+	if err != nil {
+		t.Fatalf("get without hedge: %v", err)
+	}
+	if string(result.([]byte)) != "hedged" {
+		t.Fatalf("got %q, want %q", result, "hedged")
+	}
+
+	// Re-enable.
+	db.SetHedgeEnabled(true)
+	if !db.HedgeEnabled() {
+		t.Fatal("hedge should be re-enabled")
+	}
+}
