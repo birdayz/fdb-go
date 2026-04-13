@@ -75,7 +75,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
 | 7 | `getRange` RYW merge | DESIGN | C++ segment-tree `RYWIterator`. Go iterative fetch+merge loop. Functionally equivalent. |
 | 8 | QueueModel key | COSMETIC | C++ `endpoint.token.first()`. Go address string. Same identity. |
-| 9 | Load balance secondDelay | PERF | C++ speculative second request. Go sequential. p99 only. |
+| 9 | ~~Load balance secondDelay~~ | ~~PERF~~ FIXED | ~~C++ speculative second request. Go sequential.~~ Fixed: `sendFrameWithHedge()` in `hedge.go`. All 3 read paths hedge. swingshift-11. |
 | 10 | `FLAG_FIRST_IN_BATCH` | COSMETIC | Not exposed. No behavioral gap. |
 
 ### Missing C API Surface (audit 2026-04-13)
