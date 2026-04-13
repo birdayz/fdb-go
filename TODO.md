@@ -90,7 +90,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 ### Bugs
 
-_No known bugs. 2460 Ginkgo specs + 430 conformance specs + 50 chaos tests pass._
+_No known bugs. 2522 Ginkgo specs + 430 conformance specs + 50 chaos tests pass._
 
 ### Features
 
