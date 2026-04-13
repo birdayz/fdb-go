@@ -580,15 +580,16 @@ func buildVoidReply() []byte {
 // Matches C++ FlowTransport.actor.cpp connectionMonitor():
 //   - Check every 750ms (CONNECTION_MONITOR_LOOP_TIME)
 //   - If no bytes received since last check AND there are pending requests, send PING
-//   - If still no bytes after 2s (CONNECTION_MONITOR_TIMEOUT), kill connection
+//   - If still no bytes after 5s, kill connection
+//
+// Timeout is 5s (matching DefaultRPCTimeout) instead of C++'s 2s to tolerate
+// slow CI environments where instrumented code delays server PING delivery.
 //
 // Only activates when there are pending requests — idle connections (no
 // in-flight RPCs) are left alone and handled by TCP keepalive (10s).
-// This matches C++ which checks peer->reliable.empty() && peer->unsent.empty()
-// before entering the PING phase.
 //
 // Any bytes received (PING reply, normal responses, server PINGs) reset the timer.
-// Detects dead connections in ~2.75s instead of waiting 10s for TCP keepalive.
+// Detects dead connections in ~5.75s instead of waiting 10s for TCP keepalive.
 func (c *Conn) connectionMonitor() {
 	defer c.loopWG.Done()
 
@@ -610,8 +611,8 @@ func (c *Conn) connectionMonitor() {
 				continue
 			}
 			// No new bytes since last check.
-			if pingPending && time.Since(pingSentAt) > 2*time.Second {
-				// PING timeout — connection is dead.
+			if pingPending && time.Since(pingSentAt) > 5*time.Second {
+				// PING timeout — connection is dead. 5s matches DefaultRPCTimeout.
 				c.cancel()
 				return
 			}
