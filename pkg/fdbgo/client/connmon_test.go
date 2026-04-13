@@ -84,9 +84,9 @@ func TestConnectionMonitor_SurvivesIdleConnection(t *testing.T) {
 		t.Fatalf("warmup: %v", err)
 	}
 
-	// Wait 7 seconds — longer than the 5.75s PING timeout. If the monitor
-	// incorrectly kills idle connections, the next transaction will fail.
-	time.Sleep(7 * time.Second)
+	// Wait 5 seconds — longer than a full PING cycle (750ms + 750ms + 2s = 3.5s).
+	// If the monitor incorrectly kills idle connections, the next tx will fail.
+	time.Sleep(5 * time.Second)
 
 	// Verify the connection is still alive by doing another transaction.
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {

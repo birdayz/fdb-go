@@ -577,77 +577,113 @@ func buildVoidReply() []byte {
 }
 
 // connectionMonitor detects dead connections by sending outbound PINGs.
-// Matches C++ FlowTransport.actor.cpp connectionMonitor():
-//   - Check every 750ms (CONNECTION_MONITOR_LOOP_TIME)
-//   - If no bytes received since last check AND there are pending requests, send PING
-//   - If still no bytes after 5s, kill connection
+// Matches C++ FlowTransport.actor.cpp connectionMonitor() (lines 641-721):
 //
-// Timeout is 5s (matching DefaultRPCTimeout) instead of C++'s 2s to tolerate
-// slow CI environments where instrumented code delays server PING delivery.
+// Outer loop:
+//  1. Sleep CONNECTION_MONITOR_LOOP_TIME (750ms)
+//  2. If no pending requests → check idle timeout (skip PING)
+//  3. Sleep again (jittered), then send PING
+//  4. Inner loop: wait CONNECTION_MONITOR_TIMEOUT (2s) per round
+//     - If bytesReceived unchanged → kill connection
+//     - If bytesReceived changed → update baseline, continue inner loop
+//     - If PING reply arrives → break (connection alive)
 //
-// Only activates when there are pending requests — idle connections (no
-// in-flight RPCs) are left alone and handled by TCP keepalive (10s).
-//
-// Any bytes received (PING reply, normal responses, server PINGs) reset the timer.
-// Detects dead connections in ~5.75s instead of waiting 10s for TCP keepalive.
+// The inner retry loop is key: a single 2s timeout with no bytes kills,
+// but if ANY bytes arrive (server PINGs, other responses), the baseline
+// resets and we wait another 2s. This tolerates slow-but-alive connections.
 func (c *Conn) connectionMonitor() {
 	defer c.loopWG.Done()
 
-	ticker := time.NewTicker(750 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastBytes int64
-	var pingSentAt time.Time
-	var pingPending bool
-
 	for {
+		// Outer loop: sleep, then decide whether to PING.
+		// C++ CONNECTION_MONITOR_LOOP_TIME = 0.75s
 		select {
-		case <-ticker.C:
-			current := c.bytesReceived.Load()
-			if current != lastBytes {
-				// Activity detected — reset state.
-				lastBytes = current
-				pingPending = false
-				continue
-			}
-			// No new bytes since last check.
-			if pingPending && time.Since(pingSentAt) > 5*time.Second {
-				// PING timeout — connection is dead. 5s matches DefaultRPCTimeout.
-				c.cancel()
-				return
-			}
-			if !pingPending {
-				// Only PING if there are pending requests. Idle connections
-				// (no in-flight RPCs) don't need probing — TCP keepalive (10s)
-				// handles them. This avoids killing connections during transient
-				// network hiccups when nobody's waiting for a response.
-				c.pendingMu.RLock()
-				hasPending := len(c.pending) > 0
-				c.pendingMu.RUnlock()
-				if !hasPending {
-					continue
-				}
-				c.sendPing()
-				pingSentAt = time.Now()
-				pingPending = true
-			}
+		case <-time.After(750 * time.Millisecond):
 		case <-c.ctx.Done():
 			return
 		}
+
+		// C++ checks peer->reliable.empty() && peer->unsent.empty() && peer->outstandingReplies == 0.
+		// If no pending requests, the connection is idle — skip PING, let TCP keepalive handle it.
+		c.pendingMu.RLock()
+		hasPending := len(c.pending) > 0
+		c.pendingMu.RUnlock()
+		if !hasPending {
+			continue
+		}
+
+		// C++ second delay (jittered) before sending PING.
+		select {
+		case <-time.After(750 * time.Millisecond):
+		case <-c.ctx.Done():
+			return
+		}
+
+		// Send PING and register for reply.
+		replyCh := c.sendPingWithReply()
+
+		// Inner loop: C++ lines 690-720.
+		// Wait 2s per round. Kill only if bytesReceived is truly frozen.
+		startingBytes := c.bytesReceived.Load()
+		alive := false
+		for timeouts := 0; ; timeouts++ {
+			timer := time.NewTimer(2 * time.Second)
+			select {
+			case <-replyCh:
+				// PING reply arrived — connection alive. C++ line 710-714.
+				timer.Stop()
+				alive = true
+			case <-timer.C:
+				// 2s timeout. Check if ANY bytes arrived.
+				current := c.bytesReceived.Load()
+				if current == startingBytes {
+					// No bytes at all since PING was sent — connection is dead.
+					// C++ line 698-699: throw connection_failed.
+					c.cancel()
+					return
+				}
+				// Bytes arrived (server PINGs, other traffic) but not our PING reply.
+				// C++ line 707-708: update baseline, increment timeouts, loop.
+				startingBytes = current
+				continue
+			case <-c.ctx.Done():
+				timer.Stop()
+				return
+			}
+			break
+		}
+		_ = alive // used for clarity; break exits inner loop
 	}
 }
 
-// sendPing sends a PingRequest to the peer's well-known PING endpoint.
-// Fire-and-forget: we don't register a pending request because we only
-// care about ANY bytes arriving (which bytesReceived tracks).
-func (c *Conn) sendPing() {
+// sendPingWithReply sends a PingRequest and returns a channel that closes
+// when the PING reply arrives. Matches C++ pingRequest.reply.getFuture().
+// The reply is registered in the pending map so readLoop dispatches it.
+func (c *Conn) sendPingWithReply() <-chan struct{} {
+	done := make(chan struct{})
+	replyToken, replyCh, cancelReply := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
-	body := buildPingRequest(NewUID())
+	body := buildPingRequest(replyToken)
 	select {
 	case c.writeCh <- writeReq{token: pingEP, body: body}:
 	default:
-		// Write channel full — we'll detect the dead connection on next tick.
+		// Write channel full — cancel and return closed channel
+		// so the inner loop falls through to bytesReceived check.
+		cancelReply()
+		close(done)
+		return done
 	}
+	// Wait for reply in background, then signal done.
+	go func() {
+		defer close(done)
+		select {
+		case <-replyCh:
+			// Reply arrived.
+		case <-c.ctx.Done():
+			cancelReply()
+		}
+	}()
+	return done
 }
 
 // PingRequest file identifier from C++ flow/genericactors.actor.h.
