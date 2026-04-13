@@ -73,7 +73,7 @@ All data-path functions implemented. Missing are observability/admin only:
 | C Function | Category | Assessment |
 |---|---|---|
 | `fdb_transaction_get_mapped_range` | Niche | Server-side index join. Record Layer doesn't use it. |
-| `fdb_transaction_get_tag_throttled_duration` | Observability | Returns cumulative tag-throttle delay. Enforcement works, reporting missing. |
+| ~~`fdb_transaction_get_tag_throttled_duration`~~ | ~~Observability~~ | ~~Returns cumulative tag-throttle delay.~~ Implemented as `GetTagThrottledDuration()` (dayshift-10). |
 | `fdb_transaction_get_total_cost` | Observability | Estimated transaction cost for rate limiting. |
 | `fdb_database_force_recovery_with_data_loss` | Admin | DR operation. |
 | `fdb_database_create_snapshot` | Admin | Disk-level backup. |
