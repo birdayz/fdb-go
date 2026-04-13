@@ -32,6 +32,7 @@ go_test(
     name = "client_test",
     timeout = "eternal",
     srcs = [
+        "atomic_roundtrip_test.go",
         "atomic_test.go",
         "bench_test.go",
         "c_binding_port_test.go",
