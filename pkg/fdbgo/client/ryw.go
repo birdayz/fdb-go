@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"math"
 	"sort"
 	"sync"
 )
@@ -247,6 +248,9 @@ func (c *rywCache) getRange(
 	// the limit or the server is exhausted for the remaining range.
 	var result []KeyValue
 	remaining := limit
+	if remaining <= 0 {
+		remaining = math.MaxInt // C++ ROW_LIMIT_UNLIMITED: 0 or negative = no limit
+	}
 	curBegin := begin
 	curEnd := end
 

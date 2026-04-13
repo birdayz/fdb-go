@@ -14,7 +14,7 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **getKey selector resolution across shard boundaries** — Go sent ONE request and returned the reply key, ignoring `orEqual` and `offset` fields from the `KeySelector` in the reply. C++ loops until `offset==0 && orEqual==true`. In multi-shard clusters, selectors crossing shard boundaries returned wrong keys. Fixed: full resolution loop matching C++. Not caught by tests (single-shard testcontainers).
 - [x] **hot_shard/range_locked backoff cap** — Go used `DEFAULT_MAX_BACKOFF` (1s) for `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242). C++ uses `RESOURCE_CONSTRAINED_MAX_BACKOFF` (30s). Caused over-aggressive retry under hot-shard conditions. Fixed: moved to resource-constrained group.
 
-- [ ] **RYW getRange: Set + Clear + GetRange on new keys returns empty** — When keys are Set locally (not yet on server), then one is Cleared, GetRange returns empty instead of the non-cleared keys. The RYW slow path (triggered by hasClears) fetches server data (empty for new keys) and the merge doesn't include the local Sets. Discovered dayshift-10 multi-shard test.
+- [x] **RYW getRange: limit=0 (unlimited) skipped slow path** — `remaining := limit` with `limit=0` caused `for remaining > 0` to never execute. Fixed: `if remaining <= 0 { remaining = math.MaxInt }` matching `readpath.go`. Discovered dayshift-10 multi-shard test.
 
 _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 

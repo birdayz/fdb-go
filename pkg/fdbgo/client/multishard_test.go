@@ -172,11 +172,9 @@ func TestMultiShard(t *testing.T) {
 	t.Run("ReadWriteConflictRanges", func(t *testing.T) {
 		testMultiShard_ReadWriteConflictRanges(t, ctx, env)
 	})
-	// NOTE: ReadYourWrites sub-test disabled — discovered RYW bug where
-	// Set + Clear + GetRange on local-only keys (not yet on server) returns
-	// empty. The RYW getRange slow path fetches server data (empty for new
-	// keys) and the merge doesn't include local Sets after a Clear. Tracked
-	// in TODO.md as a bug.
+	t.Run("ReadYourWrites", func(t *testing.T) {
+		testMultiShard_ReadYourWrites(t, ctx, env)
+	})
 	t.Run("BatchedWrites", func(t *testing.T) {
 		testMultiShard_BatchedWrites(t, ctx, env)
 	})

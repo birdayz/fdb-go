@@ -53,6 +53,7 @@ go_test(
         "nil_shard_end_test.go",
         "readpath_test.go",
         "rpc_test.go",
+        "ryw_integration_test.go",
         "ryw_test.go",
         "setget_test.go",
         "snapshot_test.go",
