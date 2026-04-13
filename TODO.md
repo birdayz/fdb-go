@@ -37,7 +37,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 #### MEDIUM
 
-- [ ] **RYW SnapshotCache** — C++ caches server reads for reuse within a transaction (divergence #5). Go re-fetches every `getRange` when there are local writes/clears. Correct but more I/O. Would need segment-tree or interval-map data structure.
+- [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
 - [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
@@ -54,7 +54,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 - [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
 - [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
-- [ ] **Multi-shard concurrent writes during DD** — Concurrent Set/Commit while DD is actively splitting/moving shards. Verify no data loss.
+- [x] **Multi-shard concurrent writes during DD** — 8 goroutines × 25 ops write large values across 51 shards. Point read + scan cross-check verifies no data loss. nightshift-12.
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
@@ -72,7 +72,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 2 | ~~`makeSelfConflicting`~~ | ~~BEHAVIOR~~ FIXED | ~~Go used `writeConflicts[0].Begin` in `commitDummyTransaction`.~~ Fixed: `intersectConflictRanges()` matches C++ `intersects()` — picks a key from the overlap of write+read conflict ranges. Falls back to `writes[0].Begin` if no intersection. |
 | 3 | ~~Watch cancellation on Reset~~ | ~~MISSING~~ FIXED | ~~C++ cancels pending watches on reset.~~ Fixed: `cancelWatches()` on Reset/Cancel/reset via lazy `watchCtx`. |
 | 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
-| 5 | RYW SnapshotCache | BEHAVIOR | C++ caches server reads for reuse within a transaction. Go re-fetches on every `getRange` with writes/clears. Correct but more I/O for repeated reads of the same range. |
+| 5 | ~~RYW SnapshotCache~~ | ~~BEHAVIOR~~ FIXED | ~~C++ caches server reads for reuse within a transaction.~~ Fixed: `snapshotCache` sorted interval map in `ryw_snapshot_cache.go`. nightshift-12. |
 | 6 | Auto-reset after commit | DESIGN | C++ no auto-reset at API >= 410. Go `postCommitReset()` clears for reuse. |
 | 7 | `getRange` RYW merge | DESIGN | C++ segment-tree `RYWIterator`. Go iterative fetch+merge loop. Functionally equivalent. |
 | 8 | QueueModel key | COSMETIC | C++ `endpoint.token.first()`. Go address string. Same identity. |
@@ -170,5 +170,4 @@ Go `database/sql` compatible driver. Swap your Postgres DSN for an FDB one.
 ## Infrastructure / CI
 
 - [x] **Hetzner Object Storage upload `continue-on-error`** — Added nightshift-9. Outages no longer block PR merges.
-
-No open infrastructure items.
+- [x] **Benchmark CI with PR comparison** — RFC 018. `cmd/bench-report` Go tool + `just bench-ci` recipe + CI workflow. Master pushes upload baseline to S3, PRs get benchstat-style comparison posted as PR comment (edit-in-place via marker comment). nightshift-12.

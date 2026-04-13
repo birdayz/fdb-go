@@ -53,6 +53,8 @@ test-report.html
 pkg/fdbgo/wire/types/v5/
 binding-stress-out/
 binding-stress-report.txt
+bench-raw.txt
+bench-results.txt
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 test-report.html

@@ -30,6 +30,11 @@ type rywCache struct {
 	// cleared is a sorted, non-overlapping list of [begin, end) byte ranges
 	// that were ClearRange'd.
 	cleared []rywRange
+
+	// serverCache caches server-side state at the read version, avoiding
+	// redundant server round-trips for repeated reads of the same range.
+	// Matches C++'s SnapshotCache. Not invalidated by local writes/clears.
+	serverCache snapshotCache
 }
 
 // rywEntry represents a pending write for a single key.
@@ -59,6 +64,7 @@ func (c *rywCache) reset() {
 	c.writes = nil
 	c.sortedKeys = nil
 	c.cleared = nil
+	c.serverCache.reset()
 }
 
 // ensureSortedLocked rebuilds sortedKeys from the writes map if dirty (nil).
@@ -215,11 +221,31 @@ func (c *rywCache) get(ctx context.Context, key []byte, serverGet func(ctx conte
 		return val, nil
 	}
 	isClr := c.isClearedLocked(key)
-	c.mu.Unlock()
 	if isClr {
+		c.mu.Unlock()
 		return nil, nil
 	}
-	return serverGet(ctx, key)
+	// Check snapshot cache for prior server read.
+	if val, known := c.serverCache.getKey(key); known {
+		c.mu.Unlock()
+		return val, nil
+	}
+	c.mu.Unlock()
+
+	val, err := serverGet(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	// Cache the server result.
+	c.mu.Lock()
+	keyAfter := append(append([]byte(nil), key...), 0)
+	var kvs []KeyValue
+	if val != nil {
+		kvs = []KeyValue{{Key: append([]byte(nil), key...), Value: val}}
+	}
+	c.serverCache.insert(key, keyAfter, kvs)
+	c.mu.Unlock()
+	return val, nil
 }
 
 // getRange intercepts a range read and merges with pending writes/clears.
@@ -241,7 +267,19 @@ func (c *rywCache) getRange(
 	hasClears := c.hasClearsInRangeLocked(begin, end)
 	c.mu.Unlock()
 	if !hasWrites && !hasClears {
-		return serverGetRange(ctx, begin, end, limit, reverse)
+		// Fast path: no local mutations. Check snapshot cache first.
+		c.mu.Lock()
+		cachedKVs, fullyKnown := c.serverCache.getRangeKVs(begin, end)
+		c.mu.Unlock()
+		if fullyKnown {
+			return applyLimitAndDirection(cachedKVs, limit, reverse), computeMore(cachedKVs, limit), nil
+		}
+		kvs, more, err := serverGetRange(ctx, begin, end, limit, reverse)
+		if err != nil {
+			return nil, false, err
+		}
+		c.cacheServerResult(begin, end, kvs, more, reverse)
+		return kvs, more, nil
 	}
 
 	// Slow path: iterative fetch + merge. Loop until we either fill
@@ -265,7 +303,7 @@ func (c *rywCache) getRange(
 			}
 		}
 
-		serverKVs, serverMore, err := serverGetRange(ctx, curBegin, curEnd, fetchLimit, reverse)
+		serverKVs, serverMore, err := c.fetchOrCached(ctx, curBegin, curEnd, fetchLimit, reverse, serverGetRange)
 		if err != nil {
 			return nil, false, err
 		}
@@ -315,6 +353,89 @@ func (c *rywCache) getRange(
 	}
 
 	return result, false, nil
+}
+
+// fetchOrCached checks the snapshot cache before making a server call.
+// If the range is fully cached, returns cached KVs (in scan direction).
+// Otherwise fetches from server and caches the result.
+func (c *rywCache) fetchOrCached(
+	ctx context.Context,
+	begin, end []byte,
+	limit int,
+	reverse bool,
+	serverGetRange func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error),
+) ([]KeyValue, bool, error) {
+	c.mu.Lock()
+	cachedKVs, fullyKnown := c.serverCache.getRangeKVs(begin, end)
+	c.mu.Unlock()
+
+	if fullyKnown {
+		kvs := applyLimitAndDirection(cachedKVs, limit, reverse)
+		more := computeMore(cachedKVs, limit)
+		return kvs, more, nil
+	}
+
+	kvs, more, err := serverGetRange(ctx, begin, end, limit, reverse)
+	if err != nil {
+		return nil, false, err
+	}
+	c.cacheServerResult(begin, end, kvs, more, reverse)
+	return kvs, more, nil
+}
+
+// cacheServerResult inserts a server getRange result into the snapshot cache.
+func (c *rywCache) cacheServerResult(fetchBegin, fetchEnd []byte, serverKVs []KeyValue, serverMore bool, reverse bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cacheBegin := fetchBegin
+	cacheEnd := fetchEnd
+	var cacheKVs []KeyValue
+
+	if reverse {
+		if serverMore && len(serverKVs) > 0 {
+			// Reverse scan: last element is the smallest key returned.
+			// Known range is [lastKey, fetchEnd).
+			cacheBegin = serverKVs[len(serverKVs)-1].Key
+		}
+		// Store in forward order.
+		cacheKVs = make([]KeyValue, len(serverKVs))
+		for i, kv := range serverKVs {
+			cacheKVs[len(serverKVs)-1-i] = kv
+		}
+	} else {
+		if serverMore && len(serverKVs) > 0 {
+			// Forward scan: known range is [fetchBegin, keyAfter(lastKey)).
+			lastKey := serverKVs[len(serverKVs)-1].Key
+			cacheEnd = append(append([]byte(nil), lastKey...), 0)
+		}
+		cacheKVs = make([]KeyValue, len(serverKVs))
+		copy(cacheKVs, serverKVs)
+	}
+
+	c.serverCache.insert(cacheBegin, cacheEnd, cacheKVs)
+}
+
+// applyLimitAndDirection returns KVs with limit and direction applied.
+// Input KVs must be in ascending order.
+func applyLimitAndDirection(kvs []KeyValue, limit int, reverse bool) []KeyValue {
+	if reverse {
+		// Reverse the order.
+		out := make([]KeyValue, len(kvs))
+		for i, kv := range kvs {
+			out[len(kvs)-1-i] = kv
+		}
+		kvs = out
+	}
+	if limit > 0 && len(kvs) > limit {
+		kvs = kvs[:limit]
+	}
+	return kvs
+}
+
+// computeMore returns true if applying the limit would leave remaining KVs.
+func computeMore(kvs []KeyValue, limit int) bool {
+	return limit > 0 && len(kvs) > limit
 }
 
 // mergeBatch merges a batch of server results with local writes and clears.

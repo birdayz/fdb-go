@@ -75,6 +75,40 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
+# Run all benchmarks for CI, capture results to bench-results.txt
+bench-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    COMMON_ARGS=(
+        --test_arg="-test.bench=."
+        --test_arg="-test.benchmem"
+        --test_arg="-test.benchtime=3s"
+        --test_output=all
+        --nocache_test_results
+        --test_timeout=300
+    )
+    # Ginkgo targets need --ginkgo.skip to avoid running specs.
+    GINKGO_ARGS=("${COMMON_ARGS[@]}" --test_arg="--ginkgo.skip=.*")
+    rm -f bench-raw.txt bench-results.txt
+    {
+        echo "=== Running benchmarks: //pkg/recordlayer:recordlayer_test ==="
+        bazelisk test //pkg/recordlayer:recordlayer_test "${GINKGO_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/bench:bench_test ==="
+        bazelisk test //pkg/fdbgo/bench:bench_test "${COMMON_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/client:client_test ==="
+        bazelisk test //pkg/fdbgo/client:client_test "${COMMON_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
+        bazelisk test //pkg/fdbgo/wire/types:types_test "${COMMON_ARGS[@]}" 2>&1 || true
+    } | tee bench-raw.txt
+    # Extract benchmark lines for bench-report.
+    grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' bench-raw.txt > bench-results.txt || true
+    NRESULTS=$(grep -c '^Benchmark' bench-results.txt || echo 0)
+    echo "Benchmarks: $NRESULTS results → bench-results.txt"
+
+# Compare benchmark results: just bench-report old.txt new.txt
+bench-report old new:
+    bazelisk run //cmd/bench-report -- -old {{old}} -new {{new}}
+
 # Run Go vs Java performance comparison benchmark
 bench-compare:
     bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=Performance Comparison" --test_arg="--ginkgo.v" --test_output=streamed --cache_test_results=no

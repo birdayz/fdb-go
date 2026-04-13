@@ -1079,6 +1079,44 @@ func BenchmarkRYWGetRange_WithClears(b *testing.B) {
 	}
 }
 
+// BenchmarkSnapshotCacheGetKey benchmarks single-key lookup in a populated cache.
+func BenchmarkSnapshotCacheGetKey(b *testing.B) {
+	var sc snapshotCache
+	// Insert a range with 1000 KVs.
+	kvs := make([]KeyValue, 1000)
+	for i := range kvs {
+		kvs[i] = KeyValue{
+			Key:   []byte(fmt.Sprintf("k%04d", i)),
+			Value: []byte("v"),
+		}
+	}
+	sc.insert([]byte("k0000"), []byte("k9999"), kvs)
+	lookupKey := []byte("k0500")
+
+	b.ResetTimer()
+	for b.Loop() {
+		sc.getKey(lookupKey)
+	}
+}
+
+// BenchmarkSnapshotCacheGetRange benchmarks full-range lookup in a populated cache.
+func BenchmarkSnapshotCacheGetRange(b *testing.B) {
+	var sc snapshotCache
+	kvs := make([]KeyValue, 1000)
+	for i := range kvs {
+		kvs[i] = KeyValue{
+			Key:   []byte(fmt.Sprintf("k%04d", i)),
+			Value: []byte("v"),
+		}
+	}
+	sc.insert([]byte("k0000"), []byte("k9999"), kvs)
+
+	b.ResetTimer()
+	for b.Loop() {
+		sc.getRangeKVs([]byte("k0000"), []byte("k9999"))
+	}
+}
+
 // BenchmarkRYWHasWritesInRange benchmarks the binary search optimization
 // for checking if writes exist in a range.
 func BenchmarkRYWHasWritesInRange(b *testing.B) {
