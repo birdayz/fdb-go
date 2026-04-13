@@ -495,8 +495,6 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 }
 
 func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limit int, reverse bool, servers []ServerInfo) ([]KeyValue, bool, error) {
-	// C++ uses negative limit for reverse scans (transformRangeLimits in NativeAPI.actor.cpp:4231).
-	// Wire format: int32. Clamp at boundary (Go int may be 64-bit).
 	wl := limit
 	if wl > math.MaxInt32 {
 		wl = math.MaxInt32
@@ -505,46 +503,65 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	if reverse {
 		wireLimit = -wireLimit
 	}
-	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
-	order := loadBalanceOrder(servers, chosenIdx)
 
-	for _, server := range order {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
-		if err != nil {
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
-		gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
+	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 
-		delta := tx.db.queueModel.startRequest(server.Address)
-		start := time.Now()
+	makeSender := func(server ServerInfo) sendFunc {
+		return func() inFlightRPC {
+			conn, err := tx.db.getOrDial(ctx, server.Address)
+			if err != nil {
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
+			gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
-		if err := conn.SendFrame(gkvToken, body); err != nil {
+			delta := tx.db.queueModel.startRequest(server.Address)
+			start := time.Now()
+
+			if err := conn.SendFrame(gkvToken, body); err != nil {
+				getKeyValuesBufPool.Put(poolBuf)
+				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+				cancelReply()
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
 			getKeyValuesBufPool.Put(poolBuf)
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			tx.db.handleConnError(server.Address)
-			continue
+			return inFlightRPC{
+				replyCh: replyCh,
+				cancel:  cancelReply,
+				addr:    server.Address,
+				delta:   delta,
+				start:   start,
+			}
 		}
-		getKeyValuesBufPool.Put(poolBuf)
-		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
-		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			continue
-		}
-		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		kvs, more, penalty, err := parseGetKeyValuesReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-		return kvs, more, err
 	}
-	return nil, false, &wire.FDBError{Code: ErrAllAlternativesFailed}
+
+	primary := makeSender(servers[bestIdx])
+	var secondary sendFunc
+	if secondIdx >= 0 {
+		secondary = makeSender(servers[secondIdx])
+	}
+
+	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	if result.addr != "" {
+		if result.connErr {
+			tx.db.handleConnError(result.addr)
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		} else if result.err != nil {
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		}
+	}
+	if result.err != nil {
+		return nil, false, result.err
+	}
+
+	kvs, more, penalty, err := parseGetKeyValuesReply(result.body)
+	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+	return kvs, more, err
 }
 
 // isWrongShardServer returns true if the error is FDB error 1062.
