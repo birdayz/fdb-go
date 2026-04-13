@@ -223,4 +223,98 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 			}).To(PanicWith(MatchError(ContainSubstring("unknown record type"))))
 		})
 	})
+
+	Describe("RecordType accessor methods", func() {
+		It("GetIndexes returns single-type indexes", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			Expect(rt.GetIndexes()).To(HaveLen(1))
+			Expect(rt.GetIndexes()[0].Name).To(Equal("price_idx"))
+
+			// Customer has no indexes
+			crt := md.GetRecordType("Customer")
+			Expect(crt.GetIndexes()).To(BeEmpty())
+		})
+
+		It("GetMultiTypeIndexes returns multi-type indexes", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, NewIndex("shared", RecordTypeKey()))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			Expect(rt.GetMultiTypeIndexes()).To(HaveLen(1))
+			Expect(rt.GetMultiTypeIndexes()[0].Name).To(Equal("shared"))
+		})
+
+		It("GetAllIndexes combines single and multi-type", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, NewIndex("shared", RecordTypeKey()))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			all := rt.GetAllIndexes()
+			Expect(all).To(HaveLen(2))
+
+			names := make([]string, len(all))
+			for i, idx := range all {
+				names[i] = idx.Name
+			}
+			Expect(names).To(ContainElement("price_idx"))
+			Expect(names).To(ContainElement("shared"))
+		})
+
+		It("GetAllIndexes returns only single-type when no multi-type", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			Expect(rt.GetAllIndexes()).To(HaveLen(1))
+		})
+
+		It("HasExplicitRecordTypeKey returns correct value", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.GetRecordType("Order").SetRecordTypeKey(int64(99))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(md.GetRecordType("Order").HasExplicitRecordTypeKey()).To(BeTrue())
+			Expect(md.GetRecordType("Customer").HasExplicitRecordTypeKey()).To(BeFalse())
+		})
+
+		It("GetReadableUniversalIndexes filters by state", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddUniversalIndex(NewIndex("univ", RecordTypeKey()))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(md.GetUniversalIndexes()).To(HaveLen(1))
+		})
+	})
 })
