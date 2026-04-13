@@ -140,6 +140,35 @@ func TestParseTagThrottleInfoTruncated(t *testing.T) {
 	}
 }
 
+func TestParseTagThrottleInfoTruncatedAfterTagLen(t *testing.T) {
+	t.Parallel()
+	// count=1, tagLen=100 but only 3 bytes of tag data — hits line 68 (tag data truncated).
+	data := make([]byte, 4+4+3)                  // count + tagLen + 3 tag bytes (need 100)
+	binary.LittleEndian.PutUint32(data[0:], 1)   // count=1
+	binary.LittleEndian.PutUint32(data[4:], 100) // tagLen=100 (but only 3 bytes available)
+	result := parseTagThrottleInfo(data)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 entries from truncated tag data, got %d", len(result))
+	}
+}
+
+func TestParseTagThrottleInfoTruncatedAfterTag(t *testing.T) {
+	t.Parallel()
+	// count=1, tag="ab" (2 bytes), but missing tpsRate+duration — hits line 73.
+	tag := "ab"
+	data := make([]byte, 4+4+len(tag)+4) // count + tagLen + tag + 4 bytes (need 16)
+	off := 0
+	binary.LittleEndian.PutUint32(data[off:], 1)
+	off += 4
+	binary.LittleEndian.PutUint32(data[off:], uint32(len(tag)))
+	off += 4
+	copy(data[off:], tag)
+	result := parseTagThrottleInfo(data)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 entries from truncated rate data, got %d", len(result))
+	}
+}
+
 func TestThrottleDuration(t *testing.T) {
 	t.Parallel()
 

@@ -144,6 +144,7 @@ go_test(
         "count_index_test.go",
         "count_not_null_index_test.go",
         "count_updates_index_test.go",
+        "coverage_unit_test.go",
         "cross_type_index_test.go",
         "cursor_bug_verify_test.go",
         "cursor_combinator_edge_test.go",

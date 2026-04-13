@@ -8,6 +8,16 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 )
 
+func TestGetPutTimer_Recycle(t *testing.T) {
+	t.Parallel()
+	// Exercise getTimer/putTimer to cover the pool recycle path.
+	// First call creates a timer via pool.New, second reuses it.
+	t1 := getTimer(time.Hour)
+	putTimer(t1)
+	t2 := getTimer(time.Hour)
+	putTimer(t2)
+}
+
 func TestWaitReply_Success(t *testing.T) {
 	t.Parallel()
 	ch := make(chan transport.Response, 1)
@@ -98,6 +108,30 @@ func TestWaitReplyOrProxiesChanged_ProxiesChangeMidWait(t *testing.T) {
 	// Should wake within ~50ms + scheduling jitter, not 5s timeout.
 	if elapsed > 200*time.Millisecond {
 		t.Fatalf("mid-wait proxy change detection too slow: %v (expected <200ms)", elapsed)
+	}
+}
+
+func TestWaitReplyOrProxiesChanged_Timeout(t *testing.T) {
+	t.Parallel()
+	ch := make(chan transport.Response)   // never sends
+	proxiesChanged := make(chan struct{}) // never fires
+
+	_, err := waitReplyOrProxiesChanged(ch, context.Background(), 10*time.Millisecond, proxiesChanged)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded on timeout, got %v", err)
+	}
+}
+
+func TestWaitReplyOrProxiesChanged_ContextCancelled(t *testing.T) {
+	t.Parallel()
+	ch := make(chan transport.Response)   // never sends
+	proxiesChanged := make(chan struct{}) // never fires
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := waitReplyOrProxiesChanged(ch, ctx, 5*time.Second, proxiesChanged)
+	if err != context.Canceled {
+		t.Fatalf("expected Canceled, got %v", err)
 	}
 }
 

@@ -48,6 +48,32 @@ func TestKeyString(t *testing.T) {
 	g.Expect(nilKey.String()).To(Equal(""))
 }
 
+func TestPrefixRangeAllFFError(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// All-0xFF prefix makes Strinc fail, so PrefixRange returns an error.
+	_, err := fdb.PrefixRange([]byte{0xFF, 0xFF})
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("strinc"))
+}
+
+func TestKeyRangeFDBRangeKeySelectors(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	kr := fdb.KeyRange{Begin: fdb.Key{0x01}, End: fdb.Key{0x02}}
+	beginSel, endSel := kr.FDBRangeKeySelectors()
+	g.Expect(beginSel).NotTo(BeNil())
+	g.Expect(endSel).NotTo(BeNil())
+
+	// FirstGreaterOrEqual wraps the key; verify via the Selectable interface.
+	bSel := beginSel.(fdb.KeySelector)
+	eSel := endSel.(fdb.KeySelector)
+	g.Expect(bSel.Key.FDBKey()).To(Equal(fdb.Key{0x01}))
+	g.Expect(eSel.Key.FDBKey()).To(Equal(fdb.Key{0x02}))
+}
+
 func TestPrefixRangeCoversBeginCopy(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
