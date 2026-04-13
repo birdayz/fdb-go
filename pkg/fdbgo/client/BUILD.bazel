@@ -9,6 +9,7 @@ go_library(
         "endpoint.go",
         "failure_monitor.go",
         "grv.go",
+        "hedge.go",
         "loadbalance.go",
         "locality.go",
         "metrics.go",
