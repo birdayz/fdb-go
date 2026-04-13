@@ -37,7 +37,7 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
 - [ ] **Speculative second request (secondDelay)** — C++ sends a hedge request to a second storage server after ~0.5ms delay to improve p99 latency. Currently we try servers sequentially.
-- [ ] **Outbound PING connection monitor** — C++ sends periodic PINGs to detect dead connections in ~2s. We rely on TCP keepalive (10s) + next-RPC detection (~5s). Phase 2 optimization.
+- [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
 #### LOW
 
