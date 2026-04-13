@@ -49,6 +49,7 @@ go_test(
         "lint_test.go",
         "loadbalance_test.go",
         "locality_test.go",
+        "multishard_test.go",
         "nil_shard_end_test.go",
         "readpath_test.go",
         "rpc_test.go",
