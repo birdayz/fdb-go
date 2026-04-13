@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"math"
+	"math/big"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
@@ -1262,4 +1263,35 @@ func tupleElemEqual(a, b any) bool {
 		// string comparison (good enough for test assertions).
 		return false
 	}
+}
+
+// TestTupleElementEndPosBigInt verifies arbitrary precision integer handling.
+func TestTupleElementEndPosBigInt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bigint_positive", func(t *testing.T) {
+		t.Parallel()
+		bigVal := new(big.Int).Lsh(big.NewInt(1), 128) // 2^128 — uses type code 0x1D
+		packed := tuple.Tuple{bigVal}.Pack()
+		end, err := tupleElementEndPos(packed, 0)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if end != len(packed) {
+			t.Errorf("got %d, want %d", end, len(packed))
+		}
+	})
+
+	t.Run("bigint_negative", func(t *testing.T) {
+		t.Parallel()
+		bigVal := new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 128)) // -2^128 — uses type code 0x0B
+		packed := tuple.Tuple{bigVal}.Pack()
+		end, err := tupleElementEndPos(packed, 0)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if end != len(packed) {
+			t.Errorf("got %d, want %d", end, len(packed))
+		}
+	})
 }
