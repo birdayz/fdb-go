@@ -105,6 +105,10 @@ bench-ci:
     NRESULTS=$(grep -c '^Benchmark' bench-results.txt || echo 0)
     echo "Benchmarks: $NRESULTS results → bench-results.txt"
 
+# Compare benchmark results: just bench-report old.txt new.txt
+bench-report old new:
+    bazelisk run //cmd/bench-report -- -old {{old}} -new {{new}}
+
 # Run Go vs Java performance comparison benchmark
 bench-compare:
     bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=Performance Comparison" --test_arg="--ginkgo.v" --test_output=streamed --cache_test_results=no
