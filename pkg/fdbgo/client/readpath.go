@@ -102,64 +102,81 @@ func (tx *Transaction) getKey(ctx context.Context, selectorKey []byte, orEqual b
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
 func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo) ([]byte, bool, int32, error) {
-	// Pick the least-loaded server, then fall back to remaining on failure.
-	_, chosenIdx := tx.db.queueModel.chooseServer(servers)
-	order := loadBalanceOrder(servers, chosenIdx)
+	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
 
-	for _, server := range order {
-		conn, err := tx.db.getOrDial(ctx, server.Address)
-		if err != nil {
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
-		req := types.GetKeyRequest{
-			Sel: types.KeySelectorRef{
-				Key:     selectorKey,
-				OrEqual: orEqual,
-				Offset:  offset,
-			},
-			Version:                tx.readVersion,
-			Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-			TenantInfo:             types.TenantInfo{TenantId: tx.tenantId},
-			SsLatestCommitVersions: emptyVersionVector,
-		}
-		if tx.lockAware || tx.readLockAware {
-			req.HasOptions = true
-			req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
-		}
-		bufp := getKeyBufPool.Get().(*[]byte)
-		reqData := req.MarshalFDBPooled(*bufp)
-		*bufp = reqData
-		gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
+	makeSender := func(server ServerInfo) sendFunc {
+		return func() inFlightRPC {
+			conn, err := tx.db.getOrDial(ctx, server.Address)
+			if err != nil {
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
+			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			req := types.GetKeyRequest{
+				Sel: types.KeySelectorRef{
+					Key:     selectorKey,
+					OrEqual: orEqual,
+					Offset:  offset,
+				},
+				Version:                tx.readVersion,
+				Reply:                  types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+				TenantInfo:             types.TenantInfo{TenantId: tx.tenantId},
+				SsLatestCommitVersions: emptyVersionVector,
+			}
+			if tx.lockAware || tx.readLockAware {
+				req.HasOptions = true
+				req.Options = types.ReadOptions{HasLockAware: true, LockAware: []byte{}}
+			}
+			bufp := getKeyBufPool.Get().(*[]byte)
+			reqData := req.MarshalFDBPooled(*bufp)
+			*bufp = reqData
+			gkToken := getAdjustedEndpoint(server.Token, EndpointGetKey)
 
-		delta := tx.db.queueModel.startRequest(server.Address)
-		start := time.Now()
+			delta := tx.db.queueModel.startRequest(server.Address)
+			start := time.Now()
 
-		if err := conn.SendFrame(gkToken, reqData); err != nil {
+			if err := conn.SendFrame(gkToken, reqData); err != nil {
+				getKeyBufPool.Put(bufp)
+				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
+				cancelReply()
+				tx.db.handleConnError(server.Address)
+				return inFlightRPC{err: err, addr: server.Address}
+			}
 			getKeyBufPool.Put(bufp)
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			tx.db.handleConnError(server.Address)
-			continue
+			return inFlightRPC{
+				replyCh: replyCh,
+				cancel:  cancelReply,
+				addr:    server.Address,
+				delta:   delta,
+				start:   start,
+			}
 		}
-		getKeyBufPool.Put(bufp)
-		resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
-		if err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
-			continue
-		}
-		if resp.Err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			tx.db.handleConnError(server.Address)
-			continue
-		}
-		key, replyOrEqual, replyOffset, penalty, err := parseGetKeyReply(resp.Body)
-		tx.db.queueModel.endRequestFull(server.Address, delta, time.Since(start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-		return key, replyOrEqual, replyOffset, err
 	}
-	return nil, false, 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
+
+	primary := makeSender(servers[bestIdx])
+	var secondary sendFunc
+	if secondIdx >= 0 {
+		secondary = makeSender(servers[secondIdx])
+	}
+
+	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
+	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, DefaultRPCTimeout)
+
+	if result.addr != "" {
+		if result.connErr {
+			tx.db.handleConnError(result.addr)
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		} else if result.err != nil {
+			tx.db.queueModel.endRequest(result.addr, result.delta, time.Since(result.start), false)
+		}
+	}
+	if result.err != nil {
+		return nil, false, 0, result.err
+	}
+
+	key, replyOrEqual, replyOffset, penalty, err := parseGetKeyReply(result.body)
+	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+	return key, replyOrEqual, replyOffset, err
 }
 
 // parseGetKeyReply parses the ErrorOr<GetKeyReply> response.
