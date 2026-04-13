@@ -49,7 +49,7 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 #### MEDIUM
 
-- [ ] **Multi-shard GetRange integration test** — Needs multi-node testcontainer support. Single-node = single shard, can't verify cross-shard continuation.
+- [ ] **Multi-shard GetRange integration test** — Needs `WithKnob("min_shard_bytes", "40000")` on testcontainer to force shard splits in single-node. Requires modifying `foundationdb.conf` before container start (knobs are process-level, not runtime). Alternative: multi-node testcontainer with enough data to trigger natural splits (~50MB+).
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
 
