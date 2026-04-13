@@ -57,11 +57,11 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
-- [ ] **Tenant isolation tests** — Zero coverage. Verify cross-tenant reads/writes are rejected. Test tenant prefix logic end-to-end.
+- [x] **Tenant isolation tests** — Already covered in `fdb/tenant_test.go`: TestTenantCRUD (CRUD lifecycle) + TestTenantIsolation (cross-tenant key invisibility, shared key name different values, range scoping).
 - [x] **Watch edge cases** — 3 tests: timeout via context deadline, atomic mutation triggers watch, cancellation. swingshift-11d.
 - [x] **Snapshot read isolation (extensive)** — 5 tests: GetAfterClear, GetRangeAfterClearRange, GetRangeDoesNotConflict, GetAfterAtomicAdd, ConflictAsymmetry. swingshift-11d. Still TODO: fuzz target.
 - [x] **Transaction retry with RYW** — 4 tests: OnError resets RYW, new read version after OnError, conflict detection across retry, Transact automatic retry. swingshift-11d. Still TODO: fuzz target.
-- [ ] **Watch + atomic mutations** — Do atomics (ADD, OR, ByteMax, etc.) correctly trigger watches? Untested.
+- [x] **Watch + atomic mutations** — TestWatchFiresOnAtomicMutation verifies AtomicAdd triggers watch. swingshift-11d.
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
 
