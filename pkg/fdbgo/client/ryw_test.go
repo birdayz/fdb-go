@@ -1155,6 +1155,62 @@ func TestRYWGetRange_UnlimitedWithClears(t *testing.T) {
 		t.Fatalf("expected 2 results (A, C), got %d", len(result))
 	}
 	if string(result[0].Key) != "A" || string(result[1].Key) != "C" {
-		t.Errorf("expected [A, C], got [%s, %s]", result[0].Key, result[1].Key)
+		t.Errorf("unlimited forward with clears: expected [A, C], got [%s, %s]", result[0].Key, result[1].Key)
+	}
+}
+
+// TestRYWGetRange_UnlimitedWithWrites verifies limit=0 works for the
+// writes-only slow path (no clears, just writes that need merging).
+func TestRYWGetRange_UnlimitedWithWrites(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.set([]byte("B"), []byte("local-b"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return []KeyValue{
+			{Key: []byte("A"), Value: []byte("server-a")},
+			{Key: []byte("C"), Value: []byte("server-c")},
+		}, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results (A, B, C), got %d", len(result))
+	}
+	if string(result[1].Key) != "B" || string(result[1].Value) != "local-b" {
+		t.Errorf("expected B=local-b, got %s=%s", result[1].Key, result[1].Value)
+	}
+}
+
+// TestRYWGetRange_UnlimitedReverse verifies limit=0 in reverse with clears.
+func TestRYWGetRange_UnlimitedReverse(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.set([]byte("A"), []byte("a"))
+	c.set([]byte("B"), []byte("b"))
+	c.set([]byte("C"), []byte("c"))
+	c.clear([]byte("B"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		if !reverse {
+			t.Fatal("expected reverse=true")
+		}
+		return nil, false, nil
+	}
+
+	result, _, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, true, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 results (C, A), got %d", len(result))
+	}
+	if string(result[0].Key) != "C" || string(result[1].Key) != "A" {
+		t.Errorf("expected [C, A], got [%s, %s]", result[0].Key, result[1].Key)
 	}
 }
