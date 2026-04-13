@@ -1126,3 +1126,35 @@ func BenchmarkRYWAddClearedRange(b *testing.B) {
 		c.mu.Unlock()
 	}
 }
+
+// TestRYWGetRange_UnlimitedWithClears verifies that limit=0 (unlimited)
+// correctly enters the slow path when clears are present. This was a bug:
+// remaining=0 caused `for remaining > 0` to skip the entire merge loop.
+func TestRYWGetRange_UnlimitedWithClears(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+
+	c.set([]byte("A"), []byte("a"))
+	c.set([]byte("B"), []byte("b"))
+	c.set([]byte("C"), []byte("c"))
+	c.clear([]byte("B"))
+
+	mockServer := func(ctx context.Context, begin, end []byte, limit int, reverse bool) ([]KeyValue, bool, error) {
+		return nil, false, nil // empty server — all data is local
+	}
+
+	// limit=0 means unlimited.
+	result, more, err := c.getRange(context.Background(), []byte("A"), []byte("Z"), 0, false, mockServer)
+	if err != nil {
+		t.Fatalf("getRange: %v", err)
+	}
+	if more {
+		t.Error("expected more=false")
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 results (A, C), got %d", len(result))
+	}
+	if string(result[0].Key) != "A" || string(result[1].Key) != "C" {
+		t.Errorf("expected [A, C], got [%s, %s]", result[0].Key, result[1].Key)
+	}
+}
