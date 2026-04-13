@@ -20,7 +20,7 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 #### HIGH
 
-- [ ] **`proxyTagThrottledDuration` send path** — Accumulated per-transaction but not sent back to proxy in GRV request metadata. C++ sends it so the proxy can adjust throttle decisions. Not a correctness issue — throttle still works via standard backoff — but reduces throttle tuning accuracy.
+- [x] **`proxyTagThrottledDuration` send path** — Investigated: C++ `CommitProxyInterface.h:318` comments "Not serialized, because this field does not need to be sent to master." The field is reply-only (proxy→client), accumulated correctly in Go. No send path needed. Resolved dayshift-10.
 
 #### LOW
 
