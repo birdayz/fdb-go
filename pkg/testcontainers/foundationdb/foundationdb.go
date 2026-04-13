@@ -99,7 +99,6 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	// Build the container request.
 	// Port mapping for external access (localhost:randomPort → container:4500).
-	// No custom entrypoint — the FDB image's default entrypoint handles everything.
 	env := map[string]string{}
 	if cfg.fdbPort != defaultFDBPort {
 		env["FDB_PORT"] = fmt.Sprintf("%d", cfg.fdbPort)
@@ -116,6 +115,18 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 		Tmpfs: map[string]string{"/var/fdb/data": ""},
 		WaitingFor: wait.ForLog("FDBD joined cluster").
 			WithStartupTimeout(cfg.startupTimeout),
+	}
+
+	// When knobs are set, override the entrypoint to patch the startup script.
+	// sed inserts knob args into the fdbserver command line before exec'ing
+	// the original script. This passes --knob_NAME=VALUE to fdbserver.
+	if len(cfg.knobs) > 0 {
+		var knobArgs string
+		for name, value := range cfg.knobs {
+			knobArgs += fmt.Sprintf(" --knob_%s=%s", name, value)
+		}
+		sedCmd := fmt.Sprintf(`sed -i 's|^fdbserver |fdbserver%s |' /var/fdb/scripts/fdb.bash && exec /var/fdb/scripts/fdb.bash`, knobArgs)
+		req.Entrypoint = []string{"/usr/bin/tini", "-g", "--", "/bin/bash", "-c", sedCmd}
 	}
 
 	// Attach to custom network if provided.

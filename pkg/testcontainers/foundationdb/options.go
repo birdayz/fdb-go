@@ -23,6 +23,7 @@ type options struct {
 	startupTimeout time.Duration
 	network        *testcontainers.DockerNetwork // user-provided network (nil = create one)
 	networkAliases []string
+	knobs          map[string]string // server knobs: --knob_NAME=VALUE
 }
 
 func defaultOptions() options {
@@ -184,6 +185,22 @@ func WithNetwork(nw *testcontainers.DockerNetwork, aliases ...string) Option {
 func WithNetworkAliases(aliases ...string) Option {
 	return Option{applyFn: func(o *options) error {
 		o.networkAliases = append(o.networkAliases, aliases...)
+		return nil
+	}}
+}
+
+// WithKnob sets a server-side FDB knob. Knobs are passed as --knob_NAME=VALUE
+// to the fdbserver process. This is useful for forcing shard splits
+// (e.g., WithKnob("min_shard_bytes", "40000")) or other server behavior changes.
+//
+// The knob is injected by modifying the entrypoint script inside the container.
+// Multiple WithKnob calls accumulate.
+func WithKnob(name, value string) Option {
+	return Option{applyFn: func(o *options) error {
+		if o.knobs == nil {
+			o.knobs = make(map[string]string)
+		}
+		o.knobs[name] = value
 		return nil
 	}}
 }
