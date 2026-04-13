@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "subspace",
@@ -8,5 +8,16 @@ go_library(
     deps = [
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_test(
+    name = "subspace_test",
+    srcs = ["subspace_test.go"],
+    embed = [":subspace"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/tuple",
+        "@com_github_onsi_gomega//:gomega",
     ],
 )

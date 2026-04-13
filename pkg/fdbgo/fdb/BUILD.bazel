@@ -32,6 +32,7 @@ go_test(
     srcs = [
         "directory_test.go",
         "fdb_test.go",
+        "key_test.go",
         "ryw_test.go",
         "tenant_test.go",
         "testmain_test.go",
@@ -43,5 +44,6 @@ go_test(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
     ],
 )
