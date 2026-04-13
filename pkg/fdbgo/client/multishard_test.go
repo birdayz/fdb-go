@@ -65,10 +65,6 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 			}
 			return nil, nil
 		})
-		if err != nil {
-			db.Close()
-			container.Terminate(ctx)
-		}
 		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed batch %d", batch)
 	}
 	t.Logf("seeded %d keys × %dKB", numKeys, valueSize/1000)

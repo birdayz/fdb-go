@@ -413,9 +413,10 @@ var _ = Describe("Aggregate Function Unit Tests", func() {
 	})
 
 	Describe("isGroupPrefix", func() {
-		It("returns true for identical expressions", func() {
-			expr := Ungrouped(Field("price"))
-			Expect(isGroupPrefix(expr, expr)).To(BeTrue())
+		It("returns true for structurally equal expressions", func() {
+			expr1 := Ungrouped(Field("price"))
+			expr2 := Ungrouped(Field("price"))
+			Expect(isGroupPrefix(expr1, expr2)).To(BeTrue())
 		})
 
 		It("returns true when operand grouping is a prefix of index grouping", func() {

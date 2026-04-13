@@ -58,16 +58,16 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(attempts).To(Equal(1))
 		})
 
-		It("respects context cancellation", func() {
+		It("succeeds on first attempt even with pre-cancelled context", func() {
 			cancelCtx, cancel := context.WithCancel(ctx)
-			cancel() // Cancel immediately
+			cancel() // Cancel immediately — but first attempt still runs
 
 			runner := NewFDBDatabaseRunner(sharedDB)
 			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
 				return nil, nil
 			})
-			// First attempt should succeed since cancel is checked before retry delay
-			// If the function succeeds, no retry needed
+			// Cancellation is only checked before retry delays, not before the first attempt.
+			// If the function succeeds on the first try, no retry (and no cancel check) needed.
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -188,9 +188,9 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			elapsed := time.Since(start)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(attempts).To(Equal(3))
-			// Should have had 2 delay periods (before attempt 2 and 3).
-			// InitialDelay=10ms, so minimum total delay ~20ms (10 + 10*2 exponential).
-			Expect(elapsed).To(BeNumerically(">", 15*time.Millisecond))
+			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms minimum.
+			// Jitter adds 0.5x-1.5x, so range is ~15ms-45ms. Use 20ms as safe lower bound.
+			Expect(elapsed).To(BeNumerically(">", 20*time.Millisecond))
 		})
 
 		It("gives up after max attempts", func() {
