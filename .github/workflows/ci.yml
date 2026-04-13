@@ -149,10 +149,12 @@ jobs:
             echo "No master baseline found — skipping comparison"
             exit 0
           }
+          bazelisk build //cmd/bench-report
+          BENCH_REPORT="$(bazelisk info bazel-bin 2>/dev/null)/cmd/bench-report/bench-report_/bench-report"
           PR_NUM=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
-          bazelisk run //cmd/bench-report -- \
-            -old "$PWD/master-bench.txt" \
-            -new "$PWD/bench-results.txt" \
+          "$BENCH_REPORT" \
+            -old master-bench.txt \
+            -new bench-results.txt \
             -pr "$PR_NUM" \
             -repo "$REPO"
