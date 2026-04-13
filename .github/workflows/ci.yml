@@ -34,20 +34,15 @@ jobs:
             exit 1
           fi
 
-      - name: Build, lint & test with coverage
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_timeout=900 --test_summary=detailed
+      - name: Build, lint & test
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
 
-      - name: Generate test report with coverage
+      - name: Generate test report
         if: always()
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
-          LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
-          if [ -f "$LCOV" ]; then
-            "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
-          else
-            "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
-          fi
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage
