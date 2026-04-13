@@ -363,3 +363,267 @@ func TestMetaDataToProtoUniversalIndex(t *testing.T) {
 		t.Fatalf("restored universal indexes: got %d, want 1", len(md2.GetUniversalIndexes()))
 	}
 }
+
+// TestRecordMetaDataFromProtoNil verifies nil input is rejected.
+func TestRecordMetaDataFromProtoNil(t *testing.T) {
+	t.Parallel()
+	_, err := RecordMetaDataFromProto(nil)
+	if err == nil {
+		t.Fatal("expected error for nil metadata proto")
+	}
+}
+
+// TestMetaDataProtoRoundtripWithAllIndexTypes verifies that metadata with
+// various index types survives a ToProto→FromProto round-trip.
+func TestMetaDataProtoRoundtripWithAllIndexTypes(t *testing.T) {
+	t.Parallel()
+	fd := gen.File_record_layer_demo_proto
+
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.SetSplitLongRecords(true)
+	builder.SetStoreRecordVersions(true)
+	builder.SetRecordCountKey(RecordTypeKey())
+
+	// Add various index types
+	builder.AddIndex("Order", NewIndex("price_val", Field("price")))
+	builder.AddIndex("Order", NewCountIndex("order_count", GroupAll(EmptyKey())))
+	builder.AddIndex("Order", NewSumIndex("price_sum", GroupBy(Field("price"), EmptyKey())))
+	builder.AddIndex("Order", NewRankIndex("price_rank", Ungrouped(Field("price"))))
+	builder.AddIndex("Order", NewIndex("composite", Concat(Field("price"), Field("order_id"))))
+
+	// Universal index
+	builder.AddUniversalIndex(NewIndex("type_idx", RecordTypeKey()))
+
+	// Add and remove to create a former index
+	builder.AddIndex("Customer", NewIndex("cust_temp", Field("name")))
+	builder.RemoveIndex("cust_temp")
+
+	// Version must be >= all index added/removed versions (addIndexCommon bumps internally)
+	builder.SetVersion(20)
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Serialize to proto
+	mdProto, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify proto fields
+	if !mdProto.GetSplitLongRecords() {
+		t.Fatal("split_long_records should be true")
+	}
+	if !mdProto.GetStoreRecordVersions() {
+		t.Fatal("store_record_versions should be true")
+	}
+	if mdProto.GetVersion() != 20 {
+		t.Fatalf("version: got %d, want 20", mdProto.GetVersion())
+	}
+	if mdProto.RecordCountKey == nil {
+		t.Fatal("record_count_key should be set")
+	}
+
+	// Deserialize back
+	md2, err := RecordMetaDataFromProto(mdProto)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify all properties survive
+	if md2.Version() != 20 {
+		t.Fatalf("version: got %d, want 20", md2.Version())
+	}
+	if !md2.IsSplitLongRecords() {
+		t.Fatal("split should be true")
+	}
+	if !md2.IsStoreRecordVersions() {
+		t.Fatal("store_record_versions should be true")
+	}
+
+	// All indexes should survive
+	for _, name := range []string{"price_val", "order_count", "price_sum", "price_rank", "composite", "type_idx"} {
+		if md2.GetIndex(name) == nil {
+			t.Fatalf("index %q should exist after round-trip", name)
+		}
+	}
+
+	// Index types should survive
+	if md2.GetIndex("order_count").Type != IndexTypeCount {
+		t.Fatalf("order_count type: got %q, want %q", md2.GetIndex("order_count").Type, IndexTypeCount)
+	}
+	if md2.GetIndex("price_sum").Type != IndexTypeSum {
+		t.Fatalf("price_sum type: got %q, want %q", md2.GetIndex("price_sum").Type, IndexTypeSum)
+	}
+	if md2.GetIndex("price_rank").Type != IndexTypeRank {
+		t.Fatalf("price_rank type: got %q, want %q", md2.GetIndex("price_rank").Type, IndexTypeRank)
+	}
+
+	// Former index should survive
+	if len(md2.GetFormerIndexes()) != 1 {
+		t.Fatalf("former indexes: got %d, want 1", len(md2.GetFormerIndexes()))
+	}
+
+	// Universal index should survive
+	if len(md2.GetUniversalIndexes()) != 1 {
+		t.Fatalf("universal indexes: got %d, want 1", len(md2.GetUniversalIndexes()))
+	}
+
+	// Record types should survive
+	for _, name := range []string{"Order", "Customer", "TypedRecord"} {
+		if md2.GetRecordType(name) == nil {
+			t.Fatalf("record type %q should exist", name)
+		}
+	}
+
+	// Record count key should survive
+	if md2.recordCountKey == nil {
+		t.Fatal("record_count_key should survive round-trip")
+	}
+}
+
+// TestMetaDataProtoRoundtripWithSinceVersion checks that SinceVersion survives.
+func TestMetaDataProtoRoundtripWithSinceVersion(t *testing.T) {
+	t.Parallel()
+	fd := gen.File_record_layer_demo_proto
+
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.GetRecordType("Order").recordType.SinceVersion = 3
+	builder.SetVersion(5)
+
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mdProto, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	md2, err := RecordMetaDataFromProto(mdProto)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orderRT := md2.GetRecordType("Order")
+	if orderRT == nil {
+		t.Fatal("Order should exist")
+	}
+	if orderRT.SinceVersion != 3 {
+		t.Fatalf("Order SinceVersion: got %d, want 3", orderRT.SinceVersion)
+	}
+}
+
+// TestMetaDataProtoRoundtripWithExplicitRecordTypeKey checks explicit type keys.
+func TestMetaDataProtoRoundtripWithExplicitRecordTypeKey(t *testing.T) {
+	t.Parallel()
+	fd := gen.File_record_layer_demo_proto
+
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	builder.GetRecordType("Order").SetRecordTypeKey(int64(42))
+	builder.SetVersion(2)
+
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mdProto, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	md2, err := RecordMetaDataFromProto(mdProto)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	orderRT := md2.GetRecordType("Order")
+	if orderRT == nil {
+		t.Fatal("Order should exist")
+	}
+	key := orderRT.GetRecordTypeKey()
+	if key != int64(42) {
+		t.Fatalf("Order record type key: got %v (%T), want int64(42)", key, key)
+	}
+}
+
+// TestMetaDataProtoRoundtripMultiTypeIndex verifies multi-type indexes survive.
+func TestMetaDataProtoRoundtripMultiTypeIndex(t *testing.T) {
+	t.Parallel()
+	fd := gen.File_record_layer_demo_proto
+
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+
+	// Add a multi-type index (shared between Order and Customer)
+	multiIdx := NewIndex("shared_idx", RecordTypeKey())
+	builder.AddMultiTypeIndex([]string{"Order", "Customer"}, multiIdx)
+
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mdProto, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Multi-type index should list both record types
+	var sharedProto *gen.Index
+	for _, ip := range mdProto.Indexes {
+		if ip.GetName() == "shared_idx" {
+			sharedProto = ip
+			break
+		}
+	}
+	if sharedProto == nil {
+		t.Fatal("shared_idx should be in proto")
+	}
+	if len(sharedProto.RecordType) != 2 {
+		t.Fatalf("shared_idx record types: got %d, want 2", len(sharedProto.RecordType))
+	}
+
+	md2, err := RecordMetaDataFromProto(mdProto)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored := md2.GetIndex("shared_idx")
+	if restored == nil {
+		t.Fatal("shared_idx should survive round-trip")
+	}
+
+	// Both record types should have the index
+	orderIdxs := md2.GetIndexesForRecordType("Order")
+	customerIdxs := md2.GetIndexesForRecordType("Customer")
+	hasOrder := false
+	hasCustomer := false
+	for _, idx := range orderIdxs {
+		if idx.Name == "shared_idx" {
+			hasOrder = true
+		}
+	}
+	for _, idx := range customerIdxs {
+		if idx.Name == "shared_idx" {
+			hasCustomer = true
+		}
+	}
+	if !hasOrder || !hasCustomer {
+		t.Fatalf("shared_idx should be on both Order (%v) and Customer (%v)", hasOrder, hasCustomer)
+	}
+}
