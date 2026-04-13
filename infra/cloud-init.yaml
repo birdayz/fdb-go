@@ -13,6 +13,65 @@ write_files:
     content: |
       {"default-address-pools": [{"base": "172.17.0.0/12", "size": 24}, {"base": "192.168.0.0/16", "size": 24}]}
 
+  # Watchdog: restart the runner if it hasn't picked up a job in 30 minutes.
+  # The runner logs "Running job:" when it starts work and "Listening for Jobs"
+  # when idle. If the last log line is older than 30 min and GitHub has queued
+  # jobs, the listener is stuck on a dead connection.
+  - path: /usr/local/bin/runner-watchdog.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      UNIT="actions.runner.birdayz-fdb-record-layer-go.gh-runner-fdb.service"
+      REPO="birdayz/fdb-record-layer-go"
+      # Check if the service is active.
+      if ! systemctl is-active --quiet "$UNIT"; then
+        echo "runner not active, restarting"
+        systemctl restart "$UNIT"
+        exit 0
+      fi
+      # Get timestamp of last log line from the runner.
+      LAST=$(journalctl -u "$UNIT" -n 1 --output=short-unix --no-pager 2>/dev/null | awk '{print int($1)}')
+      NOW=$(date +%s)
+      if [ -z "$LAST" ] || [ "$LAST" -eq 0 ]; then
+        echo "no log output found, restarting"
+        systemctl restart "$UNIT"
+        exit 0
+      fi
+      AGE=$(( NOW - LAST ))
+      # Only restart if silent AND there are queued/in_progress runs.
+      # If nothing is queued, silence is normal — the runner is just idle.
+      if [ "$AGE" -gt 1800 ]; then
+        QUEUED=$(curl -fsSL -H "Accept: application/vnd.github+json" \
+          "https://api.github.com/repos/$REPO/actions/runs?status=queued&per_page=1" 2>/dev/null \
+          | jq '.total_count // 0')
+        if [ "$QUEUED" -gt 0 ]; then
+          echo "runner silent for ${AGE}s with $QUEUED queued runs, restarting"
+          systemctl restart "$UNIT"
+        fi
+      fi
+
+  - path: /etc/systemd/system/runner-watchdog.service
+    content: |
+      [Unit]
+      Description=GitHub Actions Runner Watchdog
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/runner-watchdog.sh
+
+  - path: /etc/systemd/system/runner-watchdog.timer
+    content: |
+      [Unit]
+      Description=Check GitHub Actions Runner health every 10 minutes
+
+      [Timer]
+      OnBootSec=5min
+      OnUnitActiveSec=10min
+
+      [Install]
+      WantedBy=timers.target
+
 runcmd:
   # Docker
   - systemctl enable --now docker
@@ -53,3 +112,7 @@ runcmd:
     cd "$RUNNER_DIR"
     ./svc.sh install runner
     ./svc.sh start
+
+  # Enable runner watchdog timer
+  - systemctl daemon-reload
+  - systemctl enable --now runner-watchdog.timer
