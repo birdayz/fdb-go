@@ -38,7 +38,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 #### MEDIUM
 
 - [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
-- [ ] **Speculative second request (secondDelay)** — C++ sends a hedge request to a second storage server after ~0.5ms delay to improve p99 latency. Currently we try servers sequentially. Design: modify sendGetValue/sendGetKey/sendGetRange to (1) send to best server, (2) start timer based on QueueModel latency, (3) if timer fires before reply, send to second-best, (4) race both replies, (5) cancel loser. ~200 lines touching hot read path — needs careful implementation.
+- [ ] **Speculative second request (secondDelay)** — Primitives implemented (swingshift-11): `secondDelay()`, `chooseTopTwo()`, `sendFrameWithHedge()` in `hedge.go`. **Remaining**: wire into `sendGetValue`/`sendGetKey`/`sendGetRange` by extracting dial+send into `sendFunc` closures. Needs benchmarking to verify no common-case regression. ~50 lines per send function.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
 #### LOW
