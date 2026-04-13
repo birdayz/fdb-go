@@ -417,9 +417,9 @@ func TestSnapshotMethods(t *testing.T) {
 			t.Fatalf("expected 1 key, got %d", len(kvs))
 		}
 
-		// Options returns non-nil
+		// Options returns a usable handle
 		opts := snap.Options()
-		_ = opts
+		_ = opts.SetTimeout(5000) // verify it doesn't panic
 
 		// ReadTransact
 		inner, err := snap.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {

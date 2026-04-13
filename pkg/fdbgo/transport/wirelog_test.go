@@ -86,6 +86,8 @@ func TestWireLogTextTruncation(t *testing.T) {
 	output := buf.String()
 	g.Expect(output).To(gomega.ContainSubstring("more bytes"))
 	g.Expect(output).To(gomega.ContainSubstring("len=100"))
-	// Should only show 64 bytes of hex
-	g.Expect(strings.Count(output, "aa")).To(gomega.Equal(64))
+	// Should contain exactly 64 bytes of 0xAA hex (128 hex chars)
+	g.Expect(output).To(gomega.ContainSubstring(strings.Repeat("aa", 64)))
+	// But NOT 65 bytes worth (would mean truncation didn't work)
+	g.Expect(output).NotTo(gomega.ContainSubstring(strings.Repeat("aa", 65)))
 }
