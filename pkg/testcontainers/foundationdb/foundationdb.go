@@ -222,9 +222,34 @@ func Run(ctx context.Context, img string, opts ...testcontainers.ContainerCustom
 
 	// Auto-initialize unless disabled.
 	if cfg.autoInit {
-		if err := c.InitializeDatabase(ctx); err != nil {
-			_ = c.Terminate(ctx)
-			return nil, fmt.Errorf("initialize database: %w", err)
+		if cfg.processCount > 1 {
+			// Multi-process: init with single redundancy first (so the DB is
+			// available with just 1 process), start additional processes, then
+			// reconfigure to the requested redundancy mode.
+			savedMode := c.config.redundancyMode
+			c.config.redundancyMode = "single"
+			if err := c.InitializeDatabase(ctx); err != nil {
+				_ = c.Terminate(ctx)
+				return nil, fmt.Errorf("initialize database: %w", err)
+			}
+			if err := c.startAdditionalProcesses(ctx); err != nil {
+				_ = c.Terminate(ctx)
+				return nil, fmt.Errorf("start additional processes: %w", err)
+			}
+			// Reconfigure to requested redundancy now that all processes are up.
+			c.config.redundancyMode = savedMode
+			if savedMode != "single" {
+				cmd := fmt.Sprintf("configure %s", savedMode)
+				if _, err := c.FDBCLIExec(ctx, cmd); err != nil {
+					_ = c.Terminate(ctx)
+					return nil, fmt.Errorf("reconfigure redundancy: %w", err)
+				}
+			}
+		} else {
+			if err := c.InitializeDatabase(ctx); err != nil {
+				_ = c.Terminate(ctx)
+				return nil, fmt.Errorf("initialize database: %w", err)
+			}
 		}
 	}
 
@@ -349,6 +374,68 @@ func (c *Container) InitializeDatabase(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// startAdditionalProcesses starts extra fdbserver processes on ports 4501..4500+n-1.
+// Each process uses a separate data directory and the same cluster file.
+// The processes join the existing cluster as additional storage servers.
+func (c *Container) startAdditionalProcesses(ctx context.Context) error {
+	publicIP := c.containerIP
+
+	// Build knob args string for additional processes (same knobs as primary).
+	var knobArgs string
+	for name, value := range c.config.knobs {
+		knobArgs += fmt.Sprintf(" --knob_%s=%s", name, value)
+	}
+
+	for i := 1; i < c.config.processCount; i++ {
+		port := c.config.fdbPort + i
+		dataDir := fmt.Sprintf("/var/fdb/data/proc%d", i)
+
+		// Create data directory and start fdbserver in background.
+		cmd := fmt.Sprintf(
+			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s:%d "+
+				"--datadir %s --logdir /var/fdb/logs --class storage%s &",
+			dataDir, port, publicIP, port, dataDir, knobArgs,
+		)
+		_, reader, err := c.Exec(ctx, []string{"/bin/bash", "-c", cmd}, tcexec.Multiplexed())
+		if err != nil {
+			return fmt.Errorf("start process %d on port %d: %w", i, port, err)
+		}
+		// Drain output to prevent blocking.
+		if reader != nil {
+			io.ReadAll(reader)
+		}
+	}
+
+	// Wait for all processes to join the cluster.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		output, err := c.FDBCLIExec(ctx, "status minimal")
+		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+			// Count processes via ps aux (more reliable than parsing status details).
+			procCount, _ := c.countProcesses(ctx)
+			if procCount >= c.config.processCount {
+				return nil
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for %d processes to join cluster", c.config.processCount)
+}
+
+// countProcesses returns the number of fdbserver processes running in the container.
+// Uses pgrep for precise matching (avoids counting bash wrappers or fdbcli).
+func (c *Container) countProcesses(ctx context.Context) (int, error) {
+	_, reader, err := c.Exec(ctx, []string{"pgrep", "-c", "fdbserver"}, tcexec.Multiplexed())
+	if err != nil {
+		// pgrep returns exit 1 if no matches.
+		return 0, nil
+	}
+	out, _ := io.ReadAll(reader)
+	var count int
+	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
+	return count, nil
 }
 
 // FDBCLIExec runs an fdbcli command inside the container and returns the output.

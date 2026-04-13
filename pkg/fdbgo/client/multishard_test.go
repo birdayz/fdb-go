@@ -22,10 +22,13 @@ func TestMultiShard_GetRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Start FDB with small shards to force data distribution splits.
+	// Start FDB with 3 storage processes and small shards.
+	// Multiple storage servers enable data distribution to actually split shards.
 	container, err := tcfdb.Run(ctx, "",
 		tcfdb.WithStorageEngine("ssd"),
 		tcfdb.WithDirectIP(),
+		tcfdb.WithProcessCount(3),
+		tcfdb.WithRedundancyMode("double"),
 		tcfdb.WithKnob("min_shard_bytes", "10000"),
 		tcfdb.WithKnob("max_shard_bytes", "50000"),
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),

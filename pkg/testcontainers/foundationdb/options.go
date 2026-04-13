@@ -24,6 +24,7 @@ type options struct {
 	network        *testcontainers.DockerNetwork // user-provided network (nil = create one)
 	networkAliases []string
 	knobs          map[string]string // server knobs: --knob_NAME=VALUE
+	processCount   int               // fdbserver processes per container (default 1)
 }
 
 func defaultOptions() options {
@@ -37,6 +38,7 @@ func defaultOptions() options {
 		redundancyMode: "single",
 		autoInit:       true,
 		startupTimeout: 60 * time.Second,
+		processCount:   1,
 	}
 }
 
@@ -185,6 +187,31 @@ func WithNetwork(nw *testcontainers.DockerNetwork, aliases ...string) Option {
 func WithNetworkAliases(aliases ...string) Option {
 	return Option{applyFn: func(o *options) error {
 		o.networkAliases = append(o.networkAliases, aliases...)
+		return nil
+	}}
+}
+
+// WithProcessCount sets the number of fdbserver processes to run inside the
+// container. Default is 1. When n > 1, additional processes are started on
+// ports 4501..4500+n-1 after the primary process joins the cluster.
+//
+// Use with WithRedundancyMode("double") or ("triple") to enable data
+// replication across processes. Multiple storage servers enable shard splits,
+// which is required for testing cross-shard GetRange behavior.
+//
+// Example:
+//
+//	Run(ctx, "",
+//	    WithProcessCount(3),
+//	    WithRedundancyMode("double"),
+//	    WithKnob("min_shard_bytes", "40000"),
+//	)
+func WithProcessCount(n int) Option {
+	return Option{applyFn: func(o *options) error {
+		if n < 1 || n > 10 {
+			return fmt.Errorf("process count must be 1-10, got %d", n)
+		}
+		o.processCount = n
 		return nil
 	}}
 }
