@@ -32,6 +32,7 @@ jobs:
 
       - name: Ensure bun is installed
         run: |
+          command -v unzip >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq unzip >/dev/null 2>&1
           curl -fsSL https://bun.sh/install | bash
           sudo ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun
 
