@@ -662,7 +662,7 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	done := make(chan struct{})
 	replyToken, replyCh, cancelReply := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
-	body := buildPingRequest(replyToken)
+	body := BuildPingRequest(replyToken)
 	select {
 	case c.writeCh <- writeReq{token: pingEP, body: body}:
 	default:
@@ -703,11 +703,11 @@ var pingRequestTemplate = wire.NewMessageTemplate(
 	pingRequestFileID, pingRequestVTable, 4, pingRequestVTableClosure,
 )
 
-// buildPingRequest builds a PingRequest FlatBuffers body.
+// BuildPingRequest builds a PingRequest FlatBuffers body.
 // PingRequest has one field: ReplyPromise<Void> serialized as a bytes blob
 // (Standalone<StringRef>) containing the 16-byte reply token UID.
 // The server extracts this token and sends back a VoidReply to it.
-func buildPingRequest(replyToken UID) []byte {
+func BuildPingRequest(replyToken UID) []byte {
 	// The ReplyPromise is serialized via save/load trait → bytes blob.
 	// The blob contains the serialized Endpoint, which starts with the
 	// 16-byte token (two uint64 LE). This is the minimum the server
