@@ -36,8 +36,13 @@ jobs:
 
       - name: Ensure bun is installed
         run: |
-          curl -fsSL https://bun.sh/install | bash
-          sudo ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun
+          mkdir -p "$HOME/.bun/bin"
+          curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v1.3.6/bun-linux-x64.zip" -o /tmp/bun.zip
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/bun.zip').extractall('/tmp/bun-extract')"
+          cp /tmp/bun-extract/bun-linux-x64/bun "$HOME/.bun/bin/bun"
+          chmod +x "$HOME/.bun/bin/bun"
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+          rm -rf /tmp/bun.zip /tmp/bun-extract
 
       - name: Run Claude Code
         id: claude
