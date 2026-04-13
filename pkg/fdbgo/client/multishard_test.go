@@ -22,8 +22,8 @@ func TestMultiShard_GetRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Start FDB with 3 storage processes and small shards.
-	// Multiple storage servers enable data distribution to actually split shards.
+	// Start FDB with 3 processes and small shards.
+	// WithProcessCount(3) runs 3 fdbserver processes in one container.
 	container, err := tcfdb.Run(ctx, "",
 		tcfdb.WithStorageEngine("ssd"),
 		tcfdb.WithDirectIP(),
@@ -34,7 +34,7 @@ func TestMultiShard_GetRange(t *testing.T) {
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
 	)
 	if err != nil {
-		t.Fatalf("start FDB container with small shards: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	defer container.Terminate(ctx)
 
@@ -77,22 +77,28 @@ func TestMultiShard_GetRange(t *testing.T) {
 	}
 	t.Logf("seeded %d keys × %dKB = %dKB total", numKeys, valueSize/1000, numKeys*valueSize/1000)
 
-	// Wait for data distribution to potentially split shards. DD is async;
-	// single-node clusters may not split at all (only one storage server).
-	// The test validates the full GetRange path regardless of shard count.
-	time.Sleep(5 * time.Second)
-
-	// Check how many shard locations we get for our range.
-	result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		begin := []byte(prefix)
-		end := append([]byte(prefix), 0xFF)
-		locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId)
-		return locs, err
-	})
-	if err != nil {
-		t.Fatalf("locateRange: %v", err)
+	// Poll for shard splits. With 3 processes, double redundancy, and
+	// max_shard_bytes=50000, 1MB of data should yield ~20 shards.
+	// DD is async — poll every 2s for up to 30s.
+	var locs []LocationResult
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+			begin := []byte(prefix)
+			end := append([]byte(prefix), 0xFF)
+			return tx.db.locCache.locateRange(tx.db, ctx, begin, end, 100, false, tx.tenantId)
+		})
+		if err != nil {
+			t.Fatalf("locateRange: %v", err)
+		}
+		locs = result.([]LocationResult)
+		if len(locs) > 1 {
+			break // splits happened
+		}
+		// Invalidate location cache to pick up new shard boundaries.
+		db.db.locCache.invalidateRange([]byte(prefix), append([]byte(prefix), 0xFF), NoTenantID)
+		time.Sleep(2 * time.Second)
 	}
-	locs := result.([]LocationResult)
 	t.Logf("shard locations for range: %d", len(locs))
 	for i, loc := range locs {
 		t.Logf("  shard[%d]: begin=%x end=%x servers=%d", i, loc.ShardBegin, loc.ShardEnd, len(loc.Servers))
@@ -130,6 +136,6 @@ func TestMultiShard_GetRange(t *testing.T) {
 	if len(locs) > 1 {
 		t.Logf("SUCCESS: cross-shard GetRange worked across %d shards", len(locs))
 	} else {
-		t.Log("NOTE: data distribution did not split within 5s — test validates single-shard path only")
+		t.Log("NOTE: data distribution did not split within 30s — test validates single-shard path only")
 	}
 }

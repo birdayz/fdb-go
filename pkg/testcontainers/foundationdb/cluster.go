@@ -109,6 +109,12 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 			cluster.Terminate(ctx)
 			return nil, fmt.Errorf("configure redundancy: %w", err)
 		}
+		// Wait for the cluster to stabilize after redundancy change.
+		// FDB needs time to replicate data to meet the new policy.
+		if err := cluster.waitForHealthy(ctx); err != nil {
+			cluster.Terminate(ctx)
+			return nil, fmt.Errorf("wait for healthy after redundancy change: %w", err)
+		}
 	}
 
 	return cluster, nil
@@ -145,6 +151,19 @@ func (c *Cluster) waitForCluster(ctx context.Context, expected int) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("timed out waiting for %d processes in cluster", expected)
+}
+
+// waitForHealthy waits until fdbcli reports "Healthy" or "available".
+func (c *Cluster) waitForHealthy(ctx context.Context) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		output, err := c.Coordinator.FDBCLIExec(ctx, "status minimal")
+		if err == nil && (strings.Contains(output, "Healthy") || strings.Contains(output, "available")) {
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for healthy cluster")
 }
 
 // countProcessesInStatus parses "status details" output to count FDB processes.
