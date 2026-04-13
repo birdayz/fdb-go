@@ -170,5 +170,4 @@ Go `database/sql` compatible driver. Swap your Postgres DSN for an FDB one.
 ## Infrastructure / CI
 
 - [x] **Hetzner Object Storage upload `continue-on-error`** — Added nightshift-9. Outages no longer block PR merges.
-
-No open infrastructure items.
+- [x] **Benchmark CI with PR comparison** — RFC 018. `cmd/bench-report` Go tool + `just bench-ci` recipe + CI workflow. Master pushes upload baseline to S3, PRs get benchstat-style comparison posted as PR comment (edit-in-place via marker comment). nightshift-12.

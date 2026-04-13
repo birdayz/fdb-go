@@ -75,6 +75,35 @@ bench:
 bench-one NAME:
     bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
 
+# Run all benchmarks for CI, capture results to bench-results.txt
+bench-ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGETS=(
+        //pkg/recordlayer:recordlayer_test
+        //pkg/fdbgo/bench:bench_test
+        //pkg/fdbgo/client:client_test
+        //pkg/fdbgo/wire/types:types_test
+    )
+    BENCH_ARGS=(
+        --test_arg="-test.bench=."
+        --test_arg="-test.benchmem"
+        --test_arg="-test.benchtime=3s"
+        --test_arg="--ginkgo.skip=.*"
+        --test_output=all
+        --nocache_test_results
+        --test_timeout=300
+    )
+    rm -f bench-raw.txt bench-results.txt
+    for target in "${TARGETS[@]}"; do
+        echo "=== Running benchmarks: $target ==="
+        bazelisk test "$target" "${BENCH_ARGS[@]}" 2>&1 || true
+    done | tee bench-raw.txt
+    # Extract benchmark lines for benchstat/bench-report.
+    grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' bench-raw.txt > bench-results.txt || true
+    NRESULTS=$(grep -c '^Benchmark' bench-results.txt || echo 0)
+    echo "Benchmarks: $NRESULTS results → bench-results.txt"
+
 # Run Go vs Java performance comparison benchmark
 bench-compare:
     bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=Performance Comparison" --test_arg="--ginkgo.v" --test_output=streamed --cache_test_results=no
