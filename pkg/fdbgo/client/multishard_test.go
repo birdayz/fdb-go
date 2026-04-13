@@ -82,7 +82,7 @@ func TestMultiShard_GetRange(t *testing.T) {
 	// max_shard_bytes=50000, 1MB of data should yield ~20 shards.
 	// DD is async — poll every 2s for up to 30s.
 	var locs []LocationResult
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			begin := []byte(prefix)
@@ -137,6 +137,6 @@ func TestMultiShard_GetRange(t *testing.T) {
 	if len(locs) > 1 {
 		t.Logf("SUCCESS: cross-shard GetRange worked across %d shards", len(locs))
 	} else {
-		t.Log("NOTE: data distribution did not split within 30s — test validates single-shard path only")
+		t.Log("NOTE: data distribution did not split within 60s — test validates single-shard path only")
 	}
 }
