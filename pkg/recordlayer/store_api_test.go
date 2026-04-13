@@ -1861,6 +1861,237 @@ var _ = Describe("FDBRecordStore API", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("AsBuilder and CopyBuilder", func() {
+		It("AsBuilder creates a builder with the same config", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				ab := store.AsBuilder()
+				Expect(ab).NotTo(BeNil())
+				Expect(ab.metaData).To(Equal(md))
+				Expect(ab.subspace).To(Equal(ks))
+				Expect(ab.context).To(Equal(rtx))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("CopyBuilder creates a builder for a different context", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create the store first (committed transaction).
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Open in one transaction, then copy to another.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Create a second context to copy to.
+				_, err2 := sharedDB.Run(ctx, func(rtx2 *FDBRecordContext) (any, error) {
+					cb := store.CopyBuilder(rtx2)
+					Expect(cb).NotTo(BeNil())
+					Expect(cb.metaData).To(Equal(md))
+					Expect(cb.subspace).To(Equal(ks))
+					Expect(cb.context).To(Equal(rtx2))
+					Expect(cb.context).NotTo(Equal(rtx))
+
+					// Open the store in the new context.
+					store2, err := cb.Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store2).NotTo(BeNil())
+					return nil, nil
+				})
+				Expect(err2).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("IsVersionChanged", func() {
+		It("returns false for initial open", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsVersionChanged()).To(BeFalse())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns true when metadata version increases", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create the store initially.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Now open with a higher metadata version.
+			builder2 := baseMetaData()
+			builder2.SetVersion(md.Version() + 1)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsVersionChanged()).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("error type formatting", func() {
+		It("StoreIsLockedForRecordUpdatesError formats correctly", func() {
+			e := &StoreIsLockedForRecordUpdatesError{Reason: "maintenance", Timestamp: 12345}
+			Expect(e.Error()).To(ContainSubstring("maintenance"))
+			Expect(e.Error()).To(ContainSubstring("12345"))
+		})
+
+		It("StoreIsFullyLockedError formats correctly", func() {
+			e := &StoreIsFullyLockedError{Reason: "upgrade", Timestamp: 67890}
+			Expect(e.Error()).To(ContainSubstring("upgrade"))
+			Expect(e.Error()).To(ContainSubstring("67890"))
+		})
+
+		It("UnknownStoreLockStateError formats correctly", func() {
+			e := &UnknownStoreLockStateError{LockStateValue: 99}
+			Expect(e.Error()).To(ContainSubstring("99"))
+		})
+
+		It("StaleMetaDataVersionError formats correctly", func() {
+			e := &StaleMetaDataVersionError{LocalVersion: 3, StoredVersion: 5}
+			Expect(e.Error()).To(ContainSubstring("3"))
+			Expect(e.Error()).To(ContainSubstring("5"))
+		})
+	})
+
+	Describe("GetReadableUniversalIndexes and GetEnabledUniversalIndexes", func() {
+		It("returns universal indexes in their respective states", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			idx := NewIndex("type_idx", RecordTypeKey())
+			builder.AddUniversalIndex(idx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				readable := store.GetReadableUniversalIndexes()
+				Expect(readable).To(HaveLen(1))
+				Expect(readable[0].Name).To(Equal("type_idx"))
+
+				enabled := store.GetEnabledUniversalIndexes()
+				Expect(enabled).To(HaveLen(1))
+				Expect(enabled[0].Name).To(Equal("type_idx"))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("SetFormatVersion", func() {
+		It("updates the store format version", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				err = store.SetFormatVersion(14)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("IndexStateSubspace", func() {
+		It("returns a subspace for index states", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				sub := store.IndexStateSubspace()
+				Expect(sub).NotTo(BeNil())
+				Expect(bytes.HasPrefix(sub.Bytes(), ks.Bytes())).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("GetAllIndexStates", func() {
+		It("returns states for all indexes", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				states := store.GetAllIndexStates()
+				Expect(states).NotTo(BeEmpty())
+				// price_idx should be READABLE by default
+				state, ok := states["price_idx"]
+				Expect(ok).To(BeTrue())
+				Expect(state).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
 
 // collectPage drains a tuple cursor, returning all values and the raw

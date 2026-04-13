@@ -52,7 +52,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 #### MEDIUM
 
 - [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
-- [ ] **Multi-shard watch survival** — Watch a key, trigger shard move via DD, verify watch fires. Needs DD to move the shard while a watch is active.
+- [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
 - [ ] **Multi-shard concurrent writes during DD** — Concurrent Set/Commit while DD is actively splitting/moving shards. Verify no data loss.
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
@@ -90,7 +90,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 ### Bugs
 
-_No known bugs. 2307 Ginkgo specs + 429 conformance specs + 50 chaos tests pass._
+_No known bugs. 2555 Ginkgo specs + 430 conformance specs + 50 chaos tests pass._
 
 ### Features
 

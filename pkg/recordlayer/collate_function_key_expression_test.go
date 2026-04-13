@@ -482,5 +482,40 @@ func TestCollateConcurrentStress(t *testing.T) {
 	}
 }
 
+func TestCollateEvaluatorStrengthIntTypes(t *testing.T) {
+	t.Parallel()
+
+	eval := makeCollateEvaluator()
+
+	// int type for strength
+	r1, err := eval(nil, nil, [][]any{{"Hello", "", int(CollateStrengthTertiary)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// int32 type for strength
+	r2, err := eval(nil, nil, [][]any{{"Hello", "", int32(CollateStrengthTertiary)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// int64 type (baseline)
+	r3, err := eval(nil, nil, [][]any{{"Hello", "", int64(CollateStrengthTertiary)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All three should produce identical results
+	key1 := r1[0][0].([]byte)
+	key2 := r2[0][0].([]byte)
+	key3 := r3[0][0].([]byte)
+	if !bytes.Equal(key1, key2) {
+		t.Errorf("int vs int32 mismatch: %x vs %x", key1, key2)
+	}
+	if !bytes.Equal(key1, key3) {
+		t.Errorf("int vs int64 mismatch: %x vs %x", key1, key3)
+	}
+}
+
 // Verify the unused proto import doesn't cause issues
 var _ = proto.Int64

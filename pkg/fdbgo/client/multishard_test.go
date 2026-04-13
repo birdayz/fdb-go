@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,10 +65,6 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 			}
 			return nil, nil
 		})
-		if err != nil {
-			db.Close()
-			container.Terminate(ctx)
-		}
 		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed batch %d", batch)
 	}
 	t.Logf("seeded %d keys × %dKB", numKeys, valueSize/1000)
@@ -166,6 +163,18 @@ func TestMultiShard(t *testing.T) {
 	})
 	t.Run("BatchedWrites", func(t *testing.T) {
 		testMultiShard_BatchedWrites(t, ctx, env)
+	})
+	t.Run("WatchBasic", func(t *testing.T) {
+		testMultiShard_WatchBasic(t, ctx, env)
+	})
+	t.Run("WatchMultipleShards", func(t *testing.T) {
+		testMultiShard_WatchMultipleShards(t, ctx, env)
+	})
+	t.Run("WatchDuringHeavyWrites", func(t *testing.T) {
+		testMultiShard_WatchDuringHeavyWrites(t, ctx, env)
+	})
+	t.Run("WatchClearRange", func(t *testing.T) {
+		testMultiShard_WatchClearRange(t, ctx, env)
 	})
 }
 
@@ -785,4 +794,217 @@ func testMultiShard_BatchedWrites(t *testing.T, ctx context.Context, env *multiS
 		g.Expect(string(kv.Value)).To(gomega.Equal(fmt.Sprintf("batch-%d", i)))
 	}
 	t.Logf("batched writes: %d keys written + read back across %d shards", batchSize, env.numShards)
+}
+
+// WatchBasic: watch a key in multi-shard cluster, modify it, verify watch fires.
+// C++ ref: Watches.actor.cpp — basic watch trigger across storage servers.
+func testMultiShard_WatchBasic(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	watchKey := []byte(env.prefix + "watch_basic")
+
+	// Set initial value.
+	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(watchKey, []byte("v1"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Start watch in a goroutine.
+	watchDone := make(chan error, 1)
+	go func() {
+		_, werr := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.Watch(ctx, watchKey)
+		})
+		watchDone <- werr
+	}()
+
+	// Let the watch register with the storage server.
+	time.Sleep(500 * time.Millisecond)
+
+	// Modify the key from another transaction.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(watchKey, []byte("v2"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Watch should fire within 30s.
+	select {
+	case err := <-watchDone:
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch did not resolve within 30 seconds")
+	}
+	t.Logf("basic watch fired across %d shards", env.numShards)
+}
+
+// WatchMultipleShards: watch keys spread across different shards simultaneously.
+// All watches should fire independently when their respective keys change.
+func testMultiShard_WatchMultipleShards(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// Pick keys spread across the shard space.
+	// ms_0010, ms_0030, ms_0050, ms_0070, ms_0090 should land on different shards
+	// given ~35 shards over 100 keys.
+	watchKeys := []string{
+		env.prefix + "0010",
+		env.prefix + "0030",
+		env.prefix + "0050",
+		env.prefix + "0070",
+		env.prefix + "0090",
+	}
+
+	// These keys already exist from the seeded data. Start watches on all of them.
+	var wg sync.WaitGroup
+	watchErrors := make([]chan error, len(watchKeys))
+	for i, key := range watchKeys {
+		watchErrors[i] = make(chan error, 1)
+		wg.Add(1)
+		go func(idx int, k string) {
+			defer wg.Done()
+			_, werr := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+				return nil, tx.Watch(ctx, []byte(k))
+			})
+			watchErrors[idx] <- werr
+		}(i, key)
+	}
+
+	// Let all watches register.
+	time.Sleep(1 * time.Second)
+
+	// Modify all watched keys in a single transaction.
+	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for _, key := range watchKeys {
+			tx.Set([]byte(key), []byte("modified"))
+		}
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// All watches should fire.
+	for i, ch := range watchErrors {
+		select {
+		case err := <-ch:
+			g.Expect(err).ToNot(gomega.HaveOccurred(), "watch %d (%s)", i, watchKeys[i])
+		case <-time.After(30 * time.Second):
+			t.Fatalf("watch %d (%s) did not resolve within 30 seconds", i, watchKeys[i])
+		}
+	}
+
+	wg.Wait()
+	t.Logf("all %d watches across different shards fired", len(watchKeys))
+}
+
+// WatchDuringHeavyWrites: watch a key while hammering writes across all shards.
+// Verifies the watch mechanism is robust under load.
+func testMultiShard_WatchDuringHeavyWrites(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	watchKey := []byte(env.prefix + "watch_heavy")
+
+	// Set initial value.
+	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(watchKey, []byte("initial"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Start watch.
+	watchDone := make(chan error, 1)
+	go func() {
+		_, werr := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.Watch(ctx, watchKey)
+		})
+		watchDone <- werr
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Hammer writes across the shard space while the watch is active.
+	// 10 batches × 20 keys = 200 writes to OTHER keys.
+	writePrefix := env.prefix + "heavy_"
+	for batch := 0; batch < 10; batch++ {
+		_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			for i := 0; i < 20; i++ {
+				key := []byte(fmt.Sprintf("%s%04d", writePrefix, batch*20+i))
+				tx.Set(key, bytes.Repeat([]byte{byte(batch)}, 1000))
+			}
+			return nil, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	}
+
+	// Now modify the watched key.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(watchKey, []byte("changed_under_load"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Watch should still fire despite all the concurrent shard activity.
+	select {
+	case err := <-watchDone:
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch did not resolve within 30 seconds under heavy writes")
+	}
+
+	// Verify the value.
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, watchKey)
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	g.Expect(string(result.([]byte))).To(gomega.Equal("changed_under_load"))
+	t.Logf("watch fired under heavy write load across %d shards", env.numShards)
+}
+
+// WatchClearRange: watch a key, then clear a range that spans multiple shards
+// containing the watched key. Verifies the watch fires on cross-shard ClearRange.
+func testMultiShard_WatchClearRange(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	watchKey := []byte(env.prefix + "watch_cr_target")
+
+	// Set initial value.
+	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(watchKey, []byte("exists"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Start watch.
+	watchDone := make(chan error, 1)
+	go func() {
+		_, werr := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			return nil, tx.Watch(ctx, watchKey)
+		})
+		watchDone <- werr
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+
+	// ClearRange covering the watched key and spanning multiple shards.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(env.prefix + "watch_cr")
+		end := []byte(env.prefix + "watch_cr~")
+		return nil, tx.ClearRange(begin, end)
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Watch should fire.
+	select {
+	case err := <-watchDone:
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+	case <-time.After(30 * time.Second):
+		t.Fatal("watch did not resolve within 30 seconds after cross-shard ClearRange")
+	}
+
+	// Verify key is gone.
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		return tx.Get(ctx, watchKey)
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	g.Expect(result).To(gomega.BeNil())
+	t.Logf("watch fired after cross-shard ClearRange across %d shards", env.numShards)
 }

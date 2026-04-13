@@ -58,16 +58,16 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(attempts).To(Equal(1))
 		})
 
-		It("respects context cancellation", func() {
+		It("succeeds on first attempt even with pre-cancelled context", func() {
 			cancelCtx, cancel := context.WithCancel(ctx)
-			cancel() // Cancel immediately
+			cancel() // Cancel immediately — but first attempt still runs
 
 			runner := NewFDBDatabaseRunner(sharedDB)
 			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
 				return nil, nil
 			})
-			// First attempt should succeed since cancel is checked before retry delay
-			// If the function succeeds, no retry needed
+			// Cancellation is only checked before retry delays, not before the first attempt.
+			// If the function succeeds on the first try, no retry (and no cancel check) needed.
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -166,6 +166,60 @@ var _ = Describe("FDBDatabaseRunner", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(rctx).NotTo(BeNil())
 			rctx.Cancel()
+		})
+	})
+
+	Describe("retry with backoff", func() {
+		It("retries with increasing delay on retryable errors", func() {
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(4).
+				SetInitialDelay(10 * time.Millisecond).
+				SetMaxDelay(1 * time.Second)
+
+			attempts := 0
+			start := time.Now()
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
+				if attempts < 3 {
+					return nil, fdb.Error{Code: 1020} // not_committed — retryable
+				}
+				return "done", nil
+			})
+			elapsed := time.Since(start)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(attempts).To(Equal(3))
+			// Two delay periods: 10ms (attempt 2) + 20ms (attempt 3) = ~30ms minimum.
+			// Jitter adds 0.5x-1.5x, so range is ~15ms-45ms. Use 20ms as safe lower bound.
+			Expect(elapsed).To(BeNumerically(">", 20*time.Millisecond))
+		})
+
+		It("gives up after max attempts", func() {
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(3).
+				SetInitialDelay(1 * time.Millisecond)
+
+			attempts := 0
+			_, err := runner.RunWithRetry(ctx, func(rtx *FDBRecordContext) (any, error) {
+				attempts++
+				return nil, fdb.Error{Code: 1020} // always retryable
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(attempts).To(Equal(3))
+		})
+
+		It("cancels between retries when context is cancelled", func() {
+			cancelCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+			defer cancel()
+
+			runner := NewFDBDatabaseRunner(sharedDB).
+				SetMaxAttempts(100).
+				SetInitialDelay(100 * time.Millisecond) // Long delay so context cancels during wait
+
+			_, err := runner.RunWithRetry(cancelCtx, func(rtx *FDBRecordContext) (any, error) {
+				return nil, fdb.Error{Code: 1020} // retryable
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue())
 		})
 	})
 

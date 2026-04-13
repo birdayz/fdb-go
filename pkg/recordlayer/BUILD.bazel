@@ -117,6 +117,7 @@ go_test(
     timeout = "long",
     srcs = [
         "aggregate_function_test.go",
+        "aggregate_function_unit_test.go",
         "api_coverage2_test.go",
         "api_coverage_test.go",
         "benchmark_test.go",
@@ -129,6 +130,7 @@ go_test(
         "bug_bounty3_store_test.go",
         "bug_bounty3_test.go",
         "bug_bounty_test.go",
+        "bunched_map_unit_test.go",
         "byte_limit_bug_test.go",
         "chained_cursor_test.go",
         "collate_function_key_expression_test.go",
@@ -167,6 +169,7 @@ go_test(
         "index_predicate_test.go",
         "index_registration_matrix_test.go",
         "index_scan_test.go",
+        "index_scan_unit_test.go",
         "index_state_test.go",
         "index_test.go",
         "index_validation_test.go",
@@ -265,7 +268,9 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )
 
