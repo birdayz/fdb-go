@@ -49,7 +49,9 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 
 #### MEDIUM
 
-- [ ] **Multi-shard GetRange integration test** — Needs `WithKnob("min_shard_bytes", "40000")` on testcontainer to force shard splits in single-node. Requires modifying `foundationdb.conf` before container start (knobs are process-level, not runtime). Alternative: multi-node testcontainer with enough data to trigger natural splits (~50MB+).
+- [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
+- [ ] **Multi-shard watch survival** — Watch a key, trigger shard move via DD, verify watch fires. Needs DD to move the shard while a watch is active.
+- [ ] **Multi-shard concurrent writes during DD** — Concurrent Set/Commit while DD is actively splitting/moving shards. Verify no data loss.
 
 ### Behavioral Divergences from C++ (audit 2026-04-13)
 
