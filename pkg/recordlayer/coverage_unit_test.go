@@ -84,19 +84,11 @@ var _ = Describe("Coverage Unit Tests", func() {
 			Expect(cosineDistance(a, b)).To(BeNumerically("~", 0.0, 1e-10))
 		})
 
-		It("clamps similarity below -1.0", func() {
-			// Craft vectors where floating-point accumulation yields sim < -1.
-			// Two anti-parallel unit-ish vectors should give sim ~ -1. Inject
-			// a tiny perturbation so the computed sim dips just below -1 due
-			// to rounding. If clamp works, distance = 1 - (-1) = 2.
-			//
-			// Direct approach: call cosineDistance with perfectly antiparallel
-			// vectors. The computed sim is exactly -1.0 (no perturbation needed
-			// to test the clamp path). But the branch is `sim < -1.0`, so we
-			// need to actually produce a value below -1.0. That's hard to do
-			// with real floating-point without a contrived example. Instead,
-			// we test the boundary by directly calling the function with
-			// antiparallel vectors and verifying we get distance = 2.0.
+		It("returns max distance for antiparallel vectors", func() {
+			// Antiparallel unit vectors: sim = -1.0 exactly.
+			// The sim < -1.0 and sim > 1.0 clamp branches are defensive
+			// guards for floating-point drift — unreachable with real
+			// arithmetic but keep the result in [0, 2].
 			a := []float64{1, 0, 0}
 			b := []float64{-1, 0, 0}
 			Expect(cosineDistance(a, b)).To(BeNumerically("~", 2.0, 1e-10))

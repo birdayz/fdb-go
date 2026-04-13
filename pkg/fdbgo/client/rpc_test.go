@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func TestWaitReply_Timeout(t *testing.T) {
 	ch := make(chan transport.Response) // never sends
 
 	_, err := waitReply(ch, context.Background(), 10*time.Millisecond)
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
 }
@@ -49,7 +50,7 @@ func TestWaitReply_ContextCancelled(t *testing.T) {
 	cancel()
 
 	_, err := waitReply(ch, ctx, 5*time.Second)
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected Canceled, got %v", err)
 	}
 }
@@ -79,7 +80,7 @@ func TestWaitReplyOrProxiesChanged_ProxiesChange(t *testing.T) {
 	_, err := waitReplyOrProxiesChanged(ch, context.Background(), 5*time.Second, proxiesChanged)
 	elapsed := time.Since(start)
 
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded on proxy change, got %v", err)
 	}
 	// Should return immediately, not wait for the 5s timeout.
@@ -102,7 +103,7 @@ func TestWaitReplyOrProxiesChanged_ProxiesChangeMidWait(t *testing.T) {
 	_, err := waitReplyOrProxiesChanged(ch, context.Background(), 5*time.Second, proxiesChanged)
 	elapsed := time.Since(start)
 
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
 	// Should wake within ~50ms + scheduling jitter, not 5s timeout.
@@ -117,7 +118,7 @@ func TestWaitReplyOrProxiesChanged_Timeout(t *testing.T) {
 	proxiesChanged := make(chan struct{}) // never fires
 
 	_, err := waitReplyOrProxiesChanged(ch, context.Background(), 10*time.Millisecond, proxiesChanged)
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded on timeout, got %v", err)
 	}
 }
@@ -130,7 +131,7 @@ func TestWaitReplyOrProxiesChanged_ContextCancelled(t *testing.T) {
 	cancel()
 
 	_, err := waitReplyOrProxiesChanged(ch, ctx, 5*time.Second, proxiesChanged)
-	if err != context.Canceled {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected Canceled, got %v", err)
 	}
 }

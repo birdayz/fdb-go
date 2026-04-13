@@ -142,7 +142,7 @@ func TestParseTagThrottleInfoTruncated(t *testing.T) {
 
 func TestParseTagThrottleInfoTruncatedAfterTagLen(t *testing.T) {
 	t.Parallel()
-	// count=1, tagLen=100 but only 3 bytes of tag data — hits line 68 (tag data truncated).
+	// count=1, tagLen=100 but only 3 bytes of tag data — tagLen exceeds available bytes.
 	data := make([]byte, 4+4+3)                  // count + tagLen + 3 tag bytes (need 100)
 	binary.LittleEndian.PutUint32(data[0:], 1)   // count=1
 	binary.LittleEndian.PutUint32(data[4:], 100) // tagLen=100 (but only 3 bytes available)
@@ -154,7 +154,7 @@ func TestParseTagThrottleInfoTruncatedAfterTagLen(t *testing.T) {
 
 func TestParseTagThrottleInfoTruncatedAfterTag(t *testing.T) {
 	t.Parallel()
-	// count=1, tag="ab" (2 bytes), but missing tpsRate+duration — hits line 73.
+	// count=1, tag="ab" (2 bytes), but rate/duration data truncated after tag bytes.
 	tag := "ab"
 	data := make([]byte, 4+4+len(tag)+4) // count + tagLen + tag + 4 bytes (need 16)
 	off := 0
