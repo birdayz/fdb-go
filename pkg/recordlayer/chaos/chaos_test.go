@@ -1312,3 +1312,102 @@ func TestVectorHighDimRaBitQCommitUnknown(t *testing.T) {
 	t.Logf("completed %d ops with seed=%d, %d faults injected",
 		numOps, s.Seed(), len(s.FaultLog()))
 }
+
+// --- COUNT_NOT_NULL chaos tests ---
+
+// buildCountNotNullMetadata creates metadata with a COUNT_NOT_NULL index.
+// Groups by price — only counts records where price is actually set (non-nil).
+func buildCountNotNullMetadata() *recordlayer.RecordMetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder()
+	builder.SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.SetRecordCountKey(recordlayer.EmptyKey())
+	builder.AddIndex("Order", recordlayer.NewCountNotNullIndex("order_count_not_null_by_price",
+		recordlayer.GroupAll(recordlayer.Field("price"))))
+	md, err := builder.Build()
+	if err != nil {
+		panic("chaos: failed to build count_not_null metadata: " + err.Error())
+	}
+	return md
+}
+
+// TestCountNotNullCommitUnknown verifies COUNT_NOT_NULL stays correct under
+// commit-unknown. Like COUNT, the removeCommonGroupingKeys optimization
+// makes it safe for unchanged keys.
+func TestCountNotNullCommitUnknown(t *testing.T) {
+	t.Parallel()
+	md := buildCountNotNullMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	// Insert record with price set → should be counted
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
+	s.Verify()
+
+	// Insert record WITHOUT price set → should NOT be counted
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
+	s.Verify()
+
+	// Overwrite record 1 with different price under commit-unknown
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(200)})
+	s.Verify()
+
+	// Set price on record 2 (was nil → now has value) under commit-unknown
+	s.InjectOnce(FaultCommitUnknown)
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(200)})
+	s.Verify()
+}
+
+// TestCountNotNullNilToSet verifies transition from nil price to set price.
+func TestCountNotNullNilToSet(t *testing.T) {
+	t.Parallel()
+	md := buildCountNotNullMetadata()
+	s := NewScenario(t, testRealDB, md)
+
+	// Save without price
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+	s.Verify()
+
+	// Now set price → count should increase
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(50)})
+	s.Verify()
+
+	// Clear price back to nil → count should decrease
+	s.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+	s.Verify()
+}
+
+// TestRandomWithCountNotNullIndex runs random ops with COUNT_NOT_NULL index.
+// Mix of records with and without price set, under fault injection.
+func TestRandomWithCountNotNullIndex(t *testing.T) {
+	t.Parallel()
+	md := buildCountNotNullMetadata()
+	s := NewScenario(t, testRealDB, md, WithSeed(77777), WithFaults(FaultsRetryHeavy))
+
+	const numOps = 100
+	maxPK := int64(20)
+
+	for i := 0; i < numOps; i++ {
+		pk := s.Rng.Int64N(maxPK) + 1
+		if s.Rng.Float64() < 0.7 {
+			order := &gen.Order{OrderId: proto.Int64(pk)}
+			// 70% chance of setting price, 30% leave nil
+			if s.Rng.Float64() < 0.7 {
+				order.Price = proto.Int32(s.Rng.Int32N(5) * 100)
+			}
+			s.SaveRecord(order)
+		} else {
+			s.DeleteRecord(tuple.Tuple{pk})
+		}
+
+		if (i+1)%20 == 0 {
+			s.Verify()
+		}
+	}
+	s.Verify()
+	t.Logf("completed %d ops, %d faults injected", numOps, len(s.FaultLog()))
+}
