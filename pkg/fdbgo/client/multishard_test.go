@@ -154,6 +154,9 @@ func TestMultiShard(t *testing.T) {
 	t.Run("ConcurrentReadsWrites", func(t *testing.T) {
 		testMultiShard_ConcurrentReadsWrites(t, ctx, env)
 	})
+	t.Run("GetRangeSplitPoints", func(t *testing.T) {
+		testMultiShard_GetRangeSplitPoints(t, ctx, env)
+	})
 }
 
 // GetRange: full forward scan across all shards.
@@ -469,4 +472,28 @@ func testMultiShard_ConcurrentReadsWrites(t *testing.T, ctx context.Context, env
 	}
 	t.Logf("concurrent reads/writes: %d goroutines × %d ops across %d shards",
 		goroutines, opsPerGoroutine, env.numShards)
+}
+
+// GetRangeSplitPoints: split points API across multi-shard range.
+// C++ ref: GetEstimatedRangeSize.actor.cpp tests split points with bulk data.
+func testMultiShard_GetRangeSplitPoints(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(env.prefix)
+		end := append([]byte(env.prefix), 0xFF)
+		return tx.GetRangeSplitPoints(ctx, begin, end, 100000) // 100KB chunks
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	points := result.([][]byte)
+	// With 1MB of data and 100KB chunks, expect ~10 split points.
+	// The exact count depends on FDB's internal layout.
+	t.Logf("split points (100KB chunks): %d points across %d shards", len(points), env.numShards)
+	if len(points) > 0 {
+		// Verify split points are within our key range.
+		for i, p := range points {
+			g.Expect(bytes.Compare(p, []byte(env.prefix))).To(gomega.BeNumerically(">=", 0),
+				"split point %d below range: %x", i, p)
+		}
+	}
 }
