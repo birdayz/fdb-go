@@ -105,4 +105,10 @@ var _ = Describe("FDBMetaDataStore", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(loaded).To(BeNil())
 	})
+
+	It("Subspace returns the configured subspace", func() {
+		ss := specSubspace()
+		store := NewFDBMetaDataStore(ss)
+		Expect(store.Subspace()).To(Equal(ss))
+	})
 })

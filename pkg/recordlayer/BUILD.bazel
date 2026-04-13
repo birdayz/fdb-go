@@ -130,6 +130,7 @@ go_test(
         "bug_bounty3_store_test.go",
         "bug_bounty3_test.go",
         "bug_bounty_test.go",
+        "bunched_map_unit_test.go",
         "byte_limit_bug_test.go",
         "chained_cursor_test.go",
         "collate_function_key_expression_test.go",
