@@ -32,6 +32,7 @@ func TestMultiShard_GetRange(t *testing.T) {
 		tcfdb.WithKnob("min_shard_bytes", "10000"),
 		tcfdb.WithKnob("max_shard_bytes", "50000"),
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
+		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
