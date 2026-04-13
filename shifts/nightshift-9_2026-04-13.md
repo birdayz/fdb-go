@@ -75,7 +75,7 @@ All test files using hardcoded FDB keys now use `t.Name()` prefixes:
 - **Fuzz testing:** ~330M total executions across all 10 fuzz targets, 0 crashes
 - **Race detector:** Full client test suite passes with `-race` (0 data races)
 - **CI:** Green on all pushes
-- **Line coverage:** 72.4% client, 78.8% record layer
+- **Line coverage:** 77.4% overall (CI, filtered to production code), 72.4% client, 78.8% record layer
 
 ## Known issues
 
