@@ -361,6 +361,84 @@ func TestSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotMethods(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	pfx := t.Name() + "_"
+	key := fdb.Key(pfx + "key")
+
+	// Seed data
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("val"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, err = db.ReadTransact(func(tr fdb.ReadTransaction) (any, error) {
+		snap := tr.Snapshot()
+
+		// Snapshot() returns itself
+		snap2 := snap.Snapshot()
+		v, err := snap2.Get(key).Get()
+		if err != nil {
+			t.Fatalf("Snapshot().Snapshot().Get: %v", err)
+		}
+		if string(v) != "val" {
+			t.Fatalf("got %q, want %q", v, "val")
+		}
+
+		// GetDatabase returns the database
+		snapDB := snap.GetDatabase()
+		if snapDB == (fdb.Database{}) {
+			t.Fatal("GetDatabase returned zero value")
+		}
+
+		// GetReadVersion
+		rv, err := snap.GetReadVersion().Get()
+		if err != nil {
+			t.Fatalf("GetReadVersion: %v", err)
+		}
+		if rv <= 0 {
+			t.Fatalf("read version should be positive, got %d", rv)
+		}
+
+		// GetRange
+		begin := fdb.Key(pfx)
+		end := fdb.Key(pfx + "\xFF")
+		rr := snap.GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{})
+		kvs, err := rr.GetSliceWithError()
+		if err != nil {
+			t.Fatalf("GetRange: %v", err)
+		}
+		if len(kvs) != 1 {
+			t.Fatalf("expected 1 key, got %d", len(kvs))
+		}
+
+		// Options returns non-nil
+		opts := snap.Options()
+		_ = opts
+
+		// ReadTransact
+		inner, err := snap.ReadTransact(func(rt fdb.ReadTransaction) (any, error) {
+			return rt.Get(key).MustGet(), nil
+		})
+		if err != nil {
+			t.Fatalf("ReadTransact: %v", err)
+		}
+		if string(inner.([]byte)) != "val" {
+			t.Fatalf("ReadTransact got %q", inner)
+		}
+
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("ReadTransact: %v", err)
+	}
+}
+
 func TestGetCommittedVersion(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
