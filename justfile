@@ -79,27 +79,28 @@ bench-one NAME:
 bench-ci:
     #!/usr/bin/env bash
     set -euo pipefail
-    TARGETS=(
-        //pkg/recordlayer:recordlayer_test
-        //pkg/fdbgo/bench:bench_test
-        //pkg/fdbgo/client:client_test
-        //pkg/fdbgo/wire/types:types_test
-    )
-    BENCH_ARGS=(
+    COMMON_ARGS=(
         --test_arg="-test.bench=."
         --test_arg="-test.benchmem"
         --test_arg="-test.benchtime=3s"
-        --test_arg="--ginkgo.skip=.*"
         --test_output=all
         --nocache_test_results
         --test_timeout=300
     )
+    # Ginkgo targets need --ginkgo.skip to avoid running specs.
+    GINKGO_ARGS=("${COMMON_ARGS[@]}" --test_arg="--ginkgo.skip=.*")
     rm -f bench-raw.txt bench-results.txt
-    for target in "${TARGETS[@]}"; do
-        echo "=== Running benchmarks: $target ==="
-        bazelisk test "$target" "${BENCH_ARGS[@]}" 2>&1 || true
-    done | tee bench-raw.txt
-    # Extract benchmark lines for benchstat/bench-report.
+    {
+        echo "=== Running benchmarks: //pkg/recordlayer:recordlayer_test ==="
+        bazelisk test //pkg/recordlayer:recordlayer_test "${GINKGO_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/bench:bench_test ==="
+        bazelisk test //pkg/fdbgo/bench:bench_test "${COMMON_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/client:client_test ==="
+        bazelisk test //pkg/fdbgo/client:client_test "${COMMON_ARGS[@]}" 2>&1 || true
+        echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
+        bazelisk test //pkg/fdbgo/wire/types:types_test "${COMMON_ARGS[@]}" 2>&1 || true
+    } | tee bench-raw.txt
+    # Extract benchmark lines for bench-report.
     grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' bench-raw.txt > bench-results.txt || true
     NRESULTS=$(grep -c '^Benchmark' bench-results.txt || echo 0)
     echo "Benchmarks: $NRESULTS results → bench-results.txt"
