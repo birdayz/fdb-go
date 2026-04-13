@@ -142,6 +142,18 @@ func TestMultiShard(t *testing.T) {
 	t.Run("GetEstimatedRangeSize", func(t *testing.T) {
 		testMultiShard_GetEstimatedRangeSize(t, ctx, env)
 	})
+	t.Run("SnapshotRead", func(t *testing.T) {
+		testMultiShard_SnapshotRead(t, ctx, env)
+	})
+	t.Run("ClearRange", func(t *testing.T) {
+		testMultiShard_ClearRange(t, ctx, env)
+	})
+	t.Run("ConflictDetection", func(t *testing.T) {
+		testMultiShard_ConflictDetection(t, ctx, env)
+	})
+	t.Run("ConcurrentReadsWrites", func(t *testing.T) {
+		testMultiShard_ConcurrentReadsWrites(t, ctx, env)
+	})
 }
 
 // GetRange: full forward scan across all shards.
@@ -315,4 +327,146 @@ func testMultiShard_GetEstimatedRangeSize(t *testing.T, ctx context.Context, env
 	g.Expect(size).To(gomega.BeNumerically(">=", int64(500000)),
 		"estimated size %d too low for 1MB of data", size)
 	t.Logf("estimated range size: %d bytes across %d shards", size, env.numShards)
+}
+
+// SnapshotRead: snapshot reads across shards don't add read conflicts.
+// C++ Watches.actor.cpp tests snapshot isolation across distributed keys.
+func testMultiShard_SnapshotRead(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// tx1: snapshot-read the full range across all shards.
+	tx1 := env.db.CreateTransaction()
+	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tx1.SetReadVersion(rv)
+
+	snap := tx1.Snapshot()
+	begin := []byte(env.prefix)
+	end := append([]byte(env.prefix), 0xFF)
+	kvs, _, err := snap.GetRange(ctx, begin, end, 10)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	g.Expect(len(kvs)).To(gomega.BeNumerically(">=", 10))
+
+	// Write to a key in the snapshot-read range from another transaction.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set([]byte(env.prefix+"0050"), []byte("concurrent-write"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// tx1 should NOT conflict because snapshot reads don't add read conflicts.
+	tx1.Set([]byte(env.prefix+"snap_test"), []byte("ok"))
+	err = tx1.Commit(ctx)
+	g.Expect(err).ToNot(gomega.HaveOccurred(), "snapshot read should not cause conflict")
+	t.Logf("snapshot read across %d shards: no conflict", env.numShards)
+}
+
+// ClearRange: clear a range that spans multiple shards, verify keys gone.
+// C++ PhysicalShardMove.actor.cpp validates data consistency after range operations.
+func testMultiShard_ClearRange(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// Write keys in a sub-range that spans shards.
+	clearPrefix := env.prefix + "clr_"
+	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		for i := 0; i < 20; i++ {
+			key := []byte(fmt.Sprintf("%s%04d", clearPrefix, i))
+			tx.Set(key, bytes.Repeat([]byte{byte(i)}, 100))
+		}
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Clear the entire sub-range.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(clearPrefix)
+		end := append([]byte(clearPrefix), 0xFF)
+		tx.ClearRange(begin, end)
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// Verify all keys are gone.
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		begin := []byte(clearPrefix)
+		end := append([]byte(clearPrefix), 0xFF)
+		kvs, _, err := tx.GetRange(ctx, begin, end, 0)
+		return kvs, err
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	kvs := result.([]KeyValue)
+	g.Expect(kvs).To(gomega.BeEmpty(), "expected all keys cleared")
+	t.Logf("clear range across shards: 20 keys cleared")
+}
+
+// ConflictDetection: read-write conflict on keys spanning different shards.
+// C++ AtomicOps.actor.cpp tests conflict behavior across distributed keys.
+func testMultiShard_ConflictDetection(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	key := []byte(env.prefix + "0025") // Exists on some shard.
+
+	// tx1: read the key (adds read conflict range).
+	tx1 := env.db.CreateTransaction()
+	rv, err := env.db.db.grvBatchers[grvBatcherDefault].getReadVersion(env.db.db, ctx, grvPriorityDefault)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tx1.SetReadVersion(rv)
+	_, err = tx1.Get(ctx, key)
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	tx1.Set([]byte(env.prefix+"conflict_marker"), []byte("from_tx1"))
+
+	// tx2: write the same key and commit first.
+	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("from_tx2"))
+		return nil, nil
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+
+	// tx1 should conflict.
+	err = tx1.Commit(ctx)
+	g.Expect(err).To(gomega.HaveOccurred(), "expected conflict")
+	t.Logf("cross-shard conflict detection works")
+}
+
+// ConcurrentReadsWrites: multiple goroutines reading and writing across shards.
+// C++ RandomMoveKeys.actor.cpp stresses concurrent operations during shard moves.
+func testMultiShard_ConcurrentReadsWrites(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// 5 concurrent goroutines, each doing 10 read-write transactions.
+	const goroutines = 5
+	const opsPerGoroutine = 10
+	errCh := make(chan error, goroutines)
+
+	for w := 0; w < goroutines; w++ {
+		go func(workerID int) {
+			for i := 0; i < opsPerGoroutine; i++ {
+				_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+					// Read a key on one shard.
+					readKey := []byte(fmt.Sprintf("%s%04d", env.prefix, (workerID*20+i)%100))
+					_, err := tx.Get(ctx, readKey)
+					if err != nil {
+						return nil, err
+					}
+					// Write a key on potentially a different shard.
+					writeKey := []byte(fmt.Sprintf("%scw_%d_%04d", env.prefix, workerID, i))
+					tx.Set(writeKey, []byte(fmt.Sprintf("worker-%d-op-%d", workerID, i)))
+					return nil, nil
+				})
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}
+			errCh <- nil
+		}(w)
+	}
+
+	// Collect results.
+	for i := 0; i < goroutines; i++ {
+		err := <-errCh
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "worker %d failed", i)
+	}
+	t.Logf("concurrent reads/writes: %d goroutines × %d ops across %d shards",
+		goroutines, opsPerGoroutine, env.numShards)
 }
