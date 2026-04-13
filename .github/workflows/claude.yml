@@ -30,6 +30,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Ensure bun is installed
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          sudo ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
