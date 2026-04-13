@@ -318,3 +318,67 @@ var _ = Describe("RecordMetaDataBuilder advanced features", func() {
 		})
 	})
 })
+
+var _ = Describe("IndexState", func() {
+	Describe("state predicates", func() {
+		It("IsScannable for READABLE and READABLE_UNIQUE_PENDING", func() {
+			Expect(IndexStateReadable.IsScannable()).To(BeTrue())
+			Expect(IndexStateReadableUniquePending.IsScannable()).To(BeTrue())
+			Expect(IndexStateWriteOnly.IsScannable()).To(BeFalse())
+			Expect(IndexStateDisabled.IsScannable()).To(BeFalse())
+		})
+
+		It("IsWriteOnly", func() {
+			Expect(IndexStateWriteOnly.IsWriteOnly()).To(BeTrue())
+			Expect(IndexStateReadable.IsWriteOnly()).To(BeFalse())
+			Expect(IndexStateDisabled.IsWriteOnly()).To(BeFalse())
+		})
+
+		It("IsDisabled", func() {
+			Expect(IndexStateDisabled.IsDisabled()).To(BeTrue())
+			Expect(IndexStateReadable.IsDisabled()).To(BeFalse())
+			Expect(IndexStateWriteOnly.IsDisabled()).To(BeFalse())
+		})
+	})
+
+	Describe("String", func() {
+		It("returns correct names", func() {
+			Expect(IndexStateReadable.String()).To(Equal("READABLE"))
+			Expect(IndexStateWriteOnly.String()).To(Equal("WRITE_ONLY"))
+			Expect(IndexStateDisabled.String()).To(Equal("DISABLED"))
+			Expect(IndexStateReadableUniquePending.String()).To(Equal("READABLE_UNIQUE_PENDING"))
+		})
+
+		It("handles unknown state", func() {
+			unknown := IndexState(99)
+			Expect(unknown.String()).To(ContainSubstring("UNKNOWN"))
+			Expect(unknown.String()).To(ContainSubstring("99"))
+		})
+	})
+
+	Describe("indexStateFromCode", func() {
+		It("converts valid codes", func() {
+			s, err := indexStateFromCode(int64(IndexStateReadable))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(IndexStateReadable))
+
+			s, err = indexStateFromCode(int64(IndexStateWriteOnly))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(IndexStateWriteOnly))
+
+			s, err = indexStateFromCode(int64(IndexStateDisabled))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(IndexStateDisabled))
+
+			s, err = indexStateFromCode(int64(IndexStateReadableUniquePending))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s).To(Equal(IndexStateReadableUniquePending))
+		})
+
+		It("rejects unknown codes", func() {
+			_, err := indexStateFromCode(99)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("unknown index state code"))
+		})
+	})
+})
