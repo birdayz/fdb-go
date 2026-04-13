@@ -26,7 +26,8 @@ func TestMultiShard_GetRange(t *testing.T) {
 	container, err := tcfdb.Run(ctx, "",
 		tcfdb.WithStorageEngine("ssd"),
 		tcfdb.WithDirectIP(),
-		tcfdb.WithKnob("min_shard_bytes", "40000"),
+		tcfdb.WithKnob("min_shard_bytes", "10000"),
+		tcfdb.WithKnob("max_shard_bytes", "50000"),
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
 	)
 	if err != nil {
@@ -53,14 +54,16 @@ func TestMultiShard_GetRange(t *testing.T) {
 	prefix := "multishard_"
 
 	// Seed enough data to trigger shard splits.
-	// 200 keys × 1KB each = 200KB total > 40KB min_shard_bytes.
-	// Spread across the keyspace so FDB splits into multiple shards.
+	// 100 keys × 10KB each = 1MB total >> 40KB min_shard_bytes.
+	// With shard_bytes_ratio=2, max shard = 80KB, so 1MB should yield ~12+ shards.
+	const numKeys = 100
+	const valueSize = 10000 // 10KB per key
 	for batch := 0; batch < 10; batch++ {
 		_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-			for i := 0; i < 20; i++ {
-				idx := batch*20 + i
+			for i := 0; i < 10; i++ {
+				idx := batch*10 + i
 				key := []byte(fmt.Sprintf("%s%04d", prefix, idx))
-				val := bytes.Repeat([]byte{byte(idx % 256)}, 1000)
+				val := bytes.Repeat([]byte{byte(idx % 256)}, valueSize)
 				tx.Set(key, val)
 			}
 			return nil, nil
@@ -69,10 +72,11 @@ func TestMultiShard_GetRange(t *testing.T) {
 			t.Fatalf("seed batch %d: %v", batch, err)
 		}
 	}
-	t.Log("seeded 200 keys × 1KB")
+	t.Logf("seeded %d keys × %dKB = %dKB total", numKeys, valueSize/1000, numKeys*valueSize/1000)
 
-	// Wait for data distribution to potentially split shards.
-	// This is inherently racy — FDB may or may not split within our window.
+	// Wait for data distribution to potentially split shards. DD is async;
+	// single-node clusters may not split at all (only one storage server).
+	// The test validates the full GetRange path regardless of shard count.
 	time.Sleep(5 * time.Second)
 
 	// Check how many shard locations we get for our range.
@@ -105,8 +109,8 @@ func TestMultiShard_GetRange(t *testing.T) {
 	kvs := readResult.([]KeyValue)
 	t.Logf("GetRange returned %d keys", len(kvs))
 
-	if len(kvs) != 200 {
-		t.Fatalf("expected 200 keys, got %d", len(kvs))
+	if len(kvs) != numKeys {
+		t.Fatalf("expected %d keys, got %d", numKeys, len(kvs))
 	}
 
 	// Verify keys are in order and values match.
@@ -115,8 +119,8 @@ func TestMultiShard_GetRange(t *testing.T) {
 		if string(kv.Key) != expectedKey {
 			t.Fatalf("key[%d]: got %q, want %q", i, kv.Key, expectedKey)
 		}
-		if len(kv.Value) != 1000 {
-			t.Fatalf("value[%d]: got %d bytes, want 1000", i, len(kv.Value))
+		if len(kv.Value) != valueSize {
+			t.Fatalf("value[%d]: got %d bytes, want %d", i, len(kv.Value), valueSize)
 		}
 	}
 
