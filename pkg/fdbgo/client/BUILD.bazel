@@ -47,6 +47,7 @@ go_test(
         "endpoint_test.go",
         "failure_monitor_test.go",
         "fault_test.go",
+        "hedge_test.go",
         "lint_test.go",
         "loadbalance_test.go",
         "locality_test.go",
