@@ -71,6 +71,7 @@ go_test(
         "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_onsi_gomega//:gomega",
         "@com_github_zeebo_xxh3//:xxh3",
     ],
 )

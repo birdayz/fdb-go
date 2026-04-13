@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onsi/gomega"
+
 	tcfdb "github.com/birdayz/fdb-record-layer-go/pkg/testcontainers/foundationdb"
 )
 
@@ -23,6 +25,7 @@ type multiShardEnv struct {
 
 func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 	t.Helper()
+	g := gomega.NewWithT(t)
 
 	container, err := tcfdb.Run(ctx, "",
 		tcfdb.WithStorageEngine("ssd"),
@@ -34,27 +37,25 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		tcfdb.WithKnob("shard_bytes_ratio", "2"),
 		tcfdb.WithKnob("storage_metrics_polling_delay", "1"),
 	)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {
 		container.Terminate(ctx)
-		t.Fatalf("cluster file: %v", err)
 	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	cf, err := ParseClusterString(connStr)
 	if err != nil {
 		container.Terminate(ctx)
-		t.Fatalf("parse cluster: %v", err)
 	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	db, err := OpenDatabaseFromConfig(ctx, cf, nil)
 	if err != nil {
 		container.Terminate(ctx)
-		t.Fatalf("connect: %v", err)
 	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	prefix := "ms_"
 
@@ -73,15 +74,14 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		if err != nil {
 			db.Close()
 			container.Terminate(ctx)
-			t.Fatalf("seed batch %d: %v", batch, err)
 		}
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed batch %d", batch)
 	}
 	t.Logf("seeded %d keys × %dKB", numKeys, valueSize/1000)
 
 	// Poll for shard splits.
 	var numShards int
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
+	g.Eventually(func() int {
 		result, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 			begin := []byte(prefix)
 			end := append([]byte(prefix), 0xFF)
@@ -90,13 +90,10 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 		if err == nil {
 			locs := result.([]LocationResult)
 			numShards = len(locs)
-			if numShards > 1 {
-				break
-			}
 		}
 		db.db.locCache.invalidateRange([]byte(prefix), append([]byte(prefix), 0xFF), NoTenantID)
-		time.Sleep(2 * time.Second)
-	}
+		return numShards
+	}).WithTimeout(60 * time.Second).WithPolling(2 * time.Second).Should(gomega.BeNumerically(">", 1))
 	t.Logf("shard splits: %d shards", numShards)
 
 	return &multiShardEnv{
@@ -149,54 +146,50 @@ func TestMultiShard(t *testing.T) {
 
 // GetRange: full forward scan across all shards.
 func testMultiShard_GetRange(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		begin := []byte(env.prefix)
 		end := append([]byte(env.prefix), 0xFF)
 		kvs, _, err := tx.GetRange(ctx, begin, end, 0)
 		return kvs, err
 	})
-	if err != nil {
-		t.Fatalf("GetRange: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	kvs := result.([]KeyValue)
-	if len(kvs) != 100 {
-		t.Fatalf("expected 100 keys, got %d", len(kvs))
-	}
+	g.Expect(kvs).To(gomega.HaveLen(100))
 	// Verify ordering.
 	for i := 1; i < len(kvs); i++ {
-		if bytes.Compare(kvs[i-1].Key, kvs[i].Key) >= 0 {
-			t.Fatalf("keys not in order at %d: %s >= %s", i, kvs[i-1].Key, kvs[i].Key)
-		}
+		g.Expect(bytes.Compare(kvs[i-1].Key, kvs[i].Key)).To(gomega.BeNumerically("<", 0),
+			"keys not in order at %d: %s >= %s", i, kvs[i-1].Key, kvs[i].Key)
 	}
 	t.Logf("forward scan: 100 keys across %d shards", env.numShards)
 }
 
 // GetRangeReverse: full reverse scan across all shards.
 func testMultiShard_GetRangeReverse(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		begin := []byte(env.prefix)
 		end := append([]byte(env.prefix), 0xFF)
 		kvs, _, err := tx.GetRangeReverse(ctx, begin, end, 0)
 		return kvs, err
 	})
-	if err != nil {
-		t.Fatalf("GetRangeReverse: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	kvs := result.([]KeyValue)
-	if len(kvs) != 100 {
-		t.Fatalf("expected 100 keys, got %d", len(kvs))
-	}
+	g.Expect(kvs).To(gomega.HaveLen(100))
 	// Verify reverse ordering.
 	for i := 1; i < len(kvs); i++ {
-		if bytes.Compare(kvs[i-1].Key, kvs[i].Key) <= 0 {
-			t.Fatalf("keys not in reverse order at %d: %s <= %s", i, kvs[i-1].Key, kvs[i].Key)
-		}
+		g.Expect(bytes.Compare(kvs[i-1].Key, kvs[i].Key)).To(gomega.BeNumerically(">", 0),
+			"keys not in reverse order at %d: %s <= %s", i, kvs[i-1].Key, kvs[i].Key)
 	}
 	t.Logf("reverse scan: 100 keys across %d shards", env.numShards)
 }
 
 // GetRangeWithLimit: paged reads across shard boundaries.
 func testMultiShard_GetRangeWithLimit(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	// Read in pages of 7 — a non-power-of-2 that won't align with shard boundaries.
 	var allKeys []KeyValue
 	begin := []byte(env.prefix)
@@ -210,9 +203,7 @@ func testMultiShard_GetRangeWithLimit(t *testing.T, ctx context.Context, env *mu
 			}
 			return []any{kvs, more}, nil
 		})
-		if err != nil {
-			t.Fatalf("page %d: %v", page, err)
-		}
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "page %d", page)
 		parts := result.([]any)
 		kvs := parts[0].([]KeyValue)
 		more := parts[1].(bool)
@@ -226,9 +217,7 @@ func testMultiShard_GetRangeWithLimit(t *testing.T, ctx context.Context, env *mu
 		begin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0)
 	}
 
-	if len(allKeys) != 100 {
-		t.Fatalf("paged scan: expected 100 keys, got %d", len(allKeys))
-	}
+	g.Expect(allKeys).To(gomega.HaveLen(100))
 	t.Logf("paged scan (7/page): %d keys across %d shards", len(allKeys), env.numShards)
 }
 
@@ -237,46 +226,38 @@ func testMultiShard_GetRangeWithLimit(t *testing.T, ctx context.Context, env *mu
 // and returned the reply key, ignoring offset from the reply when the
 // selector crossed a shard boundary.
 func testMultiShard_GetKey(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	// firstGreaterOrEqual on a key known to exist.
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte(env.prefix+"0050"), false, 1)
 	})
-	if err != nil {
-		t.Fatalf("GetKey FGE: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	key := result.([]byte)
-	if string(key) != env.prefix+"0050" {
-		t.Errorf("FGE(%s0050): got %q", env.prefix, key)
-	}
+	g.Expect(string(key)).To(gomega.Equal(env.prefix + "0050"))
 
 	// lastLessOrEqual on a key that may be on a different shard than the selector.
 	result, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte(env.prefix+"0099"), true, 0)
 	})
-	if err != nil {
-		t.Fatalf("GetKey LLE: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	key = result.([]byte)
-	if string(key) != env.prefix+"0099" {
-		t.Errorf("LLE(%s0099): got %q", env.prefix, key)
-	}
+	g.Expect(string(key)).To(gomega.Equal(env.prefix + "0099"))
 
 	// firstGreaterThan a key mid-range — forces selector resolution at shard boundary.
 	result, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		return tx.GetKey(ctx, []byte(env.prefix+"0050"), false, 2)
 	})
-	if err != nil {
-		t.Fatalf("GetKey FGT: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	key = result.([]byte)
-	if string(key) != env.prefix+"0051" {
-		t.Errorf("FGT(%s0050): got %q, want %s0051", env.prefix, key, env.prefix)
-	}
+	g.Expect(string(key)).To(gomega.Equal(env.prefix + "0051"))
 	t.Logf("key selector resolution across %d shards OK", env.numShards)
 }
 
 // AtomicAdd: atomic mutations on keys that span multiple shards.
 func testMultiShard_AtomicAdd(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	// Set counter keys across the shard range.
 	counterPrefix := env.prefix + "ctr_"
 	_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -288,9 +269,7 @@ func testMultiShard_AtomicAdd(t *testing.T, ctx context.Context, env *multiShard
 		}
 		return nil, nil
 	})
-	if err != nil {
-		t.Fatalf("seed counters: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	// Atomically increment all counters.
 	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -302,9 +281,7 @@ func testMultiShard_AtomicAdd(t *testing.T, ctx context.Context, env *multiShard
 		}
 		return nil, nil
 	})
-	if err != nil {
-		t.Fatalf("atomic ADD: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 
 	// Verify all counters.
 	_, err = env.db.Transact(ctx, func(tx *Transaction) (any, error) {
@@ -315,32 +292,27 @@ func testMultiShard_AtomicAdd(t *testing.T, ctx context.Context, env *multiShard
 				return nil, err
 			}
 			got := binary.LittleEndian.Uint64(val)
-			if got != 42 {
-				t.Errorf("counter %d: got %d, want 42", i, got)
-			}
+			g.Expect(got).To(gomega.Equal(uint64(42)), "counter %d", i)
 		}
 		return nil, nil
 	})
-	if err != nil {
-		t.Fatalf("verify counters: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	t.Logf("atomic ADD on 10 keys across %d shards OK", env.numShards)
 }
 
 // GetEstimatedRangeSize: should return meaningful estimate for multi-shard range.
 func testMultiShard_GetEstimatedRangeSize(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
 	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
 		begin := []byte(env.prefix)
 		end := append([]byte(env.prefix), 0xFF)
 		return tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
 	})
-	if err != nil {
-		t.Fatalf("GetEstimatedRangeSizeBytes: %v", err)
-	}
+	g.Expect(err).ToNot(gomega.HaveOccurred())
 	size := result.(int64)
 	// 100 keys × 10KB = 1MB. Estimate should be in the ballpark.
-	if size < 500000 {
-		t.Errorf("estimated size %d too low for 1MB of data", size)
-	}
+	g.Expect(size).To(gomega.BeNumerically(">=", int64(500000)),
+		"estimated size %d too low for 1MB of data", size)
 	t.Logf("estimated range size: %d bytes across %d shards", size, env.numShards)
 }
