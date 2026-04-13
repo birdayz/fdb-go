@@ -436,7 +436,7 @@ func (db *database) getCommitProxies() []ProxyInfo {
 | 3 | `loadBalance` speculative second request after ~0.5ms | Sequential replica iteration | p99 optimization, not correctness | 2 |
 | 4 | `allAlternativesFailedDelay` (50ms-1s) for storage reads | Immediate retry via `Transact` | Graceful rolling restart optimization | 2 |
 | 5 | `connectionMonitor` outbound PING | No outbound PING; dead conns detected on next RPC | Detection latency 5s vs 2s | 2 |
-| 6 | `onProxiesChanged()` races every proxy RPC via `choose` | Topology kick after total failure; stale list completed first | One extra retry cycle on topology change during cycling | 2 |
+| 6 | `onProxiesChanged()` races every proxy RPC via `choose` | `proxiesChanged` broadcast wakes backoff in commit/GRV/location; stale proxy cycling still completes | Backoff wake-up done (nightshift-9); in-flight RPC cancellation not yet ported | 2 |
 
 ## User-visible behavior (must match C++)
 
