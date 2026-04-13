@@ -27,6 +27,11 @@ test --test_env=FDB_VERSION=7.3.75
 # client_test spawns ~40 FDB containers and needs ~7 min.
 test --test_timeout=60,300,900,3600
 
+# Coverage: only instrument our code, not generated types or linters.
+# Without this, Bazel auto-instruments everything (including gen/ and
+# pkg/linters/) which dilutes the coverage percentage.
+coverage --instrumentation_filter="^//pkg/fdbgo/client[/:],^//pkg/fdbgo/fdb[/:],^//pkg/fdbgo/transport[/:],^//pkg/recordlayer[/:]"
+
 # Limit concurrent test targets to prevent Docker socket contention.
 # 9 test targets all create FDB testcontainers (socat + FDB + network each).
 # Docker socket can't handle 9× parallel container creation → timeouts/hangs.
