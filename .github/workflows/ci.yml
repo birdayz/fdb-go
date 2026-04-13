@@ -25,11 +25,18 @@ jobs:
 
       - name: Check generated protobuf code is up to date
         run: |
+          # Checksum gen/ before and after — don't regenerate in-place
+          # (regenerating touches timestamps and invalidates Bazel cache)
+          BEFORE=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
           just generate
-          if ! git diff --exit-code -- 'gen/'; then
+          AFTER=$(find gen/ -name '*.go' -exec sha256sum {} + | sort | sha256sum)
+          if [ "$BEFORE" != "$AFTER" ]; then
             echo "Generated protobuf code is out of date. Run 'just generate' and commit."
+            git diff --stat -- 'gen/'
             exit 1
           fi
+          # Restore original timestamps so Bazel cache stays valid
+          git checkout -- gen/
 
       - name: Check Gazelle BUILD files are up to date
         run: |
@@ -38,6 +45,8 @@ jobs:
             echo "BUILD files are out of date. Run 'just gazelle' and commit."
             exit 1
           fi
+          # Restore original timestamps
+          git checkout -- '*.bazel' '*.bzl' 2>/dev/null || true
 
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
