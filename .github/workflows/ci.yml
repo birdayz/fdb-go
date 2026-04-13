@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ master, main ]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -34,23 +39,15 @@ jobs:
             exit 1
           fi
 
-      - name: Build all targets (includes nogo lint)
-        run: bazelisk build //...
+      - name: Build, lint & test
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
 
-      - name: Run all tests with coverage (including binding tester)
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_timeout=900 --test_summary=detailed
-
-      - name: Generate test report with coverage
+      - name: Generate test report
         if: always()
         run: |
           bazelisk build //cmd/test-report
           BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
-          LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
-          if [ -f "$LCOV" ]; then
-            "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
-          else
-            "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
-          fi
+          "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
           echo "Report generated: $(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)') tests"
 
       - name: Upload test report to Hetzner Object Storage
@@ -152,9 +149,11 @@ jobs:
             echo "No master baseline found — skipping comparison"
             exit 0
           }
+          bazelisk build //cmd/bench-report
+          BENCH_REPORT="$(bazelisk info bazel-bin 2>/dev/null)/cmd/bench-report/bench-report_/bench-report"
           PR_NUM=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
-          bazelisk run //cmd/bench-report -- \
+          "$BENCH_REPORT" \
             -old master-bench.txt \
             -new bench-results.txt \
             -pr "$PR_NUM" \
