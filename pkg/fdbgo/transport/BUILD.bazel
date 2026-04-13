@@ -20,6 +20,9 @@ go_library(
 
 go_test(
     name = "transport_test",
-    srcs = ["transport_test.go"],
+    srcs = [
+        "ping_test.go",
+        "transport_test.go",
+    ],
     embed = [":transport"],
 )
