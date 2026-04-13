@@ -59,6 +59,7 @@ go_test(
         "snapshot_test.go",
         "tag_throttle_test.go",
         "testmain_test.go",
+        "topology_unit_test.go",
         "transaction_options_test.go",
     ],
     args = [
