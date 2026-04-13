@@ -1998,6 +1998,100 @@ var _ = Describe("FDBRecordStore API", func() {
 			Expect(e.Error()).To(ContainSubstring("5"))
 		})
 	})
+
+	Describe("GetReadableUniversalIndexes and GetEnabledUniversalIndexes", func() {
+		It("returns universal indexes in their respective states", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			idx := NewIndex("type_idx", RecordTypeKey())
+			builder.AddUniversalIndex(idx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				readable := store.GetReadableUniversalIndexes()
+				Expect(readable).To(HaveLen(1))
+				Expect(readable[0].Name).To(Equal("type_idx"))
+
+				enabled := store.GetEnabledUniversalIndexes()
+				Expect(enabled).To(HaveLen(1))
+				Expect(enabled[0].Name).To(Equal("type_idx"))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("SetFormatVersion", func() {
+		It("updates the store format version", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				err = store.SetFormatVersion(14)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("IndexStateSubspace", func() {
+		It("returns a subspace for index states", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				sub := store.IndexStateSubspace()
+				Expect(sub).NotTo(BeNil())
+				Expect(bytes.HasPrefix(sub.Bytes(), ks.Bytes())).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("GetAllIndexStates", func() {
+		It("returns states for all indexes", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			builder.AddIndex("Order", NewIndex("price_idx", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				states := store.GetAllIndexStates()
+				Expect(states).NotTo(BeEmpty())
+				// price_idx should be READABLE by default
+				state, ok := states["price_idx"]
+				Expect(ok).To(BeTrue())
+				Expect(state).To(Equal(IndexStateReadable))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
 
 // collectPage drains a tuple cursor, returning all values and the raw
