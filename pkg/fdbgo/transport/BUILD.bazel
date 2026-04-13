@@ -23,6 +23,8 @@ go_test(
     srcs = [
         "ping_test.go",
         "transport_test.go",
+        "wirelog_test.go",
     ],
     embed = [":transport"],
+    deps = ["@com_github_onsi_gomega//:gomega"],
 )
