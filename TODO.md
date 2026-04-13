@@ -56,7 +56,7 @@ _No known open bugs. Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C b
 | # | Area | Type | Description |
 |---|---|---|---|
 | 1 | ~~`future_version` backoff~~ | ~~BEHAVIOR~~ FIXED | ~~C++ uses `min(FUTURE_VERSION_RETRY_DELAY, maxBackoff)`.~~ Fixed: Go now respects user's `maxRetryDelay`. |
-| 2 | `makeSelfConflicting` | BEHAVIOR | C++ adds random key to `\xFF/SC/` when write/read conflicts don't intersect. Go uses `writeConflicts[0].Begin` in `commitDummyTransaction`. Functionally equivalent for common cases. |
+| 2 | ~~`makeSelfConflicting`~~ | ~~BEHAVIOR~~ FIXED | ~~Go used `writeConflicts[0].Begin` in `commitDummyTransaction`.~~ Fixed: `intersectConflictRanges()` matches C++ `intersects()` — picks a key from the overlap of write+read conflict ranges. Falls back to `writes[0].Begin` if no intersection. |
 | 3 | ~~Watch cancellation on Reset~~ | ~~MISSING~~ FIXED | ~~C++ cancels pending watches on reset.~~ Fixed: `cancelWatches()` on Reset/Cancel/reset via lazy `watchCtx`. |
 | 4 | ~~GRV cache ratekeeper per-priority~~ | ~~BEHAVIOR~~ FIXED | ~~C++ checks per-priority.~~ Fixed: BATCH checks `lastRkBatch`, DEFAULT checks `lastRkDefault`. |
 | 5 | RYW SnapshotCache | BEHAVIOR | C++ caches server reads for reuse within a transaction. Go re-fetches on every `getRange` with writes/clears. Correct but more I/O for repeated reads of the same range. |
