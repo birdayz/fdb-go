@@ -228,3 +228,142 @@ func TestFastDecodeIntEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// TestTupleSkip verifies tupleSkip returns correct byte lengths for all tuple type codes.
+func TestTupleSkip(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		tupleV tuple.Tuple
+	}{
+		{"nil", tuple.Tuple{nil}},
+		{"zero", tuple.Tuple{int64(0)}},
+		{"small_pos", tuple.Tuple{int64(42)}},
+		{"small_neg", tuple.Tuple{int64(-42)}},
+		{"large_pos", tuple.Tuple{int64(1 << 40)}},
+		{"large_neg", tuple.Tuple{int64(-1 << 40)}},
+		{"max_int64", tuple.Tuple{int64(math.MaxInt64)}},
+		{"min_int64", tuple.Tuple{int64(math.MinInt64)}},
+		{"string", tuple.Tuple{"hello"}},
+		{"empty_string", tuple.Tuple{""}},
+		{"bytes", tuple.Tuple{[]byte{1, 2, 3}}},
+		{"empty_bytes", tuple.Tuple{[]byte{}}},
+		{"float32", tuple.Tuple{float32(3.14)}},
+		{"float64", tuple.Tuple{float64(2.718)}},
+		{"bool_true", tuple.Tuple{true}},
+		{"bool_false", tuple.Tuple{false}},
+		{"uuid", tuple.Tuple{tuple.UUID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}}},
+		{"versionstamp", tuple.Tuple{tuple.Versionstamp{
+			TransactionVersion: [10]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+			UserVersion:        42,
+		}}},
+		// Nested tuples tested separately in TestTupleSkipNestedInNested
+		// because Pack escaping of inner 0x00 bytes affects size calculation.
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			packed := tc.tupleV.Pack()
+			size := tupleSkip(packed)
+			if size != len(packed) {
+				t.Errorf("tupleSkip(%x) = %d, want %d (full packed length)", packed, size, len(packed))
+			}
+		})
+	}
+
+	// Multi-element: tupleSkip should return just the first element's size.
+	t.Run("multi_element_first_only", func(t *testing.T) {
+		t.Parallel()
+		packed := tuple.Tuple{int64(42), "hello"}.Pack()
+		firstPacked := tuple.Tuple{int64(42)}.Pack()
+		size := tupleSkip(packed)
+		if size != len(firstPacked) {
+			t.Errorf("tupleSkip on multi-element: got %d, want %d (first element)", size, len(firstPacked))
+		}
+	})
+
+	// Truncated input should return -1.
+	t.Run("truncated_empty", func(t *testing.T) {
+		t.Parallel()
+		if tupleSkip(nil) != -1 {
+			t.Error("tupleSkip(nil) should return -1")
+		}
+		if tupleSkip([]byte{}) != -1 {
+			t.Error("tupleSkip({}) should return -1")
+		}
+	})
+
+	t.Run("unknown_type_code", func(t *testing.T) {
+		t.Parallel()
+		// 0x04 is not a valid type code
+		if tupleSkip([]byte{0x04}) != -1 {
+			t.Error("tupleSkip(0x04) should return -1 for unknown type code")
+		}
+	})
+}
+
+// TestSplitKeySuffixEdgeCases verifies edge cases for the zero-alloc key suffix splitter.
+func TestSplitKeySuffixEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("simple_pk_with_int_suffix", func(t *testing.T) {
+		t.Parallel()
+		// pk=(42), suffix=0
+		packed := tuple.Tuple{int64(42), int64(0)}.Pack()
+		suffix, pkEnd, err := splitKeySuffix(packed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != 0 {
+			t.Errorf("suffix: got %d, want 0", suffix)
+		}
+		// pkEnd should point to where the last element starts
+		firstPacked := tuple.Tuple{int64(42)}.Pack()
+		if pkEnd != len(firstPacked) {
+			t.Errorf("pkEnd: got %d, want %d", pkEnd, len(firstPacked))
+		}
+	})
+
+	t.Run("string_pk_with_negative_suffix", func(t *testing.T) {
+		t.Parallel()
+		packed := tuple.Tuple{"order", int64(-1)}.Pack()
+		suffix, pkEnd, err := splitKeySuffix(packed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != -1 {
+			t.Errorf("suffix: got %d, want -1", suffix)
+		}
+		firstPacked := tuple.Tuple{"order"}.Pack()
+		if pkEnd != len(firstPacked) {
+			t.Errorf("pkEnd: got %d, want %d", pkEnd, len(firstPacked))
+		}
+	})
+
+	t.Run("non_integer_suffix_errors", func(t *testing.T) {
+		t.Parallel()
+		// Suffix is a string, not an integer
+		packed := tuple.Tuple{int64(1), "not_an_int"}.Pack()
+		_, _, err := splitKeySuffix(packed)
+		if err == nil {
+			t.Error("expected error for non-integer suffix")
+		}
+	})
+
+	t.Run("single_integer", func(t *testing.T) {
+		t.Parallel()
+		packed := tuple.Tuple{int64(5)}.Pack()
+		suffix, pkEnd, err := splitKeySuffix(packed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != 5 {
+			t.Errorf("suffix: got %d, want 5", suffix)
+		}
+		if pkEnd != 0 {
+			t.Errorf("pkEnd: got %d, want 0", pkEnd)
+		}
+	})
+}
