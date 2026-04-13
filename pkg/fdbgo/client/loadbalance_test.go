@@ -315,3 +315,68 @@ func TestSmootherDecay(t *testing.T) {
 		t.Fatalf("estimate after 5τ should be near 10.0, got %.2f", est)
 	}
 }
+
+func TestSecondDelay(t *testing.T) {
+	t.Parallel()
+	q := newQueueModel()
+
+	// Default latency is 1ms. secondDelay = max(10ms, 2.0 × 1ms) = 10ms.
+	delay := q.secondDelay("server-a")
+	if delay < 10*time.Millisecond || delay > 11*time.Millisecond {
+		t.Fatalf("default secondDelay: got %v, want ~10ms", delay)
+	}
+
+	// Simulate a slow server (50ms latency). secondDelay = max(10ms, 2.0 × 50ms) = 100ms.
+	q.endRequestFull("server-b", 1.0, 50*time.Millisecond, true, false, -1.0)
+	delay = q.secondDelay("server-b")
+	if delay < 90*time.Millisecond || delay > 110*time.Millisecond {
+		t.Fatalf("slow server secondDelay: got %v, want ~100ms", delay)
+	}
+
+	// Very fast server (0.1ms latency). secondDelay = max(10ms, 2.0 × 0.1ms) = 10ms (clamped).
+	q.endRequestFull("server-c", 1.0, 100*time.Microsecond, true, false, -1.0)
+	delay = q.secondDelay("server-c")
+	if delay < 9*time.Millisecond || delay > 11*time.Millisecond {
+		t.Fatalf("fast server secondDelay: got %v, want ~10ms (clamped)", delay)
+	}
+}
+
+func TestChooseTopTwo(t *testing.T) {
+	t.Parallel()
+	q := newQueueModel()
+
+	// Single server → secondIdx = -1.
+	servers := makeServers("a")
+	best, second := q.chooseTopTwo(servers)
+	if best != 0 || second != -1 {
+		t.Fatalf("single server: best=%d, second=%d", best, second)
+	}
+
+	// Two servers, no load → both available.
+	servers = makeServers("a", "b")
+	best, second = q.chooseTopTwo(servers)
+	if best == second {
+		t.Fatalf("two servers: best and second should differ, got best=%d second=%d", best, second)
+	}
+	if second == -1 {
+		t.Fatal("two servers: second should not be -1")
+	}
+
+	// Three servers with different loads.
+	servers = makeServers("fast", "medium", "slow")
+	q.endRequestFull("fast", 1.0, 1*time.Millisecond, true, false, -1.0)
+	q.endRequestFull("medium", 1.0, 10*time.Millisecond, true, false, -1.0)
+	q.endRequestFull("slow", 1.0, 100*time.Millisecond, true, false, -1.0)
+	// Add load to "slow" to make it clearly worst.
+	delta := q.startRequest("slow")
+	_ = delta
+
+	best, second = q.chooseTopTwo(servers)
+	// "fast" should be best (lowest outstanding), "medium" second.
+	if servers[best].Address == "slow" {
+		t.Fatalf("slow should not be best: best=%d (%s)", best, servers[best].Address)
+	}
+	if best == second {
+		t.Fatalf("best=%d should differ from second=%d", best, second)
+	}
+}

@@ -60,6 +60,10 @@ const (
 	loadBalanceMaxBadOptions = 1    // LOAD_BALANCE_MAX_BAD_OPTIONS
 	loadBalancePenaltyIsBad  = true // LOAD_BALANCE_PENALTY_IS_BAD
 	penaltyBadThreshold      = 1.001
+
+	// Speculative second request knobs (C++ CLIENT_KNOBS)
+	backupRequestDelay = 0.01 // BACKUP_REQUEST_DELAY (10ms minimum hedge delay)
+	secondMultiplier   = 2.0  // MODEL_SECOND_MULTIPLIER (latency × this = hedge delay)
 )
 
 func newQueueModel() *QueueModel {
@@ -145,6 +149,72 @@ func (q *QueueModel) chooseServer(servers []ServerInfo) (ServerInfo, int) {
 		bestIdx = 0
 	}
 	return servers[bestIdx], bestIdx
+}
+
+// secondDelay returns the hedge delay for speculative second requests.
+// The delay is max(BACKUP_REQUEST_DELAY, secondMultiplier × latency) for the
+// best server. This balances between not sending too early (wasting work) and
+// not waiting too long (defeating the purpose of hedging).
+// Matches C++ LoadBalance.actor.h secondDelay computation.
+func (q *QueueModel) secondDelay(addr string) time.Duration {
+	q.mu.Lock()
+	d := q.getOrCreate(addr)
+	lat := d.latency
+	q.mu.Unlock()
+
+	delay := secondMultiplier * lat
+	if delay < backupRequestDelay {
+		delay = backupRequestDelay
+	}
+	return time.Duration(delay * float64(time.Second))
+}
+
+// chooseTopTwo picks the best and second-best servers from the replica set.
+// Returns the indices. If only one server, secondIdx = -1.
+func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int) {
+	if len(servers) <= 1 {
+		return 0, -1
+	}
+
+	now := nowSeconds()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	type ranked struct {
+		idx    int
+		metric float64
+	}
+	var candidates []ranked
+
+	for i, s := range servers {
+		d := q.getOrCreate(s.Address)
+		if now <= d.failedUntil {
+			continue
+		}
+		candidates = append(candidates, ranked{idx: i, metric: d.smoothOutstanding.smoothTotal(now)})
+	}
+
+	if len(candidates) == 0 {
+		return 0, -1
+	}
+	if len(candidates) == 1 {
+		return candidates[0].idx, -1
+	}
+
+	// Find best and second-best by metric.
+	best, second := 0, 1
+	if candidates[1].metric < candidates[0].metric {
+		best, second = 1, 0
+	}
+	for i := 2; i < len(candidates); i++ {
+		if candidates[i].metric < candidates[best].metric {
+			second = best
+			best = i
+		} else if candidates[i].metric < candidates[second].metric {
+			second = i
+		}
+	}
+	return candidates[best].idx, candidates[second].idx
 }
 
 // startRequest increments smoothOutstanding by the server's current penalty.
