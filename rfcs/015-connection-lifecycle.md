@@ -435,7 +435,7 @@ func (db *database) getCommitProxies() []ProxyInfo {
 | 2 | `commitDummyTransaction` confirms original before retrying | Implemented: dummy transaction sync barrier in commit path | Matches C++; defense-in-depth on top of self-conflicting | 0 |
 | 3 | `loadBalance` speculative second request after ~0.5ms | Sequential replica iteration | p99 optimization, not correctness | 2 |
 | 4 | `allAlternativesFailedDelay` (50ms-1s) for storage reads | Immediate retry via `Transact` | Graceful rolling restart optimization | 2 |
-| 5 | `connectionMonitor` outbound PING | No outbound PING; dead conns detected on next RPC | Detection latency 5s vs 2s | 2 |
+| 5 | `connectionMonitor` outbound PING | **Implemented** (dayshift-10): outbound PING every 750ms when pending requests, 2s timeout | Matches C++ detection latency ~2.75s | 0 |
 | 6 | `onProxiesChanged()` races every proxy RPC via `choose` | `proxiesChanged` broadcast wakes backoff in commit/GRV/location; stale proxy cycling still completes | Backoff wake-up done (nightshift-9); in-flight RPC cancellation not yet ported | 2 |
 
 ## User-visible behavior (must match C++)
@@ -470,7 +470,7 @@ func (db *database) getCommitProxies() []ProxyInfo {
 
 - Speculative second request (storage reads)
 - `allAlternativesFailedDelay` (wait for replica recovery)
-- Outbound PING connection monitor
+- ~~Outbound PING connection monitor~~ (done: dayshift-10)
 - Per-proxy backoff tracking
 - `onProxiesChanged` race equivalent (cancel in-flight proxy cycling on topology change)
 
