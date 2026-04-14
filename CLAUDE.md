@@ -121,7 +121,7 @@ TODO.md                             # Tracked issues and improvements
 ```sh
 just build                    # bazel build //... (includes nogo lint)
 just test                     # bazel test //... (fully cached, incremental)
-just bench                    # Run all benchmarks (9 benchmarks, ~50s)
+just bench                    # Run all benchmarks (15 record layer benchmarks)
 just bench-one NAME           # Run specific benchmark by regex
 just gazelle                  # Regenerate BUILD files after adding/removing Go files
 just generate                 # buf generate (proto codegen — not in Bazel)
@@ -196,7 +196,7 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 `benchmark_test.go` contains 15 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
 
 ```sh
-just bench                          # All benchmarks (~60s)
+just bench                          # All benchmarks
 just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 ```
 
