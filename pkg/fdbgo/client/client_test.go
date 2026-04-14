@@ -105,7 +105,7 @@ func TestParseClusterFile(t *testing.T) {
 func TestTransactionSet(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Set([]byte("key1"), []byte("val1"))
 	tx.Set([]byte("key2"), []byte("val2"))
 
@@ -126,7 +126,7 @@ func TestTransactionSet(t *testing.T) {
 func TestTransactionClear(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Clear([]byte("key1"))
 
 	if len(tx.mutations) != 1 {
@@ -140,7 +140,7 @@ func TestTransactionClear(t *testing.T) {
 func TestTransactionReset(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Set([]byte("key"), []byte("val"))
 	tx.SetReadVersion(100)
 
@@ -152,8 +152,8 @@ func TestTransactionReset(t *testing.T) {
 	if tx.hasReadVersion {
 		t.Error("readVersion not cleared")
 	}
-	if tx.state != txStateActive {
-		t.Errorf("state: got %d, want %d", tx.state, txStateActive)
+	if txState(tx.state.Load()) != txStateActive {
+		t.Errorf("state: got %d, want %d", txState(tx.state.Load()), txStateActive)
 	}
 }
 
@@ -188,7 +188,7 @@ func TestOnError_AllRetryableCodes(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tx := &Transaction{state: txStateActive}
+			tx := &Transaction{}
 			tx.Set([]byte("key"), []byte("val"))
 
 			// Wrap like real code does: fmt.Errorf("context: %w", fdbErr)
@@ -212,19 +212,19 @@ func TestOnError_NonRetryable(t *testing.T) {
 
 	t.Run("non_retryable_fdb_error", func(t *testing.T) {
 		t.Parallel()
-		tx := &Transaction{state: txStateActive}
+		tx := &Transaction{}
 		err := fmt.Errorf("something: %w", &wire.FDBError{Code: 9999})
 		if tx.OnError(err) == nil {
 			t.Error("expected non-retryable")
 		}
-		if tx.state != txStateErrored {
-			t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
+		if txState(tx.state.Load()) != txStateErrored {
+			t.Errorf("state: got %d, want %d", txState(tx.state.Load()), txStateErrored)
 		}
 	})
 
 	t.Run("non_fdb_error", func(t *testing.T) {
 		t.Parallel()
-		tx := &Transaction{state: txStateActive}
+		tx := &Transaction{}
 		if tx.OnError(fmt.Errorf("network timeout")) == nil {
 			t.Error("non-FDB error should be non-retryable")
 		}
@@ -234,7 +234,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 		t.Parallel()
 		// 1062 is handled at the read path level, NOT by Transact.
 		// OnError should treat it as non-retryable.
-		tx := &Transaction{state: txStateActive}
+		tx := &Transaction{}
 		err := fmt.Errorf("getValue: %w", &wire.FDBError{Code: 1062})
 		if tx.OnError(err) == nil {
 			t.Error("wrong_shard_server should not be retryable at Transact level")
@@ -245,13 +245,13 @@ func TestOnError_NonRetryable(t *testing.T) {
 		t.Parallel()
 		// 1031 = transaction_timed_out — NEVER retryable.
 		// Matches C++ where OnError(1031) returns 1031.
-		tx := &Transaction{state: txStateActive}
+		tx := &Transaction{}
 		err := fmt.Errorf("timed out: %w", &wire.FDBError{Code: ErrTransactionTimedOut})
 		if tx.OnError(err) == nil {
 			t.Error("transaction_timed_out should not be retryable")
 		}
-		if tx.state != txStateErrored {
-			t.Errorf("state: got %d, want %d", tx.state, txStateErrored)
+		if txState(tx.state.Load()) != txStateErrored {
+			t.Errorf("state: got %d, want %d", txState(tx.state.Load()), txStateErrored)
 		}
 	})
 }
@@ -259,7 +259,7 @@ func TestOnError_NonRetryable(t *testing.T) {
 func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Set([]byte("key_a"), []byte("val"))
 	tx.Set([]byte("key_b"), []byte("val"))
 	tx.ClearRange([]byte("range_begin"), []byte("range_end"))
@@ -302,7 +302,7 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	}
 
 	// Verify that a normal retryable error (1020) does NOT inject self-conflicts.
-	tx2 := &Transaction{state: txStateActive}
+	tx2 := &Transaction{}
 	tx2.Set([]byte("key"), []byte("val"))
 	err2 := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
 	tx2.OnError(err2)
@@ -316,7 +316,7 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 
 	// cluster_version_changed (1039) is MAYBE_COMMITTED — must inject
 	// self-conflicts, same as commit_unknown_result (1021).
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Set([]byte("key_a"), []byte("val"))
 	tx.Set([]byte("key_b"), []byte("val"))
 
@@ -351,8 +351,8 @@ func TestReadOnlyCommit(t *testing.T) {
 	if err != nil {
 		t.Errorf("read-only commit should succeed: %v", err)
 	}
-	if tx.state != txStateActive {
-		t.Errorf("state: got %d, want %d (active after postCommitReset)", tx.state, txStateActive)
+	if txState(tx.state.Load()) != txStateActive {
+		t.Errorf("state: got %d, want %d (active after postCommitReset)", txState(tx.state.Load()), txStateActive)
 	}
 }
 

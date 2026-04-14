@@ -474,7 +474,6 @@ func TestCommitDummyTransaction_IsDummyGuard(t *testing.T) {
 	// Create a dummy transaction directly — verify isDummy prevents recursion.
 	tx := &Transaction{
 		db:           db.db,
-		state:        txStateActive,
 		tenantId:     NoTenantID,
 		creationTime: time.Now(),
 		isDummy:      true,

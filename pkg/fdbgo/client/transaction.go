@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
@@ -100,7 +101,7 @@ const (
 	EndpointGetKeyServerLocations = 2  // CommitProxyInterface::getKeyServerLocations
 )
 
-type txState int
+type txState int32
 
 const (
 	txStateActive txState = iota
@@ -150,7 +151,7 @@ type KeyRange struct {
 // Mutations are buffered locally and sent on Commit().
 type Transaction struct {
 	db    *database
-	state txState
+	state atomic.Int32 // txState values; atomic because Watch goroutines read concurrently with Commit
 
 	readVersion        int64
 	hasReadVersion     bool
@@ -357,10 +358,10 @@ func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
 }
 
 func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
-	if tx.state == txStateCancelled {
+	if txState(tx.state.Load()) == txStateCancelled {
 		return fmt.Errorf("transaction cancelled")
 	}
-	if tx.state != txStateActive {
+	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
 	if err := tx.checkTimeout(); err != nil {
@@ -672,7 +673,7 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 // This matches the C client's behavior where fdb_transaction_set() can be
 // called after commit to start building a new transaction.
 func (tx *Transaction) Commit(ctx context.Context) error {
-	if tx.state != txStateActive {
+	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
 	if err := tx.checkTimeout(); err != nil {
@@ -682,13 +683,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// Validate size limit bounds. C++: valid range is [32, 10_000_000].
 	// Out-of-range values return invalid_option_value (2006) at commit time.
 	if tx.sizeLimit > 0 && (tx.sizeLimit < 32 || tx.sizeLimit > 10_000_000) {
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2006} // invalid_option_value
 	}
 
 	// Enforce size limit if set. Matches C++ FDB_TR_OPTION_SIZE_LIMIT.
 	if tx.sizeLimit > 0 && tx.GetApproximateSize() > tx.sizeLimit {
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
 	}
 
@@ -704,13 +705,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			continue
 		}
 		if bytes.Compare(m.Key, maxWrite) >= 0 {
-			tx.state = txStateErrored
+			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004} // key_outside_legal_range
 		}
 		// ClearRange: also check end key (stored in Value).
 		// C++ clear(range): if (range.begin > maxKey || range.end > maxKey) → reject
 		if m.Type == MutClearRange && bytes.Compare(m.Value, maxWrite) > 0 {
-			tx.state = txStateErrored
+			tx.state.Store(int32(txStateErrored))
 			return &wire.FDBError{Code: 2004}
 		}
 	}
@@ -722,12 +723,12 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		switch m.Type {
 		case MutSetVersionstampedKey:
 			if err := validateVersionstampOffset(m.Key); err != nil {
-				tx.state = txStateErrored
+				tx.state.Store(int32(txStateErrored))
 				return err
 			}
 		case MutSetVersionstampedValue:
 			if err := validateVersionstampOffset(m.Value); err != nil {
-				tx.state = txStateErrored
+				tx.state.Store(int32(txStateErrored))
 				return err
 			}
 		}
@@ -770,7 +771,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
 	tx.cancelWatches()
-	tx.state = txStateCancelled
+	tx.state.Store(int32(txStateCancelled))
 }
 
 // Reset resets the transaction to a clean state, as if newly created from Database.
@@ -837,20 +838,20 @@ func (tx *Transaction) GetVersionstamp() ([]byte, error) {
 func (tx *Transaction) OnError(err error) error {
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return err
 	}
 
 	// Transaction timeout is NEVER retryable — matches C++ behavior where
 	// OnError(1031) returns 1031 and the error escapes the retry loop.
 	if fdbErr.Code == ErrTransactionTimedOut {
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return err
 	}
 
 	// Check retry limit before allowing any retry.
 	if tx.hasRetryLimit && tx.retryCount >= tx.retryLimit {
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return err
 	}
 
@@ -901,7 +902,7 @@ func (tx *Transaction) OnError(err error) error {
 		return nil
 
 	default:
-		tx.state = txStateErrored
+		tx.state.Store(int32(txStateErrored))
 		return err
 	}
 }
@@ -1239,7 +1240,7 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 // after successful commit. Preserves committedVersion and txnBatchId for
 // GetCommittedVersion/GetVersionstamp queries.
 func (tx *Transaction) postCommitReset() {
-	tx.state = txStateActive
+	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
 	tx.userSetReadVersion = false
@@ -1254,7 +1255,7 @@ func (tx *Transaction) postCommitReset() {
 
 func (tx *Transaction) reset() {
 	tx.cancelWatches()
-	tx.state = txStateActive
+	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
 	tx.readVersion = 0

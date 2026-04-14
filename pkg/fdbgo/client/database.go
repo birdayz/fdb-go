@@ -528,7 +528,6 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 func (d *Database) CreateTransaction() *Transaction {
 	tx := &Transaction{
 		db:           d.db,
-		state:        txStateActive,
 		tenantId:     NoTenantID,
 		creationTime: time.Now(),
 	}

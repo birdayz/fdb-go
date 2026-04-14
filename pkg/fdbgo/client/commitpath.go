@@ -129,7 +129,6 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 
 		dummy := &Transaction{
 			db:           tx.db,
-			state:        txStateActive,
 			tenantId:     NoTenantID, // dummy uses raw access
 			creationTime: time.Now(),
 			isDummy:      true, // prevents recursive commitDummyTransaction

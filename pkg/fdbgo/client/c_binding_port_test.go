@@ -1256,7 +1256,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 	// We create a fresh transaction and call OnError. If it returns nil,
 	// the error is retryable.
 	isRetryable := func(code int) bool {
-		tx := &Transaction{state: txStateActive}
+		tx := &Transaction{}
 		err := &wire.FDBError{Code: code}
 		return tx.OnError(err) == nil
 	}
@@ -1312,7 +1312,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 	}
 
 	// Non-FDB error should not be retryable.
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	plainErr := fmt.Errorf("some random error")
 	if tx.OnError(plainErr) == nil {
 		t.Error("non-FDB error should not be retryable")
@@ -1334,7 +1334,7 @@ func TestErrorPredicate_CPort(t *testing.T) {
 func TestSetTimeout_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetTimeout(1) // 1 millisecond
 
 	// Burn through the timeout — sleep to guarantee deadline passes.
@@ -1369,7 +1369,7 @@ func TestSetTimeout_CPort(t *testing.T) {
 func TestSetRetryLimit(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetRetryLimit(2) // allow 2 retries
 
 	retryableErr := &wire.FDBError{Code: ErrNotCommitted}
@@ -1405,7 +1405,7 @@ func TestSetRetryLimit(t *testing.T) {
 func TestSetRetryLimit_Zero(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetRetryLimit(0) // no retries
 
 	err := tx.OnError(&wire.FDBError{Code: ErrNotCommitted})
@@ -1420,7 +1420,7 @@ func TestSetRetryLimit_Zero(t *testing.T) {
 func TestSetTimeout_Get(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetTimeout(1) // 1ms
 
 	// Wait for deadline to pass.
@@ -1443,7 +1443,7 @@ func TestSetTimeout_Get(t *testing.T) {
 func TestSetTimeout_Preserved(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetTimeout(500) // 500ms — long enough to not fire during test
 
 	// Force a retryable error.
@@ -1474,7 +1474,7 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	t.Parallel()
 
 	// Create a tx whose creationTime is 200ms in the past.
-	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-200 * time.Millisecond)}
+	tx := &Transaction{creationTime: time.Now().Add(-200 * time.Millisecond)}
 	tx.SetTimeout(500) // 500ms budget from creationTime → deadline = 300ms from now
 
 	// Deadline should NOT have fired yet (300ms from now).
@@ -1512,7 +1512,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	t.Parallel()
 
 	// Start with creationTime far in the past — budget is already exhausted.
-	tx := &Transaction{state: txStateActive, creationTime: time.Now().Add(-10 * time.Second)}
+	tx := &Transaction{creationTime: time.Now().Add(-10 * time.Second)}
 	tx.SetTimeout(500) // deadline = -10s + 500ms = -9.5s → already expired
 
 	// Should be timed out.
@@ -1539,7 +1539,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 func TestSetTimeout_Disabled(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetTimeout(100) // set a timeout
 	tx.SetTimeout(0)   // then disable it
 
@@ -1560,7 +1560,7 @@ func TestSetTimeout_Disabled(t *testing.T) {
 func TestSetRetryLimit_Unlimited(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetRetryLimit(0) // set limit to 0
 
 	// Should not retry.
@@ -1570,7 +1570,7 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 	}
 
 	// Now remove the limit.
-	tx.state = txStateActive
+	tx.state.Store(int32(txStateActive))
 	tx.SetRetryLimit(-1)
 
 	// Should retry now.
@@ -1584,7 +1584,7 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 func TestSetMaxRetryDelay(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetRetryLimit(-1)    // unlimited retries
 	tx.SetMaxRetryDelay(50) // 50ms cap
 
@@ -1608,7 +1608,7 @@ func TestSetMaxRetryDelay(t *testing.T) {
 func TestSetTimeout_CommitCheck(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetTimeout(1)                     // 1ms
 	tx.Set([]byte("key"), []byte("val")) // need mutations for commit path
 	time.Sleep(2 * time.Millisecond)
@@ -1628,7 +1628,7 @@ func TestSetTimeout_CommitCheck(t *testing.T) {
 func TestGetApproximateSize_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 
 	// Empty transaction should have zero size.
 	if size := tx.GetApproximateSize(); size != 0 {
@@ -2270,7 +2270,7 @@ func TestReadYourWrites_CPort(t *testing.T) {
 func TestSizeLimit_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetSizeLimit(1000) // 1000 bytes
 
 	// Write a key with a large value that pushes total transaction size over 1000.
@@ -2514,7 +2514,7 @@ func TestSnapshotRYWDisable_CPort(t *testing.T) {
 func TestSizeLimitTooSmall_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetSizeLimit(31)
 	tx.Set([]byte("foo"), []byte("bar"))
 
@@ -2539,7 +2539,7 @@ func TestSizeLimitTooSmall_CPort(t *testing.T) {
 func TestSizeLimitTooLarge_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetSizeLimit(10_000_001)
 	tx.Set([]byte("foo"), []byte("bar"))
 
@@ -2565,7 +2565,7 @@ func TestSizeLimitTooLarge_CPort(t *testing.T) {
 func TestSizeLimitMinimum_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.SetSizeLimit(32)
 	tx.Set([]byte("foo"), []byte("foundation database is amazing"))
 
@@ -2689,7 +2689,7 @@ func TestReadSystemKey_CPort(t *testing.T) {
 func TestCannotWriteSystemKey_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive}
+	tx := &Transaction{}
 	tx.Set([]byte("\xff\x02"), []byte("bar"))
 
 	err := tx.Commit(context.Background())
@@ -3311,8 +3311,8 @@ func TestResourceConstrainedBackoff_CPort(t *testing.T) {
 
 	// Test that after many retries, the backoff cap for proxy memory errors
 	// is higher than for normal errors.
-	txNormal := &Transaction{state: txStateActive, creationTime: time.Now()}
-	txProxy := &Transaction{state: txStateActive, creationTime: time.Now()}
+	txNormal := &Transaction{creationTime: time.Now()}
+	txProxy := &Transaction{creationTime: time.Now()}
 
 	// Drive both to max backoff by calling nextBackoff many times.
 	for i := 0; i < 20; i++ {
@@ -3341,7 +3341,7 @@ func TestResourceConstrainedBackoff_CPort(t *testing.T) {
 func TestBlobGranuleRetryable_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	tx := &Transaction{creationTime: time.Now()}
 	err := tx.OnError(&wire.FDBError{Code: ErrBlobGranuleRequestFailed})
 	if err != nil {
 		t.Fatalf("blob_granule_request_failed should be retryable, got: %v", err)
@@ -3827,7 +3827,7 @@ func TestGetRangeSplitPoints_CPort(t *testing.T) {
 func TestClearRangeInverted_CPort(t *testing.T) {
 	t.Parallel()
 
-	tx := &Transaction{state: txStateActive, creationTime: time.Now()}
+	tx := &Transaction{creationTime: time.Now()}
 	err := tx.ClearRange([]byte("z"), []byte("a"))
 	if err == nil {
 		t.Fatal("expected inverted_range error")
