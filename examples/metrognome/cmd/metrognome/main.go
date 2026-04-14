@@ -11,6 +11,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/birdayz/protobuf-ecosystem/protoconfig"
+
+	metrognomev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/consumer"
@@ -25,19 +28,20 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	listenAddr := ":8080"
-	if addr := os.Getenv("LISTEN_ADDR"); addr != "" {
-		listenAddr = addr
+	cfg, err := protoconfig.Load("config.yaml", &metrognomev1.Config{
+		ListenAddress: ":8080",
+		FrontendUrl:   "http://localhost:3000",
+	})
+	if err != nil {
+		slog.Error("failed to load config", "error", err)
+		os.Exit(1)
 	}
-
-	clusterFile := os.Getenv("FDB_CLUSTER_FILE")
 
 	// Connect to FoundationDB
 	fdb.MustAPIVersion(720)
 	var fdbDB fdb.Database
-	var err error
-	if clusterFile != "" {
-		fdbDB, err = fdb.OpenDatabase(clusterFile)
+	if cfg.FdbClusterFile != "" {
+		fdbDB, err = fdb.OpenDatabase(cfg.FdbClusterFile)
 		if err != nil {
 			slog.Error("failed to open FDB", "error", err)
 			os.Exit(1)
@@ -82,7 +86,7 @@ func main() {
 	// Set up HTTP mux with ConnectRPC services
 	mux := http.NewServeMux()
 
-	// Health check (liveness) — always 200 if the process is up
+	// Health check (liveness)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok","service":"metrognome"}`)
@@ -102,7 +106,6 @@ func main() {
 			if err != nil {
 				return nil, err
 			}
-			// Read the record count to verify FDB is reachable
 			count, err := store.GetRecordCount()
 			if err != nil {
 				return nil, err
@@ -143,31 +146,23 @@ func main() {
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
 
-	// CORS for frontend
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:3000"
-	}
-	handler := services.CORSMiddleware(frontendURL, mux)
-
-	srv := &http.Server{
-		Addr:              listenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
-
-	// Start Kafka consumer if brokers configured
-	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
-	kafkaTopic := os.Getenv("KAFKA_TOPIC")
+	// Start Kafka consumer if configured
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
 	defer consumerCancel()
-	if kafkaBrokers != "" && kafkaTopic != "" {
-		var err error
+	if k := cfg.Kafka; k != nil && len(k.Brokers) > 0 && k.Topic != "" {
+		groupID := k.GroupId
+		if groupID == "" {
+			groupID = "metrognome"
+		}
+		batchSize := int(k.BatchSize)
+		if batchSize <= 0 {
+			batchSize = 100
+		}
 		kafkaConsumer, err = consumer.New(consumer.Config{
-			Brokers: []string{kafkaBrokers},
-			Topic:   kafkaTopic,
-			GroupID: "metrognome",
+			Brokers:   k.Brokers,
+			Topic:     k.Topic,
+			GroupID:   groupID,
+			BatchSize: batchSize,
 		}, db, meterEngine, slog.Default())
 		if err != nil {
 			slog.Error("failed to create kafka consumer", "error", err)
@@ -178,7 +173,17 @@ func main() {
 				slog.Error("kafka consumer error", "error", err)
 			}
 		}()
-		slog.Info("kafka consumer started", "brokers", kafkaBrokers, "topic", kafkaTopic)
+		slog.Info("kafka consumer started", "brokers", k.Brokers, "topic", k.Topic)
+	}
+
+	// CORS for frontend
+	handler := services.CORSMiddleware(cfg.FrontendUrl, mux)
+
+	srv := &http.Server{
+		Addr:              cfg.ListenAddress,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -186,7 +191,7 @@ func main() {
 	signal.Notify(done, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		slog.Info("metrognome starting", "addr", listenAddr)
+		slog.Info("metrognome starting", "addr", cfg.ListenAddress)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)
@@ -195,7 +200,7 @@ func main() {
 
 	sig := <-done
 	slog.Info("shutting down", "signal", sig)
-	consumerCancel() // stop kafka consumer
+	consumerCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

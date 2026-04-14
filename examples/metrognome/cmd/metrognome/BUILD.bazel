@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/cmd/metrognome",
     visibility = ["//visibility:private"],
     deps = [
+        "//examples/metrognome/gen/metrognome/v1:metrognome",
         "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
         "//examples/metrognome/internal/billing",
         "//examples/metrognome/internal/consumer",
@@ -15,6 +16,7 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
+        "@com_github_birdayz_protobuf_ecosystem//protoconfig",
     ],
 )
 

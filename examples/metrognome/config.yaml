@@ -1,0 +1,13 @@
+listen_address: ":8080"
+frontend_url: "http://localhost:3000"
+
+# FDB cluster file. Empty = use default (/etc/foundationdb/fdb.cluster).
+# fdb_cluster_file: "/path/to/fdb.cluster"
+
+# Kafka configuration (optional — comment out to disable consumer).
+# kafka:
+#   brokers:
+#     - "localhost:9092"
+#   topic: "usage-events"
+#   group_id: "metrognome"
+#   batch_size: 100

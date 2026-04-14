@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+message Config {
+  string listen_address = 1;
+  string frontend_url = 2;
+
+  // Path to FDB cluster file. If empty, uses default.
+  string fdb_cluster_file = 3;
+
+  // Kafka configuration (optional — if empty, Kafka consumer is disabled).
+  KafkaConfig kafka = 4;
+}
+
+message KafkaConfig {
+  repeated string brokers = 1;
+  string topic = 2;
+  string group_id = 3;
+  int32 batch_size = 4;
+}
