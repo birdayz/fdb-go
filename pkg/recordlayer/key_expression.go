@@ -248,7 +248,8 @@ func (f *FieldKeyExpression) ColumnSize() int {
 type RecordTypeKeyExpression struct {
 	// cachedResults caches the Evaluate return for each type name.
 	// RecordTypeKey is deterministic per record type, so cache is safe.
-	cachedResults map[string][][]any
+	// Uses sync.Map for concurrent access safety.
+	cachedResults sync.Map // string → [][]any
 	// nested is the optional nested key expression
 	nested KeyExpression
 	// typeKeys maps proto message full name → record type key (int64).
@@ -283,10 +284,8 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 
 	// Check cache — RecordTypeKey is deterministic per type name
 	if r.nested == nil {
-		if r.cachedResults != nil {
-			if cached, ok := r.cachedResults[typeName]; ok {
-				return cached, nil
-			}
+		if cached, ok := r.cachedResults.Load(typeName); ok {
+			return cached.([][]any), nil
 		}
 	}
 
@@ -304,11 +303,7 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 
 	if r.nested == nil {
 		result := [][]any{{typeKey}}
-		// Cache for reuse
-		if r.cachedResults == nil {
-			r.cachedResults = make(map[string][][]any)
-		}
-		r.cachedResults[typeName] = result
+		r.cachedResults.Store(typeName, result)
 		return result, nil
 	}
 
@@ -452,25 +447,33 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
 func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
-	// Fast path: if all children produce exactly 1 result (no fan-out),
-	// we can build a single tuple without cross-product allocations.
-	// This covers the vast majority of cases (simple PKs, index keys).
+	// Fast path: use EvaluateFlat for children to avoid [][]any allocs.
+	// If all children support it, we build a single tuple directly.
 	fast := make([]any, 0, len(c.expressions))
-	allSingle := true
+	allFlat := true
 
 	for _, expr := range c.expressions {
-		childTuples, err := expr.Evaluate(record, msg)
-		if err != nil {
-			return nil, err
+		if fe, ok := expr.(FlatEvaluator); ok {
+			childFlat, err := fe.EvaluateFlat(record, msg)
+			if err != nil {
+				allFlat = false
+				break
+			}
+			fast = append(fast, childFlat...)
+		} else {
+			childTuples, err := expr.Evaluate(record, msg)
+			if err != nil {
+				return nil, err
+			}
+			if len(childTuples) != 1 {
+				allFlat = false
+				break
+			}
+			fast = append(fast, childTuples[0]...)
 		}
-		if len(childTuples) != 1 {
-			allSingle = false
-			break
-		}
-		fast = append(fast, childTuples[0]...)
 	}
 
-	if allSingle {
+	if allFlat {
 		return [][]any{fast}, nil
 	}
 
@@ -895,6 +898,21 @@ func GroupAll(expr KeyExpression) *GroupingKeyExpression {
 // The grouping/grouped split is metadata, not evaluation logic.
 func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	return g.wholeKey.Evaluate(record, msg)
+}
+
+// EvaluateFlat delegates to the whole key's EvaluateFlat if available.
+func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if fe, ok := g.wholeKey.(FlatEvaluator); ok {
+		return fe.EvaluateFlat(record, msg)
+	}
+	tuples, err := g.wholeKey.Evaluate(record, msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(tuples) == 0 {
+		return nil, nil
+	}
+	return tuples[0], nil
 }
 
 // FieldNames returns field names from the whole key.

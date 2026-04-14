@@ -183,31 +183,32 @@ func (m *sumMutation) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([
 		return nil, nil
 	}
 
-	// Fast path: use EvaluateFlat to avoid [][]any alloc
+	// Fast path: use EvaluateFlat to avoid [][]any alloc.
+	// Falls through on error (e.g. fan-out repeated fields).
 	if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 		values, err := fe.EvaluateFlat(record, record.Record)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			groupingCount := indexGroupingCount(m.index.RootExpression)
+			if groupingCount >= len(values) {
+				return nil, nil
+			}
+			groupKey := make(tuple.Tuple, groupingCount)
+			for j := 0; j < groupingCount; j++ {
+				groupKey[j] = values[j]
+			}
+			rawValue := values[groupingCount]
+			if rawValue == nil {
+				return nil, nil
+			}
+			sumValue, err := toInt64(rawValue)
+			if err != nil {
+				return nil, fmt.Errorf("sum index %q: value at column %d: %w", m.index.Name, groupingCount, err)
+			}
+			var param [8]byte
+			binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
+			return []atomicMutationEntry{{groupKey: groupKey, param: param[:]}}, nil
 		}
-		groupingCount := indexGroupingCount(m.index.RootExpression)
-		if groupingCount >= len(values) {
-			return nil, nil
-		}
-		groupKey := make(tuple.Tuple, groupingCount)
-		for j := 0; j < groupingCount; j++ {
-			groupKey[j] = values[j]
-		}
-		rawValue := values[groupingCount]
-		if rawValue == nil {
-			return nil, nil
-		}
-		sumValue, err := toInt64(rawValue)
-		if err != nil {
-			return nil, fmt.Errorf("sum index %q: value at column %d: %w", m.index.Name, groupingCount, err)
-		}
-		var param [8]byte
-		binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
-		return []atomicMutationEntry{{groupKey: groupKey, param: param[:]}}, nil
+		// Fall through to standard Evaluate
 	}
 
 	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
