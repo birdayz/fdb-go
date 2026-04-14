@@ -28,13 +28,23 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
-	cfg, err := protoconfig.Load("config.yaml", &metrognomev1.Config{
+	defaults := &metrognomev1.Config{
 		ListenAddress: ":8080",
 		FrontendUrl:   "http://localhost:3000",
-	})
+	}
+	configPath := "config.yaml"
+	if v := os.Getenv("CONFIG_FILE"); v != "" {
+		configPath = v
+	}
+	cfg, err := protoconfig.Load(configPath, defaults)
 	if err != nil {
-		slog.Error("failed to load config", "error", err)
-		os.Exit(1)
+		if os.IsNotExist(err) {
+			slog.Info("no config.yaml found, using defaults")
+			cfg = defaults
+		} else {
+			slog.Error("failed to load config", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Connect to FoundationDB
