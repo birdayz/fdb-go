@@ -160,7 +160,7 @@ bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -ops 1000 -seed-start 146
 
 ### Fuzz testing
 
-`fuzz_test.go` contains 7 Go native fuzz targets covering all hand-rolled binary parsers. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
+`fuzz_test.go` contains 12 Go native fuzz targets covering all hand-rolled binary parsers and protobuf deserialization. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
 
 ```sh
 # Run a specific fuzz target for 60 seconds:
@@ -185,6 +185,8 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzConcatContinuation` | ConcatCursor proto continuation deserializer | Clean |
 | `FuzzFlatMapContinuation` | FlatMapPipelined proto continuation deserializer | Clean |
 | `FuzzDedupContinuation` | Dedup cursor proto continuation deserializer | Clean |
+| `FuzzDeserializeAndDiscover` | Union wire format record type discovery (protowire) | Clean |
+| `FuzzDeserializeRecord` | Union wire format targeted record extraction (protowire) | Clean |
 | `FuzzRYWCache` | RYW cache Set/Clear/ClearRange/AtomicAdd vs map model (forward + reverse range) | Model bug found during development (ClearRange boundary) |
 
 **Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
@@ -536,5 +538,5 @@ See `TODO.md` for full gap analysis. Summary:
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
 - **Test counts**: 2717 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 80.0% overall, 82.8% (client), 81.3% (record layer). `just coverage` generates HTML report.
-- **Fuzz targets**: 21 (10 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr)
+- **Fuzz targets**: 23 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
