@@ -244,6 +244,80 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("LimitPlan", func() {
+		It("limits results from child plan", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				saveOrders(store,
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
+					&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
+					&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)},
+					&gen.Order{OrderId: proto.Int64(4), Price: proto.Int32(40)},
+					&gen.Order{OrderId: proto.Int64(5), Price: proto.Int32(50)},
+				)
+
+				plan := &LimitPlan{
+					Child: &ScanPlan{RecordTypeName: "Order"},
+					Limit: 2,
+				}
+				cursor := plan.Execute(store, nil, ForwardScan())
+				var count int
+				for _, err := range Seq2(cursor, ctx) {
+					Expect(err).NotTo(HaveOccurred())
+					count++
+				}
+				Expect(count).To(Equal(2))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("Composability", func() {
+		It("composes filter + limit + index scan", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 10; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+
+				// "SELECT * FROM Order WHERE price > 50 LIMIT 3"
+				plan := &LimitPlan{
+					Limit: 3,
+					Child: &FilterPlan{
+						Child:       &ScanPlan{RecordTypeName: "Order"},
+						Description: "price > 50",
+						Predicate: func(r *FDBStoredRecord[proto.Message]) bool {
+							return r.Record.(*gen.Order).GetPrice() > 50
+						},
+					},
+				}
+				cursor := plan.Execute(store, nil, ForwardScan())
+				var prices []int32
+				for result, err := range Seq2(cursor, ctx) {
+					Expect(err).NotTo(HaveOccurred())
+					prices = append(prices, result.Record.(*gen.Order).GetPrice())
+				}
+				Expect(prices).To(HaveLen(3))
+				// First 3 orders with price > 50: 60, 70, 80
+				Expect(prices).To(Equal([]int32{60, 70, 80}))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Explain", func() {
 		It("produces readable plan descriptions", func() {
 			scan := &ScanPlan{RecordTypeName: "Order"}

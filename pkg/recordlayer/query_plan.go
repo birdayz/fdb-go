@@ -196,6 +196,24 @@ func (p *IntersectionPlan) Explain(indent int) string {
 	return fmt.Sprintf("%sIntersection\n%s\n%s", prefix, leftExplain, rightExplain)
 }
 
+// LimitPlan wraps a child plan and limits the number of returned results.
+// Matches SQL's LIMIT N.
+type LimitPlan struct {
+	Child RecordQueryPlan
+	Limit int
+}
+
+func (p *LimitPlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	inner := p.Child.Execute(store, continuation, props)
+	return LimitRowsCursor(inner, p.Limit)
+}
+
+func (p *LimitPlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	childExplain := p.Child.Explain(indent + 1)
+	return fmt.Sprintf("%sLimit(%d)\n%s", prefix, p.Limit, childExplain)
+}
+
 // storedRecordComparisonKey extracts the primary key tuple for merge comparison.
 func storedRecordComparisonKey(r *FDBStoredRecord[proto.Message]) tuple.Tuple {
 	return r.PrimaryKey
