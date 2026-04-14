@@ -847,14 +847,17 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
+}
+
+// updateSecondaryIndexesLocked is the lock-free variant for use when the caller
+// already holds stateMu.RLock() (e.g. SaveRecordBatch which takes it once).
+func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
-
-	// Hold read lock for entire index update — matches Java's
-	// beginRecordStoreStateRead() wrapping updateSecondaryIndexes.
-	store.stateMu.RLock()
-	defer store.stateMu.RUnlock()
 
 	// Fast path: same type (or one side nil) — no three-way split needed.
 	sameType := oldRecord == nil || newRecord == nil || oldRecord.RecordType.Name == newRecord.RecordType.Name

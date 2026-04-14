@@ -100,6 +100,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
 	var insertCount int64
 
+	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
+	// Also validate update lock once (same for all records).
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
+		return nil, err
+	}
+
 	for i := range pending {
 		p := &pending[i]
 
@@ -126,11 +134,6 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			oldsizeInfo.KeySize = len(unsplitKey)
 			oldsizeInfo.ValueSize = len(oldValue)
 			oldsizeInfo.IsSplit = false
-		}
-
-		// Validate lock
-		if err := store.validateRecordUpdateAllowed(); err != nil {
-			return nil, err
 		}
 
 		// Serialize
@@ -184,7 +187,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				}
 			}
 		}
-		if err := store.updateSecondaryIndexes(oldRecord, stored); err != nil {
+		if err := store.updateSecondaryIndexesLocked(oldRecord, stored); err != nil {
 			return nil, fmt.Errorf("record %d: index update: %w", i, err)
 		}
 
