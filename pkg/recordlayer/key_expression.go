@@ -26,6 +26,12 @@ type FlatEvaluator interface {
 	EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error)
 }
 
+// ScalarEvaluator is an optional interface for KeyExpressions that extract
+// a single scalar value. Avoids both the outer [][]any and inner []any allocs.
+type ScalarEvaluator interface {
+	EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error)
+}
+
 // evaluateKeyFlat calls EvaluateFlat if available, otherwise falls back to Evaluate.
 // Saves 1 alloc per call on the hot path (avoids the outer [][]any).
 func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
@@ -147,6 +153,31 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 		return nil, err
 	}
 	return []any{result}, nil
+}
+
+// EvaluateScalar returns the single scalar value directly — zero allocs for the return.
+func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	m := msg.ProtoReflect()
+	msgName := string(m.Descriptor().FullName())
+	fd := f.cachedFD
+	if f.cachedFDMsgName != msgName || fd == nil {
+		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+		if fd == nil {
+			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
+		}
+		f.cachedFD = fd
+		f.cachedFDMsgName = msgName
+	}
+	if fd.IsList() {
+		return nil, fmt.Errorf("EvaluateScalar on repeated field")
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return nil, nil
+	}
+	return scalarToInterface(fd, m.Get(fd))
 }
 
 // getNullResult returns the appropriate result for a nil message based on FanType.
@@ -325,6 +356,20 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 	return result, nil
 }
 
+// EvaluateScalar returns the type key directly — zero alloc.
+func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			return k, nil
+		}
+	}
+	return typeName, nil
+}
+
 // EvaluateFlat returns the type key as a single-element []any.
 func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if msg == nil {
@@ -410,14 +455,20 @@ type CompositeKeyExpression struct {
 func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	result := make([]any, 0, len(c.expressions))
 	for _, expr := range c.expressions {
-		// Try flat path first (avoids child's [][]any alloc)
+		// Try scalar first (zero alloc per value)
+		if se, ok := expr.(ScalarEvaluator); ok {
+			val, err := se.EvaluateScalar(record, msg)
+			if err == nil {
+				result = append(result, val)
+				continue
+			}
+		}
 		if fe, ok := expr.(FlatEvaluator); ok {
 			childFlat, err := fe.EvaluateFlat(record, msg)
-			if err != nil {
-				return nil, err
+			if err == nil {
+				result = append(result, childFlat...)
+				continue
 			}
-			result = append(result, childFlat...)
-			continue
 		}
 		childTuples, err := expr.Evaluate(record, msg)
 		if err != nil {
@@ -453,24 +504,32 @@ func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 	allFlat := true
 
 	for _, expr := range c.expressions {
+		// Try scalar first (zero alloc)
+		if se, ok := expr.(ScalarEvaluator); ok {
+			val, err := se.EvaluateScalar(record, msg)
+			if err == nil {
+				fast = append(fast, val)
+				continue
+			}
+			// Fall through on error (e.g. repeated field)
+		}
 		if fe, ok := expr.(FlatEvaluator); ok {
 			childFlat, err := fe.EvaluateFlat(record, msg)
-			if err != nil {
-				allFlat = false
-				break
+			if err == nil {
+				fast = append(fast, childFlat...)
+				continue
 			}
-			fast = append(fast, childFlat...)
-		} else {
-			childTuples, err := expr.Evaluate(record, msg)
-			if err != nil {
-				return nil, err
-			}
-			if len(childTuples) != 1 {
-				allFlat = false
-				break
-			}
-			fast = append(fast, childTuples[0]...)
+			// Fall through
 		}
+		childTuples, err := expr.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
+		if len(childTuples) != 1 {
+			allFlat = false
+			break
+		}
+		fast = append(fast, childTuples[0]...)
 	}
 
 	if allFlat {
