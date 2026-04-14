@@ -386,6 +386,68 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("Continuation", func() {
+		It("paged scan across multiple Execute calls", func() {
+			ss := specSubspace()
+			// Save 10 orders
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 10; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Page through 3 at a time using ScanPlan + LimitPlan
+			var allIDs []int64
+			var continuation []byte
+			for page := 0; page < 5; page++ {
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+
+					plan := &ScanPlan{RecordTypeName: "Order"}
+					props := NewScanProperties(DefaultExecuteProperties().WithReturnedRowLimit(3))
+					cursor := plan.Execute(store, continuation, props)
+					for {
+						result, err := cursor.OnNext(ctx)
+						if err != nil {
+							return nil, err
+						}
+						if !result.HasNext() {
+							contBytes, _ := result.GetContinuation().ToBytes()
+							continuation = contBytes
+							break
+						}
+						order := result.GetValue().Record.(*gen.Order)
+						allIDs = append(allIDs, order.GetOrderId())
+						contBytes, _ := result.GetContinuation().ToBytes()
+						continuation = contBytes
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				if len(continuation) == 0 {
+					break
+				}
+			}
+			Expect(allIDs).To(HaveLen(10))
+			// Verify all 10 unique IDs were returned
+			for i := int64(1); i <= 10; i++ {
+				Expect(allIDs).To(ContainElement(i))
+			}
+		})
+	})
+
 	Describe("Explain", func() {
 		It("produces readable plan descriptions", func() {
 			scan := &ScanPlan{RecordTypeName: "Order"}
