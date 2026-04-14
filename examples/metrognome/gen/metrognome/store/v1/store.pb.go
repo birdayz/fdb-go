@@ -25,28 +25,31 @@ const (
 type AggregationType int32
 
 const (
-	AggregationType_AGGREGATION_TYPE_COUNT  AggregationType = 0
-	AggregationType_AGGREGATION_TYPE_SUM    AggregationType = 1
-	AggregationType_AGGREGATION_TYPE_MAX    AggregationType = 2
-	AggregationType_AGGREGATION_TYPE_UNIQUE AggregationType = 3
-	AggregationType_AGGREGATION_TYPE_LATEST AggregationType = 4
+	AggregationType_AGGREGATION_TYPE_UNSPECIFIED AggregationType = 0
+	AggregationType_AGGREGATION_TYPE_COUNT       AggregationType = 1
+	AggregationType_AGGREGATION_TYPE_SUM         AggregationType = 2
+	AggregationType_AGGREGATION_TYPE_MAX         AggregationType = 3
+	AggregationType_AGGREGATION_TYPE_UNIQUE      AggregationType = 4
+	AggregationType_AGGREGATION_TYPE_LATEST      AggregationType = 5
 )
 
 // Enum value maps for AggregationType.
 var (
 	AggregationType_name = map[int32]string{
-		0: "AGGREGATION_TYPE_COUNT",
-		1: "AGGREGATION_TYPE_SUM",
-		2: "AGGREGATION_TYPE_MAX",
-		3: "AGGREGATION_TYPE_UNIQUE",
-		4: "AGGREGATION_TYPE_LATEST",
+		0: "AGGREGATION_TYPE_UNSPECIFIED",
+		1: "AGGREGATION_TYPE_COUNT",
+		2: "AGGREGATION_TYPE_SUM",
+		3: "AGGREGATION_TYPE_MAX",
+		4: "AGGREGATION_TYPE_UNIQUE",
+		5: "AGGREGATION_TYPE_LATEST",
 	}
 	AggregationType_value = map[string]int32{
-		"AGGREGATION_TYPE_COUNT":  0,
-		"AGGREGATION_TYPE_SUM":    1,
-		"AGGREGATION_TYPE_MAX":    2,
-		"AGGREGATION_TYPE_UNIQUE": 3,
-		"AGGREGATION_TYPE_LATEST": 4,
+		"AGGREGATION_TYPE_UNSPECIFIED": 0,
+		"AGGREGATION_TYPE_COUNT":       1,
+		"AGGREGATION_TYPE_SUM":         2,
+		"AGGREGATION_TYPE_MAX":         3,
+		"AGGREGATION_TYPE_UNIQUE":      4,
+		"AGGREGATION_TYPE_LATEST":      5,
 	}
 )
 
@@ -90,22 +93,25 @@ func (AggregationType) EnumDescriptor() ([]byte, []int) {
 type BillingPeriod int32
 
 const (
-	BillingPeriod_BILLING_PERIOD_MONTHLY   BillingPeriod = 0
-	BillingPeriod_BILLING_PERIOD_QUARTERLY BillingPeriod = 1
-	BillingPeriod_BILLING_PERIOD_ANNUAL    BillingPeriod = 2
+	BillingPeriod_BILLING_PERIOD_UNSPECIFIED BillingPeriod = 0
+	BillingPeriod_BILLING_PERIOD_MONTHLY     BillingPeriod = 1
+	BillingPeriod_BILLING_PERIOD_QUARTERLY   BillingPeriod = 2
+	BillingPeriod_BILLING_PERIOD_ANNUAL      BillingPeriod = 3
 )
 
 // Enum value maps for BillingPeriod.
 var (
 	BillingPeriod_name = map[int32]string{
-		0: "BILLING_PERIOD_MONTHLY",
-		1: "BILLING_PERIOD_QUARTERLY",
-		2: "BILLING_PERIOD_ANNUAL",
+		0: "BILLING_PERIOD_UNSPECIFIED",
+		1: "BILLING_PERIOD_MONTHLY",
+		2: "BILLING_PERIOD_QUARTERLY",
+		3: "BILLING_PERIOD_ANNUAL",
 	}
 	BillingPeriod_value = map[string]int32{
-		"BILLING_PERIOD_MONTHLY":   0,
-		"BILLING_PERIOD_QUARTERLY": 1,
-		"BILLING_PERIOD_ANNUAL":    2,
+		"BILLING_PERIOD_UNSPECIFIED": 0,
+		"BILLING_PERIOD_MONTHLY":     1,
+		"BILLING_PERIOD_QUARTERLY":   2,
+		"BILLING_PERIOD_ANNUAL":      3,
 	}
 )
 
@@ -149,25 +155,28 @@ func (BillingPeriod) EnumDescriptor() ([]byte, []int) {
 type InvoiceStatus int32
 
 const (
-	InvoiceStatus_INVOICE_STATUS_DRAFT  InvoiceStatus = 0
-	InvoiceStatus_INVOICE_STATUS_ISSUED InvoiceStatus = 1
-	InvoiceStatus_INVOICE_STATUS_PAID   InvoiceStatus = 2
-	InvoiceStatus_INVOICE_STATUS_VOID   InvoiceStatus = 3
+	InvoiceStatus_INVOICE_STATUS_UNSPECIFIED InvoiceStatus = 0
+	InvoiceStatus_INVOICE_STATUS_DRAFT       InvoiceStatus = 1
+	InvoiceStatus_INVOICE_STATUS_ISSUED      InvoiceStatus = 2
+	InvoiceStatus_INVOICE_STATUS_PAID        InvoiceStatus = 3
+	InvoiceStatus_INVOICE_STATUS_VOID        InvoiceStatus = 4
 )
 
 // Enum value maps for InvoiceStatus.
 var (
 	InvoiceStatus_name = map[int32]string{
-		0: "INVOICE_STATUS_DRAFT",
-		1: "INVOICE_STATUS_ISSUED",
-		2: "INVOICE_STATUS_PAID",
-		3: "INVOICE_STATUS_VOID",
+		0: "INVOICE_STATUS_UNSPECIFIED",
+		1: "INVOICE_STATUS_DRAFT",
+		2: "INVOICE_STATUS_ISSUED",
+		3: "INVOICE_STATUS_PAID",
+		4: "INVOICE_STATUS_VOID",
 	}
 	InvoiceStatus_value = map[string]int32{
-		"INVOICE_STATUS_DRAFT":  0,
-		"INVOICE_STATUS_ISSUED": 1,
-		"INVOICE_STATUS_PAID":   2,
-		"INVOICE_STATUS_VOID":   3,
+		"INVOICE_STATUS_UNSPECIFIED": 0,
+		"INVOICE_STATUS_DRAFT":       1,
+		"INVOICE_STATUS_ISSUED":      2,
+		"INVOICE_STATUS_PAID":        3,
+		"INVOICE_STATUS_VOID":        4,
 	}
 )
 
@@ -211,19 +220,22 @@ func (InvoiceStatus) EnumDescriptor() ([]byte, []int) {
 type AlertType int32
 
 const (
-	AlertType_ALERT_TYPE_USAGE AlertType = 0 // raw usage threshold
-	AlertType_ALERT_TYPE_SPEND AlertType = 1 // computed spend threshold
+	AlertType_ALERT_TYPE_UNSPECIFIED AlertType = 0
+	AlertType_ALERT_TYPE_USAGE       AlertType = 1 // raw usage threshold
+	AlertType_ALERT_TYPE_SPEND       AlertType = 2 // computed spend threshold
 )
 
 // Enum value maps for AlertType.
 var (
 	AlertType_name = map[int32]string{
-		0: "ALERT_TYPE_USAGE",
-		1: "ALERT_TYPE_SPEND",
+		0: "ALERT_TYPE_UNSPECIFIED",
+		1: "ALERT_TYPE_USAGE",
+		2: "ALERT_TYPE_SPEND",
 	}
 	AlertType_value = map[string]int32{
-		"ALERT_TYPE_USAGE": 0,
-		"ALERT_TYPE_SPEND": 1,
+		"ALERT_TYPE_UNSPECIFIED": 0,
+		"ALERT_TYPE_USAGE":       1,
+		"ALERT_TYPE_SPEND":       2,
 	}
 )
 
@@ -403,7 +415,7 @@ func (x *Meter) GetAggregationType() AggregationType {
 	if x != nil && x.AggregationType != nil {
 		return *x.AggregationType
 	}
-	return AggregationType_AGGREGATION_TYPE_COUNT
+	return AggregationType_AGGREGATION_TYPE_UNSPECIFIED
 }
 
 func (x *Meter) GetValueProperty() string {
@@ -1135,7 +1147,7 @@ func (x *Contract) GetBillingPeriod() BillingPeriod {
 	if x != nil && x.BillingPeriod != nil {
 		return *x.BillingPeriod
 	}
-	return BillingPeriod_BILLING_PERIOD_MONTHLY
+	return BillingPeriod_BILLING_PERIOD_UNSPECIFIED
 }
 
 func (x *Contract) GetCreatedAt() int64 {
@@ -1385,7 +1397,7 @@ func (x *Invoice) GetStatus() InvoiceStatus {
 	if x != nil && x.Status != nil {
 		return *x.Status
 	}
-	return InvoiceStatus_INVOICE_STATUS_DRAFT
+	return InvoiceStatus_INVOICE_STATUS_UNSPECIFIED
 }
 
 func (x *Invoice) GetCreatedAt() int64 {
@@ -1647,7 +1659,7 @@ func (x *Alert) GetAlertType() AlertType {
 	if x != nil && x.AlertType != nil {
 		return *x.AlertType
 	}
-	return AlertType_ALERT_TYPE_USAGE
+	return AlertType_ALERT_TYPE_UNSPECIFIED
 }
 
 func (x *Alert) GetTriggered() bool {
@@ -2009,25 +2021,29 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\a_Credit\x18\b \x01(\v2\x1b.metrognome.store.v1.CreditR\x06Credit\x121\n" +
 	"\x06_Alert\x18\t \x01(\v2\x1a.metrognome.store.v1.AlertR\x05Alert\x12C\n" +
 	"\f_KafkaOffset\x18\n" +
-	" \x01(\v2 .metrognome.store.v1.KafkaOffsetR\vKafkaOffset*\x9b\x01\n" +
-	"\x0fAggregationType\x12\x1a\n" +
-	"\x16AGGREGATION_TYPE_COUNT\x10\x00\x12\x18\n" +
-	"\x14AGGREGATION_TYPE_SUM\x10\x01\x12\x18\n" +
-	"\x14AGGREGATION_TYPE_MAX\x10\x02\x12\x1b\n" +
-	"\x17AGGREGATION_TYPE_UNIQUE\x10\x03\x12\x1b\n" +
-	"\x17AGGREGATION_TYPE_LATEST\x10\x04*d\n" +
-	"\rBillingPeriod\x12\x1a\n" +
-	"\x16BILLING_PERIOD_MONTHLY\x10\x00\x12\x1c\n" +
-	"\x18BILLING_PERIOD_QUARTERLY\x10\x01\x12\x19\n" +
-	"\x15BILLING_PERIOD_ANNUAL\x10\x02*v\n" +
-	"\rInvoiceStatus\x12\x18\n" +
-	"\x14INVOICE_STATUS_DRAFT\x10\x00\x12\x19\n" +
-	"\x15INVOICE_STATUS_ISSUED\x10\x01\x12\x17\n" +
-	"\x13INVOICE_STATUS_PAID\x10\x02\x12\x17\n" +
-	"\x13INVOICE_STATUS_VOID\x10\x03*7\n" +
-	"\tAlertType\x12\x14\n" +
-	"\x10ALERT_TYPE_USAGE\x10\x00\x12\x14\n" +
-	"\x10ALERT_TYPE_SPEND\x10\x01B\\ZZgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1;storev1"
+	" \x01(\v2 .metrognome.store.v1.KafkaOffsetR\vKafkaOffset*\xbd\x01\n" +
+	"\x0fAggregationType\x12 \n" +
+	"\x1cAGGREGATION_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16AGGREGATION_TYPE_COUNT\x10\x01\x12\x18\n" +
+	"\x14AGGREGATION_TYPE_SUM\x10\x02\x12\x18\n" +
+	"\x14AGGREGATION_TYPE_MAX\x10\x03\x12\x1b\n" +
+	"\x17AGGREGATION_TYPE_UNIQUE\x10\x04\x12\x1b\n" +
+	"\x17AGGREGATION_TYPE_LATEST\x10\x05*\x84\x01\n" +
+	"\rBillingPeriod\x12\x1e\n" +
+	"\x1aBILLING_PERIOD_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16BILLING_PERIOD_MONTHLY\x10\x01\x12\x1c\n" +
+	"\x18BILLING_PERIOD_QUARTERLY\x10\x02\x12\x19\n" +
+	"\x15BILLING_PERIOD_ANNUAL\x10\x03*\x96\x01\n" +
+	"\rInvoiceStatus\x12\x1e\n" +
+	"\x1aINVOICE_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14INVOICE_STATUS_DRAFT\x10\x01\x12\x19\n" +
+	"\x15INVOICE_STATUS_ISSUED\x10\x02\x12\x17\n" +
+	"\x13INVOICE_STATUS_PAID\x10\x03\x12\x17\n" +
+	"\x13INVOICE_STATUS_VOID\x10\x04*S\n" +
+	"\tAlertType\x12\x1a\n" +
+	"\x16ALERT_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10ALERT_TYPE_USAGE\x10\x01\x12\x14\n" +
+	"\x10ALERT_TYPE_SPEND\x10\x02B\\ZZgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1;storev1"
 
 var (
 	file_metrognome_store_v1_store_proto_rawDescOnce sync.Once

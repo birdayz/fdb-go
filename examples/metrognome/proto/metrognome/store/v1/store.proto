@@ -25,11 +25,12 @@ message Meter {
 }
 
 enum AggregationType {
-  AGGREGATION_TYPE_COUNT = 0;
-  AGGREGATION_TYPE_SUM = 1;
-  AGGREGATION_TYPE_MAX = 2;
-  AGGREGATION_TYPE_UNIQUE = 3;
-  AGGREGATION_TYPE_LATEST = 4;
+  AGGREGATION_TYPE_UNSPECIFIED = 0;
+  AGGREGATION_TYPE_COUNT = 1;
+  AGGREGATION_TYPE_SUM = 2;
+  AGGREGATION_TYPE_MAX = 3;
+  AGGREGATION_TYPE_UNIQUE = 4;
+  AGGREGATION_TYPE_LATEST = 5;
 }
 
 // Plan is a pricing plan containing charges.
@@ -104,9 +105,10 @@ message Contract {
 }
 
 enum BillingPeriod {
-  BILLING_PERIOD_MONTHLY = 0;
-  BILLING_PERIOD_QUARTERLY = 1;
-  BILLING_PERIOD_ANNUAL = 2;
+  BILLING_PERIOD_UNSPECIFIED = 0;
+  BILLING_PERIOD_MONTHLY = 1;
+  BILLING_PERIOD_QUARTERLY = 2;
+  BILLING_PERIOD_ANNUAL = 3;
 }
 
 // UsageEvent is a raw usage event ingested from the API or Kafka.
@@ -140,10 +142,11 @@ message Invoice {
 }
 
 enum InvoiceStatus {
-  INVOICE_STATUS_DRAFT = 0;
-  INVOICE_STATUS_ISSUED = 1;
-  INVOICE_STATUS_PAID = 2;
-  INVOICE_STATUS_VOID = 3;
+  INVOICE_STATUS_UNSPECIFIED = 0;
+  INVOICE_STATUS_DRAFT = 1;
+  INVOICE_STATUS_ISSUED = 2;
+  INVOICE_STATUS_PAID = 3;
+  INVOICE_STATUS_VOID = 4;
 }
 
 message LineItem {
@@ -177,8 +180,9 @@ message Alert {
 }
 
 enum AlertType {
-  ALERT_TYPE_USAGE = 0;  // raw usage threshold
-  ALERT_TYPE_SPEND = 1;  // computed spend threshold
+  ALERT_TYPE_UNSPECIFIED = 0;
+  ALERT_TYPE_USAGE = 1;  // raw usage threshold
+  ALERT_TYPE_SPEND = 2;  // computed spend threshold
 }
 
 // KafkaOffset stores consumer group offsets in FDB for exactly-once.

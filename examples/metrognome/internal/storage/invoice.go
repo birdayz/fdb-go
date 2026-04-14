@@ -13,6 +13,14 @@ type InvoiceStore struct {
 	db *DB
 }
 
+func (s *InvoiceStore) Save(ctx context.Context, inv *storev1.Invoice) error {
+	_, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		_, err := rs.SaveRecord(inv)
+		return nil, err
+	})
+	return err
+}
+
 func (s *InvoiceStore) Create(ctx context.Context, inv *storev1.Invoice) error {
 	_, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
 		_, err := rs.SaveRecord(inv)

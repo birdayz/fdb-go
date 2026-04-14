@@ -8,6 +8,7 @@ service InvoiceService {
   rpc GetInvoice(GetInvoiceRequest) returns (GetInvoiceResponse);
   rpc ListInvoices(ListInvoicesRequest) returns (ListInvoicesResponse);
   rpc GenerateInvoice(GenerateInvoiceRequest) returns (GenerateInvoiceResponse);
+  rpc UpdateInvoiceStatus(UpdateInvoiceStatusRequest) returns (UpdateInvoiceStatusResponse);
 }
 
 message GetInvoiceRequest {
@@ -37,6 +38,15 @@ message GenerateInvoiceRequest {
 }
 
 message GenerateInvoiceResponse {
+  Invoice invoice = 1;
+}
+
+message UpdateInvoiceStatusRequest {
+  string id = 1;
+  InvoiceStatus status = 2;
+}
+
+message UpdateInvoiceStatusResponse {
   Invoice invoice = 1;
 }
 

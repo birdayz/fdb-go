@@ -524,6 +524,101 @@ func TestE2EAlertTriggering(t *testing.T) {
 	g.Expect(listResp2.Msg.GetAlerts()[0].GetTriggered()).To(BeTrue())
 }
 
+// TestE2EInvoiceStatusTransitions tests the invoice status state machine.
+func TestE2EInvoiceStatusTransitions(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	planClient := metrognomev1connect.NewPlanServiceClient(http.DefaultClient, testServer.URL)
+	contractClient := metrognomev1connect.NewContractServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+	invoiceClient := metrognomev1connect.NewInvoiceServiceClient(http.DefaultClient, testServer.URL)
+
+	// Setup: meter + customer + plan + charge + contract + events + invoice
+	_, _ = meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "ist_calls", Name: "IST Calls", AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	custResp, _ := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "IST Corp"}))
+	custID := custResp.Msg.GetCustomer().GetId()
+	planResp, _ := planClient.CreatePlan(ctx, connect.NewRequest(&metrognomev1.CreatePlanRequest{Name: "IST Plan"}))
+	planID := planResp.Msg.GetPlan().GetId()
+	_, _ = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "ist_calls",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_PerUnit{
+			PerUnit: &metrognomev1.PerUnitPricing{UnitPriceCents: 1},
+		}},
+	}))
+	periodStart := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd := time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	contractResp, _ := contractClient.CreateContract(ctx, connect.NewRequest(&metrognomev1.CreateContractRequest{
+		CustomerId: custID, PlanId: planID, StartAt: periodStart,
+		BillingPeriod: metrognomev1.BillingPeriod_BILLING_PERIOD_MONTHLY,
+	}))
+	contractID := contractResp.Msg.GetContract().GetId()
+	ts := time.Date(2027, 1, 15, 12, 0, 0, 0, time.UTC).UnixMilli()
+	_, _ = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{
+		Events: []*metrognomev1.Event{{
+			CustomerId: custID, EventType: "ist_calls", TimestampMs: ts,
+			Value: 10, IdempotencyKey: "ist-1",
+		}},
+	}))
+
+	invResp, err := invoiceClient.GenerateInvoice(ctx, connect.NewRequest(&metrognomev1.GenerateInvoiceRequest{
+		ContractId: contractID, PeriodStart: periodStart, PeriodEnd: periodEnd,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	invoiceID := invResp.Msg.GetInvoice().GetId()
+	g.Expect(invResp.Msg.GetInvoice().GetStatus()).To(Equal(metrognomev1.InvoiceStatus_INVOICE_STATUS_DRAFT))
+
+	// DRAFT → ISSUED (valid)
+	updateResp, err := invoiceClient.UpdateInvoiceStatus(ctx, connect.NewRequest(&metrognomev1.UpdateInvoiceStatusRequest{
+		Id: invoiceID, Status: metrognomev1.InvoiceStatus_INVOICE_STATUS_ISSUED,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(updateResp.Msg.GetInvoice().GetStatus()).To(Equal(metrognomev1.InvoiceStatus_INVOICE_STATUS_ISSUED))
+	g.Expect(updateResp.Msg.GetInvoice().GetFinalizedAt()).To(BeNumerically(">", 0))
+
+	// ISSUED → PAID (valid)
+	updateResp, err = invoiceClient.UpdateInvoiceStatus(ctx, connect.NewRequest(&metrognomev1.UpdateInvoiceStatusRequest{
+		Id: invoiceID, Status: metrognomev1.InvoiceStatus_INVOICE_STATUS_PAID,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(updateResp.Msg.GetInvoice().GetStatus()).To(Equal(metrognomev1.InvoiceStatus_INVOICE_STATUS_PAID))
+
+	// PAID → ISSUED (invalid — terminal state)
+	_, err = invoiceClient.UpdateInvoiceStatus(ctx, connect.NewRequest(&metrognomev1.UpdateInvoiceStatusRequest{
+		Id: invoiceID, Status: metrognomev1.InvoiceStatus_INVOICE_STATUS_ISSUED,
+	}))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(connect.CodeOf(err)).To(Equal(connect.CodeInvalidArgument))
+
+	// Test VOID transition: create another invoice and void it from DRAFT
+	_, _ = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{
+		Events: []*metrognomev1.Event{{
+			CustomerId: custID, EventType: "ist_calls", TimestampMs: ts,
+			Value: 5, IdempotencyKey: "ist-2",
+		}},
+	}))
+	// Use a different period to avoid duplicate invoice ID
+	periodStart2 := time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd2 := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	invResp2, err := invoiceClient.GenerateInvoice(ctx, connect.NewRequest(&metrognomev1.GenerateInvoiceRequest{
+		ContractId: contractID, PeriodStart: periodStart2, PeriodEnd: periodEnd2,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	invoiceID2 := invResp2.Msg.GetInvoice().GetId()
+
+	// DRAFT → VOID (valid)
+	updateResp, err = invoiceClient.UpdateInvoiceStatus(ctx, connect.NewRequest(&metrognomev1.UpdateInvoiceStatusRequest{
+		Id: invoiceID2, Status: metrognomev1.InvoiceStatus_INVOICE_STATUS_VOID,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(updateResp.Msg.GetInvoice().GetStatus()).To(Equal(metrognomev1.InvoiceStatus_INVOICE_STATUS_VOID))
+}
+
 func TestE2ECustomerNotFound(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

@@ -3,8 +3,10 @@ package services
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	storev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1"
 	metrognomev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1"
@@ -56,6 +58,57 @@ func (s *InvoiceService) GenerateInvoice(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&metrognomev1.GenerateInvoiceResponse{
 		Invoice: invoiceToAPI(invoice),
 	}), nil
+}
+
+func (s *InvoiceService) UpdateInvoiceStatus(ctx context.Context, req *connect.Request[metrognomev1.UpdateInvoiceStatusRequest]) (*connect.Response[metrognomev1.UpdateInvoiceStatusResponse], error) {
+	record, err := s.invoices.Get(ctx, req.Msg.GetId())
+	if err != nil {
+		return nil, storageError("invoice", err)
+	}
+
+	newStatus := req.Msg.GetStatus()
+	oldStatus := record.GetStatus()
+
+	// Validate state transition
+	if err := validateStatusTransition(oldStatus, storev1.InvoiceStatus(newStatus)); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	record.Status = storev1.InvoiceStatus(newStatus).Enum()
+	if newStatus == metrognomev1.InvoiceStatus_INVOICE_STATUS_ISSUED {
+		record.FinalizedAt = proto.Int64(time.Now().UnixMilli())
+	}
+
+	if err := s.invoices.Save(ctx, record); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update invoice status: %w", err))
+	}
+
+	return connect.NewResponse(&metrognomev1.UpdateInvoiceStatusResponse{
+		Invoice: invoiceToAPI(record),
+	}), nil
+}
+
+// validateStatusTransition enforces the invoice status state machine:
+//
+//	DRAFT → ISSUED → PAID
+//	DRAFT → VOID
+//	ISSUED → VOID
+func validateStatusTransition(from storev1.InvoiceStatus, to storev1.InvoiceStatus) error {
+	switch from {
+	case storev1.InvoiceStatus_INVOICE_STATUS_DRAFT:
+		if to == storev1.InvoiceStatus_INVOICE_STATUS_ISSUED || to == storev1.InvoiceStatus_INVOICE_STATUS_VOID {
+			return nil
+		}
+	case storev1.InvoiceStatus_INVOICE_STATUS_ISSUED:
+		if to == storev1.InvoiceStatus_INVOICE_STATUS_PAID || to == storev1.InvoiceStatus_INVOICE_STATUS_VOID {
+			return nil
+		}
+	case storev1.InvoiceStatus_INVOICE_STATUS_PAID:
+		// terminal state
+	case storev1.InvoiceStatus_INVOICE_STATUS_VOID:
+		// terminal state
+	}
+	return fmt.Errorf("invalid transition: %s → %s", from, to)
 }
 
 func invoiceToAPI(s *storev1.Invoice) *metrognomev1.Invoice {
