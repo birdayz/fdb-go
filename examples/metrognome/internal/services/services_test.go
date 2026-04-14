@@ -262,3 +262,210 @@ func TestE2ECreditFlow(t *testing.T) {
 	g.Expect(balResp.Msg.GetTotalRemainingCents()).To(Equal(int64(8000)))
 	g.Expect(balResp.Msg.GetCredits()).To(HaveLen(2))
 }
+
+func TestE2EContractLifecycle(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	contractClient := metrognomev1connect.NewContractServiceClient(http.DefaultClient, testServer.URL)
+	planClient := metrognomev1connect.NewPlanServiceClient(http.DefaultClient, testServer.URL)
+
+	custResp, err := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Contract Corp"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	custID := custResp.Msg.GetCustomer().GetId()
+
+	planResp, err := planClient.CreatePlan(ctx, connect.NewRequest(&metrognomev1.CreatePlanRequest{Name: "Lifecycle Plan"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	planID := planResp.Msg.GetPlan().GetId()
+
+	// Create contract
+	now := time.Now().UnixMilli()
+	createResp, err := contractClient.CreateContract(ctx, connect.NewRequest(&metrognomev1.CreateContractRequest{
+		CustomerId: custID, PlanId: planID, StartAt: now,
+		BillingPeriod: metrognomev1.BillingPeriod_BILLING_PERIOD_MONTHLY,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	contractID := createResp.Msg.GetContract().GetId()
+	g.Expect(createResp.Msg.GetContract().GetActive()).To(BeTrue())
+
+	// Get contract
+	getResp, err := contractClient.GetContract(ctx, connect.NewRequest(&metrognomev1.GetContractRequest{Id: contractID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getResp.Msg.GetContract().GetCustomerId()).To(Equal(custID))
+
+	// List contracts by customer
+	listResp, err := contractClient.ListContracts(ctx, connect.NewRequest(&metrognomev1.ListContractsRequest{CustomerId: custID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(listResp.Msg.GetContracts()).To(HaveLen(1))
+
+	// End contract
+	endResp, err := contractClient.EndContract(ctx, connect.NewRequest(&metrognomev1.EndContractRequest{Id: contractID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(endResp.Msg.GetContract().GetActive()).To(BeFalse())
+	g.Expect(endResp.Msg.GetContract().GetEndAt()).To(BeNumerically(">", 0))
+
+	// Verify ended
+	getResp2, err := contractClient.GetContract(ctx, connect.NewRequest(&metrognomev1.GetContractRequest{Id: contractID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getResp2.Msg.GetContract().GetActive()).To(BeFalse())
+}
+
+func TestE2EAlertCRUD(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	alertClient := metrognomev1connect.NewAlertServiceClient(http.DefaultClient, testServer.URL)
+
+	custResp, err := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Alert Corp"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	custID := custResp.Msg.GetCustomer().GetId()
+
+	// Create alert
+	createResp, err := alertClient.CreateAlert(ctx, connect.NewRequest(&metrognomev1.CreateAlertRequest{
+		CustomerId: custID, MeterSlug: "api_calls", Threshold: 10000,
+		AlertType: metrognomev1.AlertType_ALERT_TYPE_USAGE,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(createResp.Msg.GetAlert().GetThreshold()).To(Equal(int64(10000)))
+	g.Expect(createResp.Msg.GetAlert().GetTriggered()).To(BeFalse())
+
+	// Create second alert
+	_, err = alertClient.CreateAlert(ctx, connect.NewRequest(&metrognomev1.CreateAlertRequest{
+		CustomerId: custID, MeterSlug: "api_calls", Threshold: 50000,
+		AlertType: metrognomev1.AlertType_ALERT_TYPE_SPEND,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// List alerts
+	listResp, err := alertClient.ListAlerts(ctx, connect.NewRequest(&metrognomev1.ListAlertsRequest{CustomerId: custID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(listResp.Msg.GetAlerts()).To(HaveLen(2))
+}
+
+// TestE2EMultiChargeInvoice tests invoice generation with multiple charges on one plan.
+func TestE2EMultiChargeInvoice(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	planClient := metrognomev1connect.NewPlanServiceClient(http.DefaultClient, testServer.URL)
+	contractClient := metrognomev1connect.NewContractServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+	invoiceClient := metrognomev1connect.NewInvoiceServiceClient(http.DefaultClient, testServer.URL)
+
+	// Create meters
+	_, err := meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "mc_api_calls", Name: "API Calls", AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	_, err = meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "mc_storage_gb", Name: "Storage GB", AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Create customer
+	custResp, err := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Multi Corp"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	custID := custResp.Msg.GetCustomer().GetId()
+
+	// Create plan with 3 charges: flat + per-unit API + tiered storage
+	planResp, err := planClient.CreatePlan(ctx, connect.NewRequest(&metrognomev1.CreatePlanRequest{Name: "Enterprise"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	planID := planResp.Msg.GetPlan().GetId()
+
+	// Charge 1: $99 flat platform fee
+	_, err = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "mc_api_calls",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_Flat{
+			Flat: &metrognomev1.FlatPricing{AmountCents: 9900},
+		}},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Charge 2: $0.01 per API call
+	_, err = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "mc_api_calls",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_PerUnit{
+			PerUnit: &metrognomev1.PerUnitPricing{UnitPriceCents: 1},
+		}},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Charge 3: Tiered storage — first 10GB @ $0.10/GB, next 90 @ $0.05, rest @ $0.02
+	_, err = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "mc_storage_gb",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_Tiered{
+			Tiered: &metrognomev1.TieredPricing{Tiers: []*metrognomev1.Tier{
+				{UpTo: 10, PriceCents: 10},
+				{UpTo: 100, PriceCents: 5},
+				{UpTo: 0, PriceCents: 2},
+			}},
+		}},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Create contract
+	periodStart := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	contractResp, err := contractClient.CreateContract(ctx, connect.NewRequest(&metrognomev1.CreateContractRequest{
+		CustomerId: custID, PlanId: planID, StartAt: periodStart,
+		BillingPeriod: metrognomev1.BillingPeriod_BILLING_PERIOD_MONTHLY,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	contractID := contractResp.Msg.GetContract().GetId()
+
+	// Ingest API calls: 500 events with value 1 each
+	ts := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC).UnixMilli()
+	apiEvents := make([]*metrognomev1.Event, 500)
+	for i := range apiEvents {
+		apiEvents[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "mc_api_calls", TimestampMs: ts + int64(i),
+			Value: 1, IdempotencyKey: fmt.Sprintf("mc-api-%d", i),
+		}
+	}
+	ingestResp, err := eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: apiEvents}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ingestResp.Msg.GetAccepted()).To(Equal(int32(500)))
+
+	// Ingest storage: 50 GB (single event with value 50)
+	_, err = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{
+		Events: []*metrognomev1.Event{{
+			CustomerId: custID, EventType: "mc_storage_gb", TimestampMs: ts,
+			Value: 50, IdempotencyKey: "mc-storage-1",
+		}},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Generate invoice
+	// Expected:
+	//   Charge 1 (flat): $99.00 = 9900 cents
+	//   Charge 2 (per-unit API): 500 * 1 cent = 500 cents
+	//   Charge 3 (tiered storage): 10*10 + 40*5 = 100 + 200 = 300 cents
+	//   Total: 9900 + 500 + 300 = 10700 cents = $107.00
+	invoiceResp, err := invoiceClient.GenerateInvoice(ctx, connect.NewRequest(&metrognomev1.GenerateInvoiceRequest{
+		ContractId: contractID, PeriodStart: periodStart, PeriodEnd: periodEnd,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	invoice := invoiceResp.Msg.GetInvoice()
+	g.Expect(invoice.GetLineItems()).To(HaveLen(3))
+	g.Expect(invoice.GetTotalCents()).To(Equal(int64(10700)))
+}
+
+func TestE2ECustomerNotFound(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+
+	_, err := customerClient.GetCustomer(ctx, connect.NewRequest(&metrognomev1.GetCustomerRequest{Id: "nonexistent"}))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(connect.CodeOf(err)).To(Equal(connect.CodeNotFound))
+}
