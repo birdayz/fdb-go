@@ -302,6 +302,76 @@ var _ = Describe("Store version access", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("saveRecordVersion with complete version writes directly", func() {
+			ss := specSubspace()
+
+			globalVer := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x01}
+			completeVer, err := NewCompleteVersion(globalVer, 7)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create store, then directly call saveRecordVersion with a complete version.
+			// Use a PK that has NO SaveRecord call — SaveRecord queues a
+			// SET_VERSIONSTAMPED_VALUE mutation that would overwrite at commit.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(versionedMD).SetSubspace(ss).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				si := &sizeInfo{}
+				err = store.saveRecordVersion(tuple.Tuple{int64(99)}, completeVer, si)
+				if err != nil {
+					return nil, err
+				}
+				Expect(si.VersionedInline).To(BeTrue())
+				Expect(si.KeyCount).To(Equal(1))
+				Expect(si.KeySize).To(BeNumerically(">", 0))
+				Expect(si.ValueSize).To(BeNumerically(">", 0))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the complete version is stored and loadable
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(versionedMD).SetSubspace(ss).
+					Open()
+				if err != nil {
+					return nil, err
+				}
+				v, err := store.LoadRecordVersion(tuple.Tuple{int64(99)}, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(v).NotTo(BeNil())
+				Expect(v.IsComplete()).To(BeTrue())
+				Expect(v.GetLocalVersion()).To(Equal(7))
+				gv, err := v.GetGlobalVersion()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(gv).To(Equal(globalVer))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("saveRecordVersion with nil sizeInfo does not panic", func() {
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(versionedMD).SetSubspace(specSubspace()).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				globalVer := []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01}
+				v, err := NewCompleteVersion(globalVer, 0)
+				if err != nil {
+					return nil, err
+				}
+				// nil sizeInfo should not panic
+				return nil, store.saveRecordVersion(tuple.Tuple{int64(1)}, v, nil)
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("assigns distinct local versions to multiple records", func() {
 			ss := specSubspace()
 
