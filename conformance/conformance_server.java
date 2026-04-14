@@ -67,6 +67,7 @@ class ConformanceServer {
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),
         new BenchmarkSteps(),
+        new MetaDataStoreSteps(),
     };
 
     private static class StepEntry {

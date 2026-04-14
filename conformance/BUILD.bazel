@@ -71,6 +71,7 @@ go_test(
         "java_invoker_test.go",
         "max_ever_version_index_conformance_test.go",
         "metadata_proto_conformance_test.go",
+        "metadata_store_conformance_test.go",
         "min_max_ever_index_conformance_test.go",
         "min_max_ever_tuple_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
