@@ -54,16 +54,13 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
 
-		keyTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
 		}
-		if len(keyTuples) != 1 {
-			return nil, fmt.Errorf("record %d: primary key must be single tuple", i)
-		}
 
-		primaryKey := make(tuple.Tuple, len(keyTuples[0]))
-		for j, v := range keyTuples[0] {
+		primaryKey := make(tuple.Tuple, len(keyValues))
+		for j, v := range keyValues {
 			primaryKey[j] = v
 		}
 

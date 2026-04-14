@@ -20,6 +20,28 @@ var (
 	nilKeyResult   = [][]any{{nil}} // FieldKeyExpression unset field result
 )
 
+// FlatEvaluator is an optional interface for KeyExpressions that can return
+// a single tuple directly without the [][]any wrapper. Avoids 1 alloc per call.
+type FlatEvaluator interface {
+	EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error)
+}
+
+// evaluateKeyFlat calls EvaluateFlat if available, otherwise falls back to Evaluate.
+// Saves 1 alloc per call on the hot path (avoids the outer [][]any).
+func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if fe, ok := expr.(FlatEvaluator); ok {
+		return fe.EvaluateFlat(record, msg)
+	}
+	tuples, err := expr.Evaluate(record, msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(tuples) == 0 {
+		return nil, nil
+	}
+	return tuples[0], nil
+}
+
 const (
 	// FanTypeNone means the field must not be repeated. This is the default.
 	FanTypeNone FanType = iota
@@ -90,6 +112,41 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 	}
 	// Return single-element result. Inner slice is 1 alloc; outer reuses fixed capacity.
 	return [][]any{{result}}, nil
+}
+
+// EvaluateFlat returns the scalar value directly as a single-element []any.
+func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if msg == nil {
+		return []any{nil}, nil
+	}
+	m := msg.ProtoReflect()
+	msgName := string(m.Descriptor().FullName())
+	fd := f.cachedFD
+	if f.cachedFDMsgName != msgName || fd == nil {
+		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+		if fd == nil {
+			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
+		}
+		f.cachedFD = fd
+		f.cachedFDMsgName = msgName
+	}
+	if fd.IsList() {
+		// Fan-out: can't flatten
+		tuples, err := f.evaluateRepeated(m, fd)
+		if err != nil || len(tuples) != 1 {
+			return nil, fmt.Errorf("EvaluateFlat on repeated field")
+		}
+		return tuples[0], nil
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return []any{nil}, nil
+	}
+	value := m.Get(fd)
+	result, err := scalarToInterface(fd, value)
+	if err != nil {
+		return nil, err
+	}
+	return []any{result}, nil
 }
 
 // getNullResult returns the appropriate result for a nil message based on FanType.
@@ -255,6 +312,9 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 		return result, nil
 	}
 
+	// EvaluateFlat for non-nested case — returns single-element []any
+	// (implementing FlatEvaluator interface)
+
 	nestedTuples, err := r.nested.Evaluate(record, msg)
 	if err != nil {
 		return nil, err
@@ -268,6 +328,25 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 		result[i] = combined
 	}
 	return result, nil
+}
+
+// EvaluateFlat returns the type key as a single-element []any.
+func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if msg == nil {
+		return []any{nil}, nil
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	var typeKey any
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			typeKey = k
+		} else {
+			typeKey = typeName
+		}
+	} else {
+		typeKey = typeName
+	}
+	return []any{typeKey}, nil
 }
 
 // FieldNames returns the field names accessed by nested expression
@@ -328,6 +407,33 @@ func (e *EmptyKeyExpression) ColumnSize() int {
 // CompositeKeyExpression combines multiple key expressions
 type CompositeKeyExpression struct {
 	expressions []KeyExpression
+}
+
+// EvaluateFlat returns the single concatenated tuple directly, avoiding the
+// outer [][]any wrapper. Only valid when no child uses fan-out.
+// Saves 1 alloc per child (no [][]any) + 1 alloc for the result (no outer wrapper).
+func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	result := make([]any, 0, len(c.expressions))
+	for _, expr := range c.expressions {
+		// Try flat path first (avoids child's [][]any alloc)
+		if fe, ok := expr.(FlatEvaluator); ok {
+			childFlat, err := fe.EvaluateFlat(record, msg)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, childFlat...)
+			continue
+		}
+		childTuples, err := expr.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
+		if len(childTuples) != 1 {
+			return nil, fmt.Errorf("EvaluateFlat: child produced %d tuples, expected 1", len(childTuples))
+		}
+		result = append(result, childTuples[0]...)
+	}
+	return result, nil
 }
 
 // Concat creates a composite key from multiple expressions
