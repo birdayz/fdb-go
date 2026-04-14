@@ -15,6 +15,7 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **hot_shard/range_locked backoff cap** — Go used `DEFAULT_MAX_BACKOFF` (1s) for `transaction_throttled_hot_shard` (1235) and `transaction_rejected_range_locked` (1242). C++ uses `RESOURCE_CONSTRAINED_MAX_BACKOFF` (30s). Caused over-aggressive retry under hot-shard conditions. Fixed: moved to resource-constrained group.
 
 - [x] **RYW getRange: limit=0 (unlimited) skipped slow path** — `remaining := limit` with `limit=0` caused `for remaining > 0` to never execute. Fixed: `if remaining <= 0 { remaining = math.MaxInt }` matching `readpath.go`. Discovered dayshift-10 multi-shard test.
+- [x] **Data race in ensureReadVersion + tx.state** — 44 races: `tx.hasReadVersion` and `tx.state` read by Watch goroutines concurrently with writes from Commit→postCommitReset. Fixed: `readVersionMu` mutex for hasReadVersion/readVersion, `atomic.Int32` for state. Found by race detector (`--@rules_go//go/config:race`). dayshift-14.
 
 _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
