@@ -56,10 +56,10 @@ func TestCompare_Regression(t *testing.T) {
 	g := NewWithT(t)
 
 	old := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000},
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5},
 	}
 	new := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1200}, // +20%
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1200, AllocsPerOp: 7}, // +20%, allocs changed
 	}
 
 	comps := compare(old, new)
@@ -73,10 +73,10 @@ func TestCompare_Improvement(t *testing.T) {
 	g := NewWithT(t)
 
 	old := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000},
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 10},
 	}
 	new := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 800}, // -20%
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 800, AllocsPerOp: 8}, // -20%, allocs changed
 	}
 
 	comps := compare(old, new)
@@ -90,10 +90,44 @@ func TestCompare_Noise(t *testing.T) {
 	g := NewWithT(t)
 
 	old := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000},
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5},
 	}
 	new := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1030}, // +3% < 5% threshold
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1090, AllocsPerOp: 5}, // +9% < 10% threshold
+	}
+
+	comps := compare(old, new)
+	g.Expect(comps).To(HaveLen(1))
+	g.Expect(comps[0].Status).To(Equal("~"))
+}
+
+func TestCompare_TimingOnlyNoise(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Large timing delta but identical alloc count = VM noise, not regression
+	old := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5, BytesPerOp: 100},
+	}
+	new := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1500, AllocsPerOp: 5, BytesPerOp: 100}, // +50% but same allocs
+	}
+
+	comps := compare(old, new)
+	g.Expect(comps).To(HaveLen(1))
+	g.Expect(comps[0].Status).To(Equal("~"))
+}
+
+func TestCompare_BytesChangedAllocsUnchanged(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Bytes changed but allocs unchanged = encoding/buffer variance, not regression
+	old := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5, BytesPerOp: 57345},
+	}
+	new := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1200, AllocsPerOp: 5, BytesPerOp: 57346}, // +20%, bytes differ by 1
 	}
 
 	comps := compare(old, new)
@@ -134,7 +168,10 @@ func TestFormatMarkdown_RegressionWarning(t *testing.T) {
 	g := NewWithT(t)
 
 	comps := []comparison{
-		{Name: "BenchmarkFoo-24", OldNs: 1000, NewNs: 1200, DeltaPct: 20.0, Status: "slower"},
+		{
+			Name: "BenchmarkFoo-24", OldNs: 1000, NewNs: 1200, DeltaPct: 20.0,
+			OldAllocs: 5, NewAllocs: 7, Status: "slower",
+		},
 	}
 	md := formatMarkdown(comps)
 	g.Expect(md).To(ContainSubstring(marker))
@@ -152,6 +189,7 @@ func TestFormatMarkdown_NoRegression(t *testing.T) {
 	md := formatMarkdown(comps)
 	g.Expect(md).To(ContainSubstring("No significant"))
 	g.Expect(md).NotTo(ContainSubstring("regressions"))
+	g.Expect(md).To(ContainSubstring("Threshold: +/-10%"))
 }
 
 func TestStripBenchPrefix(t *testing.T) {
