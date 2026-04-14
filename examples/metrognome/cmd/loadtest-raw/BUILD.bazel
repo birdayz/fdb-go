@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "loadtest-raw_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/cmd/loadtest-raw",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+    ],
+)
+
+go_binary(
+    name = "loadtest-raw",
+    embed = [":loadtest-raw_lib"],
+    visibility = ["//visibility:public"],
+)

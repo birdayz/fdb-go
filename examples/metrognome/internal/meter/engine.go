@@ -12,10 +12,10 @@ package meter
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -72,6 +72,19 @@ func (e *Engine) Register(m *storev1.Meter) error {
 		return fmt.Errorf("compile meter %s: %w", slug, err)
 	}
 
+	// Pre-create the store so IngestBatch can use Open() instead of CreateOrOpen()
+	_, err = e.fdb.Run(context.Background(), func(rtx *rl.FDBRecordContext) (any, error) {
+		_, err := rl.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(rt.metadata).
+			SetSubspace(rt.ss).
+			CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		return fmt.Errorf("create store for meter %s: %w", slug, err)
+	}
+
 	e.meters[slug] = rt
 	return nil
 }
@@ -89,7 +102,7 @@ func (e *Engine) IngestEvent(ctx context.Context, slug string, customerID string
 	msg := dynamicpb.NewMessage(rt.msgDesc)
 
 	// Set fixed fields
-	setField(msg, rt.msgDesc, "event_id", protoreflect.ValueOfString(randomID()))
+	setField(msg, rt.msgDesc, "event_id", protoreflect.ValueOfString(fastID()))
 	setField(msg, rt.msgDesc, "customer_id", protoreflect.ValueOfString(customerID))
 	setField(msg, rt.msgDesc, "timestamp_bucket", protoreflect.ValueOfInt64(timestampBucket))
 	setField(msg, rt.msgDesc, "value", protoreflect.ValueOfInt64(value))
@@ -116,6 +129,70 @@ func (e *Engine) IngestEvent(ctx context.Context, slug string, customerID string
 		return nil, err
 	})
 	return err
+}
+
+// IngestBatch saves multiple events in a single FDB transaction for throughput.
+func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEvent) error {
+	e.mu.RLock()
+	rt, ok := e.meters[slug]
+	e.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("meter %q not registered", slug)
+	}
+
+	// Pre-resolve field descriptors (avoid per-event map lookup)
+	fdEventID := rt.msgDesc.Fields().ByName("event_id")
+	fdCustomerID := rt.msgDesc.Fields().ByName("customer_id")
+	fdBucket := rt.msgDesc.Fields().ByName("timestamp_bucket")
+	fdValue := rt.msgDesc.Fields().ByName("value")
+
+	type groupFD struct {
+		name string
+		fd   protoreflect.FieldDescriptor
+	}
+	var groupFDs []groupFD
+	for _, prop := range rt.config.GetGroupByProperties() {
+		fd := rt.msgDesc.Fields().ByName(protoreflect.Name(prop))
+		if fd != nil {
+			groupFDs = append(groupFDs, groupFD{prop, fd})
+		}
+	}
+
+	_, err := e.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+		store, err := rl.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(rt.metadata).
+			SetSubspace(rt.ss).
+			Open()
+		if err != nil {
+			return nil, err
+		}
+		for i := range events {
+			msg := dynamicpb.NewMessage(rt.msgDesc)
+			msg.Set(fdEventID, protoreflect.ValueOfString(fastID()))
+			msg.Set(fdCustomerID, protoreflect.ValueOfString(events[i].CustomerID))
+			msg.Set(fdBucket, protoreflect.ValueOfInt64(events[i].TimestampBucket))
+			msg.Set(fdValue, protoreflect.ValueOfInt64(events[i].Value))
+			for _, gfd := range groupFDs {
+				if v, ok := events[i].GroupValues[gfd.name]; ok {
+					msg.Set(gfd.fd, protoreflect.ValueOfString(v))
+				}
+			}
+			if _, err := store.SaveRecord(msg); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	return err
+}
+
+// BatchEvent is a single event for IngestBatch.
+type BatchEvent struct {
+	CustomerID      string
+	TimestampBucket int64
+	Value           int64
+	GroupValues     map[string]string
 }
 
 // GetUsage queries the SUM aggregate for a meter, optionally filtered by group values.
@@ -389,22 +466,16 @@ func compileMeter(m *storev1.Meter, fdb *rl.FDBDatabase, parentSS subspace.Subsp
 		return nil, fmt.Errorf("build file descriptor: %w", err)
 	}
 
-	// Register the dynamic message type in the global registry
+	// Register the dynamic message type in the global registry.
+	// Use recover to handle the panic from duplicate registration
+	// (proto v2 panics on conflict instead of returning an error).
 	eventDesc := fd.Messages().ByName("Event")
 	msgType := dynamicpb.NewMessageType(eventDesc)
+	safeRegister(msgType)
 
-	// Try to register — ignore AlreadyExists (idempotent)
-	if err := protoregistry.GlobalTypes.RegisterMessage(msgType); err != nil {
-		// If already registered, that's fine
-		if _, lookupErr := protoregistry.GlobalTypes.FindMessageByName(eventDesc.FullName()); lookupErr != nil {
-			return nil, fmt.Errorf("register message type: %w", err)
-		}
-	}
-
-	// Also register the UnionDescriptor
 	unionDesc := fd.Messages().ByName("UnionDescriptor")
 	unionMsgType := dynamicpb.NewMessageType(unionDesc)
-	_ = protoregistry.GlobalTypes.RegisterMessage(unionMsgType) // ignore if exists
+	safeRegister(unionMsgType)
 
 	// Build Record Layer metadata
 	builder := rl.NewRecordMetaDataBuilder().SetRecords(fd)
@@ -466,12 +537,15 @@ func int64Field(name string, number int32) *descriptorpb.FieldDescriptorProto {
 	}
 }
 
-func randomID() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("crypto/rand failed: %v", err))
-	}
-	return hex.EncodeToString(b)
+var idCounter atomic.Uint64
+
+func fastID() string {
+	return strconv.FormatUint(idCounter.Add(1), 36)
+}
+
+func safeRegister(mt protoreflect.MessageType) {
+	defer func() { recover() }() // ignore panic from duplicate registration
+	protoregistry.GlobalTypes.RegisterMessage(mt)
 }
 
 func setField(msg *dynamicpb.Message, desc protoreflect.MessageDescriptor, name string, val protoreflect.Value) {

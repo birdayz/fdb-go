@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "loadtest_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/cmd/loadtest",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/meter",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_binary(
+    name = "loadtest",
+    embed = [":loadtest_lib"],
+    visibility = ["//visibility:public"],
+)
