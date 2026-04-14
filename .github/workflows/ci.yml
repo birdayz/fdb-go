@@ -49,7 +49,18 @@ jobs:
           git checkout -- '*.bazel' '*.bzl' 2>/dev/null || true
 
       - name: Build, lint & test
-        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed
+        run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_timeout=900 --test_summary=detailed --explain=bazel_explain.log --verbose_explanations
+
+      - name: Debug cache misses
+        if: always()
+        run: |
+          echo "=== Explain log ==="
+          cat bazel_explain.log || true
+          echo ""
+          echo "=== Environment ==="
+          echo "HOME=$HOME"
+          echo "USER=$USER"
+          echo "PWD=$PWD"
 
       - name: Generate test report
         if: always()
