@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -35,6 +36,12 @@ type Consumer struct {
 
 	topic     string
 	batchSize int
+
+	// Lag tracking
+	mu             sync.Mutex
+	committedAt    map[int32]int64 // partition → last committed offset
+	highWaterMark  map[int32]int64 // partition → latest seen offset from Kafka
+	lastCommitTime map[int32]time.Time
 }
 
 // Config holds consumer configuration.
@@ -63,12 +70,15 @@ func New(cfg Config, db *storage.DB, meterEngine *meter.Engine, log *slog.Logger
 	}
 
 	return &Consumer{
-		client:      client,
-		db:          db,
-		meterEngine: meterEngine,
-		log:         log,
-		topic:       cfg.Topic,
-		batchSize:   cfg.BatchSize,
+		client:         client,
+		db:             db,
+		meterEngine:    meterEngine,
+		log:            log,
+		topic:          cfg.Topic,
+		batchSize:      cfg.BatchSize,
+		committedAt:    make(map[int32]int64),
+		highWaterMark:  make(map[int32]int64),
+		lastCommitTime: make(map[int32]time.Time),
 	}, nil
 }
 
@@ -212,11 +222,48 @@ func (c *Consumer) processPartition(ctx context.Context, p kgo.FetchTopicPartiti
 		return fmt.Errorf("fdb transaction: %w", err)
 	}
 
+	// Update lag tracking
+	c.mu.Lock()
+	c.committedAt[p.Partition] = newOffset
+	if hwm := p.Records[len(p.Records)-1].Offset + 1; hwm > c.highWaterMark[p.Partition] {
+		c.highWaterMark[p.Partition] = hwm
+	}
+	c.lastCommitTime[p.Partition] = time.Now()
+	c.mu.Unlock()
+
 	c.log.Debug("committed batch",
 		"topic", p.Topic, "partition", p.Partition,
 		"events", len(events), "new_offset", newOffset)
 
 	return nil
+}
+
+// PartitionLag holds lag info for one partition.
+type PartitionLag struct {
+	Partition      int32     `json:"partition"`
+	CommittedAt    int64     `json:"committed_offset"`
+	HighWaterMark  int64     `json:"high_water_mark"`
+	Lag            int64     `json:"lag"`
+	LastCommitTime time.Time `json:"last_commit_time"`
+}
+
+// GetLag returns consumer lag per partition.
+func (c *Consumer) GetLag() []PartitionLag {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var lags []PartitionLag
+	for p, committed := range c.committedAt {
+		hwm := c.highWaterMark[p]
+		lags = append(lags, PartitionLag{
+			Partition:      p,
+			CommittedAt:    committed,
+			HighWaterMark:  hwm,
+			Lag:            hwm - committed,
+			LastCommitTime: c.lastCommitTime[p],
+		})
+	}
+	return lags
 }
 
 // KafkaEvent is the JSON schema for events on the Kafka topic.

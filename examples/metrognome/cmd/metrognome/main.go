@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -75,6 +76,9 @@ func main() {
 	// Initialize billing engine
 	billingEngine := billing.NewEngine(recordDB, db.MetaData(), db.Subspace())
 
+	// Kafka consumer (nil if not configured)
+	var kafkaConsumer *consumer.Consumer
+
 	// Set up HTTP mux with ConnectRPC services
 	mux := http.NewServeMux()
 
@@ -82,6 +86,18 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok","service":"metrognome"}`)
+	})
+
+	// Consumer lag endpoint
+	mux.HandleFunc("GET /consumer-lag", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if kafkaConsumer == nil {
+			fmt.Fprint(w, `{"enabled":false}`)
+			return
+		}
+		lags := kafkaConsumer.GetLag()
+		resp := map[string]any{"enabled": true, "partitions": lags}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	// Register all services
@@ -111,7 +127,8 @@ func main() {
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
 	defer consumerCancel()
 	if kafkaBrokers != "" && kafkaTopic != "" {
-		kafkaConsumer, err := consumer.New(consumer.Config{
+		var err error
+		kafkaConsumer, err = consumer.New(consumer.Config{
 			Brokers: []string{kafkaBrokers},
 			Topic:   kafkaTopic,
 			GroupID: "metrognome",
