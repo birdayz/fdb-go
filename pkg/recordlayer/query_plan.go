@@ -214,9 +214,58 @@ func (p *LimitPlan) Explain(indent int) string {
 	return fmt.Sprintf("%sLimit(%d)\n%s", prefix, p.Limit, childExplain)
 }
 
+// ReversePlan wraps a child plan and reverses the scan direction.
+// Only works with plans that support reverse scanning (ScanPlan, IndexPlan).
+type ReversePlan struct {
+	Child RecordQueryPlan
+}
+
+func (p *ReversePlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	reverseProps := ReverseScan()
+	return p.Child.Execute(store, continuation, reverseProps)
+}
+
+func (p *ReversePlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	childExplain := p.Child.Explain(indent + 1)
+	return fmt.Sprintf("%sReverse\n%s", prefix, childExplain)
+}
+
 // storedRecordComparisonKey extracts the primary key tuple for merge comparison.
 func storedRecordComparisonKey(r *FDBStoredRecord[proto.Message]) tuple.Tuple {
 	return r.PrimaryKey
+}
+
+// ExecuteAndCollect is a convenience function that executes a plan and
+// collects all results into a slice. Useful for small result sets.
+func ExecuteAndCollect(ctx context.Context, store *FDBRecordStore, plan RecordQueryPlan) ([]*FDBStoredRecord[proto.Message], error) {
+	cursor := plan.Execute(store, nil, ForwardScan())
+	defer cursor.Close()
+	var results []*FDBStoredRecord[proto.Message]
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		results = append(results, result.GetValue())
+	}
+	return results, nil
+}
+
+// ExecuteFirst returns the first result from a plan, or nil if empty.
+func ExecuteFirst(ctx context.Context, store *FDBRecordStore, plan RecordQueryPlan) (*FDBStoredRecord[proto.Message], error) {
+	limited := &LimitPlan{Child: plan, Limit: 1}
+	results, err := ExecuteAndCollect(ctx, store, limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results[0], nil
 }
 
 // singleRecordCursor returns one record then exhausts.

@@ -318,6 +318,74 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("ReversePlan", func() {
+		It("reverses scan order", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				saveOrders(store,
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
+					&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
+					&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)},
+				)
+
+				plan := &ReversePlan{Child: &ScanPlan{RecordTypeName: "Order"}}
+				results, err := ExecuteAndCollect(ctx, store, plan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(3))
+				// Reverse order: 3, 2, 1
+				Expect(results[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(3)))
+				Expect(results[2].Record.(*gen.Order).GetOrderId()).To(Equal(int64(1)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("ExecuteFirst", func() {
+		It("returns first matching record", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				saveOrders(store,
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
+					&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
+				)
+
+				plan := &ScanPlan{RecordTypeName: "Order"}
+				first, err := ExecuteFirst(ctx, store, plan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(first).NotTo(BeNil())
+				Expect(first.Record.(*gen.Order).GetOrderId()).To(Equal(int64(1)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns nil for empty result", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				plan := &ScanPlan{RecordTypeName: "Order"}
+				first, err := ExecuteFirst(ctx, store, plan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(first).To(BeNil())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Explain", func() {
 		It("produces readable plan descriptions", func() {
 			scan := &ScanPlan{RecordTypeName: "Order"}
