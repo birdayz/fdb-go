@@ -28,7 +28,10 @@ go_library(
 
 go_test(
     name = "storage_test",
-    srcs = ["storage_test.go"],
+    srcs = [
+        "benchmark_test.go",
+        "storage_test.go",
+    ],
     deps = [
         ":storage",
         "//examples/metrognome/gen/metrognome/store/v1:store",
