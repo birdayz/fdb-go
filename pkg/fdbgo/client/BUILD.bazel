@@ -37,6 +37,7 @@ go_test(
         "atomic_roundtrip_test.go",
         "atomic_test.go",
         "bench_test.go",
+        "boundary_test.go",
         "c_binding_port_test.go",
         "client_test.go",
         "commitpath_test.go",
