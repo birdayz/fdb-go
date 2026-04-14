@@ -67,41 +67,53 @@ lint:
         exit 1
     fi
 
-# Run all benchmarks (skips Ginkgo specs, runs only Go benchmarks)
+# Run all benchmarks (skips Ginkgo specs, runs only Go benchmarks).
+# Uses 'bazelisk run' to avoid polluting the test action cache.
 bench:
-    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.run=^$$" --test_arg="-test.bench=." --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazelisk build //pkg/recordlayer:recordlayer_test
+    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
+        -test.run='^$' -test.bench=. -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
 # Run a specific benchmark by name regex
 bench-one NAME:
-    bazelisk test //pkg/recordlayer:recordlayer_test --test_arg="-test.run=^$$" --test_arg="-test.bench={{NAME}}" --test_arg="-test.benchtime=3s" --test_arg="--ginkgo.skip=.*" --test_output=all --nocache_test_results --test_timeout=300
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazelisk build //pkg/recordlayer:recordlayer_test
+    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
+        -test.run='^$' -test.bench='{{NAME}}' -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
 # Run benchmarks for CI, capture results to bench-results.txt.
 # Only runs record layer + wire type benchmarks (no FDB-heavy client bench).
 # Uses benchtime=1s for speed — sufficient for regression detection.
+# IMPORTANT: Uses 'bazelisk run' (not 'bazelisk test') so benchmark execution
+# does not overwrite the test action cache. Using 'bazelisk test' with different
+# --test_arg/--test_timeout flags overwrites the cached test result, causing
+# the test step on the NEXT CI run to re-execute instead of hitting cache.
 bench-ci:
     #!/usr/bin/env bash
     set -euo pipefail
     rm -f bench-raw.txt bench-results.txt
+    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
     {
         echo "=== Running benchmarks: //pkg/recordlayer:recordlayer_test ==="
-        bazelisk test //pkg/recordlayer:recordlayer_test \
-            --test_arg="-test.run=^$$" \
-            --test_arg="-test.bench=." \
-            --test_arg="-test.benchmem" \
-            --test_arg="-test.benchtime=1s" \
-            --test_arg="--ginkgo.skip=.*" \
-            --test_output=all \
-            --nocache_test_results \
-            --test_timeout=300 2>&1 || true
+        bazelisk build //pkg/recordlayer:recordlayer_test
+        timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s \
+            --ginkgo.skip='.*' 2>&1 || true
         echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
-        bazelisk test //pkg/fdbgo/wire/types:types_test \
-            --test_arg="-test.run=^$$" \
-            --test_arg="-test.bench=." \
-            --test_arg="-test.benchmem" \
-            --test_arg="-test.benchtime=1s" \
-            --test_output=all \
-            --nocache_test_results \
-            --test_timeout=60 2>&1 || true
+        bazelisk build //pkg/fdbgo/wire/types:types_test
+        timeout 60 "$BAZEL_BIN/pkg/fdbgo/wire/types/types_test_/types_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s 2>&1 || true
     } | tee bench-raw.txt
     # Extract benchmark lines for bench-report.
     grep -E '^(Benchmark|goos:|goarch:|pkg:|cpu:)' bench-raw.txt > bench-results.txt || true
