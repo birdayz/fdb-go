@@ -46,6 +46,27 @@ jobs:
           done
           exit $FAILED
 
+  race-detector:
+    name: Race Detector
+    runs-on: [self-hosted, linux, x64, hetzner]
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run tests with race detector
+        run: >
+          bazelisk test
+          //pkg/fdbgo/client:client_test
+          //pkg/recordlayer:recordlayer_test
+          //pkg/fdbgo/fdb:fdb_test
+          //pkg/recordlayer/chaos:chaos_test
+          //conformance:conformance_test
+          --@rules_go//go/config:race
+          --test_timeout=900
+          --test_summary=detailed
+
   binding-stress:
     name: Binding Tester Stress (50 seeds)
     runs-on: [self-hosted, linux, x64, hetzner]
