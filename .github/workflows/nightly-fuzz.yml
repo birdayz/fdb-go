@@ -58,5 +58,8 @@ jobs:
       - name: Build
         run: bazelisk build //cmd/fdb-binding-stress:fdb-binding-stress //cmd/fdb-stacktester:fdb-stacktester
 
-      - name: Run 50 seeds × 1000 ops
+      - name: Run API binding stress (50 seeds × 1000 ops)
         run: bazelisk run //cmd/fdb-binding-stress -- -seeds 50 -ops 1000
+
+      - name: Run directory binding stress (30 seeds × 500 ops)
+        run: bazelisk run //cmd/fdb-binding-stress -- -seeds 30 -ops 500 -test-name directory
