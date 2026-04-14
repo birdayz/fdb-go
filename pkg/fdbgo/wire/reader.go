@@ -426,6 +426,15 @@ func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 		return 0, fmt.Errorf("wire: vector start out of bounds (pos %d, buf %d)", vecStart, len(r.data))
 	}
 	count := binary.LittleEndian.Uint32(r.data[vecStart:])
+	// Cap count to prevent OOM from crafted wire data.
+	// Each vector element needs at least 4 bytes (RelativeOffset).
+	maxCount := (len(r.data) - vecStart - 4) / 4
+	if maxCount < 0 {
+		maxCount = 0
+	}
+	if int(count) > maxCount {
+		count = uint32(maxCount)
+	}
 	return int(count), nil
 }
 
