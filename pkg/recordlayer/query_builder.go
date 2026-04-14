@@ -37,6 +37,15 @@ func NewQueryFromIndex(indexName string, scanRange TupleRange) *QueryBuilder {
 	return &QueryBuilder{plan: &IndexPlan{IndexName: indexName, Range: scanRange}}
 }
 
+// NewQueryInRange starts building a query for a primary key range scan.
+func NewQueryInRange(low, high tuple.Tuple) *QueryBuilder {
+	return &QueryBuilder{plan: &RangeScanPlan{
+		Low: low, High: high,
+		LowEndpoint:  EndpointTypeRangeInclusive,
+		HighEndpoint: EndpointTypeRangeExclusive,
+	}}
+}
+
 // NewQueryByPK starts building a query for a single primary key lookup.
 func NewQueryByPK(pk tuple.Tuple) *QueryBuilder {
 	return &QueryBuilder{plan: &PrimaryKeyLookupPlan{PrimaryKey: pk}}

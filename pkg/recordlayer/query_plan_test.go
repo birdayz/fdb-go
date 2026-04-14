@@ -386,6 +386,34 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("RangeScanPlan", func() {
+		It("scans records within PK range", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 10; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+
+				// PK range [3, 7) — orders 3, 4, 5, 6
+				plan := NewQueryInRange(tuple.Tuple{int64(3)}, tuple.Tuple{int64(7)}).Build()
+				results, err := ExecuteAndCollect(ctx, store, plan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(4))
+				Expect(results[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(3)))
+				Expect(results[3].Record.(*gen.Order).GetOrderId()).To(Equal(int64(6)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Continuation", func() {
 		It("paged scan across multiple Execute calls", func() {
 			ss := specSubspace()

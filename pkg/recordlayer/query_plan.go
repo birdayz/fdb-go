@@ -144,6 +144,24 @@ func (p *PrimaryKeyLookupPlan) Explain(indent int) string {
 	return fmt.Sprintf("%sLookup(pk=%v)", prefix, p.PrimaryKey)
 }
 
+// RangeScanPlan scans records within a primary key range.
+// Matches Java's RecordQueryScanPlan with comparison ranges.
+type RangeScanPlan struct {
+	Low          tuple.Tuple
+	High         tuple.Tuple
+	LowEndpoint  EndpointType
+	HighEndpoint EndpointType
+}
+
+func (p *RangeScanPlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	return store.ScanRecordsInRange(p.Low, p.High, p.LowEndpoint, p.HighEndpoint, continuation, props)
+}
+
+func (p *RangeScanPlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	return fmt.Sprintf("%sRangeScan([%v, %v])", prefix, p.Low, p.High)
+}
+
 // UnionPlan merges results from two child plans, deduplicating by primary key.
 // Both children must produce results in the same order (forward or reverse).
 // Matches Java's RecordQueryUnionPlan.
