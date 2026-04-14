@@ -51,3 +51,43 @@ func FuzzParseGetReadVersionReply(f *testing.F) {
 		parseGetReadVersionReply(data)
 	})
 }
+
+func FuzzParseWatchValueReply(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(make([]byte, 50))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		parseWatchValueReply(data)
+	})
+}
+
+func FuzzParseWaitMetricsReply(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(make([]byte, 100))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		parseWaitMetricsReply(data)
+	})
+}
+
+func FuzzParseSplitRangeReply(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(make([]byte, 100))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		parseSplitRangeReply(data)
+	})
+}
+
+func FuzzParseGetKeyServerLocationsReply(f *testing.F) {
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add(make([]byte, 200))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		parseGetKeyServerLocationsReply(data)
+	})
+}
