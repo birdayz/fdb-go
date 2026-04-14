@@ -200,7 +200,7 @@ coverage:
     #!/usr/bin/env bash
     set -euo pipefail
     bazelisk coverage //... --combined_report=lcov
-    LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
+    LCOV=$(bazelisk info output_path)/_coverage/_coverage_report.dat
     bazelisk build //cmd/test-report
     BAZEL_BIN=$(bazelisk info bazel-bin)
     "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
