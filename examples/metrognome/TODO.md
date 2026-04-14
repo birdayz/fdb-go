@@ -302,7 +302,7 @@ examples/metrognome/
 - [x] P0: Idempotency key dedup (pre-check before SaveRecord in consumer tx)
 - [x] P0: Batch event processing (multiple events per FDB transaction, configurable batch size)
 - [x] P0: Wired into main server (KAFKA_BROKERS + KAFKA_TOPIC env vars, graceful shutdown)
-- [ ] P1: Consumer lag monitoring
+- [x] P1: Consumer lag monitoring — GET /consumer-lag endpoint, per-partition committed/hwm/lag
 - [x] P1: Dead letter handling — malformed events → DeadLetter record type in FDB (same tx)
 
 ### Phase 4: Alerts & Real-Time

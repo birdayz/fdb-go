@@ -114,9 +114,16 @@ func main() {
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
 
+	// CORS for frontend
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000"
+	}
+	handler := services.CORSMiddleware(frontendURL, mux)
+
 	srv := &http.Server{
 		Addr:              listenAddr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

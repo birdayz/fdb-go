@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "alert.go",
         "contract.go",
+        "cors.go",
         "credit.go",
         "customer.go",
         "event.go",
