@@ -209,6 +209,41 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("UnionPlan", func() {
+		It("merges results from two index scans", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				saveOrders(store,
+					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)},
+					&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)},
+					&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(30)},
+				)
+
+				// Union of price=10 and price=30 — should return orders 1 and 3
+				plan := &UnionPlan{
+					Left:  &IndexPlan{IndexName: "order_price", Range: TupleRangeAllOf(tuple.Tuple{int64(10)})},
+					Right: &IndexPlan{IndexName: "order_price", Range: TupleRangeAllOf(tuple.Tuple{int64(30)})},
+				}
+				cursor := plan.Execute(store, nil, ForwardScan())
+				var ids []int64
+				for result, err := range Seq2(cursor, ctx) {
+					Expect(err).NotTo(HaveOccurred())
+					order := result.Record.(*gen.Order)
+					ids = append(ids, order.GetOrderId())
+				}
+				Expect(ids).To(HaveLen(2))
+				Expect(ids).To(ContainElement(int64(1)))
+				Expect(ids).To(ContainElement(int64(3)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("Explain", func() {
 		It("produces readable plan descriptions", func() {
 			scan := &ScanPlan{RecordTypeName: "Order"}
@@ -227,6 +262,15 @@ var _ = Describe("Query Plan Execution", func() {
 
 			lookup := &PrimaryKeyLookupPlan{PrimaryKey: tuple.Tuple{int64(42)}}
 			Expect(lookup.Explain(0)).To(ContainSubstring("Lookup"))
+
+			union := &UnionPlan{
+				Left:  &ScanPlan{RecordTypeName: "Order"},
+				Right: &ScanPlan{RecordTypeName: "Customer"},
+			}
+			unionExplain := union.Explain(0)
+			Expect(unionExplain).To(ContainSubstring("Union"))
+			Expect(unionExplain).To(ContainSubstring("Scan(Order)"))
+			Expect(unionExplain).To(ContainSubstring("Scan(Customer)"))
 		})
 	})
 })

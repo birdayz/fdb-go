@@ -144,6 +144,63 @@ func (p *PrimaryKeyLookupPlan) Explain(indent int) string {
 	return fmt.Sprintf("%sLookup(pk=%v)", prefix, p.PrimaryKey)
 }
 
+// UnionPlan merges results from two child plans, deduplicating by primary key.
+// Both children must produce results in the same order (forward or reverse).
+// Matches Java's RecordQueryUnionPlan.
+type UnionPlan struct {
+	Left    RecordQueryPlan
+	Right   RecordQueryPlan
+	Reverse bool
+}
+
+func (p *UnionPlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	leftCursor := p.Left.Execute(store, continuation, props)
+	rightCursor := p.Right.Execute(store, continuation, props)
+	return Union(
+		[]RecordCursor[*FDBStoredRecord[proto.Message]]{leftCursor, rightCursor},
+		storedRecordComparisonKey,
+		p.Reverse,
+	)
+}
+
+func (p *UnionPlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	leftExplain := p.Left.Explain(indent + 1)
+	rightExplain := p.Right.Explain(indent + 1)
+	return fmt.Sprintf("%sUnion\n%s\n%s", prefix, leftExplain, rightExplain)
+}
+
+// IntersectionPlan returns only records present in both child plans.
+// Both children must produce results in the same order.
+// Matches Java's RecordQueryIntersectionPlan.
+type IntersectionPlan struct {
+	Left    RecordQueryPlan
+	Right   RecordQueryPlan
+	Reverse bool
+}
+
+func (p *IntersectionPlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	leftCursor := p.Left.Execute(store, continuation, props)
+	rightCursor := p.Right.Execute(store, continuation, props)
+	return Intersection(
+		[]RecordCursor[*FDBStoredRecord[proto.Message]]{leftCursor, rightCursor},
+		storedRecordComparisonKey,
+		p.Reverse,
+	)
+}
+
+func (p *IntersectionPlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	leftExplain := p.Left.Explain(indent + 1)
+	rightExplain := p.Right.Explain(indent + 1)
+	return fmt.Sprintf("%sIntersection\n%s\n%s", prefix, leftExplain, rightExplain)
+}
+
+// storedRecordComparisonKey extracts the primary key tuple for merge comparison.
+func storedRecordComparisonKey(r *FDBStoredRecord[proto.Message]) tuple.Tuple {
+	return r.PrimaryKey
+}
+
 // singleRecordCursor returns one record then exhausts.
 type singleRecordCursor struct {
 	record *FDBStoredRecord[proto.Message]
