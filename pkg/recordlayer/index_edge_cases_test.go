@@ -221,6 +221,144 @@ var _ = Describe("Index Edge Cases", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("COUNT index with rapid inserts and deletes", func() {
+		It("count stays consistent after many save-delete cycles", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.SetRecordCountKey(&EmptyKeyExpression{})
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			ss := specSubspace()
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				// Rapid insert/delete cycle: insert 20, delete odd PKs, verify count=10.
+				for i := int64(0); i < 20; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				for i := int64(1); i < 20; i += 2 {
+					_, err := store.DeleteRecord(tuple.Tuple{i})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				count, err := store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(10)))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("VALUE index with MaxInt32 and MinInt32 prices", func() {
+		It("indexes extreme int32 values correctly", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.AddIndex("Order", NewIndex("order_price_extreme", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			ss := specSubspace()
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				// Save with extreme int32 values.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(math.MaxInt32)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), Price: proto.Int32(math.MinInt32)})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(0)})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Scan all — should get all 3 in tuple order (MinInt32 < 0 < MaxInt32).
+				allEntries, err := collectIndexEntries(ctx, store, "order_price_extreme", TupleRangeAll)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(allEntries).To(HaveLen(3))
+
+				// Verify order: MinInt32 first, then 0, then MaxInt32.
+				Expect(allEntries[0].Key[0]).To(Equal(int64(math.MinInt32)))
+				Expect(allEntries[1].Key[0]).To(Equal(int64(0)))
+				Expect(allEntries[2].Key[0]).To(Equal(int64(math.MaxInt32)))
+
+				// Point lookup for MaxInt32.
+				maxEntries, err := collectIndexEntries(ctx, store, "order_price_extreme", TupleRangeAllOf(tuple.Tuple{int64(math.MaxInt32)}))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(maxEntries).To(HaveLen(1))
+				Expect(maxEntries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("DeleteAllRecords with indexes", func() {
+		It("clears all index entries and count", func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.SetRecordCountKey(&EmptyKeyExpression{})
+			builder.AddIndex("Order", NewIndex("order_price_del", Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			ss := specSubspace()
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+
+				// Save 10 records.
+				for i := int64(0); i < 10; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				count, err := store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(10)))
+
+				// DeleteAllRecords.
+				err = store.DeleteAllRecords()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Count should be 0.
+				count, err = store.GetRecordCount()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(int64(0)))
+
+				// Index should be empty.
+				entries, err := collectIndexEntries(ctx, store, "order_price_del", TupleRangeAll)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(BeEmpty())
+
+				// Records should be gone.
+				rec, err := store.LoadRecord(tuple.Tuple{int64(5)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rec).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
 
 // collectIndexEntries scans an index and returns all entries.
