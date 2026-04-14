@@ -68,7 +68,7 @@ lint:
     fi
 
 # Run all benchmarks (skips Ginkgo specs, runs only Go benchmarks).
-# Uses 'bazelisk run' to avoid polluting the test action cache.
+# Run all record layer benchmarks (benchtime=3s)
 bench:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -86,13 +86,7 @@ bench-one NAME:
     timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
         -test.run='^$' -test.bench='{{NAME}}' -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
-# Run benchmarks for CI, capture results to bench-results.txt.
-# Only runs record layer + wire type benchmarks (no FDB-heavy client bench).
-# Uses benchtime=1s for speed — sufficient for regression detection.
-# IMPORTANT: Uses 'bazelisk run' (not 'bazelisk test') so benchmark execution
-# does not overwrite the test action cache. Using 'bazelisk test' with different
-# --test_arg/--test_timeout flags overwrites the cached test result, causing
-# the test step on the NEXT CI run to re-execute instead of hitting cache.
+# Run benchmarks for CI — record layer + wire types, benchtime=1s, results to bench-results.txt
 bench-ci:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -124,7 +118,7 @@ bench-report old new:
     bazelisk run //cmd/bench-report -- -old {{old}} -new {{new}}
 
 # Run Go vs Java performance comparison benchmark.
-# Uses 'bazelisk run' to avoid polluting the test action cache.
+# Run Go vs Java performance comparison benchmark
 bench-compare:
     #!/usr/bin/env bash
     set -euo pipefail
