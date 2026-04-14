@@ -4,6 +4,7 @@ go_library(
     name = "billing",
     srcs = [
         "engine.go",
+        "period.go",
         "pricing.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing",

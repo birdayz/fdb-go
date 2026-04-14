@@ -33,6 +33,7 @@ go_library(
 go_test(
     name = "services_test",
     srcs = [
+        "billing_simulation_test.go",
         "services_test.go",
         "validate_test.go",
     ],

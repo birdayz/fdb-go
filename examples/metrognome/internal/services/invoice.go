@@ -17,12 +17,13 @@ import (
 
 type InvoiceService struct {
 	metrognomev1connect.UnimplementedInvoiceServiceHandler
-	invoices *storage.InvoiceStore
-	engine   *billing.Engine
+	invoices  *storage.InvoiceStore
+	contracts *storage.ContractStore
+	engine    *billing.Engine
 }
 
-func NewInvoiceService(invoices *storage.InvoiceStore, engine *billing.Engine) *InvoiceService {
-	return &InvoiceService{invoices: invoices, engine: engine}
+func NewInvoiceService(invoices *storage.InvoiceStore, contracts *storage.ContractStore, engine *billing.Engine) *InvoiceService {
+	return &InvoiceService{invoices: invoices, contracts: contracts, engine: engine}
 }
 
 func (s *InvoiceService) GetInvoice(ctx context.Context, req *connect.Request[metrognomev1.GetInvoiceRequest]) (*connect.Response[metrognomev1.GetInvoiceResponse], error) {
@@ -109,6 +110,46 @@ func validateStatusTransition(from storev1.InvoiceStatus, to storev1.InvoiceStat
 		// terminal state
 	}
 	return fmt.Errorf("invalid transition: %s → %s", from, to)
+}
+
+func (s *InvoiceService) GenerateAllInvoices(ctx context.Context, req *connect.Request[metrognomev1.GenerateAllInvoicesRequest]) (*connect.Response[metrognomev1.GenerateAllInvoicesResponse], error) {
+	asOf := req.Msg.GetAsOf()
+	if asOf <= 0 {
+		asOf = time.Now().UnixMilli()
+	}
+
+	// Find all active contracts
+	contracts, err := s.contracts.ListActive(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list active contracts: %w", err))
+	}
+
+	var generated, skipped, errors int32
+
+	for _, contract := range contracts {
+		// Calculate the previous period (the one that just ended)
+		periodStart, periodEnd := billing.PreviousPeriod(contract, asOf)
+
+		// Skip if the period hasn't ended yet (period end is in the future)
+		if periodEnd > asOf {
+			skipped++
+			continue
+		}
+
+		// Generate invoice for this period
+		_, err := s.engine.GenerateInvoice(ctx, contract.GetId(), periodStart, periodEnd)
+		if err != nil {
+			errors++
+			continue
+		}
+		generated++
+	}
+
+	return connect.NewResponse(&metrognomev1.GenerateAllInvoicesResponse{
+		Generated: generated,
+		Skipped:   skipped,
+		Errors:    errors,
+	}), nil
 }
 
 func invoiceToAPI(s *storev1.Invoice) *metrognomev1.Invoice {

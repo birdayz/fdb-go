@@ -9,6 +9,11 @@ service InvoiceService {
   rpc ListInvoices(ListInvoicesRequest) returns (ListInvoicesResponse);
   rpc GenerateInvoice(GenerateInvoiceRequest) returns (GenerateInvoiceResponse);
   rpc UpdateInvoiceStatus(UpdateInvoiceStatusRequest) returns (UpdateInvoiceStatusResponse);
+
+  // GenerateAllInvoices runs the monthly billing cycle: finds all active
+  // contracts whose period ended before the given timestamp and generates
+  // invoices for each.
+  rpc GenerateAllInvoices(GenerateAllInvoicesRequest) returns (GenerateAllInvoicesResponse);
 }
 
 message GetInvoiceRequest {
@@ -39,6 +44,16 @@ message GenerateInvoiceRequest {
 
 message GenerateInvoiceResponse {
   Invoice invoice = 1;
+}
+
+message GenerateAllInvoicesRequest {
+  int64 as_of = 1; // generate invoices for periods ending before this timestamp (unix millis)
+}
+
+message GenerateAllInvoicesResponse {
+  int32 generated = 1; // number of invoices generated
+  int32 skipped = 2;   // contracts with no usage or already invoiced
+  int32 errors = 3;    // contracts that failed to generate
 }
 
 message UpdateInvoiceStatusRequest {

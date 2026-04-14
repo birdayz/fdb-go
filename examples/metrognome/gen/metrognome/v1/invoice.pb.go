@@ -382,6 +382,110 @@ func (x *GenerateInvoiceResponse) GetInvoice() *Invoice {
 	return nil
 }
 
+type GenerateAllInvoicesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AsOf          int64                  `protobuf:"varint,1,opt,name=as_of,json=asOf,proto3" json:"as_of,omitempty"` // generate invoices for periods ending before this timestamp (unix millis)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateAllInvoicesRequest) Reset() {
+	*x = GenerateAllInvoicesRequest{}
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateAllInvoicesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateAllInvoicesRequest) ProtoMessage() {}
+
+func (x *GenerateAllInvoicesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateAllInvoicesRequest.ProtoReflect.Descriptor instead.
+func (*GenerateAllInvoicesRequest) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GenerateAllInvoicesRequest) GetAsOf() int64 {
+	if x != nil {
+		return x.AsOf
+	}
+	return 0
+}
+
+type GenerateAllInvoicesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Generated     int32                  `protobuf:"varint,1,opt,name=generated,proto3" json:"generated,omitempty"` // number of invoices generated
+	Skipped       int32                  `protobuf:"varint,2,opt,name=skipped,proto3" json:"skipped,omitempty"`     // contracts with no usage or already invoiced
+	Errors        int32                  `protobuf:"varint,3,opt,name=errors,proto3" json:"errors,omitempty"`       // contracts that failed to generate
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateAllInvoicesResponse) Reset() {
+	*x = GenerateAllInvoicesResponse{}
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateAllInvoicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateAllInvoicesResponse) ProtoMessage() {}
+
+func (x *GenerateAllInvoicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateAllInvoicesResponse.ProtoReflect.Descriptor instead.
+func (*GenerateAllInvoicesResponse) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GenerateAllInvoicesResponse) GetGenerated() int32 {
+	if x != nil {
+		return x.Generated
+	}
+	return 0
+}
+
+func (x *GenerateAllInvoicesResponse) GetSkipped() int32 {
+	if x != nil {
+		return x.Skipped
+	}
+	return 0
+}
+
+func (x *GenerateAllInvoicesResponse) GetErrors() int32 {
+	if x != nil {
+		return x.Errors
+	}
+	return 0
+}
+
 type UpdateInvoiceStatusRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -392,7 +496,7 @@ type UpdateInvoiceStatusRequest struct {
 
 func (x *UpdateInvoiceStatusRequest) Reset() {
 	*x = UpdateInvoiceStatusRequest{}
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[6]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -404,7 +508,7 @@ func (x *UpdateInvoiceStatusRequest) String() string {
 func (*UpdateInvoiceStatusRequest) ProtoMessage() {}
 
 func (x *UpdateInvoiceStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[6]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -417,7 +521,7 @@ func (x *UpdateInvoiceStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateInvoiceStatusRequest.ProtoReflect.Descriptor instead.
 func (*UpdateInvoiceStatusRequest) Descriptor() ([]byte, []int) {
-	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{6}
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *UpdateInvoiceStatusRequest) GetId() string {
@@ -443,7 +547,7 @@ type UpdateInvoiceStatusResponse struct {
 
 func (x *UpdateInvoiceStatusResponse) Reset() {
 	*x = UpdateInvoiceStatusResponse{}
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[7]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +559,7 @@ func (x *UpdateInvoiceStatusResponse) String() string {
 func (*UpdateInvoiceStatusResponse) ProtoMessage() {}
 
 func (x *UpdateInvoiceStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[7]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +572,7 @@ func (x *UpdateInvoiceStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateInvoiceStatusResponse.ProtoReflect.Descriptor instead.
 func (*UpdateInvoiceStatusResponse) Descriptor() ([]byte, []int) {
-	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{7}
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *UpdateInvoiceStatusResponse) GetInvoice() *Invoice {
@@ -498,7 +602,7 @@ type Invoice struct {
 
 func (x *Invoice) Reset() {
 	*x = Invoice{}
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[8]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -510,7 +614,7 @@ func (x *Invoice) String() string {
 func (*Invoice) ProtoMessage() {}
 
 func (x *Invoice) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[8]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -523,7 +627,7 @@ func (x *Invoice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Invoice.ProtoReflect.Descriptor instead.
 func (*Invoice) Descriptor() ([]byte, []int) {
-	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{8}
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Invoice) GetId() string {
@@ -623,7 +727,7 @@ type LineItem struct {
 
 func (x *LineItem) Reset() {
 	*x = LineItem{}
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[9]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -635,7 +739,7 @@ func (x *LineItem) String() string {
 func (*LineItem) ProtoMessage() {}
 
 func (x *LineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_v1_invoice_proto_msgTypes[9]
+	mi := &file_metrognome_v1_invoice_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -648,7 +752,7 @@ func (x *LineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LineItem.ProtoReflect.Descriptor instead.
 func (*LineItem) Descriptor() ([]byte, []int) {
-	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{9}
+	return file_metrognome_v1_invoice_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LineItem) GetChargeId() string {
@@ -710,7 +814,13 @@ const file_metrognome_v1_invoice_proto_rawDesc = "" +
 	"\n" +
 	"period_end\x18\x03 \x01(\x03R\tperiodEnd\"K\n" +
 	"\x17GenerateInvoiceResponse\x120\n" +
-	"\ainvoice\x18\x01 \x01(\v2\x16.metrognome.v1.InvoiceR\ainvoice\"b\n" +
+	"\ainvoice\x18\x01 \x01(\v2\x16.metrognome.v1.InvoiceR\ainvoice\"1\n" +
+	"\x1aGenerateAllInvoicesRequest\x12\x13\n" +
+	"\x05as_of\x18\x01 \x01(\x03R\x04asOf\"m\n" +
+	"\x1bGenerateAllInvoicesResponse\x12\x1c\n" +
+	"\tgenerated\x18\x01 \x01(\x05R\tgenerated\x12\x18\n" +
+	"\askipped\x18\x02 \x01(\x05R\askipped\x12\x16\n" +
+	"\x06errors\x18\x03 \x01(\x05R\x06errors\"b\n" +
 	"\x1aUpdateInvoiceStatusRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x124\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1c.metrognome.v1.InvoiceStatusR\x06status\"O\n" +
@@ -748,13 +858,14 @@ const file_metrognome_v1_invoice_proto_rawDesc = "" +
 	"\x14INVOICE_STATUS_DRAFT\x10\x01\x12\x19\n" +
 	"\x15INVOICE_STATUS_ISSUED\x10\x02\x12\x17\n" +
 	"\x13INVOICE_STATUS_PAID\x10\x03\x12\x17\n" +
-	"\x13INVOICE_STATUS_VOID\x10\x042\x8c\x03\n" +
+	"\x13INVOICE_STATUS_VOID\x10\x042\xfa\x03\n" +
 	"\x0eInvoiceService\x12Q\n" +
 	"\n" +
 	"GetInvoice\x12 .metrognome.v1.GetInvoiceRequest\x1a!.metrognome.v1.GetInvoiceResponse\x12W\n" +
 	"\fListInvoices\x12\".metrognome.v1.ListInvoicesRequest\x1a#.metrognome.v1.ListInvoicesResponse\x12`\n" +
 	"\x0fGenerateInvoice\x12%.metrognome.v1.GenerateInvoiceRequest\x1a&.metrognome.v1.GenerateInvoiceResponse\x12l\n" +
-	"\x13UpdateInvoiceStatus\x12).metrognome.v1.UpdateInvoiceStatusRequest\x1a*.metrognome.v1.UpdateInvoiceStatusResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
+	"\x13UpdateInvoiceStatus\x12).metrognome.v1.UpdateInvoiceStatusRequest\x1a*.metrognome.v1.UpdateInvoiceStatusResponse\x12l\n" +
+	"\x13GenerateAllInvoices\x12).metrognome.v1.GenerateAllInvoicesRequest\x1a*.metrognome.v1.GenerateAllInvoicesResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
 
 var (
 	file_metrognome_v1_invoice_proto_rawDescOnce sync.Once
@@ -770,7 +881,7 @@ func file_metrognome_v1_invoice_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_v1_invoice_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-	file_metrognome_v1_invoice_proto_msgTypes  = make([]protoimpl.MessageInfo, 10)
+	file_metrognome_v1_invoice_proto_msgTypes  = make([]protoimpl.MessageInfo, 12)
 	file_metrognome_v1_invoice_proto_goTypes   = []any{
 		(InvoiceStatus)(0),                  // 0: metrognome.v1.InvoiceStatus
 		(*GetInvoiceRequest)(nil),           // 1: metrognome.v1.GetInvoiceRequest
@@ -779,31 +890,35 @@ var (
 		(*ListInvoicesResponse)(nil),        // 4: metrognome.v1.ListInvoicesResponse
 		(*GenerateInvoiceRequest)(nil),      // 5: metrognome.v1.GenerateInvoiceRequest
 		(*GenerateInvoiceResponse)(nil),     // 6: metrognome.v1.GenerateInvoiceResponse
-		(*UpdateInvoiceStatusRequest)(nil),  // 7: metrognome.v1.UpdateInvoiceStatusRequest
-		(*UpdateInvoiceStatusResponse)(nil), // 8: metrognome.v1.UpdateInvoiceStatusResponse
-		(*Invoice)(nil),                     // 9: metrognome.v1.Invoice
-		(*LineItem)(nil),                    // 10: metrognome.v1.LineItem
+		(*GenerateAllInvoicesRequest)(nil),  // 7: metrognome.v1.GenerateAllInvoicesRequest
+		(*GenerateAllInvoicesResponse)(nil), // 8: metrognome.v1.GenerateAllInvoicesResponse
+		(*UpdateInvoiceStatusRequest)(nil),  // 9: metrognome.v1.UpdateInvoiceStatusRequest
+		(*UpdateInvoiceStatusResponse)(nil), // 10: metrognome.v1.UpdateInvoiceStatusResponse
+		(*Invoice)(nil),                     // 11: metrognome.v1.Invoice
+		(*LineItem)(nil),                    // 12: metrognome.v1.LineItem
 	}
 )
 
 var file_metrognome_v1_invoice_proto_depIdxs = []int32{
-	9,  // 0: metrognome.v1.GetInvoiceResponse.invoice:type_name -> metrognome.v1.Invoice
-	9,  // 1: metrognome.v1.ListInvoicesResponse.invoices:type_name -> metrognome.v1.Invoice
-	9,  // 2: metrognome.v1.GenerateInvoiceResponse.invoice:type_name -> metrognome.v1.Invoice
+	11, // 0: metrognome.v1.GetInvoiceResponse.invoice:type_name -> metrognome.v1.Invoice
+	11, // 1: metrognome.v1.ListInvoicesResponse.invoices:type_name -> metrognome.v1.Invoice
+	11, // 2: metrognome.v1.GenerateInvoiceResponse.invoice:type_name -> metrognome.v1.Invoice
 	0,  // 3: metrognome.v1.UpdateInvoiceStatusRequest.status:type_name -> metrognome.v1.InvoiceStatus
-	9,  // 4: metrognome.v1.UpdateInvoiceStatusResponse.invoice:type_name -> metrognome.v1.Invoice
-	10, // 5: metrognome.v1.Invoice.line_items:type_name -> metrognome.v1.LineItem
+	11, // 4: metrognome.v1.UpdateInvoiceStatusResponse.invoice:type_name -> metrognome.v1.Invoice
+	12, // 5: metrognome.v1.Invoice.line_items:type_name -> metrognome.v1.LineItem
 	0,  // 6: metrognome.v1.Invoice.status:type_name -> metrognome.v1.InvoiceStatus
 	1,  // 7: metrognome.v1.InvoiceService.GetInvoice:input_type -> metrognome.v1.GetInvoiceRequest
 	3,  // 8: metrognome.v1.InvoiceService.ListInvoices:input_type -> metrognome.v1.ListInvoicesRequest
 	5,  // 9: metrognome.v1.InvoiceService.GenerateInvoice:input_type -> metrognome.v1.GenerateInvoiceRequest
-	7,  // 10: metrognome.v1.InvoiceService.UpdateInvoiceStatus:input_type -> metrognome.v1.UpdateInvoiceStatusRequest
-	2,  // 11: metrognome.v1.InvoiceService.GetInvoice:output_type -> metrognome.v1.GetInvoiceResponse
-	4,  // 12: metrognome.v1.InvoiceService.ListInvoices:output_type -> metrognome.v1.ListInvoicesResponse
-	6,  // 13: metrognome.v1.InvoiceService.GenerateInvoice:output_type -> metrognome.v1.GenerateInvoiceResponse
-	8,  // 14: metrognome.v1.InvoiceService.UpdateInvoiceStatus:output_type -> metrognome.v1.UpdateInvoiceStatusResponse
-	11, // [11:15] is the sub-list for method output_type
-	7,  // [7:11] is the sub-list for method input_type
+	9,  // 10: metrognome.v1.InvoiceService.UpdateInvoiceStatus:input_type -> metrognome.v1.UpdateInvoiceStatusRequest
+	7,  // 11: metrognome.v1.InvoiceService.GenerateAllInvoices:input_type -> metrognome.v1.GenerateAllInvoicesRequest
+	2,  // 12: metrognome.v1.InvoiceService.GetInvoice:output_type -> metrognome.v1.GetInvoiceResponse
+	4,  // 13: metrognome.v1.InvoiceService.ListInvoices:output_type -> metrognome.v1.ListInvoicesResponse
+	6,  // 14: metrognome.v1.InvoiceService.GenerateInvoice:output_type -> metrognome.v1.GenerateInvoiceResponse
+	10, // 15: metrognome.v1.InvoiceService.UpdateInvoiceStatus:output_type -> metrognome.v1.UpdateInvoiceStatusResponse
+	8,  // 16: metrognome.v1.InvoiceService.GenerateAllInvoices:output_type -> metrognome.v1.GenerateAllInvoicesResponse
+	12, // [12:17] is the sub-list for method output_type
+	7,  // [7:12] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -820,7 +935,7 @@ func file_metrognome_v1_invoice_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_v1_invoice_proto_rawDesc), len(file_metrognome_v1_invoice_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -60,6 +60,30 @@ func (s *ContractStore) ListByCustomer(ctx context.Context, customerID string) (
 	return result.([]*storev1.Contract), nil
 }
 
+// ListActive returns all active contracts.
+func (s *ContractStore) ListActive(ctx context.Context) ([]*storev1.Contract, error) {
+	result, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		props := rl.ForwardScan()
+		cursor := rs.ScanRecordsByType("Contract", nil, props)
+		entries, err := rl.AsList(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		var active []*storev1.Contract
+		for _, e := range entries {
+			c := e.Record.(*storev1.Contract)
+			if c.GetActive() {
+				active = append(active, c)
+			}
+		}
+		return active, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]*storev1.Contract), nil
+}
+
 // End terminates a contract by setting active=false and end_at.
 func (s *ContractStore) End(ctx context.Context, id string, endAt int64) (*storev1.Contract, error) {
 	result, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {

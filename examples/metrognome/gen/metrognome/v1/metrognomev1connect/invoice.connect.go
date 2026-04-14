@@ -47,6 +47,9 @@ const (
 	// InvoiceServiceUpdateInvoiceStatusProcedure is the fully-qualified name of the InvoiceService's
 	// UpdateInvoiceStatus RPC.
 	InvoiceServiceUpdateInvoiceStatusProcedure = "/metrognome.v1.InvoiceService/UpdateInvoiceStatus"
+	// InvoiceServiceGenerateAllInvoicesProcedure is the fully-qualified name of the InvoiceService's
+	// GenerateAllInvoices RPC.
+	InvoiceServiceGenerateAllInvoicesProcedure = "/metrognome.v1.InvoiceService/GenerateAllInvoices"
 )
 
 // InvoiceServiceClient is a client for the metrognome.v1.InvoiceService service.
@@ -55,6 +58,10 @@ type InvoiceServiceClient interface {
 	ListInvoices(context.Context, *connect.Request[v1.ListInvoicesRequest]) (*connect.Response[v1.ListInvoicesResponse], error)
 	GenerateInvoice(context.Context, *connect.Request[v1.GenerateInvoiceRequest]) (*connect.Response[v1.GenerateInvoiceResponse], error)
 	UpdateInvoiceStatus(context.Context, *connect.Request[v1.UpdateInvoiceStatusRequest]) (*connect.Response[v1.UpdateInvoiceStatusResponse], error)
+	// GenerateAllInvoices runs the monthly billing cycle: finds all active
+	// contracts whose period ended before the given timestamp and generates
+	// invoices for each.
+	GenerateAllInvoices(context.Context, *connect.Request[v1.GenerateAllInvoicesRequest]) (*connect.Response[v1.GenerateAllInvoicesResponse], error)
 }
 
 // NewInvoiceServiceClient constructs a client for the metrognome.v1.InvoiceService service. By
@@ -92,6 +99,12 @@ func NewInvoiceServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(invoiceServiceMethods.ByName("UpdateInvoiceStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		generateAllInvoices: connect.NewClient[v1.GenerateAllInvoicesRequest, v1.GenerateAllInvoicesResponse](
+			httpClient,
+			baseURL+InvoiceServiceGenerateAllInvoicesProcedure,
+			connect.WithSchema(invoiceServiceMethods.ByName("GenerateAllInvoices")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -101,6 +114,7 @@ type invoiceServiceClient struct {
 	listInvoices        *connect.Client[v1.ListInvoicesRequest, v1.ListInvoicesResponse]
 	generateInvoice     *connect.Client[v1.GenerateInvoiceRequest, v1.GenerateInvoiceResponse]
 	updateInvoiceStatus *connect.Client[v1.UpdateInvoiceStatusRequest, v1.UpdateInvoiceStatusResponse]
+	generateAllInvoices *connect.Client[v1.GenerateAllInvoicesRequest, v1.GenerateAllInvoicesResponse]
 }
 
 // GetInvoice calls metrognome.v1.InvoiceService.GetInvoice.
@@ -123,12 +137,21 @@ func (c *invoiceServiceClient) UpdateInvoiceStatus(ctx context.Context, req *con
 	return c.updateInvoiceStatus.CallUnary(ctx, req)
 }
 
+// GenerateAllInvoices calls metrognome.v1.InvoiceService.GenerateAllInvoices.
+func (c *invoiceServiceClient) GenerateAllInvoices(ctx context.Context, req *connect.Request[v1.GenerateAllInvoicesRequest]) (*connect.Response[v1.GenerateAllInvoicesResponse], error) {
+	return c.generateAllInvoices.CallUnary(ctx, req)
+}
+
 // InvoiceServiceHandler is an implementation of the metrognome.v1.InvoiceService service.
 type InvoiceServiceHandler interface {
 	GetInvoice(context.Context, *connect.Request[v1.GetInvoiceRequest]) (*connect.Response[v1.GetInvoiceResponse], error)
 	ListInvoices(context.Context, *connect.Request[v1.ListInvoicesRequest]) (*connect.Response[v1.ListInvoicesResponse], error)
 	GenerateInvoice(context.Context, *connect.Request[v1.GenerateInvoiceRequest]) (*connect.Response[v1.GenerateInvoiceResponse], error)
 	UpdateInvoiceStatus(context.Context, *connect.Request[v1.UpdateInvoiceStatusRequest]) (*connect.Response[v1.UpdateInvoiceStatusResponse], error)
+	// GenerateAllInvoices runs the monthly billing cycle: finds all active
+	// contracts whose period ended before the given timestamp and generates
+	// invoices for each.
+	GenerateAllInvoices(context.Context, *connect.Request[v1.GenerateAllInvoicesRequest]) (*connect.Response[v1.GenerateAllInvoicesResponse], error)
 }
 
 // NewInvoiceServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -162,6 +185,12 @@ func NewInvoiceServiceHandler(svc InvoiceServiceHandler, opts ...connect.Handler
 		connect.WithSchema(invoiceServiceMethods.ByName("UpdateInvoiceStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	invoiceServiceGenerateAllInvoicesHandler := connect.NewUnaryHandler(
+		InvoiceServiceGenerateAllInvoicesProcedure,
+		svc.GenerateAllInvoices,
+		connect.WithSchema(invoiceServiceMethods.ByName("GenerateAllInvoices")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/metrognome.v1.InvoiceService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case InvoiceServiceGetInvoiceProcedure:
@@ -172,6 +201,8 @@ func NewInvoiceServiceHandler(svc InvoiceServiceHandler, opts ...connect.Handler
 			invoiceServiceGenerateInvoiceHandler.ServeHTTP(w, r)
 		case InvoiceServiceUpdateInvoiceStatusProcedure:
 			invoiceServiceUpdateInvoiceStatusHandler.ServeHTTP(w, r)
+		case InvoiceServiceGenerateAllInvoicesProcedure:
+			invoiceServiceGenerateAllInvoicesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -195,4 +226,8 @@ func (UnimplementedInvoiceServiceHandler) GenerateInvoice(context.Context, *conn
 
 func (UnimplementedInvoiceServiceHandler) UpdateInvoiceStatus(context.Context, *connect.Request[v1.UpdateInvoiceStatusRequest]) (*connect.Response[v1.UpdateInvoiceStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.InvoiceService.UpdateInvoiceStatus is not implemented"))
+}
+
+func (UnimplementedInvoiceServiceHandler) GenerateAllInvoices(context.Context, *connect.Request[v1.GenerateAllInvoicesRequest]) (*connect.Response[v1.GenerateAllInvoicesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.InvoiceService.GenerateAllInvoices is not implemented"))
 }
