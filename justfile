@@ -207,9 +207,9 @@ coverage:
 race:
     bazelisk test //pkg/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
 
-# Run all tests with race detector (very slow — full recompile + instrumentation)
+# Run all tests with race detector (~3 min, full recompile + instrumentation)
 race-all:
-    bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test --@rules_go//go/config:race --test_timeout=900
+    bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
 
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
