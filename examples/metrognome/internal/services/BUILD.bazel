@@ -12,6 +12,7 @@ go_library(
         "invoice.go",
         "meter.go",
         "plan.go",
+        "validate.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/services",
     visibility = ["//examples/metrognome:__subpackages__"],
@@ -29,7 +30,10 @@ go_library(
 
 go_test(
     name = "services_test",
-    srcs = ["services_test.go"],
+    srcs = [
+        "services_test.go",
+        "validate_test.go",
+    ],
     deps = [
         ":services",
         "//examples/metrognome/gen/metrognome/v1:metrognome",

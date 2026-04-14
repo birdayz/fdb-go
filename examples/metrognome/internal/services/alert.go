@@ -24,6 +24,9 @@ func NewAlertService(store *storage.AlertStore) *AlertService {
 }
 
 func (s *AlertService) CreateAlert(ctx context.Context, req *connect.Request[metrognomev1.CreateAlertRequest]) (*connect.Response[metrognomev1.CreateAlertResponse], error) {
+	if err := validateCreateAlert(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("alrt")
 	now := time.Now().UnixMilli()
 	record := &storev1.Alert{

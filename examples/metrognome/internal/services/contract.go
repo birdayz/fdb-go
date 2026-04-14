@@ -24,6 +24,9 @@ func NewContractService(store *storage.ContractStore) *ContractService {
 }
 
 func (s *ContractService) CreateContract(ctx context.Context, req *connect.Request[metrognomev1.CreateContractRequest]) (*connect.Response[metrognomev1.CreateContractResponse], error) {
+	if err := validateCreateContract(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("ctr")
 	now := time.Now().UnixMilli()
 	record := &storev1.Contract{

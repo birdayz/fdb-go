@@ -24,6 +24,9 @@ func NewCreditService(store *storage.CreditStore) *CreditService {
 }
 
 func (s *CreditService) GrantCredit(ctx context.Context, req *connect.Request[metrognomev1.GrantCreditRequest]) (*connect.Response[metrognomev1.GrantCreditResponse], error) {
+	if err := validateGrantCredit(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("cred")
 	now := time.Now().UnixMilli()
 	record := &storev1.Credit{

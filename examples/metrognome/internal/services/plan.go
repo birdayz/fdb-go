@@ -25,6 +25,9 @@ func NewPlanService(plans *storage.PlanStore, charges *storage.ChargeStore) *Pla
 }
 
 func (s *PlanService) CreatePlan(ctx context.Context, req *connect.Request[metrognomev1.CreatePlanRequest]) (*connect.Response[metrognomev1.CreatePlanResponse], error) {
+	if err := validateCreatePlan(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("plan")
 	now := time.Now().UnixMilli()
 	record := &storev1.Plan{
@@ -67,6 +70,9 @@ func (s *PlanService) ListPlans(ctx context.Context, req *connect.Request[metrog
 }
 
 func (s *PlanService) AddCharge(ctx context.Context, req *connect.Request[metrognomev1.AddChargeRequest]) (*connect.Response[metrognomev1.AddChargeResponse], error) {
+	if err := validateAddCharge(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("chrg")
 	now := time.Now().UnixMilli()
 	record := &storev1.Charge{

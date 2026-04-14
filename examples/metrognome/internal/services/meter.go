@@ -26,6 +26,9 @@ func NewMeterService(store *storage.MeterStore, meterEngine *meter.Engine) *Mete
 }
 
 func (s *MeterService) CreateMeter(ctx context.Context, req *connect.Request[metrognomev1.CreateMeterRequest]) (*connect.Response[metrognomev1.CreateMeterResponse], error) {
+	if err := validateCreateMeter(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("mtr")
 	now := time.Now().UnixMilli()
 

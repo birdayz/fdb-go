@@ -29,6 +29,9 @@ func NewEventService(events *storage.EventStore, alerts *storage.AlertStore, met
 }
 
 func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[metrognomev1.IngestEventsRequest]) (*connect.Response[metrognomev1.IngestEventsResponse], error) {
+	if err := validateIngestEvents(req.Msg); err != nil {
+		return nil, err
+	}
 	now := time.Now().UnixMilli()
 
 	records := make([]*storev1.UsageEvent, len(req.Msg.GetEvents()))

@@ -24,6 +24,9 @@ func NewCustomerService(store *storage.CustomerStore) *CustomerService {
 }
 
 func (s *CustomerService) CreateCustomer(ctx context.Context, req *connect.Request[metrognomev1.CreateCustomerRequest]) (*connect.Response[metrognomev1.CreateCustomerResponse], error) {
+	if err := validateCreateCustomer(req.Msg); err != nil {
+		return nil, err
+	}
 	id := newID("cust")
 	now := time.Now().UnixMilli()
 
