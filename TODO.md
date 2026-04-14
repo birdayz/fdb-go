@@ -145,6 +145,7 @@ _Go wins 5/8 benchmarks vs Java Record Layer. LoadRecord 0.61x, ScanRecords 0.73
 #### MEDIUM
 
 - [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates a new proto message via reflection on every record scan (77.5MB / 564K allocs in BenchmarkScanRecords). vtprotobuf's `ResetVT()` + `sync.Pool` per record type could eliminate ~9% of scan allocations. Requires careful lifetime management — callers must not hold references to pooled messages.
+- [ ] **Pre-allocate tuple in fastDecodeTuple** — Index scan allocates 21% of objects in `fastDecodeTuple` as the `tuple.Tuple` slice grows via append. Pre-allocating with `make(tuple.Tuple, 0, keyExpressionColumnSize+pkColumnCount)` based on index metadata would eliminate most of these. ScanIndex is 1.43x Java — this is the most impactful optimization for that path.
 
 ### Tests
 
