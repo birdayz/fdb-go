@@ -239,6 +239,7 @@ go_test(
         "store_generic_test.go",
         "store_state_cache_test.go",
         "store_state_test.go",
+        "store_stress_test.go",
         "store_test.go",
         "store_timer_test.go",
         "store_version_test.go",
