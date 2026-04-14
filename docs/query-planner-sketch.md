@@ -1,6 +1,7 @@
 # Query Planner — Minimum Viable Design
 
-Status: **sketch** (dayshift-14). Not started. Needs RFC before implementation.
+Status: **Phase 0 DONE** (dayshift-14). 9 plan types + 13 tests shipped.
+Phase 1 (rule-based planner) is next.
 
 ## Approach
 
@@ -10,18 +11,21 @@ Hand-constructed plans → existing cursor infrastructure → results.
 The optimizer (104K Java lines) can come later. The execution engine alone
 is useful for programmatic query construction.
 
-## Phase 1: Plan Execution (MVP)
+## Phase 0: Plan Execution (DONE)
 
-### Plan types needed (6 of 46 Java types)
+### Plan types implemented (9 of 46 Java types)
 
 | Plan | What it does | Go cursor |
 |---|---|---|
 | `ScanPlan` | Full table scan | `ScanRecords()` |
-| `IndexPlan` | Index scan with range | `ScanIndex()` |
-| `FilterPlan` | Apply predicate to child | `FilterCursor` |
-| `UnionPlan` | Merge-union of two ordered scans | `MergeCursor(union)` |
-| `IntersectionPlan` | Merge-intersect of two scans | `MergeCursor(intersect)` |
-| `CoveringIndexPlan` | Index-only (no record fetch) | `ScanIndex()` directly |
+| `IndexPlan` | Index scan + record fetch | `ScanIndexRecords()` |
+| `FilterPlan` | Apply predicate to child | `filterCursor` |
+| `IndexScanPlan` | Index-only (no record fetch) | `maintainer.Scan()` |
+| `PrimaryKeyLookupPlan` | Single record by PK | `LoadRecord()` |
+| `UnionPlan` | Merge-union of two ordered scans | `Union()` |
+| `IntersectionPlan` | Merge-intersect of two scans | `Intersection()` |
+| `LimitPlan` | Limit N results | `LimitRowsCursor()` |
+| `ReversePlan` | Reverse scan direction | `ReverseScan()` |
 
 ### Interface
 
