@@ -36,6 +36,18 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 	}
 
 	groupingCount := indexGroupingCount(index.RootExpression)
+
+	// Fast path: single tuple result (common case, no fan-out).
+	// Avoids the result slice allocation.
+	if len(tuples) == 1 {
+		values := tuples[0]
+		groupKey := make(tuple.Tuple, groupingCount)
+		for j := 0; j < groupingCount && j < len(values); j++ {
+			groupKey[j] = values[j]
+		}
+		return []tuple.Tuple{groupKey}, nil
+	}
+
 	result := make([]tuple.Tuple, 0, len(tuples))
 	for _, values := range tuples {
 		groupKey := make(tuple.Tuple, groupingCount)
