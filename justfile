@@ -203,9 +203,13 @@ coverage:
     COV_PCT=$(grep -oP 'style="color: #[0-9a-f]+">\K[0-9.]+%' test-report.html | head -1 || echo '?')
     echo "Report: test-report.html ($TOTAL tests, $COV_PCT coverage)"
 
-# Run tests with race detector (slower — recompiles with instrumentation)
+# Run client tests with race detector (slower — recompiles with instrumentation)
 race:
     bazelisk test //pkg/fdbgo/client:client_test --@rules_go//go/config:race --test_timeout=300
+
+# Run all tests with race detector (very slow — full recompile + instrumentation)
+race-all:
+    bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test --@rules_go//go/config:race --test_timeout=900
 
 # Run a specific test with forced rebuild (no stale binary)
 test-fresh target *args:
