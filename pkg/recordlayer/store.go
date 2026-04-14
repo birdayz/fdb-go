@@ -1652,6 +1652,35 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
+
+	// Fast path: if SizeVT is available, compute size first and allocate once.
+	// This avoids the intermediate MarshalVT allocation.
+	type sizer interface {
+		SizeVT() int
+		MarshalToSizedBufferVT([]byte) (int, error)
+	}
+	if sv, ok := record.(sizer); ok {
+		innerSize := sv.SizeVT()
+		// Allocate single buffer: tag + length varint + inner bytes
+		tagSize := protowire.SizeTag(recordType.unionFieldNumber)
+		lenSize := protowire.SizeBytes(innerSize) - innerSize // just the varint length
+		totalSize := tagSize + lenSize + innerSize
+		out := make([]byte, totalSize)
+
+		// Write tag + length prefix
+		header := protowire.AppendTag(out[:0], recordType.unionFieldNumber, protowire.BytesType)
+		header = protowire.AppendVarint(header, uint64(innerSize))
+		headerLen := len(header)
+
+		// Marshal directly into the remaining buffer
+		_, err := sv.MarshalToSizedBufferVT(out[headerLen : headerLen+innerSize])
+		if err != nil {
+			return nil, err
+		}
+		return out[:headerLen+innerSize], nil
+	}
+
+	// Slow path: marshal first, then wrap
 	var innerBytes []byte
 	var err error
 	if vm, ok := record.(interface{ MarshalVT() ([]byte, error) }); ok {
@@ -1662,7 +1691,6 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	// Pre-allocate output: tag (max 5 bytes) + length varint (max 5) + inner bytes
 	out := make([]byte, 0, 10+len(innerBytes))
 	out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
 	out = protowire.AppendBytes(out, innerBytes)
