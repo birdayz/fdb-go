@@ -16,10 +16,14 @@ func FuzzNewReader(f *testing.F) {
 		if err != nil {
 			return
 		}
-		// Exercise field access methods — none should panic.
+		// Exercise ALL field access methods — none should panic.
 		_ = r.VTableLength()
 		for i := 0; i < 10; i++ {
 			_ = r.FieldPresent(i)
+			_ = r.ReadInt8(i)
+			_ = r.ReadUint8(i)
+			_ = r.ReadInt16(i)
+			_ = r.ReadUint16(i)
 			_ = r.ReadInt32(i)
 			_ = r.ReadUint32(i)
 			_ = r.ReadInt64(i)
@@ -29,6 +33,12 @@ func FuzzNewReader(f *testing.F) {
 			_ = r.ReadBytes(i)
 			_ = r.ReadString(i)
 			_ = r.ReadUID(i)
+			_ = r.ReadVectorInt32(i)
+			_ = r.ReadVectorUint64(i)
+			_, _ = r.ReadVectorCount(i)
+			_, _ = r.ReadNestedReader(i)
+			_, _ = r.ReadVectorElementReader(i, 0)
+			_, _ = r.ReadUIDPair(i)
 		}
 	})
 }
