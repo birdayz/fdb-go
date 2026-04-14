@@ -130,7 +130,7 @@ bench-compare:
     set -euo pipefail
     bazelisk build //conformance:conformance_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
-    "$BAZEL_BIN/conformance/conformance_test_/conformance_test" \
+    timeout 600 "$BAZEL_BIN/conformance/conformance_test_/conformance_test" \
         --ginkgo.focus='Performance Comparison' --ginkgo.v
 
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
