@@ -145,7 +145,7 @@ No open test items.
 
 ### Phase 0: Plan execution engine (DONE — dayshift-14)
 
-9 plan types wrapping existing cursors. Execution engine only, no optimizer.
+10 plan types + fluent QueryBuilder + 19 integration tests. Execution engine only, no optimizer.
 Design sketch at `docs/query-planner-sketch.md`.
 
 | Plan | Wraps | Java equivalent |
@@ -155,11 +155,13 @@ Design sketch at `docs/query-planner-sketch.md`.
 | FilterPlan | filterCursor | RecordQueryFilterPlan |
 | IndexScanPlan | maintainer.Scan | RecordQueryCoveringIndexPlan |
 | PrimaryKeyLookupPlan | LoadRecord | (no direct equivalent) |
+| RangeScanPlan | ScanRecordsInRange | RecordQueryScanPlan (with range) |
 | UnionPlan | Union cursor | RecordQueryUnionPlan |
 | IntersectionPlan | Intersection cursor | RecordQueryIntersectionPlan |
 | LimitPlan | LimitRowsCursor | (scan property) |
 | ReversePlan | ReverseScan props | (scan property) |
 
+Fluent builder: `NewQueryFrom("Order").Filter(...).Limit(3).Build()`.
 Convenience: `ExecuteAndCollect(ctx, store, plan)`, `ExecuteFirst(ctx, store, plan)`.
 
 ### Phase 1: Rule-based planner (~1-2K lines estimated)
