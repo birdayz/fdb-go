@@ -45,6 +45,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
@@ -439,6 +440,29 @@ func (t Tuple) Pack() []byte {
 	p := newPacker()
 	p.encodeTuple(t, false, false)
 	return p.buf
+}
+
+var packerPool = sync.Pool{
+	New: func() any {
+		return &packer{
+			versionstampPos: -1,
+			buf:             make([]byte, 0, 128),
+		}
+	},
+}
+
+// PackWithPrefix packs the tuple and prepends the given prefix in a single allocation.
+// Uses a pooled packer to avoid allocating a new packer per call.
+func (t Tuple) PackWithPrefix(prefix []byte) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeTuple(t, false, false)
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
 }
 
 // PackWithVersionstamp packs the specified tuple into a key for versionstamp
