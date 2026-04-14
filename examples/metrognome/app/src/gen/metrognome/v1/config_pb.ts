@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file metrognome/v1/config.proto.
  */
 export const file_metrognome_v1_config: GenFile = /*@__PURE__*/
-  fileDesc("ChptZXRyb2dub21lL3YxL2NvbmZpZy5wcm90bxINbWV0cm9nbm9tZS52MSJ7CgZDb25maWcSFgoObGlzdGVuX2FkZHJlc3MYASABKAkSFAoMZnJvbnRlbmRfdXJsGAIgASgJEhgKEGZkYl9jbHVzdGVyX2ZpbGUYAyABKAkSKQoFa2Fma2EYBCABKAsyGi5tZXRyb2dub21lLnYxLkthZmthQ29uZmlnIlMKC0thZmthQ29uZmlnEg8KB2Jyb2tlcnMYASADKAkSDQoFdG9waWMYAiABKAkSEAoIZ3JvdXBfaWQYAyABKAkSEgoKYmF0Y2hfc2l6ZRgEIAEoBUJbWllnaXRodWIuY29tL2JpcmRheXovZmRiLXJlY29yZC1sYXllci1nby9leGFtcGxlcy9tZXRyb2dub21lL2dlbi9tZXRyb2dub21lL3YxO21ldHJvZ25vbWV2MWIGcHJvdG8z");
+  fileDesc("ChptZXRyb2dub21lL3YxL2NvbmZpZy5wcm90bxINbWV0cm9nbm9tZS52MSKtAQoGQ29uZmlnEhYKDmxpc3Rlbl9hZGRyZXNzGAEgASgJEhQKDGZyb250ZW5kX3VybBgCIAEoCRIYChBmZGJfY2x1c3Rlcl9maWxlGAMgASgJEikKBWthZmthGAQgASgLMhoubWV0cm9nbm9tZS52MS5LYWZrYUNvbmZpZxIwCgxnaXRodWJfb2F1dGgYBSABKAsyGi5tZXRyb2dub21lLnYxLkdpdEh1Yk9BdXRoIk0KC0dpdEh1Yk9BdXRoEhEKCWNsaWVudF9pZBgBIAEoCRIVCg1jbGllbnRfc2VjcmV0GAIgASgJEhQKDHJlZGlyZWN0X3VybBgDIAEoCSJTCgtLYWZrYUNvbmZpZxIPCgdicm9rZXJzGAEgAygJEg0KBXRvcGljGAIgASgJEhAKCGdyb3VwX2lkGAMgASgJEhIKCmJhdGNoX3NpemUYBCABKAVCW1pZZ2l0aHViLmNvbS9iaXJkYXl6L2ZkYi1yZWNvcmQtbGF5ZXItZ28vZXhhbXBsZXMvbWV0cm9nbm9tZS9nZW4vbWV0cm9nbm9tZS92MTttZXRyb2dub21ldjFiBnByb3RvMw");
 
 /**
  * @generated from message metrognome.v1.Config
@@ -39,6 +39,13 @@ export type Config = Message<"metrognome.v1.Config"> & {
    * @generated from field: metrognome.v1.KafkaConfig kafka = 4;
    */
   kafka?: KafkaConfig;
+
+  /**
+   * GitHub OAuth configuration.
+   *
+   * @generated from field: metrognome.v1.GitHubOAuth github_oauth = 5;
+   */
+  githubOauth?: GitHubOAuth;
 };
 
 /**
@@ -47,6 +54,33 @@ export type Config = Message<"metrognome.v1.Config"> & {
  */
 export const ConfigSchema: GenMessage<Config> = /*@__PURE__*/
   messageDesc(file_metrognome_v1_config, 0);
+
+/**
+ * @generated from message metrognome.v1.GitHubOAuth
+ */
+export type GitHubOAuth = Message<"metrognome.v1.GitHubOAuth"> & {
+  /**
+   * @generated from field: string client_id = 1;
+   */
+  clientId: string;
+
+  /**
+   * @generated from field: string client_secret = 2;
+   */
+  clientSecret: string;
+
+  /**
+   * @generated from field: string redirect_url = 3;
+   */
+  redirectUrl: string;
+};
+
+/**
+ * Describes the message metrognome.v1.GitHubOAuth.
+ * Use `create(GitHubOAuthSchema)` to create a new message.
+ */
+export const GitHubOAuthSchema: GenMessage<GitHubOAuth> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_config, 1);
 
 /**
  * @generated from message metrognome.v1.KafkaConfig
@@ -78,5 +112,5 @@ export type KafkaConfig = Message<"metrognome.v1.KafkaConfig"> & {
  * Use `create(KafkaConfigSchema)` to create a new message.
  */
 export const KafkaConfigSchema: GenMessage<KafkaConfig> = /*@__PURE__*/
-  messageDesc(file_metrognome_v1_config, 1);
+  messageDesc(file_metrognome_v1_config, 2);
 

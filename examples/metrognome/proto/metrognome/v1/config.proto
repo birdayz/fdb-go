@@ -13,6 +13,15 @@ message Config {
 
   // Kafka configuration (optional — if empty, Kafka consumer is disabled).
   KafkaConfig kafka = 4;
+
+  // GitHub OAuth configuration.
+  GitHubOAuth github_oauth = 5;
+}
+
+message GitHubOAuth {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
 }
 
 message KafkaConfig {

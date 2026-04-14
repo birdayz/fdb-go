@@ -76,6 +76,14 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.GetRecordType("DeadLetter").SetPrimaryKey(
 		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
 
+	// User: lookup by id (gh_<github_id>)
+	builder.GetRecordType("User").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
+	// Session: lookup by id (random token)
+	builder.GetRecordType("Session").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
 	// --- Secondary indexes ---
 
 	// Meter slug must be unique
@@ -153,6 +161,8 @@ func (d *DB) Credits() *CreditStore           { return &CreditStore{db: d} }
 func (d *DB) Alerts() *AlertStore             { return &AlertStore{db: d} }
 func (d *DB) KafkaOffsets() *KafkaOffsetStore { return &KafkaOffsetStore{db: d} }
 func (d *DB) DeadLetters() *DeadLetterStore   { return &DeadLetterStore{db: d} }
+func (d *DB) Users() *UserStore               { return &UserStore{db: d} }
+func (d *DB) Sessions() *SessionStore         { return &SessionStore{db: d} }
 
 // run executes fn within a transaction with an open FDBRecordStore.
 func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) (any, error) {

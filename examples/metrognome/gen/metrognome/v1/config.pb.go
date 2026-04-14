@@ -29,7 +29,9 @@ type Config struct {
 	// Path to FDB cluster file. If empty, uses default.
 	FdbClusterFile string `protobuf:"bytes,3,opt,name=fdb_cluster_file,json=fdbClusterFile,proto3" json:"fdb_cluster_file,omitempty"`
 	// Kafka configuration (optional — if empty, Kafka consumer is disabled).
-	Kafka         *KafkaConfig `protobuf:"bytes,4,opt,name=kafka,proto3" json:"kafka,omitempty"`
+	Kafka *KafkaConfig `protobuf:"bytes,4,opt,name=kafka,proto3" json:"kafka,omitempty"`
+	// GitHub OAuth configuration.
+	GithubOauth   *GitHubOAuth `protobuf:"bytes,5,opt,name=github_oauth,json=githubOauth,proto3" json:"github_oauth,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -92,6 +94,73 @@ func (x *Config) GetKafka() *KafkaConfig {
 	return nil
 }
 
+func (x *Config) GetGithubOauth() *GitHubOAuth {
+	if x != nil {
+		return x.GithubOauth
+	}
+	return nil
+}
+
+type GitHubOAuth struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClientId      string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	ClientSecret  string                 `protobuf:"bytes,2,opt,name=client_secret,json=clientSecret,proto3" json:"client_secret,omitempty"`
+	RedirectUrl   string                 `protobuf:"bytes,3,opt,name=redirect_url,json=redirectUrl,proto3" json:"redirect_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GitHubOAuth) Reset() {
+	*x = GitHubOAuth{}
+	mi := &file_metrognome_v1_config_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GitHubOAuth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GitHubOAuth) ProtoMessage() {}
+
+func (x *GitHubOAuth) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_config_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GitHubOAuth.ProtoReflect.Descriptor instead.
+func (*GitHubOAuth) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_config_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GitHubOAuth) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+func (x *GitHubOAuth) GetClientSecret() string {
+	if x != nil {
+		return x.ClientSecret
+	}
+	return ""
+}
+
+func (x *GitHubOAuth) GetRedirectUrl() string {
+	if x != nil {
+		return x.RedirectUrl
+	}
+	return ""
+}
+
 type KafkaConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Brokers       []string               `protobuf:"bytes,1,rep,name=brokers,proto3" json:"brokers,omitempty"`
@@ -104,7 +173,7 @@ type KafkaConfig struct {
 
 func (x *KafkaConfig) Reset() {
 	*x = KafkaConfig{}
-	mi := &file_metrognome_v1_config_proto_msgTypes[1]
+	mi := &file_metrognome_v1_config_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -116,7 +185,7 @@ func (x *KafkaConfig) String() string {
 func (*KafkaConfig) ProtoMessage() {}
 
 func (x *KafkaConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_v1_config_proto_msgTypes[1]
+	mi := &file_metrognome_v1_config_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -129,7 +198,7 @@ func (x *KafkaConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KafkaConfig.ProtoReflect.Descriptor instead.
 func (*KafkaConfig) Descriptor() ([]byte, []int) {
-	return file_metrognome_v1_config_proto_rawDescGZIP(), []int{1}
+	return file_metrognome_v1_config_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *KafkaConfig) GetBrokers() []string {
@@ -164,12 +233,17 @@ var File_metrognome_v1_config_proto protoreflect.FileDescriptor
 
 const file_metrognome_v1_config_proto_rawDesc = "" +
 	"\n" +
-	"\x1ametrognome/v1/config.proto\x12\rmetrognome.v1\"\xae\x01\n" +
+	"\x1ametrognome/v1/config.proto\x12\rmetrognome.v1\"\xed\x01\n" +
 	"\x06Config\x12%\n" +
 	"\x0elisten_address\x18\x01 \x01(\tR\rlistenAddress\x12!\n" +
 	"\ffrontend_url\x18\x02 \x01(\tR\vfrontendUrl\x12(\n" +
 	"\x10fdb_cluster_file\x18\x03 \x01(\tR\x0efdbClusterFile\x120\n" +
-	"\x05kafka\x18\x04 \x01(\v2\x1a.metrognome.v1.KafkaConfigR\x05kafka\"w\n" +
+	"\x05kafka\x18\x04 \x01(\v2\x1a.metrognome.v1.KafkaConfigR\x05kafka\x12=\n" +
+	"\fgithub_oauth\x18\x05 \x01(\v2\x1a.metrognome.v1.GitHubOAuthR\vgithubOauth\"r\n" +
+	"\vGitHubOAuth\x12\x1b\n" +
+	"\tclient_id\x18\x01 \x01(\tR\bclientId\x12#\n" +
+	"\rclient_secret\x18\x02 \x01(\tR\fclientSecret\x12!\n" +
+	"\fredirect_url\x18\x03 \x01(\tR\vredirectUrl\"w\n" +
 	"\vKafkaConfig\x12\x18\n" +
 	"\abrokers\x18\x01 \x03(\tR\abrokers\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x19\n" +
@@ -190,20 +264,22 @@ func file_metrognome_v1_config_proto_rawDescGZIP() []byte {
 }
 
 var (
-	file_metrognome_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+	file_metrognome_v1_config_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 	file_metrognome_v1_config_proto_goTypes  = []any{
 		(*Config)(nil),      // 0: metrognome.v1.Config
-		(*KafkaConfig)(nil), // 1: metrognome.v1.KafkaConfig
+		(*GitHubOAuth)(nil), // 1: metrognome.v1.GitHubOAuth
+		(*KafkaConfig)(nil), // 2: metrognome.v1.KafkaConfig
 	}
 )
 
 var file_metrognome_v1_config_proto_depIdxs = []int32{
-	1, // 0: metrognome.v1.Config.kafka:type_name -> metrognome.v1.KafkaConfig
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 0: metrognome.v1.Config.kafka:type_name -> metrognome.v1.KafkaConfig
+	1, // 1: metrognome.v1.Config.github_oauth:type_name -> metrognome.v1.GitHubOAuth
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_v1_config_proto_init() }
@@ -217,7 +293,7 @@ func file_metrognome_v1_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_v1_config_proto_rawDesc), len(file_metrognome_v1_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

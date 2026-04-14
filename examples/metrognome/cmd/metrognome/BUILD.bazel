@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//examples/metrognome/gen/metrognome/v1:metrognome",
         "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
+        "//examples/metrognome/internal/auth",
         "//examples/metrognome/internal/billing",
         "//examples/metrognome/internal/consumer",
         "//examples/metrognome/internal/meter",
@@ -16,6 +17,7 @@ go_library(
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
+        "@com_connectrpc_connect//:connect",
         "@com_github_birdayz_protobuf_ecosystem//protoconfig",
     ],
 )

@@ -1,3 +1,8 @@
 listen_address: ":8080"
 frontend_url: "http://localhost:3000"
 fdb_cluster_file: "fdb.cluster"
+
+github_oauth:
+  client_id: "Ov23liPYcnyS7vsdJWEq"
+  client_secret: "771d23e5bfa5d549bd0f799bc11dc5e602153aa4"
+  redirect_url: "http://localhost:8080/auth/callback"

@@ -18,6 +18,11 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
       },
+      // Proxy auth routes to the Go backend
+      "/auth": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
     },
   },
 });

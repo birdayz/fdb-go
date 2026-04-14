@@ -11,10 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/birdayz/protobuf-ecosystem/protoconfig"
 
 	metrognomev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/auth"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/consumer"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
@@ -142,19 +144,28 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	// Auth (GitHub OAuth) — optional, skip if not configured
+	var connectOpts []connect.HandlerOption
+	if gh := cfg.GithubOauth; gh != nil && gh.GetClientId() != "" {
+		authHandler := auth.NewHandler(gh, cfg.FrontendUrl, db)
+		authHandler.RegisterRoutes(mux)
+		connectOpts = append(connectOpts, connect.WithInterceptors(authHandler.Interceptor()))
+		slog.Info("github oauth enabled")
+	}
+
 	// Register all services
 	register := func(path string, handler http.Handler) {
 		mux.Handle(path, handler)
 	}
 
-	register(metrognomev1connect.NewCustomerServiceHandler(services.NewCustomerService(db.Customers())))
-	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters(), meterEngine)))
-	register(metrognomev1connect.NewPlanServiceHandler(services.NewPlanService(db.Plans(), db.Charges())))
-	register(metrognomev1connect.NewContractServiceHandler(services.NewContractService(db.Contracts())))
-	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), db.Alerts(), meterEngine)))
-	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), db.Contracts(), billingEngine)))
-	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
-	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
+	register(metrognomev1connect.NewCustomerServiceHandler(services.NewCustomerService(db.Customers()), connectOpts...))
+	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters(), meterEngine), connectOpts...))
+	register(metrognomev1connect.NewPlanServiceHandler(services.NewPlanService(db.Plans(), db.Charges()), connectOpts...))
+	register(metrognomev1connect.NewContractServiceHandler(services.NewContractService(db.Contracts()), connectOpts...))
+	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), db.Alerts(), meterEngine), connectOpts...))
+	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), db.Contracts(), billingEngine), connectOpts...))
+	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits()), connectOpts...))
+	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts()), connectOpts...))
 
 	// Start Kafka consumer if configured
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())

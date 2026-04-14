@@ -17,6 +17,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.41.0
 	github.com/twmb/franz-go v1.20.7
 	github.com/zeebo/xxh3 v1.1.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/text v0.34.0
 	golang.org/x/tools v0.42.0
 	google.golang.org/protobuf v1.36.11

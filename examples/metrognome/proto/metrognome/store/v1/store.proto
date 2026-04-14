@@ -206,6 +206,25 @@ message DeadLetter {
   optional int64 created_at = 7;
 }
 
+// User represents an authenticated user (from GitHub OAuth).
+message User {
+  optional string id = 1;
+  optional string github_id = 2;
+  optional string login = 3;       // GitHub username
+  optional string name = 4;
+  optional string avatar_url = 5;
+  optional string email = 6;
+  optional int64 created_at = 7;
+}
+
+// Session represents an active login session.
+message Session {
+  optional string id = 1;
+  optional string user_id = 2;
+  optional int64 created_at = 3;
+  optional int64 expires_at = 4;
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 message UnionDescriptor {
@@ -220,4 +239,6 @@ message UnionDescriptor {
   optional Alert _Alert = 9;
   optional KafkaOffset _KafkaOffset = 10;
   optional DeadLetter _DeadLetter = 11;
+  optional User _User = 12;
+  optional Session _Session = 13;
 }

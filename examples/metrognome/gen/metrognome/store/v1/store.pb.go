@@ -1854,6 +1854,168 @@ func (x *DeadLetter) GetCreatedAt() int64 {
 	return 0
 }
 
+// User represents an authenticated user (from GitHub OAuth).
+type User struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	GithubId      *string                `protobuf:"bytes,2,opt,name=github_id,json=githubId" json:"github_id,omitempty"`
+	Login         *string                `protobuf:"bytes,3,opt,name=login" json:"login,omitempty"` // GitHub username
+	Name          *string                `protobuf:"bytes,4,opt,name=name" json:"name,omitempty"`
+	AvatarUrl     *string                `protobuf:"bytes,5,opt,name=avatar_url,json=avatarUrl" json:"avatar_url,omitempty"`
+	Email         *string                `protobuf:"bytes,6,opt,name=email" json:"email,omitempty"`
+	CreatedAt     *int64                 `protobuf:"varint,7,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *User) Reset() {
+	*x = User{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *User) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*User) ProtoMessage() {}
+
+func (x *User) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use User.ProtoReflect.Descriptor instead.
+func (*User) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *User) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *User) GetGithubId() string {
+	if x != nil && x.GithubId != nil {
+		return *x.GithubId
+	}
+	return ""
+}
+
+func (x *User) GetLogin() string {
+	if x != nil && x.Login != nil {
+		return *x.Login
+	}
+	return ""
+}
+
+func (x *User) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *User) GetAvatarUrl() string {
+	if x != nil && x.AvatarUrl != nil {
+		return *x.AvatarUrl
+	}
+	return ""
+}
+
+func (x *User) GetEmail() string {
+	if x != nil && x.Email != nil {
+		return *x.Email
+	}
+	return ""
+}
+
+func (x *User) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+// Session represents an active login session.
+type Session struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	UserId        *string                `protobuf:"bytes,2,opt,name=user_id,json=userId" json:"user_id,omitempty"`
+	CreatedAt     *int64                 `protobuf:"varint,3,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	ExpiresAt     *int64                 `protobuf:"varint,4,opt,name=expires_at,json=expiresAt" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Session) Reset() {
+	*x = Session{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Session) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Session) ProtoMessage() {}
+
+func (x *Session) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Session.ProtoReflect.Descriptor instead.
+func (*Session) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *Session) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *Session) GetUserId() string {
+	if x != nil && x.UserId != nil {
+		return *x.UserId
+	}
+	return ""
+}
+
+func (x *Session) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Session) GetExpiresAt() int64 {
+	if x != nil && x.ExpiresAt != nil {
+		return *x.ExpiresAt
+	}
+	return 0
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 type UnionDescriptor struct {
@@ -1869,13 +2031,15 @@ type UnionDescriptor struct {
 	XAlert        *Alert                 `protobuf:"bytes,9,opt,name=_Alert,json=Alert" json:"_Alert,omitempty"`
 	XKafkaOffset  *KafkaOffset           `protobuf:"bytes,10,opt,name=_KafkaOffset,json=KafkaOffset" json:"_KafkaOffset,omitempty"`
 	XDeadLetter   *DeadLetter            `protobuf:"bytes,11,opt,name=_DeadLetter,json=DeadLetter" json:"_DeadLetter,omitempty"`
+	XUser         *User                  `protobuf:"bytes,12,opt,name=_User,json=User" json:"_User,omitempty"`
+	XSession      *Session               `protobuf:"bytes,13,opt,name=_Session,json=Session" json:"_Session,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnionDescriptor) Reset() {
 	*x = UnionDescriptor{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1887,7 +2051,7 @@ func (x *UnionDescriptor) String() string {
 func (*UnionDescriptor) ProtoMessage() {}
 
 func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1900,7 +2064,7 @@ func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnionDescriptor.ProtoReflect.Descriptor instead.
 func (*UnionDescriptor) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{20}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *UnionDescriptor) GetXCustomer() *Customer {
@@ -1976,6 +2140,20 @@ func (x *UnionDescriptor) GetXKafkaOffset() *KafkaOffset {
 func (x *UnionDescriptor) GetXDeadLetter() *DeadLetter {
 	if x != nil {
 		return x.XDeadLetter
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXUser() *User {
+	if x != nil {
+		return x.XUser
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXSession() *Session {
+	if x != nil {
+		return x.XSession
 	}
 	return nil
 }
@@ -2138,7 +2316,24 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\traw_value\x18\x05 \x01(\fR\brawValue\x12#\n" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\a \x01(\x03R\tcreatedAt\"\x8d\x05\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\"\xb1\x01\n" +
+	"\x04User\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\tgithub_id\x18\x02 \x01(\tR\bgithubId\x12\x14\n" +
+	"\x05login\x18\x03 \x01(\tR\x05login\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"avatar_url\x18\x05 \x01(\tR\tavatarUrl\x12\x14\n" +
+	"\x05email\x18\x06 \x01(\tR\x05email\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\"p\n" +
+	"\aSession\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x03 \x01(\x03R\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x04 \x01(\x03R\texpiresAt\"\xf6\x05\n" +
 	"\x0fUnionDescriptor\x12:\n" +
 	"\t_Customer\x18\x01 \x01(\v2\x1d.metrognome.store.v1.CustomerR\bCustomer\x121\n" +
 	"\x06_Meter\x18\x02 \x01(\v2\x1a.metrognome.store.v1.MeterR\x05Meter\x12.\n" +
@@ -2153,7 +2348,9 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\f_KafkaOffset\x18\n" +
 	" \x01(\v2 .metrognome.store.v1.KafkaOffsetR\vKafkaOffset\x12@\n" +
 	"\v_DeadLetter\x18\v \x01(\v2\x1f.metrognome.store.v1.DeadLetterR\n" +
-	"DeadLetter*\xbd\x01\n" +
+	"DeadLetter\x12.\n" +
+	"\x05_User\x18\f \x01(\v2\x19.metrognome.store.v1.UserR\x04User\x127\n" +
+	"\b_Session\x18\r \x01(\v2\x1c.metrognome.store.v1.SessionR\aSession*\xbd\x01\n" +
 	"\x0fAggregationType\x12 \n" +
 	"\x1cAGGREGATION_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AGGREGATION_TYPE_COUNT\x10\x01\x12\x18\n" +
@@ -2191,7 +2388,7 @@ func file_metrognome_store_v1_store_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_store_v1_store_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 21)
+	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 23)
 	file_metrognome_store_v1_store_proto_goTypes   = []any{
 		(AggregationType)(0),    // 0: metrognome.store.v1.AggregationType
 		(BillingPeriod)(0),      // 1: metrognome.store.v1.BillingPeriod
@@ -2217,7 +2414,9 @@ var (
 		(*Alert)(nil),           // 21: metrognome.store.v1.Alert
 		(*KafkaOffset)(nil),     // 22: metrognome.store.v1.KafkaOffset
 		(*DeadLetter)(nil),      // 23: metrognome.store.v1.DeadLetter
-		(*UnionDescriptor)(nil), // 24: metrognome.store.v1.UnionDescriptor
+		(*User)(nil),            // 24: metrognome.store.v1.User
+		(*Session)(nil),         // 25: metrognome.store.v1.Session
+		(*UnionDescriptor)(nil), // 26: metrognome.store.v1.UnionDescriptor
 	}
 )
 
@@ -2247,11 +2446,13 @@ var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	21, // 22: metrognome.store.v1.UnionDescriptor._Alert:type_name -> metrognome.store.v1.Alert
 	22, // 23: metrognome.store.v1.UnionDescriptor._KafkaOffset:type_name -> metrognome.store.v1.KafkaOffset
 	23, // 24: metrognome.store.v1.UnionDescriptor._DeadLetter:type_name -> metrognome.store.v1.DeadLetter
-	25, // [25:25] is the sub-list for method output_type
-	25, // [25:25] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	24, // 25: metrognome.store.v1.UnionDescriptor._User:type_name -> metrognome.store.v1.User
+	25, // 26: metrognome.store.v1.UnionDescriptor._Session:type_name -> metrognome.store.v1.Session
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_store_v1_store_proto_init() }
@@ -2273,7 +2474,7 @@ func file_metrognome_store_v1_store_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_store_v1_store_proto_rawDesc), len(file_metrognome_store_v1_store_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   21,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

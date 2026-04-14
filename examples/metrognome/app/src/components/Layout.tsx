@@ -6,7 +6,10 @@ import {
   CreditCard,
   Zap,
   FileText,
+  LogOut,
 } from "lucide-react";
+import type { User } from "@/lib/auth";
+import { logout } from "@/lib/auth";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -17,7 +20,7 @@ const navItems = [
   { to: "/invoices", label: "Invoices", icon: FileText },
 ];
 
-export function Layout() {
+export function Layout({ user }: { user: User }) {
   return (
     <div className="flex h-screen">
       {/* Sidebar */}
@@ -47,6 +50,32 @@ export function Layout() {
               {item.label}
             </NavLink>
           ))}
+        </div>
+
+        {/* User info + logout */}
+        <div className="p-4 border-t border-[var(--color-border)]">
+          <div className="flex items-center gap-3">
+            <img
+              src={user.avatar_url}
+              alt={user.login}
+              className="w-8 h-8 rounded-full"
+            />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">
+                {user.name || user.login}
+              </p>
+              <p className="text-xs text-[var(--color-muted-foreground)] truncate">
+                {user.login}
+              </p>
+            </div>
+            <button
+              onClick={logout}
+              className="p-1.5 text-[var(--color-muted-foreground)] hover:text-[var(--color-destructive)] rounded transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </nav>
 
