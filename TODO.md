@@ -56,6 +56,10 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 - [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
 - [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
 - [x] **Multi-shard concurrent writes during DD** — 8 goroutines × 25 ops write large values across 51 shards. Point read + scan cross-check verifies no data loss. nightshift-12.
+- [x] **RYW adversarial tests** — 44 tests exercising all 12 atomic mutation types through RYW path, comparing client-side resolution against committed FDB values. Chained atomics, ClearRange+Get, getRange with local writes/atomics (forward+reverse). 0 divergences. swingshift-15.
+- [x] **RYW fuzz expanded** — FuzzRYWCache now covers all 12 atomic types (was only Add). 3.7M executions in 60s, 0 failures. swingshift-15.
+- [x] **Directory partition tests** — 4 tests for directoryPartition.go (was 0% coverage). Create, child dirs, namespace isolation, data read/write, removal, panic behavior. swingshift-15.
+- [x] **Retry/OnError adversarial tests** — Self-conflicting on commit_unknown_result, all 16 retryable error codes, resource-constrained backoff, intersectConflictRanges edge cases. swingshift-15.
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
