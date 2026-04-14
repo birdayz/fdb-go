@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service CustomerService {
+  rpc CreateCustomer(CreateCustomerRequest) returns (CreateCustomerResponse);
+  rpc GetCustomer(GetCustomerRequest) returns (GetCustomerResponse);
+  rpc ListCustomers(ListCustomersRequest) returns (ListCustomersResponse);
+}
+
+message CreateCustomerRequest {
+  string name = 1;
+  string external_id = 2; // optional caller-provided ID
+}
+
+message CreateCustomerResponse {
+  Customer customer = 1;
+}
+
+message GetCustomerRequest {
+  string id = 1;
+}
+
+message GetCustomerResponse {
+  Customer customer = 1;
+}
+
+message ListCustomersRequest {
+  int32 page_size = 1;
+  bytes continuation = 2;
+}
+
+message ListCustomersResponse {
+  repeated Customer customers = 1;
+  bytes continuation = 2;
+}
+
+message Customer {
+  string id = 1;
+  string name = 2;
+  string external_id = 3;
+  int64 created_at = 4;
+}

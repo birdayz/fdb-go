@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service ContractService {
+  rpc CreateContract(CreateContractRequest) returns (CreateContractResponse);
+  rpc GetContract(GetContractRequest) returns (GetContractResponse);
+  rpc ListContracts(ListContractsRequest) returns (ListContractsResponse);
+  rpc EndContract(EndContractRequest) returns (EndContractResponse);
+}
+
+message CreateContractRequest {
+  string customer_id = 1;
+  string plan_id = 2;
+  int64 start_at = 3;              // unix millis
+  int64 end_at = 4;                // 0 = indefinite
+  BillingPeriod billing_period = 5;
+}
+
+message CreateContractResponse {
+  Contract contract = 1;
+}
+
+message GetContractRequest {
+  string id = 1;
+}
+
+message GetContractResponse {
+  Contract contract = 1;
+}
+
+message ListContractsRequest {
+  string customer_id = 1; // filter by customer (optional)
+  int32 page_size = 2;
+  bytes continuation = 3;
+}
+
+message ListContractsResponse {
+  repeated Contract contracts = 1;
+  bytes continuation = 2;
+}
+
+message EndContractRequest {
+  string id = 1;
+  int64 end_at = 2; // when to end (0 = now)
+}
+
+message EndContractResponse {
+  Contract contract = 1;
+}
+
+message Contract {
+  string id = 1;
+  string customer_id = 2;
+  string plan_id = 3;
+  int64 start_at = 4;
+  int64 end_at = 5;
+  BillingPeriod billing_period = 6;
+  int64 created_at = 7;
+  bool active = 8;
+}
+
+enum BillingPeriod {
+  BILLING_PERIOD_UNSPECIFIED = 0;
+  BILLING_PERIOD_MONTHLY = 1;
+  BILLING_PERIOD_QUARTERLY = 2;
+  BILLING_PERIOD_ANNUAL = 3;
+}

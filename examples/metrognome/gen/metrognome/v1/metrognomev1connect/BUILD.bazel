@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "metrognomev1connect",
+    srcs = [
+        "alert.connect.go",
+        "contract.connect.go",
+        "credit.connect.go",
+        "customer.connect.go",
+        "event.connect.go",
+        "invoice.connect.go",
+        "meter.connect.go",
+        "plan.connect.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/v1:metrognome",
+        "@com_connectrpc_connect//:connect",
+    ],
+)

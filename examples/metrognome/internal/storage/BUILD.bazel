@@ -1,0 +1,42 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "storage",
+    srcs = [
+        "alert.go",
+        "charge.go",
+        "contract.go",
+        "credit.go",
+        "customer.go",
+        "db.go",
+        "event.go",
+        "invoice.go",
+        "kafka_offset.go",
+        "meter.go",
+        "plan.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage",
+    visibility = ["//examples/metrognome:__subpackages__"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "storage_test",
+    srcs = ["storage_test.go"],
+    deps = [
+        ":storage",
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//examples/metrognome/internal/billing",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

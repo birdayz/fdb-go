@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service AlertService {
+  rpc CreateAlert(CreateAlertRequest) returns (CreateAlertResponse);
+  rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse);
+}
+
+message CreateAlertRequest {
+  string customer_id = 1;
+  string meter_slug = 2;
+  int64 threshold = 3;
+  AlertType alert_type = 4;
+}
+
+message CreateAlertResponse {
+  Alert alert = 1;
+}
+
+message ListAlertsRequest {
+  string customer_id = 1;
+  int32 page_size = 2;
+  bytes continuation = 3;
+}
+
+message ListAlertsResponse {
+  repeated Alert alerts = 1;
+  bytes continuation = 2;
+}
+
+message Alert {
+  string id = 1;
+  string customer_id = 2;
+  string meter_slug = 3;
+  int64 threshold = 4;
+  AlertType alert_type = 5;
+  bool triggered = 6;
+  int64 created_at = 7;
+}
+
+enum AlertType {
+  ALERT_TYPE_UNSPECIFIED = 0;
+  ALERT_TYPE_USAGE = 1;
+  ALERT_TYPE_SPEND = 2;
+}

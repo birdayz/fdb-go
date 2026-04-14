@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "metrognome",
+    srcs = [
+        "alert.pb.go",
+        "contract.pb.go",
+        "credit.pb.go",
+        "customer.pb.go",
+        "event.pb.go",
+        "invoice.pb.go",
+        "meter.pb.go",
+        "plan.pb.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+    ],
+)

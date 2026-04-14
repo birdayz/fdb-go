@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service CreditService {
+  rpc GrantCredit(GrantCreditRequest) returns (GrantCreditResponse);
+  rpc ListCredits(ListCreditsRequest) returns (ListCreditsResponse);
+  rpc GetCreditBalance(GetCreditBalanceRequest) returns (GetCreditBalanceResponse);
+}
+
+message GrantCreditRequest {
+  string customer_id = 1;
+  int64 amount_cents = 2;
+  int64 expires_at = 3;  // unix millis (0 = never)
+  int32 priority = 4;    // lower = applied first
+}
+
+message GrantCreditResponse {
+  Credit credit = 1;
+}
+
+message ListCreditsRequest {
+  string customer_id = 1;
+  int32 page_size = 2;
+  bytes continuation = 3;
+}
+
+message ListCreditsResponse {
+  repeated Credit credits = 1;
+  bytes continuation = 2;
+}
+
+message GetCreditBalanceRequest {
+  string customer_id = 1;
+}
+
+message GetCreditBalanceResponse {
+  int64 total_remaining_cents = 1;
+  repeated Credit credits = 2;
+}
+
+message Credit {
+  string id = 1;
+  string customer_id = 2;
+  int64 amount_cents = 3;
+  int64 remaining_cents = 4;
+  int64 expires_at = 5;
+  int32 priority = 6;
+  int64 created_at = 7;
+}

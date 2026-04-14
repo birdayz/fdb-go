@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service PlanService {
+  rpc CreatePlan(CreatePlanRequest) returns (CreatePlanResponse);
+  rpc GetPlan(GetPlanRequest) returns (GetPlanResponse);
+  rpc ListPlans(ListPlansRequest) returns (ListPlansResponse);
+  rpc AddCharge(AddChargeRequest) returns (AddChargeResponse);
+  rpc ListCharges(ListChargesRequest) returns (ListChargesResponse);
+}
+
+message CreatePlanRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreatePlanResponse {
+  Plan plan = 1;
+}
+
+message GetPlanRequest {
+  string id = 1;
+}
+
+message GetPlanResponse {
+  Plan plan = 1;
+}
+
+message ListPlansRequest {
+  int32 page_size = 1;
+  bytes continuation = 2;
+}
+
+message ListPlansResponse {
+  repeated Plan plans = 1;
+  bytes continuation = 2;
+}
+
+message AddChargeRequest {
+  string plan_id = 1;
+  string meter_slug = 2;
+  PricingModel pricing = 3;
+}
+
+message AddChargeResponse {
+  Charge charge = 1;
+}
+
+message ListChargesRequest {
+  string plan_id = 1;
+}
+
+message ListChargesResponse {
+  repeated Charge charges = 1;
+}
+
+message Plan {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int64 created_at = 4;
+}
+
+message Charge {
+  string id = 1;
+  string plan_id = 2;
+  string meter_slug = 3;
+  PricingModel pricing = 4;
+  int64 created_at = 5;
+}
+
+message PricingModel {
+  oneof model {
+    FlatPricing flat = 1;
+    PerUnitPricing per_unit = 2;
+    TieredPricing tiered = 3;
+    VolumePricing volume = 4;
+    PackagePricing package = 5;
+    BpsPricing bps = 6;
+  }
+}
+
+message FlatPricing {
+  int64 amount_cents = 1;
+}
+
+message PerUnitPricing {
+  int64 unit_price_cents = 1;
+}
+
+message TieredPricing {
+  repeated Tier tiers = 1;
+}
+
+message Tier {
+  int64 up_to = 1;       // 0 = infinity
+  int64 price_cents = 2;
+}
+
+message VolumePricing {
+  repeated Tier tiers = 1;
+}
+
+message PackagePricing {
+  int64 package_size = 1;
+  int64 package_price_cents = 2;
+}
+
+message BpsPricing {
+  int64 basis_points = 1; // e.g. 25 = 0.25%
+}

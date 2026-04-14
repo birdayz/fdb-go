@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "billing",
+    srcs = [
+        "engine.go",
+        "pricing.go",
+    ],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing",
+    visibility = ["//examples/metrognome:__subpackages__"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

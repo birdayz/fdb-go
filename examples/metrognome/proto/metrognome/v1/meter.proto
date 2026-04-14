@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service MeterService {
+  rpc CreateMeter(CreateMeterRequest) returns (CreateMeterResponse);
+  rpc GetMeter(GetMeterRequest) returns (GetMeterResponse);
+  rpc ListMeters(ListMetersRequest) returns (ListMetersResponse);
+}
+
+message CreateMeterRequest {
+  string slug = 1;          // unique human-readable ID (e.g. "api_calls")
+  string name = 2;          // display name
+  AggregationType aggregation_type = 3;
+  string value_property = 4;        // JSON property for SUM/MAX
+  repeated string group_by_properties = 5;
+  string event_type_filter = 6;     // only count events matching this type
+}
+
+message CreateMeterResponse {
+  Meter meter = 1;
+}
+
+message GetMeterRequest {
+  string slug = 1;
+}
+
+message GetMeterResponse {
+  Meter meter = 1;
+}
+
+message ListMetersRequest {
+  int32 page_size = 1;
+  bytes continuation = 2;
+}
+
+message ListMetersResponse {
+  repeated Meter meters = 1;
+  bytes continuation = 2;
+}
+
+message Meter {
+  string id = 1;
+  string slug = 2;
+  string name = 3;
+  AggregationType aggregation_type = 4;
+  string value_property = 5;
+  repeated string group_by_properties = 6;
+  string event_type_filter = 7;
+  int64 created_at = 8;
+}
+
+enum AggregationType {
+  AGGREGATION_TYPE_UNSPECIFIED = 0;
+  AGGREGATION_TYPE_COUNT = 1;
+  AGGREGATION_TYPE_SUM = 2;
+  AGGREGATION_TYPE_MAX = 3;
+  AGGREGATION_TYPE_UNIQUE = 4;
+  AGGREGATION_TYPE_LATEST = 5;
+}

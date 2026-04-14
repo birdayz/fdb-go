@@ -1,0 +1,205 @@
+syntax = "proto2";
+
+package metrognome.store.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1;storev1";
+
+// Customer represents a billable entity.
+message Customer {
+  optional string id = 1;
+  optional string name = 2;
+  optional string external_id = 3; // caller's own ID for this customer
+  optional int64 created_at = 4;   // unix millis
+}
+
+// Meter defines a billable metric — how raw events are aggregated.
+message Meter {
+  optional string id = 1;
+  optional string slug = 2;       // unique human-readable identifier (e.g. "api_calls")
+  optional string name = 3;       // display name
+  optional AggregationType aggregation_type = 4;
+  optional string value_property = 5;    // JSON property path for SUM/MAX (e.g. "bytes")
+  repeated string group_by_properties = 6; // properties to group by (e.g. ["region", "model"])
+  optional string event_type_filter = 7;   // only count events with this event_type
+  optional int64 created_at = 8;
+}
+
+enum AggregationType {
+  AGGREGATION_TYPE_COUNT = 0;
+  AGGREGATION_TYPE_SUM = 1;
+  AGGREGATION_TYPE_MAX = 2;
+  AGGREGATION_TYPE_UNIQUE = 3;
+  AGGREGATION_TYPE_LATEST = 4;
+}
+
+// Plan is a pricing plan containing charges.
+message Plan {
+  optional string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional int64 created_at = 4;
+}
+
+// Charge ties a meter to a pricing model within a plan.
+message Charge {
+  optional string id = 1;
+  optional string plan_id = 2;
+  optional string meter_slug = 3;
+  optional PricingModel pricing = 4;
+  optional int64 created_at = 5;
+}
+
+// PricingModel defines how metered usage converts to a dollar amount.
+message PricingModel {
+  oneof model {
+    FlatPricing flat = 1;
+    PerUnitPricing per_unit = 2;
+    TieredPricing tiered = 3;
+    VolumePricing volume = 4;
+    PackagePricing package = 5;
+    BpsPricing bps = 6;
+  }
+}
+
+message FlatPricing {
+  optional int64 amount_cents = 1; // fixed amount per billing period
+}
+
+message PerUnitPricing {
+  optional int64 unit_price_cents = 1; // price per unit of usage
+}
+
+message TieredPricing {
+  repeated Tier tiers = 1;
+}
+
+message Tier {
+  optional int64 up_to = 1;       // upper bound (0 = infinity)
+  optional int64 price_cents = 2; // price per unit in this tier
+}
+
+message VolumePricing {
+  repeated Tier tiers = 1; // same structure, but all units priced at the matching tier
+}
+
+message PackagePricing {
+  optional int64 package_size = 1;     // units per package
+  optional int64 package_price_cents = 2; // price per package
+}
+
+message BpsPricing {
+  optional int64 basis_points = 1; // e.g. 25 = 0.25%
+}
+
+// Contract binds a customer to a plan for a period.
+message Contract {
+  optional string id = 1;
+  optional string customer_id = 2;
+  optional string plan_id = 3;
+  optional int64 start_at = 4;      // unix millis
+  optional int64 end_at = 5;        // unix millis (0 = indefinite)
+  optional BillingPeriod billing_period = 6;
+  optional int64 created_at = 7;
+  optional bool active = 8;
+}
+
+enum BillingPeriod {
+  BILLING_PERIOD_MONTHLY = 0;
+  BILLING_PERIOD_QUARTERLY = 1;
+  BILLING_PERIOD_ANNUAL = 2;
+}
+
+// UsageEvent is a raw usage event ingested from the API or Kafka.
+message UsageEvent {
+  optional string id = 1;
+  optional string customer_id = 2;
+  optional string event_type = 3;     // event type for filtering (matches meter.event_type_filter)
+  optional string meter_slug = 4;     // resolved meter slug
+  optional int64 timestamp_ms = 5;    // event timestamp (unix millis)
+  optional int64 value = 6;           // numeric value (for SUM/MAX meters)
+  optional string idempotency_key = 7;
+  optional string properties_json = 8; // arbitrary JSON properties (for group_by, value extraction)
+  optional int64 ingested_at = 9;      // when we received it (unix millis)
+  optional int64 timestamp_bucket = 10; // hourly bucket for SUM/COUNT index grouping
+}
+
+// Invoice is a generated billing document.
+message Invoice {
+  optional string id = 1;
+  optional string customer_id = 2;
+  optional string contract_id = 3;
+  optional int64 period_start = 4;  // unix millis
+  optional int64 period_end = 5;    // unix millis
+  repeated LineItem line_items = 6;
+  optional int64 subtotal_cents = 7;
+  optional int64 credits_applied_cents = 8;
+  optional int64 total_cents = 9;
+  optional InvoiceStatus status = 10;
+  optional int64 created_at = 11;
+  optional int64 finalized_at = 12;
+}
+
+enum InvoiceStatus {
+  INVOICE_STATUS_DRAFT = 0;
+  INVOICE_STATUS_ISSUED = 1;
+  INVOICE_STATUS_PAID = 2;
+  INVOICE_STATUS_VOID = 3;
+}
+
+message LineItem {
+  optional string charge_id = 1;
+  optional string meter_slug = 2;
+  optional string description = 3;
+  optional int64 quantity = 4;       // usage quantity
+  optional int64 amount_cents = 5;   // computed charge
+}
+
+// Credit represents prepaid balance for a customer.
+message Credit {
+  optional string id = 1;
+  optional string customer_id = 2;
+  optional int64 amount_cents = 3;    // original grant amount
+  optional int64 remaining_cents = 4; // current balance
+  optional int64 expires_at = 5;      // unix millis (0 = never)
+  optional int32 priority = 6;        // lower = applied first
+  optional int64 created_at = 7;
+}
+
+// Alert defines a usage or spend threshold.
+message Alert {
+  optional string id = 1;
+  optional string customer_id = 2;
+  optional string meter_slug = 3;     // which meter to watch
+  optional int64 threshold = 4;       // trigger when usage >= this
+  optional AlertType alert_type = 5;
+  optional bool triggered = 6;        // has it fired this period?
+  optional int64 created_at = 7;
+}
+
+enum AlertType {
+  ALERT_TYPE_USAGE = 0;  // raw usage threshold
+  ALERT_TYPE_SPEND = 1;  // computed spend threshold
+}
+
+// KafkaOffset stores consumer group offsets in FDB for exactly-once.
+message KafkaOffset {
+  optional string topic = 1;
+  optional int32 partition = 2;
+  optional int64 offset = 3;
+  optional int64 updated_at = 4;
+}
+
+// UnionDescriptor — required by FDB Record Layer for record type discrimination.
+// Field numbers determine the record type key stored in FDB tuples.
+message UnionDescriptor {
+  optional Customer _Customer = 1;
+  optional Meter _Meter = 2;
+  optional Plan _Plan = 3;
+  optional Charge _Charge = 4;
+  optional Contract _Contract = 5;
+  optional UsageEvent _UsageEvent = 6;
+  optional Invoice _Invoice = 7;
+  optional Credit _Credit = 8;
+  optional Alert _Alert = 9;
+  optional KafkaOffset _KafkaOffset = 10;
+}

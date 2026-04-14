@@ -18,6 +18,7 @@ use_repo(
     go_deps,
     "cc_mvdan_gofumpt",
     "co_honnef_go_tools",
+    "com_connectrpc_connect",
     "com_github_apple_foundationdb_bindings_go",
     "com_github_docker_docker",
     "com_github_docker_go_connections",

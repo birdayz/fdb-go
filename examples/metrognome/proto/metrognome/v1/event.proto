@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service EventService {
+  // IngestEvents accepts a batch of usage events. Each event must have an
+  // idempotency_key — duplicates are silently ignored (exactly-once).
+  rpc IngestEvents(IngestEventsRequest) returns (IngestEventsResponse);
+
+  // GetUsage returns aggregated usage for a customer/meter over a time range.
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+}
+
+message IngestEventsRequest {
+  repeated Event events = 1;
+}
+
+message Event {
+  string customer_id = 1;
+  string event_type = 2;          // matches meter.event_type_filter
+  int64 timestamp_ms = 3;         // event timestamp (unix millis)
+  int64 value = 4;                // numeric value (for SUM/MAX meters)
+  string idempotency_key = 5;     // required, must be globally unique
+  string properties_json = 6;     // arbitrary JSON (group_by extraction, audit)
+}
+
+message IngestEventsResponse {
+  int32 accepted = 1;   // number of events written
+  int32 duplicates = 2; // number of events skipped (already ingested)
+}
+
+message GetUsageRequest {
+  string customer_id = 1;
+  string meter_slug = 2;
+  int64 start_ms = 3;     // inclusive
+  int64 end_ms = 4;       // exclusive
+  WindowSize window_size = 5; // granularity for time-series response
+}
+
+enum WindowSize {
+  WINDOW_SIZE_UNSPECIFIED = 0; // total for the range
+  WINDOW_SIZE_HOUR = 1;
+  WINDOW_SIZE_DAY = 2;
+}
+
+message GetUsageResponse {
+  int64 total_value = 1;              // aggregate over the full range
+  repeated UsageBucket buckets = 2;   // time-series breakdown (if window_size set)
+}
+
+message UsageBucket {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+  int64 value = 3;
+}

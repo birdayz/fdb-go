@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service InvoiceService {
+  rpc GetInvoice(GetInvoiceRequest) returns (GetInvoiceResponse);
+  rpc ListInvoices(ListInvoicesRequest) returns (ListInvoicesResponse);
+  rpc GenerateInvoice(GenerateInvoiceRequest) returns (GenerateInvoiceResponse);
+}
+
+message GetInvoiceRequest {
+  string id = 1;
+}
+
+message GetInvoiceResponse {
+  Invoice invoice = 1;
+}
+
+message ListInvoicesRequest {
+  string customer_id = 1;
+  int32 page_size = 2;
+  bytes continuation = 3;
+}
+
+message ListInvoicesResponse {
+  repeated Invoice invoices = 1;
+  bytes continuation = 2;
+}
+
+// GenerateInvoice triggers invoice generation for a specific contract and period.
+message GenerateInvoiceRequest {
+  string contract_id = 1;
+  int64 period_start = 2; // unix millis
+  int64 period_end = 3;   // unix millis
+}
+
+message GenerateInvoiceResponse {
+  Invoice invoice = 1;
+}
+
+message Invoice {
+  string id = 1;
+  string customer_id = 2;
+  string contract_id = 3;
+  int64 period_start = 4;
+  int64 period_end = 5;
+  repeated LineItem line_items = 6;
+  int64 subtotal_cents = 7;
+  int64 credits_applied_cents = 8;
+  int64 total_cents = 9;
+  InvoiceStatus status = 10;
+  int64 created_at = 11;
+  int64 finalized_at = 12;
+}
+
+message LineItem {
+  string charge_id = 1;
+  string meter_slug = 2;
+  string description = 3;
+  int64 quantity = 4;
+  int64 amount_cents = 5;
+}
+
+enum InvoiceStatus {
+  INVOICE_STATUS_UNSPECIFIED = 0;
+  INVOICE_STATUS_DRAFT = 1;
+  INVOICE_STATUS_ISSUED = 2;
+  INVOICE_STATUS_PAID = 3;
+  INVOICE_STATUS_VOID = 4;
+}
