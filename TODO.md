@@ -16,6 +16,10 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 
 - [x] **RYW getRange: limit=0 (unlimited) skipped slow path** — `remaining := limit` with `limit=0` caused `for remaining > 0` to never execute. Fixed: `if remaining <= 0 { remaining = math.MaxInt }` matching `readpath.go`. Discovered dayshift-10 multi-shard test.
 - [x] **Data race in ensureReadVersion + tx.state** — 44 races: `tx.hasReadVersion` and `tx.state` read by Watch goroutines concurrently with writes from Commit→postCommitReset. Fixed: `readVersionMu` mutex for hasReadVersion/readVersion, `atomic.Int32` for state. Found by race detector (`--@rules_go//go/config:race`). dayshift-14.
+- [x] **Data race in Watch vs postCommitReset on conflict slices** — Watch() goroutine calls AddReadConflictKey() (under conflictMu) while Commit()→postCommitReset() clears readConflicts/writeConflicts WITHOUT conflictMu. Fixed: hold conflictMu in postCommitReset() and reset() when clearing conflict slices; also protect self-conflicting copy+append in OnError(). Found by race detector. swingshift-15.
+- [x] **getRange `more` flag incorrect across shard boundaries** — When limit is exactly met across multiple shards, `more` was taken from last shard's response (could be `false` even though subsequent shards have data). C++ sets `more = (data.size() == limit)` — always true when limit reached. Fixed: return `more=true` when `remaining <= 0`. Only affects multi-shard clusters. swingshift-15.
+- [x] **Wire reader panic on malformed responses** — `Reader.ReadBytes` and 8 similar RelativeOffset-based methods (ReadVectorInt32, ReadVectorUint64, ReadNestedReader, etc.) checked `off < 4` but not `off + 4 > len(r.object)`. Crafted vtable offsets caused out-of-bounds slice panic. Fixed: add upper bounds check to all 9 methods. Found by fuzzing `FuzzParseGetKeyValuesReply`. swingshift-15.
+- [x] **OOM amplification from crafted wire count fields** — `ParseKeyValueRefStringVector` and `ReadVectorCount` used raw `uint32` count from wire data in `make([]T, 0, count)`. Crafted `count=0xFFFFFFFF` → 206GB allocation → OOM. Fixed: cap allocation to physical buffer bounds (`bufferSize / minElementSize`). Protects all 37 generated vector parsers + hand-written KV parser. swingshift-15.
 
 _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
@@ -56,6 +60,13 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 - [x] **Multi-shard integration tests** — 6 tests across 35-51 shards (dayshift-10): GetRange, GetRangeReverse, paged GetRange, GetKey selector resolution, AtomicAdd, GetEstimatedRangeSize. Uses `WithProcessCount(3)` + `WithKnob("max_shard_bytes", "50000")` + 1MB data + 60s poll for splits.
 - [x] **Multi-shard watch survival** — 4 tests: basic, multi-shard concurrent, heavy-write load, cross-shard ClearRange. All across 51 shards. swingshift-11.
 - [x] **Multi-shard concurrent writes during DD** — 8 goroutines × 25 ops write large values across 51 shards. Point read + scan cross-check verifies no data loss. nightshift-12.
+- [x] **RYW adversarial tests** — 44 tests exercising all 12 atomic mutation types through RYW path, comparing client-side resolution against committed FDB values. Chained atomics, ClearRange+Get, getRange with local writes/atomics (forward+reverse). 0 divergences. swingshift-15.
+- [x] **RYW fuzz expanded** — FuzzRYWCache now covers all 12 atomic types (was only Add). 3.7M executions in 60s, 0 failures. swingshift-15.
+- [x] **Directory partition tests** — 4 tests for directoryPartition.go (was 0% coverage). Create, child dirs, namespace isolation, data read/write, removal, panic behavior. swingshift-15.
+- [x] **Retry/OnError adversarial tests** — Self-conflicting on commit_unknown_result, all 16 retryable error codes, resource-constrained backoff, intersectConflictRanges edge cases. swingshift-15.
+- [x] **Concurrent stress tests** — 5 tests: concurrent RYW reads, read-modify-write counter (20 goroutines × 5), concurrent AtomicAdd (20 × 10), parallel range+write, Clear vs Get race. swingshift-15.
+- [x] **Full race detector verification** — All 5 test targets clean with `--@rules_go//go/config:race` after fixing Watch/postCommitReset race. swingshift-15.
+- [x] **C++ completeness audit (5 subsystems)** — readpath, commitpath, transaction, RYW, GRV+database. All pass. No missing code paths, error codes correct, wire protocol correct, atomic implementations match C++ Atomic.h. swingshift-15.
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
@@ -138,60 +149,6 @@ No open performance items.
 _Comprehensive: 2307 Ginkgo + 429 conformance + 50 chaos + 7 fuzz targets._
 
 No open test items.
-
----
-
-## Query Planner + SQL Layer
-
-### Phase 0: Plan execution engine (DONE — dayshift-14)
-
-10 plan types + fluent QueryBuilder + 19 integration tests. Execution engine only, no optimizer.
-Design sketch at `docs/query-planner-sketch.md`.
-
-| Plan | Wraps | Java equivalent |
-|---|---|---|
-| ScanPlan | ScanRecords/ScanRecordsByType | RecordQueryScanPlan |
-| IndexPlan | ScanIndexRecords | RecordQueryIndexPlan |
-| FilterPlan | filterCursor | RecordQueryFilterPlan |
-| IndexScanPlan | maintainer.Scan | RecordQueryCoveringIndexPlan |
-| PrimaryKeyLookupPlan | LoadRecord | (no direct equivalent) |
-| RangeScanPlan | ScanRecordsInRange | RecordQueryScanPlan (with range) |
-| UnionPlan | Union cursor | RecordQueryUnionPlan |
-| IntersectionPlan | Intersection cursor | RecordQueryIntersectionPlan |
-| LimitPlan | LimitRowsCursor | (scan property) |
-| ReversePlan | ReverseScan props | (scan property) |
-
-Fluent builder: `NewQueryFrom("Order").Filter(...).Limit(3).Build()`.
-Convenience: `ExecuteAndCollect(ctx, store, plan)`, `ExecuteFirst(ctx, store, plan)`.
-
-### Phase 1: Rule-based planner (~1-2K lines estimated)
-
-Simple planner that picks plans based on available indexes.
-NOT cascades — just enough for common patterns:
-- Single-index scan (field = value, field > value)
-- Covering index selection
-- Union/intersection for OR/AND
-
-### Phase 2: Cascades query optimizer (~104K lines Java)
-
-| Component | Java files | Java lines |
-|---|---|---|
-| Cascades optimizer | 494 | 104K |
-| Plan implementations | 74 | 19K |
-| Query expressions | 35 | 9K |
-| Planning + other | 43 | 15K |
-
-### Phase 2: Relational / SQL layer (~55K lines Java)
-
-| Component | Java files | Java lines |
-|---|---|---|
-| Relational core | 233 | 41K |
-| Relational API | 88 | 13K |
-| Server/JDBC/gRPC | 31 | small |
-
-### Phase 3: `database/sql` driver
-
-Go `database/sql` compatible driver. Swap your Postgres DSN for an FDB one.
 
 ---
 

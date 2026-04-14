@@ -258,7 +258,7 @@ func (r *Reader) ReadUID(vtableSlot int) [16]byte {
 // The vtable slot contains a RelativeOffset pointing to [uint32 length][data...].
 func (r *Reader) ReadBytes(vtableSlot int) []byte {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil
 	}
 	// Read RelativeOffset at object[off:off+4].
@@ -292,7 +292,7 @@ func (r *Reader) ReadString(vtableSlot int) string {
 // Wire format: RelativeOffset → [uint32 count][int32 elem0][int32 elem1]...
 func (r *Reader) ReadVectorInt32(vtableSlot int) []int32 {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -318,7 +318,7 @@ func (r *Reader) ReadVectorInt32(vtableSlot int) []int32 {
 // ReadVectorUint64 reads a vector of uint64 from out-of-line data.
 func (r *Reader) ReadVectorUint64(vtableSlot int) []uint64 {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -345,11 +345,11 @@ func (r *Reader) ReadVectorUint64(vtableSlot int) []uint64 {
 // Optional uses 2 vtable slots: typeSlot (uint8 tag) and valueSlot (RelativeOffset).
 func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || r.object[typeOff] == 0 {
+	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
 		return 0, false
 	}
 	valOff := r.fieldOffset(valueSlot)
-	if valOff < 4 {
+	if valOff < 4 || int(valOff)+4 > len(r.object) {
 		return 0, false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
@@ -366,11 +366,11 @@ func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 // ReadOptionalString reads an Optional<string>. Returns (value, present).
 func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
 	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || r.object[typeOff] == 0 {
+	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
 		return "", false
 	}
 	valOff := r.fieldOffset(valueSlot)
-	if valOff < 4 {
+	if valOff < 4 || int(valOff)+4 > len(r.object) {
 		return "", false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
@@ -400,7 +400,7 @@ func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
 // The vtable slot must contain a RelativeOffset pointing to the struct.
 func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil, fmt.Errorf("wire: nested struct field not present (slot %d)", vtableSlot)
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -414,7 +414,7 @@ func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
 // ReadVectorCount returns the number of elements in a vector-of-struct field.
 func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return 0, nil // absent field = empty vector
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -426,6 +426,15 @@ func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 		return 0, fmt.Errorf("wire: vector start out of bounds (pos %d, buf %d)", vecStart, len(r.data))
 	}
 	count := binary.LittleEndian.Uint32(r.data[vecStart:])
+	// Cap count to prevent OOM from crafted wire data.
+	// Each vector element needs at least 4 bytes (RelativeOffset).
+	maxCount := (len(r.data) - vecStart - 4) / 4
+	if maxCount < 0 {
+		maxCount = 0
+	}
+	if int(count) > maxCount {
+		count = uint32(maxCount)
+	}
 	return int(count), nil
 }
 
@@ -433,7 +442,7 @@ func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 // Elements are 4-byte RelativeOffsets at vector_start+4+i*4, each pointing to a FlatBuffers object.
 func (r *Reader) ReadVectorElementReader(vtableSlot, index int) (*Reader, error) {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil, fmt.Errorf("wire: vector field not present (slot %d)", vtableSlot)
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -612,7 +621,7 @@ func (r *Reader) ReadUIDPair(vtableSlot int) (uint64, uint64) {
 // is raw (no length prefix), unlike ReadBytes which expects [len][data].
 func (r *Reader) ReadRelOffRaw(vtableSlot int, n int) []byte {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return nil
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -632,7 +641,7 @@ func (r *Reader) ReadRelOffRaw(vtableSlot int, n int) []byte {
 // Used for variant alternatives that are scalar uint32 (e.g., IPv4 in IPAddress).
 func (r *Reader) ReadRelOffUint32(vtableSlot int) uint32 {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return 0
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
@@ -648,7 +657,7 @@ func (r *Reader) ReadRelOffUint32(vtableSlot int) uint32 {
 
 func (r *Reader) ReadIPv4(vtableSlot int) uint32 {
 	off := r.fieldOffset(vtableSlot)
-	if off < 4 {
+	if off < 4 || int(off)+4 > len(r.object) {
 		return 0
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])

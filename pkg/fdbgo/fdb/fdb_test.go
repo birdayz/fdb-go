@@ -13,6 +13,79 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
+// TestMustGetPanic_RetryInTransact verifies that when MustGet() panics with
+// an fdb.Error inside Transact(), the panic is caught by panicToError(),
+// converted back to *wire.FDBError via unconvertError(), and the transaction
+// retries correctly. This is critical: without unconvertError, retryable
+// errors from MustGet() would escape the retry loop as fdb.Error (which
+// OnError doesn't recognize via errors.As(*wire.FDBError)).
+func TestMustGetPanic_RetryInTransact(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	key := fdb.Key("mustget_panic_test")
+
+	// Set up the key.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("value"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Use Transact with MustGet — should work normally (no panic).
+	result, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		val := tr.Get(key).MustGet()
+		return val, nil
+	})
+	if err != nil {
+		t.Fatalf("MustGet in Transact: %v", err)
+	}
+	if !bytes.Equal(result.([]byte), []byte("value")) {
+		t.Fatalf("got %q, want %q", result, "value")
+	}
+
+	// MustGet on non-existent key should return nil (not panic).
+	result, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		val := tr.Get(fdb.Key("definitely_nonexistent_key_xyz")).MustGet()
+		return val, nil
+	})
+	if err != nil {
+		t.Fatalf("MustGet nil: %v", err)
+	}
+	if result.([]byte) != nil {
+		t.Fatalf("expected nil, got %v", result)
+	}
+
+	// Clean up.
+	db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Clear(key)
+		return nil, nil
+	})
+}
+
+// TestPanicToError_NonFDBPanic verifies that non-error panics are re-panicked
+// (not swallowed).
+func TestPanicToError_NonFDBPanic(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic to propagate")
+		}
+		if r != "non-error panic" {
+			t.Fatalf("expected 'non-error panic', got %v", r)
+		}
+	}()
+
+	db.Transact(func(tr fdb.Transaction) (any, error) {
+		panic("non-error panic")
+	})
+}
+
 // openTestDB returns a Database connected to the shared FDB testcontainer.
 // Each call creates a fresh Database connection for option isolation.
 func openTestDB(t *testing.T) fdb.Database {

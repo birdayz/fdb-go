@@ -893,12 +893,16 @@ func (tx *Transaction) OnError(err error) error {
 		// MAYBE_COMMITTED: self-conflicting — copy write conflicts to read
 		// conflicts so the retry detects if our prior commit actually landed.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_MAYBE_COMMITTED, code).
+		tx.conflictMu.Lock()
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
 		copy(selfConflicts, tx.writeConflicts)
+		tx.conflictMu.Unlock()
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff(fdbErr.Code))
 		tx.reset()
+		tx.conflictMu.Lock()
 		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
+		tx.conflictMu.Unlock()
 		return nil
 
 	default:
@@ -1247,8 +1251,12 @@ func (tx *Transaction) postCommitReset() {
 	tx.readVersion = 0
 	tx.readVersionMu.Unlock()
 	tx.mutations = tx.mutations[:0]
+	// Hold conflictMu while clearing conflict slices: Watch() goroutines may
+	// be concurrently calling AddReadConflictKey() which appends under this lock.
+	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// committedVersion and txnBatchId preserved intentionally.
 }
@@ -1264,8 +1272,12 @@ func (tx *Transaction) reset() {
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
 	tx.mutations = tx.mutations[:0]
+	// Hold conflictMu: Watch() goroutines may still be running after
+	// cancelWatches() (cancel is async — goroutines drain on ctx.Done).
+	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:
 	// onError does NOT update creationTime, so the timeout is an overall

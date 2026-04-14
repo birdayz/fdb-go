@@ -635,10 +635,10 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 
 	// Verify CreatePrefix on the default root DL fails (manual prefixes not allowed).
 	rootDir := directory.Root()
+	defer rootDir.Remove(db, []string{"should_fail_prefix"}) // cleanup if CreatePrefix incorrectly succeeds
 	_, err = rootDir.CreatePrefix(db, []string{"should_fail_prefix"}, nil, []byte{0xFF})
 	if err == nil {
 		t.Fatal("expected error using CreatePrefix on default root DL (manual prefixes disallowed)")
-		rootDir.Remove(db, []string{"should_fail_prefix"})
 	}
 
 	// Clean up.
@@ -648,4 +648,249 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 		tr.ClearRange(contentSS)
 		return nil, nil
 	})
+}
+
+// TestDirectoryLayerPartition verifies partition directory creation and
+// isolation. Partitions get their own directory layer namespace — they
+// can't see directories from the parent layer, and vice versa.
+// This exercises directoryPartition.go which has 0% test coverage.
+func TestDirectoryLayerPartition(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	// Create a partition.
+	partDS, err := dir.CreateOrOpen(db, []string{"test_partition", "part1"}, []byte("partition"))
+	if err != nil {
+		t.Fatalf("create partition: %v", err)
+	}
+	if string(partDS.GetLayer()) != "partition" {
+		t.Errorf("layer: got %q, want %q", partDS.GetLayer(), "partition")
+	}
+	t.Logf("partition created at path test_partition/part1")
+
+	// Create a subdirectory inside the partition.
+	childDS, err := dir.CreateOrOpen(db, []string{"test_partition", "part1", "child"}, nil)
+	if err != nil {
+		t.Fatalf("create child in partition: %v", err)
+	}
+	t.Logf("child subspace prefix: %x", childDS.Bytes())
+
+	// Write data in the child subspace.
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(childDS.Pack(tuple.Tuple{"hello"}), []byte("world"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Read it back.
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(childDS.Pack(tuple.Tuple{"hello"})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(result.([]byte)) != "world" {
+		t.Fatalf("got %q, want %q", result, "world")
+	}
+
+	// List the partition's contents — should see "child".
+	children, err := dir.List(db, []string{"test_partition", "part1"})
+	if err != nil {
+		t.Fatalf("list partition: %v", err)
+	}
+	if len(children) != 1 || children[0] != "child" {
+		t.Errorf("list: got %v, want [child]", children)
+	}
+
+	// Verify the partition exists.
+	exists, err := dir.Exists(db, []string{"test_partition", "part1"})
+	if err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if !exists {
+		t.Error("partition should exist")
+	}
+
+	// Verify the child inside the partition exists.
+	exists, err = dir.Exists(db, []string{"test_partition", "part1", "child"})
+	if err != nil {
+		t.Fatalf("child exists: %v", err)
+	}
+	if !exists {
+		t.Error("child in partition should exist")
+	}
+
+	// Clean up: remove the partition (should remove child too).
+	removed, err := dir.Remove(db, []string{"test_partition", "part1"})
+	if err != nil {
+		t.Fatalf("remove partition: %v", err)
+	}
+	if !removed {
+		t.Error("expected partition to be removed")
+	}
+
+	// Verify the child is gone after partition removal.
+	exists, err = dir.Exists(db, []string{"test_partition", "part1", "child"})
+	if err != nil {
+		t.Fatalf("child exists after remove: %v", err)
+	}
+	if exists {
+		t.Error("child should not exist after partition removal")
+	}
+
+	// Clean up parent.
+	dir.Remove(db, []string{"test_partition"})
+}
+
+// TestDirectoryLayerPartitionIsolation verifies that a partition's
+// subdirectory namespace is isolated from the root directory layer.
+func TestDirectoryLayerPartitionIsolation(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	// Create a regular directory and a partition at the same level.
+	_, err := dir.CreateOrOpen(db, []string{"iso_test", "regular"}, nil)
+	if err != nil {
+		t.Fatalf("create regular: %v", err)
+	}
+
+	_, err = dir.CreateOrOpen(db, []string{"iso_test", "partitioned"}, []byte("partition"))
+	if err != nil {
+		t.Fatalf("create partition: %v", err)
+	}
+
+	// Create "foo" inside the partition.
+	_, err = dir.CreateOrOpen(db, []string{"iso_test", "partitioned", "foo"}, nil)
+	if err != nil {
+		t.Fatalf("create foo in partition: %v", err)
+	}
+
+	// List the partition — should only show "foo", not "regular".
+	partChildren, err := dir.List(db, []string{"iso_test", "partitioned"})
+	if err != nil {
+		t.Fatalf("list partition: %v", err)
+	}
+	for _, c := range partChildren {
+		if c == "regular" {
+			t.Error("partition should NOT see 'regular' from parent layer")
+		}
+	}
+	if len(partChildren) != 1 || partChildren[0] != "foo" {
+		t.Errorf("partition children: got %v, want [foo]", partChildren)
+	}
+
+	// List the parent — should show "regular" and "partitioned", not "foo".
+	parentChildren, err := dir.List(db, []string{"iso_test"})
+	if err != nil {
+		t.Fatalf("list parent: %v", err)
+	}
+	found := map[string]bool{}
+	for _, c := range parentChildren {
+		found[c] = true
+	}
+	if !found["regular"] || !found["partitioned"] {
+		t.Errorf("parent should contain regular and partitioned, got %v", parentChildren)
+	}
+	if found["foo"] {
+		t.Error("parent should NOT see 'foo' from inside partition")
+	}
+
+	// Clean up.
+	dir.Remove(db, []string{"iso_test"})
+}
+
+// TestDirectoryLayerPartitionData verifies that data written in a partition
+// subspace is accessible via the partition's allocated prefix.
+func TestDirectoryLayerPartitionData(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	// Create partition, then a child dir.
+	_, err := dir.CreateOrOpen(db, []string{"data_test", "part"}, []byte("partition"))
+	if err != nil {
+		t.Fatalf("create partition: %v", err)
+	}
+
+	childDS, err := dir.CreateOrOpen(db, []string{"data_test", "part", "store"}, nil)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	// Write data at child.
+	key := childDS.Pack(tuple.Tuple{"record", int64(42)})
+	_, err = db.Transact(func(tr gofdb.Transaction) (any, error) {
+		tr.Set(key, []byte("data42"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Read back via the same path — should get the same subspace.
+	childDS2, err := dir.Open(db, []string{"data_test", "part", "store"}, nil)
+	if err != nil {
+		t.Fatalf("open child: %v", err)
+	}
+
+	if !bytes.Equal(childDS.Bytes(), childDS2.Bytes()) {
+		t.Fatalf("prefix changed: first=%x second=%x", childDS.Bytes(), childDS2.Bytes())
+	}
+
+	// Verify data via reopened subspace.
+	result, err := db.Transact(func(tr gofdb.Transaction) (any, error) {
+		return tr.Get(childDS2.Pack(tuple.Tuple{"record", int64(42)})).MustGet(), nil
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(result.([]byte)) != "data42" {
+		t.Fatalf("data mismatch: got %q, want %q", result, "data42")
+	}
+
+	// Clean up.
+	dir.Remove(db, []string{"data_test"})
+}
+
+// TestDirectoryLayerPartitionPanics verifies that trying to use a partition
+// root as a subspace panics, matching the Python/Java behavior.
+func TestDirectoryLayerPartitionPanics(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	dir := directory.Root()
+
+	partDS, err := dir.CreateOrOpen(db, []string{"panic_test", "part"}, []byte("partition"))
+	if err != nil {
+		t.Fatalf("create partition: %v", err)
+	}
+
+	// Using the partition root as a subspace should panic.
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"Bytes", func() { partDS.Bytes() }},
+		{"Sub", func() { partDS.Sub("x") }},
+		{"Pack", func() { partDS.Pack(tuple.Tuple{"x"}) }},
+		{"FDBKey", func() { partDS.FDBKey() }},
+		{"FDBRangeKeys", func() { partDS.FDBRangeKeys() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("%s on partition root should panic", tt.name)
+				}
+			}()
+			tt.fn()
+		})
+	}
+
+	// Clean up.
+	dir.Remove(db, []string{"panic_test"})
 }
