@@ -236,7 +236,9 @@ type Transaction struct {
 
 	// proxyTagThrottledDuration: accumulated proxy tag throttle delay.
 	// Incremented from GRV reply's ProxyTagThrottledDuration field.
-	// Accumulated but not yet sent back to proxy (see TODO.md).
+	// Reply-only (proxy→client). C++ does not serialize this field in the
+	// commit request: "Not serialized, because this field does not need to
+	// be sent to master" (CommitProxyInterface.h:318).
 	proxyTagThrottledDuration float64
 
 	// isDummy: true for dummy transactions created by commitDummyTransaction.
