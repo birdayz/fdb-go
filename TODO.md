@@ -142,7 +142,9 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 _Go wins 5/8 benchmarks vs Java Record Layer. LoadRecord 0.61x, ScanRecords 0.73x, StoreOpen 0.85x._
 
-No open performance items.
+#### MEDIUM
+
+- [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates a new proto message via reflection on every record scan (77.5MB / 564K allocs in BenchmarkScanRecords). vtprotobuf's `ResetVT()` + `sync.Pool` per record type could eliminate ~9% of scan allocations. Requires careful lifetime management — callers must not hold references to pooled messages.
 
 ### Tests
 
