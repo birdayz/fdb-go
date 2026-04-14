@@ -26,7 +26,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	}
 
 	tx := store.context.Transaction()
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---

@@ -89,6 +89,7 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
+	recordsSubspace    subspace.Subspace          // Cached subspace.Sub(RecordKey) — avoids alloc per method call
 	storeHeader        *gen.DataStoreInfo         // Cached store header, loaded on Open/Create
 	indexStates        map[string]IndexState      // Cached index states, loaded on Open/Create
 	indexRebuildPolicy IndexRebuildPolicy         // Policy for rebuilding indexes on metadata version change
@@ -201,7 +202,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
 	startTime := time.Now()
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	var sizeInfo sizeInfo
 	value, err := loadWithSplit(
@@ -263,7 +264,7 @@ func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
 	startTime := time.Now()
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Load existing record to get size info and record data (for counting)
@@ -368,7 +369,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 //
 // Java equivalent: FDBRecordStore.recordExistsAsync(Tuple primaryKey, IsolationLevel isolationLevel)
 func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel IsolationLevel) (bool, error) {
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	var tx fdb.ReadTransaction
 	if isolationLevel.IsSnapshot() {
@@ -442,7 +443,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		primaryKey[i] = v
 	}
 
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Always load the existing record (matching Java's saveRecordAsync behavior).
@@ -699,7 +700,7 @@ func (store *FDBRecordStore) hasVersionIndex() bool {
 // This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
 // The range covers all keys that start with the primary key tuple (e.g., {orderID, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	// Pack the primary key directly (Java's TupleRange.allOf approach)
 	// This gives us recordsSubspace.pack(primaryKey)
@@ -1154,7 +1155,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 ) RecordCursor[*FDBStoredRecord[proto.Message]] {
 	// Calculate the prefix length for proper continuation handling
 	// This is the length of the records subspace prefix
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	prefixLength := len(recordsSubspace.FDBKey())
 
 	return &keyValueCursor{
@@ -1534,7 +1535,7 @@ func (store *FDBRecordStore) EstimateStoreSize() (int64, error) {
 // EstimateRecordsSize returns the estimated byte size of the records subspace only.
 // Matches Java's FDBRecordStore.estimateRecordsSizeAsync().
 func (store *FDBRecordStore) EstimateRecordsSize() (int64, error) {
-	recordsSub := store.subspace.Sub(RecordKey)
+	recordsSub := store.recordsSubspace
 	begin, end := recordsSub.FDBRangeKeys()
 	kr := fdb.KeyRange{Begin: begin, End: end}
 	return store.context.Transaction().GetEstimatedRangeSizeBytes(kr).Get()

@@ -556,6 +556,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		context:            b.context,
 		metaData:           b.metaData,
 		subspace:           b.subspace,
+		recordsSubspace:    b.subspace.Sub(RecordKey),
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 	}
