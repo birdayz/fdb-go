@@ -193,6 +193,17 @@ message KafkaOffset {
   optional int64 updated_at = 4;
 }
 
+// DeadLetter stores malformed or unprocessable events from the Kafka consumer.
+message DeadLetter {
+  optional string id = 1;
+  optional string topic = 2;
+  optional int32 partition = 3;
+  optional int64 offset = 4;
+  optional bytes raw_value = 5;      // original Kafka record value
+  optional string error_message = 6; // why it was rejected
+  optional int64 created_at = 7;
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 message UnionDescriptor {
@@ -206,4 +217,5 @@ message UnionDescriptor {
   optional Credit _Credit = 8;
   optional Alert _Alert = 9;
   optional KafkaOffset _KafkaOffset = 10;
+  optional DeadLetter _DeadLetter = 11;
 }

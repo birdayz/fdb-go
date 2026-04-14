@@ -72,6 +72,10 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.GetRecordType("KafkaOffset").SetPrimaryKey(
 		rl.Concat(rl.RecordTypeKey(), rl.Field("topic"), rl.Field("partition")))
 
+	// DeadLetter: lookup by id
+	builder.GetRecordType("DeadLetter").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
 	// --- Secondary indexes ---
 
 	// Meter slug must be unique
@@ -148,6 +152,7 @@ func (d *DB) Invoices() *InvoiceStore         { return &InvoiceStore{db: d} }
 func (d *DB) Credits() *CreditStore           { return &CreditStore{db: d} }
 func (d *DB) Alerts() *AlertStore             { return &AlertStore{db: d} }
 func (d *DB) KafkaOffsets() *KafkaOffsetStore { return &KafkaOffsetStore{db: d} }
+func (d *DB) DeadLetters() *DeadLetterStore   { return &DeadLetterStore{db: d} }
 
 // run executes fn within a transaction with an open FDBRecordStore.
 func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) (any, error) {

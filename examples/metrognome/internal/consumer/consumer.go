@@ -119,18 +119,28 @@ func (c *Consumer) processPartition(ctx context.Context, p kgo.FetchTopicPartiti
 		group  map[string]string
 	}
 	var events []parsedEvent
+	var deadLetters []*storev1.DeadLetter
 
 	now := time.Now().UnixMilli()
 	for _, record := range p.Records {
 		evt, groupVals, err := parseKafkaRecord(record, now)
 		if err != nil {
-			c.log.Warn("skip malformed event", "offset", record.Offset, "error", err)
+			c.log.Warn("dead letter: malformed event", "offset", record.Offset, "error", err)
+			deadLetters = append(deadLetters, &storev1.DeadLetter{
+				Id:           proto.String(fmt.Sprintf("dl_%s_%d_%d", p.Topic, p.Partition, record.Offset)),
+				Topic:        proto.String(p.Topic),
+				Partition:    proto.Int32(p.Partition),
+				Offset:       proto.Int64(record.Offset),
+				RawValue:     record.Value,
+				ErrorMessage: proto.String(err.Error()),
+				CreatedAt:    proto.Int64(now),
+			})
 			continue
 		}
 		events = append(events, parsedEvent{record: evt, raw: record, group: groupVals})
 	}
 
-	if len(events) == 0 {
+	if len(events) == 0 && len(deadLetters) == 0 {
 		return nil
 	}
 
@@ -175,6 +185,13 @@ func (c *Consumer) processPartition(ctx context.Context, p kgo.FetchTopicPartiti
 					evt.record.GetTimestampBucket(),
 					evt.record.GetValue(),
 					evt.group)
+			}
+		}
+
+		// Write dead letters
+		for _, dl := range deadLetters {
+			if _, err := store.SaveRecord(dl); err != nil {
+				return nil, fmt.Errorf("save dead letter: %w", err)
 			}
 		}
 
@@ -247,9 +264,4 @@ func parseKafkaRecord(record *kgo.Record, now int64) (*storev1.UsageEvent, map[s
 		IngestedAt:      proto.Int64(now),
 		TimestampBucket: proto.Int64(billing.BucketHour(ts)),
 	}, evt.Properties, nil
-}
-
-// newRandomID generates a unique ID for Kafka-ingested events.
-func newRandomID() string {
-	return fmt.Sprintf("kafka_%d", time.Now().UnixNano())
 }

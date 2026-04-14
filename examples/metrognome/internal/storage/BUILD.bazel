@@ -9,6 +9,7 @@ go_library(
         "credit.go",
         "customer.go",
         "db.go",
+        "dead_letter.go",
         "event.go",
         "invoice.go",
         "kafka_offset.go",

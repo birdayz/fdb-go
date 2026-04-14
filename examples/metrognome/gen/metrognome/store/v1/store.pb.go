@@ -1745,6 +1745,99 @@ func (x *KafkaOffset) GetUpdatedAt() int64 {
 	return 0
 }
 
+// DeadLetter stores malformed or unprocessable events from the Kafka consumer.
+type DeadLetter struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	Topic         *string                `protobuf:"bytes,2,opt,name=topic" json:"topic,omitempty"`
+	Partition     *int32                 `protobuf:"varint,3,opt,name=partition" json:"partition,omitempty"`
+	Offset        *int64                 `protobuf:"varint,4,opt,name=offset" json:"offset,omitempty"`
+	RawValue      []byte                 `protobuf:"bytes,5,opt,name=raw_value,json=rawValue" json:"raw_value,omitempty"`             // original Kafka record value
+	ErrorMessage  *string                `protobuf:"bytes,6,opt,name=error_message,json=errorMessage" json:"error_message,omitempty"` // why it was rejected
+	CreatedAt     *int64                 `protobuf:"varint,7,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeadLetter) Reset() {
+	*x = DeadLetter{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeadLetter) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeadLetter) ProtoMessage() {}
+
+func (x *DeadLetter) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeadLetter.ProtoReflect.Descriptor instead.
+func (*DeadLetter) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *DeadLetter) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetTopic() string {
+	if x != nil && x.Topic != nil {
+		return *x.Topic
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetPartition() int32 {
+	if x != nil && x.Partition != nil {
+		return *x.Partition
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetOffset() int64 {
+	if x != nil && x.Offset != nil {
+		return *x.Offset
+	}
+	return 0
+}
+
+func (x *DeadLetter) GetRawValue() []byte {
+	if x != nil {
+		return x.RawValue
+	}
+	return nil
+}
+
+func (x *DeadLetter) GetErrorMessage() string {
+	if x != nil && x.ErrorMessage != nil {
+		return *x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *DeadLetter) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 type UnionDescriptor struct {
@@ -1759,13 +1852,14 @@ type UnionDescriptor struct {
 	XCredit       *Credit                `protobuf:"bytes,8,opt,name=_Credit,json=Credit" json:"_Credit,omitempty"`
 	XAlert        *Alert                 `protobuf:"bytes,9,opt,name=_Alert,json=Alert" json:"_Alert,omitempty"`
 	XKafkaOffset  *KafkaOffset           `protobuf:"bytes,10,opt,name=_KafkaOffset,json=KafkaOffset" json:"_KafkaOffset,omitempty"`
+	XDeadLetter   *DeadLetter            `protobuf:"bytes,11,opt,name=_DeadLetter,json=DeadLetter" json:"_DeadLetter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnionDescriptor) Reset() {
 	*x = UnionDescriptor{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[19]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1777,7 +1871,7 @@ func (x *UnionDescriptor) String() string {
 func (*UnionDescriptor) ProtoMessage() {}
 
 func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[19]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1790,7 +1884,7 @@ func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnionDescriptor.ProtoReflect.Descriptor instead.
 func (*UnionDescriptor) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{19}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UnionDescriptor) GetXCustomer() *Customer {
@@ -1859,6 +1953,13 @@ func (x *UnionDescriptor) GetXAlert() *Alert {
 func (x *UnionDescriptor) GetXKafkaOffset() *KafkaOffset {
 	if x != nil {
 		return x.XKafkaOffset
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXDeadLetter() *DeadLetter {
+	if x != nil {
+		return x.XDeadLetter
 	}
 	return nil
 }
@@ -2008,7 +2109,17 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\tpartition\x18\x02 \x01(\x05R\tpartition\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x03R\x06offset\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x04 \x01(\x03R\tupdatedAt\"\xcb\x04\n" +
+	"updated_at\x18\x04 \x01(\x03R\tupdatedAt\"\xc9\x01\n" +
+	"\n" +
+	"DeadLetter\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x1c\n" +
+	"\tpartition\x18\x03 \x01(\x05R\tpartition\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x03R\x06offset\x12\x1b\n" +
+	"\traw_value\x18\x05 \x01(\fR\brawValue\x12#\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\"\x8d\x05\n" +
 	"\x0fUnionDescriptor\x12:\n" +
 	"\t_Customer\x18\x01 \x01(\v2\x1d.metrognome.store.v1.CustomerR\bCustomer\x121\n" +
 	"\x06_Meter\x18\x02 \x01(\v2\x1a.metrognome.store.v1.MeterR\x05Meter\x12.\n" +
@@ -2021,7 +2132,9 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\a_Credit\x18\b \x01(\v2\x1b.metrognome.store.v1.CreditR\x06Credit\x121\n" +
 	"\x06_Alert\x18\t \x01(\v2\x1a.metrognome.store.v1.AlertR\x05Alert\x12C\n" +
 	"\f_KafkaOffset\x18\n" +
-	" \x01(\v2 .metrognome.store.v1.KafkaOffsetR\vKafkaOffset*\xbd\x01\n" +
+	" \x01(\v2 .metrognome.store.v1.KafkaOffsetR\vKafkaOffset\x12@\n" +
+	"\v_DeadLetter\x18\v \x01(\v2\x1f.metrognome.store.v1.DeadLetterR\n" +
+	"DeadLetter*\xbd\x01\n" +
 	"\x0fAggregationType\x12 \n" +
 	"\x1cAGGREGATION_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AGGREGATION_TYPE_COUNT\x10\x01\x12\x18\n" +
@@ -2059,7 +2172,7 @@ func file_metrognome_store_v1_store_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_store_v1_store_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 20)
+	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 21)
 	file_metrognome_store_v1_store_proto_goTypes   = []any{
 		(AggregationType)(0),    // 0: metrognome.store.v1.AggregationType
 		(BillingPeriod)(0),      // 1: metrognome.store.v1.BillingPeriod
@@ -2084,7 +2197,8 @@ var (
 		(*Credit)(nil),          // 20: metrognome.store.v1.Credit
 		(*Alert)(nil),           // 21: metrognome.store.v1.Alert
 		(*KafkaOffset)(nil),     // 22: metrognome.store.v1.KafkaOffset
-		(*UnionDescriptor)(nil), // 23: metrognome.store.v1.UnionDescriptor
+		(*DeadLetter)(nil),      // 23: metrognome.store.v1.DeadLetter
+		(*UnionDescriptor)(nil), // 24: metrognome.store.v1.UnionDescriptor
 	}
 )
 
@@ -2113,11 +2227,12 @@ var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	20, // 21: metrognome.store.v1.UnionDescriptor._Credit:type_name -> metrognome.store.v1.Credit
 	21, // 22: metrognome.store.v1.UnionDescriptor._Alert:type_name -> metrognome.store.v1.Alert
 	22, // 23: metrognome.store.v1.UnionDescriptor._KafkaOffset:type_name -> metrognome.store.v1.KafkaOffset
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	23, // 24: metrognome.store.v1.UnionDescriptor._DeadLetter:type_name -> metrognome.store.v1.DeadLetter
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_store_v1_store_proto_init() }
@@ -2139,7 +2254,7 @@ func file_metrognome_store_v1_store_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_store_v1_store_proto_rawDesc), len(file_metrognome_store_v1_store_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   20,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
