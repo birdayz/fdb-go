@@ -69,6 +69,10 @@ func main() {
 
 	stacktester, btRunDir := setup()
 
+	// Clean up stale containers from previous runs (killed processes, etc.).
+	// Match containers named fdb-stress-* that are older than 1 hour.
+	exec.Command("docker", "rm", "-f", containerName).Run()
+
 	// Create timestamped output directory.
 	if *outDir == "" {
 		*outDir = filepath.Join("binding-stress-out", time.Now().Format("20060102-150405"))
@@ -203,6 +207,9 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 		r.Error = "docker run failed: " + strings.TrimSpace(string(out))
 		return r
 	}
+	// Clean up container when this seed finishes (regardless of success/failure).
+	// Without this, containers leak on early returns, process kill, or Ctrl-C.
+	defer exec.Command("docker", "rm", "-f", containerName).Run()
 
 	// Wait for FDB process to start, then configure, then wait for healthy.
 	time.Sleep(3 * time.Second)
