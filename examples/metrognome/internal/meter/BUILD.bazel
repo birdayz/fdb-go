@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "meter",
+    srcs = ["engine.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter",
+    visibility = ["//examples/metrognome:__subpackages__"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+go_test(
+    name = "meter_test",
+    srcs = ["engine_test.go"],
+    deps = [
+        ":meter",
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
