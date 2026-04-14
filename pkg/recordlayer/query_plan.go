@@ -232,6 +232,24 @@ func (p *LimitPlan) Explain(indent int) string {
 	return fmt.Sprintf("%sLimit(%d)\n%s", prefix, p.Limit, childExplain)
 }
 
+// SkipPlan wraps a child plan and skips the first N results.
+// Matches SQL's OFFSET N.
+type SkipPlan struct {
+	Child RecordQueryPlan
+	Skip  int
+}
+
+func (p *SkipPlan) Execute(store *FDBRecordStore, continuation []byte, props ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	inner := p.Child.Execute(store, continuation, props)
+	return SkipCursor(inner, p.Skip)
+}
+
+func (p *SkipPlan) Explain(indent int) string {
+	prefix := strings.Repeat("  ", indent)
+	childExplain := p.Child.Explain(indent + 1)
+	return fmt.Sprintf("%sSkip(%d)\n%s", prefix, p.Skip, childExplain)
+}
+
 // ReversePlan wraps a child plan and reverses the scan direction.
 // Only works with plans that support reverse scanning (ScanPlan, IndexPlan).
 type ReversePlan struct {

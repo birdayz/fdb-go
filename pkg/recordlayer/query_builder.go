@@ -67,6 +67,12 @@ func (qb *QueryBuilder) Limit(n int) *QueryBuilder {
 	return qb
 }
 
+// Skip skips the first N results (SQL OFFSET N).
+func (qb *QueryBuilder) Skip(n int) *QueryBuilder {
+	qb.plan = &SkipPlan{Child: qb.plan, Skip: n}
+	return qb
+}
+
 // Reverse reverses the scan direction.
 func (qb *QueryBuilder) Reverse() *QueryBuilder {
 	qb.plan = &ReversePlan{Child: qb.plan}

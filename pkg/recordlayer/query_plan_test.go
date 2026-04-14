@@ -386,6 +386,34 @@ var _ = Describe("Query Plan Execution", func() {
 		})
 	})
 
+	Describe("SkipPlan", func() {
+		It("skips first N records", func() {
+			ss := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+
+				// Skip 2, limit 2 — should get orders 3 and 4
+				plan := NewQueryFrom("Order").Skip(2).Limit(2).Build()
+				results, err := ExecuteAndCollect(ctx, store, plan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(results).To(HaveLen(2))
+				Expect(results[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(3)))
+				Expect(results[1].Record.(*gen.Order).GetOrderId()).To(Equal(int64(4)))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("RangeScanPlan", func() {
 		It("scans records within PK range", func() {
 			ss := specSubspace()
