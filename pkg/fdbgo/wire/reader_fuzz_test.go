@@ -39,6 +39,8 @@ func FuzzNewReader(f *testing.F) {
 			_, _ = r.ReadNestedReader(i)
 			_, _ = r.ReadVectorElementReader(i, 0)
 			_, _ = r.ReadUIDPair(i)
+			_, _ = r.ReadOptionalInt32(i, i+1)
+			_, _ = r.ReadOptionalString(i, i+1)
 		}
 	})
 }

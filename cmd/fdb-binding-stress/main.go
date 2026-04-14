@@ -69,8 +69,7 @@ func main() {
 
 	stacktester, btRunDir := setup()
 
-	// Clean up stale containers from previous runs (killed processes, etc.).
-	// Match containers named fdb-stress-* that are older than 1 hour.
+	// Remove any leftover container with our name from a previous run (same PID reuse, or killed process).
 	exec.Command("docker", "rm", "-f", containerName).Run()
 
 	// Create timestamped output directory.

@@ -345,11 +345,11 @@ func (r *Reader) ReadVectorUint64(vtableSlot int) []uint64 {
 // Optional uses 2 vtable slots: typeSlot (uint8 tag) and valueSlot (RelativeOffset).
 func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || r.object[typeOff] == 0 {
+	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
 		return 0, false
 	}
 	valOff := r.fieldOffset(valueSlot)
-	if valOff < 4 {
+	if valOff < 4 || int(valOff)+4 > len(r.object) {
 		return 0, false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
@@ -366,11 +366,11 @@ func (r *Reader) ReadOptionalInt32(typeSlot, valueSlot int) (int32, bool) {
 // ReadOptionalString reads an Optional<string>. Returns (value, present).
 func (r *Reader) ReadOptionalString(typeSlot, valueSlot int) (string, bool) {
 	typeOff := r.fieldOffset(typeSlot)
-	if typeOff < 4 || r.object[typeOff] == 0 {
+	if typeOff < 4 || typeOff+1 > len(r.object) || r.object[typeOff] == 0 {
 		return "", false
 	}
 	valOff := r.fieldOffset(valueSlot)
-	if valOff < 4 {
+	if valOff < 4 || int(valOff)+4 > len(r.object) {
 		return "", false
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[valOff:])
