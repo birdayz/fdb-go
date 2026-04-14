@@ -30,6 +30,7 @@ go_test(
     name = "storage_test",
     srcs = [
         "benchmark_test.go",
+        "chaos_test.go",
         "storage_test.go",
     ],
     deps = [
@@ -37,7 +38,9 @@ go_test(
         "//examples/metrognome/gen/metrognome/store/v1:store",
         "//examples/metrognome/internal/billing",
         "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
+        "//pkg/recordlayer/chaos",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",

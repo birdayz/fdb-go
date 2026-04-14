@@ -22,6 +22,7 @@ import (
 var (
 	testDB       *storage.DB
 	testRecordDB *rl.FDBDatabase
+	testFDBDB    fdb.Database // raw FDB database for chaos tests
 )
 
 func TestMain(m *testing.M) {
@@ -54,6 +55,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("failed to open FDB: " + err.Error())
 	}
+	testFDBDB = fdbDB
 	testRecordDB = rl.NewFDBDatabase(fdbDB)
 
 	testDB, err = storage.NewDB(testRecordDB)

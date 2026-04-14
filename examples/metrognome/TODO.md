@@ -294,7 +294,7 @@ examples/metrognome/
 - [x] P0: Invoice generation — single FDB transaction: read aggregates, compute charges, apply credits, write invoice
 - [x] P0: Credit system — grant, balance, drawdown by priority+expiry during invoicing
 - [x] P0: Timestamp bucketing for aggregation (hourly buckets, day-level aggregation in API)
-- [ ] P1: Invoice finalization and status transitions (draft → issued → paid → void)
+- [x] P1: Invoice status transitions (DRAFT→ISSUED→PAID, DRAFT→VOID, ISSUED→VOID) with state machine validation
 
 ### Phase 3: Exactly-Once Kafka Consumer
 - [x] P0: Kafka consumer with franz-go — per-partition batch tx, JSON event parsing
@@ -337,7 +337,7 @@ examples/metrognome/
 - [x] P1: Wire dynamic meter engine into EventService (dual-write: static + dynamic)
 - [x] P1: Persist meter registrations across restarts (loaded from main store on startup)
 - [x] P1: JSON property extraction for group-by values from properties_json
-- [ ] P2: Benchmark: invoice generation latency
+- [x] P2: Benchmark: invoice generation latency (1,267us/op = 789 invoices/sec)
 
 ---
 
