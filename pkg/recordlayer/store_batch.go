@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"encoding/binary"
 	"fmt"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -80,11 +81,24 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 	}
 
+	// Pre-compute the record count FDB key (same for all records in batch).
+	var countFDBKey []byte
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil && !store.isRecordCountDisabled() {
+		// For EmptyKey (ungrouped count), the key is always the same.
+		// For grouped counts, we'd need per-record evaluation — fall back to per-record.
+		if _, ok := countKey.(*EmptyKeyExpression); ok {
+			countSubspace := store.subspace.Sub(RecordCountKey)
+			countFDBKey = countSubspace.Pack(tuple.Tuple{})
+		}
+	}
+
 	// --- Phase 2: Collect futures + save each record ---
 	// By now FDB has pipelined all N Gets over the wire. Collecting them
 	// costs ~1 round trip total instead of N sequential round trips.
 
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
+	var insertCount int64
 
 	for i := range pending {
 		p := &pending[i]
@@ -147,8 +161,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			Split:      newsizeInfo.IsSplit,
 		}
 		if !oldRecordExists {
-			if err := store.addRecordCount(p.record, littleEndianInt64One); err != nil {
-				return nil, fmt.Errorf("record %d: record count: %w", i, err)
+			if countFDBKey != nil {
+				// Batched: just count inserts, single ADD at end
+				insertCount++
+			} else if countKey != nil {
+				// Grouped count or non-empty key: per-record ADD
+				if err := store.addRecordCount(p.record, littleEndianInt64One); err != nil {
+					return nil, fmt.Errorf("record %d: record count: %w", i, err)
+				}
 			}
 		}
 
@@ -169,6 +189,13 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		}
 
 		results[i] = stored
+	}
+
+	// Batch record count: single atomic ADD for all inserts
+	if countFDBKey != nil && insertCount > 0 {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], uint64(insertCount))
+		tx.Add(fdb.Key(countFDBKey), buf[:])
 	}
 
 	return results, nil
