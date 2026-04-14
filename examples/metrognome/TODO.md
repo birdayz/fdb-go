@@ -312,12 +312,12 @@ examples/metrognome/
 - [x] P2: Webhook delivery — async POST with 3 retries + exponential backoff, webhook_url on Alert
 
 ### Phase 5: Frontend
-- [ ] P2: React app scaffolding (Vite + Tailwind + shadcn)
-- [ ] P2: Customer dashboard
-- [ ] P2: Meter configuration UI
-- [ ] P2: Plan builder UI
-- [ ] P2: Usage charts (real-time aggregation display)
-- [ ] P2: Invoice viewer
+- [x] P2: React app scaffolding (Vite 7 + Tailwind 4 + ConnectRPC v2)
+- [x] P2: Customer dashboard (counts + CRUD)
+- [x] P2: Meter configuration UI (slug, aggregation type, group-by)
+- [x] P2: Plan builder UI (create + list)
+- [x] P2: Usage charts — event ingest form + usage query (last 24h)
+- [x] P2: Invoice viewer (search by customer, line items, credits, status badge)
 - [ ] P2: Credit management UI
 - [ ] P2: Bazel frontend build (rules_js, vite bundle)
 
