@@ -304,6 +304,25 @@ func ExecuteFirst(ctx context.Context, store *FDBRecordStore, plan RecordQueryPl
 	return results[0], nil
 }
 
+// ExecuteCount counts the results of a plan without materializing records.
+// More memory-efficient than len(ExecuteAndCollect(...)) for large result sets.
+func ExecuteCount(ctx context.Context, store *FDBRecordStore, plan RecordQueryPlan) (int, error) {
+	cursor := plan.Execute(store, nil, ForwardScan())
+	defer cursor.Close()
+	count := 0
+	for {
+		result, err := cursor.OnNext(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if !result.HasNext() {
+			break
+		}
+		count++
+	}
+	return count, nil
+}
+
 // singleRecordCursor returns one record then exhausts.
 type singleRecordCursor struct {
 	record *FDBStoredRecord[proto.Message]

@@ -135,6 +135,34 @@ var _ = Describe("QueryBuilder", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("counts with ExecuteCount", func() {
+		ss := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 10; i++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			// Count orders with price > 50
+			plan := NewQueryFrom("Order").
+				Filter("price > 50", func(r *FDBStoredRecord[proto.Message]) bool {
+					return r.Record.(*gen.Order).GetPrice() > 50
+				}).
+				Build()
+			count, err := ExecuteCount(ctx, store, plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(5)) // orders 6-10
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("explains built plan", func() {
 		plan := NewQueryFrom("Order").
 			Filter("price > 50", nil).
