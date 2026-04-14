@@ -141,11 +141,36 @@ No open test items.
 
 ---
 
-## Future: Query Planner + SQL Layer
+## Query Planner + SQL Layer
 
-**Not started. Blocked on: core must be rock solid first.**
+### Phase 0: Plan execution engine (DONE — dayshift-14)
 
-### Phase 1: Cascades query optimizer (~104K lines Java)
+9 plan types wrapping existing cursors. Execution engine only, no optimizer.
+Design sketch at `docs/query-planner-sketch.md`.
+
+| Plan | Wraps | Java equivalent |
+|---|---|---|
+| ScanPlan | ScanRecords/ScanRecordsByType | RecordQueryScanPlan |
+| IndexPlan | ScanIndexRecords | RecordQueryIndexPlan |
+| FilterPlan | filterCursor | RecordQueryFilterPlan |
+| IndexScanPlan | maintainer.Scan | RecordQueryCoveringIndexPlan |
+| PrimaryKeyLookupPlan | LoadRecord | (no direct equivalent) |
+| UnionPlan | Union cursor | RecordQueryUnionPlan |
+| IntersectionPlan | Intersection cursor | RecordQueryIntersectionPlan |
+| LimitPlan | LimitRowsCursor | (scan property) |
+| ReversePlan | ReverseScan props | (scan property) |
+
+Convenience: `ExecuteAndCollect(ctx, store, plan)`, `ExecuteFirst(ctx, store, plan)`.
+
+### Phase 1: Rule-based planner (~1-2K lines estimated)
+
+Simple planner that picks plans based on available indexes.
+NOT cascades — just enough for common patterns:
+- Single-index scan (field = value, field > value)
+- Covering index selection
+- Union/intersection for OR/AND
+
+### Phase 2: Cascades query optimizer (~104K lines Java)
 
 | Component | Java files | Java lines |
 |---|---|---|
