@@ -207,12 +207,29 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 		return nil, nil
 	}
 
+	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
+
+	// Fast path: EvaluateFlat for simple non-KeyWithValue, non-fan-out indexes.
+	// Avoids the [][]any allocation from Evaluate.
+	if !isKeyWithValue {
+		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+			values, err := fe.EvaluateFlat(record, record.Record)
+			if err == nil {
+				key := make(tuple.Tuple, len(values))
+				for j, v := range values {
+					key[j] = v
+				}
+				return []indexEntry{{key: key, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}}, nil
+			}
+			// Fall through on error (e.g. fan-out)
+		}
+	}
+
 	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}
 
-	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
 	entries := make([]indexEntry, len(tuples))
 	for i, values := range tuples {
 		if isKeyWithValue {
