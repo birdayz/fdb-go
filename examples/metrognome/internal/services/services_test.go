@@ -764,20 +764,31 @@ func TestE2EWindowedUsage(t *testing.T) {
 	// Query total (no window)
 	usageResp, err := eventClient.GetUsage(ctx, connect.NewRequest(&metrognomev1.GetUsageRequest{
 		CustomerId: custID, MeterSlug: "windowed_calls",
-		StartMs: hour1, EndMs: hour3 + 3600000, // cover all 3 hours
+		StartMs: hour1, EndMs: hour3 + 3600000,
 	}))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(usageResp.Msg.GetTotalValue()).To(Equal(int64(120))) // 30+40+50
 
-	// Query with hourly windows — should get 3 buckets via static store
-	// (The dynamic engine handles the total; for windowed breakdown we fall through to static)
-	// Actually GetUsage tries dynamic first and returns total without buckets.
-	// For windowed queries we need to fall through. Let me test the static path:
-	// Use a meter slug that's NOT in the dynamic engine to force static fallback
-	// For now, just verify the total is correct.
-	g.Expect(usageResp.Msg.GetTotalValue()).To(Equal(int64(120)))
+	// Query with hourly windows — should get 3 buckets
+	hourlyResp, err := eventClient.GetUsage(ctx, connect.NewRequest(&metrognomev1.GetUsageRequest{
+		CustomerId: custID, MeterSlug: "windowed_calls",
+		StartMs: hour1, EndMs: hour3 + 3600000,
+		WindowSize: metrognomev1.WindowSize_WINDOW_SIZE_HOUR,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(hourlyResp.Msg.GetTotalValue()).To(Equal(int64(120)))
+	g.Expect(hourlyResp.Msg.GetBuckets()).To(HaveLen(3))
 
-	// Query with DAY window — total should still be 120 (all same day)
+	// Verify bucket values
+	bucketValues := make(map[int64]int64)
+	for _, b := range hourlyResp.Msg.GetBuckets() {
+		bucketValues[b.GetStartMs()] = b.GetValue()
+	}
+	g.Expect(bucketValues[hour1]).To(Equal(int64(30)))
+	g.Expect(bucketValues[hour2]).To(Equal(int64(40)))
+	g.Expect(bucketValues[hour3]).To(Equal(int64(50)))
+
+	// Query with DAY window — all same day, should get 1 bucket with total 120
 	dayResp, err := eventClient.GetUsage(ctx, connect.NewRequest(&metrognomev1.GetUsageRequest{
 		CustomerId: custID, MeterSlug: "windowed_calls",
 		StartMs: hour1, EndMs: hour3 + 3600000,
@@ -785,6 +796,8 @@ func TestE2EWindowedUsage(t *testing.T) {
 	}))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(dayResp.Msg.GetTotalValue()).To(Equal(int64(120)))
+	g.Expect(dayResp.Msg.GetBuckets()).To(HaveLen(1))
+	g.Expect(dayResp.Msg.GetBuckets()[0].GetValue()).To(Equal(int64(120)))
 }
 
 // TestE2EListCharges tests listing charges for a plan.

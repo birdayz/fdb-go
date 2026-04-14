@@ -183,6 +183,70 @@ func (e *Engine) GetUsage(ctx context.Context, slug string, customerID string, s
 	return result.(int64), nil
 }
 
+// GetUsageBuckets returns per-bucket usage values by scanning the SUM index.
+func (e *Engine) GetUsageBuckets(ctx context.Context, slug string, customerID string, startBucket, endBucket int64, groupFilter map[string]string) (map[int64]int64, error) {
+	e.mu.RLock()
+	rt, ok := e.meters[slug]
+	e.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("meter %q not registered", slug)
+	}
+
+	// Build scan range (same logic as GetUsage)
+	allGroupsProvided := true
+	prefix := tuple.Tuple{customerID}
+	for _, prop := range rt.config.GetGroupByProperties() {
+		if v, ok := groupFilter[prop]; ok {
+			prefix = append(prefix, v)
+		} else {
+			allGroupsProvided = false
+			break
+		}
+	}
+
+	var scanRange rl.TupleRange
+	if allGroupsProvided {
+		rangeStart := append(append(tuple.Tuple{}, prefix...), startBucket)
+		rangeEnd := append(append(tuple.Tuple{}, prefix...), endBucket)
+		scanRange = rl.TupleRangeBetweenInclusive(rangeStart, rangeEnd)
+	} else {
+		scanRange = rl.TupleRangeAllOf(prefix)
+	}
+
+	result, err := e.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+		store, err := rl.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(rt.metadata).
+			SetSubspace(rt.ss).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		idx := store.GetRecordMetaData().GetIndex("usage_sum")
+		cursor := store.ScanIndex(idx, scanRange, nil, rl.ForwardScan())
+		entries, err := rl.AsList(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+
+		// Index key: [customer_id, group_by..., timestamp_bucket]
+		// The bucket is the last element in the key
+		buckets := make(map[int64]int64, len(entries))
+		for _, e := range entries {
+			bucketIdx := len(e.Key) - 1
+			bucket := e.Key[bucketIdx].(int64)
+			val := e.Value[0].(int64)
+			buckets[bucket] += val
+		}
+		return buckets, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(map[int64]int64), nil
+}
+
 // compileMeter builds the dynamic proto, registers it, and creates the metadata.
 func compileMeter(m *storev1.Meter, fdb *rl.FDBDatabase, parentSS subspace.Subspace) (*meterRuntime, error) {
 	slug := m.GetSlug()

@@ -145,6 +145,29 @@ func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrog
 			req.Msg.GetCustomerId(), startBucket, endBucket, nil)
 		if err == nil {
 			resp := &metrognomev1.GetUsageResponse{TotalValue: total}
+
+			// Add windowed breakdown if requested
+			if req.Msg.GetWindowSize() != metrognomev1.WindowSize_WINDOW_SIZE_UNSPECIFIED {
+				buckets, err := s.meterEngine.GetUsageBuckets(ctx, req.Msg.GetMeterSlug(),
+					req.Msg.GetCustomerId(), startBucket, endBucket, nil)
+				if err == nil {
+					windowMs := int64(3600 * 1000)
+					if req.Msg.GetWindowSize() == metrognomev1.WindowSize_WINDOW_SIZE_DAY {
+						windowMs = 24 * 3600 * 1000
+					}
+					windowAgg := make(map[int64]int64)
+					for bucket, val := range buckets {
+						window := (bucket / windowMs) * windowMs
+						windowAgg[window] += val
+					}
+					for window, val := range windowAgg {
+						resp.Buckets = append(resp.Buckets, &metrognomev1.UsageBucket{
+							StartMs: window, EndMs: window + windowMs, Value: val,
+						})
+					}
+				}
+			}
+
 			return connect.NewResponse(resp), nil
 		}
 		// Fall through to static store if meter not registered in dynamic engine
