@@ -167,6 +167,7 @@ func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEve
 		if err != nil {
 			return nil, err
 		}
+		msgs := make([]proto.Message, len(events))
 		for i := range events {
 			msg := dynamicpb.NewMessage(rt.msgDesc)
 			msg.Set(fdEventID, protoreflect.ValueOfString(fastID()))
@@ -178,11 +179,10 @@ func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEve
 					msg.Set(gfd.fd, protoreflect.ValueOfString(v))
 				}
 			}
-			if _, err := store.SaveRecord(msg); err != nil {
-				return nil, err
-			}
+			msgs[i] = msg
 		}
-		return nil, nil
+		_, err = store.SaveRecordBatch(msgs)
+		return nil, err
 	})
 	return err
 }
