@@ -22,10 +22,6 @@ type FDBMetaDataStore struct {
 // Matches Java's FDBMetaDataStore.CURRENT_KEY = Tuple.from((Object)null).
 var currentKey = tuple.Tuple{nil}
 
-// historyKeyPrefix is the prefix for historical metadata versions.
-// Matches Java's FDBMetaDataStore.HISTORY_KEY_PREFIX = Tuple.from("H").
-var historyKeyPrefix = tuple.Tuple{"H"}
-
 // NewFDBMetaDataStore creates a metadata store at the given subspace.
 func NewFDBMetaDataStore(ss subspace.Subspace) *FDBMetaDataStore {
 	return &FDBMetaDataStore{subspace: ss}
@@ -44,7 +40,9 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.Transaction, metaDataProto 
 	}
 
 	// Load existing metadata to archive as history.
-	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, &sizeInfo{})
+	// Capture sizeInfo to clear stale split chunks when overwriting.
+	var existingSize sizeInfo
+	existing, err := loadWithSplit(tx, s.subspace, currentKey, true, &existingSize)
 	if err != nil {
 		return fmt.Errorf("load existing metadata: %w", err)
 	}
@@ -60,7 +58,8 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.Transaction, metaDataProto 
 	}
 
 	// Save current with split support (matching Java).
-	if err := saveWithSplit(tx, s.subspace, currentKey, serialized, true, nil, &sizeInfo{}); err != nil {
+	// Pass existingSize so clearPreviousRecord removes stale split chunks.
+	if err := saveWithSplit(tx, s.subspace, currentKey, serialized, true, &existingSize, &sizeInfo{}); err != nil {
 		return fmt.Errorf("save metadata: %w", err)
 	}
 	return nil

@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
@@ -110,5 +112,27 @@ var _ = Describe("FDBMetaDataStore", func() {
 		ss := specSubspace()
 		store := NewFDBMetaDataStore(ss)
 		Expect(store.Subspace()).To(Equal(ss))
+	})
+
+	It("stores metadata at unsplit suffix 0 for Java wire compatibility", func() {
+		ss := specSubspace()
+		store := NewFDBMetaDataStore(ss)
+
+		mdProto := &gen.MetaData{Version: proto.Int32(1)}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return nil, store.SaveRecordMetaData(rtx.Transaction(), mdProto)
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the raw FDB key matches Java's format: subspace.pack(null, 0)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			expectedKey := ss.Pack(tuple.Tuple{nil, int64(unsplitRecord)})
+			value, getErr := rtx.Transaction().Get(fdb.Key(expectedKey)).Get()
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(value).NotTo(BeNil(), "metadata should be stored at unsplit suffix 0 key")
+			Expect(len(value)).To(BeNumerically(">", 0))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
