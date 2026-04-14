@@ -229,6 +229,36 @@ func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrog
 	return connect.NewResponse(resp), nil
 }
 
+func (s *EventService) GetUsageGroups(ctx context.Context, req *connect.Request[metrognomev1.GetUsageGroupsRequest]) (*connect.Response[metrognomev1.GetUsageGroupsResponse], error) {
+	if s.meterEngine == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("dynamic meter engine not configured"))
+	}
+
+	startBucket := billing.BucketHour(req.Msg.GetStartMs())
+	endBucket := billing.BucketHour(req.Msg.GetEndMs())
+
+	groups, err := s.meterEngine.GetUsageGroups(ctx, req.Msg.GetMeterSlug(),
+		req.Msg.GetCustomerId(), startBucket, endBucket)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get usage groups: %w", err))
+	}
+
+	var total int64
+	apiGroups := make([]*metrognomev1.UsageGroup, len(groups))
+	for i, g := range groups {
+		total += g.Value
+		apiGroups[i] = &metrognomev1.UsageGroup{
+			GroupValues: g.GroupValues,
+			Value:       g.Value,
+		}
+	}
+
+	return connect.NewResponse(&metrognomev1.GetUsageGroupsResponse{
+		TotalValue: total,
+		Groups:     apiGroups,
+	}), nil
+}
+
 func parseProperties(jsonStr string) map[string]string {
 	if jsonStr == "" || jsonStr == "{}" {
 		return nil

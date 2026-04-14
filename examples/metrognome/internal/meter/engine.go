@@ -247,6 +247,89 @@ func (e *Engine) GetUsageBuckets(ctx context.Context, slug string, customerID st
 	return result.(map[int64]int64), nil
 }
 
+// UsageGroupEntry holds usage for one combination of group-by values.
+type UsageGroupEntry struct {
+	GroupValues map[string]string
+	Value       int64
+}
+
+// GetUsageGroups returns usage broken down by group-by property values.
+// Scans all SUM index entries for the customer, aggregates by unique group combinations.
+func (e *Engine) GetUsageGroups(ctx context.Context, slug string, customerID string, startBucket, endBucket int64) ([]UsageGroupEntry, error) {
+	e.mu.RLock()
+	rt, ok := e.meters[slug]
+	e.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("meter %q not registered", slug)
+	}
+
+	if len(rt.config.GetGroupByProperties()) == 0 {
+		return nil, fmt.Errorf("meter %q has no group-by properties", slug)
+	}
+
+	result, err := e.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+		store, err := rl.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(rt.metadata).
+			SetSubspace(rt.ss).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+
+		idx := store.GetRecordMetaData().GetIndex("usage_sum")
+		cursor := store.ScanIndex(idx,
+			rl.TupleRangeAllOf(tuple.Tuple{customerID}),
+			nil, rl.ForwardScan())
+		entries, err := rl.AsList(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+
+		// Index key: [customer_id, group1, group2, ..., timestamp_bucket]
+		// Group by the group values (everything between customer_id and bucket)
+		groupProps := rt.config.GetGroupByProperties()
+		type groupKey string // serialized group values
+		groups := make(map[groupKey]*UsageGroupEntry)
+
+		for _, e := range entries {
+			// Extract group values from the key
+			gv := make(map[string]string, len(groupProps))
+			for i, prop := range groupProps {
+				if i+1 < len(e.Key)-1 { // skip customer_id (0) and bucket (last)
+					gv[prop] = fmt.Sprintf("%v", e.Key[i+1])
+				}
+			}
+
+			// Build a stable key for grouping
+			var gk string
+			for _, prop := range groupProps {
+				gk += prop + "=" + gv[prop] + ";"
+			}
+
+			val := e.Value[0].(int64)
+			if existing, ok := groups[groupKey(gk)]; ok {
+				existing.Value += val
+			} else {
+				groups[groupKey(gk)] = &UsageGroupEntry{
+					GroupValues: gv,
+					Value:       val,
+				}
+			}
+		}
+
+		result := make([]UsageGroupEntry, 0, len(groups))
+		for _, g := range groups {
+			result = append(result, *g)
+		}
+		return result, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]UsageGroupEntry), nil
+}
+
 // compileMeter builds the dynamic proto, registers it, and creates the metadata.
 func compileMeter(m *storev1.Meter, fdb *rl.FDBDatabase, parentSS subspace.Subspace) (*meterRuntime, error) {
 	slug := m.GetSlug()

@@ -40,6 +40,9 @@ const (
 	EventServiceIngestEventsProcedure = "/metrognome.v1.EventService/IngestEvents"
 	// EventServiceGetUsageProcedure is the fully-qualified name of the EventService's GetUsage RPC.
 	EventServiceGetUsageProcedure = "/metrognome.v1.EventService/GetUsage"
+	// EventServiceGetUsageGroupsProcedure is the fully-qualified name of the EventService's
+	// GetUsageGroups RPC.
+	EventServiceGetUsageGroupsProcedure = "/metrognome.v1.EventService/GetUsageGroups"
 )
 
 // EventServiceClient is a client for the metrognome.v1.EventService service.
@@ -49,6 +52,9 @@ type EventServiceClient interface {
 	IngestEvents(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
 	// GetUsage returns aggregated usage for a customer/meter over a time range.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
+	// GetUsageGroups returns usage broken down by group-by property values.
+	// Only works for meters with group_by_properties configured.
+	GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error)
 }
 
 // NewEventServiceClient constructs a client for the metrognome.v1.EventService service. By default,
@@ -74,13 +80,20 @@ func NewEventServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(eventServiceMethods.ByName("GetUsage")),
 			connect.WithClientOptions(opts...),
 		),
+		getUsageGroups: connect.NewClient[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse](
+			httpClient,
+			baseURL+EventServiceGetUsageGroupsProcedure,
+			connect.WithSchema(eventServiceMethods.ByName("GetUsageGroups")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // eventServiceClient implements EventServiceClient.
 type eventServiceClient struct {
-	ingestEvents *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
-	getUsage     *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
+	ingestEvents   *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
+	getUsage       *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
+	getUsageGroups *connect.Client[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse]
 }
 
 // IngestEvents calls metrognome.v1.EventService.IngestEvents.
@@ -93,6 +106,11 @@ func (c *eventServiceClient) GetUsage(ctx context.Context, req *connect.Request[
 	return c.getUsage.CallUnary(ctx, req)
 }
 
+// GetUsageGroups calls metrognome.v1.EventService.GetUsageGroups.
+func (c *eventServiceClient) GetUsageGroups(ctx context.Context, req *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error) {
+	return c.getUsageGroups.CallUnary(ctx, req)
+}
+
 // EventServiceHandler is an implementation of the metrognome.v1.EventService service.
 type EventServiceHandler interface {
 	// IngestEvents accepts a batch of usage events. Each event must have an
@@ -100,6 +118,9 @@ type EventServiceHandler interface {
 	IngestEvents(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
 	// GetUsage returns aggregated usage for a customer/meter over a time range.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
+	// GetUsageGroups returns usage broken down by group-by property values.
+	// Only works for meters with group_by_properties configured.
+	GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error)
 }
 
 // NewEventServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -121,12 +142,20 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(eventServiceMethods.ByName("GetUsage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	eventServiceGetUsageGroupsHandler := connect.NewUnaryHandler(
+		EventServiceGetUsageGroupsProcedure,
+		svc.GetUsageGroups,
+		connect.WithSchema(eventServiceMethods.ByName("GetUsageGroups")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/metrognome.v1.EventService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EventServiceIngestEventsProcedure:
 			eventServiceIngestEventsHandler.ServeHTTP(w, r)
 		case EventServiceGetUsageProcedure:
 			eventServiceGetUsageHandler.ServeHTTP(w, r)
+		case EventServiceGetUsageGroupsProcedure:
+			eventServiceGetUsageGroupsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -142,4 +171,8 @@ func (UnimplementedEventServiceHandler) IngestEvents(context.Context, *connect.R
 
 func (UnimplementedEventServiceHandler) GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.GetUsage is not implemented"))
+}
+
+func (UnimplementedEventServiceHandler) GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.GetUsageGroups is not implemented"))
 }

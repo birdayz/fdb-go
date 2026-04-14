@@ -235,6 +235,24 @@ func TestE2EWithGroupBy(t *testing.T) {
 	}))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(usageResp.Msg.GetTotalValue()).To(Equal(int64(1800)))
+
+	// Query usage broken down by group values
+	groupResp, err := eventClient.GetUsageGroups(ctx, connect.NewRequest(&metrognomev1.GetUsageGroupsRequest{
+		CustomerId: custID, MeterSlug: "svc_llm_tokens",
+		StartMs: ts - 3600000, EndMs: ts + 3600000,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(groupResp.Msg.GetTotalValue()).To(Equal(int64(1800)))
+	g.Expect(groupResp.Msg.GetGroups()).To(HaveLen(2)) // us-east-1/gpt-4 and eu-west-1/claude-4
+
+	// Verify group values
+	groupMap := make(map[string]int64) // "region:model" → value
+	for _, g := range groupResp.Msg.GetGroups() {
+		key := g.GetGroupValues()["region"] + ":" + g.GetGroupValues()["model"]
+		groupMap[key] = g.GetValue()
+	}
+	g.Expect(groupMap["us-east-1:gpt-4"]).To(Equal(int64(800)))     // 500 + 300
+	g.Expect(groupMap["eu-west-1:claude-4"]).To(Equal(int64(1000))) // 1000
 }
 
 func TestE2ECreditFlow(t *testing.T) {

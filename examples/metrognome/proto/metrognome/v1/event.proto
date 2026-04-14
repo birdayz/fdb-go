@@ -11,6 +11,10 @@ service EventService {
 
   // GetUsage returns aggregated usage for a customer/meter over a time range.
   rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+
+  // GetUsageGroups returns usage broken down by group-by property values.
+  // Only works for meters with group_by_properties configured.
+  rpc GetUsageGroups(GetUsageGroupsRequest) returns (GetUsageGroupsResponse);
 }
 
 message IngestEventsRequest {
@@ -54,4 +58,22 @@ message UsageBucket {
   int64 start_ms = 1;
   int64 end_ms = 2;
   int64 value = 3;
+}
+
+message GetUsageGroupsRequest {
+  string customer_id = 1;
+  string meter_slug = 2;
+  int64 start_ms = 3;
+  int64 end_ms = 4;
+}
+
+message GetUsageGroupsResponse {
+  int64 total_value = 1;
+  repeated UsageGroup groups = 2;
+}
+
+// UsageGroup holds usage for one combination of group-by property values.
+message UsageGroup {
+  map<string, string> group_values = 1; // e.g. {"region": "us-east-1", "model": "gpt-4"}
+  int64 value = 2;
 }

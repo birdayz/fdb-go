@@ -439,6 +439,179 @@ func (x *UsageBucket) GetValue() int64 {
 	return 0
 }
 
+type GetUsageGroupsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CustomerId    string                 `protobuf:"bytes,1,opt,name=customer_id,json=customerId,proto3" json:"customer_id,omitempty"`
+	MeterSlug     string                 `protobuf:"bytes,2,opt,name=meter_slug,json=meterSlug,proto3" json:"meter_slug,omitempty"`
+	StartMs       int64                  `protobuf:"varint,3,opt,name=start_ms,json=startMs,proto3" json:"start_ms,omitempty"`
+	EndMs         int64                  `protobuf:"varint,4,opt,name=end_ms,json=endMs,proto3" json:"end_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUsageGroupsRequest) Reset() {
+	*x = GetUsageGroupsRequest{}
+	mi := &file_metrognome_v1_event_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUsageGroupsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUsageGroupsRequest) ProtoMessage() {}
+
+func (x *GetUsageGroupsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_event_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUsageGroupsRequest.ProtoReflect.Descriptor instead.
+func (*GetUsageGroupsRequest) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_event_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetUsageGroupsRequest) GetCustomerId() string {
+	if x != nil {
+		return x.CustomerId
+	}
+	return ""
+}
+
+func (x *GetUsageGroupsRequest) GetMeterSlug() string {
+	if x != nil {
+		return x.MeterSlug
+	}
+	return ""
+}
+
+func (x *GetUsageGroupsRequest) GetStartMs() int64 {
+	if x != nil {
+		return x.StartMs
+	}
+	return 0
+}
+
+func (x *GetUsageGroupsRequest) GetEndMs() int64 {
+	if x != nil {
+		return x.EndMs
+	}
+	return 0
+}
+
+type GetUsageGroupsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TotalValue    int64                  `protobuf:"varint,1,opt,name=total_value,json=totalValue,proto3" json:"total_value,omitempty"`
+	Groups        []*UsageGroup          `protobuf:"bytes,2,rep,name=groups,proto3" json:"groups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetUsageGroupsResponse) Reset() {
+	*x = GetUsageGroupsResponse{}
+	mi := &file_metrognome_v1_event_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetUsageGroupsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetUsageGroupsResponse) ProtoMessage() {}
+
+func (x *GetUsageGroupsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_event_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetUsageGroupsResponse.ProtoReflect.Descriptor instead.
+func (*GetUsageGroupsResponse) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_event_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GetUsageGroupsResponse) GetTotalValue() int64 {
+	if x != nil {
+		return x.TotalValue
+	}
+	return 0
+}
+
+func (x *GetUsageGroupsResponse) GetGroups() []*UsageGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
+}
+
+// UsageGroup holds usage for one combination of group-by property values.
+type UsageGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GroupValues   map[string]string      `protobuf:"bytes,1,rep,name=group_values,json=groupValues,proto3" json:"group_values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // e.g. {"region": "us-east-1", "model": "gpt-4"}
+	Value         int64                  `protobuf:"varint,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UsageGroup) Reset() {
+	*x = UsageGroup{}
+	mi := &file_metrognome_v1_event_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UsageGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UsageGroup) ProtoMessage() {}
+
+func (x *UsageGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_v1_event_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UsageGroup.ProtoReflect.Descriptor instead.
+func (*UsageGroup) Descriptor() ([]byte, []int) {
+	return file_metrognome_v1_event_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *UsageGroup) GetGroupValues() map[string]string {
+	if x != nil {
+		return x.GroupValues
+	}
+	return nil
+}
+
+func (x *UsageGroup) GetValue() int64 {
+	if x != nil {
+		return x.Value
+	}
+	return 0
+}
+
 var File_metrognome_v1_event_proto protoreflect.FileDescriptor
 
 const file_metrognome_v1_event_proto_rawDesc = "" +
@@ -476,15 +649,34 @@ const file_metrognome_v1_event_proto_rawDesc = "" +
 	"\vUsageBucket\x12\x19\n" +
 	"\bstart_ms\x18\x01 \x01(\x03R\astartMs\x12\x15\n" +
 	"\x06end_ms\x18\x02 \x01(\x03R\x05endMs\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\x03R\x05value*T\n" +
+	"\x05value\x18\x03 \x01(\x03R\x05value\"\x89\x01\n" +
+	"\x15GetUsageGroupsRequest\x12\x1f\n" +
+	"\vcustomer_id\x18\x01 \x01(\tR\n" +
+	"customerId\x12\x1d\n" +
+	"\n" +
+	"meter_slug\x18\x02 \x01(\tR\tmeterSlug\x12\x19\n" +
+	"\bstart_ms\x18\x03 \x01(\x03R\astartMs\x12\x15\n" +
+	"\x06end_ms\x18\x04 \x01(\x03R\x05endMs\"l\n" +
+	"\x16GetUsageGroupsResponse\x12\x1f\n" +
+	"\vtotal_value\x18\x01 \x01(\x03R\n" +
+	"totalValue\x121\n" +
+	"\x06groups\x18\x02 \x03(\v2\x19.metrognome.v1.UsageGroupR\x06groups\"\xb1\x01\n" +
+	"\n" +
+	"UsageGroup\x12M\n" +
+	"\fgroup_values\x18\x01 \x03(\v2*.metrognome.v1.UsageGroup.GroupValuesEntryR\vgroupValues\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value\x1a>\n" +
+	"\x10GroupValuesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*T\n" +
 	"\n" +
 	"WindowSize\x12\x1b\n" +
 	"\x17WINDOW_SIZE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10WINDOW_SIZE_HOUR\x10\x01\x12\x13\n" +
-	"\x0fWINDOW_SIZE_DAY\x10\x022\xb4\x01\n" +
+	"\x0fWINDOW_SIZE_DAY\x10\x022\x93\x02\n" +
 	"\fEventService\x12W\n" +
 	"\fIngestEvents\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12K\n" +
-	"\bGetUsage\x12\x1e.metrognome.v1.GetUsageRequest\x1a\x1f.metrognome.v1.GetUsageResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
+	"\bGetUsage\x12\x1e.metrognome.v1.GetUsageRequest\x1a\x1f.metrognome.v1.GetUsageResponse\x12]\n" +
+	"\x0eGetUsageGroups\x12$.metrognome.v1.GetUsageGroupsRequest\x1a%.metrognome.v1.GetUsageGroupsResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
 
 var (
 	file_metrognome_v1_event_proto_rawDescOnce sync.Once
@@ -500,31 +692,39 @@ func file_metrognome_v1_event_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_v1_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-	file_metrognome_v1_event_proto_msgTypes  = make([]protoimpl.MessageInfo, 6)
+	file_metrognome_v1_event_proto_msgTypes  = make([]protoimpl.MessageInfo, 10)
 	file_metrognome_v1_event_proto_goTypes   = []any{
-		(WindowSize)(0),              // 0: metrognome.v1.WindowSize
-		(*IngestEventsRequest)(nil),  // 1: metrognome.v1.IngestEventsRequest
-		(*Event)(nil),                // 2: metrognome.v1.Event
-		(*IngestEventsResponse)(nil), // 3: metrognome.v1.IngestEventsResponse
-		(*GetUsageRequest)(nil),      // 4: metrognome.v1.GetUsageRequest
-		(*GetUsageResponse)(nil),     // 5: metrognome.v1.GetUsageResponse
-		(*UsageBucket)(nil),          // 6: metrognome.v1.UsageBucket
+		(WindowSize)(0),                // 0: metrognome.v1.WindowSize
+		(*IngestEventsRequest)(nil),    // 1: metrognome.v1.IngestEventsRequest
+		(*Event)(nil),                  // 2: metrognome.v1.Event
+		(*IngestEventsResponse)(nil),   // 3: metrognome.v1.IngestEventsResponse
+		(*GetUsageRequest)(nil),        // 4: metrognome.v1.GetUsageRequest
+		(*GetUsageResponse)(nil),       // 5: metrognome.v1.GetUsageResponse
+		(*UsageBucket)(nil),            // 6: metrognome.v1.UsageBucket
+		(*GetUsageGroupsRequest)(nil),  // 7: metrognome.v1.GetUsageGroupsRequest
+		(*GetUsageGroupsResponse)(nil), // 8: metrognome.v1.GetUsageGroupsResponse
+		(*UsageGroup)(nil),             // 9: metrognome.v1.UsageGroup
+		nil,                            // 10: metrognome.v1.UsageGroup.GroupValuesEntry
 	}
 )
 
 var file_metrognome_v1_event_proto_depIdxs = []int32{
-	2, // 0: metrognome.v1.IngestEventsRequest.events:type_name -> metrognome.v1.Event
-	0, // 1: metrognome.v1.GetUsageRequest.window_size:type_name -> metrognome.v1.WindowSize
-	6, // 2: metrognome.v1.GetUsageResponse.buckets:type_name -> metrognome.v1.UsageBucket
-	1, // 3: metrognome.v1.EventService.IngestEvents:input_type -> metrognome.v1.IngestEventsRequest
-	4, // 4: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
-	3, // 5: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
-	5, // 6: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	2,  // 0: metrognome.v1.IngestEventsRequest.events:type_name -> metrognome.v1.Event
+	0,  // 1: metrognome.v1.GetUsageRequest.window_size:type_name -> metrognome.v1.WindowSize
+	6,  // 2: metrognome.v1.GetUsageResponse.buckets:type_name -> metrognome.v1.UsageBucket
+	9,  // 3: metrognome.v1.GetUsageGroupsResponse.groups:type_name -> metrognome.v1.UsageGroup
+	10, // 4: metrognome.v1.UsageGroup.group_values:type_name -> metrognome.v1.UsageGroup.GroupValuesEntry
+	1,  // 5: metrognome.v1.EventService.IngestEvents:input_type -> metrognome.v1.IngestEventsRequest
+	4,  // 6: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
+	7,  // 7: metrognome.v1.EventService.GetUsageGroups:input_type -> metrognome.v1.GetUsageGroupsRequest
+	3,  // 8: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
+	5,  // 9: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
+	8,  // 10: metrognome.v1.EventService.GetUsageGroups:output_type -> metrognome.v1.GetUsageGroupsResponse
+	8,  // [8:11] is the sub-list for method output_type
+	5,  // [5:8] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_v1_event_proto_init() }
@@ -538,7 +738,7 @@ func file_metrognome_v1_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_v1_event_proto_rawDesc), len(file_metrognome_v1_event_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
