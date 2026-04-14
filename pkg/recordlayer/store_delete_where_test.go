@@ -425,4 +425,67 @@ var _ = Describe("DeleteRecordsWhere", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("clears split record chunks", func() {
+		// Split records store data across multiple KV pairs per record:
+		// pk.add(0) for header, pk.add(1), pk.add(2), ... for 100KB chunks.
+		// DeleteRecordsWhere must clear ALL chunks, not just the header.
+		ks := specSubspace()
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		builder.SetSplitLongRecords(true)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		orderTypeKey := md.GetRecordType("Order").GetRecordTypeKey()
+
+		// Save a 250KB order (will be split into 3 chunks) and a small customer.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(makeLargeOrder(1, 250_000))
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(1), Name: proto.String("test")})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Delete all Order records (including the 250KB split one).
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.DeleteRecordsWhere(tuple.Tuple{orderTypeKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify: Order is gone (including all split chunks), Customer is still there.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Order should be nil.
+			custTypeKey := md.GetRecordType("Customer").GetRecordTypeKey()
+			order, err := store.LoadRecord(tuple.Tuple{orderTypeKey, int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(order).To(BeNil(), "split order should be deleted")
+
+			// Customer should still exist.
+			cust, err := store.LoadRecord(tuple.Tuple{custTypeKey, int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cust).NotTo(BeNil(), "customer should survive")
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
 })
