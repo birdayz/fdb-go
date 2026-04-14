@@ -81,11 +81,24 @@ Single FDB transaction per invoice:
 - `internal/services/` — ConnectRPC handlers (8 services + helpers)
 - `internal/storage/` — FDB Record Layer stores (10 stores + db.go metadata)
 - `internal/billing/` — Pricing calculation (pricing.go) + invoice generation (engine.go)
+- `internal/meter/` — Dynamic meter engine (runtime proto generation)
 - `gen/` — Generated Go code from buf
+
+## Dynamic Meter Engine
+
+`internal/meter/` — the crown jewel. Runtime proto generation from user meter configs.
+
+When a user creates a meter with `group_by: ["region", "model"]`:
+1. We build a `FileDescriptorProto` at runtime with fields: `event_id`, `customer_id`, `region`, `model`, `timestamp_bucket`, `value`
+2. Register the dynamic message type via `protoregistry.GlobalTypes.RegisterMessage(dynamicpb.NewMessageType(...))`
+3. Create Record Layer metadata with SUM + COUNT indexes grouped by the user's dimensions
+4. Each meter gets its own FDB subspace and Record Layer store
+
+Users get arbitrary group-by dimensions without touching proto files. The dynamic proto is invisible — they just call `IngestEvent(slug, customerID, bucket, value, {"region": "us-east-1", "model": "gpt-4"})`.
 
 ## Tests
 
-9 integration tests against real FDB (testcontainers):
+14 integration tests across 2 test targets against real FDB (testcontainers):
 - Customer CRUD
 - Meter CRUD (slug uniqueness)
 - Event ingestion + idempotency dedup
@@ -95,6 +108,11 @@ Single FDB transaction per invoice:
 - All 6 pricing models (unit tests)
 - Zero usage invoice
 - Tiered invoice (150 events, 3 tiers)
+- Dynamic meter: no group-by (simple counter)
+- Dynamic meter: with group-by (region + model dimensions)
+- Dynamic meter: multi-bucket range queries
+- Dynamic meter: idempotent registration
+- Dynamic meter: unregistered meter error
 
 ## Design Decisions
 

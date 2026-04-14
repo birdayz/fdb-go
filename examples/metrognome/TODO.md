@@ -324,6 +324,15 @@ examples/metrognome/
 - [ ] P1: Chaos testing — commit_unknown with billing writes
 - [x] P1: Edge cases: zero usage invoices (tested), tiered pricing (tested), credit depletion (tested)
 - [ ] P2: Benchmark: event ingestion throughput
+
+### Phase 7: Dynamic Meter Engine
+- [x] P0: Runtime proto generation from meter config (dynamicpb + protodesc)
+- [x] P0: Per-meter Record Layer stores with SUM/COUNT indexes
+- [x] P0: Event ingestion into dynamic stores
+- [x] P0: Usage query with group-by filter
+- [x] P0: Integration tests (5 tests: simple, group-by, multi-bucket, idempotent, error)
+- [ ] P1: Wire dynamic meter engine into EventService (replace static usage indexes)
+- [ ] P1: Persist meter registrations across restarts (load from main store on startup)
 - [ ] P2: Benchmark: invoice generation latency
 
 ---
