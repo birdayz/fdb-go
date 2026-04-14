@@ -13,6 +13,13 @@ import (
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.FanType.
 type FanType int
 
+// Pre-allocated return values for Evaluate — avoids [][]any allocation on every call.
+// These are safe to share because callers only read the values, never mutate.
+var (
+	emptyKeyResult = [][]any{{}}    // EmptyKeyExpression result
+	nilKeyResult   = [][]any{{nil}} // FieldKeyExpression unset field result
+)
+
 const (
 	// FanTypeNone means the field must not be repeated. This is the default.
 	FanTypeNone FanType = iota
@@ -74,7 +81,7 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 	// For proto2 optional fields, unset → nil (matching Java's hasField() check).
 	// For proto3 fields (no presence), always returns the value.
 	if fd.HasPresence() && !m.Has(fd) {
-		return [][]any{{nil}}, nil
+		return nilKeyResult, nil
 	}
 	value := m.Get(fd)
 	result, err := scalarToInterface(fd, value)
@@ -288,7 +295,7 @@ func EmptyKey() KeyExpression {
 
 // Evaluate returns one empty tuple (no key components).
 func (e *EmptyKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
-	return [][]any{{}}, nil
+	return emptyKeyResult, nil
 }
 
 // FieldNames returns no field names.
