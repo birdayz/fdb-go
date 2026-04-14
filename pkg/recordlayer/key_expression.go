@@ -27,6 +27,10 @@ const (
 type FieldKeyExpression struct {
 	fieldName string
 	fanType   FanType
+	// cachedFD caches the protoreflect.FieldDescriptor for this field name,
+	// keyed by the message full name. Avoids ByName() map lookup per Evaluate.
+	cachedFDMsgName string
+	cachedFD        protoreflect.FieldDescriptor
 }
 
 // Field creates a key expression that extracts a single (non-repeated) field.
@@ -46,14 +50,20 @@ func FanOut(name string) KeyExpression {
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
 func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
-		// Nil message → result depends on FanType, matching Java's getNullResult().
 		return f.getNullResult(), nil
 	}
 	m := msg.ProtoReflect()
 
-	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-	if fd == nil {
-		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+	// Cache the field descriptor to avoid ByName() map lookup per call.
+	msgName := string(m.Descriptor().FullName())
+	fd := f.cachedFD
+	if f.cachedFDMsgName != msgName || fd == nil {
+		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+		if fd == nil {
+			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+		}
+		f.cachedFD = fd
+		f.cachedFDMsgName = msgName
 	}
 
 	if fd.IsList() {
@@ -312,16 +322,35 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
 func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
-	// Start with a single empty tuple
-	result := [][]any{{}}
+	// Fast path: if all children produce exactly 1 result (no fan-out),
+	// we can build a single tuple without cross-product allocations.
+	// This covers the vast majority of cases (simple PKs, index keys).
+	fast := make([]any, 0, len(c.expressions))
+	allSingle := true
 
 	for _, expr := range c.expressions {
 		childTuples, err := expr.Evaluate(record, msg)
 		if err != nil {
 			return nil, err
 		}
+		if len(childTuples) != 1 {
+			allSingle = false
+			break
+		}
+		fast = append(fast, childTuples[0]...)
+	}
 
-		// Cross-product: for each existing tuple, combine with each child tuple
+	if allSingle {
+		return [][]any{fast}, nil
+	}
+
+	// Slow path: cross-product for fan-out expressions
+	result := [][]any{{}}
+	for _, expr := range c.expressions {
+		childTuples, err := expr.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
 		var crossed [][]any
 		for _, existing := range result {
 			for _, child := range childTuples {
@@ -333,7 +362,6 @@ func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 		}
 		result = crossed
 	}
-
 	return result, nil
 }
 
