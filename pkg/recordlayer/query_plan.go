@@ -155,7 +155,7 @@ func (c *singleRecordCursor) OnNext(_ context.Context) (RecordCursorResult[*FDBS
 		return NewResultNoNext[*FDBStoredRecord[proto.Message]](SourceExhausted, &EndContinuation{}), nil
 	}
 	c.done = true
-	return NewResultWithValue(c.record, &EndContinuation{}), nil
+	return NewResultWithValue(c.record, &BytesContinuation{bytes: []byte{0}}), nil
 }
 
 func (c *singleRecordCursor) Close() error { return nil }
