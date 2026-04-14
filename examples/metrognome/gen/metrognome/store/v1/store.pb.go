@@ -1593,6 +1593,8 @@ type Alert struct {
 	AlertType     *AlertType             `protobuf:"varint,5,opt,name=alert_type,json=alertType,enum=metrognome.store.v1.AlertType" json:"alert_type,omitempty"`
 	Triggered     *bool                  `protobuf:"varint,6,opt,name=triggered" json:"triggered,omitempty"` // has it fired this period?
 	CreatedAt     *int64                 `protobuf:"varint,7,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	WebhookUrl    *string                `protobuf:"bytes,8,opt,name=webhook_url,json=webhookUrl" json:"webhook_url,omitempty"`     // URL to POST when triggered (optional)
+	TriggeredAt   *int64                 `protobuf:"varint,9,opt,name=triggered_at,json=triggeredAt" json:"triggered_at,omitempty"` // when it was triggered
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1672,6 +1674,20 @@ func (x *Alert) GetTriggered() bool {
 func (x *Alert) GetCreatedAt() int64 {
 	if x != nil && x.CreatedAt != nil {
 		return *x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Alert) GetWebhookUrl() string {
+	if x != nil && x.WebhookUrl != nil {
+		return *x.WebhookUrl
+	}
+	return ""
+}
+
+func (x *Alert) GetTriggeredAt() int64 {
+	if x != nil && x.TriggeredAt != nil {
+		return *x.TriggeredAt
 	}
 	return 0
 }
@@ -2091,7 +2107,7 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"expires_at\x18\x05 \x01(\x03R\texpiresAt\x12\x1a\n" +
 	"\bpriority\x18\x06 \x01(\x05R\bpriority\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\a \x01(\x03R\tcreatedAt\"\xf1\x01\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\"\xb5\x02\n" +
 	"\x05Alert\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -2103,7 +2119,10 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"alert_type\x18\x05 \x01(\x0e2\x1e.metrognome.store.v1.AlertTypeR\talertType\x12\x1c\n" +
 	"\ttriggered\x18\x06 \x01(\bR\ttriggered\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\a \x01(\x03R\tcreatedAt\"x\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x1f\n" +
+	"\vwebhook_url\x18\b \x01(\tR\n" +
+	"webhookUrl\x12!\n" +
+	"\ftriggered_at\x18\t \x01(\x03R\vtriggeredAt\"x\n" +
 	"\vKafkaOffset\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1c\n" +
 	"\tpartition\x18\x02 \x01(\x05R\tpartition\x12\x16\n" +

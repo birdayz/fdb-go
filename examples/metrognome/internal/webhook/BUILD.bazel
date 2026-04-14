@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "webhook",
+    srcs = ["webhook.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/webhook",
+    visibility = ["//examples/metrognome:__subpackages__"],
+)
+
+go_test(
+    name = "webhook_test",
+    srcs = ["webhook_test.go"],
+    deps = [
+        ":webhook",
+        "@com_github_onsi_gomega//:gomega",
+    ],
+)

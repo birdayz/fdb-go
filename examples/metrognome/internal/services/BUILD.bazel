@@ -24,6 +24,7 @@ go_library(
         "//examples/metrognome/internal/billing",
         "//examples/metrognome/internal/meter",
         "//examples/metrognome/internal/storage",
+        "//examples/metrognome/internal/webhook",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
     ],

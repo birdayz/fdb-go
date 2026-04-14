@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -15,6 +16,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/webhook"
 )
 
 type EventService struct {
@@ -116,8 +118,23 @@ func (s *EventService) evaluateAlerts(ctx context.Context, events []*metrognomev
 					continue
 				}
 				if usage >= alert.GetThreshold() {
+					now := time.Now().UnixMilli()
 					alert.Triggered = proto.Bool(true)
+					alert.TriggeredAt = proto.Int64(now)
 					_ = s.alerts.Save(ctx, alert)
+
+					// Deliver webhook if configured
+					if alert.GetWebhookUrl() != "" {
+						webhook.Deliver(ctx, alert.GetWebhookUrl(), webhook.Payload{
+							AlertID:     alert.GetId(),
+							CustomerID:  k.customerID,
+							MeterSlug:   k.meterSlug,
+							Threshold:   alert.GetThreshold(),
+							Usage:       usage,
+							AlertType:   "usage",
+							TriggeredAt: now,
+						}, slog.Default())
+					}
 				}
 			}
 		}

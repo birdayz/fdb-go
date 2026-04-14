@@ -77,6 +77,7 @@ type CreateAlertRequest struct {
 	MeterSlug     string                 `protobuf:"bytes,2,opt,name=meter_slug,json=meterSlug,proto3" json:"meter_slug,omitempty"`
 	Threshold     int64                  `protobuf:"varint,3,opt,name=threshold,proto3" json:"threshold,omitempty"`
 	AlertType     AlertType              `protobuf:"varint,4,opt,name=alert_type,json=alertType,proto3,enum=metrognome.v1.AlertType" json:"alert_type,omitempty"`
+	WebhookUrl    string                 `protobuf:"bytes,5,opt,name=webhook_url,json=webhookUrl,proto3" json:"webhook_url,omitempty"` // optional: URL to POST when triggered
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -137,6 +138,13 @@ func (x *CreateAlertRequest) GetAlertType() AlertType {
 		return x.AlertType
 	}
 	return AlertType_ALERT_TYPE_UNSPECIFIED
+}
+
+func (x *CreateAlertRequest) GetWebhookUrl() string {
+	if x != nil {
+		return x.WebhookUrl
+	}
+	return ""
 }
 
 type CreateAlertResponse struct {
@@ -304,6 +312,8 @@ type Alert struct {
 	AlertType     AlertType              `protobuf:"varint,5,opt,name=alert_type,json=alertType,proto3,enum=metrognome.v1.AlertType" json:"alert_type,omitempty"`
 	Triggered     bool                   `protobuf:"varint,6,opt,name=triggered,proto3" json:"triggered,omitempty"`
 	CreatedAt     int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	WebhookUrl    string                 `protobuf:"bytes,8,opt,name=webhook_url,json=webhookUrl,proto3" json:"webhook_url,omitempty"`
+	TriggeredAt   int64                  `protobuf:"varint,9,opt,name=triggered_at,json=triggeredAt,proto3" json:"triggered_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -387,11 +397,25 @@ func (x *Alert) GetCreatedAt() int64 {
 	return 0
 }
 
+func (x *Alert) GetWebhookUrl() string {
+	if x != nil {
+		return x.WebhookUrl
+	}
+	return ""
+}
+
+func (x *Alert) GetTriggeredAt() int64 {
+	if x != nil {
+		return x.TriggeredAt
+	}
+	return 0
+}
+
 var File_metrognome_v1_alert_proto protoreflect.FileDescriptor
 
 const file_metrognome_v1_alert_proto_rawDesc = "" +
 	"\n" +
-	"\x19metrognome/v1/alert.proto\x12\rmetrognome.v1\"\xab\x01\n" +
+	"\x19metrognome/v1/alert.proto\x12\rmetrognome.v1\"\xcc\x01\n" +
 	"\x12CreateAlertRequest\x12\x1f\n" +
 	"\vcustomer_id\x18\x01 \x01(\tR\n" +
 	"customerId\x12\x1d\n" +
@@ -399,7 +423,9 @@ const file_metrognome_v1_alert_proto_rawDesc = "" +
 	"meter_slug\x18\x02 \x01(\tR\tmeterSlug\x12\x1c\n" +
 	"\tthreshold\x18\x03 \x01(\x03R\tthreshold\x127\n" +
 	"\n" +
-	"alert_type\x18\x04 \x01(\x0e2\x18.metrognome.v1.AlertTypeR\talertType\"A\n" +
+	"alert_type\x18\x04 \x01(\x0e2\x18.metrognome.v1.AlertTypeR\talertType\x12\x1f\n" +
+	"\vwebhook_url\x18\x05 \x01(\tR\n" +
+	"webhookUrl\"A\n" +
 	"\x13CreateAlertResponse\x12*\n" +
 	"\x05alert\x18\x01 \x01(\v2\x14.metrognome.v1.AlertR\x05alert\"u\n" +
 	"\x11ListAlertsRequest\x12\x1f\n" +
@@ -409,7 +435,7 @@ const file_metrognome_v1_alert_proto_rawDesc = "" +
 	"\fcontinuation\x18\x03 \x01(\fR\fcontinuation\"f\n" +
 	"\x12ListAlertsResponse\x12,\n" +
 	"\x06alerts\x18\x01 \x03(\v2\x14.metrognome.v1.AlertR\x06alerts\x12\"\n" +
-	"\fcontinuation\x18\x02 \x01(\fR\fcontinuation\"\xeb\x01\n" +
+	"\fcontinuation\x18\x02 \x01(\fR\fcontinuation\"\xaf\x02\n" +
 	"\x05Alert\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -421,7 +447,10 @@ const file_metrognome_v1_alert_proto_rawDesc = "" +
 	"alert_type\x18\x05 \x01(\x0e2\x18.metrognome.v1.AlertTypeR\talertType\x12\x1c\n" +
 	"\ttriggered\x18\x06 \x01(\bR\ttriggered\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\a \x01(\x03R\tcreatedAt*S\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\x12\x1f\n" +
+	"\vwebhook_url\x18\b \x01(\tR\n" +
+	"webhookUrl\x12!\n" +
+	"\ftriggered_at\x18\t \x01(\x03R\vtriggeredAt*S\n" +
 	"\tAlertType\x12\x1a\n" +
 	"\x16ALERT_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ALERT_TYPE_USAGE\x10\x01\x12\x14\n" +

@@ -2,10 +2,12 @@ package services_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -617,6 +619,73 @@ func TestE2EInvoiceStatusTransitions(t *testing.T) {
 	}))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(updateResp.Msg.GetInvoice().GetStatus()).To(Equal(metrognomev1.InvoiceStatus_INVOICE_STATUS_VOID))
+}
+
+// TestE2EAlertWebhook tests that webhook is delivered when alert triggers.
+func TestE2EAlertWebhook(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	// Set up a webhook receiver
+	var mu sync.Mutex
+	var webhookReceived bool
+	var webhookPayload map[string]any
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		json.NewDecoder(r.Body).Decode(&webhookPayload)
+		webhookReceived = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookServer.Close()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	alertClient := metrognomev1connect.NewAlertServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+
+	_, _ = meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "webhook_test", Name: "Webhook Test",
+		AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+
+	custResp, _ := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Webhook Corp"}))
+	custID := custResp.Msg.GetCustomer().GetId()
+
+	// Create alert with webhook URL, threshold 10
+	_, err := alertClient.CreateAlert(ctx, connect.NewRequest(&metrognomev1.CreateAlertRequest{
+		CustomerId: custID, MeterSlug: "webhook_test", Threshold: 10,
+		AlertType:  metrognomev1.AlertType_ALERT_TYPE_USAGE,
+		WebhookUrl: webhookServer.URL,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Ingest 20 events (above threshold)
+	ts := time.Date(2027, 6, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	events := make([]*metrognomev1.Event, 20)
+	for i := range events {
+		events[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "webhook_test", TimestampMs: ts,
+			Value: 1, IdempotencyKey: fmt.Sprintf("wh-%d", i),
+		}
+	}
+	_, err = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Wait for webhook delivery (async)
+	g.Eventually(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return webhookReceived
+	}, 5*time.Second, 50*time.Millisecond).Should(BeTrue())
+
+	// Verify webhook payload
+	mu.Lock()
+	defer mu.Unlock()
+	g.Expect(webhookPayload["alert_type"]).To(Equal("usage"))
+	g.Expect(webhookPayload["customer_id"]).To(Equal(custID))
+	g.Expect(webhookPayload["meter_slug"]).To(Equal("webhook_test"))
 }
 
 func TestE2ECustomerNotFound(t *testing.T) {

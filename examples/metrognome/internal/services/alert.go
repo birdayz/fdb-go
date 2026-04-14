@@ -37,6 +37,7 @@ func (s *AlertService) CreateAlert(ctx context.Context, req *connect.Request[met
 		AlertType:  convertAlertType(req.Msg.GetAlertType()).Enum(),
 		Triggered:  proto.Bool(false),
 		CreatedAt:  proto.Int64(now),
+		WebhookUrl: proto.String(req.Msg.GetWebhookUrl()),
 	}
 	if err := s.store.Create(ctx, record); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create alert: %w", err))
@@ -62,13 +63,15 @@ func (s *AlertService) ListAlerts(ctx context.Context, req *connect.Request[metr
 
 func alertToAPI(s *storev1.Alert) *metrognomev1.Alert {
 	return &metrognomev1.Alert{
-		Id:         s.GetId(),
-		CustomerId: s.GetCustomerId(),
-		MeterSlug:  s.GetMeterSlug(),
-		Threshold:  s.GetThreshold(),
-		AlertType:  metrognomev1.AlertType(s.GetAlertType()),
-		Triggered:  s.GetTriggered(),
-		CreatedAt:  s.GetCreatedAt(),
+		Id:          s.GetId(),
+		CustomerId:  s.GetCustomerId(),
+		MeterSlug:   s.GetMeterSlug(),
+		Threshold:   s.GetThreshold(),
+		AlertType:   metrognomev1.AlertType(s.GetAlertType()),
+		Triggered:   s.GetTriggered(),
+		CreatedAt:   s.GetCreatedAt(),
+		WebhookUrl:  s.GetWebhookUrl(),
+		TriggeredAt: s.GetTriggeredAt(),
 	}
 }
 

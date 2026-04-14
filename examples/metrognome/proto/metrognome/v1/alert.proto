@@ -14,6 +14,7 @@ message CreateAlertRequest {
   string meter_slug = 2;
   int64 threshold = 3;
   AlertType alert_type = 4;
+  string webhook_url = 5; // optional: URL to POST when triggered
 }
 
 message CreateAlertResponse {
@@ -39,6 +40,8 @@ message Alert {
   AlertType alert_type = 5;
   bool triggered = 6;
   int64 created_at = 7;
+  string webhook_url = 8;
+  int64 triggered_at = 9;
 }
 
 enum AlertType {

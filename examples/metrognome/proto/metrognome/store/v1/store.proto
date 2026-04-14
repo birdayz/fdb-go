@@ -177,6 +177,8 @@ message Alert {
   optional AlertType alert_type = 5;
   optional bool triggered = 6;        // has it fired this period?
   optional int64 created_at = 7;
+  optional string webhook_url = 8;    // URL to POST when triggered (optional)
+  optional int64 triggered_at = 9;    // when it was triggered
 }
 
 enum AlertType {
