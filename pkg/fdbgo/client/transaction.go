@@ -154,7 +154,8 @@ type Transaction struct {
 
 	readVersion        int64
 	hasReadVersion     bool
-	userSetReadVersion bool // true when SetReadVersion was called (needs validateVersion)
+	readVersionMu      sync.Mutex // protects readVersion + hasReadVersion from concurrent ensureReadVersion
+	userSetReadVersion bool       // true when SetReadVersion was called (needs validateVersion)
 	committedVersion   int64
 	hasCommitted       bool // true after at least one successful commit
 	txnBatchId         uint16
@@ -365,15 +366,18 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 	if err := tx.checkTimeout(); err != nil {
 		return err
 	}
+	tx.readVersionMu.Lock()
 	if !tx.hasReadVersion {
 		flags := tx.grvFlags()
 		rv, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		if err != nil {
+			tx.readVersionMu.Unlock()
 			return err
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	tx.readVersionMu.Unlock()
 	// C++ DatabaseContext::validateVersion(): reject user-set read versions
 	// outside the acceptable range. If the client hasn't seen a version yet
 	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
@@ -913,9 +917,11 @@ func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
 
 // SetReadVersion sets the read version manually.
 func (tx *Transaction) SetReadVersion(version int64) {
+	tx.readVersionMu.Lock()
 	tx.readVersion = version
 	tx.hasReadVersion = true
 	tx.userSetReadVersion = true
+	tx.readVersionMu.Unlock()
 }
 
 // SetTimeout sets a timeout in milliseconds for this transaction.
