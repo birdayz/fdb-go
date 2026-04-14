@@ -20,6 +20,7 @@ go_library(
         "//examples/metrognome/gen/metrognome/v1:metrognome",
         "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
         "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/meter",
         "//examples/metrognome/internal/storage",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",

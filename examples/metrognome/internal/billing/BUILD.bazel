@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "billing",
@@ -13,6 +13,17 @@ go_library(
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "billing_test",
+    srcs = ["pricing_test.go"],
+    deps = [
+        ":billing",
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//proto",
     ],
 )

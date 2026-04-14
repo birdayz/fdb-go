@@ -8,9 +8,11 @@ go_library(
     deps = [
         "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
         "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/meter",
         "//examples/metrognome/internal/services",
         "//examples/metrognome/internal/storage",
         "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
     ],
 )

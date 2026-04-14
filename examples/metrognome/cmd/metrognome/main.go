@@ -12,9 +12,11 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/services"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
 
@@ -52,8 +54,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize dynamic meter engine
+	meterEngine := meter.NewEngine(recordDB, subspace.Sub("metrognome_meters"))
+
+	// Load existing meters from storage and register them in the dynamic engine
+	existingMeters, _, err := db.Meters().List(context.Background(), 0, nil)
+	if err != nil {
+		slog.Warn("failed to load existing meters", "error", err)
+	} else {
+		for _, m := range existingMeters {
+			if err := meterEngine.Register(m); err != nil {
+				slog.Warn("failed to register meter", "slug", m.GetSlug(), "error", err)
+			} else {
+				slog.Info("registered meter", "slug", m.GetSlug())
+			}
+		}
+	}
+
 	// Initialize billing engine
-	engine := billing.NewEngine(recordDB, db.MetaData(), db.Subspace())
+	billingEngine := billing.NewEngine(recordDB, db.MetaData(), db.Subspace())
 
 	// Set up HTTP mux with ConnectRPC services
 	mux := http.NewServeMux()
@@ -70,11 +89,11 @@ func main() {
 	}
 
 	register(metrognomev1connect.NewCustomerServiceHandler(services.NewCustomerService(db.Customers())))
-	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters())))
+	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters(), meterEngine)))
 	register(metrognomev1connect.NewPlanServiceHandler(services.NewPlanService(db.Plans(), db.Charges())))
 	register(metrognomev1connect.NewContractServiceHandler(services.NewContractService(db.Contracts())))
-	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events())))
-	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), engine)))
+	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), meterEngine)))
+	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), billingEngine)))
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
 

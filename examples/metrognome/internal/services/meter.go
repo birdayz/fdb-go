@@ -11,16 +11,18 @@ import (
 	storev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1"
 	metrognomev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
 )
 
 type MeterService struct {
 	metrognomev1connect.UnimplementedMeterServiceHandler
-	store *storage.MeterStore
+	store       *storage.MeterStore
+	meterEngine *meter.Engine
 }
 
-func NewMeterService(store *storage.MeterStore) *MeterService {
-	return &MeterService{store: store}
+func NewMeterService(store *storage.MeterStore, meterEngine *meter.Engine) *MeterService {
+	return &MeterService{store: store, meterEngine: meterEngine}
 }
 
 func (s *MeterService) CreateMeter(ctx context.Context, req *connect.Request[metrognomev1.CreateMeterRequest]) (*connect.Response[metrognomev1.CreateMeterResponse], error) {
@@ -40,6 +42,13 @@ func (s *MeterService) CreateMeter(ctx context.Context, req *connect.Request[met
 
 	if err := s.store.Create(ctx, record); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create meter: %w", err))
+	}
+
+	// Register in dynamic meter engine for per-meter aggregation
+	if s.meterEngine != nil {
+		if err := s.meterEngine.Register(record); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("register meter: %w", err))
+		}
 	}
 
 	return connect.NewResponse(&metrognomev1.CreateMeterResponse{
