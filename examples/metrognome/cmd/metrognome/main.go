@@ -82,10 +82,39 @@ func main() {
 	// Set up HTTP mux with ConnectRPC services
 	mux := http.NewServeMux()
 
-	// Health check
+	// Health check (liveness) — always 200 if the process is up
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok","service":"metrognome"}`)
+	})
+
+	// Readiness probe — tests FDB connectivity
+	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		_, err := recordDB.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+			store, err := rl.NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(db.MetaData()).
+				SetSubspace(db.Subspace()).
+				CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			// Read the record count to verify FDB is reachable
+			count, err := store.GetRecordCount()
+			if err != nil {
+				return nil, err
+			}
+			return count, nil
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	})
 
 	// Consumer lag endpoint
