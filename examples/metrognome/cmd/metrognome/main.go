@@ -12,6 +12,7 @@ import (
 
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/consumer"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/services"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
@@ -104,6 +105,29 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	// Start Kafka consumer if brokers configured
+	kafkaBrokers := os.Getenv("KAFKA_BROKERS")
+	kafkaTopic := os.Getenv("KAFKA_TOPIC")
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+	defer consumerCancel()
+	if kafkaBrokers != "" && kafkaTopic != "" {
+		kafkaConsumer, err := consumer.New(consumer.Config{
+			Brokers: []string{kafkaBrokers},
+			Topic:   kafkaTopic,
+			GroupID: "metrognome",
+		}, db, meterEngine, slog.Default())
+		if err != nil {
+			slog.Error("failed to create kafka consumer", "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			if err := kafkaConsumer.Run(consumerCtx); err != nil && err != context.Canceled {
+				slog.Error("kafka consumer error", "error", err)
+			}
+		}()
+		slog.Info("kafka consumer started", "brokers", kafkaBrokers, "topic", kafkaTopic)
+	}
+
 	// Graceful shutdown
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, syscall.SIGTERM, syscall.SIGINT)
@@ -118,6 +142,7 @@ func main() {
 
 	sig := <-done
 	slog.Info("shutting down", "signal", sig)
+	consumerCancel() // stop kafka consumer
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

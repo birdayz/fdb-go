@@ -320,19 +320,21 @@ examples/metrognome/
 - [ ] P2: Bazel frontend build (rules_js, vite bundle)
 
 ### Phase 6: Hardening
-- [x] P1: Integration tests with real FDB (testcontainers) — 9 tests, all pass
+- [x] P1: Integration tests with real FDB (testcontainers) — 29 tests across 4 targets
 - [ ] P1: Chaos testing — commit_unknown with billing writes
-- [x] P1: Edge cases: zero usage invoices (tested), tiered pricing (tested), credit depletion (tested)
+- [x] P1: Edge cases: zero usage invoices, tiered pricing, credit depletion, multi-charge invoice, customer not found, contract lifecycle, alert CRUD
+- [x] P1: Event dedup correctness: pre-check idempotency key BEFORE SaveRecord
 - [ ] P2: Benchmark: event ingestion throughput
 
 ### Phase 7: Dynamic Meter Engine
 - [x] P0: Runtime proto generation from meter config (dynamicpb + protodesc)
 - [x] P0: Per-meter Record Layer stores with SUM/COUNT indexes
 - [x] P0: Event ingestion into dynamic stores
-- [x] P0: Usage query with group-by filter
-- [x] P0: Integration tests (5 tests: simple, group-by, multi-bucket, idempotent, error)
-- [ ] P1: Wire dynamic meter engine into EventService (replace static usage indexes)
-- [ ] P1: Persist meter registrations across restarts (load from main store on startup)
+- [x] P0: Usage query with group-by filter (prefix range for partial groups)
+- [x] P0: Integration tests (5 unit + 1 E2E through ConnectRPC)
+- [x] P1: Wire dynamic meter engine into EventService (dual-write: static + dynamic)
+- [x] P1: Persist meter registrations across restarts (loaded from main store on startup)
+- [x] P1: JSON property extraction for group-by values from properties_json
 - [ ] P2: Benchmark: invoice generation latency
 
 ---

@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "consumer",
+    srcs = ["consumer.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/consumer",
+    visibility = ["//examples/metrognome:__subpackages__"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/meter",
+        "//examples/metrognome/internal/storage",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@com_github_twmb_franz_go//pkg/kgo",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
