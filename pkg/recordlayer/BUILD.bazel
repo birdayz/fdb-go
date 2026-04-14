@@ -168,6 +168,7 @@ go_test(
         "helpers_coverage_test.go",
         "hnsw_stats_test.go",
         "index_bug_verify_test.go",
+        "index_edge_cases_test.go",
         "index_maintainer_test.go",
         "index_predicate_test.go",
         "index_registration_matrix_test.go",
