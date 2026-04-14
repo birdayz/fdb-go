@@ -267,6 +267,125 @@ func BenchmarkThroughputInsertOnly100(b *testing.B) {
 	benchThroughputInsertOnly(b, 100)
 }
 
+// --- Pipelined batch vs sequential comparison ---
+// This is the key optimization: SaveRecordBatch pipelines existence checks.
+
+func BenchmarkThroughputSequential50(b *testing.B) {
+	benchThroughputSequentialVsBatch(b, 50, false)
+}
+
+func BenchmarkThroughputPipelined50(b *testing.B) {
+	benchThroughputSequentialVsBatch(b, 50, true)
+}
+
+func BenchmarkThroughputSequential50WithIndexes(b *testing.B) {
+	benchThroughputSequentialVsBatchWithIndexes(b, 50, false)
+}
+
+func BenchmarkThroughputPipelined50WithIndexes(b *testing.B) {
+	benchThroughputSequentialVsBatchWithIndexes(b, 50, true)
+}
+
+func BenchmarkThroughputSequential100(b *testing.B) {
+	benchThroughputSequentialVsBatch(b, 100, false)
+}
+
+func BenchmarkThroughputPipelined100(b *testing.B) {
+	benchThroughputSequentialVsBatch(b, 100, true)
+}
+
+func benchThroughputSequentialVsBatch(b *testing.B, batchSize int, pipelined bool) {
+	ensureBenchDB(b)
+	md := throughputMetaDataPlain(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var idGen atomic.Int64
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		base := idGen.Add(int64(batchSize))
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			records := make([]proto.Message, batchSize)
+			for j := 0; j < batchSize; j++ {
+				records[j] = benchOrder(base+int64(j), int32((base+int64(j))%100))
+			}
+			if pipelined {
+				_, err = store.SaveRecordBatch(records)
+			} else {
+				for _, r := range records {
+					if _, err = store.SaveRecord(r); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return nil, err
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(batchSize), "records/op")
+}
+
+func benchThroughputSequentialVsBatchWithIndexes(b *testing.B, batchSize int, pipelined bool) {
+	ensureBenchDB(b)
+	md := throughputMetaDataWithAggregateIndexes(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var idGen atomic.Int64
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		base := idGen.Add(int64(batchSize))
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			records := make([]proto.Message, batchSize)
+			for j := 0; j < batchSize; j++ {
+				records[j] = benchOrder(base+int64(j), int32((base+int64(j))%100))
+			}
+			if pipelined {
+				_, err = store.SaveRecordBatch(records)
+			} else {
+				for _, r := range records {
+					if _, err = store.SaveRecord(r); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return nil, err
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(batchSize), "records/op")
+}
+
 func benchThroughputInsertOnly(b *testing.B, batchSize int) {
 	ensureBenchDB(b)
 

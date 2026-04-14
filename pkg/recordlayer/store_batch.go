@@ -1,0 +1,210 @@
+package recordlayer
+
+import (
+	"fmt"
+
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
+	"google.golang.org/protobuf/proto"
+)
+
+// SaveRecordBatch saves multiple records with pipelined existence checks.
+//
+// Instead of N sequential blocking FDB reads (one per record in SaveRecord),
+// this method issues all existence-check Gets up front as futures, then
+// collects them in one batch. This turns N round trips into ~1 round trip
+// for the existence checks, significantly improving throughput for batch inserts.
+//
+// Semantically equivalent to calling SaveRecord N times. All records are
+// saved in the current transaction.
+func (store *FDBRecordStore) SaveRecordBatch(
+	records []proto.Message,
+) ([]*FDBStoredRecord[proto.Message], error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	tx := store.context.Transaction()
+	recordsSubspace := store.subspace.Sub(RecordKey)
+	splitEnabled := store.metaData.IsSplitLongRecords()
+
+	// --- Phase 1: Extract PKs and issue all Get futures (non-blocking) ---
+	type pendingRecord struct {
+		record     proto.Message
+		recordType *RecordType
+		primaryKey tuple.Tuple
+		future     fdb.FutureByteSlice
+	}
+
+	pending := make([]pendingRecord, len(records))
+
+	for i, record := range records {
+		if record == nil {
+			return nil, fmt.Errorf("record %d is nil", i)
+		}
+
+		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
+		recordType := store.metaData.GetRecordType(recordTypeName)
+		if recordType == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		}
+		if recordType.PrimaryKey == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
+		}
+
+		keyTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
+		}
+		if len(keyTuples) != 1 {
+			return nil, fmt.Errorf("record %d: primary key must be single tuple", i)
+		}
+
+		primaryKey := make(tuple.Tuple, len(keyTuples[0]))
+		for j, v := range keyTuples[0] {
+			primaryKey[j] = v
+		}
+
+		// Issue the Get future — this is the key optimization.
+		// tx.Get returns immediately; the read is async over the wire.
+		unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
+		unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
+		future := tx.Get(unsplitKey)
+
+		pending[i] = pendingRecord{
+			record:     record,
+			recordType: recordType,
+			primaryKey: primaryKey,
+			future:     future,
+		}
+	}
+
+	// --- Phase 2: Collect futures + save each record ---
+	// By now FDB has pipelined all N Gets over the wire. Collecting them
+	// costs ~1 round trip total instead of N sequential round trips.
+
+	results := make([]*FDBStoredRecord[proto.Message], len(records))
+
+	for i := range pending {
+		p := &pending[i]
+
+		// Collect the existence check
+		oldValue, err := p.future.Get()
+		if err != nil {
+			return nil, fmt.Errorf("record %d: existence check: %w", i, err)
+		}
+		oldRecordExists := oldValue != nil
+
+		// Handle split records (rare for batch inserts, but correct)
+		var oldsizeInfo sizeInfo
+		if !oldRecordExists && splitEnabled {
+			var err error
+			oldValue, err = loadSplitOnly(tx, recordsSubspace, p.primaryKey, &oldsizeInfo)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: split check: %w", i, err)
+			}
+			oldRecordExists = oldValue != nil
+		} else if oldRecordExists {
+			unsplitKeyTuple := appendToTuple(p.primaryKey, unsplitRecord)
+			unsplitKey := recordsSubspace.Pack(unsplitKeyTuple)
+			oldsizeInfo.KeyCount = 1
+			oldsizeInfo.KeySize = len(unsplitKey)
+			oldsizeInfo.ValueSize = len(oldValue)
+			oldsizeInfo.IsSplit = false
+		}
+
+		// Validate lock
+		if err := store.validateRecordUpdateAllowed(); err != nil {
+			return nil, err
+		}
+
+		// Serialize
+		data, err := serializeUnion(p.record, p.recordType)
+		if err != nil {
+			return nil, &RecordSerializationError{Cause: err}
+		}
+
+		// Save
+		var oldsizeInfoPtr *sizeInfo
+		if oldRecordExists {
+			oldsizeInfoPtr = &oldsizeInfo
+		}
+		var newsizeInfo sizeInfo
+		if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
+			splitEnabled, oldsizeInfoPtr, &newsizeInfo); err != nil {
+			return nil, fmt.Errorf("record %d: save: %w", i, err)
+		}
+
+		// Record count
+		stored := &FDBStoredRecord[proto.Message]{
+			PrimaryKey: p.primaryKey,
+			RecordType: p.recordType,
+			Record:     p.record,
+			KeyCount:   newsizeInfo.KeyCount,
+			KeySize:    newsizeInfo.KeySize,
+			ValueSize:  newsizeInfo.ValueSize,
+			Split:      newsizeInfo.IsSplit,
+		}
+		if !oldRecordExists {
+			if err := store.addRecordCount(p.record, littleEndianInt64One); err != nil {
+				return nil, fmt.Errorf("record %d: record count: %w", i, err)
+			}
+		}
+
+		// Secondary indexes
+		var oldRecord *FDBStoredRecord[proto.Message]
+		if oldRecordExists && oldValue != nil {
+			oldMsg, err := store.deserializeRecord(oldValue, p.recordType)
+			if err == nil {
+				oldRecord = &FDBStoredRecord[proto.Message]{
+					PrimaryKey: p.primaryKey,
+					RecordType: p.recordType,
+					Record:     oldMsg,
+				}
+			}
+		}
+		if err := store.updateSecondaryIndexes(oldRecord, stored); err != nil {
+			return nil, fmt.Errorf("record %d: index update: %w", i, err)
+		}
+
+		results[i] = stored
+	}
+
+	return results, nil
+}
+
+// loadSplitOnly checks for a split record without checking unsplit first.
+// Used by SaveRecordBatch when the unsplit check was already done via pipeline.
+func loadSplitOnly(
+	tx fdb.ReadTransaction,
+	recordSubspace subspace.Subspace,
+	primaryKey tuple.Tuple,
+	si *sizeInfo,
+) ([]byte, error) {
+	firstSplitKeyTuple := appendToTuple(primaryKey, startSplitRecord)
+	firstSplitKey := recordSubspace.Pack(firstSplitKeyTuple)
+
+	rangeEnd := recordSubspace.Pack(appendToTuple(primaryKey, 256))
+
+	kvs := tx.GetRange(
+		fdb.KeyRange{Begin: fdb.Key(firstSplitKey), End: fdb.Key(rangeEnd)},
+		fdb.RangeOptions{},
+	).GetSliceOrPanic()
+
+	if len(kvs) == 0 {
+		return nil, nil
+	}
+
+	var totalData []byte
+	for _, kv := range kvs {
+		totalData = append(totalData, kv.Value...)
+	}
+	si.KeyCount = len(kvs)
+	si.IsSplit = true
+	si.ValueSize = len(totalData)
+	if len(kvs) > 0 {
+		si.KeySize = len(kvs[0].Key)
+	}
+	return totalData, nil
+}
