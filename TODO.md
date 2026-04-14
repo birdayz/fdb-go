@@ -64,6 +64,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 - [x] **Retry/OnError adversarial tests** — Self-conflicting on commit_unknown_result, all 16 retryable error codes, resource-constrained backoff, intersectConflictRanges edge cases. swingshift-15.
 - [x] **Concurrent stress tests** — 5 tests: concurrent RYW reads, read-modify-write counter (20 goroutines × 5), concurrent AtomicAdd (20 × 10), parallel range+write, Clear vs Get race. swingshift-15.
 - [x] **Full race detector verification** — All 5 test targets clean with `--@rules_go//go/config:race` after fixing Watch/postCommitReset race. swingshift-15.
+- [x] **C++ completeness audit (5 subsystems)** — readpath, commitpath, transaction, RYW, GRV+database. All pass. No missing code paths, error codes correct, wire protocol correct, atomic implementations match C++ Atomic.h. swingshift-15.
 
 #### HIGH (client test gaps from C++ audit, swingshift-11)
 
