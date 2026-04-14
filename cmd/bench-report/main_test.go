@@ -73,10 +73,10 @@ func TestCompare_Improvement(t *testing.T) {
 	g := NewWithT(t)
 
 	old := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, BytesPerOp: 500},
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 10},
 	}
 	new := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 800, BytesPerOp: 400}, // -20%, bytes changed
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 800, AllocsPerOp: 8}, // -20%, allocs changed
 	}
 
 	comps := compare(old, new)
@@ -105,12 +105,29 @@ func TestCompare_TimingOnlyNoise(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
 
-	// Large timing delta but identical allocs/bytes = VM noise, not regression
+	// Large timing delta but identical alloc count = VM noise, not regression
 	old := map[string]*benchResult{
 		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5, BytesPerOp: 100},
 	}
 	new := map[string]*benchResult{
 		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1500, AllocsPerOp: 5, BytesPerOp: 100}, // +50% but same allocs
+	}
+
+	comps := compare(old, new)
+	g.Expect(comps).To(HaveLen(1))
+	g.Expect(comps[0].Status).To(Equal("~"))
+}
+
+func TestCompare_BytesChangedAllocsUnchanged(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// Bytes changed but allocs unchanged = encoding/buffer variance, not regression
+	old := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000, AllocsPerOp: 5, BytesPerOp: 57345},
+	}
+	new := map[string]*benchResult{
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1200, AllocsPerOp: 5, BytesPerOp: 57346}, // +20%, bytes differ by 1
 	}
 
 	comps := compare(old, new)
