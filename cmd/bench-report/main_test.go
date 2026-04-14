@@ -93,7 +93,7 @@ func TestCompare_Noise(t *testing.T) {
 		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1000},
 	}
 	new := map[string]*benchResult{
-		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1030}, // +3% < 5% threshold
+		"BenchmarkFoo-24": {Name: "BenchmarkFoo-24", NsPerOp: 1090}, // +9% < 10% threshold
 	}
 
 	comps := compare(old, new)
@@ -152,6 +152,7 @@ func TestFormatMarkdown_NoRegression(t *testing.T) {
 	md := formatMarkdown(comps)
 	g.Expect(md).To(ContainSubstring("No significant"))
 	g.Expect(md).NotTo(ContainSubstring("regressions"))
+	g.Expect(md).To(ContainSubstring("Threshold: +/-10%"))
 }
 
 func TestStripBenchPrefix(t *testing.T) {

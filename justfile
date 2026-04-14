@@ -73,7 +73,7 @@ bench:
     #!/usr/bin/env bash
     set -euo pipefail
     bazelisk build //pkg/recordlayer:recordlayer_test
-    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
         -test.run='^$' -test.bench=. -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
@@ -82,7 +82,7 @@ bench-one NAME:
     #!/usr/bin/env bash
     set -euo pipefail
     bazelisk build //pkg/recordlayer:recordlayer_test
-    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
         -test.run='^$' -test.bench='{{NAME}}' -test.benchtime=3s -test.benchmem --ginkgo.skip='.*'
 
@@ -97,10 +97,10 @@ bench-ci:
     #!/usr/bin/env bash
     set -euo pipefail
     rm -f bench-raw.txt bench-results.txt
-    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     {
         echo "=== Running benchmarks: //pkg/recordlayer:recordlayer_test ==="
-        bazelisk build //pkg/recordlayer:recordlayer_test
         timeout 300 "$BAZEL_BIN/pkg/recordlayer/recordlayer_test_/recordlayer_test" \
             -test.run='^$' \
             -test.bench=. \
@@ -108,7 +108,6 @@ bench-ci:
             -test.benchtime=1s \
             --ginkgo.skip='.*' 2>&1 || true
         echo "=== Running benchmarks: //pkg/fdbgo/wire/types:types_test ==="
-        bazelisk build //pkg/fdbgo/wire/types:types_test
         timeout 60 "$BAZEL_BIN/pkg/fdbgo/wire/types/types_test_/types_test" \
             -test.run='^$' \
             -test.bench=. \
@@ -124,9 +123,15 @@ bench-ci:
 bench-report old new:
     bazelisk run //cmd/bench-report -- -old {{old}} -new {{new}}
 
-# Run Go vs Java performance comparison benchmark
+# Run Go vs Java performance comparison benchmark.
+# Uses 'bazelisk run' to avoid polluting the test action cache.
 bench-compare:
-    bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=Performance Comparison" --test_arg="--ginkgo.v" --test_output=streamed --cache_test_results=no
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bazelisk build //conformance:conformance_test
+    BAZEL_BIN=$(bazelisk info bazel-bin)
+    "$BAZEL_BIN/conformance/conformance_test_/conformance_test" \
+        --ginkgo.focus='Performance Comparison' --ginkgo.v
 
 # Regenerate Go wire types from FDB C++ headers (v5 composable-primitives generator).
 # Two Bazel genrules: fdb_cmake_build (cached on FDB version) → generate_wire_types (cached on generator code).
@@ -185,7 +190,7 @@ report:
         exit 1
     fi
     bazelisk build //cmd/test-report
-    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     "$BAZEL_BIN/cmd/test-report/test-report_/test-report" .bazel-bep.jsonl > test-report.html
     TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
     echo "Report: test-report.html ($TOTAL tests)"
@@ -197,7 +202,7 @@ coverage:
     bazelisk coverage //... --combined_report=lcov
     LCOV=$(bazelisk info output_path 2>/dev/null)/_coverage/_coverage_report.dat
     bazelisk build //cmd/test-report
-    BAZEL_BIN=$(bazelisk info bazel-bin 2>/dev/null)
+    BAZEL_BIN=$(bazelisk info bazel-bin)
     "$BAZEL_BIN/cmd/test-report/test-report_/test-report" -coverage "$LCOV" .bazel-bep.jsonl > test-report.html
     TOTAL=$(grep 'stat-total' test-report.html | grep -oP '>\K\d+(?=</span>)' || echo '?')
     COV=$(grep -oP 'Coverage</span></div>' test-report.html || true)
