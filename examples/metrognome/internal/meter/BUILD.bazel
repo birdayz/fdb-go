@@ -21,7 +21,10 @@ go_library(
 
 go_test(
     name = "meter_test",
-    srcs = ["engine_test.go"],
+    srcs = [
+        "engine_test.go",
+        "scale_test.go",
+    ],
     deps = [
         ":meter",
         "//examples/metrognome/gen/metrognome/store/v1:store",
