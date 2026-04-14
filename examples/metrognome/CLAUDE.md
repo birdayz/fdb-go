@@ -15,10 +15,24 @@ Clone of [Metronome](https://metronome.com/) — a billing gnome that counts eve
 ## Running
 
 ```sh
-# From repo root
+# Build everything
 bazelisk build //examples/metrognome/...
+
+# Run tests (38 tests + 5 benchmarks, all against real FDB via testcontainers)
 bazelisk test //examples/metrognome/...
+
+# Local dev: start FDB + Kafka
+cd examples/metrognome && docker compose up -d
+
+# Seed demo data (5 customers, 4 meters, 3 plans, ~2000 events)
+bazelisk run //examples/metrognome/cmd/seed
+
+# Start server (ConnectRPC on :8080)
 bazelisk run //examples/metrognome/cmd/metrognome
+
+# With Kafka consumer
+KAFKA_BROKERS=localhost:9092 KAFKA_TOPIC=usage-events \
+  bazelisk run //examples/metrognome/cmd/metrognome
 ```
 
 ## Architecture
@@ -82,7 +96,9 @@ Single FDB transaction per invoice:
 - `internal/storage/` — FDB Record Layer stores (10 stores + db.go metadata)
 - `internal/billing/` — Pricing calculation (pricing.go) + invoice generation (engine.go)
 - `internal/meter/` — Dynamic meter engine (runtime proto generation)
+- `cmd/seed/` — Demo data seeder (5 customers, 4 meters, 3 plans, ~2000 events)
 - `gen/` — Generated Go code from buf
+- `docker-compose.yaml` — FDB 7.3.46 + Kafka 3.7 for local dev
 
 ## Dynamic Meter Engine
 
