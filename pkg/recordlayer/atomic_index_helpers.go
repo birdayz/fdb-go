@@ -30,15 +30,27 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 		return nil, nil
 	}
 
+	groupingCount := indexGroupingCount(index.RootExpression)
+
+	// Fast path: use EvaluateFlat to avoid [][]any alloc
+	if fe, ok := index.RootExpression.(FlatEvaluator); ok {
+		values, err := fe.EvaluateFlat(record, record.Record)
+		if err != nil {
+			return nil, err
+		}
+		groupKey := make(tuple.Tuple, groupingCount)
+		for j := 0; j < groupingCount && j < len(values); j++ {
+			groupKey[j] = values[j]
+		}
+		return []tuple.Tuple{groupKey}, nil
+	}
+
 	tuples, err := index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}
 
-	groupingCount := indexGroupingCount(index.RootExpression)
-
-	// Fast path: single tuple result (common case, no fan-out).
-	// Avoids the result slice allocation.
+	// Single tuple fast path
 	if len(tuples) == 1 {
 		values := tuples[0]
 		groupKey := make(tuple.Tuple, groupingCount)
