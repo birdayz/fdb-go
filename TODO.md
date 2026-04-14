@@ -144,7 +144,7 @@ _Go wins 5/8 benchmarks vs Java Record Layer. LoadRecord 0.61x, ScanRecords 0.73
 
 #### MEDIUM
 
-- [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates a new proto message via reflection on every record scan (77.5MB / 564K allocs in BenchmarkScanRecords). vtprotobuf's `ResetVT()` + `sync.Pool` per record type could eliminate ~9% of scan allocations. Requires careful lifetime management — callers must not hold references to pooled messages.
+- [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates via reflection per record (77.5MB / 564K allocs in BenchmarkScanRecords, ~9%). BUT: messages escape to user code via `FDBStoredRecord.Record`, so pooling isn't safe without API changes (copy-on-return or explicit release). Only viable if scan API returns copies or if users opt-in. Low priority given the constraint.
 - [x] **Pre-allocate tuple in fastDecodeTuple** — Pre-allocate with `make(tuple.Tuple, 0, len(b)/5)`. BenchmarkScanIndex: 815 → 715 allocs/op (-12.3%). nightshift-16.
 
 ### Tests
