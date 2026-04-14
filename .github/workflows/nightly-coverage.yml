@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Run tests with coverage
-        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_timeout=900 --test_summary=detailed
+        run: bazelisk coverage //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --combined_report=lcov --test_summary=detailed
 
       - name: Generate coverage report
         if: always()
