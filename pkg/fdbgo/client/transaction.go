@@ -1240,9 +1240,11 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 // GetCommittedVersion/GetVersionstamp queries.
 func (tx *Transaction) postCommitReset() {
 	tx.state = txStateActive
+	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
 	tx.userSetReadVersion = false
 	tx.readVersion = 0
+	tx.readVersionMu.Unlock()
 	tx.mutations = tx.mutations[:0]
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
@@ -1253,8 +1255,10 @@ func (tx *Transaction) postCommitReset() {
 func (tx *Transaction) reset() {
 	tx.cancelWatches()
 	tx.state = txStateActive
+	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
 	tx.readVersion = 0
+	tx.readVersionMu.Unlock()
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
