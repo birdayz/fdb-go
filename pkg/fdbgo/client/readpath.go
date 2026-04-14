@@ -439,7 +439,11 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 				remaining -= len(kvs)
 
 				if remaining <= 0 {
-					return allKVs, more, nil
+					// Limit reached. C++ getExactRange sets
+					// output.more = (data.size() == limit) — always true when
+					// the limit is met, regardless of the current shard's more
+					// flag. There may be more data in subsequent shards.
+					return allKVs, true, nil
 				}
 
 				// C++ "fix more" heuristic (NativeAPI.actor.cpp:2331-2333):
