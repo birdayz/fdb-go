@@ -8,7 +8,6 @@ import (
 
 func TestAsInt64(t *testing.T) {
 	t.Parallel()
-	g := NewGomegaWithT(t)
 
 	tests := []struct {
 		name     string
@@ -27,6 +26,7 @@ func TestAsInt64(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			g := NewGomegaWithT(t) // Must use subtest's t, not parent's.
 			val, ok := asInt64(tc.input)
 			g.Expect(ok).To(Equal(tc.ok))
 			g.Expect(val).To(Equal(tc.expected))

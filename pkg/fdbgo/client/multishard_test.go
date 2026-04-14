@@ -96,6 +96,12 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 
 // TestMultiShard runs all cross-shard tests against a shared 3-process
 // FDB cluster with small shards (~35 shards for 1MB data).
+//
+// Sub-tests run sequentially (no t.Parallel()) because they share env state:
+// ClearRange mutates the dataset, BatchedWrites adds keys, and
+// ConcurrentWritesDuringDD triggers shard splits. The container cost (~30s)
+// is paid once; parallelizing would require per-subtest key prefixes and
+// separate datasets, adding complexity for marginal speedup.
 func TestMultiShard(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
