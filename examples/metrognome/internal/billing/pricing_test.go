@@ -236,6 +236,116 @@ func TestNilPricing(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("nil pricing"))
 }
 
+func TestTieredExactBoundaries(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	tiers := []*storev1.Tier{
+		{UpTo: proto.Int64(10), PriceCents: proto.Int64(100)},
+		{UpTo: proto.Int64(20), PriceCents: proto.Int64(50)},
+		{UpTo: proto.Int64(0), PriceCents: proto.Int64(10)},
+	}
+	pricing := &storev1.PricingModel{
+		Model: &storev1.PricingModel_Tiered{Tiered: &storev1.TieredPricing{Tiers: tiers}},
+	}
+
+	// Exactly at first boundary
+	amount, _, _ := billing.CalculateCharge(10, pricing)
+	g.Expect(amount).To(Equal(int64(1000))) // 10 * 100
+
+	// One over first boundary: 10*100 + 1*50 = 1050
+	amount, _, _ = billing.CalculateCharge(11, pricing)
+	g.Expect(amount).To(Equal(int64(1050)))
+
+	// Exactly at second boundary: 10*100 + 10*50 = 1500
+	amount, _, _ = billing.CalculateCharge(20, pricing)
+	g.Expect(amount).To(Equal(int64(1500)))
+
+	// One over second boundary: 10*100 + 10*50 + 1*10 = 1510
+	amount, _, _ = billing.CalculateCharge(21, pricing)
+	g.Expect(amount).To(Equal(int64(1510)))
+
+	// Very large number: 10*100 + 10*50 + 999980*10 = 1000 + 500 + 9999800 = 10001300
+	amount, _, _ = billing.CalculateCharge(1000000, pricing)
+	g.Expect(amount).To(Equal(int64(10001300)))
+}
+
+func TestVolumeBoundaryEdge(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	tiers := []*storev1.Tier{
+		{UpTo: proto.Int64(100), PriceCents: proto.Int64(10)},
+		{UpTo: proto.Int64(0), PriceCents: proto.Int64(5)},
+	}
+	pricing := &storev1.PricingModel{
+		Model: &storev1.PricingModel_Volume{Volume: &storev1.VolumePricing{Tiers: tiers}},
+	}
+
+	// At boundary: all at first tier
+	amount, _, _ := billing.CalculateCharge(100, pricing)
+	g.Expect(amount).To(Equal(int64(1000))) // 100 * 10
+
+	// One over: all at second tier
+	amount, _, _ = billing.CalculateCharge(101, pricing)
+	g.Expect(amount).To(Equal(int64(505))) // 101 * 5
+
+	// Volume is CHEAPER than tiered at high volumes — this is the expected behavior
+	// 100 units: volume = 1000, tiered would be 1000 (same at boundary)
+	// 101 units: volume = 505, tiered would be 1000 + 5 = 1005
+}
+
+func TestPackageEdgeCases(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	pricing := &storev1.PricingModel{
+		Model: &storev1.PricingModel_Package{Package: &storev1.PackagePricing{
+			PackageSize: proto.Int64(100), PackagePriceCents: proto.Int64(500),
+		}},
+	}
+
+	// Exact multiple
+	amount, _, _ := billing.CalculateCharge(300, pricing)
+	g.Expect(amount).To(Equal(int64(1500))) // 3 packages
+
+	// One unit: still one full package
+	amount, _, _ = billing.CalculateCharge(1, pricing)
+	g.Expect(amount).To(Equal(int64(500)))
+
+	// 99 units: one package
+	amount, _, _ = billing.CalculateCharge(99, pricing)
+	g.Expect(amount).To(Equal(int64(500)))
+
+	// 101 units: two packages
+	amount, _, _ = billing.CalculateCharge(101, pricing)
+	g.Expect(amount).To(Equal(int64(1000)))
+}
+
+func TestBpsPrecision(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	// 1 bps = 0.01% = 0.0001
+	// On $100.00 (10000 cents): 10000 * 1 / 10000 = 1 cent
+	amount, _, _ := billing.CalculateCharge(10000, &storev1.PricingModel{
+		Model: &storev1.PricingModel_Bps{Bps: &storev1.BpsPricing{BasisPoints: proto.Int64(1)}},
+	})
+	g.Expect(amount).To(Equal(int64(1)))
+
+	// 10000 bps = 100% — full amount returned
+	amount, _, _ = billing.CalculateCharge(5000, &storev1.PricingModel{
+		Model: &storev1.PricingModel_Bps{Bps: &storev1.BpsPricing{BasisPoints: proto.Int64(10000)}},
+	})
+	g.Expect(amount).To(Equal(int64(5000)))
+
+	// 5000 bps = 50%
+	amount, _, _ = billing.CalculateCharge(1000, &storev1.PricingModel{
+		Model: &storev1.PricingModel_Bps{Bps: &storev1.BpsPricing{BasisPoints: proto.Int64(5000)}},
+	})
+	g.Expect(amount).To(Equal(int64(500)))
+}
+
 func TestBucketHour(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

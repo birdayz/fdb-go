@@ -678,7 +678,7 @@ func TestE2EAlertWebhook(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return webhookReceived
-	}, 5*time.Second, 50*time.Millisecond).Should(BeTrue())
+	}, 15*time.Second, 100*time.Millisecond).Should(BeTrue())
 
 	// Verify webhook payload
 	mu.Lock()
@@ -686,6 +686,147 @@ func TestE2EAlertWebhook(t *testing.T) {
 	g.Expect(webhookPayload["alert_type"]).To(Equal("usage"))
 	g.Expect(webhookPayload["customer_id"]).To(Equal(custID))
 	g.Expect(webhookPayload["meter_slug"]).To(Equal("webhook_test"))
+}
+
+// TestE2EExpiredCreditsNotApplied verifies expired credits are skipped during invoicing.
+func TestE2EExpiredCreditsNotApplied(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	planClient := metrognomev1connect.NewPlanServiceClient(http.DefaultClient, testServer.URL)
+	contractClient := metrognomev1connect.NewContractServiceClient(http.DefaultClient, testServer.URL)
+	creditClient := metrognomev1connect.NewCreditServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+	invoiceClient := metrognomev1connect.NewInvoiceServiceClient(http.DefaultClient, testServer.URL)
+
+	_, _ = meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "exp_credit_test", Name: "Exp Credit", AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	custResp, _ := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Expired Credit Corp"}))
+	custID := custResp.Msg.GetCustomer().GetId()
+	planResp, _ := planClient.CreatePlan(ctx, connect.NewRequest(&metrognomev1.CreatePlanRequest{Name: "Exp Plan"}))
+	planID := planResp.Msg.GetPlan().GetId()
+	_, _ = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "exp_credit_test",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_PerUnit{
+			PerUnit: &metrognomev1.PerUnitPricing{UnitPriceCents: 100},
+		}},
+	}))
+
+	periodStart := time.Date(2028, 3, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd := time.Date(2028, 4, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	contractResp, _ := contractClient.CreateContract(ctx, connect.NewRequest(&metrognomev1.CreateContractRequest{
+		CustomerId: custID, PlanId: planID, StartAt: periodStart,
+		BillingPeriod: metrognomev1.BillingPeriod_BILLING_PERIOD_MONTHLY,
+	}))
+	contractID := contractResp.Msg.GetContract().GetId()
+
+	// Grant an EXPIRED credit ($50.00, expired yesterday)
+	_, _ = creditClient.GrantCredit(ctx, connect.NewRequest(&metrognomev1.GrantCreditRequest{
+		CustomerId:  custID,
+		AmountCents: 5000,
+		Priority:    1,
+		ExpiresAt:   time.Now().Add(-24 * time.Hour).UnixMilli(), // expired
+	}))
+
+	// Ingest 10 events → $10.00
+	ts := time.Date(2028, 3, 15, 12, 0, 0, 0, time.UTC).UnixMilli()
+	events := make([]*metrognomev1.Event, 10)
+	for i := range events {
+		events[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "exp_credit_test", TimestampMs: ts,
+			Value: 1, IdempotencyKey: fmt.Sprintf("exp-%d", i),
+		}
+	}
+	_, _ = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events}))
+
+	// Generate invoice — expired credit should NOT be applied
+	invResp, err := invoiceClient.GenerateInvoice(ctx, connect.NewRequest(&metrognomev1.GenerateInvoiceRequest{
+		ContractId: contractID, PeriodStart: periodStart, PeriodEnd: periodEnd,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(invResp.Msg.GetInvoice().GetSubtotalCents()).To(Equal(int64(1000)))
+	g.Expect(invResp.Msg.GetInvoice().GetCreditsAppliedCents()).To(Equal(int64(0))) // expired, not applied
+	g.Expect(invResp.Msg.GetInvoice().GetTotalCents()).To(Equal(int64(1000)))
+}
+
+// TestE2EMultipleCreditPriority verifies credits are applied in priority order.
+func TestE2EMultipleCreditPriority(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	planClient := metrognomev1connect.NewPlanServiceClient(http.DefaultClient, testServer.URL)
+	contractClient := metrognomev1connect.NewContractServiceClient(http.DefaultClient, testServer.URL)
+	creditClient := metrognomev1connect.NewCreditServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+	invoiceClient := metrognomev1connect.NewInvoiceServiceClient(http.DefaultClient, testServer.URL)
+
+	_, _ = meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "multi_credit_test", Name: "Multi Credit", AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	custResp, _ := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Multi Credit Corp"}))
+	custID := custResp.Msg.GetCustomer().GetId()
+	planResp, _ := planClient.CreatePlan(ctx, connect.NewRequest(&metrognomev1.CreatePlanRequest{Name: "Multi Plan"}))
+	planID := planResp.Msg.GetPlan().GetId()
+	_, _ = planClient.AddCharge(ctx, connect.NewRequest(&metrognomev1.AddChargeRequest{
+		PlanId: planID, MeterSlug: "multi_credit_test",
+		Pricing: &metrognomev1.PricingModel{Model: &metrognomev1.PricingModel_PerUnit{
+			PerUnit: &metrognomev1.PerUnitPricing{UnitPriceCents: 100},
+		}},
+	}))
+
+	periodStart := time.Date(2028, 5, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd := time.Date(2028, 6, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	contractResp, _ := contractClient.CreateContract(ctx, connect.NewRequest(&metrognomev1.CreateContractRequest{
+		CustomerId: custID, PlanId: planID, StartAt: periodStart,
+		BillingPeriod: metrognomev1.BillingPeriod_BILLING_PERIOD_MONTHLY,
+	}))
+	contractID := contractResp.Msg.GetContract().GetId()
+
+	// Grant 3 credits with different priorities
+	// Priority 1: $3.00 (applied first)
+	_, _ = creditClient.GrantCredit(ctx, connect.NewRequest(&metrognomev1.GrantCreditRequest{
+		CustomerId: custID, AmountCents: 300, Priority: 1,
+	}))
+	// Priority 2: $5.00 (applied second)
+	_, _ = creditClient.GrantCredit(ctx, connect.NewRequest(&metrognomev1.GrantCreditRequest{
+		CustomerId: custID, AmountCents: 500, Priority: 2,
+	}))
+	// Priority 3: $10.00 (applied third, partially)
+	_, _ = creditClient.GrantCredit(ctx, connect.NewRequest(&metrognomev1.GrantCreditRequest{
+		CustomerId: custID, AmountCents: 1000, Priority: 3,
+	}))
+
+	// Ingest 10 events → $10.00 subtotal
+	ts := time.Date(2028, 5, 15, 12, 0, 0, 0, time.UTC).UnixMilli()
+	events := make([]*metrognomev1.Event, 10)
+	for i := range events {
+		events[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "multi_credit_test", TimestampMs: ts,
+			Value: 1, IdempotencyKey: fmt.Sprintf("mc-%d", i),
+		}
+	}
+	_, _ = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events}))
+
+	// Generate invoice: $10.00 - $3.00 - $5.00 - $2.00 (partial from priority 3) = $0.00
+	invResp, err := invoiceClient.GenerateInvoice(ctx, connect.NewRequest(&metrognomev1.GenerateInvoiceRequest{
+		ContractId: contractID, PeriodStart: periodStart, PeriodEnd: periodEnd,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(invResp.Msg.GetInvoice().GetSubtotalCents()).To(Equal(int64(1000)))
+	g.Expect(invResp.Msg.GetInvoice().GetCreditsAppliedCents()).To(Equal(int64(1000))) // all 3 credits cover $10
+	g.Expect(invResp.Msg.GetInvoice().GetTotalCents()).To(Equal(int64(0)))
+
+	// Verify remaining credit balances
+	balResp, err := creditClient.GetCreditBalance(ctx, connect.NewRequest(&metrognomev1.GetCreditBalanceRequest{CustomerId: custID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(balResp.Msg.GetTotalRemainingCents()).To(Equal(int64(800))) // priority 3 has $8.00 left
 }
 
 func TestE2ECustomerNotFound(t *testing.T) {

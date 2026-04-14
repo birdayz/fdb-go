@@ -123,9 +123,10 @@ func (s *EventService) evaluateAlerts(ctx context.Context, events []*metrognomev
 					alert.TriggeredAt = proto.Int64(now)
 					_ = s.alerts.Save(ctx, alert)
 
-					// Deliver webhook if configured
+					// Deliver webhook if configured (use background context —
+					// webhook must survive beyond the request lifetime)
 					if alert.GetWebhookUrl() != "" {
-						webhook.Deliver(ctx, alert.GetWebhookUrl(), webhook.Payload{
+						webhook.Deliver(context.Background(), alert.GetWebhookUrl(), webhook.Payload{
 							AlertID:     alert.GetId(),
 							CustomerID:  k.customerID,
 							MeterSlug:   k.meterSlug,

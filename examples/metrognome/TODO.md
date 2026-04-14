@@ -309,7 +309,7 @@ examples/metrognome/
 - [x] P1: Alert definitions (CRUD service + storage)
 - [x] P1: Alert evaluation — automatic check after event ingestion, marks triggered when usage >= threshold
 - [x] P1: E2E test: below-threshold (30 events, not triggered) + above (60 events, triggered)
-- [ ] P2: Webhook delivery for triggered alerts
+- [x] P2: Webhook delivery — async POST with 3 retries + exponential backoff, webhook_url on Alert
 
 ### Phase 5: Frontend
 - [ ] P2: React app scaffolding (Vite + Tailwind + shadcn)
