@@ -176,6 +176,7 @@ go_test(
         "index_state_test.go",
         "index_test.go",
         "index_validation_test.go",
+        "indexing_heartbeat_test.go",
         "indexing_range_set_test.go",
         "indexing_throttle_test.go",
         "key_expr_bug_verify_test.go",
