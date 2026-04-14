@@ -326,7 +326,7 @@ examples/metrognome/
 - [ ] P1: Chaos testing — commit_unknown with billing writes
 - [x] P1: Edge cases: zero usage invoices, tiered pricing, credit depletion, multi-charge invoice, customer not found, contract lifecycle, alert CRUD
 - [x] P1: Event dedup correctness: pre-check idempotency key BEFORE SaveRecord
-- [ ] P2: Benchmark: event ingestion throughput
+- [x] P2: Benchmarks — EventIngest(1/10/100), UsageQuery (200us), InvoiceGeneration (1.27ms)
 
 ### Phase 7: Dynamic Meter Engine
 - [x] P0: Runtime proto generation from meter config (dynamicpb + protodesc)

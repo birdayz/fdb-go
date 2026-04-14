@@ -96,9 +96,21 @@ When a user creates a meter with `group_by: ["region", "model"]`:
 
 Users get arbitrary group-by dimensions without touching proto files. The dynamic proto is invisible — they just call `IngestEvent(slug, customerID, bucket, value, {"region": "us-east-1", "model": "gpt-4"})`.
 
+## Benchmarks
+
+| Benchmark | ns/op | Throughput |
+|---|---|---|
+| EventIngest×1 | 1,027,000 | 974 events/sec |
+| EventIngest×10 | 3,442,000 | 2,905 events/sec |
+| EventIngest×100 | 28,201,000 | 3,546 events/sec |
+| UsageQuery | 200,225 | 4,994 queries/sec |
+| InvoiceGeneration | 1,267,000 | 789 invoices/sec |
+
+Usage queries sub-ms (O(1) SUM index read). Invoice generation 1.3ms. Event ingestion bottlenecked by per-event idempotency pre-check.
+
 ## Tests
 
-14 integration tests across 2 test targets against real FDB (testcontainers):
+36 tests across 4 test targets against real FDB (testcontainers):
 - Customer CRUD
 - Meter CRUD (slug uniqueness)
 - Event ingestion + idempotency dedup
@@ -113,6 +125,13 @@ Users get arbitrary group-by dimensions without touching proto files. The dynami
 - Dynamic meter: multi-bucket range queries
 - Dynamic meter: idempotent registration
 - Dynamic meter: unregistered meter error
+- Alert triggering (below threshold → above threshold)
+- Invoice status transitions (DRAFT→ISSUED→PAID, invalid→error, DRAFT→VOID)
+- Customer pagination (page_size=2, continuation tokens, no overlap)
+- Meter and plan listing
+- Windowed usage query (hourly/daily)
+- List charges for a plan
+- Empty invoice listing for new customer
 
 ## Design Decisions
 
