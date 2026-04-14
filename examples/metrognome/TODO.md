@@ -297,10 +297,11 @@ examples/metrognome/
 - [ ] P1: Invoice finalization and status transitions (draft → issued → paid → void)
 
 ### Phase 3: Exactly-Once Kafka Consumer
-- [ ] P0: Kafka consumer with franz-go
-- [x] P0: FDB-transactional offset storage (KafkaOffset record type + store)
-- [x] P0: Idempotency key dedup (UNIQUE index, tested: reingested events rejected)
-- [x] P0: Batch event processing (multiple events per FDB transaction)
+- [x] P0: Kafka consumer with franz-go — per-partition batch tx, JSON event parsing
+- [x] P0: FDB-transactional offset storage (offsets in FDB, not Kafka's __consumer_offsets)
+- [x] P0: Idempotency key dedup (pre-check before SaveRecord in consumer tx)
+- [x] P0: Batch event processing (multiple events per FDB transaction, configurable batch size)
+- [x] P0: Wired into main server (KAFKA_BROKERS + KAFKA_TOPIC env vars, graceful shutdown)
 - [ ] P1: Consumer lag monitoring
 - [ ] P1: Dead letter handling for malformed events
 

@@ -73,7 +73,7 @@ func TestMain(m *testing.M) {
 	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters(), meterEngine)))
 	register(metrognomev1connect.NewPlanServiceHandler(services.NewPlanService(db.Plans(), db.Charges())))
 	register(metrognomev1connect.NewContractServiceHandler(services.NewContractService(db.Contracts())))
-	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), meterEngine)))
+	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), db.Alerts(), meterEngine)))
 	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), billingEngine)))
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
@@ -456,6 +456,72 @@ func TestE2EMultiChargeInvoice(t *testing.T) {
 	invoice := invoiceResp.Msg.GetInvoice()
 	g.Expect(invoice.GetLineItems()).To(HaveLen(3))
 	g.Expect(invoice.GetTotalCents()).To(Equal(int64(10700)))
+}
+
+// TestE2EAlertTriggering tests that alerts are automatically triggered when usage exceeds threshold.
+func TestE2EAlertTriggering(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+	ctx := context.Background()
+
+	customerClient := metrognomev1connect.NewCustomerServiceClient(http.DefaultClient, testServer.URL)
+	meterClient := metrognomev1connect.NewMeterServiceClient(http.DefaultClient, testServer.URL)
+	alertClient := metrognomev1connect.NewAlertServiceClient(http.DefaultClient, testServer.URL)
+	eventClient := metrognomev1connect.NewEventServiceClient(http.DefaultClient, testServer.URL)
+
+	// Create meter
+	_, err := meterClient.CreateMeter(ctx, connect.NewRequest(&metrognomev1.CreateMeterRequest{
+		Slug: "alert_test_calls", Name: "Alert Test Calls",
+		AggregationType: metrognomev1.AggregationType_AGGREGATION_TYPE_SUM,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Create customer
+	custResp, err := customerClient.CreateCustomer(ctx, connect.NewRequest(&metrognomev1.CreateCustomerRequest{Name: "Alert Trigger Corp"}))
+	g.Expect(err).NotTo(HaveOccurred())
+	custID := custResp.Msg.GetCustomer().GetId()
+
+	// Create alert: trigger at 50 usage
+	createResp, err := alertClient.CreateAlert(ctx, connect.NewRequest(&metrognomev1.CreateAlertRequest{
+		CustomerId: custID, MeterSlug: "alert_test_calls", Threshold: 50,
+		AlertType: metrognomev1.AlertType_ALERT_TYPE_USAGE,
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(createResp.Msg.GetAlert().GetTriggered()).To(BeFalse())
+
+	// Ingest 30 events (below threshold) — alert should NOT trigger
+	ts := time.Date(2026, 12, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	events30 := make([]*metrognomev1.Event, 30)
+	for i := range events30 {
+		events30[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "alert_test_calls", TimestampMs: ts,
+			Value: 1, IdempotencyKey: fmt.Sprintf("alert-30-%d", i),
+		}
+	}
+	_, err = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events30}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Check: alert not triggered
+	listResp, err := alertClient.ListAlerts(ctx, connect.NewRequest(&metrognomev1.ListAlertsRequest{CustomerId: custID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(listResp.Msg.GetAlerts()).To(HaveLen(1))
+	g.Expect(listResp.Msg.GetAlerts()[0].GetTriggered()).To(BeFalse())
+
+	// Ingest 30 more events (total = 60, above threshold) — alert SHOULD trigger
+	events30more := make([]*metrognomev1.Event, 30)
+	for i := range events30more {
+		events30more[i] = &metrognomev1.Event{
+			CustomerId: custID, EventType: "alert_test_calls", TimestampMs: ts,
+			Value: 1, IdempotencyKey: fmt.Sprintf("alert-60-%d", i),
+		}
+	}
+	_, err = eventClient.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events30more}))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Check: alert triggered
+	listResp2, err := alertClient.ListAlerts(ctx, connect.NewRequest(&metrognomev1.ListAlertsRequest{CustomerId: custID}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(listResp2.Msg.GetAlerts()[0].GetTriggered()).To(BeTrue())
 }
 
 func TestE2ECustomerNotFound(t *testing.T) {

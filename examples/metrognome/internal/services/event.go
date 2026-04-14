@@ -20,11 +20,12 @@ import (
 type EventService struct {
 	metrognomev1connect.UnimplementedEventServiceHandler
 	events      *storage.EventStore
+	alerts      *storage.AlertStore
 	meterEngine *meter.Engine
 }
 
-func NewEventService(events *storage.EventStore, meterEngine *meter.Engine) *EventService {
-	return &EventService{events: events, meterEngine: meterEngine}
+func NewEventService(events *storage.EventStore, alerts *storage.AlertStore, meterEngine *meter.Engine) *EventService {
+	return &EventService{events: events, alerts: alerts, meterEngine: meterEngine}
 }
 
 func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[metrognomev1.IngestEventsRequest]) (*connect.Response[metrognomev1.IngestEventsResponse], error) {
@@ -71,10 +72,67 @@ func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[me
 		}
 	}
 
+	// Evaluate alerts for affected customers/meters
+	if s.alerts != nil && result.Accepted > 0 {
+		s.evaluateAlerts(ctx, req.Msg.GetEvents(), result.AcceptedIndexes)
+	}
+
 	return connect.NewResponse(&metrognomev1.IngestEventsResponse{
 		Accepted:   result.Accepted,
 		Duplicates: result.Duplicates,
 	}), nil
+}
+
+// evaluateAlerts checks if any alerts have been breached after event ingestion.
+func (s *EventService) evaluateAlerts(ctx context.Context, events []*metrognomev1.Event, acceptedIndexes []int) {
+	// Collect unique customer/meter pairs from accepted events
+	type key struct{ customerID, meterSlug string }
+	seen := make(map[key]bool)
+	for _, idx := range acceptedIndexes {
+		evt := events[idx]
+		k := key{evt.GetCustomerId(), evt.GetEventType()}
+		seen[k] = true
+	}
+
+	for k := range seen {
+		alerts, err := s.alerts.ListByCustomer(ctx, k.customerID)
+		if err != nil {
+			continue
+		}
+		for _, alert := range alerts {
+			if alert.GetTriggered() {
+				continue // already triggered
+			}
+			if alert.GetMeterSlug() != k.meterSlug {
+				continue // different meter
+			}
+			// Check usage against threshold
+			if alert.GetAlertType() == storev1.AlertType_ALERT_TYPE_USAGE {
+				usage, err := s.getUsageForAlert(ctx, k.customerID, k.meterSlug)
+				if err != nil {
+					continue
+				}
+				if usage >= alert.GetThreshold() {
+					alert.Triggered = proto.Bool(true)
+					_ = s.alerts.Save(ctx, alert)
+				}
+			}
+		}
+	}
+}
+
+func (s *EventService) getUsageForAlert(ctx context.Context, customerID, meterSlug string) (int64, error) {
+	// Use max int64 as end bucket to cover all time — alerts check lifetime usage
+	const maxBucket = int64(1<<62 - 1)
+	// Try dynamic engine first
+	if s.meterEngine != nil {
+		total, err := s.meterEngine.GetUsage(ctx, meterSlug, customerID, 0, maxBucket, nil)
+		if err == nil {
+			return total, nil
+		}
+	}
+	// Fallback to static
+	return s.events.GetUsage(ctx, customerID, meterSlug, 0, maxBucket)
 }
 
 func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrognomev1.GetUsageRequest]) (*connect.Response[metrognomev1.GetUsageResponse], error) {

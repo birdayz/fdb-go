@@ -21,6 +21,14 @@ func (s *AlertStore) Create(ctx context.Context, a *storev1.Alert) error {
 	return err
 }
 
+func (s *AlertStore) Save(ctx context.Context, a *storev1.Alert) error {
+	_, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		_, err := rs.SaveRecord(a)
+		return nil, err
+	})
+	return err
+}
+
 func (s *AlertStore) ListByCustomer(ctx context.Context, customerID string) ([]*storev1.Alert, error) {
 	result, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
 		cursor := rs.ScanIndexRecords("alert_by_customer",

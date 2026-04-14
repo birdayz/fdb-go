@@ -93,7 +93,7 @@ func main() {
 	register(metrognomev1connect.NewMeterServiceHandler(services.NewMeterService(db.Meters(), meterEngine)))
 	register(metrognomev1connect.NewPlanServiceHandler(services.NewPlanService(db.Plans(), db.Charges())))
 	register(metrognomev1connect.NewContractServiceHandler(services.NewContractService(db.Contracts())))
-	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), meterEngine)))
+	register(metrognomev1connect.NewEventServiceHandler(services.NewEventService(db.Events(), db.Alerts(), meterEngine)))
 	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), billingEngine)))
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits())))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts())))
