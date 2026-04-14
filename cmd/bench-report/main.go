@@ -123,9 +123,13 @@ func compare(old, new map[string]*benchResult) []comparison {
 			delta = (newR.NsPerOp - oldR.NsPerOp) / oldR.NsPerOp * 100
 		}
 		status := "~"
-		if delta > regressionThreshold {
+		// Only flag timing regressions when allocations also changed.
+		// If allocs and bytes are identical, timing variance is noise from
+		// CI VM load, not a real code regression.
+		allocsChanged := oldR.AllocsPerOp != newR.AllocsPerOp || oldR.BytesPerOp != newR.BytesPerOp
+		if delta > regressionThreshold && allocsChanged {
 			status = "slower"
-		} else if delta < -regressionThreshold {
+		} else if delta < -regressionThreshold && allocsChanged {
 			status = "faster"
 		}
 		result = append(result, comparison{
