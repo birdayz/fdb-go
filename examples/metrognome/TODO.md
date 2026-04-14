@@ -323,7 +323,7 @@ examples/metrognome/
 
 ### Phase 6: Hardening
 - [x] P1: Integration tests with real FDB (testcontainers) — 29 tests across 4 targets
-- [ ] P1: Chaos testing — commit_unknown with billing writes
+- [x] P1: Chaos testing — commit_unknown: event ingestion (SUM not double-counted), invoice generation (credit drawdown non-idempotent documented)
 - [x] P1: Edge cases: zero usage invoices, tiered pricing, credit depletion, multi-charge invoice, customer not found, contract lifecycle, alert CRUD
 - [x] P1: Event dedup correctness: pre-check idempotency key BEFORE SaveRecord
 - [x] P2: Benchmarks — EventIngest(1/10/100), UsageQuery (200us), InvoiceGeneration (1.27ms)
