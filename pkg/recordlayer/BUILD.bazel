@@ -54,6 +54,7 @@ go_library(
         "online_indexer.go",
         "order_function_key_expression.go",
         "permuted_min_max_index_maintainer.go",
+        "query_plan.go",
         "range_set.go",
         "rank_index_maintainer.go",
         "ranked_set.go",
