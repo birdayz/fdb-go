@@ -88,6 +88,7 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 	if err != nil {
 		return nil, err
 	}
+	// Return single-element result. Inner slice is 1 alloc; outer reuses fixed capacity.
 	return [][]any{{result}}, nil
 }
 
@@ -188,6 +189,9 @@ func (f *FieldKeyExpression) ColumnSize() int {
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
 type RecordTypeKeyExpression struct {
+	// cachedResults caches the Evaluate return for each type name.
+	// RecordTypeKey is deterministic per record type, so cache is safe.
+	cachedResults map[string][][]any
 	// nested is the optional nested key expression
 	nested KeyExpression
 	// typeKeys maps proto message full name → record type key (int64).
@@ -216,11 +220,18 @@ func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
 // record.getRecordType().getRecordTypeKey() — the union descriptor field number.
 func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
-		// Nil message → null type key. Matches Java's null check:
-		// record != null ? scalar(record.getRecordType().getRecordTypeKey()) : Key.Evaluated.NULL
-		return [][]any{{nil}}, nil
+		return nilKeyResult, nil
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
+
+	// Check cache — RecordTypeKey is deterministic per type name
+	if r.nested == nil {
+		if r.cachedResults != nil {
+			if cached, ok := r.cachedResults[typeName]; ok {
+				return cached, nil
+			}
+		}
+	}
 
 	// Look up the integer record type key (proto field number from union descriptor).
 	var typeKey any
@@ -228,14 +239,20 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 		if k, ok := r.typeKeys[typeName]; ok {
 			typeKey = k
 		} else {
-			typeKey = typeName // fallback for unbound expressions
+			typeKey = typeName
 		}
 	} else {
-		typeKey = typeName // fallback for unbound expressions
+		typeKey = typeName
 	}
 
 	if r.nested == nil {
-		return [][]any{{typeKey}}, nil
+		result := [][]any{{typeKey}}
+		// Cache for reuse
+		if r.cachedResults == nil {
+			r.cachedResults = make(map[string][][]any)
+		}
+		r.cachedResults[typeName] = result
+		return result, nil
 	}
 
 	nestedTuples, err := r.nested.Evaluate(record, msg)
