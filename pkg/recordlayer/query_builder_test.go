@@ -108,6 +108,33 @@ var _ = Describe("QueryBuilder", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("paginates with skip + limit", func() {
+		ss := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for i := int64(1); i <= 20; i++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 5))})
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			// Page 3 (0-indexed): skip 6, take 3
+			plan := NewQueryFrom("Order").Skip(6).Limit(3).Build()
+			results, err := ExecuteAndCollect(ctx, store, plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(3))
+			Expect(results[0].Record.(*gen.Order).GetOrderId()).To(Equal(int64(7)))
+			Expect(results[1].Record.(*gen.Order).GetOrderId()).To(Equal(int64(8)))
+			Expect(results[2].Record.(*gen.Order).GetOrderId()).To(Equal(int64(9)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("explains built plan", func() {
 		plan := NewQueryFrom("Order").
 			Filter("price > 50", nil).
