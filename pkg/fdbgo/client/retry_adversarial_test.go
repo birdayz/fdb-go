@@ -206,9 +206,9 @@ func TestOnError_AllRetryableErrors(t *testing.T) {
 		ErrProcessBehind,             // 1037
 		ErrBatchTransactionThrottled, // 1042
 		ErrTagThrottled,              // 1078
-		ErrProxyTagThrottled,         // 1235 (wait, this might be wrong number)
-		ErrThrottledHotShard,         // 1235 or 1242
-		ErrRangeLocked,               // 1242
+		ErrProxyTagThrottled,
+		ErrThrottledHotShard,
+		ErrRangeLocked,
 		ErrBlobGranuleRequestFailed,
 		ErrAllProxiesUnreachable,
 		ErrProxyMemoryLimitExceeded,

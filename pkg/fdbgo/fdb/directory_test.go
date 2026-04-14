@@ -635,10 +635,10 @@ func TestDirectoryLayerCreatePrefix(t *testing.T) {
 
 	// Verify CreatePrefix on the default root DL fails (manual prefixes not allowed).
 	rootDir := directory.Root()
+	defer rootDir.Remove(db, []string{"should_fail_prefix"}) // cleanup if CreatePrefix incorrectly succeeds
 	_, err = rootDir.CreatePrefix(db, []string{"should_fail_prefix"}, nil, []byte{0xFF})
 	if err == nil {
 		t.Fatal("expected error using CreatePrefix on default root DL (manual prefixes disallowed)")
-		rootDir.Remove(db, []string{"should_fail_prefix"})
 	}
 
 	// Clean up.

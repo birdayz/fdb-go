@@ -40,7 +40,7 @@ func TestConcurrentRYW_SameTransaction(t *testing.T) {
 	// Pre-create keys.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
 		for i := 0; i < 10; i++ {
-			tx.Set([]byte(fmt.Sprintf("%s%02d", pfx, i)), le64stress(uint64(i)))
+			tx.Set([]byte(fmt.Sprintf("%s%02d", pfx, i)), le64v(uint64(i)))
 		}
 		return nil, nil
 	})
@@ -52,7 +52,7 @@ func TestConcurrentRYW_SameTransaction(t *testing.T) {
 	_, err = db.Transact(ctx, func(tx *Transaction) (any, error) {
 		// Write unique values, then spawn readers.
 		for i := 0; i < 10; i++ {
-			tx.Set([]byte(fmt.Sprintf("%s%02d", pfx, i)), le64stress(uint64(100+i)))
+			tx.Set([]byte(fmt.Sprintf("%s%02d", pfx, i)), le64v(uint64(100+i)))
 		}
 
 		var wg sync.WaitGroup
@@ -104,7 +104,7 @@ func TestConcurrentTransactions_Stress(t *testing.T) {
 
 	// Initialize counter to 0.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set(key, le64stress(0))
+		tx.Set(key, le64v(0))
 		return nil, nil
 	})
 	if err != nil {
@@ -124,8 +124,11 @@ func TestConcurrentTransactions_Stress(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
+					if len(val) < 8 {
+						return nil, fmt.Errorf("counter key absent or corrupt: %v", val)
+					}
 					current := binary.LittleEndian.Uint64(val)
-					tx.Set(key, le64stress(current+1))
+					tx.Set(key, le64v(current+1))
 					return nil, nil
 				})
 				if err != nil {
@@ -170,7 +173,7 @@ func TestConcurrentAtomicAdd(t *testing.T) {
 
 	// Initialize to 0.
 	_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		tx.Set(key, le64stress(0))
+		tx.Set(key, le64v(0))
 		return nil, nil
 	})
 	if err != nil {
@@ -186,7 +189,7 @@ func TestConcurrentAtomicAdd(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < addsPerWorker; i++ {
 				_, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-					tx.Atomic(MutAddValue, key, le64stress(addValue))
+					tx.Atomic(MutAddValue, key, le64v(addValue))
 					return nil, nil
 				})
 				if err != nil {
@@ -334,8 +337,4 @@ func TestConcurrentClearAndRead(t *testing.T) {
 	}
 }
 
-func le64stress(v uint64) []byte {
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, v)
-	return b
-}
+// le64v is defined in ryw_adversarial_test.go
