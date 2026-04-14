@@ -307,7 +307,8 @@ examples/metrognome/
 
 ### Phase 4: Alerts & Real-Time
 - [x] P1: Alert definitions (CRUD service + storage)
-- [ ] P1: Alert evaluation (check after event batch commit)
+- [x] P1: Alert evaluation — automatic check after event ingestion, marks triggered when usage >= threshold
+- [x] P1: E2E test: below-threshold (30 events, not triggered) + above (60 events, triggered)
 - [ ] P2: Webhook delivery for triggered alerts
 
 ### Phase 5: Frontend
