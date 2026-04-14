@@ -35,6 +35,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		record     proto.Message
 		recordType *RecordType
 		primaryKey tuple.Tuple
+		unsplitKey fdb.Key // pre-computed, reused for save
 		future     fdb.FutureByteSlice
 	}
 
@@ -74,6 +75,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			record:     record,
 			recordType: recordType,
 			primaryKey: primaryKey,
+			unsplitKey: unsplitKey,
 			future:     future,
 		}
 	}
@@ -125,10 +127,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			}
 			oldRecordExists = oldValue != nil
 		} else if oldRecordExists {
-			unsplitKeyTuple := appendToTuple(p.primaryKey, unsplitRecord)
-			unsplitKey := recordsSubspace.Pack(unsplitKeyTuple)
 			oldsizeInfo.KeyCount = 1
-			oldsizeInfo.KeySize = len(unsplitKey)
+			oldsizeInfo.KeySize = len(p.unsplitKey)
 			oldsizeInfo.ValueSize = len(oldValue)
 			oldsizeInfo.IsSplit = false
 		}
@@ -139,15 +139,23 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, &RecordSerializationError{Cause: err}
 		}
 
-		// Save
-		var oldsizeInfoPtr *sizeInfo
-		if oldRecordExists {
-			oldsizeInfoPtr = &oldsizeInfo
-		}
+		// Save — fast path for unsplit new records (most common in batch ingest)
 		var newsizeInfo sizeInfo
-		if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
-			splitEnabled, oldsizeInfoPtr, &newsizeInfo); err != nil {
-			return nil, fmt.Errorf("record %d: save: %w", i, err)
+		if !oldRecordExists && len(data) <= splitRecordSize {
+			// Direct Set using pre-computed key — avoids appendToTuple + Pack in saveWithSplit
+			tx.Set(p.unsplitKey, data)
+			newsizeInfo.KeyCount = 1
+			newsizeInfo.KeySize = len(p.unsplitKey)
+			newsizeInfo.ValueSize = len(data)
+		} else {
+			var oldsizeInfoPtr *sizeInfo
+			if oldRecordExists {
+				oldsizeInfoPtr = &oldsizeInfo
+			}
+			if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
+				splitEnabled, oldsizeInfoPtr, &newsizeInfo); err != nil {
+				return nil, fmt.Errorf("record %d: save: %w", i, err)
+			}
 		}
 
 		// Record count

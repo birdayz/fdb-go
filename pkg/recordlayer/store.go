@@ -1662,7 +1662,9 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	out := protowire.AppendTag(nil, recordType.unionFieldNumber, protowire.BytesType)
+	// Pre-allocate output: tag (max 5 bytes) + length varint (max 5) + inner bytes
+	out := make([]byte, 0, 10+len(innerBytes))
+	out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
 	out = protowire.AppendBytes(out, innerBytes)
 	return out, nil
 }
