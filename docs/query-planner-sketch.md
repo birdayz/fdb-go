@@ -13,7 +13,7 @@ is useful for programmatic query construction.
 
 ## Phase 0: Plan Execution (DONE)
 
-### Plan types implemented (9 of 46 Java types)
+### Plan types implemented (10 of 46 Java types)
 
 | Plan | What it does | Go cursor |
 |---|---|---|
@@ -22,6 +22,7 @@ is useful for programmatic query construction.
 | `FilterPlan` | Apply predicate to child | `filterCursor` |
 | `IndexScanPlan` | Index-only (no record fetch) | `maintainer.Scan()` |
 | `PrimaryKeyLookupPlan` | Single record by PK | `LoadRecord()` |
+| `RangeScanPlan` | PK range scan | `ScanRecordsInRange()` |
 | `UnionPlan` | Merge-union of two ordered scans | `Union()` |
 | `IntersectionPlan` | Merge-intersect of two scans | `Intersection()` |
 | `LimitPlan` | Limit N results | `LimitRowsCursor()` |
