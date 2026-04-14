@@ -127,18 +127,32 @@ func (e *Engine) GetUsage(ctx context.Context, slug string, customerID string, s
 		return 0, fmt.Errorf("meter %q not registered", slug)
 	}
 
-	// Build the scan range prefix: [customer_id, group1, group2, ..., startBucket]
+	// Build the scan range for the SUM index.
+	// SUM index key: [customer_id, group1, group2, ..., timestamp_bucket]
+	// If all group values are provided, we can do an exact prefix + bucket range.
+	// If group values are missing, we scan all groups for the customer and sum.
+	allGroupsProvided := true
 	prefix := tuple.Tuple{customerID}
 	for _, prop := range rt.config.GetGroupByProperties() {
 		if v, ok := groupFilter[prop]; ok {
 			prefix = append(prefix, v)
 		} else {
-			break // can't skip a prefix column
+			allGroupsProvided = false
+			break
 		}
 	}
 
-	rangeStart := append(append(tuple.Tuple{}, prefix...), startBucket)
-	rangeEnd := append(append(tuple.Tuple{}, prefix...), endBucket)
+	var scanRange rl.TupleRange
+	if allGroupsProvided {
+		// Exact group prefix + bucket range
+		rangeStart := append(append(tuple.Tuple{}, prefix...), startBucket)
+		rangeEnd := append(append(tuple.Tuple{}, prefix...), endBucket)
+		scanRange = rl.TupleRangeBetweenInclusive(rangeStart, rangeEnd)
+	} else {
+		// Scan all groups for this customer — EvaluateAggregateFunction
+		// will sum across all matching entries
+		scanRange = rl.TupleRangeAllOf(prefix)
+	}
 
 	result, err := e.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
 		store, err := rl.NewStoreBuilder().
@@ -153,7 +167,7 @@ func (e *Engine) GetUsage(ctx context.Context, slug string, customerID string, s
 		aggResult, err := store.EvaluateAggregateFunction(ctx,
 			[]string{"Event"},
 			rl.NewSumAggregateFunction(buildGroupBy(rt.config)),
-			rl.TupleRangeBetweenInclusive(rangeStart, rangeEnd),
+			scanRange,
 			rl.IsolationLevelSnapshot)
 		if err != nil {
 			return nil, err

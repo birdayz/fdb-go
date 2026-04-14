@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "services",
@@ -24,5 +24,24 @@ go_library(
         "//examples/metrognome/internal/storage",
         "@com_connectrpc_connect//:connect",
         "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "services_test",
+    srcs = ["services_test.go"],
+    deps = [
+        ":services",
+        "//examples/metrognome/gen/metrognome/v1:metrognome",
+        "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
+        "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/meter",
+        "//examples/metrognome/internal/storage",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_connectrpc_connect//:connect",
+        "@com_github_onsi_gomega//:gomega",
     ],
 )

@@ -133,10 +133,10 @@ func TestEventIngestAndDedup(t *testing.T) {
 		},
 	}
 
-	accepted, dups, err := testDB.Events().Ingest(ctx, events)
+	result, err := testDB.Events().Ingest(ctx, events)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted).To(Equal(int32(2)))
-	g.Expect(dups).To(Equal(int32(0)))
+	g.Expect(result.Accepted).To(Equal(int32(2)))
+	g.Expect(result.Duplicates).To(Equal(int32(0)))
 
 	// Reingest same events — should be all duplicates
 	events2 := []*storev1.UsageEvent{
@@ -148,10 +148,10 @@ func TestEventIngestAndDedup(t *testing.T) {
 		},
 	}
 
-	accepted2, dups2, err := testDB.Events().Ingest(ctx, events2)
+	result2, err := testDB.Events().Ingest(ctx, events2)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted2).To(Equal(int32(0)))
-	g.Expect(dups2).To(Equal(int32(1)))
+	g.Expect(result2.Accepted).To(Equal(int32(0)))
+	g.Expect(result2.Duplicates).To(Equal(int32(1)))
 }
 
 func TestUsageAggregation(t *testing.T) {
@@ -183,9 +183,9 @@ func TestUsageAggregation(t *testing.T) {
 		},
 	}
 
-	accepted, _, err := testDB.Events().Ingest(ctx, events)
+	result, err := testDB.Events().Ingest(ctx, events)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted).To(Equal(int32(3)))
+	g.Expect(result.Accepted).To(Equal(int32(3)))
 
 	// SUM should be 500 + 300 + 200 = 1000
 	total, err := testDB.Events().GetUsage(ctx, "cust-agg", "bytes", bucket, bucket)
@@ -259,9 +259,9 @@ func TestEndToEndInvoiceGeneration(t *testing.T) {
 		}
 	}
 
-	accepted, _, err := testDB.Events().Ingest(ctx, events)
+	result, err := testDB.Events().Ingest(ctx, events)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted).To(Equal(int32(50)))
+	g.Expect(result.Accepted).To(Equal(int32(50)))
 
 	// 5. Generate invoice
 	engine := billing.NewEngine(testDB.FDB(), testDB.MetaData(), testDB.Subspace())
@@ -331,9 +331,9 @@ func TestInvoiceWithCredits(t *testing.T) {
 			TimestampBucket: proto.Int64(bucket), IngestedAt: proto.Int64(ts),
 		}
 	}
-	accepted, _, err := testDB.Events().Ingest(ctx, events)
+	result, err := testDB.Events().Ingest(ctx, events)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted).To(Equal(int32(10)))
+	g.Expect(result.Accepted).To(Equal(int32(10)))
 
 	// Generate invoice: $10.00 - $3.00 credit = $7.00
 	engine := billing.NewEngine(testDB.FDB(), testDB.MetaData(), testDB.Subspace())
@@ -503,9 +503,9 @@ func TestTieredInvoice(t *testing.T) {
 			TimestampBucket: proto.Int64(bucket), IngestedAt: proto.Int64(ts),
 		}
 	}
-	accepted, _, err := testDB.Events().Ingest(ctx, events)
+	result, err := testDB.Events().Ingest(ctx, events)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(accepted).To(Equal(int32(150)))
+	g.Expect(result.Accepted).To(Equal(int32(150)))
 
 	engine := billing.NewEngine(testDB.FDB(), testDB.MetaData(), testDB.Subspace())
 	invoice, err := engine.GenerateInvoice(ctx, "ctr-tiered", periodStart, periodEnd)

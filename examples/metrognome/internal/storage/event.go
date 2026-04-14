@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -14,40 +13,48 @@ type EventStore struct {
 	db *DB
 }
 
+// IngestResult contains per-event acceptance information.
+type IngestResult struct {
+	Accepted   int32
+	Duplicates int32
+	// AcceptedIndexes contains the indices of events that were accepted (not duplicates).
+	AcceptedIndexes []int
+}
+
 // Ingest saves a batch of usage events in a single transaction.
-// Deduplicates by idempotency_key using the unique index.
-// Returns counts of accepted and duplicate events.
-func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (int32, int32, error) {
-	type counts struct {
-		accepted   int32
-		duplicates int32
-	}
+// Deduplicates by idempotency_key using a pre-check scan on the unique index.
+// Returns detailed result including which event indices were accepted.
+func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (*IngestResult, error) {
 	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
-		var c counts
-		for _, evt := range events {
-			_, err := rs.SaveRecord(evt)
+		result := &IngestResult{}
+		for i, evt := range events {
+			// Pre-check idempotency key to avoid polluting SUM/COUNT indexes
+			idx := rs.GetRecordMetaData().GetIndex("event_by_idempotency_key")
+			cursor := rs.ScanIndex(idx,
+				rl.TupleRangeAllOf(tuple.Tuple{evt.GetIdempotencyKey()}), nil, rl.ForwardScan())
+			existing, err := rl.AsList(ctx, cursor)
 			if err != nil {
-				// Unique index violation means duplicate idempotency key
-				var uv *rl.RecordIndexUniquenessViolationError
-				if errors.As(err, &uv) {
-					c.duplicates++
-					continue
-				}
 				return nil, err
 			}
-			c.accepted++
+			if len(existing) > 0 {
+				result.Duplicates++
+				continue
+			}
+			if _, err := rs.SaveRecord(evt); err != nil {
+				return nil, err
+			}
+			result.Accepted++
+			result.AcceptedIndexes = append(result.AcceptedIndexes, i)
 		}
-		return &c, nil
+		return result, nil
 	})
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
-	res := r.(*counts)
-	return res.accepted, res.duplicates, nil
+	return r.(*IngestResult), nil
 }
 
 // GetUsage returns the total aggregated value for a customer/meter across a bucket range.
-// Uses the SUM atomic index for O(1) per-bucket reads.
 func (s *EventStore) GetUsage(ctx context.Context, customerID, meterSlug string, startBucket, endBucket int64) (int64, error) {
 	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
 		result, err := rs.EvaluateAggregateFunction(ctx,
@@ -112,8 +119,6 @@ func (s *EventStore) GetUsageBuckets(ctx context.Context, customerID, meterSlug 
 		}
 		buckets := make(map[int64]int64, len(entries))
 		for _, e := range entries {
-			// Index key: [customer_id, meter_slug, timestamp_bucket]
-			// Index value: little-endian int64 (sum)
 			bucket := e.Key[2].(int64)
 			val := e.Value[0].(int64)
 			buckets[bucket] = val

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -35,7 +36,7 @@ func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[me
 		if ts == 0 {
 			ts = now
 		}
-		meterSlug := evt.GetEventType() // default: event_type is the meter slug
+		meterSlug := evt.GetEventType()
 		records[i] = &storev1.UsageEvent{
 			Id:              proto.String(newID("evt")),
 			CustomerId:      proto.String(evt.GetCustomerId()),
@@ -51,31 +52,28 @@ func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[me
 	}
 
 	// Write to static store (dedup, VALUE indexes, static SUM/COUNT)
-	accepted, duplicates, err := s.events.Ingest(ctx, records)
+	result, err := s.events.Ingest(ctx, records)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ingest events: %w", err))
 	}
 
-	// Also route to dynamic meter stores for per-meter aggregation
+	// Route only accepted events to dynamic meter stores
 	if s.meterEngine != nil {
-		for _, evt := range req.Msg.GetEvents() {
+		for _, idx := range result.AcceptedIndexes {
+			evt := req.Msg.GetEvents()[idx]
 			ts := evt.GetTimestampMs()
 			if ts == 0 {
 				ts = now
 			}
-			// Parse properties_json for group-by values (simplified: treat as flat key-value)
 			groupValues := parseProperties(evt.GetPropertiesJson())
-
-			slug := evt.GetEventType()
-			_ = s.meterEngine.IngestEvent(ctx, slug, evt.GetCustomerId(),
+			_ = s.meterEngine.IngestEvent(ctx, evt.GetEventType(), evt.GetCustomerId(),
 				billing.BucketHour(ts), evt.GetValue(), groupValues)
-			// Ignore errors from unregistered meters — not all event types have meters
 		}
 	}
 
 	return connect.NewResponse(&metrognomev1.IngestEventsResponse{
-		Accepted:   accepted,
-		Duplicates: duplicates,
+		Accepted:   result.Accepted,
+		Duplicates: result.Duplicates,
 	}), nil
 }
 
@@ -102,14 +100,13 @@ func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrog
 
 	resp := &metrognomev1.GetUsageResponse{TotalValue: total}
 
-	// If windowed, return per-bucket breakdown
 	if req.Msg.GetWindowSize() != metrognomev1.WindowSize_WINDOW_SIZE_UNSPECIFIED {
 		buckets, err := s.events.GetUsageBuckets(ctx, req.Msg.GetCustomerId(), req.Msg.GetMeterSlug(), startBucket, endBucket)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get usage buckets: %w", err))
 		}
 
-		windowMs := int64(3600 * 1000) // hour
+		windowMs := int64(3600 * 1000)
 		if req.Msg.GetWindowSize() == metrognomev1.WindowSize_WINDOW_SIZE_DAY {
 			windowMs = 24 * 3600 * 1000
 		}
@@ -122,9 +119,7 @@ func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrog
 
 		for window, val := range windowAgg {
 			resp.Buckets = append(resp.Buckets, &metrognomev1.UsageBucket{
-				StartMs: window,
-				EndMs:   window + windowMs,
-				Value:   val,
+				StartMs: window, EndMs: window + windowMs, Value: val,
 			})
 		}
 	}
@@ -132,17 +127,33 @@ func (s *EventService) GetUsage(ctx context.Context, req *connect.Request[metrog
 	return connect.NewResponse(resp), nil
 }
 
-// parseProperties does a simple JSON key-value extraction for group-by values.
-// Full JSON parsing would use encoding/json, but for this example we keep it simple.
 func parseProperties(jsonStr string) map[string]string {
 	if jsonStr == "" || jsonStr == "{}" {
 		return nil
 	}
-	// Simple approach: use encoding/json
-	result := make(map[string]string)
-	// For now, return empty — the caller passes group values explicitly
-	// via the dynamic meter engine's IngestEvent API.
-	// TODO: parse JSON and extract group-by values based on meter config
-	_ = result
-	return nil
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(raw))
+	for k, v := range raw {
+		switch val := v.(type) {
+		case string:
+			result[k] = val
+		case float64:
+			if val == float64(int64(val)) {
+				result[k] = fmt.Sprintf("%d", int64(val))
+			} else {
+				result[k] = fmt.Sprintf("%g", val)
+			}
+		case bool:
+			result[k] = fmt.Sprintf("%t", val)
+		default:
+			b, err := json.Marshal(v)
+			if err == nil {
+				result[k] = string(b)
+			}
+		}
+	}
+	return result
 }
