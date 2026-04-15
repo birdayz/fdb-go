@@ -363,7 +363,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 // allocations for result structs, primary key tuples, and sizeInfo tracking.
 //
 // PRECONDITIONS:
-//   - All records MUST be the same proto message type. Mixed types cause silent corruption.
+//   - All records MUST be the same proto message type. Mixed types are rejected with an error.
 //   - All records must have unique primary keys. Existing records silently overwritten.
 //   - This is a Go-only API, not present in Java Record Layer.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
