@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -99,10 +100,8 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 				if m.index.Predicate == nil || m.index.Predicate(newRecord.Record) {
 					values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
 					if err == nil {
-						key := make(tuple.Tuple, len(values))
-						for j, v := range values {
-							key[j] = v
-						}
+						// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
+						key := *(*tuple.Tuple)(unsafe.Pointer(&values))
 						entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
 						return m.insertSingleEntry(entry, newRecord)
 					}
