@@ -921,12 +921,21 @@ func (tx *Transaction) OnError(err error) error {
 		return nil
 
 	case ErrCommitUnknownResult, ErrClusterVersionChanged:
-		// MAYBE_COMMITTED: self-conflicting — copy write conflicts to read
+		// MAYBE_COMMITTED: self-conflicting — deep-copy write conflicts to read
 		// conflicts so the retry detects if our prior commit actually landed.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_MAYBE_COMMITTED, code).
+		//
+		// Deep copy: KeyRange.Begin/End are sub-slices of conflictBuf, which
+		// reset() reuses. Without a deep copy, retry writes overwrite the same
+		// buffer positions, corrupting the selfConflicts data.
 		tx.conflictMu.Lock()
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
-		copy(selfConflicts, tx.writeConflicts)
+		for i, kr := range tx.writeConflicts {
+			buf := make([]byte, len(kr.Begin)+len(kr.End))
+			copy(buf, kr.Begin)
+			copy(buf[len(kr.Begin):], kr.End)
+			selfConflicts[i] = KeyRange{Begin: buf[:len(kr.Begin)], End: buf[len(kr.Begin):]}
+		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff(fdbErr.Code))
