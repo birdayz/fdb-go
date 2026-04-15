@@ -552,11 +552,13 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 	if policy == nil {
 		policy = DefaultIndexRebuildPolicy
 	}
+	// Use cached recordsSubspace from subspace key cache if available.
+	recSS := getCachedSubspaceKeys(b.subspace).recordsSubspace
 	return &FDBRecordStore{
 		context:            b.context,
 		metaData:           b.metaData,
 		subspace:           b.subspace,
-		recordsSubspace:    b.subspace.Sub(RecordKey),
+		recordsSubspace:    recSS,
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 	}

@@ -133,6 +133,7 @@ type storeSubspaceKeys struct {
 	indexStateEnd       fdb.Key
 	indexStatePrefixLen int
 	expectedInfoKey     fdb.Key
+	recordsSubspace     subspace.Subspace // cached subspace.Sub(RecordKey)
 }
 
 // subspaceKeysCache caches derived subspace keys across all store instances.
@@ -160,6 +161,7 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 		indexStateEnd:       isEnd.FDBKey(),
 		indexStatePrefixLen: len(isSubspace.Bytes()),
 		expectedInfoKey:     ss.Pack(tuple.Tuple{StoreInfoKey}),
+		recordsSubspace:     ss.Sub(RecordKey),
 	}
 }
 
