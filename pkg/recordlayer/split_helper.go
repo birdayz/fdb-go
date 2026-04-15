@@ -70,8 +70,7 @@ func saveWithSplit(
 		sizeInfo.IsSplit = true
 	} else {
 		// Unsplit: single KV pair at suffix 0
-		keyTuple := appendToTuple(primaryKey, unsplitRecord)
-		key := recordSubspace.Pack(keyTuple)
+		key := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
 		tx.SetBytes(key, serialized)
 
 		sizeInfo.KeyCount = 1
