@@ -249,6 +249,22 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 		return nil, err
 	}
 
+	// Try to compile the PK expression for the batch.
+	// Compiled evaluator reuses a single tupleAppender across all records,
+	// eliminating the EvaluateFlat []any allocation per record.
+	var compiledPK *compiledKeyEvaluator
+	var pkAppender tupleAppender
+	if len(records) > 0 {
+		typeName := string(records[0].ProtoReflect().Descriptor().Name())
+		rt := store.metaData.GetRecordType(typeName)
+		if rt != nil && rt.PrimaryKey != nil {
+			compiledPK = compileKeyExpression(rt.PrimaryKey)
+			if compiledPK != nil {
+				pkAppender.elements = make([]tuple.TupleElement, 0, 8)
+			}
+		}
+	}
+
 	for i, record := range records {
 		if record == nil {
 			return nil, fmt.Errorf("record %d is nil", i)
@@ -263,14 +279,24 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
 
-		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
-		if err != nil {
-			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
+		// Fast path: compiled PK evaluator (reuses tupleAppender — zero []any alloc
+		// for EvaluateFlat. Still copies into tuple.Tuple for the result).
+		var primaryKey tuple.Tuple
+		if compiledPK != nil {
+			if err := compiledPK.evaluate(&pkAppender, nil, record); err == nil {
+				primaryKey = make(tuple.Tuple, len(pkAppender.elements))
+				copy(primaryKey, pkAppender.elements)
+			}
 		}
-
-		primaryKey := make(tuple.Tuple, len(keyValues))
-		for j, v := range keyValues {
-			primaryKey[j] = v
+		if primaryKey == nil {
+			keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+			if err != nil {
+				return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
+			}
+			primaryKey = make(tuple.Tuple, len(keyValues))
+			for j, v := range keyValues {
+				primaryKey[j] = v
+			}
 		}
 
 		// Serialize
@@ -298,7 +324,6 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			Record:     record,
 		}
 
-		// Index updates (no old record)
 		if err := store.updateSecondaryIndexesLocked(nil, stored); err != nil {
 			return nil, fmt.Errorf("record %d: index update: %w", i, err)
 		}
