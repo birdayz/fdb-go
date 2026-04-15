@@ -47,7 +47,8 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 #### MEDIUM
 
 - [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
+- [x] **Pool read conflict buffers** — `addReadConflictForKey`/`addReadConflict` used `make()` per call. Now use shared `conflictBuf` via extracted `conflictBufAlloc` helper (same pool as write conflicts). SaveRecord 101→97, LoadRecord 84→81, DeleteRecord 94→91 allocs. swingshift-18.
+- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Investigated dayshift-6c: pooling requires extra copy, negates benefit.
 - [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
@@ -115,7 +116,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 ### Bugs
 
-_No known bugs. 2696 Ginkgo specs + 430 conformance specs + 50 chaos tests pass._
+- [x] **AutoContinuingCursor transaction_timed_out not retried** — Error 1031 escaped as non-retryable, killing large scans when FDB's 5-second timeout hit mid-page. Fixed: `isRetryableForContinuation()` treats 1031 as retryable in cursor context (creates new transaction from saved continuation). Java has the same gap. swingshift-18.
 
 ### Features
 
@@ -166,3 +167,6 @@ No open test items.
 - [x] **CI test cache invalidation fix** — bench-ci step used `bazelisk test` with different flags, overwriting test action cache. Fixed: bench recipes use `bazelisk run` (build + execute directly). Test step: 50s → 4.7s on cached runs. dayshift-14.
 - [x] **Bench-report false positive reduction** — Raised threshold from 5% to 10%. Only flags timing regressions when allocs/bytes also changed (timing-only deltas = VM noise). dayshift-14.
 - [x] **FDBMetaDataStore conformance test** — 3 specs: Go→Java, Java→Go, history cross-language. Uses non-tenant mode with unique subspace prefixes. dayshift-14.
+- [x] **govulncheck in CI** — `govulncheck ./...` step after build/test (informational, continue-on-error). Current findings: 2 vulns in github.com/docker/docker (testcontainers transitive dep, no fix available). `just vulncheck` for local use. swingshift-18.
+- [x] **Multi-node cluster test** — 3-container FDB cluster regression test (172.16.1.{2,3,4}:4500) with Go client CRUD. Verifies connection pool correctness for multi-node clusters. swingshift-18.
+- [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.
