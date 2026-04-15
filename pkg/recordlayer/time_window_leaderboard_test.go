@@ -2331,6 +2331,8 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 	// =========================================================================
 	// 40. TIME_WINDOW_RANK record function with specific time window
+	// (tests EvaluateRecordFunction TIME_WINDOW_RANK, error when TimeWindow nil,
+	// and nil result for record not in window — retained from earlier)
 	// =========================================================================
 	It("TIME_WINDOW_RANK with specific time window returns correct rank", func() {
 		ks := specSubspace()
@@ -2431,6 +2433,169 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			_, badErr := store.EvaluateRecordFunction(badFn, rec1)
 			Expect(badErr).To(HaveOccurred())
 			Expect(badErr.Error()).To(ContainSubstring("requires TimeWindow"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// =========================================================================
+	// 41. EvaluateTimeWindowRankAndEntry returns rank + score tuple
+	// =========================================================================
+	Describe("EvaluateTimeWindowRankAndEntry", func() {
+		It("returns Tuple{rank, scoreComponents...} for record in window", func() {
+			ks := specSubspace()
+
+			idx := NewTimeWindowLeaderboardIndex("lb_rankentry",
+				Concat(Field("price"), Field("quantity")))
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+				UpdateTimestamp: 500,
+				AllTime:         true,
+			}, idx)
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Save 3 records with different scores.
+				rec1, err := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(1), Price: proto.Int32(300), Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				rec2, err := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(2), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(3), Price: proto.Int32(200), Quantity: proto.Int32(1000),
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				maintainerIface, mErr := store.GetIndexMaintainer(idx)
+				Expect(mErr).NotTo(HaveOccurred())
+				twlm := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
+
+				// rec1 price=300 → rank 2 in all-time (scores: 100, 200, 300)
+				result1, err := twlm.EvaluateTimeWindowRankAndEntry(rec1, AllTimeLeaderboardType, 0)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result1).NotTo(BeNil())
+				// Result is Tuple{rank, score, timestamp}
+				Expect(result1[0]).To(Equal(int64(2)))    // rank
+				Expect(result1[1]).To(Equal(int64(300)))  // score (price)
+				Expect(result1[2]).To(Equal(int64(1000))) // timestamp (quantity)
+
+				// rec2 price=100 → rank 0
+				result2, err := twlm.EvaluateTimeWindowRankAndEntry(rec2, AllTimeLeaderboardType, 0)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result2).NotTo(BeNil())
+				Expect(result2[0]).To(Equal(int64(0)))    // rank
+				Expect(result2[1]).To(Equal(int64(100)))  // score
+				Expect(result2[2]).To(Equal(int64(1000))) // timestamp
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("returns nil when record has no rank in the window", func() {
+			ks := specSubspace()
+
+			idx := NewTimeWindowLeaderboardIndex("lb_rankentry_nil",
+				Concat(Field("price"), Field("quantity")))
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only typed window [1000, 2000), NO all-time.
+			setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+				UpdateTimestamp: 500,
+				Specs: []TimeWindowSpec{
+					{Type: 1, BaseTimestamp: 1000, Duration: 1000, Count: 1},
+				},
+			}, idx)
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Record at ts=500 — outside the window.
+				rec, err := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(500),
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				maintainerIface, mErr := store.GetIndexMaintainer(idx)
+				Expect(mErr).NotTo(HaveOccurred())
+				twlm := maintainerIface.(*timeWindowLeaderboardIndexMaintainer)
+
+				// All-time leaderboard doesn't exist → nil result.
+				result, err := twlm.EvaluateTimeWindowRankAndEntry(rec, AllTimeLeaderboardType, 0)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeNil())
+
+				// Also nil for the typed window (record timestamp 500 is outside [1000, 2000)).
+				result2, err := twlm.EvaluateTimeWindowRankAndEntry(rec, 1, 1500)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result2).To(BeNil())
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// =========================================================================
+	// 42. ScanIndexRanked prefix validation: grouped index requires group prefix
+	// =========================================================================
+	It("BY_RANK scan on grouped index errors when range too short", func() {
+		ks := specSubspace()
+
+		// Grouped leaderboard: group by order_id.
+		idx := NewTimeWindowLeaderboardIndex("lb_rank_prefix_err",
+			GroupBy(Concat(Field("price"), Field("quantity")), Field("order_id")))
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		setupWindows(ks, md, &TimeWindowLeaderboardWindowUpdate{
+			UpdateTimestamp: 500,
+			AllTime:         true,
+		}, idx)
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Save a record so the leaderboard has data.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(100), Quantity: proto.Int32(1000),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// BY_RANK scan with TupleRange that's too short (missing group prefix).
+			// The grouped index has groupingCount=1, so Low/High must each have
+			// at least 1 element for the group prefix. Passing empty tuples (or nil)
+			// triggers the validation error.
+			_, err = AsList(ctx, store.ScanTimeWindowLeaderboard(
+				idx, IndexScanByRank, AllTimeLeaderboardType, 0,
+				TupleRange{
+					Low:          tuple.Tuple{}, // empty — missing group prefix
+					High:         tuple.Tuple{}, // empty — missing group prefix
+					LowEndpoint:  EndpointTypeRangeInclusive,
+					HighEndpoint: EndpointTypeRangeExclusive,
+				}, nil, ForwardScan()))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("rank scan range must include group"))
 
 			return nil, nil
 		})

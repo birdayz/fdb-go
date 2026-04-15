@@ -71,6 +71,7 @@ go_test(
         "setget_test.go",
         "snapshot_test.go",
         "tag_throttle_test.go",
+        "tenant_commit_test.go",
         "testmain_test.go",
         "topology_unit_test.go",
         "transaction_options_test.go",

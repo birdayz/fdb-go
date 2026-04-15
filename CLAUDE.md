@@ -160,7 +160,7 @@ bazelisk run //cmd/fdb-binding-stress -- -seeds 1 -ops 1000 -seed-start 146
 
 ### Fuzz testing
 
-`fuzz_test.go` contains 7 Go native fuzz targets covering all hand-rolled binary parsers. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
+`fuzz_test.go` contains 12 Go native fuzz targets covering all hand-rolled binary parsers and protobuf deserialization. Seed corpus runs as regression tests under `bazel test`. Continuous fuzzing:
 
 ```sh
 # Run a specific fuzz target for 60 seconds:
@@ -185,6 +185,8 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzConcatContinuation` | ConcatCursor proto continuation deserializer | Clean |
 | `FuzzFlatMapContinuation` | FlatMapPipelined proto continuation deserializer | Clean |
 | `FuzzDedupContinuation` | Dedup cursor proto continuation deserializer | Clean |
+| `FuzzDeserializeAndDiscover` | Union wire format record type discovery (protowire) | Clean |
+| `FuzzDeserializeRecord` | Union wire format targeted record extraction (protowire) | Clean |
 | `FuzzRYWCache` | RYW cache Set/Clear/ClearRange/AtomicAdd vs map model (forward + reverse range) | Model bug found during development (ClearRange boundary) |
 
 **Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
@@ -534,7 +536,7 @@ See `TODO.md` for full gap analysis. Summary:
 - **Record Layer**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
 - **FDB Client vs C**: 100% data-path API coverage (all `fdb_transaction_*` read/write/atomic/watch/conflict/versionstamp functions). 93 C binding unit tests ported. Correctness audit (nightshift-9 + dayshift-10 + swingshift-15): 8 divergences fixed (getKey shard resolution, backoff cap, future_version delay, GRV cache per-priority, watch cancellation, commitDummyTransaction, SnapshotCache, getRange more flag across shards). 1 data race fixed (Watch vs postCommitReset). 5-subsystem C++ completeness audit (readpath, commitpath, transaction, RYW, GRV+database) — all pass. 3 remaining divergences are design choices (auto-reset, QueueModel key, FLAG_FIRST_IN_BATCH). Missing API: 6 observability/admin functions only.
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
-- **Test counts**: 2717 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
+- **Test counts**: 2722 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 80.0% overall, 82.8% (client), 81.3% (record layer). `just coverage` generates HTML report.
-- **Fuzz targets**: 21 (10 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr)
+- **Fuzz targets**: 23 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.

@@ -383,6 +383,104 @@ func FuzzDedupContinuation(f *testing.F) {
 }
 
 // ---------------------------------------------------------------------------
+// FuzzDeserializeAndDiscover — fuzz the hand-rolled union wire format parser
+// that discovers record types from raw protobuf bytes.
+// Uses protowire.ConsumeTag/ConsumeBytes/ConsumeFieldValue directly —
+// any panic on malformed input is a bug.
+// ---------------------------------------------------------------------------
+
+func FuzzDeserializeAndDiscover(f *testing.F) {
+	md := fuzzBuildMetaData(f)
+	store := &FDBRecordStore{metaData: md}
+
+	// Seed corpus: valid union-serialized records.
+	for _, data := range fuzzUnionSeeds() {
+		f.Add(data)
+	}
+	// Malformed seeds.
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff, 0xff})
+	// Truncated tag.
+	f.Add([]byte{0x80})
+	// Valid tag (field 1, varint) but no value.
+	f.Add([]byte{0x08})
+	// Valid tag (field 1, bytes) but truncated length.
+	f.Add([]byte{0x0a, 0x80})
+	// Unknown field number with valid wire format.
+	f.Add(append([]byte{0xf8, 0x3e, 0x00}, []byte("junk")...))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Must not panic. Error is fine.
+		_, _, _ = store.deserializeAndDiscover(data)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// FuzzDeserializeRecord — fuzz the targeted union field parser that
+// extracts a specific record type from raw protobuf bytes.
+// ---------------------------------------------------------------------------
+
+func FuzzDeserializeRecord(f *testing.F) {
+	md := fuzzBuildMetaData(f)
+	store := &FDBRecordStore{metaData: md}
+	orderType := md.GetRecordType("Order")
+	customerType := md.GetRecordType("Customer")
+
+	// Seed corpus.
+	for _, data := range fuzzUnionSeeds() {
+		f.Add(data)
+	}
+	f.Add([]byte{})
+	f.Add([]byte{0x00})
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
+	f.Add([]byte{0x08}) // varint tag, no value
+	f.Add([]byte{0x0a, 0x80})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Must not panic for either record type.
+		_, _ = store.deserializeRecord(data, orderType)
+		_, _ = store.deserializeRecord(data, customerType)
+	})
+}
+
+// fuzzBuildMetaData creates a RecordMetaData for fuzz targets (no FDB needed).
+func fuzzBuildMetaData(f *testing.F) *RecordMetaData {
+	f.Helper()
+	builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		f.Fatalf("build metadata: %v", err)
+	}
+	return md
+}
+
+// fuzzUnionSeeds returns valid union-serialized record bytes for seed corpus.
+func fuzzUnionSeeds() [][]byte {
+	order := &gen.UnionDescriptor{XOrder: &gen.Order{
+		OrderId: proto.Int64(1), Price: proto.Int32(42),
+	}}
+	customer := &gen.UnionDescriptor{XCustomer: &gen.Customer{
+		CustomerId: proto.Int64(1), Name: proto.String("test"),
+	}}
+	empty := &gen.UnionDescriptor{XOrder: &gen.Order{}}
+
+	var seeds [][]byte
+	for _, msg := range []proto.Message{order, customer, empty} {
+		data, err := proto.Marshal(msg)
+		if err != nil {
+			panic(err)
+		}
+		seeds = append(seeds, data)
+	}
+	return seeds
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

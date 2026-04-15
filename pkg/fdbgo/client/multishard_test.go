@@ -96,6 +96,12 @@ func setupMultiShardEnv(t *testing.T, ctx context.Context) *multiShardEnv {
 
 // TestMultiShard runs all cross-shard tests against a shared 3-process
 // FDB cluster with small shards (~35 shards for 1MB data).
+//
+// Sub-tests run sequentially (no t.Parallel()) because they share env state:
+// ClearRange mutates the dataset, BatchedWrites adds keys, and
+// ConcurrentWritesDuringDD triggers shard splits. The container cost (~30s)
+// is paid once; parallelizing would require per-subtest key prefixes and
+// separate datasets, adding complexity for marginal speedup.
 func TestMultiShard(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -178,6 +184,9 @@ func TestMultiShard(t *testing.T) {
 	})
 	t.Run("ConcurrentWritesDuringDD", func(t *testing.T) {
 		testMultiShard_ConcurrentWritesDuringDD(t, ctx, env)
+	})
+	t.Run("MoreFlagAtShardBoundary", func(t *testing.T) {
+		testMultiShard_MoreFlagAtShardBoundary(t, ctx, env)
 	})
 }
 
@@ -1107,4 +1116,95 @@ func testMultiShard_ConcurrentWritesDuringDD(t *testing.T, ctx context.Context, 
 
 	t.Logf("verified %d keys across %d shards — no data lost during concurrent writes",
 		totalKeys, shardsAfter)
+}
+
+// MoreFlagAtShardBoundary: regression test for swingshift-15 bug.
+// When limit is met exactly across multiple shards, `more` must be true.
+// Before the fix, `more` was taken from the last shard's response, which
+// could be false even though subsequent shards had data.
+func testMultiShard_MoreFlagAtShardBoundary(t *testing.T, ctx context.Context, env *multiShardEnv) {
+	g := gomega.NewWithT(t)
+
+	// Use a dedicated prefix so we're not affected by other tests' writes.
+	mfPrefix := env.prefix + "mf_"
+	const numKeys = 50
+	const valueSize = 2000 // Enough to spread across shards with max_shard_bytes=50KB.
+	for batch := 0; batch < 5; batch++ {
+		_, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			for i := 0; i < 10; i++ {
+				idx := batch*10 + i
+				key := []byte(fmt.Sprintf("%s%04d", mfPrefix, idx))
+				tx.Set(key, bytes.Repeat([]byte{byte(idx % 256)}, valueSize))
+			}
+			return nil, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "seed batch %d", batch)
+	}
+
+	begin := []byte(mfPrefix)
+	end := append([]byte(mfPrefix), 0xFF)
+
+	for _, limit := range []int{1, 3, 7, 10, 13, 25, 49} {
+		result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			kvs, more, err := tx.GetRange(ctx, begin, end, limit)
+			if err != nil {
+				return nil, err
+			}
+			return []any{kvs, more}, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "limit=%d", limit)
+		parts := result.([]any)
+		kvs := parts[0].([]KeyValue)
+		more := parts[1].(bool)
+
+		g.Expect(kvs).To(gomega.HaveLen(limit), "limit=%d: expected exactly limit results", limit)
+		// We know there are 50 keys total and limit < 50, so more must be true.
+		g.Expect(more).To(gomega.BeTrue(),
+			"limit=%d: more must be true when limit(%d) < total(%d) across %d shards",
+			limit, limit, numKeys, env.numShards)
+	}
+
+	// Edge case: limit = numKeys (exact total). Should return all keys.
+	// more depends on whether FDB knows there are no more keys — could be
+	// true or false. The important thing: we got all results.
+	result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+		kvs, _, err := tx.GetRange(ctx, begin, end, numKeys)
+		return kvs, err
+	})
+	g.Expect(err).ToNot(gomega.HaveOccurred())
+	kvs := result.([]KeyValue)
+	g.Expect(kvs).To(gomega.HaveLen(numKeys))
+
+	// Paged scan: verify that paginating with the `more` flag yields all keys.
+	// This catches the original bug: if `more` was incorrectly false at a shard
+	// boundary, the paged scan would stop early and miss keys.
+	var all []KeyValue
+	pageBegin := []byte(mfPrefix)
+	pageEnd := append([]byte(mfPrefix), 0xFF)
+	pageLimit := 7 // Deliberately misaligned with shard sizes.
+	for i := 0; i < 20; i++ {
+		result, err := env.db.Transact(ctx, func(tx *Transaction) (any, error) {
+			kvs, more, err := tx.GetRange(ctx, pageBegin, pageEnd, pageLimit)
+			if err != nil {
+				return nil, err
+			}
+			return []any{kvs, more}, nil
+		})
+		g.Expect(err).ToNot(gomega.HaveOccurred(), "page %d", i)
+		parts := result.([]any)
+		kvs := parts[0].([]KeyValue)
+		more := parts[1].(bool)
+
+		all = append(all, kvs...)
+		if !more || len(kvs) == 0 {
+			break
+		}
+		// Advance past last key.
+		pageBegin = append(append([]byte{}, kvs[len(kvs)-1].Key...), 0)
+	}
+	g.Expect(all).To(gomega.HaveLen(numKeys),
+		"paged scan with limit=%d should yield all %d keys, got %d (more flag bug?)",
+		pageLimit, numKeys, len(all))
+
+	t.Logf("more flag regression: all limits correct across %d shards", env.numShards)
 }

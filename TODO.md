@@ -142,7 +142,10 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 _Go wins 5/8 benchmarks vs Java Record Layer. LoadRecord 0.61x, ScanRecords 0.73x, StoreOpen 0.85x._
 
-No open performance items.
+#### MEDIUM
+
+- [ ] **Pool proto messages in deserializeAndDiscover** — `rt.newMessage()` allocates via reflection per record (77.5MB / 564K allocs in BenchmarkScanRecords, ~9%). BUT: messages escape to user code via `FDBStoredRecord.Record`, so pooling isn't safe without API changes (copy-on-return or explicit release). Only viable if scan API returns copies or if users opt-in. Low priority given the constraint.
+- [x] **Pre-allocate tuple in fastDecodeTuple** — Pre-allocate with `make(tuple.Tuple, 0, len(b)/5)`. BenchmarkScanIndex: 815 → 715 allocs/op (-12.3%). nightshift-16.
 
 ### Tests
 

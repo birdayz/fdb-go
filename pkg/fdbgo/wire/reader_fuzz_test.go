@@ -42,6 +42,34 @@ func FuzzNewReader(f *testing.F) {
 			_, _ = r.ReadOptionalInt32(i, i+1)
 			_, _ = r.ReadOptionalString(i, i+1)
 		}
+
+		// Chained nested reader access — tests ReadNestedReader → ReadNestedReader
+		// and ReadNestedReader → field access on the sub-reader. Exercises
+		// potential self-referential / circular offset patterns in crafted data.
+		for depth := 0; depth < 3; depth++ {
+			nr, nerr := r.ReadNestedReader(depth)
+			if nerr != nil {
+				continue
+			}
+			// Read fields on nested reader.
+			_ = nr.ReadInt64(0)
+			_ = nr.ReadBytes(1)
+			_ = nr.ReadString(2)
+			// Go one level deeper.
+			nr2, nerr2 := nr.ReadNestedReader(0)
+			if nerr2 != nil {
+				continue
+			}
+			_ = nr2.ReadInt64(0)
+			_ = nr2.ReadBytes(1)
+			// Vector element on nested reader.
+			if cnt, _ := nr.ReadVectorCount(3); cnt > 0 {
+				elem, eerr := nr.ReadVectorElementReader(3, 0)
+				if eerr == nil {
+					_ = elem.ReadInt64(0)
+				}
+			}
+		}
 	})
 }
 
