@@ -81,7 +81,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 - [x] **Transaction retry with RYW** — 4 tests: OnError resets RYW, new read version after OnError, conflict detection across retry, Transact automatic retry. swingshift-11d. Still TODO: fuzz target.
 - [x] **Watch + atomic mutations** — TestWatchFiresOnAtomicMutation verifies AtomicAdd triggers watch. swingshift-11d.
 
-### Behavioral Divergences from C++ (audit 2026-04-13)
+### Behavioral Divergences from C++ (audit 2026-04-13, updated swingshift-18)
 
 | # | Area | Type | Description |
 |---|---|---|---|
@@ -95,6 +95,13 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 8 | QueueModel key | COSMETIC | C++ `endpoint.token.first()`. Go address string. Same identity. |
 | 9 | ~~Load balance secondDelay~~ | ~~PERF~~ FIXED | ~~C++ speculative second request. Go sequential.~~ Fixed: `sendFrameWithHedge()` in `hedge.go`. All 3 read paths hedge. swingshift-11. |
 | 10 | `FLAG_FIRST_IN_BATCH` | COSMETIC | Not exposed. No behavioral gap. |
+| 11 | ~~`reset()` stale flags~~ | ~~BEHAVIOR~~ FIXED | ~~`userSetReadVersion` and `nextWriteNoConflict` not cleared by `reset()`. C++ creates fresh state.~~ Fixed: both cleared in `reset()`. swingshift-18. |
+| 12 | ~~`tryCache` SYSTEM_IMMEDIATE~~ | ~~MAINTENANCE~~ FIXED | ~~Dead code fell through to DEFAULT throttle check.~~ Fixed: explicit rejection. swingshift-18. |
+| 13 | `commitDummyTransaction` no Set mutation | COSMETIC | C++ calls `tr->set(key, "")`. Go only adds conflict ranges. Functionally equivalent — commit proxy sends the transaction regardless because write conflicts are present. |
+| 14 | `commitDummyTransaction` fixed backoff | PERF | C++ uses `tr->onError(e)` (exponential backoff). Go uses fixed 10ms. Dummy is a fast synchronization barrier — rarely matters. |
+| 15 | `commitDummyTransaction` no `CAUSAL_WRITE_RISKY` | PERF | C++ sets `CAUSAL_WRITE_RISKY` for faster GRV on the dummy. Go doesn't implement this option. Latency optimization only — dummy still works correctly. |
+| 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
+| 17 | Location cache over-invalidation | CONSERVATIVE | C++ invalidates just the stale shard's range on `wrong_shard_server`. Go invalidates the entire remaining scan range. Causes slightly more cache thrash but is strictly correct. |
 
 ### Missing C API Surface (audit 2026-04-13)
 
