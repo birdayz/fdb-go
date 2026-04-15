@@ -1145,6 +1145,7 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
+	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
