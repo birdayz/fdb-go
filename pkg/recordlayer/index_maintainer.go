@@ -91,20 +91,25 @@ func (m *standardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDB
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's standardIndexMaintainer.update().
 func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Fast path: insert-only with EvaluateFlat — skip evaluateIndex wrapper,
+	// Fast path: insert-only — skip evaluateIndex wrapper,
 	// common-entry filtering, and old-entries loop.
 	if oldRecord == nil && newRecord != nil {
 		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
-		if !isKWV {
+		if !isKWV && (m.index.Predicate == nil || m.index.Predicate(newRecord.Record)) {
+			// Scalar fast path: single-field expressions avoid []any allocation.
+			if se, ok := m.index.RootExpression.(ScalarEvaluator); ok {
+				val, err := se.EvaluateScalar(newRecord, newRecord.Record)
+				if err == nil {
+					return m.insertScalarEntry(val, newRecord)
+				}
+			}
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
-				if m.index.Predicate == nil || m.index.Predicate(newRecord.Record) {
-					values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
-					if err == nil {
-						// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
-						key := *(*tuple.Tuple)(unsafe.Pointer(&values))
-						entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
-						return m.insertSingleEntry(entry, newRecord)
-					}
+				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
+				if err == nil {
+					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
+					key := *(*tuple.Tuple)(unsafe.Pointer(&values))
+					entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+					return m.insertSingleEntry(entry, newRecord)
 				}
 			}
 		}
@@ -184,6 +189,38 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		m.tx.Set(fdb.Key(keyBytes), valueBytes)
 	}
 
+	return nil
+}
+
+// insertScalarEntry handles inserting a VALUE index entry for a single-field
+// expression. Avoids allocating a tuple.Tuple for the key by packing the scalar
+// value directly alongside the trimmed primary key.
+func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRecord[proto.Message]) error {
+	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
+	// Pack scalar value + trimmed PK directly — no intermediate tuple alloc.
+	var keyBytes fdb.Key
+	if len(trimmedPK) == 0 {
+		keyBytes = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val)))
+	} else {
+		keyBytes = fdb.Key(tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK))
+	}
+
+	if err := checkKeyValueSizes(m.index, record.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() && val != nil {
+		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
 	return nil
 }
 

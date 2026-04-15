@@ -363,6 +363,50 @@ func (p *packer) encodeVersionstamp(v Versionstamp) {
 	p.putBytes(v.Bytes())
 }
 
+// encodeElement encodes a single tuple element into the packer.
+func (p *packer) encodeElement(e TupleElement) {
+	switch e := e.(type) {
+	case Tuple:
+		p.encodeTuple(e, true, false)
+	case nil:
+		p.putByte(nilCode)
+	case int:
+		p.encodeInt(int64(e))
+	case int64:
+		p.encodeInt(e)
+	case uint:
+		p.encodeUint(uint64(e))
+	case uint64:
+		p.encodeUint(e)
+	case *big.Int:
+		p.encodeBigInt(e)
+	case big.Int:
+		p.encodeBigInt(&e)
+	case []byte:
+		p.encodeBytes(bytesCode, e)
+	case fdb.KeyConvertible:
+		p.encodeBytes(bytesCode, []byte(e.FDBKey()))
+	case string:
+		p.encodeBytes(stringCode, []byte(e))
+	case float32:
+		p.encodeFloat(e)
+	case float64:
+		p.encodeDouble(e)
+	case bool:
+		if e {
+			p.putByte(trueCode)
+		} else {
+			p.putByte(falseCode)
+		}
+	case UUID:
+		p.encodeUUID(e)
+	case Versionstamp:
+		p.encodeVersionstamp(e)
+	default:
+		panic(fmt.Sprintf("unencodable element (%v, type %T)", e, e))
+	}
+}
+
 func (p *packer) encodeTuple(t Tuple, nested bool, versionstamps bool) {
 	if nested {
 		p.putByte(nestedCode)
@@ -475,6 +519,35 @@ func PackConcatWithPrefix(prefix []byte, tuples ...Tuple) []byte {
 	for _, t := range tuples {
 		p.encodeTuple(t, false, false)
 	}
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1WithPrefix packs a single tuple element with a prefix in one allocation.
+// Avoids creating a Tuple slice for single-field index expressions.
+func Pack1WithPrefix(prefix []byte, elem TupleElement) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1ConcatWithPrefix packs a single element plus a tuple with a prefix.
+// Used for single-field index keys that also need a trimmed primary key suffix.
+func Pack1ConcatWithPrefix(prefix []byte, elem TupleElement, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	p.encodeTuple(suffix, false, false)
 	result := make([]byte, len(prefix)+len(p.buf))
 	copy(result, prefix)
 	copy(result[len(prefix):], p.buf)
