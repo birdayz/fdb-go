@@ -168,6 +168,7 @@ type Transaction struct {
 	mutations      []Mutation
 	readConflicts  []KeyRange
 	writeConflicts []KeyRange
+	conflictBuf    []byte // batch-allocated backing store for conflict range keys
 
 	retryCount int
 	backoff    time.Duration
@@ -1078,10 +1079,23 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 		return
 	}
 	n := len(key)
-	buf := make([]byte, n+n+1)
+	// Batch-allocate conflict range key storage to reduce per-write allocs.
+	tx.conflictMu.Lock()
+	needed := n + n + 1
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+		if newCap < 4096 {
+			newCap = 4096 // ~30 typical keys
+		}
+		newBuf := make([]byte, len(tx.conflictBuf), newCap)
+		copy(newBuf, tx.conflictBuf)
+		tx.conflictBuf = newBuf
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
 	copy(buf, key)
 	copy(buf[n:], key)
-	tx.conflictMu.Lock()
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
