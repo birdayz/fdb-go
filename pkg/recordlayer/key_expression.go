@@ -3,11 +3,21 @@ package recordlayer
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+// fieldDescCache is an atomically-swapped cache entry for FieldKeyExpression.
+// FieldKeyExpressions are shared across goroutines (via RecordMetaData), so
+// the cache must be safe for concurrent reads/writes. Using atomic.Pointer
+// ensures no torn reads (unlike bare struct fields which would race).
+type fieldDescCache struct {
+	msgName string
+	fd      protoreflect.FieldDescriptor
+}
 
 // FanType controls how repeated (list) proto fields are handled in key expressions.
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.FanType.
@@ -69,15 +79,30 @@ const (
 type FieldKeyExpression struct {
 	fieldName string
 	fanType   FanType
-	// cachedFD caches the protoreflect.FieldDescriptor for this field name,
+	// fdCache caches the protoreflect.FieldDescriptor for this field name,
 	// keyed by the message full name. Avoids ByName() map lookup per Evaluate.
-	cachedFDMsgName string
-	cachedFD        protoreflect.FieldDescriptor
+	// Uses atomic.Pointer for goroutine safety (metadata is shared across txns).
+	fdCache atomic.Pointer[fieldDescCache]
 }
 
 // Field creates a key expression that extracts a single (non-repeated) field.
 func Field(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name, fanType: FanTypeNone}
+}
+
+// resolveFieldDescriptor returns the cached field descriptor for the given message,
+// or resolves and caches it atomically. Thread-safe.
+func (f *FieldKeyExpression) resolveFieldDescriptor(m protoreflect.Message) (protoreflect.FieldDescriptor, error) {
+	msgName := string(m.Descriptor().FullName())
+	if cached := f.fdCache.Load(); cached != nil && cached.msgName == msgName {
+		return cached.fd, nil
+	}
+	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+	if fd == nil {
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+	}
+	f.fdCache.Store(&fieldDescCache{msgName: msgName, fd: fd})
+	return fd, nil
 }
 
 // FanOut creates a key expression for a repeated field that produces one index entry
@@ -96,16 +121,9 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 	}
 	m := msg.ProtoReflect()
 
-	// Cache the field descriptor to avoid ByName() map lookup per call.
-	msgName := string(m.Descriptor().FullName())
-	fd := f.cachedFD
-	if f.cachedFDMsgName != msgName || fd == nil {
-		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-		if fd == nil {
-			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
-		}
-		f.cachedFD = fd
-		f.cachedFDMsgName = msgName
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
 	}
 
 	if fd.IsList() {
@@ -133,15 +151,9 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 		return []any{nil}, nil
 	}
 	m := msg.ProtoReflect()
-	msgName := string(m.Descriptor().FullName())
-	fd := f.cachedFD
-	if f.cachedFDMsgName != msgName || fd == nil {
-		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-		if fd == nil {
-			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
-		}
-		f.cachedFD = fd
-		f.cachedFDMsgName = msgName
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
 	}
 	if fd.IsList() {
 		// Fan-out: can't flatten
@@ -168,15 +180,9 @@ func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Messag
 		return nil, nil
 	}
 	m := msg.ProtoReflect()
-	msgName := string(m.Descriptor().FullName())
-	fd := f.cachedFD
-	if f.cachedFDMsgName != msgName || fd == nil {
-		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-		if fd == nil {
-			return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
-		}
-		f.cachedFD = fd
-		f.cachedFDMsgName = msgName
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
 	}
 	if fd.IsList() {
 		return nil, fmt.Errorf("EvaluateScalar on repeated field")
@@ -194,15 +200,9 @@ func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message
 		return 0, false, nil
 	}
 	m := msg.ProtoReflect()
-	msgName := string(m.Descriptor().FullName())
-	fd := f.cachedFD
-	if f.cachedFDMsgName != msgName || fd == nil {
-		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-		if fd == nil {
-			return 0, false, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
-		}
-		f.cachedFD = fd
-		f.cachedFDMsgName = msgName
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return 0, false, err
 	}
 	if fd.HasPresence() && !m.Has(fd) {
 		return 0, false, nil

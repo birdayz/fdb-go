@@ -200,6 +200,10 @@ var metadataVersionKey = []byte("\xff/metadataVersion")
 
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
+// Compile-time assertion: Mutation and MutationRef must have identical size.
+// The zero-copy unsafe cast in buildCommitTransactionRequest depends on this.
+var _ [unsafe.Sizeof(Mutation{})]byte = [unsafe.Sizeof(types.MutationRef{})]byte{}
+
 // Pool for conflict range slices. Avoids per-commit alloc.
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 
