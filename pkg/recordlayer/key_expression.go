@@ -32,6 +32,13 @@ type ScalarEvaluator interface {
 	EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error)
 }
 
+// Int64Evaluator extracts a single int64 value without boxing to any.
+// Go's convT64 allocates for every non-zero int64→any conversion.
+// This interface bypasses that by returning int64 directly.
+type Int64Evaluator interface {
+	EvaluateInt64(record *FDBStoredRecord[proto.Message], msg proto.Message) (int64, bool, error)
+}
+
 // evaluateKeyFlat calls EvaluateFlat if available, otherwise falls back to Evaluate.
 // Saves 1 alloc per call on the hot path (avoids the outer [][]any).
 func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
@@ -178,6 +185,40 @@ func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Messag
 		return nil, nil
 	}
 	return scalarToInterface(fd, m.Get(fd))
+}
+
+// EvaluateInt64 returns the field value as int64 without boxing.
+// Returns (0, false, nil) for nil/unset fields, (val, true, nil) for integer fields.
+func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message], msg proto.Message) (int64, bool, error) {
+	if msg == nil {
+		return 0, false, nil
+	}
+	m := msg.ProtoReflect()
+	msgName := string(m.Descriptor().FullName())
+	fd := f.cachedFD
+	if f.cachedFDMsgName != msgName || fd == nil {
+		fd = m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+		if fd == nil {
+			return 0, false, &KeyExpressionError{Message: fmt.Sprintf("field %s not found", f.fieldName)}
+		}
+		f.cachedFD = fd
+		f.cachedFDMsgName = msgName
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return 0, false, nil
+	}
+	switch fd.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return m.Get(fd).Int(), true, nil
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(m.Get(fd).Uint()), true, nil
+	case protoreflect.EnumKind:
+		return int64(m.Get(fd).Enum()), true, nil
+	default:
+		return 0, false, nil // not an integer field
+	}
 }
 
 // getNullResult returns the appropriate result for a nil message based on FanType.

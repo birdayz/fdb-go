@@ -96,6 +96,13 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	if oldRecord == nil && newRecord != nil {
 		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
 		if !isKWV && (m.index.Predicate == nil || m.index.Predicate(newRecord.Record)) {
+			// Int64 fast path: avoids any boxing alloc for integer fields.
+			if ie, ok := m.index.RootExpression.(Int64Evaluator); ok {
+				val, ok, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+				if err == nil && ok {
+					return m.insertInt64Entry(val, newRecord)
+				}
+			}
 			// Scalar fast path: single-field expressions avoid []any allocation.
 			if se, ok := m.index.RootExpression.(ScalarEvaluator); ok {
 				val, err := se.EvaluateScalar(newRecord, newRecord.Record)
@@ -189,6 +196,47 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		m.tx.SetBytes(keyBytes, valueBytes)
 	}
 
+	return nil
+}
+
+// insertInt64Entry handles inserting a VALUE index entry for an integer field.
+// Avoids the any boxing allocation by packing int64 directly.
+func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredRecord[proto.Message]) error {
+	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
+	var keyBytes []byte
+	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+		if len(trimmedPK) == 0 {
+			keyBytes = tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), val)
+		} else {
+			// Pack int64 + trimmed PK: encode int64, then encode PK tuple.
+			p := tuple.GetPacker()
+			p.EncodeInt(val)
+			p.EncodeTuple(trimmedPK)
+			keyBytes = p.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes())
+			tuple.PutPacker(p)
+		}
+	} else if len(trimmedPK) == 0 {
+		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), val)
+	} else {
+		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), val, trimmedPK)
+	}
+
+	if err := checkKeyValueSizes(m.index, record.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() {
+		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
 	return nil
 }
 

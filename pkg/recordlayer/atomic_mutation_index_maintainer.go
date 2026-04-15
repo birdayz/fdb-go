@@ -213,35 +213,67 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		if len(comp.expressions) == 0 {
 			return false, nil
 		}
-		se, ok := comp.expressions[0].(ScalarEvaluator)
-		if !ok {
-			return false, nil
-		}
-		groupVal, err := se.EvaluateScalar(newRecord, newRecord.Record)
-		if err != nil {
-			return false, nil
-		}
+		// Try Int64Evaluator for zero-alloc group key packing.
 		var fdbKey fdb.Key
-		if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
-			fdbKey = fdb.Key(tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+		if ie, ok := comp.expressions[0].(Int64Evaluator); ok {
+			groupInt64, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+			if err != nil {
+				return false, nil
+			}
+			if !valid {
+				return false, nil
+			}
+			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+				fdbKey = fdb.Key(tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), groupInt64))
+			} else {
+				fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), groupInt64))
+			}
+		} else if se, ok := comp.expressions[0].(ScalarEvaluator); ok {
+			groupVal, err := se.EvaluateScalar(newRecord, newRecord.Record)
+			if err != nil {
+				return false, nil
+			}
+			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+				fdbKey = fdb.Key(tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+			} else {
+				fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+			}
 		} else {
-			fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+			return false, nil
 		}
 
-		// For SUM: need the grouped (second) value.
-		var sumSource any
+		// For SUM: extract the sum value and apply inline to avoid int64→any boxing.
 		if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > 1 {
-			if se2, ok := comp.expressions[1].(ScalarEvaluator); ok {
-				sumSource, err = se2.EvaluateScalar(newRecord, newRecord.Record)
-				if err != nil {
+			var sumInt64 int64
+			if ie, ok := comp.expressions[1].(Int64Evaluator); ok {
+				val, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+				if err != nil || !valid {
 					return false, nil
+				}
+				sumInt64 = val
+			} else if se2, ok := comp.expressions[1].(ScalarEvaluator); ok {
+				val, err := se2.EvaluateScalar(newRecord, newRecord.Record)
+				if err != nil || val == nil {
+					return false, nil
+				}
+				sumInt64, err = toInt64(val)
+				if err != nil {
+					return true, fmt.Errorf("sum index %q: %w", m.index.Name, err)
 				}
 			} else {
 				return false, nil
 			}
+			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
+				return true, err
+			}
+			var param [8]byte
+			binary.LittleEndian.PutUint64(param[:], uint64(sumInt64))
+			var entry atomicMutationEntry
+			entry.param = param[:]
+			return true, m.mutation.applyMutation(m.tx, fdbKey, entry, false)
 		}
 
-		return m.applyInsertMutation(fdbKey, sumSource, gc, newRecord, gke)
+		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 	}
 
 	return false, nil // multi-field grouping: fall through

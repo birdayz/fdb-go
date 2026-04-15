@@ -555,6 +555,38 @@ func Pack1ConcatWithPrefix(prefix []byte, elem TupleElement, suffix Tuple) []byt
 	return result
 }
 
+// Packer exposes the internal packer for advanced callers that need to
+// encode multiple elements and then append to a shared buffer.
+type Packer struct{ p *packer }
+
+func GetPacker() *Packer {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	return &Packer{p: p}
+}
+
+func PutPacker(pk *Packer) { packerPool.Put(pk.p) }
+
+func (pk *Packer) EncodeInt(val int64)          { pk.p.encodeInt(val) }
+func (pk *Packer) EncodeTuple(t Tuple)          { pk.p.encodeTuple(t, false, false) }
+func (pk *Packer) EncodeElement(e TupleElement) { pk.p.encodeElement(e) }
+
+func (pk *Packer) AppendInto(buf *[]byte, prefix []byte) []byte {
+	return appendPacked(buf, prefix, pk.p)
+}
+
+// PackInt64Into packs a single int64 into a shared buffer. Avoids any→int64 boxing.
+func PackInt64Into(buf *[]byte, prefix []byte, val int64) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeInt(val)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
 // appendPacked appends prefix + packer contents to the shared buffer, returns sub-slice.
 func appendPacked(buf *[]byte, prefix []byte, p *packer) []byte {
 	b := *buf
