@@ -1004,7 +1004,6 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 // avoiding repeated allocation of maintainer + mutation objects.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
-	// Check cache (sync.Map is safe for concurrent access)
 	if cached, ok := store.maintainerCache.Load(index.Name); ok {
 		return cached.(IndexMaintainer), nil
 	}
