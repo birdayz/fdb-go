@@ -58,7 +58,7 @@ func saveWithSplit(
 
 			keyTuple := appendToTuple(primaryKey, splitIndex)
 			key := recordSubspace.Pack(keyTuple)
-			tx.Set(key, chunk)
+			tx.SetBytes(key, chunk)
 
 			sizeInfo.KeyCount++
 			sizeInfo.KeySize += len(key)
@@ -70,9 +70,8 @@ func saveWithSplit(
 		sizeInfo.IsSplit = true
 	} else {
 		// Unsplit: single KV pair at suffix 0
-		keyTuple := appendToTuple(primaryKey, unsplitRecord)
-		key := recordSubspace.Pack(keyTuple)
-		tx.Set(key, serialized)
+		key := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
+		tx.SetBytes(key, serialized)
 
 		sizeInfo.KeyCount = 1
 		sizeInfo.KeySize = len(key)
@@ -126,9 +125,10 @@ func loadWithSplit(
 	splitLongRecords bool,
 	sizeInfo *sizeInfo,
 ) ([]byte, error) {
-	// Try unsplit first (most common case)
-	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
-	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)
+	// Try unsplit first (most common case).
+	// Use PackConcatWithPrefix to avoid the intermediate tuple allocation
+	// from appendToTuple(primaryKey, unsplitRecord).
+	unsplitKey := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
 
 	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
 	if err != nil {

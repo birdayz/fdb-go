@@ -174,9 +174,20 @@ func (tr Transaction) Set(key KeyConvertible, value []byte) {
 	tr.t.inner.Set(key.FDBKey(), value)
 }
 
+// SetBytes sets a key-value pair using raw byte slices. Avoids the
+// KeyConvertible interface boxing allocation in the hot path.
+func (tr Transaction) SetBytes(key, value []byte) {
+	tr.t.inner.Set(key, value)
+}
+
 // Clear removes a key from the database.
 func (tr Transaction) Clear(key KeyConvertible) {
 	tr.t.inner.Clear(key.FDBKey())
+}
+
+// ClearBytes deletes a key using raw bytes. Avoids KeyConvertible boxing.
+func (tr Transaction) ClearBytes(key []byte) {
+	tr.t.inner.Clear(key)
 }
 
 // ClearRange removes all keys k such that begin <= k < end.
@@ -205,6 +216,12 @@ func (tr Transaction) SetVersionstampedValue(key KeyConvertible, param []byte) {
 
 func (tr Transaction) Add(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutAddValue, key.FDBKey(), param)
+}
+
+// AddBytes performs an atomic Add using raw byte slices. Avoids
+// KeyConvertible interface boxing in the hot path.
+func (tr Transaction) AddBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutAddValue, key, param)
 }
 
 func (tr Transaction) And(key KeyConvertible, param []byte) {
@@ -241,6 +258,14 @@ func (tr Transaction) Min(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutMinV2, key.FDBKey(), param)
 }
 
+func (tr Transaction) MaxBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutMax, key, param)
+}
+
+func (tr Transaction) MinBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutMinV2, key, param)
+}
+
 func (tr Transaction) ByteMax(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutByteMax, key.FDBKey(), param)
 }
@@ -255,6 +280,10 @@ func (tr Transaction) AppendIfFits(key KeyConvertible, param []byte) {
 
 func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutCompareAndClear, key.FDBKey(), param)
+}
+
+func (tr Transaction) CompareAndClearBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutCompareAndClear, key, param)
 }
 
 // Commit commits the transaction. The returned FutureNil becomes ready

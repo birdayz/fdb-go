@@ -89,12 +89,15 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
+	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
 	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create
 	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create
 	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu            sync.RWMutex             // protects storeHeader + indexStates
 	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
+	batchKeyBuf        *[]byte                  // shared buffer for batch key packing (InsertBatch only)
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -200,7 +203,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 // via SplitHelper, matching Java's FDBRecordStore.loadRecordAsync().
 func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
 	startTime := time.Now()
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	var sizeInfo sizeInfo
 	value, err := loadWithSplit(
@@ -262,7 +265,7 @@ func (store *FDBRecordStore) SaveRecord(record proto.Message) (*FDBStoredRecord[
 // Matches Java's FDBRecordStore.deleteRecordAsync(Tuple primaryKey)
 func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) {
 	startTime := time.Now()
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Load existing record to get size info and record data (for counting)
@@ -367,7 +370,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 //
 // Java equivalent: FDBRecordStore.recordExistsAsync(Tuple primaryKey, IsolationLevel isolationLevel)
 func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel IsolationLevel) (bool, error) {
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	var tx fdb.ReadTransaction
 	if isolationLevel.IsSnapshot() {
@@ -424,24 +427,17 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 
-	// Extract primary key values using the key expression.
-	// Primary keys must evaluate to exactly one tuple.
-	keyTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
+	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
-	if len(keyTuples) != 1 {
-		return nil, fmt.Errorf("primary key expression must evaluate to exactly one tuple, got %d", len(keyTuples))
-	}
-
-	// Create primary key tuple
-	keyValues := keyTuples[0]
 	primaryKey := make(tuple.Tuple, len(keyValues))
 	for i, v := range keyValues {
 		primaryKey[i] = v
 	}
 
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Always load the existing record (matching Java's saveRecordAsync behavior).
@@ -698,7 +694,7 @@ func (store *FDBRecordStore) hasVersionIndex() bool {
 // This is different from using Sub(), which would add an extra 0x00 byte to the begin key.
 // The range covers all keys that start with the primary key tuple (e.g., {orderID, UNSPLIT_RECORD}).
 func (store *FDBRecordStore) getRangeForRecord(primaryKey tuple.Tuple) fdb.ExactRange {
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 
 	// Pack the primary key directly (Java's TupleRange.allOf approach)
 	// This gives us recordsSubspace.pack(primaryKey)
@@ -845,14 +841,17 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
+}
+
+// updateSecondaryIndexesLocked is the lock-free variant for use when the caller
+// already holds stateMu.RLock() (e.g. SaveRecordBatch which takes it once).
+func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
-
-	// Hold read lock for entire index update — matches Java's
-	// beginRecordStoreStateRead() wrapping updateSecondaryIndexes.
-	store.stateMu.RLock()
-	defer store.stateMu.RUnlock()
 
 	// Fast path: same type (or one side nil) — no three-way split needed.
 	sameType := oldRecord == nil || newRecord == nil || oldRecord.RecordType.Name == newRecord.RecordType.Name
@@ -1001,9 +1000,24 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 }
 
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
-// Dispatches to CountIndexMaintainer for COUNT indexes, StandardIndexMaintainer otherwise.
+// Maintainers are cached for the lifetime of the store (= one transaction),
+// avoiding repeated allocation of maintainer + mutation objects.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
+	if cached, ok := store.maintainerCache.Load(index.Name); ok {
+		return cached.(IndexMaintainer), nil
+	}
+
+	m, err := store.createIndexMaintainer(index)
+	if err != nil {
+		return nil, err
+	}
+
+	store.maintainerCache.Store(index.Name, m)
+	return m, nil
+}
+
+func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintainer, error) {
 	idxSubspace := store.indexSubspace(index)
 	tx := store.context.Transaction()
 	switch index.Type {
@@ -1131,7 +1145,7 @@ func (store *FDBRecordStore) ScanRecordsInRange(
 ) RecordCursor[*FDBStoredRecord[proto.Message]] {
 	// Calculate the prefix length for proper continuation handling
 	// This is the length of the records subspace prefix
-	recordsSubspace := store.subspace.Sub(RecordKey)
+	recordsSubspace := store.recordsSubspace
 	prefixLength := len(recordsSubspace.FDBKey())
 
 	return &keyValueCursor{
@@ -1511,7 +1525,7 @@ func (store *FDBRecordStore) EstimateStoreSize() (int64, error) {
 // EstimateRecordsSize returns the estimated byte size of the records subspace only.
 // Matches Java's FDBRecordStore.estimateRecordsSizeAsync().
 func (store *FDBRecordStore) EstimateRecordsSize() (int64, error) {
-	recordsSub := store.subspace.Sub(RecordKey)
+	recordsSub := store.recordsSubspace
 	begin, end := recordsSub.FDBRangeKeys()
 	kr := fdb.KeyRange{Begin: begin, End: end}
 	return store.context.Transaction().GetEstimatedRangeSizeBytes(kr).Get()
@@ -1625,6 +1639,35 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
+
+	// Fast path: if SizeVT is available, compute size first and allocate once.
+	// This avoids the intermediate MarshalVT allocation.
+	type sizer interface {
+		SizeVT() int
+		MarshalToSizedBufferVT([]byte) (int, error)
+	}
+	if sv, ok := record.(sizer); ok {
+		innerSize := sv.SizeVT()
+		// Allocate single buffer: tag + length varint + inner bytes
+		tagSize := protowire.SizeTag(recordType.unionFieldNumber)
+		lenSize := protowire.SizeBytes(innerSize) - innerSize // just the varint length
+		totalSize := tagSize + lenSize + innerSize
+		out := make([]byte, totalSize)
+
+		// Write tag + length prefix
+		header := protowire.AppendTag(out[:0], recordType.unionFieldNumber, protowire.BytesType)
+		header = protowire.AppendVarint(header, uint64(innerSize))
+		headerLen := len(header)
+
+		// Marshal directly into the remaining buffer
+		_, err := sv.MarshalToSizedBufferVT(out[headerLen : headerLen+innerSize])
+		if err != nil {
+			return nil, err
+		}
+		return out[:headerLen+innerSize], nil
+	}
+
+	// Slow path: marshal first, then wrap
 	var innerBytes []byte
 	var err error
 	if vm, ok := record.(interface{ MarshalVT() ([]byte, error) }); ok {
@@ -1635,9 +1678,59 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	out := protowire.AppendTag(nil, recordType.unionFieldNumber, protowire.BytesType)
+	out := make([]byte, 0, 10+len(innerBytes))
+	out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
 	out = protowire.AppendBytes(out, innerBytes)
 	return out, nil
+}
+
+// serializeUnionInto serializes a record into a shared buffer, returning a sub-slice.
+// The buffer grows as needed. Used by InsertBatch to avoid per-record allocations.
+func serializeUnionInto(record proto.Message, recordType *RecordType, buf *[]byte) ([]byte, error) {
+	if recordType.unionFieldNumber == 0 {
+		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
+	}
+
+	type sizer interface {
+		SizeVT() int
+		MarshalToSizedBufferVT([]byte) (int, error)
+	}
+	sv, ok := record.(sizer)
+	if !ok {
+		// Fallback to standard serializeUnion (allocates its own buffer).
+		return serializeUnion(record, recordType)
+	}
+
+	innerSize := sv.SizeVT()
+	tagSize := protowire.SizeTag(recordType.unionFieldNumber)
+	lenSize := protowire.SizeBytes(innerSize) - innerSize
+	totalSize := tagSize + lenSize + innerSize
+
+	// Grow shared buffer if needed.
+	b := *buf
+	start := len(b)
+	needed := start + totalSize
+	if needed > cap(b) {
+		newCap := max(2*cap(b), needed)
+		newBuf := make([]byte, start, newCap)
+		copy(newBuf, b)
+		b = newBuf
+	}
+	b = b[:needed]
+	out := b[start:needed]
+
+	// Write tag + length prefix.
+	header := protowire.AppendTag(out[:0], recordType.unionFieldNumber, protowire.BytesType)
+	header = protowire.AppendVarint(header, uint64(innerSize))
+	headerLen := len(header)
+
+	// Marshal directly into the shared buffer.
+	if _, err := sv.MarshalToSizedBufferVT(out[headerLen : headerLen+innerSize]); err != nil {
+		return nil, err
+	}
+
+	*buf = b
+	return out[:headerLen+innerSize], nil
 }
 
 // deserializeAndDiscover reads the union wire format tag to discover the record type,

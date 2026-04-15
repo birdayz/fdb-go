@@ -3,15 +3,67 @@ package recordlayer
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// fieldDescCache is an atomically-swapped cache entry for FieldKeyExpression.
+// FieldKeyExpressions are shared across goroutines (via RecordMetaData), so
+// the cache must be safe for concurrent reads/writes. Using atomic.Pointer
+// ensures no torn reads (unlike bare struct fields which would race).
+type fieldDescCache struct {
+	msgName string
+	fd      protoreflect.FieldDescriptor
+}
+
 // FanType controls how repeated (list) proto fields are handled in key expressions.
 // Matches Java's com.apple.foundationdb.record.metadata.expressions.KeyExpression.FanType.
 type FanType int
+
+// Pre-allocated return values for Evaluate — avoids [][]any allocation on every call.
+// These are safe to share because callers only read the values, never mutate.
+var (
+	emptyKeyResult = [][]any{{}}    // EmptyKeyExpression result
+	nilKeyResult   = [][]any{{nil}} // FieldKeyExpression unset field result
+)
+
+// FlatEvaluator is an optional interface for KeyExpressions that can return
+// a single tuple directly without the [][]any wrapper. Avoids 1 alloc per call.
+type FlatEvaluator interface {
+	EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error)
+}
+
+// ScalarEvaluator is an optional interface for KeyExpressions that extract
+// a single scalar value. Avoids both the outer [][]any and inner []any allocs.
+type ScalarEvaluator interface {
+	EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error)
+}
+
+// Int64Evaluator extracts a single int64 value without boxing to any.
+// Go's convT64 allocates for every non-zero int64→any conversion.
+// This interface bypasses that by returning int64 directly.
+type Int64Evaluator interface {
+	EvaluateInt64(record *FDBStoredRecord[proto.Message], msg proto.Message) (int64, bool, error)
+}
+
+// evaluateKeyFlat calls EvaluateFlat if available, otherwise falls back to Evaluate.
+// Saves 1 alloc per call on the hot path (avoids the outer [][]any).
+func evaluateKeyFlat(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if fe, ok := expr.(FlatEvaluator); ok {
+		return fe.EvaluateFlat(record, msg)
+	}
+	tuples, err := expr.Evaluate(record, msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(tuples) == 0 {
+		return nil, nil
+	}
+	return tuples[0], nil
+}
 
 const (
 	// FanTypeNone means the field must not be repeated. This is the default.
@@ -27,11 +79,30 @@ const (
 type FieldKeyExpression struct {
 	fieldName string
 	fanType   FanType
+	// fdCache caches the protoreflect.FieldDescriptor for this field name,
+	// keyed by the message full name. Avoids ByName() map lookup per Evaluate.
+	// Uses atomic.Pointer for goroutine safety (metadata is shared across txns).
+	fdCache atomic.Pointer[fieldDescCache]
 }
 
 // Field creates a key expression that extracts a single (non-repeated) field.
 func Field(name string) KeyExpression {
 	return &FieldKeyExpression{fieldName: name, fanType: FanTypeNone}
+}
+
+// resolveFieldDescriptor returns the cached field descriptor for the given message,
+// or resolves and caches it atomically. Thread-safe.
+func (f *FieldKeyExpression) resolveFieldDescriptor(m protoreflect.Message) (protoreflect.FieldDescriptor, error) {
+	msgName := string(m.Descriptor().FullName())
+	if cached := f.fdCache.Load(); cached != nil && cached.msgName == msgName {
+		return cached.fd, nil
+	}
+	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
+	if fd == nil {
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+	}
+	f.fdCache.Store(&fieldDescCache{msgName: msgName, fd: fd})
+	return fd, nil
 }
 
 // FanOut creates a key expression for a repeated field that produces one index entry
@@ -46,14 +117,13 @@ func FanOut(name string) KeyExpression {
 // For repeated fields with Concatenate, returns one tuple containing a nested tuple of all values.
 func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
-		// Nil message → result depends on FanType, matching Java's getNullResult().
 		return f.getNullResult(), nil
 	}
 	m := msg.ProtoReflect()
 
-	fd := m.Descriptor().Fields().ByName(protoreflect.Name(f.fieldName))
-	if fd == nil {
-		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", f.fieldName)}
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
 	}
 
 	if fd.IsList() {
@@ -64,14 +134,87 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 	// For proto2 optional fields, unset → nil (matching Java's hasField() check).
 	// For proto3 fields (no presence), always returns the value.
 	if fd.HasPresence() && !m.Has(fd) {
-		return [][]any{{nil}}, nil
+		return nilKeyResult, nil
 	}
 	value := m.Get(fd)
 	result, err := scalarToInterface(fd, value)
 	if err != nil {
 		return nil, err
 	}
+	// Return single-element result. Inner slice is 1 alloc; outer reuses fixed capacity.
 	return [][]any{{result}}, nil
+}
+
+// EvaluateFlat returns the scalar value directly as a single-element []any.
+func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if msg == nil {
+		return []any{nil}, nil
+	}
+	m := msg.ProtoReflect()
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
+	}
+	if fd.IsList() {
+		// Repeated fields can't be flattened — signal caller to fall through.
+		return nil, fmt.Errorf("EvaluateFlat: repeated field %s", f.fieldName)
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return []any{nil}, nil
+	}
+	value := m.Get(fd)
+	result, err := scalarToInterface(fd, value)
+	if err != nil {
+		return nil, err
+	}
+	return []any{result}, nil
+}
+
+// EvaluateScalar returns the single scalar value directly — zero allocs for the return.
+func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	m := msg.ProtoReflect()
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return nil, err
+	}
+	if fd.IsList() {
+		return nil, fmt.Errorf("EvaluateScalar on repeated field")
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return nil, nil
+	}
+	return scalarToInterface(fd, m.Get(fd))
+}
+
+// EvaluateInt64 returns the field value as int64 without boxing.
+// Returns (0, false, nil) for nil/unset fields, (val, true, nil) for integer fields.
+func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message], msg proto.Message) (int64, bool, error) {
+	if msg == nil {
+		return 0, false, nil
+	}
+	m := msg.ProtoReflect()
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil {
+		return 0, false, err
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return 0, false, nil
+	}
+	switch fd.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return m.Get(fd).Int(), true, nil
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return int64(m.Get(fd).Uint()), true, nil
+	case protoreflect.EnumKind:
+		return int64(m.Get(fd).Enum()), true, nil
+	default:
+		return 0, false, nil // not an integer field
+	}
 }
 
 // getNullResult returns the appropriate result for a nil message based on FanType.
@@ -171,6 +314,10 @@ func (f *FieldKeyExpression) ColumnSize() int {
 // Matches Java's RecordTypeKeyExpression: evaluates to the record type key
 // (an integer derived from the union descriptor field number).
 type RecordTypeKeyExpression struct {
+	// cachedResults caches the Evaluate return for each type name.
+	// RecordTypeKey is deterministic per record type, so cache is safe.
+	// Uses sync.Map for concurrent access safety.
+	cachedResults sync.Map // string → [][]any
 	// nested is the optional nested key expression
 	nested KeyExpression
 	// typeKeys maps proto message full name → record type key (int64).
@@ -199,11 +346,16 @@ func (r *RecordTypeKeyExpression) bindTypeKeys(typeKeys map[string]int64) {
 // record.getRecordType().getRecordTypeKey() — the union descriptor field number.
 func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	if msg == nil {
-		// Nil message → null type key. Matches Java's null check:
-		// record != null ? scalar(record.getRecordType().getRecordTypeKey()) : Key.Evaluated.NULL
-		return [][]any{{nil}}, nil
+		return nilKeyResult, nil
 	}
 	typeName := string(msg.ProtoReflect().Descriptor().Name())
+
+	// Check cache — RecordTypeKey is deterministic per type name
+	if r.nested == nil {
+		if cached, ok := r.cachedResults.Load(typeName); ok {
+			return cached.([][]any), nil
+		}
+	}
 
 	// Look up the integer record type key (proto field number from union descriptor).
 	var typeKey any
@@ -211,15 +363,20 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 		if k, ok := r.typeKeys[typeName]; ok {
 			typeKey = k
 		} else {
-			typeKey = typeName // fallback for unbound expressions
+			typeKey = typeName
 		}
 	} else {
-		typeKey = typeName // fallback for unbound expressions
+		typeKey = typeName
 	}
 
 	if r.nested == nil {
-		return [][]any{{typeKey}}, nil
+		result := [][]any{{typeKey}}
+		r.cachedResults.Store(typeName, result)
+		return result, nil
 	}
+
+	// EvaluateFlat for non-nested case — returns single-element []any
+	// (implementing FlatEvaluator interface)
 
 	nestedTuples, err := r.nested.Evaluate(record, msg)
 	if err != nil {
@@ -234,6 +391,39 @@ func (r *RecordTypeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message
 		result[i] = combined
 	}
 	return result, nil
+}
+
+// EvaluateScalar returns the type key directly — zero alloc.
+func (r *RecordTypeKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
+	if msg == nil {
+		return nil, nil
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			return k, nil
+		}
+	}
+	return typeName, nil
+}
+
+// EvaluateFlat returns the type key as a single-element []any.
+func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if msg == nil {
+		return []any{nil}, nil
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	var typeKey any
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			typeKey = k
+		} else {
+			typeKey = typeName
+		}
+	} else {
+		typeKey = typeName
+	}
+	return []any{typeKey}, nil
 }
 
 // FieldNames returns the field names accessed by nested expression
@@ -278,7 +468,12 @@ func EmptyKey() KeyExpression {
 
 // Evaluate returns one empty tuple (no key components).
 func (e *EmptyKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
-	return [][]any{{}}, nil
+	return emptyKeyResult, nil
+}
+
+// EvaluateFlat returns empty (no elements to append).
+func (e *EmptyKeyExpression) EvaluateFlat(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([]any, error) {
+	return nil, nil
 }
 
 // FieldNames returns no field names.
@@ -294,6 +489,39 @@ func (e *EmptyKeyExpression) ColumnSize() int {
 // CompositeKeyExpression combines multiple key expressions
 type CompositeKeyExpression struct {
 	expressions []KeyExpression
+}
+
+// EvaluateFlat returns the single concatenated tuple directly, avoiding the
+// outer [][]any wrapper. Only valid when no child uses fan-out.
+// Saves 1 alloc per child (no [][]any) + 1 alloc for the result (no outer wrapper).
+func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	result := make([]any, 0, len(c.expressions))
+	for _, expr := range c.expressions {
+		// Try scalar first (zero alloc per value)
+		if se, ok := expr.(ScalarEvaluator); ok {
+			val, err := se.EvaluateScalar(record, msg)
+			if err == nil {
+				result = append(result, val)
+				continue
+			}
+		}
+		if fe, ok := expr.(FlatEvaluator); ok {
+			childFlat, err := fe.EvaluateFlat(record, msg)
+			if err == nil {
+				result = append(result, childFlat...)
+				continue
+			}
+		}
+		childTuples, err := expr.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
+		if len(childTuples) != 1 {
+			return nil, fmt.Errorf("EvaluateFlat: child produced %d tuples, expected 1", len(childTuples))
+		}
+		result = append(result, childTuples[0]...)
+	}
+	return result, nil
 }
 
 // Concat creates a composite key from multiple expressions
@@ -312,16 +540,51 @@ func Concat(exprs ...KeyExpression) KeyExpression {
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
 func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
-	// Start with a single empty tuple
-	result := [][]any{{}}
+	// Fast path: use EvaluateFlat for children to avoid [][]any allocs.
+	// If all children support it, we build a single tuple directly.
+	fast := make([]any, 0, len(c.expressions))
+	allFlat := true
 
+	for _, expr := range c.expressions {
+		// Try scalar first (zero alloc)
+		if se, ok := expr.(ScalarEvaluator); ok {
+			val, err := se.EvaluateScalar(record, msg)
+			if err == nil {
+				fast = append(fast, val)
+				continue
+			}
+			// Fall through on error (e.g. repeated field)
+		}
+		if fe, ok := expr.(FlatEvaluator); ok {
+			childFlat, err := fe.EvaluateFlat(record, msg)
+			if err == nil {
+				fast = append(fast, childFlat...)
+				continue
+			}
+			// Fall through
+		}
+		childTuples, err := expr.Evaluate(record, msg)
+		if err != nil {
+			return nil, err
+		}
+		if len(childTuples) != 1 {
+			allFlat = false
+			break
+		}
+		fast = append(fast, childTuples[0]...)
+	}
+
+	if allFlat {
+		return [][]any{fast}, nil
+	}
+
+	// Slow path: cross-product for fan-out expressions
+	result := [][]any{{}}
 	for _, expr := range c.expressions {
 		childTuples, err := expr.Evaluate(record, msg)
 		if err != nil {
 			return nil, err
 		}
-
-		// Cross-product: for each existing tuple, combine with each child tuple
 		var crossed [][]any
 		for _, existing := range result {
 			for _, child := range childTuples {
@@ -333,7 +596,6 @@ func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message]
 		}
 		result = crossed
 	}
-
 	return result, nil
 }
 
@@ -737,6 +999,21 @@ func GroupAll(expr KeyExpression) *GroupingKeyExpression {
 // The grouping/grouped split is metadata, not evaluation logic.
 func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
 	return g.wholeKey.Evaluate(record, msg)
+}
+
+// EvaluateFlat delegates to the whole key's EvaluateFlat if available.
+func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
+	if fe, ok := g.wholeKey.(FlatEvaluator); ok {
+		return fe.EvaluateFlat(record, msg)
+	}
+	tuples, err := g.wholeKey.Evaluate(record, msg)
+	if err != nil {
+		return nil, err
+	}
+	if len(tuples) == 0 {
+		return nil, nil
+	}
+	return tuples[0], nil
 }
 
 // FieldNames returns field names from the whole key.
