@@ -58,7 +58,7 @@ func saveWithSplit(
 
 			keyTuple := appendToTuple(primaryKey, splitIndex)
 			key := recordSubspace.Pack(keyTuple)
-			tx.Set(key, chunk)
+			tx.SetBytes(key, chunk)
 
 			sizeInfo.KeyCount++
 			sizeInfo.KeySize += len(key)
@@ -72,7 +72,7 @@ func saveWithSplit(
 		// Unsplit: single KV pair at suffix 0
 		keyTuple := appendToTuple(primaryKey, unsplitRecord)
 		key := recordSubspace.Pack(keyTuple)
-		tx.Set(key, serialized)
+		tx.SetBytes(key, serialized)
 
 		sizeInfo.KeyCount = 1
 		sizeInfo.KeySize = len(key)

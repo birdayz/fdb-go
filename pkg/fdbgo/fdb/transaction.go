@@ -185,6 +185,11 @@ func (tr Transaction) Clear(key KeyConvertible) {
 	tr.t.inner.Clear(key.FDBKey())
 }
 
+// ClearBytes deletes a key using raw bytes. Avoids KeyConvertible boxing.
+func (tr Transaction) ClearBytes(key []byte) {
+	tr.t.inner.Clear(key)
+}
+
 // ClearRange removes all keys k such that begin <= k < end.
 // The Apple binding's ClearRange is void because mutations are buffered
 // locally with no I/O. Our pure Go client validates begin <= end and
@@ -253,6 +258,14 @@ func (tr Transaction) Min(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutMinV2, key.FDBKey(), param)
 }
 
+func (tr Transaction) MaxBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutMax, key, param)
+}
+
+func (tr Transaction) MinBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutMinV2, key, param)
+}
+
 func (tr Transaction) ByteMax(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutByteMax, key.FDBKey(), param)
 }
@@ -267,6 +280,10 @@ func (tr Transaction) AppendIfFits(key KeyConvertible, param []byte) {
 
 func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutCompareAndClear, key.FDBKey(), param)
+}
+
+func (tr Transaction) CompareAndClearBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutCompareAndClear, key, param)
 }
 
 // Commit commits the transaction. The returned FutureNil becomes ready

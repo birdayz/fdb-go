@@ -88,7 +88,7 @@ func (m *countMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry 
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
 		tx.AddBytes(fdbKey, littleEndianInt64One)
@@ -130,7 +130,7 @@ func (m *countNotNullMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key,
 	if remove {
 		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
 		tx.AddBytes(fdbKey, littleEndianInt64One)
@@ -271,7 +271,7 @@ func (m *sumMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry at
 		}
 		tx.AddBytes(fdbKey, encodeRecordCount(-val))
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
 		tx.AddBytes(fdbKey, entry.param)
@@ -346,9 +346,9 @@ func (m *minMaxEverLongMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Ke
 		return nil // _EVER: deletes are no-ops.
 	}
 	if m.isMax {
-		tx.Max(fdbKey, entry.param)
+		tx.MaxBytes(fdbKey, entry.param)
 	} else {
-		tx.Min(fdbKey, entry.param)
+		tx.MinBytes(fdbKey, entry.param)
 	}
 	return nil
 }

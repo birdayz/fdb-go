@@ -147,7 +147,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		var newsizeInfo sizeInfo
 		if !oldRecordExists && len(data) <= splitRecordSize {
 			// Direct Set using pre-computed key — avoids appendToTuple + Pack in saveWithSplit
-			tx.Set(p.unsplitKey, data)
+			tx.SetBytes(p.unsplitKey, data)
 			newsizeInfo.KeyCount = 1
 			newsizeInfo.KeySize = len(p.unsplitKey)
 			newsizeInfo.ValueSize = len(data)
@@ -207,7 +207,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	if countFDBKey != nil && insertCount > 0 {
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], uint64(insertCount))
-		tx.Add(fdb.Key(countFDBKey), buf[:])
+		tx.AddBytes(countFDBKey, buf[:])
 	}
 
 	return results, nil
@@ -352,7 +352,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	if countFDBKey != nil {
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], uint64(len(records)))
-		tx.Add(fdb.Key(countFDBKey), buf[:])
+		tx.AddBytes(countFDBKey, buf[:])
 	}
 
 	return results, nil

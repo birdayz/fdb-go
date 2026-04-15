@@ -157,7 +157,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		if err != nil {
 			return err
 		}
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
+		m.tx.ClearBytes(m.indexSubspace.Pack(oldEntryKey))
 		// Clean up violation entries on delete for WRITE_ONLY/READABLE_UNIQUE_PENDING indexes.
 		// Matches Java's standardIndexMaintainer.updateOneKeyAsync() remove path.
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
