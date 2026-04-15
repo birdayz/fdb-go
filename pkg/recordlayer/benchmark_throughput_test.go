@@ -459,6 +459,14 @@ func BenchmarkThroughputInsertBatch100WithIndexes(b *testing.B) {
 	benchThroughputInsertBatch(b, 100)
 }
 
+func BenchmarkThroughputInsertBatch200WithIndexes(b *testing.B) {
+	benchThroughputInsertBatch(b, 200)
+}
+
+func BenchmarkThroughputInsertBatch500WithIndexes(b *testing.B) {
+	benchThroughputInsertBatch(b, 500)
+}
+
 func benchThroughputInsertOnlyBatch(b *testing.B, batchSize int, withIndexes bool) {
 	ensureBenchDB(b)
 	var md *RecordMetaData
@@ -537,4 +545,66 @@ func benchThroughputInsertBatch(b *testing.B, batchSize int) {
 		}
 	}
 	b.ReportMetric(float64(batchSize), "records/op")
+}
+
+func BenchmarkThroughputInsertBatchConcurrent8(b *testing.B) {
+	benchThroughputInsertBatchConcurrent(b, 50, 8)
+}
+
+func BenchmarkThroughputInsertBatchConcurrent32(b *testing.B) {
+	benchThroughputInsertBatchConcurrent(b, 50, 32)
+}
+
+func BenchmarkThroughputInsertBatchConcurrent128(b *testing.B) {
+	benchThroughputInsertBatchConcurrent(b, 50, 128)
+}
+
+func benchThroughputInsertBatchConcurrent(b *testing.B, batchSize, goroutines int) {
+	ensureBenchDB(b)
+	md := throughputMetaDataWithAggregateIndexes(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var idGen atomic.Int64
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func() {
+				defer wg.Done()
+				base := idGen.Add(int64(batchSize))
+				_, runErr := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					records := make([]proto.Message, batchSize)
+					for j := 0; j < batchSize; j++ {
+						records[j] = benchOrder(base+int64(j), int32((base+int64(j))%100))
+					}
+					return nil, store.InsertBatch(records)
+				})
+				if runErr != nil {
+					b.Error(runErr)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	b.ReportMetric(float64(goroutines), "goroutines")
+	b.ReportMetric(float64(batchSize*goroutines), "records/op")
+}
+
+func BenchmarkThroughputInsertBatchConcurrent16(b *testing.B) {
+	benchThroughputInsertBatchConcurrent(b, 50, 16)
 }
