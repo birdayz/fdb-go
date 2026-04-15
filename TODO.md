@@ -97,11 +97,11 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 10 | `FLAG_FIRST_IN_BATCH` | COSMETIC | Not exposed. No behavioral gap. |
 | 11 | ~~`reset()` stale flags~~ | ~~BEHAVIOR~~ FIXED | ~~`userSetReadVersion` and `nextWriteNoConflict` not cleared by `reset()`. C++ creates fresh state.~~ Fixed: both cleared in `reset()`. swingshift-18. |
 | 12 | ~~`tryCache` SYSTEM_IMMEDIATE~~ | ~~MAINTENANCE~~ FIXED | ~~Dead code fell through to DEFAULT throttle check.~~ Fixed: explicit rejection. swingshift-18. |
-| 13 | `commitDummyTransaction` no Set mutation | COSMETIC | C++ calls `tr->set(key, "")`. Go only adds conflict ranges. Functionally equivalent — commit proxy sends the transaction regardless because write conflicts are present. |
-| 14 | `commitDummyTransaction` fixed backoff | PERF | C++ uses `tr->onError(e)` (exponential backoff). Go uses fixed 10ms. Dummy is a fast synchronization barrier — rarely matters. |
+| 13 | ~~`commitDummyTransaction` no Set mutation~~ | ~~COSMETIC~~ FIXED | ~~Go only adds conflict ranges.~~ Fixed: now calls `Set(key, "")` matching C++. swingshift-18. |
+| 14 | ~~`commitDummyTransaction` fixed backoff~~ | ~~PERF~~ FIXED | ~~Go uses fixed 10ms.~~ Fixed: exponential backoff (10ms → 2x → cap 1s) matching C++ `onError`. swingshift-18. |
 | 15 | `commitDummyTransaction` no `CAUSAL_WRITE_RISKY` | PERF | C++ sets `CAUSAL_WRITE_RISKY` for faster GRV on the dummy. Go doesn't implement this option. Latency optimization only — dummy still works correctly. |
 | 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
-| 17 | Location cache over-invalidation | CONSERVATIVE | C++ invalidates just the stale shard's range on `wrong_shard_server`. Go invalidates the entire remaining scan range. Causes slightly more cache thrash but is strictly correct. |
+| 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
 
 ### Missing C API Surface (audit 2026-04-13)
 

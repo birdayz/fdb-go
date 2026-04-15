@@ -123,6 +123,11 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 	// ranges, and the dummy must always carry the conflict key to serve as a
 	// synchronization barrier. Loops until success or context cancellation,
 	// matching C++ which loops until the actor is cancelled.
+	//
+	// C++ uses tr->onError(e) which provides exponential backoff. We replicate
+	// the same backoff curve: start at defaultBackoff (10ms), double each retry,
+	// cap at DEFAULT_MAX_BACKOFF (1s).
+	backoff := defaultBackoff
 	for {
 		if ctx.Err() != nil {
 			return // caller gave up, don't block forever
@@ -139,7 +144,10 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		dummy.readSystemKeys = true
 		dummy.lockAware = true
 
-		// Add the key as both read and write conflict, matching C++.
+		// C++ does tr->set(key, "") + adds read/write conflict ranges.
+		// The Set ensures the commit proxy doesn't optimize away the tx
+		// as a no-op.
+		dummy.Set(key, []byte{})
 		dummy.addReadConflictForKey(key)
 		dummy.addWriteConflictForKey(key)
 
@@ -149,7 +157,8 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		if err := dummy.Commit(ctx); err != nil {
 			var fdbErr *wire.FDBError
 			if errors.As(err, &fdbErr) && isRetryable(fdbErr.Code) {
-				time.Sleep(defaultBackoff)
+				time.Sleep(backoff)
+				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
 			return // non-retryable error, give up

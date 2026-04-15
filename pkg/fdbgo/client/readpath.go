@@ -417,13 +417,13 @@ func (tx *Transaction) getRange(ctx context.Context, begin, end []byte, limit in
 						if relocateRetries > maxRelocateRetries {
 							return nil, false, fmt.Errorf("getRange: exceeded %d relocate retries: %w", maxRelocateRetries, err)
 						}
-						// C++ invalidates the entire remaining range, not just one key.
-						// This handles shard splits that affect multiple adjacent entries.
+						// C++ invalidates just the stale shard's range:
+						// cx->invalidateCache(locations[shard].range).
+						// Narrower than our previous whole-remaining-range invalidation.
+						tx.db.locCache.invalidateRange(shardBegin, shardEnd, tx.tenantId)
 						if reverse {
-							tx.db.locCache.invalidateRange(curBegin, shardEnd, tx.tenantId)
 							curEnd = shardEnd
 						} else {
-							tx.db.locCache.invalidateRange(shardBegin, curEnd, tx.tenantId)
 							curBegin = shardBegin
 						}
 						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
