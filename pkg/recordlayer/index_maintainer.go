@@ -9,6 +9,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// emptyTuplePacked is the pre-computed packed form of an empty tuple.
+// Used as the value for VALUE index entries (which store no value data).
+var emptyTuplePacked = tuple.Tuple{}.Pack()
+
 // IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.
 type IndexMaintainer interface {
@@ -132,7 +136,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Add new entries
-	emptyValue := tuple.Tuple{}.Pack()
+	emptyValue := emptyTuplePacked
 	for i := range newEntries {
 		entryTupleKey, err := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
 		if err != nil {

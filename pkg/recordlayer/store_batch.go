@@ -279,7 +279,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 			return nil, &RecordSerializationError{Cause: err}
 		}
 
-		// Direct write — no existence check, no split check
+		// Direct write — no existence check, no split check.
 		if !splitEnabled || len(data) <= splitRecordSize {
 			unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
 			unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
