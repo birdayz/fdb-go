@@ -209,6 +209,113 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	return results, nil
 }
 
+// SaveRecordBatchInsertOnly saves multiple NEW records without existence checks.
+// Skips the pipelined Get phase entirely — assumes all records are fresh inserts.
+// This eliminates one FDB round trip per batch and all existence-check overhead.
+//
+// WARNING: If a record with the same primary key already exists, it will be
+// silently overwritten. Record count will be incorrectly incremented. Index
+// entries from the old record will NOT be cleaned up. Only use this when you
+// can guarantee unique primary keys (e.g. UUID/random IDs, monotonic sequences).
+//
+// For the metrognome usage event ingest path, every event has a unique event_id
+// PK, so this is safe and provides maximum throughput.
+func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
+	records []proto.Message,
+) ([]*FDBStoredRecord[proto.Message], error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	tx := store.context.Transaction()
+	recordsSubspace := store.recordsSubspace
+	splitEnabled := store.metaData.IsSplitLongRecords()
+
+	// Pre-compute count key
+	var countFDBKey []byte
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil && !store.isRecordCountDisabled() {
+		if _, ok := countKey.(*EmptyKeyExpression); ok {
+			countSubspace := store.subspace.Sub(RecordCountKey)
+			countFDBKey = countSubspace.Pack(tuple.Tuple{})
+		}
+	}
+
+	results := make([]*FDBStoredRecord[proto.Message], len(records))
+
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
+		return nil, err
+	}
+
+	for i, record := range records {
+		if record == nil {
+			return nil, fmt.Errorf("record %d is nil", i)
+		}
+
+		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
+		recordType := store.metaData.GetRecordType(recordTypeName)
+		if recordType == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		}
+		if recordType.PrimaryKey == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
+		}
+
+		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
+		}
+
+		primaryKey := make(tuple.Tuple, len(keyValues))
+		for j, v := range keyValues {
+			primaryKey[j] = v
+		}
+
+		// Serialize
+		data, err := serializeUnion(record, recordType)
+		if err != nil {
+			return nil, &RecordSerializationError{Cause: err}
+		}
+
+		// Direct write — no existence check, no split check
+		if !splitEnabled || len(data) <= splitRecordSize {
+			unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
+			unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
+			tx.Set(unsplitKey, data)
+		} else {
+			var newsizeInfo sizeInfo
+			if err := saveWithSplit(tx, recordsSubspace, primaryKey, data,
+				splitEnabled, nil, &newsizeInfo); err != nil {
+				return nil, fmt.Errorf("record %d: save: %w", i, err)
+			}
+		}
+
+		stored := &FDBStoredRecord[proto.Message]{
+			PrimaryKey: primaryKey,
+			RecordType: recordType,
+			Record:     record,
+		}
+
+		// Index updates (no old record)
+		if err := store.updateSecondaryIndexesLocked(nil, stored); err != nil {
+			return nil, fmt.Errorf("record %d: index update: %w", i, err)
+		}
+
+		results[i] = stored
+	}
+
+	// Batch record count
+	if countFDBKey != nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(records)))
+		tx.Add(fdb.Key(countFDBKey), buf[:])
+	}
+
+	return results, nil
+}
+
 // loadSplitOnly checks for a split record without checking unsplit first.
 // Used by SaveRecordBatch when the unsplit check was already done via pipeline.
 func loadSplitOnly(
