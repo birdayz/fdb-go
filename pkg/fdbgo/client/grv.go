@@ -53,10 +53,15 @@ func (c *grvCache) tryCache(priority uint32) (int64, bool) {
 
 	// Check ratekeeper throttle cooldown for the requesting priority.
 	// C++ checks lastRkBatchThrottleTime for BATCH, lastRkDefaultThrottleTime for DEFAULT.
+	// SYSTEM_IMMEDIATE never reaches here (bypasses cache at callsite), but guard
+	// explicitly to prevent bugs if the bypass is ever refactored.
 	var lastThrottle int64
-	if priority == grvPriorityBatch {
+	switch priority {
+	case grvPriorityBatch:
 		lastThrottle = c.lastRkBatch.Load()
-	} else {
+	case grvPrioritySystemImmediate:
+		return 0, false // SYSTEM_IMMEDIATE must always contact proxy
+	default:
 		lastThrottle = c.lastRkDefault.Load()
 	}
 	if lastThrottle > 0 && time.Duration(now-lastThrottle) < grvCacheRKCooldown {

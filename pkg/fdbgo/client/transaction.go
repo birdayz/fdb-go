@@ -1369,11 +1369,13 @@ func (tx *Transaction) reset() {
 	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
+	tx.userSetReadVersion = false // C++ creates fresh state on reset
 	tx.readVersion = 0
 	tx.readVersionMu.Unlock()
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
+	tx.nextWriteNoConflict = false // C++ creates fresh state on reset
 	tx.mutations = tx.mutations[:0]
 	// Hold conflictMu: Watch() goroutines may still be running after
 	// cancelWatches() (cancel is async — goroutines drain on ctx.Done).
