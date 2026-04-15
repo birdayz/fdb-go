@@ -164,11 +164,12 @@ type Transaction struct {
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
 	// use goroutines, so concurrent Get/Set calls on the same transaction race.
-	conflictMu     sync.Mutex
-	mutations      []Mutation
-	readConflicts  []KeyRange
-	writeConflicts []KeyRange
-	conflictBuf    []byte // batch-allocated backing store for conflict range keys
+	conflictMu       sync.Mutex
+	mutations        []Mutation
+	readConflicts    []KeyRange
+	writeConflicts   []KeyRange
+	conflictBuf      []byte       // batch-allocated backing store for conflict range keys
+	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
 
 	retryCount int
 	backoff    time.Duration
@@ -558,7 +559,11 @@ var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 // totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
 // per transaction, creating intermediate garbage at each step.
 // Stores *conflictBuf to avoid interface boxing allocation (SA6002).
-var conflictBufPool sync.Pool
+var conflictBufPool = sync.Pool{
+	New: func() any {
+		return &conflictBuf{b: make([]byte, 0, 32768)}
+	},
+}
 
 type conflictBuf struct {
 	b []byte
@@ -1105,9 +1110,13 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 		reused := false
 		// Try reusing a pooled buffer when starting fresh (avoids 4K→8K→16K→32K growth).
 		if len(tx.conflictBuf) == 0 {
-			if cb, ok := conflictBufPool.Get().(*conflictBuf); ok && cap(cb.b) >= needed {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
 				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
 				reused = true
+			} else {
+				conflictBufPool.Put(cb) // too small, return it
 			}
 		}
 		if !reused {
@@ -1139,9 +1148,13 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
 		reused := false
 		if len(tx.conflictBuf) == 0 {
-			if cb, ok := conflictBufPool.Get().(*conflictBuf); ok && cap(cb.b) >= needed {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
 				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
 				reused = true
+			} else {
+				conflictBufPool.Put(cb)
 			}
 		}
 		if !reused {
@@ -1321,7 +1334,13 @@ func (tx *Transaction) postCommitReset() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	// Return conflict buffer to pool for reuse by next transaction.
-	if cap(tx.conflictBuf) > 0 {
+	if tx.conflictBufOwner != nil {
+		tx.conflictBufOwner.b = tx.conflictBuf[:0]
+		conflictBufPool.Put(tx.conflictBufOwner)
+		tx.conflictBufOwner = nil
+		tx.conflictBuf = nil
+	} else if cap(tx.conflictBuf) > 0 {
+		// Buffer was allocated outside pool (growth path) — wrap and return.
 		conflictBufPool.Put(&conflictBuf{b: tx.conflictBuf[:0]})
 		tx.conflictBuf = nil
 	}
