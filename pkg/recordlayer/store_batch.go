@@ -393,36 +393,59 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		return err
 	}
 
+	// Cache record type + indexes for the batch — all records are the same type.
+	typeName := string(records[0].ProtoReflect().Descriptor().Name())
+	recordType := store.metaData.GetRecordType(typeName)
+	if recordType == nil {
+		return &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", typeName)}
+	}
+	if recordType.PrimaryKey == nil {
+		return &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", typeName)}
+	}
+
+	// Pre-resolve index maintainers to avoid per-record map lookups.
+	typeIndexes := store.metaData.GetIndexesForRecordType(recordType.Name)
+	universalIndexes := store.metaData.GetUniversalIndexes()
+	type cachedMaintainer struct {
+		index      *Index
+		maintainer IndexMaintainer
+	}
+	maintainers := make([]cachedMaintainer, 0, len(typeIndexes)+len(universalIndexes))
+	for _, idx := range typeIndexes {
+		if store.shouldMaintainIndex(idx.Name) {
+			m, err := store.getIndexMaintainer(idx)
+			if err != nil {
+				return err
+			}
+			maintainers = append(maintainers, cachedMaintainer{index: idx, maintainer: m})
+		}
+	}
+	for _, idx := range universalIndexes {
+		if store.shouldMaintainIndex(idx.Name) {
+			m, err := store.getIndexMaintainer(idx)
+			if err != nil {
+				return err
+			}
+			maintainers = append(maintainers, cachedMaintainer{index: idx, maintainer: m})
+		}
+	}
+
 	// Compiled PK evaluator + reusable appender
 	var compiledPK *compiledKeyEvaluator
 	var pkAppender tupleAppender
-	if len(records) > 0 {
-		typeName := string(records[0].ProtoReflect().Descriptor().Name())
-		rt := store.metaData.GetRecordType(typeName)
-		if rt != nil && rt.PrimaryKey != nil {
-			compiledPK = compileKeyExpression(rt.PrimaryKey)
-			if compiledPK != nil {
-				pkAppender.elements = make([]tuple.TupleElement, 0, 8)
-			}
+	if recordType.PrimaryKey != nil {
+		compiledPK = compileKeyExpression(recordType.PrimaryKey)
+		if compiledPK != nil {
+			pkAppender.elements = make([]tuple.TupleElement, 0, 8)
 		}
 	}
 
 	// Reusable stored record — populated per-record, not returned to caller.
-	// PrimaryKey is a sub-slice of pkAppender.elements (or a fresh tuple for fallback).
 	var stored FDBStoredRecord[proto.Message]
 
 	for i, record := range records {
 		if record == nil {
 			return fmt.Errorf("record %d is nil", i)
-		}
-
-		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
-		recordType := store.metaData.GetRecordType(recordTypeName)
-		if recordType == nil {
-			return &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
-		}
-		if recordType.PrimaryKey == nil {
-			return &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
 
 		// Evaluate PK — reuse pkAppender across records (no alloc per record).
@@ -464,12 +487,14 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			}
 		}
 
-		// Index updates via reusable stored record
+		// Index updates via cached maintainers — no per-record map lookups.
 		stored.PrimaryKey = primaryKey
 		stored.RecordType = recordType
 		stored.Record = record
-		if err := store.updateSecondaryIndexesLocked(nil, &stored); err != nil {
-			return fmt.Errorf("record %d: index update: %w", i, err)
+		for _, cm := range maintainers {
+			if err := cm.maintainer.Update(nil, &stored); err != nil {
+				return fmt.Errorf("record %d: index %q: %w", i, cm.index.Name, err)
+			}
 		}
 	}
 
