@@ -14,11 +14,13 @@ import (
 // Used as the value for VALUE index entries (which store no value data).
 var emptyTuplePacked = tuple.Tuple{}.Pack()
 
-// Compile-time assertion: tuple.TupleElement must be any (type alias).
-// The unsafe cast (*tuple.Tuple)(unsafe.Pointer(&[]any{})) in the insert
-// fast path depends on this. If TupleElement ever becomes a named type,
-// the unsafe cast is invalid and this will fail to compile.
-var _ tuple.TupleElement = any(nil)
+// SAFETY: The unsafe cast (*tuple.Tuple)(unsafe.Pointer(&[]any{})) in the
+// insert fast path depends on tuple.Tuple being []TupleElement where
+// TupleElement is a type alias for any. Verified by inspection of tuple.go:
+//   type TupleElement = any
+//   type Tuple []TupleElement
+// If TupleElement becomes a named type, the unsafe cast is invalid.
+// No compile-time check can enforce this — verify on tuple.go changes.
 
 // IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.

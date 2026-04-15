@@ -934,11 +934,9 @@ var _ = Describe("BatchInsert", func() {
 	})
 
 	Describe("InsertBatch mixed types", func() {
-		It("uses wrong record type for non-first records (silent data corruption)", func() {
-			// InsertBatch caches the record type from records[0] and uses it for ALL
-			// records. If you mix types, the second type gets serialized with the wrong
-			// union field number. This is by design — InsertBatch is for homogeneous
-			// batches. This test documents the behavior.
+		It("rejects mixed record types with explicit error", func() {
+			// InsertBatch requires all records to be the same proto message type.
+			// Mixing types is now rejected with a clear error message.
 			ks := specSubspace()
 			builder := baseMetaData()
 			builder.SetRecordCountKey(EmptyKey())
@@ -951,13 +949,7 @@ var _ = Describe("BatchInsert", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Insert mixed types: Order first, then Customer.
-			// Customer will be serialized with Order's union field number — wrong.
-			// InsertBatch caches recordType from records[0] for the entire batch.
-			// We don't assert on the Run error — InsertBatch may succeed (proto
-			// lenience with wrong field tag) or fail. Either way, the data is
-			// corrupt. This test documents the constraint: don't mix types.
-			_, _ = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 				if err != nil {
 					return nil, err
@@ -966,9 +958,10 @@ var _ = Describe("BatchInsert", func() {
 					&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)},
 					&gen.Customer{CustomerId: proto.Int64(2), Name: proto.String("Alice")},
 				}
-				_ = store.InsertBatch(records)
-				return nil, nil
+				return nil, store.InsertBatch(records)
 			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does not match batch type"))
 		})
 	})
 

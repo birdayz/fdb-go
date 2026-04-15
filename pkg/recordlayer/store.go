@@ -427,18 +427,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
 
-	// Extract primary key values using the key expression.
-	// Primary keys must evaluate to exactly one tuple.
-	keyTuples, err := recordType.PrimaryKey.Evaluate(nil, record)
+	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
+	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
-	if len(keyTuples) != 1 {
-		return nil, fmt.Errorf("primary key expression must evaluate to exactly one tuple, got %d", len(keyTuples))
-	}
-
-	// Create primary key tuple
-	keyValues := keyTuples[0]
 	primaryKey := make(tuple.Tuple, len(keyValues))
 	for i, v := range keyValues {
 		primaryKey[i] = v

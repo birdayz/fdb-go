@@ -156,12 +156,8 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 		return nil, err
 	}
 	if fd.IsList() {
-		// Fan-out: can't flatten
-		tuples, err := f.evaluateRepeated(m, fd)
-		if err != nil || len(tuples) != 1 {
-			return nil, fmt.Errorf("EvaluateFlat on repeated field")
-		}
-		return tuples[0], nil
+		// Repeated fields can't be flattened — signal caller to fall through.
+		return nil, fmt.Errorf("EvaluateFlat: repeated field %s", f.fieldName)
 	}
 	if fd.HasPresence() && !m.Has(fd) {
 		return []any{nil}, nil

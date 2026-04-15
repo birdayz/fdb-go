@@ -362,8 +362,10 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 // but returns no results — the caller only gets an error. This eliminates per-record
 // allocations for result structs, primary key tuples, and sizeInfo tracking.
 //
-// Same guarantees and warnings as SaveRecordBatchInsertOnly: all records must have
-// unique primary keys, existing records will be silently overwritten.
+// PRECONDITIONS:
+//   - All records MUST be the same proto message type. Mixed types cause silent corruption.
+//   - All records must have unique primary keys. Existing records silently overwritten.
+//   - This is a Go-only API, not present in Java Record Layer.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
 		return nil
@@ -459,6 +461,13 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			return fmt.Errorf("record %d is nil", i)
 		}
 
+		// Validate all records are the same type (InsertBatch precondition).
+		// Mixed types cause silent corruption: wrong union field number in
+		// serialization and wrong index maintainers applied.
+		if rtn := string(record.ProtoReflect().Descriptor().Name()); rtn != typeName {
+			return fmt.Errorf("record %d: type %q does not match batch type %q (InsertBatch requires all same type)", i, rtn, typeName)
+		}
+
 		// Evaluate PK — reuse pkAppender across records (no alloc per record).
 		var primaryKey tuple.Tuple
 		if compiledPK != nil {
@@ -532,10 +541,13 @@ func loadSplitOnly(
 
 	rangeEnd := recordSubspace.Pack(appendToTuple(primaryKey, 256))
 
-	kvs := tx.GetRange(
+	kvs, err := tx.GetRange(
 		fdb.KeyRange{Begin: fdb.Key(firstSplitKey), End: fdb.Key(rangeEnd)},
 		fdb.RangeOptions{},
-	).GetSliceOrPanic()
+	).GetSliceWithError()
+	if err != nil {
+		return nil, fmt.Errorf("split record range read: %w", err)
+	}
 
 	if len(kvs) == 0 {
 		return nil, nil
