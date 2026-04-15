@@ -188,8 +188,9 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 | `FuzzDeserializeAndDiscover` | Union wire format record type discovery (protowire) | Clean |
 | `FuzzDeserializeRecord` | Union wire format targeted record extraction (protowire) | Clean |
 | `FuzzRYWCache` | RYW cache Set/Clear/ClearRange/AtomicAdd vs map model (forward + reverse range) | Model bug found during development (ClearRange boundary) |
+| `FuzzPackIntoEquivalence` | `PackWithPrefixInto`/`Pack1Into`/`PackInt64Into`/`PackConcatInto` vs allocating equivalents | Clean |
 
-**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
+**Note:** `FuzzRYWCache` is in `pkg/fdbgo/client/ryw_fuzz_test.go`, `FuzzPackIntoEquivalence` is in `pkg/fdbgo/fdb/tuple/tuple_test.go` (all others in `pkg/recordlayer/fuzz_test.go`). Run with `bazelisk run //pkg/fdbgo/client:client_test -- -test.fuzz='^FuzzRYWCache$'`.
 
 **Note:** Upstream `tuple.Unpack` (FDB Go bindings) panics on truncated input — see birdayz/fdb-record-layer-go#2. Our `fastUnpack` is hardened and should be used instead in all deserialization paths.
 
