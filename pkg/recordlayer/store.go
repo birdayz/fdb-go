@@ -97,6 +97,7 @@ type FDBRecordStore struct {
 	stateMu            sync.RWMutex             // protects storeHeader + indexStates
 	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
+	batchKeyBuf        *[]byte                  // shared buffer for batch key packing (InsertBatch only)
 }
 
 // IsVersionChanged returns true if the metadata version changed during

@@ -202,11 +202,18 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	// Pack scalar value + trimmed PK directly — no intermediate tuple alloc.
-	var keyBytes fdb.Key
-	if len(trimmedPK) == 0 {
-		keyBytes = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val)))
+	// Use shared batch key buffer if available (InsertBatch path).
+	var keyBytes []byte
+	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+		if len(trimmedPK) == 0 {
+			keyBytes = tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val))
+		} else {
+			keyBytes = tuple.Pack1ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
+		}
+	} else if len(trimmedPK) == 0 {
+		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val))
 	} else {
-		keyBytes = fdb.Key(tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK))
+		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
 	}
 
 	if err := checkKeyValueSizes(m.index, record.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {

@@ -140,7 +140,12 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 	}
 	groupKey := *(*tuple.Tuple)(unsafe.Pointer(&values))
 	groupKey = groupKey[:n]
-	fdbKey := fdb.Key(m.indexSubspace.Pack(groupKey))
+	var fdbKey fdb.Key
+	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+		fdbKey = fdb.Key(groupKey.PackWithPrefixInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
+	} else {
+		fdbKey = fdb.Key(m.indexSubspace.Pack(groupKey))
+	}
 
 	if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
 		return true, err
@@ -188,7 +193,12 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	if gc == 0 {
 		switch m.mutation.(type) {
 		case *countMutation, *countUpdatesMutation:
-			fdbKey := fdb.Key(m.indexSubspace.Pack(tuple.Tuple{}))
+			var fdbKey fdb.Key
+			if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+				fdbKey = fdb.Key(tuple.Tuple{}.PackWithPrefixInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
+			} else {
+				fdbKey = fdb.Key(m.indexSubspace.Pack(tuple.Tuple{}))
+			}
 			return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 		}
 		return false, nil // SUM/other with gc=0: fall through
@@ -211,7 +221,12 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		if err != nil {
 			return false, nil
 		}
-		fdbKey := fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+		var fdbKey fdb.Key
+		if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+			fdbKey = fdb.Key(tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+		} else {
+			fdbKey = fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+		}
 
 		// For SUM: need the grouped (second) value.
 		var sumSource any

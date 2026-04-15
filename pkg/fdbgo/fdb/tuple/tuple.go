@@ -555,6 +555,71 @@ func Pack1ConcatWithPrefix(prefix []byte, elem TupleElement, suffix Tuple) []byt
 	return result
 }
 
+// appendPacked appends prefix + packer contents to the shared buffer, returns sub-slice.
+func appendPacked(buf *[]byte, prefix []byte, p *packer) []byte {
+	b := *buf
+	start := len(b)
+	needed := start + len(prefix) + len(p.buf)
+	if needed > cap(b) {
+		newCap := max(2*cap(b), needed)
+		newB := make([]byte, start, newCap)
+		copy(newB, b)
+		b = newB
+	}
+	b = b[:needed]
+	copy(b[start:], prefix)
+	copy(b[start+len(prefix):], p.buf)
+	*buf = b
+	return b[start:needed]
+}
+
+// PackWithPrefixInto packs tuple with prefix into a shared buffer.
+func (t Tuple) PackWithPrefixInto(buf *[]byte, prefix []byte) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeTuple(t, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// PackConcatInto packs multiple tuples into a shared buffer.
+func PackConcatInto(buf *[]byte, prefix []byte, tuples ...Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	for _, t := range tuples {
+		p.encodeTuple(t, false, false)
+	}
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1Into packs a single element into a shared buffer.
+func Pack1Into(buf *[]byte, prefix []byte, elem TupleElement) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1ConcatInto packs a single element + tuple into a shared buffer.
+func Pack1ConcatInto(buf *[]byte, prefix []byte, elem TupleElement, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	p.encodeTuple(suffix, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
 // PackWithVersionstamp packs the specified tuple into a key for versionstamp
 // operations. See Pack for more information. This function will return an error
 // if you attempt to pack a tuple with more than one versionstamp. This function will

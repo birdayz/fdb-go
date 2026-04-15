@@ -447,6 +447,13 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	// of this buffer. Avoids per-record make([]byte, totalSize) in serializeUnion.
 	serBuf := make([]byte, 0, len(records)*128)
 
+	// Shared key buffer — all packed FDB keys are sub-slices of this buffer.
+	// Avoids per-key make([]byte) in Pack functions. Estimated 80 bytes per key,
+	// ~4 keys per record (record + VALUE + COUNT + SUM).
+	keyBuf := make([]byte, 0, len(records)*320)
+	store.batchKeyBuf = &keyBuf
+	defer func() { store.batchKeyBuf = nil }()
+
 	for i, record := range records {
 		if record == nil {
 			return fmt.Errorf("record %d is nil", i)
@@ -480,8 +487,8 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 
 		// Direct write
 		if !splitEnabled || len(data) <= splitRecordSize {
-			unsplitKey := fdb.Key(tuple.PackConcatWithPrefix(
-				recordsSubspace.Bytes(), primaryKey, unsplitSuffix))
+			unsplitKey := tuple.PackConcatInto(&keyBuf,
+				recordsSubspace.Bytes(), primaryKey, unsplitSuffix)
 			tx.SetBytes(unsplitKey, data)
 		} else {
 			var newsizeInfo sizeInfo
