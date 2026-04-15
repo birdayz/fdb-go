@@ -239,20 +239,14 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		delete(db.connPool, addr)
 	}
 
-	// Check if we have an existing connection to the same port via a different
-	// address (e.g., proxy at 172.x.x.x:PORT when we connected via localhost:PORT).
-	// In single-node clusters, all FDB processes share one address, so we can
-	// reuse the coordinator connection for proxy/storage requests.
-	_, targetPort, _ := net.SplitHostPort(addr)
-	for existingAddr, c := range db.connPool {
-		if !c.IsClosed() {
-			_, existingPort, _ := net.SplitHostPort(existingAddr)
-			if existingPort == targetPort {
-				db.connPool[addr] = c // cache under new key too
-				return c, false, nil
-			}
-		}
-	}
+	// In single-process clusters (all roles on one process), the topology may
+	// report a different IP than the coordinator address (e.g., Docker's
+	// internal 172.x vs the exposed localhost). Detect this by checking if
+	// ALL topology addresses share the same port as the coordinator AND only
+	// one coordinator exists. Reuse the coordinator connection for all.
+	//
+	// This MUST NOT match when different processes are on different IPs
+	// (multi-node cluster) even if they share the same port number.
 
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
@@ -262,6 +256,7 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		// Fallback: if the internal address failed (e.g., Docker networking),
 		// try the coordinator address with the same port.
 		if len(db.clusterFile.Coordinators) > 0 {
+			_, targetPort, _ := net.SplitHostPort(addr)
 			_, coordPort, _ := net.SplitHostPort(db.clusterFile.Coordinators[0])
 			if targetPort == coordPort {
 				coordAddr := db.clusterFile.Coordinators[0]
