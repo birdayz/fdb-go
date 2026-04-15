@@ -191,11 +191,21 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 // insertSingleEntry handles the insert of a single VALUE index entry.
 // Extracted from the Update loop to support the insert-only fast path.
 func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FDBStoredRecord[proto.Message]) error {
-	entryTupleKey, err := indexEntryKey(m.index, entry.key, entry.primaryKey)
+	trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
 	if err != nil {
 		return err
 	}
-	keyBytes := m.indexSubspace.Pack(entryTupleKey)
+
+	// Pack index values + trimmed PK directly into the key, avoiding
+	// the intermediate tuple allocation in indexEntryKey.
+	var keyBytes fdb.Key
+	if len(trimmedPK) == 0 {
+		keyBytes = m.indexSubspace.Pack(entry.key)
+	} else if len(entry.key) == 0 {
+		keyBytes = m.indexSubspace.Pack(trimmedPK)
+	} else {
+		keyBytes = fdb.Key(tuple.PackConcatWithPrefix(m.indexSubspace.Bytes(), entry.key, trimmedPK))
+	}
 
 	if err := checkKeyValueSizes(m.index, entry.primaryKey, keyBytes, emptyTuplePacked); err != nil {
 		return err

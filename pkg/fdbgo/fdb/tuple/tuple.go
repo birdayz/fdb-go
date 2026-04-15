@@ -465,6 +465,23 @@ func (t Tuple) PackWithPrefix(prefix []byte) []byte {
 	return result
 }
 
+// PackConcatWithPrefix packs multiple tuples concatenated into a single key,
+// prepending the given prefix. Avoids creating an intermediate combined tuple.
+// Saves 1 allocation vs indexEntryKey + Pack for VALUE index entry keys.
+func PackConcatWithPrefix(prefix []byte, tuples ...Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	for _, t := range tuples {
+		p.encodeTuple(t, false, false)
+	}
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
 // PackWithVersionstamp packs the specified tuple into a key for versionstamp
 // operations. See Pack for more information. This function will return an error
 // if you attempt to pack a tuple with more than one versionstamp. This function will
