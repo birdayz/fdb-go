@@ -122,6 +122,7 @@ go_test(
         "aggregate_function_unit_test.go",
         "api_coverage2_test.go",
         "api_coverage_test.go",
+        "batch_insert_test.go",
         "benchmark_test.go",
         "benchmark_throughput_test.go",
         "bitmap_value_index_test.go",
