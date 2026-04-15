@@ -1,0 +1,112 @@
+#cloud-config
+# Metrognome node: FDB + backend on each machine.
+# FDB cluster runs on private network (VPC). Backend listens on :8080.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - docker.io
+  - curl
+  - jq
+  - net-tools
+
+write_files:
+  # FDB cluster file — all nodes point to the coordinator (node 0)
+  - path: /etc/foundationdb/fdb.cluster
+    content: "metrognome:metrognome@${coordinator_ip}:4500"
+    permissions: "0644"
+
+  # FDB config
+  - path: /etc/foundationdb/foundationdb.conf
+    content: |
+      [fdbmonitor]
+      user = root
+      group = root
+
+      [general]
+      restart-delay = 10
+      cluster-file = /etc/foundationdb/fdb.cluster
+
+      [fdbserver.1]
+      command = /usr/sbin/fdbserver
+      public-address = ${private_ip}:4500
+      listen-address = 0.0.0.0:4500
+      datadir = /var/lib/foundationdb/data/$ID
+      logdir = /var/log/foundationdb/
+      # FDB manages its own memory. On 4GB machines, default is fine.
+    permissions: "0644"
+
+  # Metrognome systemd service
+  - path: /etc/systemd/system/metrognome.service
+    content: |
+      [Unit]
+      Description=Metrognome Usage-Based Billing Engine
+      After=network.target foundationdb.service
+      Wants=foundationdb.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/metrognome
+      Environment=FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
+      Environment=LISTEN_ADDR=0.0.0.0:8080
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    permissions: "0644"
+
+  # FDB init script — only runs on coordinator (node 0)
+  - path: /usr/local/bin/fdb-init.sh
+    content: |
+      #!/bin/bash
+      set -e
+
+      if [ "${node_index}" != "0" ]; then
+        echo "Not coordinator, skipping init"
+        exit 0
+      fi
+
+      echo "Waiting for FDB to start..."
+      for i in $(seq 1 60); do
+        if fdbcli --exec "status minimal" 2>/dev/null | grep -q "available"; then
+          echo "FDB already configured"
+          exit 0
+        fi
+        if fdbcli --exec "configure new single ssd" 2>/dev/null; then
+          echo "FDB configured: single ssd"
+          # Wait for other nodes to join, then configure triple redundancy
+          sleep 10
+          NODE_COUNT=$(fdbcli --exec "status json" 2>/dev/null | jq '.cluster.processes | length' 2>/dev/null || echo 0)
+          if [ "$NODE_COUNT" -ge 3 ]; then
+            fdbcli --exec "configure triple" 2>/dev/null && echo "Upgraded to triple redundancy" || true
+          fi
+          exit 0
+        fi
+        sleep 2
+      done
+      echo "ERROR: FDB init timed out"
+      exit 1
+    permissions: "0755"
+
+runcmd:
+  # Install FoundationDB server + client (x86 .deb packages)
+  - curl -fsSL "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-server_${fdb_version}-1_amd64.deb" -o /tmp/fdb-server.deb
+  - curl -fsSL "https://github.com/apple/foundationdb/releases/download/${fdb_version}/foundationdb-clients_${fdb_version}-1_amd64.deb" -o /tmp/fdb-clients.deb
+  - dpkg -i /tmp/fdb-clients.deb /tmp/fdb-server.deb || apt-get install -f -y
+  - rm /tmp/fdb-*.deb
+
+  # Stop default FDB (it starts with wrong config), apply our config, restart
+  - systemctl stop foundationdb || true
+  - mkdir -p /var/lib/foundationdb/data /var/log/foundationdb
+  - systemctl start foundationdb
+  - systemctl enable foundationdb
+
+  # Wait for FDB process to be ready, then init cluster
+  - sleep 5
+  - /usr/local/bin/fdb-init.sh
+
+  # Enable metrognome service (binary deployed separately via `just deploy`)
+  - systemctl daemon-reload
+  - touch /usr/local/bin/metrognome && chmod +x /usr/local/bin/metrognome

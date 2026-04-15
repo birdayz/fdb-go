@@ -76,7 +76,9 @@ func main() {
 	meterEngine := meter.NewEngine(recordDB, subspace.Sub("metrognome_meters"))
 
 	// Load existing meters from storage and register them in the dynamic engine
-	existingMeters, _, err := db.Meters().List(context.Background(), 0, nil)
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer startupCancel()
+	existingMeters, _, err := db.Meters().List(startupCtx, 0, nil)
 	if err != nil {
 		slog.Warn("failed to load existing meters", "error", err)
 	} else {

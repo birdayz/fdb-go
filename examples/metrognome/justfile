@@ -1,0 +1,66 @@
+# Metrognome — usage-based billing engine
+
+# --- Infra ---
+
+# Initialize OpenTofu (first time only)
+infra-init:
+    cd infra && tofu init
+
+# Plan infrastructure changes
+infra-plan:
+    cd infra && tofu plan
+
+# Apply infrastructure (creates 3 nodes + LB)
+infra-up:
+    cd infra && tofu apply -auto-approve
+
+# Destroy all infrastructure
+infra-down:
+    cd infra && tofu destroy -auto-approve
+
+# Show infrastructure outputs (IPs, API URL)
+infra-status:
+    cd infra && tofu output
+
+# SSH into a node (0, 1, or 2)
+ssh node="0":
+    cd infra && ssh root@$(tofu output -json node_ips | jq -r '.[{{node}}]')
+
+# Check FDB cluster status via node 0
+fdb-status:
+    cd infra && ssh root@$(tofu output -json node_ips | jq -r '.[0]') fdbcli --exec "'status'"
+
+# --- Build & Deploy ---
+
+# Build the metrognome binary
+build:
+    cd ../.. && bazelisk build //examples/metrognome/cmd/metrognome
+
+# Deploy binary to all nodes
+deploy: build
+    cd infra && bash deploy.sh ../../../../bazel-bin/examples/metrognome/cmd/metrognome/metrognome_/metrognome
+
+# Build + deploy in one step
+ship: deploy
+
+# Check API health through load balancer
+health:
+    @curl -sf http://$(cd infra && tofu output -raw lb_ip):8080/ready && echo "OK" || echo "FAIL"
+
+# --- Local Dev ---
+
+# Start local FDB (docker compose)
+dev-up:
+    docker compose up -d
+
+# Stop local FDB
+dev-down:
+    docker compose down
+
+# Run tests
+test:
+    cd ../.. && bazelisk test //examples/metrognome/...
+
+# Run loadtest against deployed cluster
+loadtest events="100000" batch="50" workers="8":
+    cd ../.. && FDB_CLUSTER_FILE=examples/metrognome/fdb.cluster bazelisk run //examples/metrognome/cmd/loadtest -- -events {{events}} -batch {{batch}} -workers {{workers}}
