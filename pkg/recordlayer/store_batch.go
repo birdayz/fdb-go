@@ -10,6 +10,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// unsplitSuffix is the pre-computed tuple for the unsplit record suffix (0).
+// Used by PackConcatWithPrefix to avoid appendToTuple allocation.
+var unsplitSuffix = tuple.Tuple{unsplitRecord}
+
 // SaveRecordBatch saves multiple records with pipelined existence checks.
 //
 // Instead of N sequential blocking FDB reads (one per record in SaveRecord),
@@ -307,8 +311,9 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 
 		// Direct write — no existence check, no split check.
 		if !splitEnabled || len(data) <= splitRecordSize {
-			unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
-			unsplitKey := fdb.Key(recordsSubspace.Pack(unsplitKeyTuple))
+			// Pack PK + unsplit suffix directly, avoiding appendToTuple alloc.
+			unsplitKey := fdb.Key(tuple.PackConcatWithPrefix(
+				recordsSubspace.Bytes(), primaryKey, unsplitSuffix))
 			tx.Set(unsplitKey, data)
 		} else {
 			var newsizeInfo sizeInfo
