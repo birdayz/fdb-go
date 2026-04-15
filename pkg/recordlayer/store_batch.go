@@ -237,6 +237,10 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	// skips both read and write caching. Saves ~400 allocs per batch (string
 	// key conversions + value copies eliminated).
 	tx.Options().SetReadYourWritesDisable()
+	// Pre-size mutation and conflict range slices to avoid growth allocs.
+	// Each record produces ~4 FDB ops (record Set + VALUE Set + COUNT Atomic + SUM Atomic).
+	numIndexes := len(store.metaData.GetAllIndexes())
+	tx.Options().EnsureMutationCapacity(len(records) * (1 + numIndexes))
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 

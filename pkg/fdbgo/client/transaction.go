@@ -1227,6 +1227,23 @@ func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
 }
 
+// EnsureMutationCapacity pre-sizes the mutations and writeConflicts slices
+// to avoid growth allocations during batch writes. Call before a large batch.
+func (tx *Transaction) EnsureMutationCapacity(n int) {
+	tx.conflictMu.Lock()
+	if cap(tx.mutations) < n {
+		newMuts := make([]Mutation, len(tx.mutations), n)
+		copy(newMuts, tx.mutations)
+		tx.mutations = newMuts
+	}
+	if cap(tx.writeConflicts) < n {
+		newConflicts := make([]KeyRange, len(tx.writeConflicts), n)
+		copy(newConflicts, tx.writeConflicts)
+		tx.writeConflicts = newConflicts
+	}
+	tx.conflictMu.Unlock()
+}
+
 // SetSnapshotRYWDisable disables RYW for snapshot reads.
 // When set, Snapshot.Get/GetRange always read from the server.
 // Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE.
