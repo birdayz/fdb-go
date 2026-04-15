@@ -177,3 +177,4 @@ No open test items.
 - [x] **govulncheck in CI** — `govulncheck ./...` step after build/test (informational, continue-on-error). Current findings: 2 vulns in github.com/docker/docker (testcontainers transitive dep, no fix available). `just vulncheck` for local use. swingshift-18.
 - [x] **Multi-node cluster test** — 3-container FDB cluster regression test (172.16.1.{2,3,4}:4500) with Go client CRUD. Verifies connection pool correctness for multi-node clusters. swingshift-18.
 - [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.
+- [x] **Binding stress cluster file path fix** — Testcontainers migration (swingshift-18) used relative cluster file path, but Python binding tester runs with `cmd.Dir=/tmp/bt-run`. Relative path resolved wrong → error 1515 on all seeds. Fixed: `filepath.Abs()`. nightshift-19.
