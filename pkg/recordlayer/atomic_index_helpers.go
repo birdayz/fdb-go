@@ -37,9 +37,10 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 	if fe, ok := index.RootExpression.(FlatEvaluator); ok {
 		values, err := fe.EvaluateFlat(record, record.Record)
 		if err == nil {
+			// Convert []any to tuple.Tuple (same underlying type)
 			groupKey := make(tuple.Tuple, groupingCount)
 			for j := 0; j < groupingCount && j < len(values); j++ {
-				groupKey[j] = values[j]
+				groupKey[j] = tuple.TupleElement(values[j])
 			}
 			return []tuple.Tuple{groupKey}, nil
 		}

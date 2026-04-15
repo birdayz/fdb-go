@@ -89,14 +89,14 @@ type FDBRecordStore struct {
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
-	recordsSubspace    subspace.Subspace          // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo         // Cached store header, loaded on Open/Create
-	indexStates        map[string]IndexState      // Cached index states, loaded on Open/Create
-	indexRebuildPolicy IndexRebuildPolicy         // Policy for rebuilding indexes on metadata version change
-	storeStateCache    FDBRecordStoreStateCache   // Cache for store state across transactions
-	stateMu            sync.RWMutex               // protects storeHeader + indexStates
-	versionChanged     bool                       // true if checkPossiblyRebuild detected a version change
-	maintainerCache    map[string]IndexMaintainer // Cached index maintainers (per-transaction lifetime)
+	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create
+	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create
+	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
+	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
+	stateMu            sync.RWMutex             // protects storeHeader + indexStates
+	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -1010,11 +1010,9 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 // avoiding repeated allocation of maintainer + mutation objects.
 // Matches Java's FDBRecordStore.getIndexMaintainer() dispatch.
 func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, error) {
-	// Check cache first
-	if store.maintainerCache != nil {
-		if m, ok := store.maintainerCache[index.Name]; ok {
-			return m, nil
-		}
+	// Check cache (sync.Map is safe for concurrent access)
+	if cached, ok := store.maintainerCache.Load(index.Name); ok {
+		return cached.(IndexMaintainer), nil
 	}
 
 	m, err := store.createIndexMaintainer(index)
@@ -1022,11 +1020,7 @@ func (store *FDBRecordStore) getIndexMaintainer(index *Index) (IndexMaintainer, 
 		return nil, err
 	}
 
-	// Cache for reuse within this transaction
-	if store.maintainerCache == nil {
-		store.maintainerCache = make(map[string]IndexMaintainer)
-	}
-	store.maintainerCache[index.Name] = m
+	store.maintainerCache.Store(index.Name, m)
 	return m, nil
 }
 

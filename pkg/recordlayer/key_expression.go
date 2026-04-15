@@ -434,6 +434,11 @@ func (e *EmptyKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto
 	return emptyKeyResult, nil
 }
 
+// EvaluateFlat returns empty (no elements to append).
+func (e *EmptyKeyExpression) EvaluateFlat(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([]any, error) {
+	return nil, nil
+}
+
 // FieldNames returns no field names.
 func (e *EmptyKeyExpression) FieldNames() []string {
 	return nil
