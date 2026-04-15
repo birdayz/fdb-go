@@ -222,21 +222,23 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkSaveRecordBatch` | 10 records/tx with VALUE index |
 | `BenchmarkScanWithContinuation` | Paged scan (100 records, 10 pages, continuations) |
 
-**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.46 testcontainer, 2026-03-28):
+**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-15):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| SaveRecord | 2,176,230 | 3,136 | 101 |
-| LoadRecord | 410,904 | 2,906 | 91 |
-| ScanRecords (100) | 624,915 | 55,435 | 1,414 |
-| SaveRecordWithIndex | 2,187,184 | 3,920 | 117 |
-| ScanIndex (100) | 576,417 | 47,240 | 1,485 |
-| SaveRecordWithMultipleIndexes | 2,198,939 | 4,916 | 139 |
-| GetRecordCount | 406,424 | 3,149 | 89 |
-| SaveLargeRecord (50KB) | 2,262,228 | 121,511 | 101 |
-| SaveSplitRecord (250KB) | 2,510,222 | 549,871 | 122 |
-| StoreOpen | 339,357 | 2,119 | 69 |
-| StoreOpenCached | 359,933 | 2,215 | 72 |
+| SaveRecord | 1,008,249 | 6,688 | 97 |
+| LoadRecord | 177,243 | 5,374 | 81 |
+| ScanRecords (100) | 626,442 | 103,431 | 1,326 |
+| SaveRecordWithIndex | 1,010,468 | 7,668 | 110 |
+| ScanIndex (100) | 545,942 | 78,146 | 705 |
+| SaveRecordWithMultipleIndexes | 1,009,713 | 11,244 | 135 |
+| GetRecordCount | 191,668 | 5,796 | 92 |
+| SaveLargeRecord (50KB) | 1,046,445 | 133,199 | 99 |
+| SaveSplitRecord (250KB) | 1,112,845 | 728,245 | 135 |
+| StoreOpen | 207,892 | 3,753 | 60 |
+| StoreOpenCached | 123,421 | 3,830 | 61 |
+| DeleteRecord | 1,008,310 | 5,806 | 91 |
+| SaveRecordWithCountAndIndex | 1,008,869 | 11,011 | 125 |
 | DeleteRecord | 2,159,154 | 2,767 | 90 |
 | SaveRecordWithCountAndIndex | 2,189,853 | 4,939 | 131 |
 
