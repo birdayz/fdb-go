@@ -1,0 +1,66 @@
+static_resources:
+  listeners:
+    - name: frontend
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: metrognome
+                      domains: ["*"]
+                      routes:
+                        # ConnectRPC API → Go backend
+                        - match: { prefix: "/metrognome.v1" }
+                          route: { cluster: backend }
+                        # Auth routes → Go backend
+                        - match: { prefix: "/auth" }
+                          route: { cluster: backend }
+                        # Health/ready → Go backend
+                        - match: { prefix: "/health" }
+                          route: { cluster: backend }
+                        - match: { prefix: "/ready" }
+                          route: { cluster: backend }
+                        # Static files with SPA fallback (try file, then index.html)
+                        - match: { prefix: "/" }
+                          route: { cluster: static_files }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: backend
+      connect_timeout: 5s
+      type: STATIC
+      load_assignment:
+        cluster_name: backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 9090
+
+    # Simple Python HTTP server for static files
+    - name: static_files
+      connect_timeout: 1s
+      type: STATIC
+      load_assignment:
+        cluster_name: static_files
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 9091

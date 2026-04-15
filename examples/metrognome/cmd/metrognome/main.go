@@ -49,6 +49,22 @@ func main() {
 		}
 	}
 
+	// Environment overrides for deployment
+	if v := os.Getenv("LISTEN_ADDR"); v != "" {
+		cfg.ListenAddress = v
+	}
+	if v := os.Getenv("FRONTEND_URL"); v != "" {
+		cfg.FrontendUrl = v
+	}
+	if clientID := os.Getenv("GITHUB_CLIENT_ID"); clientID != "" {
+		if cfg.GithubOauth == nil {
+			cfg.GithubOauth = &metrognomev1.GitHubOAuth{}
+		}
+		cfg.GithubOauth.ClientId = clientID
+		cfg.GithubOauth.ClientSecret = os.Getenv("GITHUB_CLIENT_SECRET")
+		cfg.GithubOauth.RedirectUrl = os.Getenv("GITHUB_REDIRECT_URL")
+	}
+
 	// Connect to FoundationDB
 	fdb.MustAPIVersion(720)
 	var fdbDB fdb.Database

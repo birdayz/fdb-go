@@ -1,0 +1,46 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary")
+load("@metrognome_npm//:defs.bzl", "npm_link_all_packages")
+
+# gazelle:exclude node_modules
+
+npm_link_all_packages(name = "node_modules")
+
+# Export files for npm_translate_lock
+exports_files([
+    "pnpm-lock.yaml",
+    ".npmrc",
+])
+
+# Source files
+_SRCS = glob([
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.css",
+])
+
+# Vite CLI wrapper
+js_binary(
+    name = "vite_bin",
+    data = [
+        ":node_modules/@tailwindcss/vite",
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/tailwindcss",
+        ":node_modules/vite",
+    ],
+    entry_point = "vite_wrapper.mjs",
+)
+
+# Vite production build
+js_run_binary(
+    name = "bundle",
+    srcs = _SRCS + [
+        "index.html",
+        "tsconfig.json",
+        "vite.config.ts",
+        ":node_modules",
+    ],
+    args = ["build"],
+    chdir = package_name(),
+    out_dirs = ["dist"],
+    tool = ":vite_bin",
+)

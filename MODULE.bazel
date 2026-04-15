@@ -116,6 +116,17 @@ maven.install(
 )
 use_repo(maven, "maven")
 
+# JavaScript (metrognome frontend)
+bazel_dep(name = "aspect_rules_js", version = "3.0.3")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "metrognome_npm",
+    npmrc = "//examples/metrognome/app:.npmrc",
+    pnpm_lock = "//examples/metrognome/app:pnpm-lock.yaml",
+)
+use_repo(npm, "metrognome_npm")
+
 # SIFT-1M benchmark dataset (industry-standard ANN benchmark, ~160MB compressed).
 # Downloaded on demand via FTP from INRIA TEXMEX. Cached by Bazel repository cache.
 # Only fetched when sift_benchmark_test target is built (manual tag).

@@ -19,6 +19,9 @@
     "react-dom": "19.2.3",
     "react-router-dom": "^7.6.1"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  },
   "devDependencies": {
     "@tailwindcss/vite": "^4",
     "@types/react": "^19",
