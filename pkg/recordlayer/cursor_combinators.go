@@ -2,11 +2,13 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"google.golang.org/protobuf/proto"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 // filterCursor wraps another cursor and filters records by a predicate.
@@ -702,7 +704,7 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 
 	result, err := c.currentCursor.OnNext(ctx)
 	if err != nil {
-		if !isRetryableError(err) || attempt >= c.maxRetries {
+		if !c.isRetryableForContinuation(err) || attempt >= c.maxRetries {
 			return RecordCursorResult[T]{}, err
 		}
 		// Retryable error — create new cursor from last successful position
@@ -717,6 +719,23 @@ func (c *autoContinuingCursor[T]) onNextWithRetry(ctx context.Context, attempt i
 	}
 
 	return result, nil
+}
+
+// isRetryableForContinuation extends isRetryableError with transaction_timed_out
+// (1031). Normally 1031 is not retryable — retrying the same transaction won't
+// help. But AutoContinuingCursor creates a NEW transaction with a saved
+// continuation, so it's safe to retry from the last successful position. This
+// handles the case where a scan hits FDB's 5-second transaction timeout before
+// the application-level time limit fires.
+func (c *autoContinuingCursor[T]) isRetryableForContinuation(err error) bool {
+	if isRetryableError(err) {
+		return true
+	}
+	var fdbErr fdb.Error
+	if errors.As(err, &fdbErr) && fdbErr.Code == 1031 { // transaction_timed_out
+		return true
+	}
+	return false
 }
 
 func (c *autoContinuingCursor[T]) lastContinuation() ([]byte, error) {

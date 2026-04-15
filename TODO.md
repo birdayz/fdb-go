@@ -21,11 +21,15 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **Wire reader panic on malformed responses** — `Reader.ReadBytes` and 8 similar RelativeOffset-based methods (ReadVectorInt32, ReadVectorUint64, ReadNestedReader, etc.) checked `off < 4` but not `off + 4 > len(r.object)`. Crafted vtable offsets caused out-of-bounds slice panic. Fixed: add upper bounds check to all 9 methods. Found by fuzzing `FuzzParseGetKeyValuesReply`. swingshift-15.
 - [x] **OOM amplification from crafted wire count fields** — `ParseKeyValueRefStringVector` and `ReadVectorCount` used raw `uint32` count from wire data in `make([]T, 0, count)`. Crafted `count=0xFFFFFFFF` → 206GB allocation → OOM. Fixed: cap allocation to physical buffer bounds (`bufferSize / minElementSize`). Protects all 37 generated vector parsers + hand-written KV parser. swingshift-15.
 
+- [x] **Connection pool same-port aliasing broke multi-node clusters** — `getOrDialConn` reused an existing TCP connection for any address with the same port number, regardless of IP. In multi-node clusters (3 processes on 10.0.1.10-12:4500), the coordinator connection was returned for GRV proxy and commit proxy requests, sending frames to the wrong process where the endpoint token didn't match → silent drop → GRV timeout. C++ FlowTransport creates one Peer per unique NetworkAddress with no aliasing. Fixed: removed same-port matching and coordinator dial fallback entirely. PR #61.
+
 _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
 ### Features
 
 #### HIGH
+
+- [ ] **C++ ConnectionID dedup** — C++ FlowTransport deduplicates bidirectional connections via ConnectionID exchange in ConnectPacket. When two processes connect to each other simultaneously, the lower-priority connection is dropped. Not needed as a pure client (we never accept incoming connections), but should be implemented if we ever add server-side functionality.
 
 - [x] **`proxyTagThrottledDuration` send path** — Investigated: C++ `CommitProxyInterface.h:318` comments "Not serialized, because this field does not need to be sent to master." The field is reply-only (proxy→client), accumulated correctly in Go. No send path needed. Resolved dayshift-10.
 
@@ -43,7 +47,8 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 #### MEDIUM
 
 - [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Would need refactored deserialization.
+- [x] **Pool read conflict buffers** — `addReadConflictForKey`/`addReadConflict` used `make()` per call. Now use shared `conflictBuf` via extracted `conflictBufAlloc` helper (same pool as write conflicts). SaveRecord 101→97, LoadRecord 84→81, DeleteRecord 94→91 allocs. swingshift-18.
+- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Investigated dayshift-6c: pooling requires extra copy, negates benefit.
 - [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
@@ -76,7 +81,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 - [x] **Transaction retry with RYW** — 4 tests: OnError resets RYW, new read version after OnError, conflict detection across retry, Transact automatic retry. swingshift-11d. Still TODO: fuzz target.
 - [x] **Watch + atomic mutations** — TestWatchFiresOnAtomicMutation verifies AtomicAdd triggers watch. swingshift-11d.
 
-### Behavioral Divergences from C++ (audit 2026-04-13)
+### Behavioral Divergences from C++ (audit 2026-04-13, updated swingshift-18)
 
 | # | Area | Type | Description |
 |---|---|---|---|
@@ -90,6 +95,13 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 8 | QueueModel key | COSMETIC | C++ `endpoint.token.first()`. Go address string. Same identity. |
 | 9 | ~~Load balance secondDelay~~ | ~~PERF~~ FIXED | ~~C++ speculative second request. Go sequential.~~ Fixed: `sendFrameWithHedge()` in `hedge.go`. All 3 read paths hedge. swingshift-11. |
 | 10 | `FLAG_FIRST_IN_BATCH` | COSMETIC | Not exposed. No behavioral gap. |
+| 11 | ~~`reset()` stale flags~~ | ~~BEHAVIOR~~ FIXED | ~~`userSetReadVersion` and `nextWriteNoConflict` not cleared by `reset()`. C++ creates fresh state.~~ Fixed: both cleared in `reset()`. swingshift-18. |
+| 12 | ~~`tryCache` SYSTEM_IMMEDIATE~~ | ~~MAINTENANCE~~ FIXED | ~~Dead code fell through to DEFAULT throttle check.~~ Fixed: explicit rejection. swingshift-18. |
+| 13 | ~~`commitDummyTransaction` no Set mutation~~ | ~~COSMETIC~~ FIXED | ~~Go only adds conflict ranges.~~ Fixed: now calls `Set(key, "")` matching C++. swingshift-18. |
+| 14 | ~~`commitDummyTransaction` fixed backoff~~ | ~~PERF~~ FIXED | ~~Go uses fixed 10ms.~~ Fixed: exponential backoff (10ms → 2x → cap 1s) matching C++ `onError`. swingshift-18. |
+| 15 | ~~`commitDummyTransaction` no `CAUSAL_WRITE_RISKY`~~ | ~~PERF~~ FIXED | ~~Go doesn't set CAUSAL_WRITE_RISKY on dummy.~~ Fixed: `causalReadRisky = true` for faster GRV. swingshift-18. |
+| 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
+| 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
 
 ### Missing C API Surface (audit 2026-04-13)
 
@@ -111,7 +123,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 ### Bugs
 
-_No known bugs. 2696 Ginkgo specs + 430 conformance specs + 50 chaos tests pass._
+- [x] **AutoContinuingCursor transaction_timed_out not retried** — Error 1031 escaped as non-retryable, killing large scans when FDB's 5-second timeout hit mid-page. Fixed: `isRetryableForContinuation()` treats 1031 as retryable in cursor context (creates new transaction from saved continuation). Java has the same gap. swingshift-18.
 
 ### Features
 
@@ -162,3 +174,6 @@ No open test items.
 - [x] **CI test cache invalidation fix** — bench-ci step used `bazelisk test` with different flags, overwriting test action cache. Fixed: bench recipes use `bazelisk run` (build + execute directly). Test step: 50s → 4.7s on cached runs. dayshift-14.
 - [x] **Bench-report false positive reduction** — Raised threshold from 5% to 10%. Only flags timing regressions when allocs/bytes also changed (timing-only deltas = VM noise). dayshift-14.
 - [x] **FDBMetaDataStore conformance test** — 3 specs: Go→Java, Java→Go, history cross-language. Uses non-tenant mode with unique subspace prefixes. dayshift-14.
+- [x] **govulncheck in CI** — `govulncheck ./...` step after build/test (informational, continue-on-error). Current findings: 2 vulns in github.com/docker/docker (testcontainers transitive dep, no fix available). `just vulncheck` for local use. swingshift-18.
+- [x] **Multi-node cluster test** — 3-container FDB cluster regression test (172.16.1.{2,3,4}:4500) with Go client CRUD. Verifies connection pool correctness for multi-node clusters. swingshift-18.
+- [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.

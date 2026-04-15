@@ -239,39 +239,20 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 		delete(db.connPool, addr)
 	}
 
-	// Check if we have an existing connection to the same port via a different
-	// address (e.g., proxy at 172.x.x.x:PORT when we connected via localhost:PORT).
-	// In single-node clusters, all FDB processes share one address, so we can
-	// reuse the coordinator connection for proxy/storage requests.
-	_, targetPort, _ := net.SplitHostPort(addr)
-	for existingAddr, c := range db.connPool {
-		if !c.IsClosed() {
-			_, existingPort, _ := net.SplitHostPort(existingAddr)
-			if existingPort == targetPort {
-				db.connPool[addr] = c // cache under new key too
-				return c, false, nil
-			}
-		}
-	}
-
+	// Dial a new connection. C++ FlowTransport creates one Peer (TCP connection)
+	// per unique NetworkAddress. No address aliasing or port-matching — each
+	// ip:port gets its own connection.
+	//
+	// TODO: C++ FlowTransport deduplicates bidirectional connections via
+	// ConnectionID exchange in ConnectPacket. When two processes connect to
+	// each other simultaneously, the lower-priority connection is dropped.
+	// We don't need this as a pure client (we never accept incoming connections),
+	// but should implement it if we ever add server-side functionality.
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
 	c, dialErr := transport.DialWith(dialCtx, addr, false, db.dialFn)
 	if dialErr != nil {
-		// Fallback: if the internal address failed (e.g., Docker networking),
-		// try the coordinator address with the same port.
-		if len(db.clusterFile.Coordinators) > 0 {
-			_, coordPort, _ := net.SplitHostPort(db.clusterFile.Coordinators[0])
-			if targetPort == coordPort {
-				coordAddr := db.clusterFile.Coordinators[0]
-				c, dialErr = transport.DialWith(dialCtx, coordAddr, false, db.dialFn)
-				if dialErr == nil {
-					db.connPool[addr] = c
-					return c, true, nil
-				}
-			}
-		}
 		return nil, false, dialErr
 	}
 

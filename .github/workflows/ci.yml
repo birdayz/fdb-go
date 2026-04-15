@@ -60,6 +60,12 @@ jobs:
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
 
+      - name: Run govulncheck
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+          govulncheck ./...
+
       - name: Generate test report
         if: always()
         run: |
