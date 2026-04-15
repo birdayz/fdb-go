@@ -186,7 +186,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			}
 		}
 
-		m.tx.Set(fdb.Key(keyBytes), valueBytes)
+		m.tx.SetBytes(keyBytes, valueBytes)
 	}
 
 	return nil
@@ -220,7 +220,7 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 		}
 	}
 
-	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
 	return nil
 }
 
@@ -253,7 +253,7 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 		}
 	}
 
-	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
 	return nil
 }
 

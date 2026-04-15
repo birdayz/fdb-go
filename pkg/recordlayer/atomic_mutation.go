@@ -86,12 +86,12 @@ func (m *countMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMu
 
 func (m *countMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
-		tx.Add(fdbKey, littleEndianInt64MinusOne)
+		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
 			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, littleEndianInt64One)
+		tx.AddBytes(fdbKey, littleEndianInt64One)
 	}
 	return nil
 }
@@ -128,12 +128,12 @@ func (m *countNotNullMutation) removeCommon(old, new []atomicMutationEntry) ([]a
 
 func (m *countNotNullMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
-		tx.Add(fdbKey, littleEndianInt64MinusOne)
+		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
 			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, littleEndianInt64One)
+		tx.AddBytes(fdbKey, littleEndianInt64One)
 	}
 	return nil
 }
@@ -174,7 +174,7 @@ func (m *countUpdatesMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key,
 		// COUNT_UPDATES: getMutationParam returns null for remove — no-op.
 		return nil
 	}
-	tx.Add(fdbKey, littleEndianInt64One)
+	tx.AddBytes(fdbKey, littleEndianInt64One)
 	return nil
 }
 
@@ -269,12 +269,12 @@ func (m *sumMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry at
 		if val == math.MinInt64 {
 			return fmt.Errorf("sum index %q overflow: cannot negate math.MinInt64", m.index.Name)
 		}
-		tx.Add(fdbKey, encodeRecordCount(-val))
+		tx.AddBytes(fdbKey, encodeRecordCount(-val))
 		if m.index.IsClearWhenZero() {
 			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, entry.param)
+		tx.AddBytes(fdbKey, entry.param)
 	}
 	return nil
 }

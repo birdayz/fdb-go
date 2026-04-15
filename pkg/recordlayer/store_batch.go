@@ -482,7 +482,7 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		if !splitEnabled || len(data) <= splitRecordSize {
 			unsplitKey := fdb.Key(tuple.PackConcatWithPrefix(
 				recordsSubspace.Bytes(), primaryKey, unsplitSuffix))
-			tx.Set(unsplitKey, data)
+			tx.SetBytes(unsplitKey, data)
 		} else {
 			var newsizeInfo sizeInfo
 			if err := saveWithSplit(tx, recordsSubspace, primaryKey, data,
@@ -506,7 +506,7 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if countFDBKey != nil {
 		var buf [8]byte
 		binary.LittleEndian.PutUint64(buf[:], uint64(len(records)))
-		tx.Add(fdb.Key(countFDBKey), buf[:])
+		tx.AddBytes(countFDBKey, buf[:])
 	}
 
 	return nil

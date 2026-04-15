@@ -174,6 +174,12 @@ func (tr Transaction) Set(key KeyConvertible, value []byte) {
 	tr.t.inner.Set(key.FDBKey(), value)
 }
 
+// SetBytes sets a key-value pair using raw byte slices. Avoids the
+// KeyConvertible interface boxing allocation in the hot path.
+func (tr Transaction) SetBytes(key, value []byte) {
+	tr.t.inner.Set(key, value)
+}
+
 // Clear removes a key from the database.
 func (tr Transaction) Clear(key KeyConvertible) {
 	tr.t.inner.Clear(key.FDBKey())
@@ -205,6 +211,12 @@ func (tr Transaction) SetVersionstampedValue(key KeyConvertible, param []byte) {
 
 func (tr Transaction) Add(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutAddValue, key.FDBKey(), param)
+}
+
+// AddBytes performs an atomic Add using raw byte slices. Avoids
+// KeyConvertible interface boxing in the hot path.
+func (tr Transaction) AddBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutAddValue, key, param)
 }
 
 func (tr Transaction) And(key KeyConvertible, param []byte) {
