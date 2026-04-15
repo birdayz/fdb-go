@@ -114,14 +114,23 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 		return true, nil // predicate skipped
 	}
 
+	// Try zero-alloc path: evaluate grouping key fields directly via ScalarEvaluator,
+	// bypassing CompositeKeyExpression.EvaluateFlat's make([]any, 0, N).
+	if gke, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
+		if ok, err := m.updateInsertOnlyGrouped(gke, newRecord); ok || err != nil {
+			return ok, err
+		}
+	}
+
+	// Standard path: use EvaluateFlat (allocates []any for composite expressions).
 	fe, ok := m.index.RootExpression.(FlatEvaluator)
 	if !ok {
-		return false, nil // can't use fast path
+		return false, nil
 	}
 
 	values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
 	if err != nil {
-		return false, nil // fall through to standard path
+		return false, nil
 	}
 
 	gc := indexGroupingCount(m.index.RootExpression)
@@ -129,8 +138,6 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 	if n > len(values) {
 		n = len(values)
 	}
-	// Zero-alloc sub-slice: reinterpret []any as tuple.Tuple (same memory layout:
-	// both are []interface{}, TupleElement is defined as any).
 	groupKey := *(*tuple.Tuple)(unsafe.Pointer(&values))
 	groupKey = groupKey[:n]
 	fdbKey := fdb.Key(m.indexSubspace.Pack(groupKey))
@@ -139,17 +146,14 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 		return true, err
 	}
 
-	// Compute param and apply mutation based on type.
 	var entry atomicMutationEntry
 	entry.groupKey = groupKey
 
 	switch m.mutation.(type) {
 	case *countMutation, *countUpdatesMutation:
-		// COUNT variants: applyMutation ignores entry.param, uses constant ±1.
 	case *sumMutation:
-		// SUM: param is little-endian int64 of the grouped column value.
 		if gc >= len(values) || values[gc] == nil {
-			return true, nil // no value to sum
+			return true, nil
 		}
 		sumValue, err := toInt64(values[gc])
 		if err != nil {
@@ -159,7 +163,104 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 		binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
 		entry.param = param[:]
 	default:
-		// MIN/MAX_EVER and other types: fall through to standard path.
+		return false, nil
+	}
+
+	if err := m.mutation.applyMutation(m.tx, fdbKey, entry, false); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// updateInsertOnlyGrouped handles the insert-only fast path for GroupingKeyExpression
+// roots. Evaluates grouping key fields directly via ScalarEvaluator, bypassing
+// CompositeKeyExpression.EvaluateFlat's make([]any) allocation.
+// Returns (true, nil) on success, (false, nil) to fall through.
+func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
+	gke *GroupingKeyExpression,
+	newRecord *FDBStoredRecord[proto.Message],
+) (bool, error) {
+	gc := gke.GetGroupingCount()
+
+	// Ungrouped (gc=0): all records share empty group key. No evaluation needed.
+	// Only handles COUNT variants (no grouped value required). SUM with gc=0
+	// falls through to the standard EvaluateFlat path.
+	if gc == 0 {
+		switch m.mutation.(type) {
+		case *countMutation, *countUpdatesMutation:
+			fdbKey := fdb.Key(m.indexSubspace.Pack(tuple.Tuple{}))
+			return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
+		}
+		return false, nil // SUM/other with gc=0: fall through
+	}
+
+	// Single-field grouping (gc=1): try ScalarEvaluator on first child.
+	if gc == 1 {
+		comp, ok := gke.wholeKey.(*CompositeKeyExpression)
+		if !ok {
+			return false, nil
+		}
+		if len(comp.expressions) == 0 {
+			return false, nil
+		}
+		se, ok := comp.expressions[0].(ScalarEvaluator)
+		if !ok {
+			return false, nil
+		}
+		groupVal, err := se.EvaluateScalar(newRecord, newRecord.Record)
+		if err != nil {
+			return false, nil
+		}
+		fdbKey := fdb.Key(tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(groupVal)))
+
+		// For SUM: need the grouped (second) value.
+		var sumSource any
+		if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > 1 {
+			if se2, ok := comp.expressions[1].(ScalarEvaluator); ok {
+				sumSource, err = se2.EvaluateScalar(newRecord, newRecord.Record)
+				if err != nil {
+					return false, nil
+				}
+			} else {
+				return false, nil
+			}
+		}
+
+		return m.applyInsertMutation(fdbKey, sumSource, gc, newRecord, gke)
+	}
+
+	return false, nil // multi-field grouping: fall through
+}
+
+// applyInsertMutation applies the mutation for insert-only, given a pre-packed FDB key.
+// sumSource is the raw value for SUM mutations (nil for COUNT).
+func (m *atomicMutationIndexMaintainer) applyInsertMutation(
+	fdbKey fdb.Key,
+	sumSource any,
+	gc int,
+	newRecord *FDBStoredRecord[proto.Message],
+	gke *GroupingKeyExpression,
+) (bool, error) {
+	if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
+		return true, err
+	}
+
+	var entry atomicMutationEntry
+	switch m.mutation.(type) {
+	case *countMutation, *countUpdatesMutation:
+		// param ignored by applyMutation
+	case *sumMutation:
+		if sumSource == nil {
+			return true, nil
+		}
+		sumValue, err := toInt64(sumSource)
+		if err != nil {
+			return true, fmt.Errorf("sum index %q: %w", m.index.Name, err)
+		}
+		var param [8]byte
+		binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
+		entry.param = param[:]
+	default:
 		return false, nil
 	}
 
