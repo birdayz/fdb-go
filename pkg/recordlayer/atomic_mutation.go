@@ -55,6 +55,20 @@ type countMutation struct {
 }
 
 func (m *countMutation) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+	// Fast path: inline evaluation to skip evaluateGroupingKeys's []tuple.Tuple wrapper.
+	if m.index.Predicate == nil || m.index.Predicate(record.Record) {
+		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+			values, err := fe.EvaluateFlat(record, record.Record)
+			if err == nil {
+				gc := indexGroupingCount(m.index.RootExpression)
+				groupKey := make(tuple.Tuple, gc)
+				for j := 0; j < gc && j < len(values); j++ {
+					groupKey[j] = tuple.TupleElement(values[j])
+				}
+				return []atomicMutationEntry{{groupKey: groupKey, param: littleEndianInt64One}}, nil
+			}
+		}
+	}
 	keys, err := evaluateGroupingKeys(m.index, record)
 	if err != nil {
 		return nil, err
