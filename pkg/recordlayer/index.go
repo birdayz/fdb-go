@@ -476,6 +476,14 @@ func indexEntryKey(idx *Index, indexValues tuple.Tuple, primaryKey tuple.Tuple) 
 	if err != nil {
 		return nil, err
 	}
+	// Fast path: no PK to append (fully deduplicated or empty PK)
+	if len(trimmed) == 0 {
+		return indexValues, nil
+	}
+	// Fast path: no index values (PK-only index)
+	if len(indexValues) == 0 {
+		return trimmed, nil
+	}
 	entry := make(tuple.Tuple, 0, len(indexValues)+len(trimmed))
 	entry = append(entry, indexValues...)
 	entry = append(entry, trimmed...)

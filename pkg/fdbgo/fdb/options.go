@@ -47,6 +47,14 @@ func (o TransactionOptions) SetReadYourWritesDisable() error {
 	return nil
 }
 
+func (o TransactionOptions) EnsureMutationCapacity(n int) {
+	o.tx.inner.EnsureMutationCapacity(n)
+}
+
+func (o TransactionOptions) SetWriteConflictsDisabled() {
+	o.tx.inner.SetWriteConflictsDisabled()
+}
+
 func (o TransactionOptions) SetAccessSystemKeys() error {
 	o.tx.inner.SetAccessSystemKeys()
 	o.tx.inner.SetLockAware(true) // lock_aware on commit allows system key writes

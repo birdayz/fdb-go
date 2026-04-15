@@ -35,6 +35,10 @@ type rywCache struct {
 	// redundant server round-trips for repeated reads of the same range.
 	// Matches C++'s SnapshotCache. Not invalidated by local writes/clears.
 	serverCache snapshotCache
+
+	// byteBuf batch-allocates small byte copies (e.g. atomic mutation params).
+	// Reduces per-op allocs for small values.
+	byteBuf []byte
 }
 
 // rywEntry represents a pending write for a single key.
@@ -57,6 +61,23 @@ type rywRange struct {
 	end   []byte
 }
 
+// allocBytes returns a slice of n bytes from the cache's shared buffer.
+// Must be called with c.mu held. Reduces per-op allocs for small byte copies.
+func (c *rywCache) allocBytes(n int) []byte {
+	if cap(c.byteBuf)-len(c.byteBuf) < n {
+		newCap := max(2*cap(c.byteBuf), len(c.byteBuf)+n)
+		if newCap < 2048 {
+			newCap = 2048
+		}
+		newBuf := make([]byte, len(c.byteBuf), newCap)
+		copy(newBuf, c.byteBuf)
+		c.byteBuf = newBuf
+	}
+	start := len(c.byteBuf)
+	c.byteBuf = c.byteBuf[:start+n]
+	return c.byteBuf[start : start+n]
+}
+
 // reset clears all cached state.
 func (c *rywCache) reset() {
 	c.mu.Lock()
@@ -64,6 +85,7 @@ func (c *rywCache) reset() {
 	c.writes = nil
 	c.sortedKeys = nil
 	c.cleared = nil
+	c.byteBuf = c.byteBuf[:0]
 	c.serverCache.reset()
 }
 
@@ -91,9 +113,12 @@ func (c *rywCache) set(key, value []byte) {
 	if c.writes == nil {
 		c.writes = make(map[string]rywEntry)
 	}
-	// Defensive copy. FDB treats Set(key, nil) and Set(key, []byte{}) as equivalent
-	// — both set the key to empty bytes. The cached value must be non-nil so that
-	// get() can distinguish "key exists with empty value" from "key not found" (nil).
+	// Defensive copy — value must have its own backing array.
+	// Cannot share byteBuf: the READABLE_UNIQUE_PENDING test proves
+	// that read-back of cached Set values fails when values alias
+	// the shared buffer (root cause: byteBuf growth copies data,
+	// but sub-slices of the old buffer become stale if the buffer
+	// pointer advances during the same transaction).
 	copied := make([]byte, len(value))
 	copy(copied, value)
 	c.writes[string(key)] = rywEntry{value: copied}
@@ -147,11 +172,10 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 	k := string(key)
 	entry, exists := c.writes[k]
 	if exists && !entry.hasAtomics {
-		// Key has a plain Set value — apply atomic to it immediately.
 		val, clr := applyAtomic(op, entry.value, param)
 		if clr {
 			delete(c.writes, k)
-			c.sortedKeys = nil // key removed, invalidate sorted index
+			c.sortedKeys = nil
 			c.addClearedRangeLocked(append([]byte(nil), key...), append(append([]byte(nil), key...), 0))
 		} else {
 			entry.value = val
@@ -160,20 +184,19 @@ func (c *rywCache) atomic(op MutationType, key, param []byte) {
 		return
 	}
 	if !exists && c.isClearedLocked(key) {
-		// Key was cleared — base is nil. Apply atomic against nil.
 		val, clr := applyAtomic(op, nil, param)
 		if !clr {
 			c.writes[k] = rywEntry{value: val}
-			c.sortedKeys = nil // new key added, invalidate sorted index
+			c.sortedKeys = nil
 		}
-		// If clr, key stays cleared — no action needed.
 		return
 	}
-	// Either no entry (unknown base, server-dependent) or already an atomics list — append.
 	entry.hasAtomics = true
-	entry.atomics = append(entry.atomics, rywMutation{typ: op, param: append([]byte(nil), param...)})
+	paramCopy := c.allocBytes(len(param))
+	copy(paramCopy, param)
+	entry.atomics = append(entry.atomics, rywMutation{typ: op, param: paramCopy})
 	if !exists {
-		c.sortedKeys = nil // new key added, invalidate sorted index
+		c.sortedKeys = nil
 	}
 	c.writes[k] = entry
 }

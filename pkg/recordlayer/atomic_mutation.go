@@ -55,6 +55,20 @@ type countMutation struct {
 }
 
 func (m *countMutation) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
+	// Fast path: inline evaluation to skip evaluateGroupingKeys's []tuple.Tuple wrapper.
+	if m.index.Predicate == nil || m.index.Predicate(record.Record) {
+		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+			values, err := fe.EvaluateFlat(record, record.Record)
+			if err == nil {
+				gc := indexGroupingCount(m.index.RootExpression)
+				groupKey := make(tuple.Tuple, gc)
+				for j := 0; j < gc && j < len(values); j++ {
+					groupKey[j] = tuple.TupleElement(values[j])
+				}
+				return []atomicMutationEntry{{groupKey: groupKey, param: littleEndianInt64One}}, nil
+			}
+		}
+	}
 	keys, err := evaluateGroupingKeys(m.index, record)
 	if err != nil {
 		return nil, err
@@ -72,12 +86,12 @@ func (m *countMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMu
 
 func (m *countMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
-		tx.Add(fdbKey, littleEndianInt64MinusOne)
+		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, littleEndianInt64One)
+		tx.AddBytes(fdbKey, littleEndianInt64One)
 	}
 	return nil
 }
@@ -114,12 +128,12 @@ func (m *countNotNullMutation) removeCommon(old, new []atomicMutationEntry) ([]a
 
 func (m *countNotNullMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
 	if remove {
-		tx.Add(fdbKey, littleEndianInt64MinusOne)
+		tx.AddBytes(fdbKey, littleEndianInt64MinusOne)
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, littleEndianInt64One)
+		tx.AddBytes(fdbKey, littleEndianInt64One)
 	}
 	return nil
 }
@@ -160,7 +174,7 @@ func (m *countUpdatesMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key,
 		// COUNT_UPDATES: getMutationParam returns null for remove — no-op.
 		return nil
 	}
-	tx.Add(fdbKey, littleEndianInt64One)
+	tx.AddBytes(fdbKey, littleEndianInt64One)
 	return nil
 }
 
@@ -181,6 +195,34 @@ type sumMutation struct {
 func (m *sumMutation) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
 	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
 		return nil, nil
+	}
+
+	// Fast path: use EvaluateFlat to avoid [][]any alloc.
+	// Falls through on error (e.g. fan-out repeated fields).
+	if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+		values, err := fe.EvaluateFlat(record, record.Record)
+		if err == nil {
+			groupingCount := indexGroupingCount(m.index.RootExpression)
+			if groupingCount >= len(values) {
+				return nil, nil
+			}
+			groupKey := make(tuple.Tuple, groupingCount)
+			for j := 0; j < groupingCount; j++ {
+				groupKey[j] = values[j]
+			}
+			rawValue := values[groupingCount]
+			if rawValue == nil {
+				return nil, nil
+			}
+			sumValue, err := toInt64(rawValue)
+			if err != nil {
+				return nil, fmt.Errorf("sum index %q: value at column %d: %w", m.index.Name, groupingCount, err)
+			}
+			var param [8]byte
+			binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
+			return []atomicMutationEntry{{groupKey: groupKey, param: param[:]}}, nil
+		}
+		// Fall through to standard Evaluate
 	}
 
 	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
@@ -227,12 +269,12 @@ func (m *sumMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Key, entry at
 		if val == math.MinInt64 {
 			return fmt.Errorf("sum index %q overflow: cannot negate math.MinInt64", m.index.Name)
 		}
-		tx.Add(fdbKey, encodeRecordCount(-val))
+		tx.AddBytes(fdbKey, encodeRecordCount(-val))
 		if m.index.IsClearWhenZero() {
-			tx.CompareAndClear(fdbKey, littleEndianInt64Zero)
+			tx.CompareAndClearBytes(fdbKey, littleEndianInt64Zero)
 		}
 	} else {
-		tx.Add(fdbKey, entry.param)
+		tx.AddBytes(fdbKey, entry.param)
 	}
 	return nil
 }
@@ -304,9 +346,9 @@ func (m *minMaxEverLongMutation) applyMutation(tx fdb.Transaction, fdbKey fdb.Ke
 		return nil // _EVER: deletes are no-ops.
 	}
 	if m.isMax {
-		tx.Max(fdbKey, entry.param)
+		tx.MaxBytes(fdbKey, entry.param)
 	} else {
-		tx.Min(fdbKey, entry.param)
+		tx.MinBytes(fdbKey, entry.param)
 	}
 	return nil
 }
