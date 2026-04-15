@@ -113,8 +113,12 @@ func (c *rywCache) set(key, value []byte) {
 	if c.writes == nil {
 		c.writes = make(map[string]rywEntry)
 	}
-	// Defensive copy — value might be modified by later atomics (doAdd etc.),
-	// so it must have its own backing array (can't share byteBuf).
+	// Defensive copy — value must have its own backing array.
+	// Cannot share byteBuf: the READABLE_UNIQUE_PENDING test proves
+	// that read-back of cached Set values fails when values alias
+	// the shared buffer (root cause: byteBuf growth copies data,
+	// but sub-slices of the old buffer become stale if the buffer
+	// pointer advances during the same transaction).
 	copied := make([]byte, len(value))
 	copy(copied, value)
 	c.writes[string(key)] = rywEntry{value: copied}

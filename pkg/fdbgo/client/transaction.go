@@ -553,6 +553,17 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
+// conflictBufPool reuses backing buffers for write conflict range keys.
+// Each transaction needs ~200 conflict keys for a 50-record batch,
+// totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
+// per transaction, creating intermediate garbage at each step.
+// Stores *conflictBuf to avoid interface boxing allocation (SA6002).
+var conflictBufPool sync.Pool
+
+type conflictBuf struct {
+	b []byte
+}
+
 // SetReadSystemKeys allows reading \xff prefix system keys.
 func (tx *Transaction) SetReadSystemKeys() {
 	tx.readSystemKeys = true
@@ -1083,13 +1094,23 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 	tx.conflictMu.Lock()
 	needed := n + n + 1
 	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
-		newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
-		if newCap < 4096 {
-			newCap = 4096 // ~30 typical keys
+		reused := false
+		// Try reusing a pooled buffer when starting fresh (avoids 4K→8K→16K→32K growth).
+		if len(tx.conflictBuf) == 0 {
+			if cb, ok := conflictBufPool.Get().(*conflictBuf); ok && cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				reused = true
+			}
 		}
-		newBuf := make([]byte, len(tx.conflictBuf), newCap)
-		copy(newBuf, tx.conflictBuf)
-		tx.conflictBuf = newBuf
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096 // ~30 typical keys
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
 	}
 	start := len(tx.conflictBuf)
 	tx.conflictBuf = tx.conflictBuf[:start+needed]
@@ -1105,12 +1126,33 @@ func (tx *Transaction) addWriteConflict(begin, end []byte) {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	b := make([]byte, len(begin))
-	copy(b, begin)
-	e := make([]byte, len(end))
-	copy(e, end)
 	tx.conflictMu.Lock()
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: b, End: e})
+	needed := len(begin) + len(end)
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		reused := false
+		if len(tx.conflictBuf) == 0 {
+			if cb, ok := conflictBufPool.Get().(*conflictBuf); ok && cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				reused = true
+			}
+		}
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
+	nb := len(begin)
+	copy(buf, begin)
+	copy(buf[nb:], end)
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
 	tx.conflictMu.Unlock()
 }
 
@@ -1270,6 +1312,11 @@ func (tx *Transaction) postCommitReset() {
 	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	// Return conflict buffer to pool for reuse by next transaction.
+	if cap(tx.conflictBuf) > 0 {
+		conflictBufPool.Put(&conflictBuf{b: tx.conflictBuf[:0]})
+		tx.conflictBuf = nil
+	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// committedVersion and txnBatchId preserved intentionally.
@@ -1291,6 +1338,7 @@ func (tx *Transaction) reset() {
 	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:

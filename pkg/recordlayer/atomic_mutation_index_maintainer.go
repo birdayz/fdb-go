@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"encoding/binary"
 	"fmt"
+	"unsafe"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -44,6 +46,14 @@ func (m *atomicMutationIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 	// _EVER and COUNT_UPDATES: deletes are no-ops.
 	if m.mutation.deleteIsNoOp() && newRecord == nil {
 		return nil
+	}
+
+	// Insert-only fast path: evaluate + apply inline, no intermediate slices.
+	// Saves 2 allocs per call ([]atomicMutationEntry + make(tuple.Tuple)).
+	if oldRecord == nil && newRecord != nil {
+		if ok, err := m.updateInsertOnly(newRecord); ok || err != nil {
+			return err
+		}
 	}
 
 	var oldEntries, newEntries []atomicMutationEntry
@@ -93,6 +103,70 @@ func (m *atomicMutationIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 	}
 
 	return nil
+}
+
+// updateInsertOnly is the insert-only fast path for atomic index maintenance.
+// Evaluates the expression and applies the mutation inline without allocating
+// []atomicMutationEntry or make(tuple.Tuple). Returns (true, nil) on success,
+// (false, nil) to fall through to the standard path.
+func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRecord[proto.Message]) (bool, error) {
+	if m.index.Predicate != nil && !m.index.Predicate(newRecord.Record) {
+		return true, nil // predicate skipped
+	}
+
+	fe, ok := m.index.RootExpression.(FlatEvaluator)
+	if !ok {
+		return false, nil // can't use fast path
+	}
+
+	values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
+	if err != nil {
+		return false, nil // fall through to standard path
+	}
+
+	gc := indexGroupingCount(m.index.RootExpression)
+	n := gc
+	if n > len(values) {
+		n = len(values)
+	}
+	// Zero-alloc sub-slice: reinterpret []any as tuple.Tuple (same memory layout:
+	// both are []interface{}, TupleElement is defined as any).
+	groupKey := *(*tuple.Tuple)(unsafe.Pointer(&values))
+	groupKey = groupKey[:n]
+	fdbKey := fdb.Key(m.indexSubspace.Pack(groupKey))
+
+	if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
+		return true, err
+	}
+
+	// Compute param and apply mutation based on type.
+	var entry atomicMutationEntry
+	entry.groupKey = groupKey
+
+	switch m.mutation.(type) {
+	case *countMutation, *countUpdatesMutation:
+		// COUNT variants: applyMutation ignores entry.param, uses constant ±1.
+	case *sumMutation:
+		// SUM: param is little-endian int64 of the grouped column value.
+		if gc >= len(values) || values[gc] == nil {
+			return true, nil // no value to sum
+		}
+		sumValue, err := toInt64(values[gc])
+		if err != nil {
+			return true, fmt.Errorf("sum index %q: value at column %d: %w", m.index.Name, gc, err)
+		}
+		var param [8]byte
+		binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
+		entry.param = param[:]
+	default:
+		// MIN/MAX_EVER and other types: fall through to standard path.
+		return false, nil
+	}
+
+	if err := m.mutation.applyMutation(m.tx, fdbKey, entry, false); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // UpdateWhileWriteOnly updates the index during WRITE_ONLY state.
