@@ -443,6 +443,10 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	// Reusable stored record — populated per-record, not returned to caller.
 	var stored FDBStoredRecord[proto.Message]
 
+	// Shared serialization buffer — all records' serialized bytes are sub-slices
+	// of this buffer. Avoids per-record make([]byte, totalSize) in serializeUnion.
+	serBuf := make([]byte, 0, len(records)*128)
+
 	for i, record := range records {
 		if record == nil {
 			return fmt.Errorf("record %d is nil", i)
@@ -468,8 +472,8 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 			}
 		}
 
-		// Serialize
-		data, err := serializeUnion(record, recordType)
+		// Serialize into shared buffer (1 alloc for all records instead of 50).
+		data, err := serializeUnionInto(record, recordType, &serBuf)
 		if err != nil {
 			return &RecordSerializationError{Cause: err}
 		}

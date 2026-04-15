@@ -1691,6 +1691,55 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	return out, nil
 }
 
+// serializeUnionInto serializes a record into a shared buffer, returning a sub-slice.
+// The buffer grows as needed. Used by InsertBatch to avoid per-record allocations.
+func serializeUnionInto(record proto.Message, recordType *RecordType, buf *[]byte) ([]byte, error) {
+	if recordType.unionFieldNumber == 0 {
+		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
+	}
+
+	type sizer interface {
+		SizeVT() int
+		MarshalToSizedBufferVT([]byte) (int, error)
+	}
+	sv, ok := record.(sizer)
+	if !ok {
+		// Fallback to standard serializeUnion (allocates its own buffer).
+		return serializeUnion(record, recordType)
+	}
+
+	innerSize := sv.SizeVT()
+	tagSize := protowire.SizeTag(recordType.unionFieldNumber)
+	lenSize := protowire.SizeBytes(innerSize) - innerSize
+	totalSize := tagSize + lenSize + innerSize
+
+	// Grow shared buffer if needed.
+	b := *buf
+	start := len(b)
+	needed := start + totalSize
+	if needed > cap(b) {
+		newCap := max(2*cap(b), needed)
+		newBuf := make([]byte, start, newCap)
+		copy(newBuf, b)
+		b = newBuf
+	}
+	b = b[:needed]
+	out := b[start:needed]
+
+	// Write tag + length prefix.
+	header := protowire.AppendTag(out[:0], recordType.unionFieldNumber, protowire.BytesType)
+	header = protowire.AppendVarint(header, uint64(innerSize))
+	headerLen := len(header)
+
+	// Marshal directly into the shared buffer.
+	if _, err := sv.MarshalToSizedBufferVT(out[headerLen : headerLen+innerSize]); err != nil {
+		return nil, err
+	}
+
+	*buf = b
+	return out[:headerLen+innerSize], nil
+}
+
 // deserializeAndDiscover reads the union wire format tag to discover the record type,
 // then unmarshals the inner bytes directly into the concrete message type.
 // Skips allocating/parsing a full UnionDescriptor.
