@@ -124,18 +124,56 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 // FDB's future-based API, then resolves sequentially.
 // This is a pure function — it does NOT mutate store fields.
 // The caller is responsible for setting store.storeHeader and store.indexStates.
+// storeSubspaceKeys caches derived subspace keys for a store's subspace.
+// Avoids recomputing the same subspace operations on every Open().
+type storeSubspaceKeys struct {
+	storeBegin          fdb.Key
+	storeEnd            fdb.Key
+	indexStateBegin     fdb.Key
+	indexStateEnd       fdb.Key
+	indexStatePrefixLen int
+	expectedInfoKey     fdb.Key
+}
+
+// subspaceKeysCache caches derived subspace keys across all store instances.
+// Keyed by subspace raw prefix bytes. Safe for concurrent access.
+var subspaceKeysCache sync.Map
+
+func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
+	key := string(ss.Bytes())
+	if v, ok := subspaceKeysCache.Load(key); ok {
+		return v.(*storeSubspaceKeys)
+	}
+	ks := newStoreSubspaceKeys(ss)
+	subspaceKeysCache.Store(key, ks)
+	return ks
+}
+
+func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
+	storeBegin, storeEnd := ss.FDBRangeKeys()
+	isSubspace := ss.Sub(IndexStateSpaceKey)
+	isBegin, isEnd := isSubspace.FDBRangeKeys()
+	return &storeSubspaceKeys{
+		storeBegin:          storeBegin.FDBKey(),
+		storeEnd:            storeEnd.FDBKey(),
+		indexStateBegin:     isBegin.FDBKey(),
+		indexStateEnd:       isEnd.FDBKey(),
+		indexStatePrefixLen: len(isSubspace.Bytes()),
+		expectedInfoKey:     ss.Pack(tuple.Tuple{StoreInfoKey}),
+	}
+}
+
 func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
 	tx := store.context.Transaction()
+
+	// Cache derived subspace keys globally — same for every Open() on the same subspace.
+	ks := getCachedSubspaceKeys(store.subspace)
 
 	// Fire both range reads in parallel. Index states use snapshot isolation
 	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).
 	// By issuing both before resolving either, the FDB client can pipeline them.
-	storeBegin, storeEnd := store.subspace.FDBRangeKeys()
-	storeInfoFuture := tx.GetRange(fdb.KeyRange{Begin: storeBegin, End: storeEnd}, fdb.RangeOptions{Limit: 1})
-
-	isSubspace := store.subspace.Sub(IndexStateSpaceKey)
-	isBegin, isEnd := isSubspace.FDBRangeKeys()
-	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: isBegin, End: isEnd}, fdb.RangeOptions{})
+	storeInfoFuture := tx.GetRange(fdb.KeyRange{Begin: ks.storeBegin, End: ks.storeEnd}, fdb.RangeOptions{Limit: 1})
+	indexStatesFuture := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
 
 	// Resolve store info.
 	storeKVs, err := storeInfoFuture.GetSliceWithError()
@@ -147,8 +185,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 	var header *gen.DataStoreInfo
 	if len(storeKVs) > 0 {
 		firstKV := storeKVs[0]
-		expectedStoreInfoKey := store.subspace.Pack(tuple.Tuple{StoreInfoKey})
-		if !bytes.Equal(firstKV.Key, expectedStoreInfoKey) {
+		if !bytes.Equal(firstKV.Key, ks.expectedInfoKey) {
 			return nil, &RecordStoreNoInfoButNotEmptyError{FirstKey: firstKV.Key}
 		}
 		header = &gen.DataStoreInfo{}
@@ -171,7 +208,7 @@ func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCh
 		}
 		indexStates = make(map[string]IndexState, len(indexKVs))
 		for _, kv := range indexKVs {
-			t, err := fastSubspaceUnpack(kv.Key, len(isSubspace.Bytes()))
+			t, err := fastSubspaceUnpack(kv.Key, ks.indexStatePrefixLen)
 			if err != nil {
 				return nil, fmt.Errorf("failed to unpack index state key: %w", err)
 			}
