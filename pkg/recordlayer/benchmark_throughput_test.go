@@ -530,7 +530,10 @@ func benchThroughputInsertBatch(b *testing.B, batchSize int) {
 	for i := 0; i < b.N; i++ {
 		base := idGen.Add(int64(batchSize))
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			// Use Build() instead of Open() — skips store state FDB reads.
+			// Safe for InsertBatch: storeHeader=nil → no lock check,
+			// indexStates=nil → all indexes READABLE.
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Build()
 			if err != nil {
 				return nil, err
 			}
