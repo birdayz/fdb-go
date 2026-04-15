@@ -623,7 +623,9 @@ func (tx *Transaction) Set(key, value []byte) {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflictForKey(key)
-	tx.ryw.set(key, value)
+	if !tx.rywDisabled {
+		tx.ryw.set(key, value)
+	}
 }
 
 // Clear deletes a key.
@@ -639,7 +641,9 @@ func (tx *Transaction) Clear(key []byte) {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflict(key, end)
-	tx.ryw.clear(key)
+	if !tx.rywDisabled {
+		tx.ryw.clear(key)
+	}
 }
 
 // ClearRange deletes all keys in [begin, end).
@@ -661,7 +665,9 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflict(begin, end)
-	tx.ryw.clearRange(begin, end)
+	if !tx.rywDisabled {
+		tx.ryw.clearRange(begin, end)
+	}
 	return nil
 }
 
@@ -676,7 +682,9 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
 	tx.addWriteConflictForKey(key)
-	tx.ryw.atomic(op, key, operand)
+	if !tx.rywDisabled {
+		tx.ryw.atomic(op, key, operand)
+	}
 }
 
 // Commit sends mutations to a commit proxy.
