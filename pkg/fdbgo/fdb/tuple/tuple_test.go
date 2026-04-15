@@ -278,3 +278,64 @@ func TestAppendPackedGrowth(t *testing.T) {
 		g.Expect(result).To(Equal(expected), "growth corruption at iteration %d", i)
 	}
 }
+
+// FuzzPackIntoEquivalence fuzzes the Into variants against the allocating versions.
+// Seeds a tuple from fuzz input, packs via both paths, and checks byte equality.
+// This catches buffer corruption, off-by-one errors, and growth bugs.
+func FuzzPackIntoEquivalence(f *testing.F) {
+	f.Add(int64(0), "hello", []byte{0x01, 0x02}, int64(42))
+	f.Add(int64(-1), "", []byte{}, int64(0))
+	f.Add(int64(math.MaxInt64), "test", []byte{0xFF}, int64(math.MinInt64))
+	f.Add(int64(255), "x", []byte{0xAB, 0xCD, 0xEF}, int64(256))
+
+	f.Fuzz(func(t *testing.T, a int64, s string, prefix []byte, b int64) {
+		tup := Tuple{a, s, b}
+
+		// Test PackWithPrefixInto
+		var buf1 []byte
+		got1 := tup.PackWithPrefixInto(&buf1, prefix)
+		exp1 := tup.PackWithPrefix(prefix)
+		if !bytes.Equal(got1, exp1) {
+			t.Errorf("PackWithPrefixInto mismatch: got %x, want %x", got1, exp1)
+		}
+
+		// Test Pack1Into (single element)
+		var buf2 []byte
+		got2 := Pack1Into(&buf2, prefix, a)
+		exp2 := Pack1WithPrefix(prefix, a)
+		if !bytes.Equal(got2, exp2) {
+			t.Errorf("Pack1Into mismatch: got %x, want %x", got2, exp2)
+		}
+
+		// Test PackInt64Into
+		var buf3 []byte
+		got3 := PackInt64Into(&buf3, prefix, a)
+		exp3 := Tuple{a}.PackWithPrefix(prefix)
+		if !bytes.Equal(got3, exp3) {
+			t.Errorf("PackInt64Into mismatch: got %x, want %x", got3, exp3)
+		}
+
+		// Test PackConcatInto (two tuples)
+		t1 := Tuple{a, s}
+		t2 := Tuple{b}
+		var buf4 []byte
+		got4 := PackConcatInto(&buf4, prefix, t1, t2)
+		exp4 := PackConcatWithPrefix(prefix, t1, t2)
+		if !bytes.Equal(got4, exp4) {
+			t.Errorf("PackConcatInto mismatch: got %x, want %x", got4, exp4)
+		}
+
+		// Test shared buffer with multiple packs (growth safety)
+		var shared []byte
+		results := make([][]byte, 10)
+		for i := 0; i < 10; i++ {
+			results[i] = PackInt64Into(&shared, prefix, a+int64(i))
+		}
+		for i := 0; i < 10; i++ {
+			exp := Tuple{a + int64(i)}.PackWithPrefix(prefix)
+			if !bytes.Equal(results[i], exp) {
+				t.Errorf("shared buffer corruption at %d: got %x, want %x", i, results[i], exp)
+			}
+		}
+	})
+}
