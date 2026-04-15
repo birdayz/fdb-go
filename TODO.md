@@ -99,7 +99,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 12 | ~~`tryCache` SYSTEM_IMMEDIATE~~ | ~~MAINTENANCE~~ FIXED | ~~Dead code fell through to DEFAULT throttle check.~~ Fixed: explicit rejection. swingshift-18. |
 | 13 | ~~`commitDummyTransaction` no Set mutation~~ | ~~COSMETIC~~ FIXED | ~~Go only adds conflict ranges.~~ Fixed: now calls `Set(key, "")` matching C++. swingshift-18. |
 | 14 | ~~`commitDummyTransaction` fixed backoff~~ | ~~PERF~~ FIXED | ~~Go uses fixed 10ms.~~ Fixed: exponential backoff (10ms → 2x → cap 1s) matching C++ `onError`. swingshift-18. |
-| 15 | `commitDummyTransaction` no `CAUSAL_WRITE_RISKY` | PERF | C++ sets `CAUSAL_WRITE_RISKY` for faster GRV on the dummy. Go doesn't implement this option. Latency optimization only — dummy still works correctly. |
+| 15 | ~~`commitDummyTransaction` no `CAUSAL_WRITE_RISKY`~~ | ~~PERF~~ FIXED | ~~Go doesn't set CAUSAL_WRITE_RISKY on dummy.~~ Fixed: `causalReadRisky = true` for faster GRV. swingshift-18. |
 | 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
 | 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
 

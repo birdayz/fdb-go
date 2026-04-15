@@ -141,7 +141,8 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		}
 		// C++ sets RAW_ACCESS, CAUSAL_WRITE_RISKY, LOCK_AWARE on the dummy.
 		dummy.writeSystemKeys = true // RAW_ACCESS equivalent
-		dummy.readSystemKeys = true
+		dummy.readSystemKeys = true  // RAW_ACCESS equivalent
+		dummy.causalReadRisky = true // CAUSAL_WRITE_RISKY — faster GRV for dummy
 		dummy.lockAware = true
 
 		// C++ does tr->set(key, "") + adds read/write conflict ranges.
