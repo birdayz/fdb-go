@@ -2,12 +2,17 @@ package recordlayer
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 )
+
+// emptyTuplePacked is the pre-computed packed form of an empty tuple.
+// Used as the value for VALUE index entries (which store no value data).
+var emptyTuplePacked = tuple.Tuple{}.Pack()
 
 // IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.
@@ -86,6 +91,37 @@ func (m *standardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDB
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's standardIndexMaintainer.update().
 func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	// Fast path: insert-only — skip evaluateIndex wrapper,
+	// common-entry filtering, and old-entries loop.
+	if oldRecord == nil && newRecord != nil {
+		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
+		if !isKWV && (m.index.Predicate == nil || m.index.Predicate(newRecord.Record)) {
+			// Int64 fast path: avoids any boxing alloc for integer fields.
+			if ie, ok := m.index.RootExpression.(Int64Evaluator); ok {
+				val, ok, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+				if err == nil && ok {
+					return m.insertInt64Entry(val, newRecord)
+				}
+			}
+			// Scalar fast path: single-field expressions avoid []any allocation.
+			if se, ok := m.index.RootExpression.(ScalarEvaluator); ok {
+				val, err := se.EvaluateScalar(newRecord, newRecord.Record)
+				if err == nil {
+					return m.insertScalarEntry(val, newRecord)
+				}
+			}
+			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
+				if err == nil {
+					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
+					key := *(*tuple.Tuple)(unsafe.Pointer(&values))
+					entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+					return m.insertSingleEntry(entry, newRecord)
+				}
+			}
+		}
+	}
+
 	var oldEntries []indexEntry
 	var newEntries []indexEntry
 
@@ -121,7 +157,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		if err != nil {
 			return err
 		}
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
+		m.tx.ClearBytes(m.indexSubspace.Pack(oldEntryKey))
 		// Clean up violation entries on delete for WRITE_ONLY/READABLE_UNIQUE_PENDING indexes.
 		// Matches Java's standardIndexMaintainer.updateOneKeyAsync() remove path.
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
@@ -132,7 +168,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Add new entries
-	emptyValue := tuple.Tuple{}.Pack()
+	emptyValue := emptyTuplePacked
 	for i := range newEntries {
 		entryTupleKey, err := indexEntryKey(m.index, newEntries[i].key, newEntries[i].primaryKey)
 		if err != nil {
@@ -157,9 +193,117 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			}
 		}
 
-		m.tx.Set(fdb.Key(keyBytes), valueBytes)
+		m.tx.SetBytes(keyBytes, valueBytes)
 	}
 
+	return nil
+}
+
+// insertInt64Entry handles inserting a VALUE index entry for an integer field.
+// Avoids the any boxing allocation by packing int64 directly.
+func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredRecord[proto.Message]) error {
+	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
+	var keyBytes []byte
+	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+		if len(trimmedPK) == 0 {
+			keyBytes = tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), val)
+		} else {
+			keyBytes = tuple.PackInt64ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), val, trimmedPK)
+		}
+	} else if len(trimmedPK) == 0 {
+		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), val)
+	} else {
+		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), val, trimmedPK)
+	}
+
+	if err := checkKeyValueSizes(m.index, record.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() {
+		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
+	return nil
+}
+
+// insertScalarEntry handles inserting a VALUE index entry for a single-field
+// expression. Avoids allocating a tuple.Tuple for the key by packing the scalar
+// value directly alongside the trimmed primary key.
+func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRecord[proto.Message]) error {
+	trimmedPK, err := m.index.TrimPrimaryKey(record.PrimaryKey)
+	if err != nil {
+		return err
+	}
+
+	// Pack scalar value + trimmed PK directly — no intermediate tuple alloc.
+	// Use shared batch key buffer if available (InsertBatch path).
+	var keyBytes []byte
+	if s, ok := m.store.(*FDBRecordStore); ok && s.batchKeyBuf != nil {
+		if len(trimmedPK) == 0 {
+			keyBytes = tuple.Pack1Into(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val))
+		} else {
+			keyBytes = tuple.Pack1ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
+		}
+	} else if len(trimmedPK) == 0 {
+		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val))
+	} else {
+		keyBytes = tuple.Pack1ConcatWithPrefix(m.indexSubspace.Bytes(), tuple.TupleElement(val), trimmedPK)
+	}
+
+	if err := checkKeyValueSizes(m.index, record.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() && val != nil {
+		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
+	return nil
+}
+
+// insertSingleEntry handles the insert of a single VALUE index entry.
+// Extracted from the Update loop to support the insert-only fast path.
+func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FDBStoredRecord[proto.Message]) error {
+	trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
+	if err != nil {
+		return err
+	}
+
+	// Pack index values + trimmed PK directly into the key, avoiding
+	// the intermediate tuple allocation in indexEntryKey.
+	var keyBytes fdb.Key
+	if len(trimmedPK) == 0 {
+		keyBytes = m.indexSubspace.Pack(entry.key)
+	} else if len(entry.key) == 0 {
+		keyBytes = m.indexSubspace.Pack(trimmedPK)
+	} else {
+		keyBytes = fdb.Key(tuple.PackConcatWithPrefix(m.indexSubspace.Bytes(), entry.key, trimmedPK))
+	}
+
+	if err := checkKeyValueSizes(m.index, entry.primaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.SetBytes(keyBytes, emptyTuplePacked)
 	return nil
 }
 
@@ -207,12 +351,29 @@ func (m *standardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 		return nil, nil
 	}
 
+	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
+
+	// Fast path: EvaluateFlat for simple non-KeyWithValue, non-fan-out indexes.
+	// Avoids the [][]any allocation from Evaluate.
+	if !isKeyWithValue {
+		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+			values, err := fe.EvaluateFlat(record, record.Record)
+			if err == nil {
+				key := make(tuple.Tuple, len(values))
+				for j, v := range values {
+					key[j] = v
+				}
+				return []indexEntry{{key: key, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}}, nil
+			}
+			// Fall through on error (e.g. fan-out)
+		}
+	}
+
 	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
 	if err != nil {
 		return nil, err
 	}
 
-	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
 	entries := make([]indexEntry, len(tuples))
 	for i, values := range tuples {
 		if isKeyWithValue {

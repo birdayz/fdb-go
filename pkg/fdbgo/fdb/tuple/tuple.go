@@ -45,6 +45,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
@@ -362,6 +363,50 @@ func (p *packer) encodeVersionstamp(v Versionstamp) {
 	p.putBytes(v.Bytes())
 }
 
+// encodeElement encodes a single tuple element into the packer.
+func (p *packer) encodeElement(e TupleElement) {
+	switch e := e.(type) {
+	case Tuple:
+		p.encodeTuple(e, true, false)
+	case nil:
+		p.putByte(nilCode)
+	case int:
+		p.encodeInt(int64(e))
+	case int64:
+		p.encodeInt(e)
+	case uint:
+		p.encodeUint(uint64(e))
+	case uint64:
+		p.encodeUint(e)
+	case *big.Int:
+		p.encodeBigInt(e)
+	case big.Int:
+		p.encodeBigInt(&e)
+	case []byte:
+		p.encodeBytes(bytesCode, e)
+	case fdb.KeyConvertible:
+		p.encodeBytes(bytesCode, []byte(e.FDBKey()))
+	case string:
+		p.encodeBytes(stringCode, []byte(e))
+	case float32:
+		p.encodeFloat(e)
+	case float64:
+		p.encodeDouble(e)
+	case bool:
+		if e {
+			p.putByte(trueCode)
+		} else {
+			p.putByte(falseCode)
+		}
+	case UUID:
+		p.encodeUUID(e)
+	case Versionstamp:
+		p.encodeVersionstamp(e)
+	default:
+		panic(fmt.Sprintf("unencodable element (%v, type %T)", e, e))
+	}
+}
+
 func (p *packer) encodeTuple(t Tuple, nested bool, versionstamps bool) {
 	if nested {
 		p.putByte(nestedCode)
@@ -439,6 +484,184 @@ func (t Tuple) Pack() []byte {
 	p := newPacker()
 	p.encodeTuple(t, false, false)
 	return p.buf
+}
+
+var packerPool = sync.Pool{
+	New: func() any {
+		return &packer{
+			versionstampPos: -1,
+			buf:             make([]byte, 0, 128),
+		}
+	},
+}
+
+// PackWithPrefix packs the tuple and prepends the given prefix in a single allocation.
+// Uses a pooled packer to avoid allocating a new packer per call.
+func (t Tuple) PackWithPrefix(prefix []byte) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeTuple(t, false, false)
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// PackConcatWithPrefix packs multiple tuples concatenated into a single key,
+// prepending the given prefix. Avoids creating an intermediate combined tuple.
+// Saves 1 allocation vs indexEntryKey + Pack for VALUE index entry keys.
+func PackConcatWithPrefix(prefix []byte, tuples ...Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	for _, t := range tuples {
+		p.encodeTuple(t, false, false)
+	}
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1WithPrefix packs a single tuple element with a prefix in one allocation.
+// Avoids creating a Tuple slice for single-field index expressions.
+func Pack1WithPrefix(prefix []byte, elem TupleElement) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1ConcatWithPrefix packs a single element plus a tuple with a prefix.
+// Used for single-field index keys that also need a trimmed primary key suffix.
+func Pack1ConcatWithPrefix(prefix []byte, elem TupleElement, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	p.encodeTuple(suffix, false, false)
+	result := make([]byte, len(prefix)+len(p.buf))
+	copy(result, prefix)
+	copy(result[len(prefix):], p.buf)
+	packerPool.Put(p)
+	return result
+}
+
+// Packer exposes the internal packer for advanced callers that need to
+// encode multiple elements and then append to a shared buffer.
+type Packer struct{ p *packer }
+
+func GetPacker() *Packer {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	return &Packer{p: p}
+}
+
+func PutPacker(pk *Packer) { packerPool.Put(pk.p) }
+
+func (pk *Packer) EncodeInt(val int64)          { pk.p.encodeInt(val) }
+func (pk *Packer) EncodeTuple(t Tuple)          { pk.p.encodeTuple(t, false, false) }
+func (pk *Packer) EncodeElement(e TupleElement) { pk.p.encodeElement(e) }
+
+func (pk *Packer) AppendInto(buf *[]byte, prefix []byte) []byte {
+	return appendPacked(buf, prefix, pk.p)
+}
+
+// PackInt64ConcatInto packs an int64 + a tuple into a shared buffer.
+func PackInt64ConcatInto(buf *[]byte, prefix []byte, val int64, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeInt(val)
+	p.encodeTuple(suffix, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// PackInt64Into packs a single int64 into a shared buffer. Avoids any→int64 boxing.
+func PackInt64Into(buf *[]byte, prefix []byte, val int64) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeInt(val)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// appendPacked appends prefix + packer contents to the shared buffer, returns sub-slice.
+func appendPacked(buf *[]byte, prefix []byte, p *packer) []byte {
+	b := *buf
+	start := len(b)
+	needed := start + len(prefix) + len(p.buf)
+	if needed > cap(b) {
+		newCap := max(2*cap(b), needed)
+		newB := make([]byte, start, newCap)
+		copy(newB, b)
+		b = newB
+	}
+	b = b[:needed]
+	copy(b[start:], prefix)
+	copy(b[start+len(prefix):], p.buf)
+	*buf = b
+	return b[start:needed]
+}
+
+// PackWithPrefixInto packs tuple with prefix into a shared buffer.
+func (t Tuple) PackWithPrefixInto(buf *[]byte, prefix []byte) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeTuple(t, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// PackConcatInto packs multiple tuples into a shared buffer.
+func PackConcatInto(buf *[]byte, prefix []byte, tuples ...Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	for _, t := range tuples {
+		p.encodeTuple(t, false, false)
+	}
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1Into packs a single element into a shared buffer.
+func Pack1Into(buf *[]byte, prefix []byte, elem TupleElement) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
+// Pack1ConcatInto packs a single element + tuple into a shared buffer.
+func Pack1ConcatInto(buf *[]byte, prefix []byte, elem TupleElement, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeElement(elem)
+	p.encodeTuple(suffix, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
 }
 
 // PackWithVersionstamp packs the specified tuple into a key for versionstamp

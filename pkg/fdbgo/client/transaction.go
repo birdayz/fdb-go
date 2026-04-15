@@ -164,10 +164,12 @@ type Transaction struct {
 	// conflictMu protects mutations, readConflicts, writeConflicts from concurrent
 	// access. The Apple C binding uses a single-threaded actor model. Our Go futures
 	// use goroutines, so concurrent Get/Set calls on the same transaction race.
-	conflictMu     sync.Mutex
-	mutations      []Mutation
-	readConflicts  []KeyRange
-	writeConflicts []KeyRange
+	conflictMu       sync.Mutex
+	mutations        []Mutation
+	readConflicts    []KeyRange
+	writeConflicts   []KeyRange
+	conflictBuf      []byte       // batch-allocated backing store for conflict range keys
+	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
 
 	retryCount int
 	backoff    time.Duration
@@ -215,6 +217,12 @@ type Transaction struct {
 	// maxRetryDelay: if > 0, caps the exponential backoff. Default: 1s (maxBackoff).
 	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
 	maxRetryDelay time.Duration
+
+	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
+	// ranges. Used for insert-only batch writes where all keys are unique (no
+	// write-write conflicts possible) and all atomics commute. Reduces commit
+	// request size significantly.
+	writeConflictsDisabled bool
 
 	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
@@ -552,6 +560,21 @@ func (tx *Transaction) maxWriteKey() []byte {
 // C++ RYW: `key != metadataVersionKey` in getValue check.
 var metadataVersionKeyBytes = []byte("\xff/metadataVersion")
 
+// conflictBufPool reuses backing buffers for write conflict range keys.
+// Each transaction needs ~200 conflict keys for a 50-record batch,
+// totaling ~20KB. Without pooling, the buffer grows 4K→8K→16K→32K
+// per transaction, creating intermediate garbage at each step.
+// Stores *conflictBuf to avoid interface boxing allocation (SA6002).
+var conflictBufPool = sync.Pool{
+	New: func() any {
+		return &conflictBuf{b: make([]byte, 0, 32768)}
+	},
+}
+
+type conflictBuf struct {
+	b []byte
+}
+
 // SetReadSystemKeys allows reading \xff prefix system keys.
 func (tx *Transaction) SetReadSystemKeys() {
 	tx.readSystemKeys = true
@@ -611,7 +634,9 @@ func (tx *Transaction) Set(key, value []byte) {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflictForKey(key)
-	tx.ryw.set(key, value)
+	if !tx.rywDisabled {
+		tx.ryw.set(key, value)
+	}
 }
 
 // Clear deletes a key.
@@ -627,7 +652,9 @@ func (tx *Transaction) Clear(key []byte) {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflict(key, end)
-	tx.ryw.clear(key)
+	if !tx.rywDisabled {
+		tx.ryw.clear(key)
+	}
 }
 
 // ClearRange deletes all keys in [begin, end).
@@ -649,7 +676,9 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 	})
 	tx.conflictMu.Unlock()
 	tx.addWriteConflict(begin, end)
-	tx.ryw.clearRange(begin, end)
+	if !tx.rywDisabled {
+		tx.ryw.clearRange(begin, end)
+	}
 	return nil
 }
 
@@ -664,7 +693,9 @@ func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
 	tx.conflictMu.Unlock()
 	// Atomic ops add write conflict but NOT read conflict.
 	tx.addWriteConflictForKey(key)
-	tx.ryw.atomic(op, key, operand)
+	if !tx.rywDisabled {
+		tx.ryw.atomic(op, key, operand)
+	}
 }
 
 // Commit sends mutations to a commit proxy.
@@ -1073,30 +1104,88 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 // addWriteConflictForKey adds a write conflict range [key, key\x00) with a
 // single allocation. Same optimization as addReadConflictForKey.
 func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	if tx.writeConflictsDisabled {
+		return
+	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
 	n := len(key)
-	buf := make([]byte, n+n+1)
+	// Batch-allocate conflict range key storage to reduce per-write allocs.
+	tx.conflictMu.Lock()
+	needed := n + n + 1
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		reused := false
+		// Try reusing a pooled buffer when starting fresh (avoids 4K→8K→16K→32K growth).
+		if len(tx.conflictBuf) == 0 {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
+				reused = true
+			} else {
+				conflictBufPool.Put(cb) // too small, return it
+			}
+		}
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096 // ~30 typical keys
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
 	copy(buf, key)
 	copy(buf[n:], key)
-	tx.conflictMu.Lock()
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
+	if tx.writeConflictsDisabled {
+		return
+	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
 	}
-	b := make([]byte, len(begin))
-	copy(b, begin)
-	e := make([]byte, len(end))
-	copy(e, end)
 	tx.conflictMu.Lock()
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: b, End: e})
+	needed := len(begin) + len(end)
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		reused := false
+		if len(tx.conflictBuf) == 0 {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
+				reused = true
+			} else {
+				conflictBufPool.Put(cb)
+			}
+		}
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
+	nb := len(begin)
+	copy(buf, begin)
+	copy(buf[nb:], end)
+	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb], End: buf[nb:]})
 	tx.conflictMu.Unlock()
 }
 
@@ -1148,6 +1237,31 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
+}
+
+// SetWriteConflictsDisabled disables write conflict ranges for all subsequent
+// mutations. Use for insert-only batch writes where keys are guaranteed unique
+// and all atomic operations commute (ADD, MAX, MIN). Significantly reduces
+// commit request size and eliminates conflict buffer allocations.
+func (tx *Transaction) SetWriteConflictsDisabled() {
+	tx.writeConflictsDisabled = true
+}
+
+// EnsureMutationCapacity pre-sizes the mutations and writeConflicts slices
+// to avoid growth allocations during batch writes. Call before a large batch.
+func (tx *Transaction) EnsureMutationCapacity(n int) {
+	tx.conflictMu.Lock()
+	if cap(tx.mutations) < n {
+		newMuts := make([]Mutation, len(tx.mutations), n)
+		copy(newMuts, tx.mutations)
+		tx.mutations = newMuts
+	}
+	if cap(tx.writeConflicts) < n {
+		newConflicts := make([]KeyRange, len(tx.writeConflicts), n)
+		copy(newConflicts, tx.writeConflicts)
+		tx.writeConflicts = newConflicts
+	}
+	tx.conflictMu.Unlock()
 }
 
 // SetSnapshotRYWDisable disables RYW for snapshot reads.
@@ -1256,6 +1370,17 @@ func (tx *Transaction) postCommitReset() {
 	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	// Return conflict buffer to pool for reuse by next transaction.
+	if tx.conflictBufOwner != nil {
+		tx.conflictBufOwner.b = tx.conflictBuf[:0]
+		conflictBufPool.Put(tx.conflictBufOwner)
+		tx.conflictBufOwner = nil
+		tx.conflictBuf = nil
+	} else if cap(tx.conflictBuf) > 0 {
+		// Buffer was allocated outside pool (growth path) — wrap and return.
+		conflictBufPool.Put(&conflictBuf{b: tx.conflictBuf[:0]})
+		tx.conflictBuf = nil
+	}
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// committedVersion and txnBatchId preserved intentionally.
@@ -1277,6 +1402,7 @@ func (tx *Transaction) reset() {
 	tx.conflictMu.Lock()
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
+	tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	// Re-apply timeout from creationTime (NOT time.Now()). C++ semantics:

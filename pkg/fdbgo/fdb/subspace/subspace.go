@@ -123,7 +123,7 @@ func (s subspace) Bytes() []byte {
 }
 
 func (s subspace) Pack(t tuple.Tuple) fdb.Key {
-	return fdb.Key(concat(s.rawPrefix, t.Pack()...))
+	return fdb.Key(t.PackWithPrefix(s.rawPrefix))
 }
 
 func (s subspace) PackWithVersionstamp(t tuple.Tuple) (fdb.Key, error) {
