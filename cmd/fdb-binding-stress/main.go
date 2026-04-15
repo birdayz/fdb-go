@@ -202,7 +202,7 @@ func runSeed(seed, ops int, testName, stacktester, btRunDir, seedDir string) See
 		return r
 	}
 
-	clusterFile := filepath.Join(seedDir, "fdb.cluster")
+	clusterFile, _ := filepath.Abs(filepath.Join(seedDir, "fdb.cluster"))
 	if err := os.WriteFile(clusterFile, []byte(clusterContent), 0o644); err != nil {
 		r.Error = "write cluster file: " + err.Error()
 		return r
