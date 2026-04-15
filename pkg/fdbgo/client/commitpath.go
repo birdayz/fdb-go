@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -199,11 +200,8 @@ var metadataVersionKey = []byte("\xff/metadataVersion")
 
 // buildCommitTransactionRequest constructs the full request with
 // typed mutations and conflict ranges — no pre-serialization blobs.
-// Pools for commit request construction. Avoids per-commit slice allocations.
-var (
-	mutationSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 16); return &s }}
-	crSlicePool       = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
-)
+// Pool for conflict range slices. Avoids per-commit alloc.
+var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 
 // marshalBufPool pools the serialization buffer for CommitTransactionRequest.
 // Avoids ~11% of total commit-path allocations. Uses *[]byte to avoid
@@ -217,11 +215,9 @@ var marshalBufPool = sync.Pool{New: func() any {
 // serialized body and a pool handle — caller MUST call releaseMarshalBuf
 // after the body is no longer needed (after SendFrame).
 func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (body []byte, poolBuf *[]byte) {
-	mutSlice := mutationSlicePool.Get().(*[]types.MutationRef)
-	mutations := (*mutSlice)[:0]
-	for _, m := range tx.mutations {
-		mutations = append(mutations, types.MutationRef{MutType: uint8(m.Type), Param1: m.Key, Param2: m.Value})
-	}
+	// Zero-copy reinterpret: Mutation and MutationRef have identical memory layout
+	// (uint8 + []byte + []byte). Avoid copying 200+ mutations per batch.
+	mutations := *(*[]types.MutationRef)(unsafe.Pointer(&tx.mutations))
 
 	readCRSlice := crSlicePool.Get().(*[]types.KeyRangeRef)
 	readCRs := (*readCRSlice)[:0]
@@ -302,8 +298,6 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID) (b
 	*bufp = result // track capacity for pool reuse
 
 	// Return pooled slices.
-	*mutSlice = mutations
-	mutationSlicePool.Put(mutSlice)
 	*readCRSlice = readCRs
 	crSlicePool.Put(readCRSlice)
 	*writeCRSlice = writeCRs
