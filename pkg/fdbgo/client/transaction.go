@@ -218,6 +218,12 @@ type Transaction struct {
 	// Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
 	maxRetryDelay time.Duration
 
+	// writeConflictsDisabled: when true, ALL mutations skip adding write conflict
+	// ranges. Used for insert-only batch writes where all keys are unique (no
+	// write-write conflicts possible) and all atomics commute. Reduces commit
+	// request size significantly.
+	writeConflictsDisabled bool
+
 	// rywDisabled: when true, regular Get/GetRange bypass the RYW cache and
 	// always read from the server. Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 	rywDisabled bool
@@ -1098,6 +1104,9 @@ func (tx *Transaction) addReadConflict(begin, end []byte) {
 // addWriteConflictForKey adds a write conflict range [key, key\x00) with a
 // single allocation. Same optimization as addReadConflictForKey.
 func (tx *Transaction) addWriteConflictForKey(key []byte) {
+	if tx.writeConflictsDisabled {
+		return
+	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
@@ -1139,6 +1148,9 @@ func (tx *Transaction) addWriteConflictForKey(key []byte) {
 }
 
 func (tx *Transaction) addWriteConflict(begin, end []byte) {
+	if tx.writeConflictsDisabled {
+		return
+	}
 	if tx.nextWriteNoConflict {
 		tx.nextWriteNoConflict = false
 		return
@@ -1225,6 +1237,14 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // Matches FDB_TR_OPTION_READ_YOUR_WRITES_DISABLE.
 func (tx *Transaction) SetReadYourWritesDisable() {
 	tx.rywDisabled = true
+}
+
+// SetWriteConflictsDisabled disables write conflict ranges for all subsequent
+// mutations. Use for insert-only batch writes where keys are guaranteed unique
+// and all atomic operations commute (ADD, MAX, MIN). Significantly reduces
+// commit request size and eliminates conflict buffer allocations.
+func (tx *Transaction) SetWriteConflictsDisabled() {
+	tx.writeConflictsDisabled = true
 }
 
 // EnsureMutationCapacity pre-sizes the mutations and writeConflicts slices
