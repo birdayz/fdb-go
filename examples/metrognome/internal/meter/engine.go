@@ -181,7 +181,8 @@ func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEve
 			}
 			msgs[i] = msg
 		}
-		_, err = store.SaveRecordBatch(msgs)
+		// Every event has a unique event_id PK — safe to skip existence checks
+		_, err = store.SaveRecordBatchInsertOnly(msgs)
 		return nil, err
 	})
 	return err
