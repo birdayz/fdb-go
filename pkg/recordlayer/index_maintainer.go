@@ -90,6 +90,27 @@ func (m *standardIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDB
 // Update handles insert (old=nil), delete (new=nil), or update (both non-nil).
 // Matches Java's standardIndexMaintainer.update().
 func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	// Fast path: insert-only with EvaluateFlat — skip evaluateIndex wrapper,
+	// common-entry filtering, and old-entries loop.
+	if oldRecord == nil && newRecord != nil {
+		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
+		if !isKWV {
+			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
+				if m.index.Predicate == nil || m.index.Predicate(newRecord.Record) {
+					values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
+					if err == nil {
+						key := make(tuple.Tuple, len(values))
+						for j, v := range values {
+							key[j] = v
+						}
+						entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+						return m.insertSingleEntry(entry, newRecord)
+					}
+				}
+			}
+		}
+	}
+
 	var oldEntries []indexEntry
 	var newEntries []indexEntry
 
@@ -164,6 +185,29 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 		m.tx.Set(fdb.Key(keyBytes), valueBytes)
 	}
 
+	return nil
+}
+
+// insertSingleEntry handles the insert of a single VALUE index entry.
+// Extracted from the Update loop to support the insert-only fast path.
+func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FDBStoredRecord[proto.Message]) error {
+	entryTupleKey, err := indexEntryKey(m.index, entry.key, entry.primaryKey)
+	if err != nil {
+		return err
+	}
+	keyBytes := m.indexSubspace.Pack(entryTupleKey)
+
+	if err := checkKeyValueSizes(m.index, entry.primaryKey, keyBytes, emptyTuplePacked); err != nil {
+		return err
+	}
+
+	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
+		if err := m.checkUniqueness(entry); err != nil {
+			return err
+		}
+	}
+
+	m.tx.Set(fdb.Key(keyBytes), emptyTuplePacked)
 	return nil
 }
 
