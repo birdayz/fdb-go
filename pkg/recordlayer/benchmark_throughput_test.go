@@ -451,6 +451,14 @@ func BenchmarkThroughputInsertOnlyBatch100WithIndexes(b *testing.B) {
 	benchThroughputInsertOnlyBatch(b, 100, true)
 }
 
+func BenchmarkThroughputInsertBatch50WithIndexes(b *testing.B) {
+	benchThroughputInsertBatch(b, 50)
+}
+
+func BenchmarkThroughputInsertBatch100WithIndexes(b *testing.B) {
+	benchThroughputInsertBatch(b, 100)
+}
+
 func benchThroughputInsertOnlyBatch(b *testing.B, batchSize int, withIndexes bool) {
 	ensureBenchDB(b)
 	var md *RecordMetaData
@@ -486,6 +494,43 @@ func benchThroughputInsertOnlyBatch(b *testing.B, batchSize int, withIndexes boo
 			}
 			_, err = store.SaveRecordBatchInsertOnly(records)
 			return nil, err
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(batchSize), "records/op")
+}
+
+func benchThroughputInsertBatch(b *testing.B, batchSize int) {
+	ensureBenchDB(b)
+	md := throughputMetaDataWithAggregateIndexes(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	var idGen atomic.Int64
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		base := idGen.Add(int64(batchSize))
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+			if err != nil {
+				return nil, err
+			}
+			records := make([]proto.Message, batchSize)
+			for j := 0; j < batchSize; j++ {
+				records[j] = benchOrder(base+int64(j), int32((base+int64(j))%100))
+			}
+			return nil, store.InsertBatch(records)
 		})
 		if err != nil {
 			b.Fatal(err)

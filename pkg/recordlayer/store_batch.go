@@ -358,6 +358,131 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 	return results, nil
 }
 
+// InsertBatch is the maximum-throughput insert path. Like SaveRecordBatchInsertOnly
+// but returns no results — the caller only gets an error. This eliminates per-record
+// allocations for result structs, primary key tuples, and sizeInfo tracking.
+//
+// Same guarantees and warnings as SaveRecordBatchInsertOnly: all records must have
+// unique primary keys, existing records will be silently overwritten.
+func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	tx := store.context.Transaction()
+	tx.Options().SetReadYourWritesDisable()
+	tx.Options().SetWriteConflictsDisabled()
+	numIndexes := len(store.metaData.GetAllIndexes())
+	tx.Options().EnsureMutationCapacity(len(records) * (1 + numIndexes))
+	recordsSubspace := store.recordsSubspace
+	splitEnabled := store.metaData.IsSplitLongRecords()
+
+	// Pre-compute count key
+	var countFDBKey []byte
+	countKey := store.metaData.GetRecordCountKey()
+	if countKey != nil && !store.isRecordCountDisabled() {
+		if _, ok := countKey.(*EmptyKeyExpression); ok {
+			countSubspace := store.subspace.Sub(RecordCountKey)
+			countFDBKey = countSubspace.Pack(tuple.Tuple{})
+		}
+	}
+
+	store.stateMu.RLock()
+	defer store.stateMu.RUnlock()
+	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
+		return err
+	}
+
+	// Compiled PK evaluator + reusable appender
+	var compiledPK *compiledKeyEvaluator
+	var pkAppender tupleAppender
+	if len(records) > 0 {
+		typeName := string(records[0].ProtoReflect().Descriptor().Name())
+		rt := store.metaData.GetRecordType(typeName)
+		if rt != nil && rt.PrimaryKey != nil {
+			compiledPK = compileKeyExpression(rt.PrimaryKey)
+			if compiledPK != nil {
+				pkAppender.elements = make([]tuple.TupleElement, 0, 8)
+			}
+		}
+	}
+
+	// Reusable stored record — populated per-record, not returned to caller.
+	// PrimaryKey is a sub-slice of pkAppender.elements (or a fresh tuple for fallback).
+	var stored FDBStoredRecord[proto.Message]
+
+	for i, record := range records {
+		if record == nil {
+			return fmt.Errorf("record %d is nil", i)
+		}
+
+		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
+		recordType := store.metaData.GetRecordType(recordTypeName)
+		if recordType == nil {
+			return &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		}
+		if recordType.PrimaryKey == nil {
+			return &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
+		}
+
+		// Evaluate PK — reuse pkAppender across records (no alloc per record).
+		var primaryKey tuple.Tuple
+		if compiledPK != nil {
+			if err := compiledPK.evaluate(&pkAppender, nil, record); err == nil {
+				// Use pkAppender.elements directly for packing (consumed immediately).
+				// For index maintainers, create a sub-slice reference (no copy).
+				primaryKey = tuple.Tuple(pkAppender.elements)
+			}
+		}
+		if primaryKey == nil {
+			keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, nil, record)
+			if err != nil {
+				return fmt.Errorf("record %d: extract primary key: %w", i, err)
+			}
+			primaryKey = make(tuple.Tuple, len(keyValues))
+			for j, v := range keyValues {
+				primaryKey[j] = v
+			}
+		}
+
+		// Serialize
+		data, err := serializeUnion(record, recordType)
+		if err != nil {
+			return &RecordSerializationError{Cause: err}
+		}
+
+		// Direct write
+		if !splitEnabled || len(data) <= splitRecordSize {
+			unsplitKey := fdb.Key(tuple.PackConcatWithPrefix(
+				recordsSubspace.Bytes(), primaryKey, unsplitSuffix))
+			tx.Set(unsplitKey, data)
+		} else {
+			var newsizeInfo sizeInfo
+			if err := saveWithSplit(tx, recordsSubspace, primaryKey, data,
+				splitEnabled, nil, &newsizeInfo); err != nil {
+				return fmt.Errorf("record %d: save: %w", i, err)
+			}
+		}
+
+		// Index updates via reusable stored record
+		stored.PrimaryKey = primaryKey
+		stored.RecordType = recordType
+		stored.Record = record
+		if err := store.updateSecondaryIndexesLocked(nil, &stored); err != nil {
+			return fmt.Errorf("record %d: index update: %w", i, err)
+		}
+	}
+
+	// Batch record count
+	if countFDBKey != nil {
+		var buf [8]byte
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(records)))
+		tx.Add(fdb.Key(countFDBKey), buf[:])
+	}
+
+	return nil
+}
+
 // loadSplitOnly checks for a split record without checking unsplit first.
 // Used by SaveRecordBatch when the unsplit check was already done via pipeline.
 func loadSplitOnly(
