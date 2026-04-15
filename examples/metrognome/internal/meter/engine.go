@@ -159,11 +159,14 @@ func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEve
 	}
 
 	_, err := e.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+		// Use Build() instead of Open() — skips store state FDB reads.
+		// Safe for InsertBatch: storeHeader=nil → no lock check,
+		// indexStates=nil → all indexes READABLE, isRecordCountDisabled → false.
 		store, err := rl.NewStoreBuilder().
 			SetContext(rtx).
 			SetMetaDataProvider(rt.metadata).
 			SetSubspace(rt.ss).
-			Open()
+			Build()
 		if err != nil {
 			return nil, err
 		}
@@ -181,9 +184,9 @@ func (e *Engine) IngestBatch(ctx context.Context, slug string, events []BatchEve
 			}
 			msgs[i] = msg
 		}
-		// Every event has a unique event_id PK — safe to skip existence checks
-		_, err = store.SaveRecordBatchInsertOnly(msgs)
-		return nil, err
+		// Every event has a unique event_id PK — safe to skip existence checks.
+		// InsertBatch is the max-throughput path: no results, no RYW, no write conflicts.
+		return nil, store.InsertBatch(msgs)
 	})
 	return err
 }
