@@ -576,6 +576,18 @@ func (pk *Packer) AppendInto(buf *[]byte, prefix []byte) []byte {
 	return appendPacked(buf, prefix, pk.p)
 }
 
+// PackInt64ConcatInto packs an int64 + a tuple into a shared buffer.
+func PackInt64ConcatInto(buf *[]byte, prefix []byte, val int64, suffix Tuple) []byte {
+	p := packerPool.Get().(*packer)
+	p.versionstampPos = -1
+	p.buf = p.buf[:0]
+	p.encodeInt(val)
+	p.encodeTuple(suffix, false, false)
+	result := appendPacked(buf, prefix, p)
+	packerPool.Put(p)
+	return result
+}
+
 // PackInt64Into packs a single int64 into a shared buffer. Avoids any→int64 boxing.
 func PackInt64Into(buf *[]byte, prefix []byte, val int64) []byte {
 	p := packerPool.Get().(*packer)

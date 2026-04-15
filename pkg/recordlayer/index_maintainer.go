@@ -212,12 +212,7 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 		if len(trimmedPK) == 0 {
 			keyBytes = tuple.PackInt64Into(s.batchKeyBuf, m.indexSubspace.Bytes(), val)
 		} else {
-			// Pack int64 + trimmed PK: encode int64, then encode PK tuple.
-			p := tuple.GetPacker()
-			p.EncodeInt(val)
-			p.EncodeTuple(trimmedPK)
-			keyBytes = p.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes())
-			tuple.PutPacker(p)
+			keyBytes = tuple.PackInt64ConcatInto(s.batchKeyBuf, m.indexSubspace.Bytes(), val, trimmedPK)
 		}
 	} else if len(trimmedPK) == 0 {
 		keyBytes = tuple.Pack1WithPrefix(m.indexSubspace.Bytes(), val)
