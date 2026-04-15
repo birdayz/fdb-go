@@ -21,11 +21,15 @@ Java Record Layer version: **4.10.6.0**. FDB wire protocol: **7.3.75**.
 - [x] **Wire reader panic on malformed responses** — `Reader.ReadBytes` and 8 similar RelativeOffset-based methods (ReadVectorInt32, ReadVectorUint64, ReadNestedReader, etc.) checked `off < 4` but not `off + 4 > len(r.object)`. Crafted vtable offsets caused out-of-bounds slice panic. Fixed: add upper bounds check to all 9 methods. Found by fuzzing `FuzzParseGetKeyValuesReply`. swingshift-15.
 - [x] **OOM amplification from crafted wire count fields** — `ParseKeyValueRefStringVector` and `ReadVectorCount` used raw `uint32` count from wire data in `make([]T, 0, count)`. Crafted `count=0xFFFFFFFF` → 206GB allocation → OOM. Fixed: cap allocation to physical buffer bounds (`bufferSize / minElementSize`). Protects all 37 generated vector parsers + hand-written KV parser. swingshift-15.
 
+- [x] **Connection pool same-port aliasing broke multi-node clusters** — `getOrDialConn` reused an existing TCP connection for any address with the same port number, regardless of IP. In multi-node clusters (3 processes on 10.0.1.10-12:4500), the coordinator connection was returned for GRV proxy and commit proxy requests, sending frames to the wrong process where the endpoint token didn't match → silent drop → GRV timeout. C++ FlowTransport creates one Peer per unique NetworkAddress with no aliasing. Fixed: removed same-port matching and coordinator dial fallback entirely. PR #61.
+
 _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pass (96% of C test suite)._
 
 ### Features
 
 #### HIGH
+
+- [ ] **C++ ConnectionID dedup** — C++ FlowTransport deduplicates bidirectional connections via ConnectionID exchange in ConnectPacket. When two processes connect to each other simultaneously, the lower-priority connection is dropped. Not needed as a pure client (we never accept incoming connections), but should be implemented if we ever add server-side functionality.
 
 - [x] **`proxyTagThrottledDuration` send path** — Investigated: C++ `CommitProxyInterface.h:318` comments "Not serialized, because this field does not need to be sent to master." The field is reply-only (proxy→client), accumulated correctly in Go. No send path needed. Resolved dayshift-10.
 

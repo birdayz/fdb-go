@@ -242,6 +242,12 @@ func (db *database) getOrDialConn(ctx context.Context, addr string) (conn *trans
 	// Dial a new connection. C++ FlowTransport creates one Peer (TCP connection)
 	// per unique NetworkAddress. No address aliasing or port-matching — each
 	// ip:port gets its own connection.
+	//
+	// TODO: C++ FlowTransport deduplicates bidirectional connections via
+	// ConnectionID exchange in ConnectPacket. When two processes connect to
+	// each other simultaneously, the lower-priority connection is dropped.
+	// We don't need this as a pure client (we never accept incoming connections),
+	// but should implement it if we ever add server-side functionality.
 	dialCtx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
 	defer cancel()
 
