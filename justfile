@@ -211,9 +211,9 @@ race:
 race-all:
     bazelisk test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test --@rules_go//go/config:race --test_timeout=900
 
-# Run govulncheck on all packages
+# Run govulncheck on all packages (pinned version for reproducibility)
 vulncheck:
-    go install golang.org/x/vuln/cmd/govulncheck@latest
+    go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
     govulncheck ./...
 
 # Run a specific test with forced rebuild (no stale binary)
