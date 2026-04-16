@@ -73,12 +73,52 @@ func (t *indexingThrottle) decreaseLimit(recordsScanned int) {
 }
 
 // handleSuccess updates throttle state after a successful transaction.
-// Resets failure counters and applies rate limiting delay.
-// Matches Java's IndexingThrottle.handleSuccess().
+// Resets failure counters, potentially increases limit after sustained success,
+// and applies rate limiting delay.
+// Matches Java's IndexingThrottle.handleSuccess() + increaseLimit().
 func (t *indexingThrottle) handleSuccess(recordsScanned int) {
 	t.consecutiveFailureCount = 0
 	t.consecutiveSuccessCount++
 	t.recordsScannedSinceForcedDelay += recordsScanned
+
+	// After 10 consecutive successes, gradually increase the limit back toward
+	// initialLimit. Matches Java's config.getIncreaseLimitAfter() = 10.
+	const increaseLimitAfter = 10
+	if t.consecutiveSuccessCount >= increaseLimitAfter && t.recordsLimit < t.initialLimit {
+		t.increaseLimit()
+		t.consecutiveSuccessCount = 0
+	}
+}
+
+// increaseLimit gradually increases the per-transaction limit.
+// Matches Java's IndexingThrottle.increaseLimit() + getIncreasedLimit().
+//
+// Schedule:
+//
+//	limit < 5:   add 5
+//	limit < 100: double
+//	limit >= 100: multiply by 4/3
+//
+// Never exceeds initialLimit.
+func (t *indexingThrottle) increaseLimit() {
+	oldLimit := t.recordsLimit
+	var newLimit int
+	if oldLimit < 5 {
+		newLimit = oldLimit + 5
+	} else if oldLimit < 100 {
+		newLimit = oldLimit * 2
+	} else {
+		newLimit = (4 * oldLimit) / 3
+	}
+	// Ensure at least +1 progress
+	if newLimit <= oldLimit {
+		newLimit = oldLimit + 1
+	}
+	// Cap at initialLimit
+	if newLimit > t.initialLimit {
+		newLimit = t.initialLimit
+	}
+	t.recordsLimit = newLimit
 }
 
 // waitForRateLimit blocks until the rate limiter allows the next transaction.

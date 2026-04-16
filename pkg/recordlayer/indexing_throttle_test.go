@@ -293,6 +293,89 @@ func TestGetLimit(t *testing.T) {
 	})
 }
 
+func TestIncreaseLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("increases after 10 consecutive successes", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(200, 5, 0)
+		// Decrease to force a low limit
+		th.decreaseLimit(100) // limit = 90
+		th.decreaseLimit(90)  // limit = 72
+		if th.getLimit() != 72 {
+			t.Fatalf("expected limit 72, got %d", th.getLimit())
+		}
+
+		// 9 successes — should NOT increase yet
+		for i := 0; i < 9; i++ {
+			th.handleSuccess(72)
+		}
+		if th.getLimit() != 72 {
+			t.Errorf("limit should not change after 9 successes, got %d", th.getLimit())
+		}
+
+		// 10th success — should increase (72 < 100, so doubles to 144)
+		th.handleSuccess(72)
+		if th.getLimit() != 144 {
+			t.Errorf("expected limit 144 after 10 successes, got %d", th.getLimit())
+		}
+	})
+
+	t.Run("caps at initialLimit", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(100, 5, 0)
+		th.decreaseLimit(100) // limit = 90
+
+		// 10 successes — 90 < 100, doubles to 180, but capped at 100
+		for i := 0; i < 10; i++ {
+			th.handleSuccess(90)
+		}
+		if th.getLimit() != 100 {
+			t.Errorf("expected limit capped at 100, got %d", th.getLimit())
+		}
+	})
+
+	t.Run("small limit adds 5", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(200, 5, 0)
+		th.recordsLimit = 3 // force tiny limit
+
+		for i := 0; i < 10; i++ {
+			th.handleSuccess(3)
+		}
+		// 3 < 5, so adds 5 → 8
+		if th.getLimit() != 8 {
+			t.Errorf("expected limit 8, got %d", th.getLimit())
+		}
+	})
+
+	t.Run("large limit uses 4/3 multiplier", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(10000, 5, 0)
+		th.recordsLimit = 150
+
+		for i := 0; i < 10; i++ {
+			th.handleSuccess(150)
+		}
+		// 150 >= 100, so 4*150/3 = 200
+		if th.getLimit() != 200 {
+			t.Errorf("expected limit 200, got %d", th.getLimit())
+		}
+	})
+
+	t.Run("no increase when already at initialLimit", func(t *testing.T) {
+		t.Parallel()
+		th := newIndexingThrottle(100, 5, 0)
+		// Already at initialLimit — should not change
+		for i := 0; i < 20; i++ {
+			th.handleSuccess(100)
+		}
+		if th.getLimit() != 100 {
+			t.Errorf("expected limit unchanged at 100, got %d", th.getLimit())
+		}
+	})
+}
+
 func TestWaitForRateLimit(t *testing.T) {
 	t.Parallel()
 
