@@ -229,10 +229,10 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| SaveRecord | 1,008,811 | 6,465 | 83 |
-| SaveRecordBuild | 1,008,966 | 6,405 | 81 |
-| LoadRecord | 178,619 | 5,174 | 70 |
-| LoadRecordBuild | 60,693 | 2,678 | 27 |
+| SaveRecord | 1,008,148 | 6,403 | 80 |
+| SaveRecordBuild | 1,009,295 | 3,916 | 39 |
+| LoadRecord | 183,800 | 5,133 | 68 |
+| LoadRecordBuild | 63,150 | 2,697 | 27 |
 | ScanRecords (100) | 644,543 | 103,105 | 1,295 |
 | SaveRecordWithIndex | 1,008,642 | 7,455 | 97 |
 | ScanIndex (100) | 558,350 | 77,684 | 673 |
