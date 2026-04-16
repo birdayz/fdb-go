@@ -283,7 +283,16 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return false, nil
 	}
 	// Pack grouping fields (first gc children) directly into FDB key.
-	pk := tuple.GetPacker()
+	// Use shared batch packer if available to avoid pool churn.
+	var pk *tuple.Packer
+	var ownedPk bool
+	if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchPacker != nil {
+		pk = s.batchPacker
+	} else {
+		pk = tuple.GetPacker()
+		ownedPk = true
+	}
+	pk.Reset()
 	allDirect := true
 	for i := 0; i < gc; i++ {
 		if dp, ok2 := comp.expressions[i].(DirectPacker); ok2 {
@@ -297,7 +306,9 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		}
 	}
 	if !allDirect {
-		tuple.PutPacker(pk)
+		if ownedPk {
+			tuple.PutPacker(pk)
+		}
 		return false, nil
 	}
 	var fdbKey fdb.Key
@@ -307,7 +318,9 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		var buf []byte
 		fdbKey = fdb.Key(pk.AppendInto(&buf, m.indexSubspace.Bytes()))
 	}
-	tuple.PutPacker(pk)
+	if ownedPk {
+		tuple.PutPacker(pk)
+	}
 
 	// Extract SUM value directly via Int64Evaluator if available (avoids scalarToInterface).
 	var sumSource any

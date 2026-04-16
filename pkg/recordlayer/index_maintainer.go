@@ -107,7 +107,16 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			// Avoids scalarToInterface boxing — handles both single-field and
 			// composite keys without going through any.
 			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
-				pk := tuple.GetPacker()
+				// Use shared batch packer if available (InsertBatch path).
+				var pk *tuple.Packer
+				var ownedPk bool
+				if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchPacker != nil {
+					pk = s.batchPacker
+				} else {
+					pk = tuple.GetPacker()
+					ownedPk = true
+				}
+				pk.Reset()
 				if dp.PackDirect(pk, newRecord, newRecord.Record) {
 					trimmedPK, pkErr := m.index.TrimPrimaryKey(newRecord.PrimaryKey)
 					if pkErr == nil {
@@ -120,7 +129,9 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 							var buf []byte
 							keyBytes = pk.AppendInto(&buf, m.indexSubspace.Bytes())
 						}
-						tuple.PutPacker(pk)
+						if ownedPk {
+							tuple.PutPacker(pk)
+						}
 						if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
 							return err
 						}
@@ -144,7 +155,9 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 						return nil
 					}
 				}
-				tuple.PutPacker(pk)
+				if ownedPk {
+					tuple.PutPacker(pk)
+				}
 			}
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
