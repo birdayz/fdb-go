@@ -267,4 +267,165 @@ var _ = Describe("MultiTypeRecords", func() {
 		Expect(orderType.RecordTypeIndex).To(Equal(1))
 		Expect(customerType.RecordTypeIndex).To(Equal(2))
 	})
+
+	Describe("ScanRecordsByType prefix scan", func() {
+		// Metadata with RecordTypeKey() as first PK component — triggers fast path.
+		var rtMetaData *RecordMetaData
+		BeforeEach(func() {
+			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+			builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			rtMetaData = md
+		})
+
+		It("returns only records of the requested type", func() {
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(rtMetaData).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Save 5 orders and 3 customers
+				for i := int64(1); i <= 5; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))}); err != nil {
+						return nil, err
+					}
+				}
+				for i := int64(1); i <= 3; i++ {
+					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("Cust")}); err != nil {
+						return nil, err
+					}
+				}
+
+				// Prefix scan: should return only orders
+				orders, err := AsList(context.Background(), store.ScanRecordsByType("Order", nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(orders).To(HaveLen(5))
+				for _, r := range orders {
+					Expect(r.RecordType.Name).To(Equal("Order"))
+				}
+
+				// Prefix scan: should return only customers
+				custs, err := AsList(context.Background(), store.ScanRecordsByType("Customer", nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(custs).To(HaveLen(3))
+				for _, r := range custs {
+					Expect(r.RecordType.Name).To(Equal("Customer"))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("handles continuation tokens", func() {
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(rtMetaData).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Save 10 orders + 5 customers
+				for i := int64(1); i <= 10; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
+						return nil, err
+					}
+				}
+				for i := int64(1); i <= 5; i++ {
+					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
+						return nil, err
+					}
+				}
+
+				// Page through orders 3 at a time
+				var allOrders []*FDBStoredRecord[proto.Message]
+				var cont []byte
+				limitedScan := func() ScanProperties {
+					sp := ForwardScan()
+					sp.ExecuteProperties = sp.ExecuteProperties.WithReturnedRowLimit(3)
+					return sp
+				}
+				for {
+					cursor := store.ScanRecordsByType("Order", cont, limitedScan())
+					page, nextCont, err := AsListWithContinuation(context.Background(), cursor)
+					Expect(err).NotTo(HaveOccurred())
+					allOrders = append(allOrders, page...)
+					cont = nextCont
+					if len(cont) == 0 {
+						break
+					}
+				}
+				Expect(allOrders).To(HaveLen(10))
+				for _, r := range allOrders {
+					Expect(r.RecordType.Name).To(Equal("Order"))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("reverse scan works", func() {
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(rtMetaData).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 5; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); err != nil {
+						return nil, err
+					}
+				}
+				for i := int64(1); i <= 3; i++ {
+					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i), Name: proto.String("C")}); err != nil {
+						return nil, err
+					}
+				}
+
+				// Reverse scan should return orders in reverse order
+				orders, err := AsList(context.Background(), store.ScanRecordsByType("Order", nil, ReverseScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(orders).To(HaveLen(5))
+				// Verify descending order
+				for i := 0; i < len(orders)-1; i++ {
+					thisKey := orders[i].PrimaryKey
+					nextKey := orders[i+1].PrimaryKey
+					// RecordTypeKey is first, order_id is second — compare by order_id
+					Expect(thisKey[1].(int64)).To(BeNumerically(">", nextKey[1].(int64)))
+				}
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("falls back for non-RecordTypeKey PK", func() {
+			// The original metaData (without RecordTypeKey) should still work via filter
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 3; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(100)}); err != nil {
+						return nil, err
+					}
+				}
+				orders, err := AsList(context.Background(), store.ScanRecordsByType("Order", nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(orders).To(HaveLen(3))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
