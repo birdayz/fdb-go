@@ -244,7 +244,7 @@ func (f *FieldKeyExpression) PackDirect(pk *tuple.Packer, _ *FDBStoredRecord[pro
 		pk.EncodeInt(int64(m.Get(fd).Enum()))
 		return true
 	case protoreflect.StringKind:
-		pk.EncodeElement(m.Get(fd).String())
+		pk.EncodeString(m.Get(fd).String())
 		return true
 	default:
 		return false

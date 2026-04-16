@@ -276,7 +276,40 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 	}
 
-	return false, nil // multi-field grouping: fall through
+	// Multi-field grouping (gc > 1): try DirectPacker on the grouping fields.
+	// Avoids scalarToInterface boxing for each group key component.
+	comp, ok := gke.wholeKey.(*CompositeKeyExpression)
+	if !ok || len(comp.expressions) < gc {
+		return false, nil
+	}
+	// Pack grouping fields (first gc children) directly into FDB key.
+	pk := tuple.GetPacker()
+	allDirect := true
+	for i := 0; i < gc; i++ {
+		if dp, ok2 := comp.expressions[i].(DirectPacker); ok2 {
+			if !dp.PackDirect(pk, newRecord, newRecord.Record) {
+				allDirect = false
+				break
+			}
+		} else {
+			allDirect = false
+			break
+		}
+	}
+	if !allDirect {
+		tuple.PutPacker(pk)
+		return false, nil
+	}
+	var fdbKey fdb.Key
+	if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
+		fdbKey = fdb.Key(pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
+	} else {
+		var buf []byte
+		fdbKey = fdb.Key(pk.AppendInto(&buf, m.indexSubspace.Bytes()))
+	}
+	tuple.PutPacker(pk)
+
+	return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 }
 
 // applyInsertMutation applies the mutation for insert-only, given a pre-packed FDB key.
