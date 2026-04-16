@@ -955,6 +955,34 @@ func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 	return m.indexes
 }
 
+// RecordTypesForIndex returns the record types that the given index covers.
+// Universal indexes cover all record types. Type-specific indexes cover only
+// the record types they are associated with.
+// Matches Java's RecordMetaData.recordTypesForIndex(Index).
+func (m *RecordMetaData) RecordTypesForIndex(idx *Index) []*RecordType {
+	// Check if it's a universal index.
+	for _, ui := range m.universalIndexes {
+		if ui.Name == idx.Name {
+			result := make([]*RecordType, 0, len(m.recordTypes))
+			for _, rt := range m.recordTypes {
+				result = append(result, rt)
+			}
+			return result
+		}
+	}
+	// Type-specific: find which types have this index.
+	var result []*RecordType
+	for _, rt := range m.recordTypes {
+		for _, i := range m.GetIndexesForRecordType(rt.Name) {
+			if i.Name == idx.Name {
+				result = append(result, rt)
+				break
+			}
+		}
+	}
+	return result
+}
+
 // GetFormerIndexes returns all former (deleted) indexes.
 // Matches Java's RecordMetaData.getFormerIndexes().
 func (m *RecordMetaData) GetFormerIndexes() []*FormerIndex {

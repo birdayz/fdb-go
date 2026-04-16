@@ -107,13 +107,20 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 		return err
 	}
 
+	// Build type rename map before record type and index validation.
+	// Matches Java's MetaDataEvolutionValidator.getTypeRenames().
+	typeRenames, err := v.getTypeRenames(oldMetaData, newMetaData)
+	if err != nil {
+		return err
+	}
+
 	// 3. Record type validation
-	if err := v.validateRecordTypes(oldMetaData, newMetaData); err != nil {
+	if err := v.validateRecordTypes(oldMetaData, newMetaData, typeRenames); err != nil {
 		return err
 	}
 
 	// 4. Index validation
-	if err := v.validateIndexes(oldMetaData, newMetaData); err != nil {
+	if err := v.validateIndexes(oldMetaData, newMetaData, typeRenames); err != nil {
 		return err
 	}
 
@@ -128,6 +135,48 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 	}
 
 	return nil
+}
+
+// getTypeRenames builds a map from old record type names to new record type names
+// by matching on GetRecordTypeKey(). If the old type name still exists in the new
+// metadata, it maps to itself. Otherwise, it finds the new type with the same type key.
+// Matches Java's MetaDataEvolutionValidator.getTypeRenames() lines 319-344.
+func (v *MetaDataEvolutionValidator) getTypeRenames(old, new *RecordMetaData) (map[string]string, error) {
+	renames := make(map[string]string, len(old.RecordTypes()))
+	for oldName, oldRT := range old.RecordTypes() {
+		if new.GetRecordType(oldName) != nil {
+			// Same name exists in new — identity mapping.
+			renames[oldName] = oldName
+			continue
+		}
+		// Find new type with same type key.
+		oldKey := normalizeSubspaceKey(oldRT.GetRecordTypeKey())
+		found := false
+		for newName, newRT := range new.RecordTypes() {
+			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == oldKey {
+				// A type with a different name but the same key exists — this is a rename.
+				if v.disallowTypeRenames {
+					return nil, &MetaDataEvolutionError{
+						Message: fmt.Sprintf("record type %q renamed in new meta-data", oldName),
+					}
+				}
+				if prev, ok := renames[oldName]; ok && prev != newName {
+					return nil, &MetaDataEvolutionError{
+						Message: fmt.Sprintf("record type %q maps to multiple new types", oldName),
+					}
+				}
+				renames[oldName] = newName
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Type key not found in new metadata — this is a removal, not a rename.
+			// validateRecordTypes will report the appropriate error.
+			renames[oldName] = oldName
+		}
+	}
+	return renames, nil
 }
 
 func (v *MetaDataEvolutionValidator) validateVersion(old, new *RecordMetaData) error {
@@ -231,29 +280,13 @@ func getUnionDescriptor(m *RecordMetaData) protoreflect.MessageDescriptor {
 	return m.fileDescriptor.Messages().ByName("UnionDescriptor")
 }
 
-func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData) error {
+func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData, typeRenames map[string]string) error {
 	for name, oldRT := range old.RecordTypes() {
-		newRT := new.GetRecordType(name)
+		newName := typeRenames[name]
+		newRT := new.GetRecordType(newName)
 		if newRT == nil {
-			// Check if it was renamed
-			if v.disallowTypeRenames {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("record type %q removed from meta-data", name),
-				}
-			}
-			// Try to find by type key
-			found := false
-			for _, nrt := range new.RecordTypes() {
-				if normalizeSubspaceKey(nrt.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
-					found = true
-					newRT = nrt
-					break
-				}
-			}
-			if !found {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("record type %q removed from meta-data", name),
-				}
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type %q removed from meta-data", name),
 			}
 		}
 
@@ -280,18 +313,10 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 		}
 	}
 
-	// Build set of old record type names, accounting for renames via type key.
+	// Build set of new names that correspond to old types (via rename map).
 	olderNames := make(map[string]bool, len(old.RecordTypes()))
-	for name, oldRT := range old.RecordTypes() {
-		// If this type was renamed, map old name to the new name
-		renamed := name
-		for newName, newRT := range new.RecordTypes() {
-			if normalizeSubspaceKey(newRT.GetRecordTypeKey()) == normalizeSubspaceKey(oldRT.GetRecordTypeKey()) {
-				renamed = newName
-				break
-			}
-		}
-		olderNames[renamed] = true
+	for _, newName := range typeRenames {
+		olderNames[newName] = true
 	}
 
 	// Validate new record types have SinceVersion set.
@@ -341,7 +366,7 @@ func (v *MetaDataEvolutionValidator) comparePrimaryKeys(name string, oldRT, newR
 	return nil
 }
 
-func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) error {
+func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData, typeRenames map[string]string) error {
 	newFormerIndexMap := buildFormerIndexMap(new.GetFormerIndexes())
 
 	for name, oldIdx := range old.GetAllIndexes() {
@@ -404,6 +429,13 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 			}
 		}
 
+		// Validate index record type scope.
+		// Old types (renamed) must still be covered; new types must have SinceVersion > old version.
+		// Matches Java's MetaDataEvolutionValidator lines 623-648.
+		if err := v.validateIndexRecordTypes(old, new, oldIdx, newIdx, typeRenames); err != nil {
+			return err
+		}
+
 		// primaryKeyComponentPositions must not change.
 		// Matches Java's MetaDataEvolutionValidator lines 649-667.
 		oldHasPositions := oldIdx.HasPrimaryKeyComponentPositions()
@@ -434,6 +466,17 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 				}
 			}
 		}
+
+		// Validate index options changes.
+		// Java delegates to IndexValidatorRegistry.getIndexValidator(newIndex).validateChangedOptions(oldIndex).
+		// Go simplified: reject option changes unless allowIndexRebuilds is set.
+		if !mapsEqual(oldIdx.Options, newIdx.Options) {
+			if !v.allowIndexRebuilds {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("index %q options changed", name),
+				}
+			}
+		}
 	}
 
 	// New indexes must have version > old metadata version
@@ -449,6 +492,67 @@ func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData) e
 	}
 
 	return nil
+}
+
+// validateIndexRecordTypes checks that the record type scope of an index has not
+// lost any old types and that new types have appropriate SinceVersion.
+// Matches Java's MetaDataEvolutionValidator lines 623-648.
+func (v *MetaDataEvolutionValidator) validateIndexRecordTypes(
+	old, new *RecordMetaData,
+	oldIdx, newIdx *Index,
+	typeRenames map[string]string,
+) error {
+	// Get old record types for this index, mapped through renames.
+	oldTypes := old.RecordTypesForIndex(oldIdx)
+	oldRenamedNames := make(map[string]bool, len(oldTypes))
+	for _, rt := range oldTypes {
+		newName := typeRenames[rt.Name]
+		oldRenamedNames[newName] = true
+	}
+
+	// Get new record types for this index.
+	newTypes := new.RecordTypesForIndex(newIdx)
+	newTypeNames := make(map[string]bool, len(newTypes))
+	for _, rt := range newTypes {
+		newTypeNames[rt.Name] = true
+	}
+
+	// Every old type (renamed) must still be present in new index.
+	for renamedName := range oldRenamedNames {
+		if !newTypeNames[renamedName] {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q no longer covers record type %q", newIdx.Name, renamedName),
+			}
+		}
+	}
+
+	// New types not in old must have SinceVersion > old metadata version.
+	for _, rt := range newTypes {
+		if oldRenamedNames[rt.Name] {
+			continue
+		}
+		if rt.SinceVersion <= old.Version() {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index %q covers new record type %q without newer since version (since=%d, old=%d)",
+					newIdx.Name, rt.Name, rt.SinceVersion, old.Version()),
+			}
+		}
+	}
+
+	return nil
+}
+
+// mapsEqual compares two map[string]string for equality.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		if vb, ok := b[k]; !ok || va != vb {
+			return false
+		}
+	}
+	return true
 }
 
 func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaData) error {
