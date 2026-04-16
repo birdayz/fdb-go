@@ -264,9 +264,14 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	if m.index.IsUnique() && val != nil {
-		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		// Skip uniqueness check when called from InsertBatch — caller guarantees
+		// unique keys, and the check does an FDB GetRange per entry (15% CPU cost
+		// at 13K events/sec). The skipUniquenessChecks flag is set by InsertBatch.
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 

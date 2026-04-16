@@ -169,6 +169,9 @@ func main() {
 
 	// Auth (GitHub OAuth) — optional, skip if not configured
 	var connectOpts []connect.HandlerOption
+	// Skip gzip compression for responses < 4KB. Ingest responses (~20 bytes)
+	// were costing 2.9% CPU on gzip init/reset. Saves ~3% CPU under load.
+	connectOpts = append(connectOpts, connect.WithCompressMinBytes(4096))
 	if gh := cfg.GithubOauth; gh != nil && gh.GetClientId() != "" {
 		authHandler := auth.NewHandler(gh, cfg.FrontendUrl, db)
 		authHandler.RegisterRoutes(mux)
