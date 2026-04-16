@@ -57,11 +57,6 @@ const (
 	futureVersionMaxBackoff     = 8.0 // FUTURE_VERSION_MAX_BACKOFF (growth capped here)
 	futureVersionBackoffGrowth  = 2.0 // BACKOFF_GROWTH_RATE
 
-	// Load balance knobs
-	loadBalanceMaxBadOptions = 1    // LOAD_BALANCE_MAX_BAD_OPTIONS
-	loadBalancePenaltyIsBad  = true // LOAD_BALANCE_PENALTY_IS_BAD
-	penaltyBadThreshold      = 1.001
-
 	// Speculative second request knobs (C++ CLIENT_KNOBS)
 	backupRequestDelay = 0.01 // BACKUP_REQUEST_DELAY (10ms minimum hedge delay)
 	secondMultiplier   = 2.0  // MODEL_SECOND_MULTIPLIER (latency × this = hedge delay)
@@ -169,7 +164,9 @@ func (q *QueueModel) secondDelay(addr string) time.Duration {
 	return time.Duration(delay * float64(time.Second))
 }
 
-// chooseTopTwo picks the best and second-best servers from the replica set.
+// chooseTopTwo picks a primary and backup server for hedged reads.
+// Primary: power-of-two random (same as chooseServer) for load distribution.
+// Backup: best remaining server by metric (deterministic) for fast hedge.
 // Returns the indices. If only one server, secondIdx = -1.
 func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int) {
 	if len(servers) <= 1 {
@@ -201,20 +198,33 @@ func (q *QueueModel) chooseTopTwo(servers []ServerInfo) (bestIdx, secondIdx int)
 		return candidates[0].idx, -1
 	}
 
-	// Find best and second-best by metric.
-	best, second := 0, 1
-	if candidates[1].metric < candidates[0].metric {
-		best, second = 1, 0
+	// Primary: power-of-two random selection for load distribution.
+	a := rand.IntN(len(candidates))
+	b := rand.IntN(len(candidates) - 1)
+	if b >= a {
+		b++
 	}
-	for i := 2; i < len(candidates); i++ {
-		if candidates[i].metric < candidates[best].metric {
-			second = best
-			best = i
-		} else if candidates[i].metric < candidates[second].metric {
-			second = i
+	primary := a
+	if candidates[b].metric < candidates[a].metric {
+		primary = b
+	}
+
+	// Backup: best remaining candidate by metric (deterministic for fast hedge).
+	backupCandIdx := -1
+	backupMetric := math.MaxFloat64
+	for i := range candidates {
+		if i == primary {
+			continue
+		}
+		if candidates[i].metric < backupMetric {
+			backupMetric = candidates[i].metric
+			backupCandIdx = i
 		}
 	}
-	return candidates[best].idx, candidates[second].idx
+	if backupCandIdx < 0 {
+		return candidates[primary].idx, -1
+	}
+	return candidates[primary].idx, candidates[backupCandIdx].idx
 }
 
 // startRequest increments smoothOutstanding by the server's current penalty.
