@@ -620,6 +620,9 @@ func isAllAlternativesFailed(err error) bool {
 // future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
 // which passes futureVersion=true for future_version (1009) and process_behind (1037).
 func isFutureVersionOrProcessBehind(err error) bool {
+	if err == nil {
+		return false
+	}
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
 		return false
