@@ -48,7 +48,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 - [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
 - [x] **Pool read conflict buffers** — `addReadConflictForKey`/`addReadConflict` used `make()` per call. Now use shared `conflictBuf` via extracted `conflictBufAlloc` helper (same pool as write conflicts). SaveRecord 101→97, LoadRecord 84→81, DeleteRecord 94→91 allocs. swingshift-18.
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Investigated dayshift-6c: pooling requires extra copy, negates benefit.
+- [x] **Pool frame read buffers** — Won't-fix. `ReadFrame` allocates `make([]byte, payloadLen)` per response. Consumers hold slices into the buffer (zero-copy design), so pooling requires copying every slice back out, negating the pool benefit. Investigated dayshift-6c, confirmed dayshift-20.
 - [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
