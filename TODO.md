@@ -48,7 +48,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 
 - [x] **RYW SnapshotCache** — Sorted interval map caches server reads for reuse within a transaction. Repeated getRange/get calls hit cache instead of server. nightshift-12. 22 tests.
 - [x] **Pool read conflict buffers** — `addReadConflictForKey`/`addReadConflict` used `make()` per call. Now use shared `conflictBuf` via extracted `conflictBufAlloc` helper (same pool as write conflicts). SaveRecord 101→97, LoadRecord 84→81, DeleteRecord 94→91 allocs. swingshift-18.
-- [ ] **Pool frame read buffers** — `ReadFrame` allocates `make([]byte, payloadLen)` per response. Blocked by zero-copy design (consumers hold slices into buffer). Investigated dayshift-6c: pooling requires extra copy, negates benefit.
+- [x] **Pool frame read buffers** — Won't-fix. `ReadFrame` allocates `make([]byte, payloadLen)` per response. Consumers hold slices into the buffer (zero-copy design), so pooling requires copying every slice back out, negating the pool benefit. Investigated dayshift-6c, confirmed dayshift-20.
 - [x] **Speculative second request** — All three read paths (sendGetValue, sendGetKey, sendGetRange) now hedge: send to best, timer max(10ms, 2×latency), send to second-best, race. swingshift-11. Primitives in `hedge.go`, QueueModel extensions in `loadbalance.go`.
 - [x] **Outbound PING connection monitor** — connectionMonitor goroutine sends PingRequest every 750ms when connection has pending requests but no bytes received. Kills connection after 2s timeout. Matches C++ FlowTransport connectionMonitor(). Implemented dayshift-10.
 
@@ -102,6 +102,10 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 15 | ~~`commitDummyTransaction` no `CAUSAL_WRITE_RISKY`~~ | ~~PERF~~ FIXED | ~~Go doesn't set CAUSAL_WRITE_RISKY on dummy.~~ Fixed: `causalReadRisky = true` for faster GRV. swingshift-18. |
 | 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
 | 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
+| 18 | Wrong-shard retry cap | CONSERVATIVE | Go caps at `MaxWrongShardRetries=50`. C++ loops unbounded (relies on 5s tx timeout). Go returns error earlier under extreme shard movement. |
+| 19 | GRV background refresh | PERF | Go refreshes at fixed 50ms. C++ uses adaptive delay `(grvDelay + latency)/2` (1ms-100ms range). Go is more aggressive (2x more RPCs under low load). |
+| 20 | ~~Server selection~~ | ~~PERF/SCALE~~ FIXED | ~~Go selects deterministic min-metric. C++ uses randomized best-of-two.~~ Fixed: "power of two random choices" — pick 2 random candidates, select lower metric. Matches C++ `LOAD_BALANCE_USE_BEST_OF_TWO_RANDOM`. dayshift-20. |
+| 21 | Frame checksum | COSMETIC | Go uses XXH3-64. C++ uses CRC32. Both valid, same security properties. |
 
 ### Missing C API Surface (audit 2026-04-13)
 
@@ -142,6 +146,10 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 - [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking.
 - [ ] **RecordCursorVisitor pattern** — Cursor tree inspection.
 
+#### MEDIUM
+
+- [ ] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20: (1) Index record type scope validation — Java validates indexes still cover same record types after evolution, Go skips this entirely. (2) Type rename propagation — Go detects renames but doesn't apply to index validation. (3) Index options validation — Java delegates to `IndexValidator` registry for option changes, Go has no equivalent. Plus one edge case: former index added version check without prior old index.
+
 #### LOW
 
 - [ ] **`isClosed()` on cursor** — Closure state check.
@@ -178,3 +186,5 @@ No open test items.
 - [x] **Multi-node cluster test** — 3-container FDB cluster regression test (172.16.1.{2,3,4}:4500) with Go client CRUD. Verifies connection pool correctness for multi-node clusters. swingshift-18.
 - [x] **Binding stress testcontainers migration** — Replaced raw Docker CLI calls with testcontainers module. Eliminates manual polling, 3s sleeps, and fragile container lifecycle. swingshift-18.
 - [x] **Binding stress cluster file path fix** — Testcontainers migration (swingshift-18) used relative cluster file path, but Python binding tester runs with `cmd.Dir=/tmp/bt-run`. Relative path resolved wrong → error 1515 on all seeds. Fixed: `filepath.Abs()`. nightshift-19.
+- [ ] **Throughput benchmarks fail on single-node testcontainer** — `BenchmarkThroughputInsertBatchConcurrent128` overwhelms the FDB testcontainer (128 goroutines × concurrent transactions). Two issues: (1) GRV cache staleness causes "record store does not exist" on first goroutines after setup; fix: `InvalidateGRVCache()` after store creation. (2) FDB 5-second transaction timeout under load causes "context deadline exceeded". Fix: either skip in `just bench` or use a larger cluster. `just bench-ci` excludes throughput benchmarks and works fine.
+- [ ] **CI Node.js 20 deprecation** — `actions/checkout@v4` and `oven-sh/setup-bun` use Node.js 20 which GitHub will force to Node.js 24 on 2026-06-02 and remove on 2026-09-16. `actions/upload-artifact@v4` → v5+ also needs Node 24. Self-hosted runner needs Node 24 installed + runner version ≥ 2.327.1. Alternatively, set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` on runner to test now.

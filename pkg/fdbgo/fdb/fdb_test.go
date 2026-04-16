@@ -1663,3 +1663,54 @@ func TestGetRangeEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestSetTransactionRetryLimit_Zero verifies that SetTransactionRetryLimit(0)
+// actually prevents retries. This is a regression test: the fdb wrapper used
+// "retryLimit != 0" as the sentinel, which silently dropped retryLimit=0.
+//
+// The fix is in applyTxDefaults (called by Transact), so the test must use
+// Transact() — CreateTransaction() doesn't apply fdb wrapper defaults.
+func TestSetTransactionRetryLimit_Zero(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	key := fdb.Key(t.Name() + "_key")
+
+	// Seed.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Set retry limit to 0 — Transact should fail on first retryable error.
+	db.Options().SetTransactionRetryLimit(0)
+
+	// Count how many times Transact invokes the callback. With retryLimit=0,
+	// a conflict causes OnError to reject retry, so the callback runs once
+	// and Transact returns the error.
+	var calls atomic.Int32
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		n := calls.Add(1)
+
+		// First call: read key, then return a retryable error to simulate
+		// a transient failure. Transact will call OnError, which should
+		// reject retry (retryLimit=0).
+		if n == 1 {
+			return nil, fdb.Error{Code: 1020} // not_committed
+		}
+		// If we get here, the retry was allowed — the bug is present.
+		return nil, nil
+	})
+
+	if calls.Load() > 1 {
+		t.Fatalf("Transact retried %d times: retryLimit=0 was NOT applied — the original bug is present",
+			calls.Load())
+	}
+	if err == nil {
+		t.Fatal("expected error from Transact, got nil")
+	}
+	t.Logf("Transact correctly failed without retry (retryLimit=0): %v", err)
+}

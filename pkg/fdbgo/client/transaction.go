@@ -386,18 +386,20 @@ func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
 		tx.readVersion = rv
 		tx.hasReadVersion = true
 	}
+	userSet := tx.userSetReadVersion
+	rv := tx.readVersion
 	tx.readVersionMu.Unlock()
 	// C++ DatabaseContext::validateVersion(): reject user-set read versions
 	// outside the acceptable range. If the client hasn't seen a version yet
 	// (minAcceptableReadVersion==0), a GRV is needed first to establish the
 	// baseline. C++ does this in startTransaction() before validateVersion().
-	if tx.db != nil && tx.userSetReadVersion {
+	if tx.db != nil && userSet {
 		if tx.db.minAcceptableReadVersion.Load() == 0 {
 			// Bootstrap: fetch a version to establish the minimum.
 			flags := tx.grvFlags()
 			_, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags)
 		}
-		if err := tx.db.validateVersion(tx.readVersion); err != nil {
+		if err := tx.db.validateVersion(rv); err != nil {
 			return err
 		}
 	}

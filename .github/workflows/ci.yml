@@ -60,11 +60,32 @@ jobs:
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
 
+      - name: Race detector (FDB client + record layer)
+        run: |
+          bazelisk test \
+            //pkg/fdbgo/client:client_test \
+            //pkg/fdbgo/fdb:fdb_test \
+            //pkg/recordlayer:recordlayer_test \
+            //pkg/recordlayer/chaos:chaos_test \
+            //conformance:conformance_test \
+            --@rules_go//go/config:race \
+            --test_timeout=900 \
+            --test_summary=detailed
+
       - name: Run govulncheck
         continue-on-error: true
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
-          govulncheck ./...
+          # Use Bazel's hermetic Go SDK — the runner may not have system Go in PATH.
+          OUTPUT_BASE=$(bazelisk info output_base 2>/dev/null)
+          GO_BIN=$(ls "$OUTPUT_BASE"/external/rules_go++go_sdk+*download*/bin/go 2>/dev/null | head -1)
+          if [ -z "$GO_BIN" ]; then
+            echo "Bazel Go SDK not found — trying system go"
+            GO_BIN=go
+          fi
+          echo "Using Go: $GO_BIN"
+          GOBIN=$(mktemp -d)
+          GOBIN="$GOBIN" "$GO_BIN" install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+          "$GOBIN/govulncheck" ./...
 
       - name: Generate test report
         if: always()
