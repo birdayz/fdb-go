@@ -1,4 +1,4 @@
-# RFC 019: Online Indexer — Lifecycle, Operations, and `frl` CLI
+# RFC 020: Online Indexer — Lifecycle, Operations, and `frl` CLI
 
 ## Status: Draft
 
