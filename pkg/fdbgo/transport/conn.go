@@ -279,7 +279,7 @@ func putReplyChannel(ch chan Response) {
 // immediately wait for the response.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.debugFrames {
-		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
+		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
@@ -490,7 +490,7 @@ func (c *Conn) readLoop() {
 			c.pendingMu.RLock()
 			_, isPending := c.pending[token]
 			c.pendingMu.RUnlock()
-			fmt.Fprintf(c.debugWriter, "[recv] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n",
+			fmt.Fprintf(c.debugWriter, "[recv %s] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n", c.conn.RemoteAddr(),
 				token.First, token.Second, len(body), token == pingToken, isPending)
 		}
 
