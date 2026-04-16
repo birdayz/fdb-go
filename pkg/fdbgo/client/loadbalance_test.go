@@ -376,7 +376,7 @@ func TestChooseTopTwo(t *testing.T) {
 	_ = delta
 
 	best, second = q.chooseTopTwo(servers)
-	// "fast" should be best (lowest outstanding), "medium" second.
+	// "slow" should never be primary; "fast" and "medium" are both valid under power-of-two random.
 	if servers[best].Address == "slow" {
 		t.Fatalf("slow should not be best: best=%d (%s)", best, servers[best].Address)
 	}
