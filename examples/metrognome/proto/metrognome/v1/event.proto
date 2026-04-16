@@ -9,6 +9,11 @@ service EventService {
   // idempotency_key — duplicates are silently ignored (exactly-once).
   rpc IngestEvents(IngestEventsRequest) returns (IngestEventsResponse);
 
+  // IngestEventsBulk is the high-throughput path. Skips idempotency dedup —
+  // caller guarantees unique keys. Uses FDB InsertBatch (no read-before-write,
+  // disabled RYW cache, disabled write conflict ranges).
+  rpc IngestEventsBulk(IngestEventsRequest) returns (IngestEventsResponse);
+
   // GetUsage returns aggregated usage for a customer/meter over a time range.
   rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
 

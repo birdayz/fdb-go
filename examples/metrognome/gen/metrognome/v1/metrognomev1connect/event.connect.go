@@ -38,6 +38,9 @@ const (
 	// EventServiceIngestEventsProcedure is the fully-qualified name of the EventService's IngestEvents
 	// RPC.
 	EventServiceIngestEventsProcedure = "/metrognome.v1.EventService/IngestEvents"
+	// EventServiceIngestEventsBulkProcedure is the fully-qualified name of the EventService's
+	// IngestEventsBulk RPC.
+	EventServiceIngestEventsBulkProcedure = "/metrognome.v1.EventService/IngestEventsBulk"
 	// EventServiceGetUsageProcedure is the fully-qualified name of the EventService's GetUsage RPC.
 	EventServiceGetUsageProcedure = "/metrognome.v1.EventService/GetUsage"
 	// EventServiceGetUsageGroupsProcedure is the fully-qualified name of the EventService's
@@ -50,6 +53,10 @@ type EventServiceClient interface {
 	// IngestEvents accepts a batch of usage events. Each event must have an
 	// idempotency_key — duplicates are silently ignored (exactly-once).
 	IngestEvents(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
+	// IngestEventsBulk is the high-throughput path. Skips idempotency dedup —
+	// caller guarantees unique keys. Uses FDB InsertBatch (no read-before-write,
+	// disabled RYW cache, disabled write conflict ranges).
+	IngestEventsBulk(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
 	// GetUsage returns aggregated usage for a customer/meter over a time range.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
 	// GetUsageGroups returns usage broken down by group-by property values.
@@ -74,6 +81,12 @@ func NewEventServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(eventServiceMethods.ByName("IngestEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		ingestEventsBulk: connect.NewClient[v1.IngestEventsRequest, v1.IngestEventsResponse](
+			httpClient,
+			baseURL+EventServiceIngestEventsBulkProcedure,
+			connect.WithSchema(eventServiceMethods.ByName("IngestEventsBulk")),
+			connect.WithClientOptions(opts...),
+		),
 		getUsage: connect.NewClient[v1.GetUsageRequest, v1.GetUsageResponse](
 			httpClient,
 			baseURL+EventServiceGetUsageProcedure,
@@ -91,14 +104,20 @@ func NewEventServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 
 // eventServiceClient implements EventServiceClient.
 type eventServiceClient struct {
-	ingestEvents   *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
-	getUsage       *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
-	getUsageGroups *connect.Client[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse]
+	ingestEvents     *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
+	ingestEventsBulk *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
+	getUsage         *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
+	getUsageGroups   *connect.Client[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse]
 }
 
 // IngestEvents calls metrognome.v1.EventService.IngestEvents.
 func (c *eventServiceClient) IngestEvents(ctx context.Context, req *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error) {
 	return c.ingestEvents.CallUnary(ctx, req)
+}
+
+// IngestEventsBulk calls metrognome.v1.EventService.IngestEventsBulk.
+func (c *eventServiceClient) IngestEventsBulk(ctx context.Context, req *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error) {
+	return c.ingestEventsBulk.CallUnary(ctx, req)
 }
 
 // GetUsage calls metrognome.v1.EventService.GetUsage.
@@ -116,6 +135,10 @@ type EventServiceHandler interface {
 	// IngestEvents accepts a batch of usage events. Each event must have an
 	// idempotency_key — duplicates are silently ignored (exactly-once).
 	IngestEvents(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
+	// IngestEventsBulk is the high-throughput path. Skips idempotency dedup —
+	// caller guarantees unique keys. Uses FDB InsertBatch (no read-before-write,
+	// disabled RYW cache, disabled write conflict ranges).
+	IngestEventsBulk(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error)
 	// GetUsage returns aggregated usage for a customer/meter over a time range.
 	GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
 	// GetUsageGroups returns usage broken down by group-by property values.
@@ -136,6 +159,12 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(eventServiceMethods.ByName("IngestEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	eventServiceIngestEventsBulkHandler := connect.NewUnaryHandler(
+		EventServiceIngestEventsBulkProcedure,
+		svc.IngestEventsBulk,
+		connect.WithSchema(eventServiceMethods.ByName("IngestEventsBulk")),
+		connect.WithHandlerOptions(opts...),
+	)
 	eventServiceGetUsageHandler := connect.NewUnaryHandler(
 		EventServiceGetUsageProcedure,
 		svc.GetUsage,
@@ -152,6 +181,8 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 		switch r.URL.Path {
 		case EventServiceIngestEventsProcedure:
 			eventServiceIngestEventsHandler.ServeHTTP(w, r)
+		case EventServiceIngestEventsBulkProcedure:
+			eventServiceIngestEventsBulkHandler.ServeHTTP(w, r)
 		case EventServiceGetUsageProcedure:
 			eventServiceGetUsageHandler.ServeHTTP(w, r)
 		case EventServiceGetUsageGroupsProcedure:
@@ -167,6 +198,10 @@ type UnimplementedEventServiceHandler struct{}
 
 func (UnimplementedEventServiceHandler) IngestEvents(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.IngestEvents is not implemented"))
+}
+
+func (UnimplementedEventServiceHandler) IngestEventsBulk(context.Context, *connect.Request[v1.IngestEventsRequest]) (*connect.Response[v1.IngestEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.IngestEventsBulk is not implemented"))
 }
 
 func (UnimplementedEventServiceHandler) GetUsage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error) {

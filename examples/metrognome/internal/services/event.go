@@ -88,6 +88,44 @@ func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[me
 	}), nil
 }
 
+func (s *EventService) IngestEventsBulk(ctx context.Context, req *connect.Request[metrognomev1.IngestEventsRequest]) (*connect.Response[metrognomev1.IngestEventsResponse], error) {
+	if err := validateIngestEvents(req.Msg); err != nil {
+		return nil, err
+	}
+	now := time.Now().UnixMilli()
+
+	records := make([]*storev1.UsageEvent, len(req.Msg.GetEvents()))
+	for i, evt := range req.Msg.GetEvents() {
+		ts := evt.GetTimestampMs()
+		if ts == 0 {
+			ts = now
+		}
+		meterSlug := evt.GetEventType()
+		records[i] = &storev1.UsageEvent{
+			Id:              proto.String(newID("evt")),
+			CustomerId:      proto.String(evt.GetCustomerId()),
+			EventType:       proto.String(evt.GetEventType()),
+			MeterSlug:       proto.String(meterSlug),
+			TimestampMs:     proto.Int64(ts),
+			Value:           proto.Int64(evt.GetValue()),
+			IdempotencyKey:  proto.String(evt.GetIdempotencyKey()),
+			PropertiesJson:  proto.String(evt.GetPropertiesJson()),
+			IngestedAt:      proto.Int64(now),
+			TimestampBucket: proto.Int64(billing.BucketHour(ts)),
+		}
+	}
+
+	n, err := s.events.BulkInsert(ctx, records)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("bulk ingest: %w", err))
+	}
+
+	return connect.NewResponse(&metrognomev1.IngestEventsResponse{
+		Accepted:   int32(n),
+		Duplicates: 0,
+	}), nil
+}
+
 // evaluateAlerts checks if any alerts have been breached after event ingestion.
 func (s *EventService) evaluateAlerts(ctx context.Context, events []*metrognomev1.Event, acceptedIndexes []int) {
 	// Collect unique customer/meter pairs from accepted events

@@ -175,6 +175,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	user, err := h.resolveUser(r)
 	if err != nil {
+		slog.Warn("auth/me failed", "error", err)
 		http.Error(w, "not authenticated", http.StatusUnauthorized)
 		return
 	}

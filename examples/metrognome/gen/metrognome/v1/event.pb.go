@@ -672,9 +672,10 @@ const file_metrognome_v1_event_proto_rawDesc = "" +
 	"WindowSize\x12\x1b\n" +
 	"\x17WINDOW_SIZE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10WINDOW_SIZE_HOUR\x10\x01\x12\x13\n" +
-	"\x0fWINDOW_SIZE_DAY\x10\x022\x93\x02\n" +
+	"\x0fWINDOW_SIZE_DAY\x10\x022\xf0\x02\n" +
 	"\fEventService\x12W\n" +
-	"\fIngestEvents\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12K\n" +
+	"\fIngestEvents\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12[\n" +
+	"\x10IngestEventsBulk\x12\".metrognome.v1.IngestEventsRequest\x1a#.metrognome.v1.IngestEventsResponse\x12K\n" +
 	"\bGetUsage\x12\x1e.metrognome.v1.GetUsageRequest\x1a\x1f.metrognome.v1.GetUsageResponse\x12]\n" +
 	"\x0eGetUsageGroups\x12$.metrognome.v1.GetUsageGroupsRequest\x1a%.metrognome.v1.GetUsageGroupsResponseB[ZYgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1b\x06proto3"
 
@@ -715,13 +716,15 @@ var file_metrognome_v1_event_proto_depIdxs = []int32{
 	9,  // 3: metrognome.v1.GetUsageGroupsResponse.groups:type_name -> metrognome.v1.UsageGroup
 	10, // 4: metrognome.v1.UsageGroup.group_values:type_name -> metrognome.v1.UsageGroup.GroupValuesEntry
 	1,  // 5: metrognome.v1.EventService.IngestEvents:input_type -> metrognome.v1.IngestEventsRequest
-	4,  // 6: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
-	7,  // 7: metrognome.v1.EventService.GetUsageGroups:input_type -> metrognome.v1.GetUsageGroupsRequest
-	3,  // 8: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
-	5,  // 9: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
-	8,  // 10: metrognome.v1.EventService.GetUsageGroups:output_type -> metrognome.v1.GetUsageGroupsResponse
-	8,  // [8:11] is the sub-list for method output_type
-	5,  // [5:8] is the sub-list for method input_type
+	1,  // 6: metrognome.v1.EventService.IngestEventsBulk:input_type -> metrognome.v1.IngestEventsRequest
+	4,  // 7: metrognome.v1.EventService.GetUsage:input_type -> metrognome.v1.GetUsageRequest
+	7,  // 8: metrognome.v1.EventService.GetUsageGroups:input_type -> metrognome.v1.GetUsageGroupsRequest
+	3,  // 9: metrognome.v1.EventService.IngestEvents:output_type -> metrognome.v1.IngestEventsResponse
+	3,  // 10: metrognome.v1.EventService.IngestEventsBulk:output_type -> metrognome.v1.IngestEventsResponse
+	5,  // 11: metrognome.v1.EventService.GetUsage:output_type -> metrognome.v1.GetUsageResponse
+	8,  // 12: metrognome.v1.EventService.GetUsageGroups:output_type -> metrognome.v1.GetUsageGroupsResponse
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name

@@ -3,11 +3,13 @@ import { createClient } from "@connectrpc/connect";
 import { transport } from "@/lib/transport";
 import { CustomerService } from "@/gen/metrognome/v1/customer_pb";
 import type { Customer } from "@/gen/metrognome/v1/customer_pb";
-import { Users, Plus, Search, ExternalLink, Copy, Check } from "lucide-react";
+import { Users, Plus, Search, ExternalLink, Copy, Check, ChevronRight } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 const client = createClient(CustomerService, transport);
 
 export function CustomersPage() {
+  const navigate = useNavigate();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -103,11 +105,12 @@ export function CustomersPage() {
                 <th className="text-left px-4 py-3">External ID</th>
                 <th className="text-left px-4 py-3">Customer ID</th>
                 <th className="text-left px-4 py-3">Created</th>
+                <th className="w-8"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map(c => (
-                <tr key={c.id} className="border-b border-gray-50 hover:bg-indigo-50/30 cursor-pointer">
+                <tr key={c.id} onClick={() => navigate(`/customers/${c.id}`)} className="border-b border-gray-50 hover:bg-indigo-50/30 cursor-pointer">
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 text-xs font-bold">
@@ -134,6 +137,9 @@ export function CustomersPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
                     {new Date(Number(c.createdAt)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  </td>
+                  <td className="pr-3">
+                    <ChevronRight className="w-4 h-4 text-gray-300" />
                   </td>
                 </tr>
               ))}

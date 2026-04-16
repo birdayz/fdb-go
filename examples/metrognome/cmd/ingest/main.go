@@ -36,6 +36,7 @@ func main() {
 	workers := flag.Int("workers", 20, "Parallel workers")
 	batch := flag.Int("batch", 500, "Events per batch")
 	customer := flag.String("customer", "cust-anthropic", "Customer ID")
+	bulk := flag.Bool("bulk", false, "Use IngestEventsBulk (no dedup, max throughput)")
 	flag.Parse()
 
 	if *key == "" {
@@ -50,7 +51,11 @@ func main() {
 	totalBatches := *total / *batch
 	perWorker := totalBatches / *workers
 
-	log.Printf("Ingesting %d events for %s", *total, *customer)
+	mode := "standard (with dedup)"
+	if *bulk {
+		mode = "BULK (no dedup, InsertBatch)"
+	}
+	log.Printf("Ingesting %d events for %s [%s]", *total, *customer, mode)
 	log.Printf("  %d batches of %d, %d workers (%d batches/worker)", totalBatches, *batch, *workers, perWorker)
 
 	var accepted, duplicates atomic.Int64
@@ -107,8 +112,6 @@ func main() {
 			events := make([]*metrognomev1.Event, *batch)
 			for b := startBatch; b < endBatch; b++ {
 				for i := range events {
-					idx := int64(b**batch + i)
-
 					// Pick meter based on weight distribution
 					roll := rng.IntN(100)
 					mi := 0
@@ -133,14 +136,18 @@ func main() {
 						EventType:      m.slug,
 						Value:          val,
 						TimestampMs:    ts,
-						IdempotencyKey: fmt.Sprintf("bulk-%d-%d", workerID, idx),
+						IdempotencyKey: fmt.Sprintf("i%d-%d-%d", rng.Int64(), workerID, i),
 					}
 				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				resp, err := client.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{
-					Events: events,
-				}))
+				var resp *connect.Response[metrognomev1.IngestEventsResponse]
+				var err error
+				if *bulk {
+					resp, err = client.IngestEventsBulk(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events}))
+				} else {
+					resp, err = client.IngestEvents(ctx, connect.NewRequest(&metrognomev1.IngestEventsRequest{Events: events}))
+				}
 				cancel()
 
 				if err != nil {

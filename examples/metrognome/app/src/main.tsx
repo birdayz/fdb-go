@@ -17,6 +17,7 @@ import { RateCardsPage } from "./pages/RateCards";
 import { ContractsPage } from "./pages/Contracts";
 import { AlertsPage } from "./pages/Alerts";
 import { ApiKeysPage } from "./pages/ApiKeys";
+import { CustomerDetailPage } from "./pages/CustomerDetail";
 
 function App() {
   const { user, loading } = useAuth();
@@ -42,6 +43,7 @@ function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/customers" element={<CustomersPage />} />
+        <Route path="/customers/:id" element={<CustomerDetailPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/meters" element={<MetersPage />} />
         <Route path="/rate-cards" element={<RateCardsPage />} />

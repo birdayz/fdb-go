@@ -5,6 +5,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 
@@ -24,17 +25,32 @@ type IngestResult struct {
 }
 
 // Ingest saves a batch of usage events in a single transaction.
-// Deduplicates by idempotency_key using a pre-check scan on the unique index.
+// Deduplicates by idempotency_key using pipelined index lookups — all N dedup
+// checks fire as FDB GetRange futures at once (1 round trip total instead of N
+// sequential), then resolves and saves non-duplicates.
 // Returns detailed result including which event indices were accepted.
 func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (*IngestResult, error) {
 	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
 		result := &IngestResult{}
+		tx := rs.Context().Transaction()
+
+		// Phase 1: Fire all dedup lookups as futures (non-blocking).
+		// Each lookup checks if the idempotency key exists in the unique index.
+		// All N reads pipeline over the wire — ~1 FDB round trip total.
+		idx := rs.GetRecordMetaData().GetIndex("event_by_idempotency_key")
+		indexSS := rs.Subspace().Sub(rl.IndexKey, idx.SubspaceTupleKey())
+
+		dedupFutures := make([]fdb.RangeResult, len(events))
 		for i, evt := range events {
-			// Pre-check idempotency key to avoid polluting SUM/COUNT indexes
-			idx := rs.GetRecordMetaData().GetIndex("event_by_idempotency_key")
-			cursor := rs.ScanIndex(idx,
-				rl.TupleRangeAllOf(tuple.Tuple{evt.GetIdempotencyKey()}), nil, rl.ForwardScan())
-			existing, err := rl.AsList(ctx, cursor)
+			prefix := fdb.Key(indexSS.Pack(tuple.Tuple{evt.GetIdempotencyKey()}))
+			kr, _ := fdb.PrefixRange(prefix)
+			dedupFutures[i] = tx.Snapshot().GetRange(kr, fdb.RangeOptions{Limit: 1})
+		}
+
+		// Phase 2: Resolve futures + save non-duplicates.
+		// By now FDB has pipelined all N reads. Resolution is ~1 round trip.
+		for i, evt := range events {
+			existing, err := dedupFutures[i].GetSliceWithError()
 			if err != nil {
 				return nil, err
 			}

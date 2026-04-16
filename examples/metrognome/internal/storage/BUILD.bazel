@@ -25,6 +25,7 @@ go_library(
     visibility = ["//examples/metrognome:__subpackages__"],
     deps = [
         "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",

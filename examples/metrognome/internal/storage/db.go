@@ -155,11 +155,28 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 		return nil, fmt.Errorf("build record metadata: %w", err)
 	}
 
-	return &DB{
+	db := &DB{
 		fdb:      fdb,
 		metadata: md,
 		ss:       subspace.Sub("metrognome"),
-	}, nil
+	}
+
+	// CreateOrOpen once at startup — ensures store exists, header written,
+	// and checkPossiblyRebuild runs if metadata version changed.
+	// Subsequent per-request Open() calls skip this (SetSkipPossiblyRebuild).
+	_, err = fdb.Run(context.Background(), func(rtx *rl.FDBRecordContext) (any, error) {
+		_, err := rl.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(db.ss).
+			CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create/open store: %w", err)
+	}
+
+	return db, nil
 }
 
 // FDB returns the underlying FDBDatabase.
@@ -196,7 +213,8 @@ func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) 
 			SetContext(rtx).
 			SetMetaDataProvider(d.metadata).
 			SetSubspace(d.ss).
-			CreateOrOpen()
+			SetSkipPossiblyRebuild(true).
+			Open()
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +229,8 @@ func (d *DB) runInStore(ctx context.Context, fn func(*rl.FDBRecordContext, *rl.F
 			SetContext(rtx).
 			SetMetaDataProvider(d.metadata).
 			SetSubspace(d.ss).
-			CreateOrOpen()
+			SetSkipPossiblyRebuild(true).
+			Open()
 		if err != nil {
 			return nil, err
 		}

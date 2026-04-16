@@ -28,7 +28,13 @@ func main() {
 	workers := flag.Int("workers", 20, "Parallel goroutines")
 	batch := flag.Int("batch", 200, "Events per FDB transaction")
 	customer := flag.String("customer", "cust-anthropic", "Customer ID")
+	prefix := flag.String("prefix", "", "Key prefix for uniqueness across nodes")
 	flag.Parse()
+
+	if *prefix == "" {
+		hostname, _ := os.Hostname()
+		*prefix = hostname
+	}
 
 	clusterFile := os.Getenv("FDB_CLUSTER_FILE")
 	fdb.MustAPIVersion(720)
@@ -129,13 +135,13 @@ func main() {
 					ts := baseTs + int64(day)*86400000 + int64(hour)*3600000 + int64(minute)*60000 + int64(second)*1000
 
 					events[i] = &storev1.UsageEvent{
-						Id:              proto.String(fmt.Sprintf("bi-%d", globalIdx)),
+						Id:              proto.String(fmt.Sprintf("bi-%s-%d", *prefix, globalIdx)),
 						CustomerId:      proto.String(*customer),
 						MeterSlug:       proto.String(m.slug),
 						EventType:       proto.String(m.slug),
 						TimestampMs:     proto.Int64(ts),
 						Value:           proto.Int64(val),
-						IdempotencyKey:  proto.String(fmt.Sprintf("bi-%d", globalIdx)),
+						IdempotencyKey:  proto.String(fmt.Sprintf("bi-%s-%d", *prefix, globalIdx)),
 						TimestampBucket: proto.Int64(billing.BucketHour(ts)),
 						IngestedAt:      proto.Int64(time.Now().UnixMilli()),
 					}
