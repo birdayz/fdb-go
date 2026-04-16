@@ -202,3 +202,37 @@ All optimizations maintain Java wire compatibility and semantic behavior:
 - SetAssumeAllIndexesReadable goes beyond Java (Java always lazy-loads)
 - ScanRecordsByType prefix scan matches Java's RecordTypeKeyComparison optimization
 - 433 conformance specs pass (Go↔Java cross-compatibility verified)
+
+## Addendum: DirectPacker + scalarToInterface Elimination
+
+### scalarToInterface journey
+
+| Step | Production alloc % | What |
+|---|---|---|
+| Baseline | **27%** | Every field boxed int64/string→any |
+| DirectPacker for VALUE composite keys | 22% | Multi-field VALUE indexes bypass any |
+| DirectPacker for atomic multi-field grouping | 15% | SUM/COUNT group keys bypass any |
+| EncodeString on Packer | 6.6% | String fields encoded directly |
+| DirectPacker for single-field VALUE | 9% | UNIQUE index values bypass any |
+| SUM value via Int64Evaluator | 5% | SUM extraction avoids boxing |
+| Typed fieldStep.packInto | **0%** | Compiled PK evaluator uses typed append |
+
+### Additional optimizations
+
+- **skipUniquenessChecks in InsertBatch**: 2.7x throughput (13K → 34K events/sec). checkUniqueness did FDB GetRange per UNIQUE index entry — 100 reads per batch of 100.
+- **Shared batchPacker**: Eliminates tuple.Packer pool churn during InsertBatch. GetPacker went from 19% to 0% of production allocs.
+- **Packer.Reset() + EncodeString()**: New methods enabling packer reuse and zero-boxing string encoding.
+- **SUM value extraction bug fix**: Multi-field DirectPacker path was passing nil sumSource, silently skipping SUM mutations for bulk-inserted events.
+
+### Final production alloc distribution (34K events/sec)
+
+| Source | % | Layer |
+|---|---|---|
+| IngestEventsBulk handler | 50% | Application (proto2 *string/*int64) |
+| Proto deserialization | 20% | Framework (ConnectRPC) |
+| serializeUnion | 6% | Record layer (structural — proto bytes for FDB) |
+| appendString | 5% | Record layer (structural — string→TupleElement for PK) |
+| proto.Marshal | 5% | Framework |
+| reflect.unsafe_New | 4% | Framework |
+| newID | 3% | Application |
+| **Record layer total** | **~11%** | Down from ~60% at start |
