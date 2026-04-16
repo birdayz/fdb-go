@@ -404,7 +404,10 @@ func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) [
 		}
 	}
 
-	var results []LocationResult
+	// Small-array optimization: most lookups return 1 result (single shard).
+	// Avoids heap allocation for the common case.
+	var buf [1]LocationResult
+	results := buf[:0]
 	for i := startIdx; i < len(lc.entries); i++ {
 		e := &lc.entries[i]
 		if e.tenantId != tenantId {
@@ -484,12 +487,13 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				continue
 			}
 
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body := buildRequest(replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 			if err := conn.SendFrame(locToken, body); err != nil {
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				db.handleConnError(proxy.Address)
 				continue
 			}
@@ -498,6 +502,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			select {
 			case resp := <-replyCh:
 				rpcCancel()
+				replyHandle.Release()
 				if resp.Err != nil {
 					db.handleConnError(proxy.Address)
 					continue
@@ -519,7 +524,8 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				}
 			case <-rctx.Done():
 				rpcCancel()
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}

@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file metrognome/store/v1/store.proto.
  */
 export const file_metrognome_store_v1_store: GenFile = /*@__PURE__*/
-  fileDesc("Ch9tZXRyb2dub21lL3N0b3JlL3YxL3N0b3JlLnByb3RvEhNtZXRyb2dub21lLnN0b3JlLnYxIk0KCEN1c3RvbWVyEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSEwoLZXh0ZXJuYWxfaWQYAyABKAkSEgoKY3JlYXRlZF9hdBgEIAEoAyLTAQoFTWV0ZXISCgoCaWQYASABKAkSDAoEc2x1ZxgCIAEoCRIMCgRuYW1lGAMgASgJEj4KEGFnZ3JlZ2F0aW9uX3R5cGUYBCABKA4yJC5tZXRyb2dub21lLnN0b3JlLnYxLkFnZ3JlZ2F0aW9uVHlwZRIWCg52YWx1ZV9wcm9wZXJ0eRgFIAEoCRIbChNncm91cF9ieV9wcm9wZXJ0aWVzGAYgAygJEhkKEWV2ZW50X3R5cGVfZmlsdGVyGAcgASgJEhIKCmNyZWF0ZWRfYXQYCCABKAMiSQoEUGxhbhIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJEhIKCmNyZWF0ZWRfYXQYBCABKAMigQEKBkNoYXJnZRIKCgJpZBgBIAEoCRIPCgdwbGFuX2lkGAIgASgJEhIKCm1ldGVyX3NsdWcYAyABKAkSMgoHcHJpY2luZxgEIAEoCzIhLm1ldHJvZ25vbWUuc3RvcmUudjEuUHJpY2luZ01vZGVsEhIKCmNyZWF0ZWRfYXQYBSABKAMi1gIKDFByaWNpbmdNb2RlbBIwCgRmbGF0GAEgASgLMiAubWV0cm9nbm9tZS5zdG9yZS52MS5GbGF0UHJpY2luZ0gAEjcKCHBlcl91bml0GAIgASgLMiMubWV0cm9nbm9tZS5zdG9yZS52MS5QZXJVbml0UHJpY2luZ0gAEjQKBnRpZXJlZBgDIAEoCzIiLm1ldHJvZ25vbWUuc3RvcmUudjEuVGllcmVkUHJpY2luZ0gAEjQKBnZvbHVtZRgEIAEoCzIiLm1ldHJvZ25vbWUuc3RvcmUudjEuVm9sdW1lUHJpY2luZ0gAEjYKB3BhY2thZ2UYBSABKAsyIy5tZXRyb2dub21lLnN0b3JlLnYxLlBhY2thZ2VQcmljaW5nSAASLgoDYnBzGAYgASgLMh8ubWV0cm9nbm9tZS5zdG9yZS52MS5CcHNQcmljaW5nSABCBwoFbW9kZWwiIwoLRmxhdFByaWNpbmcSFAoMYW1vdW50X2NlbnRzGAEgASgDIioKDlBlclVuaXRQcmljaW5nEhgKEHVuaXRfcHJpY2VfY2VudHMYASABKAMiOQoNVGllcmVkUHJpY2luZxIoCgV0aWVycxgBIAMoCzIZLm1ldHJvZ25vbWUuc3RvcmUudjEuVGllciIqCgRUaWVyEg0KBXVwX3RvGAEgASgDEhMKC3ByaWNlX2NlbnRzGAIgASgDIjkKDVZvbHVtZVByaWNpbmcSKAoFdGllcnMYASADKAsyGS5tZXRyb2dub21lLnN0b3JlLnYxLlRpZXIiQwoOUGFja2FnZVByaWNpbmcSFAoMcGFja2FnZV9zaXplGAEgASgDEhsKE3BhY2thZ2VfcHJpY2VfY2VudHMYAiABKAMiIgoKQnBzUHJpY2luZxIUCgxiYXNpc19wb2ludHMYASABKAMivgEKCENvbnRyYWN0EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEg8KB3BsYW5faWQYAyABKAkSEAoIc3RhcnRfYXQYBCABKAMSDgoGZW5kX2F0GAUgASgDEjoKDmJpbGxpbmdfcGVyaW9kGAYgASgOMiIubWV0cm9nbm9tZS5zdG9yZS52MS5CaWxsaW5nUGVyaW9kEhIKCmNyZWF0ZWRfYXQYByABKAMSDgoGYWN0aXZlGAggASgIItsBCgpVc2FnZUV2ZW50EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhIKCmV2ZW50X3R5cGUYAyABKAkSEgoKbWV0ZXJfc2x1ZxgEIAEoCRIUCgx0aW1lc3RhbXBfbXMYBSABKAMSDQoFdmFsdWUYBiABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAcgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgIIAEoCRITCgtpbmdlc3RlZF9hdBgJIAEoAxIYChB0aW1lc3RhbXBfYnVja2V0GAogASgDIsYCCgdJbnZvaWNlEgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhMKC2NvbnRyYWN0X2lkGAMgASgJEhQKDHBlcmlvZF9zdGFydBgEIAEoAxISCgpwZXJpb2RfZW5kGAUgASgDEjEKCmxpbmVfaXRlbXMYBiADKAsyHS5tZXRyb2dub21lLnN0b3JlLnYxLkxpbmVJdGVtEhYKDnN1YnRvdGFsX2NlbnRzGAcgASgDEh0KFWNyZWRpdHNfYXBwbGllZF9jZW50cxgIIAEoAxITCgt0b3RhbF9jZW50cxgJIAEoAxIyCgZzdGF0dXMYCiABKA4yIi5tZXRyb2dub21lLnN0b3JlLnYxLkludm9pY2VTdGF0dXMSEgoKY3JlYXRlZF9hdBgLIAEoAxIUCgxmaW5hbGl6ZWRfYXQYDCABKAMibgoITGluZUl0ZW0SEQoJY2hhcmdlX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSEAoIcXVhbnRpdHkYBCABKAMSFAoMYW1vdW50X2NlbnRzGAUgASgDIpIBCgZDcmVkaXQSCgoCaWQYASABKAkSEwoLY3VzdG9tZXJfaWQYAiABKAkSFAoMYW1vdW50X2NlbnRzGAMgASgDEhcKD3JlbWFpbmluZ19jZW50cxgEIAEoAxISCgpleHBpcmVzX2F0GAUgASgDEhAKCHByaW9yaXR5GAYgASgFEhIKCmNyZWF0ZWRfYXQYByABKAMi1QEKBUFsZXJ0EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhIKCm1ldGVyX3NsdWcYAyABKAkSEQoJdGhyZXNob2xkGAQgASgDEjIKCmFsZXJ0X3R5cGUYBSABKA4yHi5tZXRyb2dub21lLnN0b3JlLnYxLkFsZXJ0VHlwZRIRCgl0cmlnZ2VyZWQYBiABKAgSEgoKY3JlYXRlZF9hdBgHIAEoAxITCgt3ZWJob29rX3VybBgIIAEoCRIUCgx0cmlnZ2VyZWRfYXQYCSABKAMiUwoLS2Fma2FPZmZzZXQSDQoFdG9waWMYASABKAkSEQoJcGFydGl0aW9uGAIgASgFEg4KBm9mZnNldBgDIAEoAxISCgp1cGRhdGVkX2F0GAQgASgDIogBCgpEZWFkTGV0dGVyEgoKAmlkGAEgASgJEg0KBXRvcGljGAIgASgJEhEKCXBhcnRpdGlvbhgDIAEoBRIOCgZvZmZzZXQYBCABKAMSEQoJcmF3X3ZhbHVlGAUgASgMEhUKDWVycm9yX21lc3NhZ2UYBiABKAkSEgoKY3JlYXRlZF9hdBgHIAEoAyJ5CgRVc2VyEgoKAmlkGAEgASgJEhEKCWdpdGh1Yl9pZBgCIAEoCRINCgVsb2dpbhgDIAEoCRIMCgRuYW1lGAQgASgJEhIKCmF2YXRhcl91cmwYBSABKAkSDQoFZW1haWwYBiABKAkSEgoKY3JlYXRlZF9hdBgHIAEoAyJOCgdTZXNzaW9uEgoKAmlkGAEgASgJEg8KB3VzZXJfaWQYAiABKAkSEgoKY3JlYXRlZF9hdBgDIAEoAxISCgpleHBpcmVzX2F0GAQgASgDIoEFCg9VbmlvbkRlc2NyaXB0b3ISMAoJX0N1c3RvbWVyGAEgASgLMh0ubWV0cm9nbm9tZS5zdG9yZS52MS5DdXN0b21lchIqCgZfTWV0ZXIYAiABKAsyGi5tZXRyb2dub21lLnN0b3JlLnYxLk1ldGVyEigKBV9QbGFuGAMgASgLMhkubWV0cm9nbm9tZS5zdG9yZS52MS5QbGFuEiwKB19DaGFyZ2UYBCABKAsyGy5tZXRyb2dub21lLnN0b3JlLnYxLkNoYXJnZRIwCglfQ29udHJhY3QYBSABKAsyHS5tZXRyb2dub21lLnN0b3JlLnYxLkNvbnRyYWN0EjQKC19Vc2FnZUV2ZW50GAYgASgLMh8ubWV0cm9nbm9tZS5zdG9yZS52MS5Vc2FnZUV2ZW50Ei4KCF9JbnZvaWNlGAcgASgLMhwubWV0cm9nbm9tZS5zdG9yZS52MS5JbnZvaWNlEiwKB19DcmVkaXQYCCABKAsyGy5tZXRyb2dub21lLnN0b3JlLnYxLkNyZWRpdBIqCgZfQWxlcnQYCSABKAsyGi5tZXRyb2dub21lLnN0b3JlLnYxLkFsZXJ0EjYKDF9LYWZrYU9mZnNldBgKIAEoCzIgLm1ldHJvZ25vbWUuc3RvcmUudjEuS2Fma2FPZmZzZXQSNAoLX0RlYWRMZXR0ZXIYCyABKAsyHy5tZXRyb2dub21lLnN0b3JlLnYxLkRlYWRMZXR0ZXISKAoFX1VzZXIYDCABKAsyGS5tZXRyb2dub21lLnN0b3JlLnYxLlVzZXISLgoIX1Nlc3Npb24YDSABKAsyHC5tZXRyb2dub21lLnN0b3JlLnYxLlNlc3Npb24qvQEKD0FnZ3JlZ2F0aW9uVHlwZRIgChxBR0dSRUdBVElPTl9UWVBFX1VOU1BFQ0lGSUVEEAASGgoWQUdHUkVHQVRJT05fVFlQRV9DT1VOVBABEhgKFEFHR1JFR0FUSU9OX1RZUEVfU1VNEAISGAoUQUdHUkVHQVRJT05fVFlQRV9NQVgQAxIbChdBR0dSRUdBVElPTl9UWVBFX1VOSVFVRRAEEhsKF0FHR1JFR0FUSU9OX1RZUEVfTEFURVNUEAUqhAEKDUJpbGxpbmdQZXJpb2QSHgoaQklMTElOR19QRVJJT0RfVU5TUEVDSUZJRUQQABIaChZCSUxMSU5HX1BFUklPRF9NT05USExZEAESHAoYQklMTElOR19QRVJJT0RfUVVBUlRFUkxZEAISGQoVQklMTElOR19QRVJJT0RfQU5OVUFMEAMqlgEKDUludm9pY2VTdGF0dXMSHgoaSU5WT0lDRV9TVEFUVVNfVU5TUEVDSUZJRUQQABIYChRJTlZPSUNFX1NUQVRVU19EUkFGVBABEhkKFUlOVk9JQ0VfU1RBVFVTX0lTU1VFRBACEhcKE0lOVk9JQ0VfU1RBVFVTX1BBSUQQAxIXChNJTlZPSUNFX1NUQVRVU19WT0lEEAQqUwoJQWxlcnRUeXBlEhoKFkFMRVJUX1RZUEVfVU5TUEVDSUZJRUQQABIUChBBTEVSVF9UWVBFX1VTQUdFEAESFAoQQUxFUlRfVFlQRV9TUEVORBACQlxaWmdpdGh1Yi5jb20vYmlyZGF5ei9mZGItcmVjb3JkLWxheWVyLWdvL2V4YW1wbGVzL21ldHJvZ25vbWUvZ2VuL21ldHJvZ25vbWUvc3RvcmUvdjE7c3RvcmV2MQ");
+  fileDesc("Ch9tZXRyb2dub21lL3N0b3JlL3YxL3N0b3JlLnByb3RvEhNtZXRyb2dub21lLnN0b3JlLnYxIk0KCEN1c3RvbWVyEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSEwoLZXh0ZXJuYWxfaWQYAyABKAkSEgoKY3JlYXRlZF9hdBgEIAEoAyLTAQoFTWV0ZXISCgoCaWQYASABKAkSDAoEc2x1ZxgCIAEoCRIMCgRuYW1lGAMgASgJEj4KEGFnZ3JlZ2F0aW9uX3R5cGUYBCABKA4yJC5tZXRyb2dub21lLnN0b3JlLnYxLkFnZ3JlZ2F0aW9uVHlwZRIWCg52YWx1ZV9wcm9wZXJ0eRgFIAEoCRIbChNncm91cF9ieV9wcm9wZXJ0aWVzGAYgAygJEhkKEWV2ZW50X3R5cGVfZmlsdGVyGAcgASgJEhIKCmNyZWF0ZWRfYXQYCCABKAMiSQoEUGxhbhIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJEhIKCmNyZWF0ZWRfYXQYBCABKAMigQEKBkNoYXJnZRIKCgJpZBgBIAEoCRIPCgdwbGFuX2lkGAIgASgJEhIKCm1ldGVyX3NsdWcYAyABKAkSMgoHcHJpY2luZxgEIAEoCzIhLm1ldHJvZ25vbWUuc3RvcmUudjEuUHJpY2luZ01vZGVsEhIKCmNyZWF0ZWRfYXQYBSABKAMi1gIKDFByaWNpbmdNb2RlbBIwCgRmbGF0GAEgASgLMiAubWV0cm9nbm9tZS5zdG9yZS52MS5GbGF0UHJpY2luZ0gAEjcKCHBlcl91bml0GAIgASgLMiMubWV0cm9nbm9tZS5zdG9yZS52MS5QZXJVbml0UHJpY2luZ0gAEjQKBnRpZXJlZBgDIAEoCzIiLm1ldHJvZ25vbWUuc3RvcmUudjEuVGllcmVkUHJpY2luZ0gAEjQKBnZvbHVtZRgEIAEoCzIiLm1ldHJvZ25vbWUuc3RvcmUudjEuVm9sdW1lUHJpY2luZ0gAEjYKB3BhY2thZ2UYBSABKAsyIy5tZXRyb2dub21lLnN0b3JlLnYxLlBhY2thZ2VQcmljaW5nSAASLgoDYnBzGAYgASgLMh8ubWV0cm9nbm9tZS5zdG9yZS52MS5CcHNQcmljaW5nSABCBwoFbW9kZWwiIwoLRmxhdFByaWNpbmcSFAoMYW1vdW50X2NlbnRzGAEgASgDIioKDlBlclVuaXRQcmljaW5nEhgKEHVuaXRfcHJpY2VfY2VudHMYASABKAMiOQoNVGllcmVkUHJpY2luZxIoCgV0aWVycxgBIAMoCzIZLm1ldHJvZ25vbWUuc3RvcmUudjEuVGllciIqCgRUaWVyEg0KBXVwX3RvGAEgASgDEhMKC3ByaWNlX2NlbnRzGAIgASgDIjkKDVZvbHVtZVByaWNpbmcSKAoFdGllcnMYASADKAsyGS5tZXRyb2dub21lLnN0b3JlLnYxLlRpZXIiQwoOUGFja2FnZVByaWNpbmcSFAoMcGFja2FnZV9zaXplGAEgASgDEhsKE3BhY2thZ2VfcHJpY2VfY2VudHMYAiABKAMiIgoKQnBzUHJpY2luZxIUCgxiYXNpc19wb2ludHMYASABKAMivgEKCENvbnRyYWN0EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEg8KB3BsYW5faWQYAyABKAkSEAoIc3RhcnRfYXQYBCABKAMSDgoGZW5kX2F0GAUgASgDEjoKDmJpbGxpbmdfcGVyaW9kGAYgASgOMiIubWV0cm9nbm9tZS5zdG9yZS52MS5CaWxsaW5nUGVyaW9kEhIKCmNyZWF0ZWRfYXQYByABKAMSDgoGYWN0aXZlGAggASgIItsBCgpVc2FnZUV2ZW50EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhIKCmV2ZW50X3R5cGUYAyABKAkSEgoKbWV0ZXJfc2x1ZxgEIAEoCRIUCgx0aW1lc3RhbXBfbXMYBSABKAMSDQoFdmFsdWUYBiABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAcgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgIIAEoCRITCgtpbmdlc3RlZF9hdBgJIAEoAxIYChB0aW1lc3RhbXBfYnVja2V0GAogASgDIsYCCgdJbnZvaWNlEgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhMKC2NvbnRyYWN0X2lkGAMgASgJEhQKDHBlcmlvZF9zdGFydBgEIAEoAxISCgpwZXJpb2RfZW5kGAUgASgDEjEKCmxpbmVfaXRlbXMYBiADKAsyHS5tZXRyb2dub21lLnN0b3JlLnYxLkxpbmVJdGVtEhYKDnN1YnRvdGFsX2NlbnRzGAcgASgDEh0KFWNyZWRpdHNfYXBwbGllZF9jZW50cxgIIAEoAxITCgt0b3RhbF9jZW50cxgJIAEoAxIyCgZzdGF0dXMYCiABKA4yIi5tZXRyb2dub21lLnN0b3JlLnYxLkludm9pY2VTdGF0dXMSEgoKY3JlYXRlZF9hdBgLIAEoAxIUCgxmaW5hbGl6ZWRfYXQYDCABKAMibgoITGluZUl0ZW0SEQoJY2hhcmdlX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSEAoIcXVhbnRpdHkYBCABKAMSFAoMYW1vdW50X2NlbnRzGAUgASgDIpIBCgZDcmVkaXQSCgoCaWQYASABKAkSEwoLY3VzdG9tZXJfaWQYAiABKAkSFAoMYW1vdW50X2NlbnRzGAMgASgDEhcKD3JlbWFpbmluZ19jZW50cxgEIAEoAxISCgpleHBpcmVzX2F0GAUgASgDEhAKCHByaW9yaXR5GAYgASgFEhIKCmNyZWF0ZWRfYXQYByABKAMi1QEKBUFsZXJ0EgoKAmlkGAEgASgJEhMKC2N1c3RvbWVyX2lkGAIgASgJEhIKCm1ldGVyX3NsdWcYAyABKAkSEQoJdGhyZXNob2xkGAQgASgDEjIKCmFsZXJ0X3R5cGUYBSABKA4yHi5tZXRyb2dub21lLnN0b3JlLnYxLkFsZXJ0VHlwZRIRCgl0cmlnZ2VyZWQYBiABKAgSEgoKY3JlYXRlZF9hdBgHIAEoAxITCgt3ZWJob29rX3VybBgIIAEoCRIUCgx0cmlnZ2VyZWRfYXQYCSABKAMiUwoLS2Fma2FPZmZzZXQSDQoFdG9waWMYASABKAkSEQoJcGFydGl0aW9uGAIgASgFEg4KBm9mZnNldBgDIAEoAxISCgp1cGRhdGVkX2F0GAQgASgDIogBCgpEZWFkTGV0dGVyEgoKAmlkGAEgASgJEg0KBXRvcGljGAIgASgJEhEKCXBhcnRpdGlvbhgDIAEoBRIOCgZvZmZzZXQYBCABKAMSEQoJcmF3X3ZhbHVlGAUgASgMEhUKDWVycm9yX21lc3NhZ2UYBiABKAkSEgoKY3JlYXRlZF9hdBgHIAEoAyKmAQoHUHJvZHVjdBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEi4KBHR5cGUYAyABKA4yIC5tZXRyb2dub21lLnN0b3JlLnYxLlByb2R1Y3RUeXBlEhoKEmJpbGxhYmxlX21ldHJpY19pZBgEIAEoCRIMCgR0YWdzGAUgAygJEhIKCmNyZWF0ZWRfYXQYBiABKAMSEwoLZGVzY3JpcHRpb24YByABKAkiXgoIUmF0ZUNhcmQSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCRIPCgdhbGlhc2VzGAQgAygJEhIKCmNyZWF0ZWRfYXQYBSABKAMioQIKBFJhdGUSCgoCaWQYASABKAkSFAoMcmF0ZV9jYXJkX2lkGAIgASgJEhIKCnByb2R1Y3RfaWQYAyABKAkSMAoJcmF0ZV90eXBlGAQgASgOMh0ubWV0cm9nbm9tZS5zdG9yZS52MS5SYXRlVHlwZRITCgtwcmljZV9jZW50cxgFIAEoAxIoCgV0aWVycxgGIAMoCzIZLm1ldHJvZ25vbWUuc3RvcmUudjEuVGllchIgChhiaWxsaW5nX2ZyZXF1ZW5jeV9tb250aHMYByABKAMSEwoLc3RhcnRpbmdfYXQYCCABKAMSFQoNZW5kaW5nX2JlZm9yZRgJIAEoAxIQCghlbnRpdGxlZBgKIAEoCBISCgpjcmVhdGVkX2F0GAsgASgDInkKBFVzZXISCgoCaWQYASABKAkSEQoJZ2l0aHViX2lkGAIgASgJEg0KBWxvZ2luGAMgASgJEgwKBG5hbWUYBCABKAkSEgoKYXZhdGFyX3VybBgFIAEoCRINCgVlbWFpbBgGIAEoCRISCgpjcmVhdGVkX2F0GAcgASgDIk4KB1Nlc3Npb24SCgoCaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRISCgpjcmVhdGVkX2F0GAMgASgDEhIKCmV4cGlyZXNfYXQYBCABKAMilwEKBkFwaUtleRIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhAKCGtleV9oYXNoGAMgASgJEhIKCmtleV9wcmVmaXgYBCABKAkSEgoKY3JlYXRlZF9ieRgFIAEoCRISCgpjcmVhdGVkX2F0GAYgASgDEhQKDGxhc3RfdXNlZF9hdBgHIAEoAxIPCgdyZXZva2VkGAggASgIIrsGCg9VbmlvbkRlc2NyaXB0b3ISMAoJX0N1c3RvbWVyGAEgASgLMh0ubWV0cm9nbm9tZS5zdG9yZS52MS5DdXN0b21lchIqCgZfTWV0ZXIYAiABKAsyGi5tZXRyb2dub21lLnN0b3JlLnYxLk1ldGVyEigKBV9QbGFuGAMgASgLMhkubWV0cm9nbm9tZS5zdG9yZS52MS5QbGFuEiwKB19DaGFyZ2UYBCABKAsyGy5tZXRyb2dub21lLnN0b3JlLnYxLkNoYXJnZRIwCglfQ29udHJhY3QYBSABKAsyHS5tZXRyb2dub21lLnN0b3JlLnYxLkNvbnRyYWN0EjQKC19Vc2FnZUV2ZW50GAYgASgLMh8ubWV0cm9nbm9tZS5zdG9yZS52MS5Vc2FnZUV2ZW50Ei4KCF9JbnZvaWNlGAcgASgLMhwubWV0cm9nbm9tZS5zdG9yZS52MS5JbnZvaWNlEiwKB19DcmVkaXQYCCABKAsyGy5tZXRyb2dub21lLnN0b3JlLnYxLkNyZWRpdBIqCgZfQWxlcnQYCSABKAsyGi5tZXRyb2dub21lLnN0b3JlLnYxLkFsZXJ0EjYKDF9LYWZrYU9mZnNldBgKIAEoCzIgLm1ldHJvZ25vbWUuc3RvcmUudjEuS2Fma2FPZmZzZXQSNAoLX0RlYWRMZXR0ZXIYCyABKAsyHy5tZXRyb2dub21lLnN0b3JlLnYxLkRlYWRMZXR0ZXISKAoFX1VzZXIYDCABKAsyGS5tZXRyb2dub21lLnN0b3JlLnYxLlVzZXISLgoIX1Nlc3Npb24YDSABKAsyHC5tZXRyb2dub21lLnN0b3JlLnYxLlNlc3Npb24SLgoIX1Byb2R1Y3QYDiABKAsyHC5tZXRyb2dub21lLnN0b3JlLnYxLlByb2R1Y3QSMAoJX1JhdGVDYXJkGA8gASgLMh0ubWV0cm9nbm9tZS5zdG9yZS52MS5SYXRlQ2FyZBIoCgVfUmF0ZRgQIAEoCzIZLm1ldHJvZ25vbWUuc3RvcmUudjEuUmF0ZRIsCgdfQXBpS2V5GBEgASgLMhsubWV0cm9nbm9tZS5zdG9yZS52MS5BcGlLZXkqvQEKD0FnZ3JlZ2F0aW9uVHlwZRIgChxBR0dSRUdBVElPTl9UWVBFX1VOU1BFQ0lGSUVEEAASGgoWQUdHUkVHQVRJT05fVFlQRV9DT1VOVBABEhgKFEFHR1JFR0FUSU9OX1RZUEVfU1VNEAISGAoUQUdHUkVHQVRJT05fVFlQRV9NQVgQAxIbChdBR0dSRUdBVElPTl9UWVBFX1VOSVFVRRAEEhsKF0FHR1JFR0FUSU9OX1RZUEVfTEFURVNUEAUqhAEKDUJpbGxpbmdQZXJpb2QSHgoaQklMTElOR19QRVJJT0RfVU5TUEVDSUZJRUQQABIaChZCSUxMSU5HX1BFUklPRF9NT05USExZEAESHAoYQklMTElOR19QRVJJT0RfUVVBUlRFUkxZEAISGQoVQklMTElOR19QRVJJT0RfQU5OVUFMEAMqlgEKDUludm9pY2VTdGF0dXMSHgoaSU5WT0lDRV9TVEFUVVNfVU5TUEVDSUZJRUQQABIYChRJTlZPSUNFX1NUQVRVU19EUkFGVBABEhkKFUlOVk9JQ0VfU1RBVFVTX0lTU1VFRBACEhcKE0lOVk9JQ0VfU1RBVFVTX1BBSUQQAxIXChNJTlZPSUNFX1NUQVRVU19WT0lEEAQqUwoJQWxlcnRUeXBlEhoKFkFMRVJUX1RZUEVfVU5TUEVDSUZJRUQQABIUChBBTEVSVF9UWVBFX1VTQUdFEAESFAoQQUxFUlRfVFlQRV9TUEVORBACKpYBCgtQcm9kdWN0VHlwZRIcChhQUk9EVUNUX1RZUEVfVU5TUEVDSUZJRUQQABIWChJQUk9EVUNUX1RZUEVfVVNBR0UQARIdChlQUk9EVUNUX1RZUEVfU1VCU0NSSVBUSU9OEAISGgoWUFJPRFVDVF9UWVBFX0NPTVBPU0lURRADEhYKElBST0RVQ1RfVFlQRV9GSVhFRBAEKoUBCghSYXRlVHlwZRIZChVSQVRFX1RZUEVfVU5TUEVDSUZJRUQQABISCg5SQVRFX1RZUEVfRkxBVBABEhQKEFJBVEVfVFlQRV9USUVSRUQQAhIaChZSQVRFX1RZUEVfU1VCU0NSSVBUSU9OEAMSGAoUUkFURV9UWVBFX1BFUkNFTlRBR0UQBEJcWlpnaXRodWIuY29tL2JpcmRheXovZmRiLXJlY29yZC1sYXllci1nby9leGFtcGxlcy9tZXRyb2dub21lL2dlbi9tZXRyb2dub21lL3N0b3JlL3YxO3N0b3JldjE");
 
 /**
  * Customer represents a billable entity.
@@ -856,6 +856,171 @@ export const DeadLetterSchema: GenMessage<DeadLetter> = /*@__PURE__*/
   messageDesc(file_metrognome_store_v1_store, 19);
 
 /**
+ * Product represents a billable item in a rate card.
+ *
+ * @generated from message metrognome.store.v1.Product
+ */
+export type Product = Message<"metrognome.store.v1.Product"> & {
+  /**
+   * @generated from field: optional string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: optional string name = 2;
+   */
+  name: string;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.ProductType type = 3;
+   */
+  type: ProductType;
+
+  /**
+   * for usage products, links to Meter
+   *
+   * @generated from field: optional string billable_metric_id = 4;
+   */
+  billableMetricId: string;
+
+  /**
+   * @generated from field: repeated string tags = 5;
+   */
+  tags: string[];
+
+  /**
+   * @generated from field: optional int64 created_at = 6;
+   */
+  createdAt: bigint;
+
+  /**
+   * @generated from field: optional string description = 7;
+   */
+  description: string;
+};
+
+/**
+ * Describes the message metrognome.store.v1.Product.
+ * Use `create(ProductSchema)` to create a new message.
+ */
+export const ProductSchema: GenMessage<Product> = /*@__PURE__*/
+  messageDesc(file_metrognome_store_v1_store, 20);
+
+/**
+ * RateCard is a collection of rates for products.
+ *
+ * @generated from message metrognome.store.v1.RateCard
+ */
+export type RateCard = Message<"metrognome.store.v1.RateCard"> & {
+  /**
+   * @generated from field: optional string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: optional string name = 2;
+   */
+  name: string;
+
+  /**
+   * @generated from field: optional string description = 3;
+   */
+  description: string;
+
+  /**
+   * @generated from field: repeated string aliases = 4;
+   */
+  aliases: string[];
+
+  /**
+   * @generated from field: optional int64 created_at = 5;
+   */
+  createdAt: bigint;
+};
+
+/**
+ * Describes the message metrognome.store.v1.RateCard.
+ * Use `create(RateCardSchema)` to create a new message.
+ */
+export const RateCardSchema: GenMessage<RateCard> = /*@__PURE__*/
+  messageDesc(file_metrognome_store_v1_store, 21);
+
+/**
+ * Rate ties a product to a pricing configuration within a rate card.
+ *
+ * @generated from message metrognome.store.v1.Rate
+ */
+export type Rate = Message<"metrognome.store.v1.Rate"> & {
+  /**
+   * @generated from field: optional string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: optional string rate_card_id = 2;
+   */
+  rateCardId: string;
+
+  /**
+   * @generated from field: optional string product_id = 3;
+   */
+  productId: string;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.RateType rate_type = 4;
+   */
+  rateType: RateType;
+
+  /**
+   * for FLAT
+   *
+   * @generated from field: optional int64 price_cents = 5;
+   */
+  priceCents: bigint;
+
+  /**
+   * for TIERED
+   *
+   * @generated from field: repeated metrognome.store.v1.Tier tiers = 6;
+   */
+  tiers: Tier[];
+
+  /**
+   * for SUBSCRIPTION
+   *
+   * @generated from field: optional int64 billing_frequency_months = 7;
+   */
+  billingFrequencyMonths: bigint;
+
+  /**
+   * @generated from field: optional int64 starting_at = 8;
+   */
+  startingAt: bigint;
+
+  /**
+   * @generated from field: optional int64 ending_before = 9;
+   */
+  endingBefore: bigint;
+
+  /**
+   * @generated from field: optional bool entitled = 10;
+   */
+  entitled: boolean;
+
+  /**
+   * @generated from field: optional int64 created_at = 11;
+   */
+  createdAt: bigint;
+};
+
+/**
+ * Describes the message metrognome.store.v1.Rate.
+ * Use `create(RateSchema)` to create a new message.
+ */
+export const RateSchema: GenMessage<Rate> = /*@__PURE__*/
+  messageDesc(file_metrognome_store_v1_store, 22);
+
+/**
  * User represents an authenticated user (from GitHub OAuth).
  *
  * @generated from message metrognome.store.v1.User
@@ -904,7 +1069,7 @@ export type User = Message<"metrognome.store.v1.User"> & {
  * Use `create(UserSchema)` to create a new message.
  */
 export const UserSchema: GenMessage<User> = /*@__PURE__*/
-  messageDesc(file_metrognome_store_v1_store, 20);
+  messageDesc(file_metrognome_store_v1_store, 23);
 
 /**
  * Session represents an active login session.
@@ -938,7 +1103,69 @@ export type Session = Message<"metrognome.store.v1.Session"> & {
  * Use `create(SessionSchema)` to create a new message.
  */
 export const SessionSchema: GenMessage<Session> = /*@__PURE__*/
-  messageDesc(file_metrognome_store_v1_store, 21);
+  messageDesc(file_metrognome_store_v1_store, 24);
+
+/**
+ * ApiKey is a bearer token for authenticating API requests.
+ *
+ * @generated from message metrognome.store.v1.ApiKey
+ */
+export type ApiKey = Message<"metrognome.store.v1.ApiKey"> & {
+  /**
+   * @generated from field: optional string id = 1;
+   */
+  id: string;
+
+  /**
+   * human-readable label
+   *
+   * @generated from field: optional string name = 2;
+   */
+  name: string;
+
+  /**
+   * SHA-256 hash of the actual key (we never store plaintext)
+   *
+   * @generated from field: optional string key_hash = 3;
+   */
+  keyHash: string;
+
+  /**
+   * first 8 chars for display (e.g. "mgn_a1b2...")
+   *
+   * @generated from field: optional string key_prefix = 4;
+   */
+  keyPrefix: string;
+
+  /**
+   * user ID who created it
+   *
+   * @generated from field: optional string created_by = 5;
+   */
+  createdBy: string;
+
+  /**
+   * @generated from field: optional int64 created_at = 6;
+   */
+  createdAt: bigint;
+
+  /**
+   * @generated from field: optional int64 last_used_at = 7;
+   */
+  lastUsedAt: bigint;
+
+  /**
+   * @generated from field: optional bool revoked = 8;
+   */
+  revoked: boolean;
+};
+
+/**
+ * Describes the message metrognome.store.v1.ApiKey.
+ * Use `create(ApiKeySchema)` to create a new message.
+ */
+export const ApiKeySchema: GenMessage<ApiKey> = /*@__PURE__*/
+  messageDesc(file_metrognome_store_v1_store, 25);
 
 /**
  * UnionDescriptor — required by FDB Record Layer for record type discrimination.
@@ -1011,6 +1238,26 @@ export type UnionDescriptor = Message<"metrognome.store.v1.UnionDescriptor"> & {
    * @generated from field: optional metrognome.store.v1.Session _Session = 13;
    */
   Session?: Session;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.Product _Product = 14;
+   */
+  Product?: Product;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.RateCard _RateCard = 15;
+   */
+  RateCard?: RateCard;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.Rate _Rate = 16;
+   */
+  Rate?: Rate;
+
+  /**
+   * @generated from field: optional metrognome.store.v1.ApiKey _ApiKey = 17;
+   */
+  ApiKey?: ApiKey;
 };
 
 /**
@@ -1018,7 +1265,7 @@ export type UnionDescriptor = Message<"metrognome.store.v1.UnionDescriptor"> & {
  * Use `create(UnionDescriptorSchema)` to create a new message.
  */
 export const UnionDescriptorSchema: GenMessage<UnionDescriptor> = /*@__PURE__*/
-  messageDesc(file_metrognome_store_v1_store, 22);
+  messageDesc(file_metrognome_store_v1_store, 26);
 
 /**
  * @generated from enum metrognome.store.v1.AggregationType
@@ -1157,4 +1404,76 @@ export enum AlertType {
  */
 export const AlertTypeSchema: GenEnum<AlertType> = /*@__PURE__*/
   enumDesc(file_metrognome_store_v1_store, 3);
+
+/**
+ * @generated from enum metrognome.store.v1.ProductType
+ */
+export enum ProductType {
+  /**
+   * @generated from enum value: PRODUCT_TYPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PRODUCT_TYPE_USAGE = 1;
+   */
+  USAGE = 1,
+
+  /**
+   * @generated from enum value: PRODUCT_TYPE_SUBSCRIPTION = 2;
+   */
+  SUBSCRIPTION = 2,
+
+  /**
+   * @generated from enum value: PRODUCT_TYPE_COMPOSITE = 3;
+   */
+  COMPOSITE = 3,
+
+  /**
+   * @generated from enum value: PRODUCT_TYPE_FIXED = 4;
+   */
+  FIXED = 4,
+}
+
+/**
+ * Describes the enum metrognome.store.v1.ProductType.
+ */
+export const ProductTypeSchema: GenEnum<ProductType> = /*@__PURE__*/
+  enumDesc(file_metrognome_store_v1_store, 4);
+
+/**
+ * @generated from enum metrognome.store.v1.RateType
+ */
+export enum RateType {
+  /**
+   * @generated from enum value: RATE_TYPE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: RATE_TYPE_FLAT = 1;
+   */
+  FLAT = 1,
+
+  /**
+   * @generated from enum value: RATE_TYPE_TIERED = 2;
+   */
+  TIERED = 2,
+
+  /**
+   * @generated from enum value: RATE_TYPE_SUBSCRIPTION = 3;
+   */
+  SUBSCRIPTION = 3,
+
+  /**
+   * @generated from enum value: RATE_TYPE_PERCENTAGE = 4;
+   */
+  PERCENTAGE = 4,
+}
+
+/**
+ * Describes the enum metrognome.store.v1.RateType.
+ */
+export const RateTypeSchema: GenEnum<RateType> = /*@__PURE__*/
+  enumDesc(file_metrognome_store_v1_store, 5);
 

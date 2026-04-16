@@ -1,0 +1,6 @@
+- generic [ref=e4]:
+  - heading "Metrognome" [level=1] [ref=e5]
+  - paragraph [ref=e6]: Usage-Based Billing Engine
+  - button "Sign in with GitHub" [ref=e7]:
+    - img [ref=e8]
+    - text: Sign in with GitHub

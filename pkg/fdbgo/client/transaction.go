@@ -473,17 +473,18 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
 		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		timer := getTimer(DefaultRPCTimeout)
-		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: ctx, timer: timer}, nil
+		return nil, &PendingGet{replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -491,7 +492,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 // PendingGet represents a GetValue request that has been sent but not yet resolved.
 type PendingGet struct {
 	replyCh     <-chan transport.Response
-	cancelReply func()
+	replyHandle *transport.ReplyHandle
 	conn        *transport.Conn
 	ctx         context.Context
 	timer       *time.Timer
@@ -506,6 +507,7 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		p.conn.Flush()
 	}
 	defer putTimer(p.timer)
+	defer p.replyHandle.Release()
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
@@ -514,10 +516,10 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		val, _, err := parseGetValueReply(resp.Body)
 		return val, err
 	case <-p.timer.C:
-		p.cancelReply()
+		p.replyHandle.Cancel()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	case <-p.ctx.Done():
-		p.cancelReply()
+		p.replyHandle.Cancel()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
 }
@@ -1079,25 +1081,77 @@ func keyAfterBytes(key []byte) []byte {
 // single allocation for both begin and end slices. Saves 2 allocs vs
 // keyAfterBytes + addReadConflict which allocate 3 buffers.
 func (tx *Transaction) addReadConflictForKey(key []byte) {
-	// One buffer: [begin(len)][end(len+1)] — end has implicit \x00 from make.
+	// Same batch-alloc pattern as addWriteConflictForKey.
 	n := len(key)
-	buf := make([]byte, n+n+1)
+	needed := n + n + 1
+	tx.conflictMu.Lock()
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		reused := false
+		if len(tx.conflictBuf) == 0 {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
+				reused = true
+			} else {
+				conflictBufPool.Put(cb)
+			}
+		}
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
 	copy(buf, key)
 	copy(buf[n:], key)
-	// buf[2*n] is already 0 from make
-	tx.conflictMu.Lock()
+	// buf[2*n] is already 0 from slice extension
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n], End: buf[n : n+n+1]})
 	tx.conflictMu.Unlock()
 }
 
-// addReadConflict adds a read conflict range with defensive copies.
+// addReadConflict adds a read conflict range using the shared conflict buffer
+// to batch-allocate key storage (same optimization as addWriteConflictForKey).
 func (tx *Transaction) addReadConflict(begin, end []byte) {
-	b := make([]byte, len(begin))
-	copy(b, begin)
-	e := make([]byte, len(end))
-	copy(e, end)
+	nb := len(begin)
+	ne := len(end)
+	needed := nb + ne
 	tx.conflictMu.Lock()
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: b, End: e})
+	if cap(tx.conflictBuf)-len(tx.conflictBuf) < needed {
+		reused := false
+		if len(tx.conflictBuf) == 0 {
+			cb := conflictBufPool.Get().(*conflictBuf)
+			if cap(cb.b) >= needed {
+				tx.conflictBuf = cb.b[:0]
+				tx.conflictBufOwner = cb
+				reused = true
+			} else {
+				conflictBufPool.Put(cb)
+			}
+		}
+		if !reused {
+			newCap := max(2*cap(tx.conflictBuf), len(tx.conflictBuf)+needed)
+			if newCap < 4096 {
+				newCap = 4096
+			}
+			newBuf := make([]byte, len(tx.conflictBuf), newCap)
+			copy(newBuf, tx.conflictBuf)
+			tx.conflictBuf = newBuf
+		}
+	}
+	start := len(tx.conflictBuf)
+	tx.conflictBuf = tx.conflictBuf[:start+needed]
+	buf := tx.conflictBuf[start : start+needed]
+	copy(buf, begin)
+	copy(buf[nb:], end)
+	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb], End: buf[nb : nb+ne]})
 	tx.conflictMu.Unlock()
 }
 

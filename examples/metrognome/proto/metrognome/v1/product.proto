@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service ProductService {
+  rpc CreateProduct(CreateProductRequest) returns (CreateProductResponse);
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+}
+
+enum ProductType {
+  PRODUCT_TYPE_UNSPECIFIED = 0;
+  PRODUCT_TYPE_USAGE = 1;
+  PRODUCT_TYPE_SUBSCRIPTION = 2;
+  PRODUCT_TYPE_COMPOSITE = 3;
+  PRODUCT_TYPE_FIXED = 4;
+}
+
+message CreateProductRequest {
+  string name = 1;
+  ProductType type = 2;
+  string billable_metric_id = 3; // for usage products
+  repeated string tags = 4;
+  string description = 5;
+}
+
+message CreateProductResponse {
+  Product product = 1;
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+
+message ListProductsRequest {
+  int32 page_size = 1;
+  bytes continuation = 2;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  bytes continuation = 2;
+}
+
+message Product {
+  string id = 1;
+  string name = 2;
+  ProductType type = 3;
+  string billable_metric_id = 4;
+  repeated string tags = 5;
+  int64 created_at = 6;
+  string description = 7;
+}

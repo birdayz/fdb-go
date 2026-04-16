@@ -91,7 +91,7 @@ func loadCacheEntry(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (
 	}
 
 	// Load store state (header + index states — fires 2 reads in parallel).
-	state, err := loadRecordStoreState(store, existenceCheck)
+	state, err := loadRecordStoreState(store, existenceCheck, getCachedSubspaceKeys(store.subspace))
 	if err != nil {
 		return nil, err
 	}
@@ -165,11 +165,8 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	}
 }
 
-func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*RecordStoreState, error) {
+func loadRecordStoreState(store *FDBRecordStore, existenceCheck StoreExistenceCheck, ks *storeSubspaceKeys) (*RecordStoreState, error) {
 	tx := store.context.Transaction()
-
-	// Cache derived subspace keys globally — same for every Open() on the same subspace.
-	ks := getCachedSubspaceKeys(store.subspace)
 
 	// Fire both range reads in parallel. Index states use snapshot isolation
 	// (matching Java's loadIndexStatesAsync which reads at SNAPSHOT).
@@ -277,7 +274,7 @@ func PassThroughStoreStateCache() FDBRecordStoreStateCache {
 // Get always loads fresh state from FDB. Skips the metadata version stamp
 // read since PassThrough has no cache to validate against.
 func (c *PassThroughRecordStoreStateCache) Get(store *FDBRecordStore, existenceCheck StoreExistenceCheck) (*FDBRecordStoreStateCacheEntry, error) {
-	state, err := loadRecordStoreState(store, existenceCheck)
+	state, err := loadRecordStoreState(store, existenceCheck, getCachedSubspaceKeys(store.subspace))
 	if err != nil {
 		return nil, err
 	}

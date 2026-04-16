@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 
@@ -52,6 +54,26 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 		return nil, err
 	}
 	return r.(*IngestResult), nil
+}
+
+// BulkInsert writes events using InsertBatch — maximum throughput path.
+// Skips read-before-write, disables RYW cache + write conflict ranges.
+// Use for bulk loads where keys are guaranteed unique.
+func (s *EventStore) BulkInsert(ctx context.Context, events []*storev1.UsageEvent) (int, error) {
+	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		records := make([]proto.Message, len(events))
+		for i, evt := range events {
+			records[i] = evt
+		}
+		if err := rs.InsertBatch(records); err != nil {
+			return nil, err
+		}
+		return len(events), nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return r.(int), nil
 }
 
 // GetUsage returns the total aggregated value for a customer/meter across a bucket range.

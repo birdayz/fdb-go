@@ -1,0 +1,45 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Metrognome" [level=1] [ref=e6]
+      - paragraph [ref=e7]: Usage-Based Billing
+    - generic [ref=e8]:
+      - link "Dashboard" [ref=e9] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e10]
+        - text: Dashboard
+      - link "Customers" [ref=e15] [cursor=pointer]:
+        - /url: /customers
+        - img [ref=e16]
+        - text: Customers
+      - link "Meters" [ref=e21] [cursor=pointer]:
+        - /url: /meters
+        - img [ref=e22]
+        - text: Meters
+      - link "Plans" [ref=e25] [cursor=pointer]:
+        - /url: /plans
+        - img [ref=e26]
+        - text: Plans
+      - link "Events" [ref=e28] [cursor=pointer]:
+        - /url: /events
+        - img [ref=e29]
+        - text: Events
+      - link "Invoices" [ref=e31] [cursor=pointer]:
+        - /url: /invoices
+        - img [ref=e32]
+        - text: Invoices
+  - main [ref=e35]:
+    - generic [ref=e36]:
+      - heading "Plans" [level=2] [ref=e37]
+      - generic [ref=e38]:
+        - textbox "Plan name" [ref=e39]
+        - textbox "Description" [ref=e40]
+        - button "Create" [ref=e41]
+      - table [ref=e43]:
+        - rowgroup [ref=e44]:
+          - row "Name Description ID Created" [ref=e45]:
+            - columnheader "Name" [ref=e46]
+            - columnheader "Description" [ref=e47]
+            - columnheader "ID" [ref=e48]
+            - columnheader "Created" [ref=e49]
+        - rowgroup

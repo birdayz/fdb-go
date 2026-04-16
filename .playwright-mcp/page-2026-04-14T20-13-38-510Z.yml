@@ -1,0 +1,50 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Metrognome" [level=1] [ref=e6]
+      - paragraph [ref=e7]: Usage-Based Billing
+    - generic [ref=e8]:
+      - link "Dashboard" [ref=e9] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e10]
+        - text: Dashboard
+      - link "Customers" [ref=e15] [cursor=pointer]:
+        - /url: /customers
+        - img [ref=e16]
+        - text: Customers
+      - link "Meters" [ref=e21] [cursor=pointer]:
+        - /url: /meters
+        - img [ref=e22]
+        - text: Meters
+      - link "Plans" [ref=e25] [cursor=pointer]:
+        - /url: /plans
+        - img [ref=e26]
+        - text: Plans
+      - link "Events" [ref=e28] [cursor=pointer]:
+        - /url: /events
+        - img [ref=e29]
+        - text: Events
+      - link "Invoices" [ref=e31] [cursor=pointer]:
+        - /url: /invoices
+        - img [ref=e32]
+        - text: Invoices
+    - generic [ref=e36]:
+      - img "birdayz" [ref=e37]
+      - generic [ref=e38]:
+        - paragraph [ref=e39]: Johannes Brüderl
+        - paragraph [ref=e40]: birdayz
+      - button "Sign out" [ref=e41]:
+        - img [ref=e42]
+  - main [ref=e45]:
+    - generic [ref=e46]:
+      - heading "Dashboard" [level=2] [ref=e47]
+      - generic [ref=e48]:
+        - generic [ref=e49]:
+          - paragraph [ref=e50]: Customers
+          - paragraph [ref=e51]: "0"
+        - generic [ref=e52]:
+          - paragraph [ref=e53]: Meters
+          - paragraph [ref=e54]: "0"
+        - generic [ref=e55]:
+          - paragraph [ref=e56]: Plans
+          - paragraph [ref=e57]: "0"

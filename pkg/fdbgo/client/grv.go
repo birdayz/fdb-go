@@ -379,24 +379,27 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				continue
 			}
 
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount)
 
 			if err := conn.SendFrame(proxy.Token, body); err != nil {
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				db.handleConnError(proxy.Address)
 				continue
 			}
 
 			resp, rpcErr := waitReply(replyCh, ctx, DefaultRPCTimeout)
 			if rpcErr != nil {
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				if ctx.Err() != nil {
 					return 0, false, false, nil, 0, ctx.Err()
 				}
 				db.failMon.markFailed(proxy.Address)
 				continue
 			}
+			replyHandle.Release()
 			if resp.Err != nil {
 				db.handleConnError(proxy.Address)
 				continue

@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "bulkingest_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/cmd/bulkingest",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/store/v1:store",
+        "//examples/metrognome/internal/billing",
+        "//examples/metrognome/internal/storage",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_binary(
+    name = "bulkingest",
+    embed = [":bulkingest_lib"],
+    visibility = ["//visibility:public"],
+)

@@ -206,6 +206,57 @@ message DeadLetter {
   optional int64 created_at = 7;
 }
 
+// Product represents a billable item in a rate card.
+message Product {
+  optional string id = 1;
+  optional string name = 2;
+  optional ProductType type = 3;
+  optional string billable_metric_id = 4;  // for usage products, links to Meter
+  repeated string tags = 5;
+  optional int64 created_at = 6;
+  optional string description = 7;
+}
+
+enum ProductType {
+  PRODUCT_TYPE_UNSPECIFIED = 0;
+  PRODUCT_TYPE_USAGE = 1;
+  PRODUCT_TYPE_SUBSCRIPTION = 2;
+  PRODUCT_TYPE_COMPOSITE = 3;
+  PRODUCT_TYPE_FIXED = 4;
+}
+
+// RateCard is a collection of rates for products.
+message RateCard {
+  optional string id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  repeated string aliases = 4;
+  optional int64 created_at = 5;
+}
+
+// Rate ties a product to a pricing configuration within a rate card.
+message Rate {
+  optional string id = 1;
+  optional string rate_card_id = 2;
+  optional string product_id = 3;
+  optional RateType rate_type = 4;
+  optional int64 price_cents = 5;           // for FLAT
+  repeated Tier tiers = 6;                   // for TIERED
+  optional int64 billing_frequency_months = 7; // for SUBSCRIPTION
+  optional int64 starting_at = 8;
+  optional int64 ending_before = 9;
+  optional bool entitled = 10;
+  optional int64 created_at = 11;
+}
+
+enum RateType {
+  RATE_TYPE_UNSPECIFIED = 0;
+  RATE_TYPE_FLAT = 1;
+  RATE_TYPE_TIERED = 2;
+  RATE_TYPE_SUBSCRIPTION = 3;
+  RATE_TYPE_PERCENTAGE = 4;
+}
+
 // User represents an authenticated user (from GitHub OAuth).
 message User {
   optional string id = 1;
@@ -225,6 +276,18 @@ message Session {
   optional int64 expires_at = 4;
 }
 
+// ApiKey is a bearer token for authenticating API requests.
+message ApiKey {
+  optional string id = 1;
+  optional string name = 2;         // human-readable label
+  optional string key_hash = 3;     // SHA-256 hash of the actual key (we never store plaintext)
+  optional string key_prefix = 4;   // first 8 chars for display (e.g. "mgn_a1b2...")
+  optional string created_by = 5;   // user ID who created it
+  optional int64 created_at = 6;
+  optional int64 last_used_at = 7;
+  optional bool revoked = 8;
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 message UnionDescriptor {
@@ -241,4 +304,8 @@ message UnionDescriptor {
   optional DeadLetter _DeadLetter = 11;
   optional User _User = 12;
   optional Session _Session = 13;
+  optional Product _Product = 14;
+  optional RateCard _RateCard = 15;
+  optional Rate _Rate = 16;
+  optional ApiKey _ApiKey = 17;
 }

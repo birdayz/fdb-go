@@ -87,7 +87,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
@@ -98,7 +98,8 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 		}
 		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
 		if err := conn.SendFrame(wmToken, req.MarshalFDB()); err != nil {
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
@@ -106,6 +107,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 		select {
 		case resp := <-replyCh:
 			cancel()
+			replyHandle.Release()
 			if resp.Err != nil {
 				tx.db.handleConnError(server.Address)
 				continue
@@ -113,7 +115,8 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			return parseWaitMetricsReply(resp.Body)
 		case <-rctx.Done():
 			cancel()
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			continue
 		}
 	}
@@ -160,7 +163,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
@@ -169,7 +172,8 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		}
 		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
 		if err := conn.SendFrame(srToken, req.MarshalFDB()); err != nil {
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
@@ -177,6 +181,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 		select {
 		case resp := <-replyCh:
 			cancel()
+			replyHandle.Release()
 			if resp.Err != nil {
 				tx.db.handleConnError(server.Address)
 				continue
@@ -184,7 +189,8 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			return parseSplitRangeReply(resp.Body)
 		case <-rctx.Done():
 			cancel()
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			continue
 		}
 	}

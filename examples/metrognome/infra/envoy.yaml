@@ -18,20 +18,10 @@ static_resources:
                     - name: metrognome
                       domains: ["*"]
                       routes:
-                        # ConnectRPC API → Go backend
-                        - match: { prefix: "/metrognome.v1" }
-                          route: { cluster: backend }
-                        # Auth routes → Go backend
-                        - match: { prefix: "/auth" }
-                          route: { cluster: backend }
-                        # Health/ready → Go backend
-                        - match: { prefix: "/health" }
-                          route: { cluster: backend }
-                        - match: { prefix: "/ready" }
-                          route: { cluster: backend }
-                        # Static files with SPA fallback (try file, then index.html)
                         - match: { prefix: "/" }
-                          route: { cluster: static_files }
+                          route:
+                            cluster: backend
+                            timeout: 120s
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -50,17 +40,3 @@ static_resources:
                     socket_address:
                       address: 127.0.0.1
                       port_value: 9090
-
-    # Simple Python HTTP server for static files
-    - name: static_files
-      connect_timeout: 1s
-      type: STATIC
-      load_assignment:
-        cluster_name: static_files
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: 127.0.0.1
-                      port_value: 9091

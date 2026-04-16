@@ -1452,7 +1452,7 @@ func (store *FDBRecordStore) ReloadRecordStoreState() error {
 func (store *FDBRecordStore) loadStoreState(existenceCheck StoreExistenceCheck, bypassReason string) error {
 	if bypassReason != "" {
 		// Bypass cache when using lock bypass — need fresh state to validate lock.
-		state, err := loadRecordStoreState(store, existenceCheck)
+		state, err := loadRecordStoreState(store, existenceCheck, getCachedSubspaceKeys(store.subspace))
 		if err != nil {
 			return err
 		}

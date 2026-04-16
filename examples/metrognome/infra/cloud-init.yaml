@@ -37,22 +37,60 @@ write_files:
       # FDB manages its own memory. On 4GB machines, default is fine.
     permissions: "0644"
 
-  # Metrognome systemd service
+  # Metrognome env file (credentials filled in by deploy or operator)
+  - path: /etc/metrognome.env
+    content: |
+      LISTEN_ADDR=0.0.0.0:9090
+      FRONTEND_URL=http://FILL_LB_IP:8080
+      FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
+      GITHUB_CLIENT_ID=FILL_ME
+      GITHUB_CLIENT_SECRET=FILL_ME
+      GITHUB_REDIRECT_URL=http://FILL_LB_IP:8080/auth/callback
+    permissions: "0600"
+
+  # Metrognome backend service
   - path: /etc/systemd/system/metrognome.service
     content: |
       [Unit]
-      Description=Metrognome Usage-Based Billing Engine
-      After=network.target foundationdb.service
-      Wants=foundationdb.service
-
+      Description=Metrognome Backend
+      After=network.target
       [Service]
       Type=simple
       ExecStart=/usr/local/bin/metrognome
-      Environment=FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
-      Environment=LISTEN_ADDR=0.0.0.0:8080
+      EnvironmentFile=/etc/metrognome.env
       Restart=always
-      RestartSec=5
+      RestartSec=3
+      [Install]
+      WantedBy=multi-user.target
+    permissions: "0644"
 
+  # Static file server for frontend
+  - path: /etc/systemd/system/metrognome-static.service
+    content: |
+      [Unit]
+      Description=Metrognome Static File Server
+      After=network.target
+      [Service]
+      Type=simple
+      WorkingDirectory=/var/www/metrognome
+      ExecStart=/usr/bin/python3 -m http.server 9091 --bind 127.0.0.1
+      Restart=always
+      RestartSec=3
+      [Install]
+      WantedBy=multi-user.target
+    permissions: "0644"
+
+  # Envoy reverse proxy
+  - path: /etc/systemd/system/envoy.service
+    content: |
+      [Unit]
+      Description=Envoy Proxy
+      After=network.target metrognome.service
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/func-e run -c /etc/envoy/envoy.yaml
+      Restart=always
+      RestartSec=3
       [Install]
       WantedBy=multi-user.target
     permissions: "0644"

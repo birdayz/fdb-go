@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package metrognome.v1;
+
+option go_package = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1;metrognomev1";
+
+service RateCardService {
+  rpc CreateRateCard(CreateRateCardRequest) returns (CreateRateCardResponse);
+  rpc ListRateCards(ListRateCardsRequest) returns (ListRateCardsResponse);
+  rpc GetRateCard(GetRateCardRequest) returns (GetRateCardResponse);
+  rpc AddRate(AddRateRequest) returns (AddRateResponse);
+  rpc ListRates(ListRatesRequest) returns (ListRatesResponse);
+}
+
+enum RateType {
+  RATE_TYPE_UNSPECIFIED = 0;
+  RATE_TYPE_FLAT = 1;
+  RATE_TYPE_TIERED = 2;
+  RATE_TYPE_SUBSCRIPTION = 3;
+  RATE_TYPE_PERCENTAGE = 4;
+}
+
+message RateTier {
+  int64 up_to = 1;
+  int64 price_cents = 2;
+}
+
+message CreateRateCardRequest {
+  string name = 1;
+  string description = 2;
+  repeated string aliases = 3;
+}
+
+message CreateRateCardResponse {
+  RateCard rate_card = 1;
+}
+
+message GetRateCardRequest {
+  string id = 1;
+}
+
+message GetRateCardResponse {
+  RateCard rate_card = 1;
+}
+
+message ListRateCardsRequest {
+  int32 page_size = 1;
+  bytes continuation = 2;
+}
+
+message ListRateCardsResponse {
+  repeated RateCard rate_cards = 1;
+  bytes continuation = 2;
+}
+
+message AddRateRequest {
+  string rate_card_id = 1;
+  string product_id = 2;
+  RateType rate_type = 3;
+  int64 price_cents = 4;             // for FLAT
+  repeated RateTier tiers = 5;            // for TIERED
+  int64 billing_frequency_months = 6; // for SUBSCRIPTION
+  int64 starting_at = 7;
+  int64 ending_before = 8;
+  bool entitled = 9;
+}
+
+message AddRateResponse {
+  Rate rate = 1;
+}
+
+message ListRatesRequest {
+  string rate_card_id = 1;
+}
+
+message ListRatesResponse {
+  repeated Rate rates = 1;
+}
+
+message RateCard {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  repeated string aliases = 4;
+  int64 created_at = 5;
+}
+
+message Rate {
+  string id = 1;
+  string rate_card_id = 2;
+  string product_id = 3;
+  RateType rate_type = 4;
+  int64 price_cents = 5;
+  repeated RateTier tiers = 6;
+  int64 billing_frequency_months = 7;
+  int64 starting_at = 8;
+  int64 ending_before = 9;
+  bool entitled = 10;
+  int64 created_at = 11;
+}

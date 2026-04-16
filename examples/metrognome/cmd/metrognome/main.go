@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -184,6 +185,9 @@ func main() {
 	register(metrognomev1connect.NewInvoiceServiceHandler(services.NewInvoiceService(db.Invoices(), db.Contracts(), billingEngine), connectOpts...))
 	register(metrognomev1connect.NewCreditServiceHandler(services.NewCreditService(db.Credits()), connectOpts...))
 	register(metrognomev1connect.NewAlertServiceHandler(services.NewAlertService(db.Alerts()), connectOpts...))
+	register(metrognomev1connect.NewProductServiceHandler(services.NewProductService(db.Products()), connectOpts...))
+	register(metrognomev1connect.NewRateCardServiceHandler(services.NewRateCardService(db.RateCards(), db.Rates()), connectOpts...))
+	register(metrognomev1connect.NewApiKeyServiceHandler(services.NewApiKeyService(db.ApiKeys()), connectOpts...))
 
 	// Start Kafka consumer if configured
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
@@ -213,6 +217,30 @@ func main() {
 			}
 		}()
 		slog.Info("kafka consumer started", "brokers", k.Brokers, "topic", k.Topic)
+	}
+
+	// Static files with SPA fallback — serve frontend from STATIC_DIR if set.
+	if staticDir := os.Getenv("STATIC_DIR"); staticDir != "" {
+		fs := http.FileServer(http.Dir(staticDir))
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			// Try serving the file directly.
+			path := staticDir + r.URL.Path
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				// Hashed assets (Vite adds content hash) → cache forever.
+				// index.html → no cache so deploys take effect immediately.
+				if strings.HasPrefix(r.URL.Path, "/assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				} else {
+					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+				}
+				fs.ServeHTTP(w, r)
+				return
+			}
+			// SPA fallback: serve index.html for client-side routing.
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			http.ServeFile(w, r, staticDir+"/index.html")
+		})
+		slog.Info("serving static files", "dir", staticDir)
 	}
 
 	// CORS for frontend

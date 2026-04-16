@@ -4,12 +4,14 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -263,6 +265,12 @@ func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 }
 
 func (a *authInterceptor) resolveFromHeaders(ctx context.Context, headers http.Header) (*storev1.User, error) {
+	// Try API key auth first (Authorization: Bearer mgn_...)
+	if authHeader := headers.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer mgn_") {
+		return a.resolveFromAPIKey(ctx, strings.TrimPrefix(authHeader, "Bearer "))
+	}
+
+	// Fall back to session cookie
 	raw := headers.Get("Cookie")
 	if raw == "" {
 		return nil, errors.New("no cookie")
@@ -273,6 +281,24 @@ func (a *authInterceptor) resolveFromHeaders(ctx context.Context, headers http.H
 		return nil, err
 	}
 	return a.handler.ResolveSession(ctx, cookie.Value)
+}
+
+func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) (*storev1.User, error) {
+	h := sha256.Sum256([]byte(rawKey))
+	keyHash := hex.EncodeToString(h[:])
+	apiKey, err := a.handler.db.ApiKeys().GetByKeyHash(ctx, keyHash)
+	if err != nil {
+		return nil, errors.New("invalid api key")
+	}
+	if apiKey.GetRevoked() {
+		return nil, errors.New("api key revoked")
+	}
+	// Return a synthetic user for API key access
+	return &storev1.User{
+		Id:    proto.String("apikey:" + apiKey.GetId()),
+		Login: proto.String("api:" + apiKey.GetName()),
+		Name:  proto.String(apiKey.GetName()),
+	}, nil
 }
 
 // --- GitHub API ---

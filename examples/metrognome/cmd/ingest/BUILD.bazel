@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "ingest_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/cmd/ingest",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//examples/metrognome/gen/metrognome/v1:metrognome",
+        "//examples/metrognome/gen/metrognome/v1/metrognomev1connect",
+        "@com_connectrpc_connect//:connect",
+    ],
+)
+
+go_binary(
+    name = "ingest",
+    embed = [":ingest_lib"],
+    visibility = ["//visibility:public"],
+)

@@ -4,6 +4,7 @@ go_library(
     name = "storage",
     srcs = [
         "alert.go",
+        "api_key.go",
         "charge.go",
         "contract.go",
         "credit.go",
@@ -15,6 +16,8 @@ go_library(
         "kafka_offset.go",
         "meter.go",
         "plan.go",
+        "product.go",
+        "ratecard.go",
         "session.go",
         "user.go",
     ],

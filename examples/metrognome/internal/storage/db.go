@@ -84,6 +84,10 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.GetRecordType("Session").SetPrimaryKey(
 		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
 
+	// ApiKey: lookup by id
+	builder.GetRecordType("ApiKey").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
 	// --- Secondary indexes ---
 
 	// Meter slug must be unique
@@ -116,6 +120,9 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.AddIndex("Alert", rl.NewIndex("alert_by_customer",
 		rl.Concat(rl.Field("customer_id"), rl.Field("meter_slug"))))
 
+	// ApiKey by key_hash (unique, for auth lookup)
+	builder.AddIndex("ApiKey", rl.NewIndex("apikey_by_hash", rl.Field("key_hash")).SetUnique())
+
 	// --- Aggregate indexes ---
 
 	// SUM of event values grouped by (customer_id, meter_slug, timestamp_bucket)
@@ -126,6 +133,20 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	// COUNT of events grouped by (customer_id, meter_slug, timestamp_bucket)
 	builder.AddIndex("UsageEvent", rl.NewCountIndex("usage_count",
 		rl.GroupBy(rl.EmptyKey(), rl.Field("customer_id"), rl.Field("meter_slug"), rl.Field("timestamp_bucket"))))
+
+	// Product: lookup by ID
+	builder.GetRecordType("Product").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
+	// RateCard: lookup by ID
+	builder.GetRecordType("RateCard").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+
+	// Rate: lookup by ID, indexed by rate_card_id
+	builder.GetRecordType("Rate").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+	builder.AddIndex("Rate", rl.NewIndex("rate_by_rate_card",
+		rl.Field("rate_card_id")))
 
 	builder.SetRecordCountKey(rl.EmptyKey())
 
@@ -163,6 +184,10 @@ func (d *DB) KafkaOffsets() *KafkaOffsetStore { return &KafkaOffsetStore{db: d} 
 func (d *DB) DeadLetters() *DeadLetterStore   { return &DeadLetterStore{db: d} }
 func (d *DB) Users() *UserStore               { return &UserStore{db: d} }
 func (d *DB) Sessions() *SessionStore         { return &SessionStore{db: d} }
+func (d *DB) Products() *ProductStore         { return &ProductStore{db: d} }
+func (d *DB) RateCards() *RateCardStore       { return &RateCardStore{db: d} }
+func (d *DB) Rates() *RateStore               { return &RateStore{db: d} }
+func (d *DB) ApiKeys() *ApiKeyStore           { return &ApiKeyStore{db: d} }
 
 // run executes fn within a transaction with an open FDBRecordStore.
 func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) (any, error) {

@@ -276,6 +276,136 @@ func (AlertType) EnumDescriptor() ([]byte, []int) {
 	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{3}
 }
 
+type ProductType int32
+
+const (
+	ProductType_PRODUCT_TYPE_UNSPECIFIED  ProductType = 0
+	ProductType_PRODUCT_TYPE_USAGE        ProductType = 1
+	ProductType_PRODUCT_TYPE_SUBSCRIPTION ProductType = 2
+	ProductType_PRODUCT_TYPE_COMPOSITE    ProductType = 3
+	ProductType_PRODUCT_TYPE_FIXED        ProductType = 4
+)
+
+// Enum value maps for ProductType.
+var (
+	ProductType_name = map[int32]string{
+		0: "PRODUCT_TYPE_UNSPECIFIED",
+		1: "PRODUCT_TYPE_USAGE",
+		2: "PRODUCT_TYPE_SUBSCRIPTION",
+		3: "PRODUCT_TYPE_COMPOSITE",
+		4: "PRODUCT_TYPE_FIXED",
+	}
+	ProductType_value = map[string]int32{
+		"PRODUCT_TYPE_UNSPECIFIED":  0,
+		"PRODUCT_TYPE_USAGE":        1,
+		"PRODUCT_TYPE_SUBSCRIPTION": 2,
+		"PRODUCT_TYPE_COMPOSITE":    3,
+		"PRODUCT_TYPE_FIXED":        4,
+	}
+)
+
+func (x ProductType) Enum() *ProductType {
+	p := new(ProductType)
+	*p = x
+	return p
+}
+
+func (x ProductType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProductType) Descriptor() protoreflect.EnumDescriptor {
+	return file_metrognome_store_v1_store_proto_enumTypes[4].Descriptor()
+}
+
+func (ProductType) Type() protoreflect.EnumType {
+	return &file_metrognome_store_v1_store_proto_enumTypes[4]
+}
+
+func (x ProductType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Do not use.
+func (x *ProductType) UnmarshalJSON(b []byte) error {
+	num, err := protoimpl.X.UnmarshalJSONEnum(x.Descriptor(), b)
+	if err != nil {
+		return err
+	}
+	*x = ProductType(num)
+	return nil
+}
+
+// Deprecated: Use ProductType.Descriptor instead.
+func (ProductType) EnumDescriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{4}
+}
+
+type RateType int32
+
+const (
+	RateType_RATE_TYPE_UNSPECIFIED  RateType = 0
+	RateType_RATE_TYPE_FLAT         RateType = 1
+	RateType_RATE_TYPE_TIERED       RateType = 2
+	RateType_RATE_TYPE_SUBSCRIPTION RateType = 3
+	RateType_RATE_TYPE_PERCENTAGE   RateType = 4
+)
+
+// Enum value maps for RateType.
+var (
+	RateType_name = map[int32]string{
+		0: "RATE_TYPE_UNSPECIFIED",
+		1: "RATE_TYPE_FLAT",
+		2: "RATE_TYPE_TIERED",
+		3: "RATE_TYPE_SUBSCRIPTION",
+		4: "RATE_TYPE_PERCENTAGE",
+	}
+	RateType_value = map[string]int32{
+		"RATE_TYPE_UNSPECIFIED":  0,
+		"RATE_TYPE_FLAT":         1,
+		"RATE_TYPE_TIERED":       2,
+		"RATE_TYPE_SUBSCRIPTION": 3,
+		"RATE_TYPE_PERCENTAGE":   4,
+	}
+)
+
+func (x RateType) Enum() *RateType {
+	p := new(RateType)
+	*p = x
+	return p
+}
+
+func (x RateType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RateType) Descriptor() protoreflect.EnumDescriptor {
+	return file_metrognome_store_v1_store_proto_enumTypes[5].Descriptor()
+}
+
+func (RateType) Type() protoreflect.EnumType {
+	return &file_metrognome_store_v1_store_proto_enumTypes[5]
+}
+
+func (x RateType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Do not use.
+func (x *RateType) UnmarshalJSON(b []byte) error {
+	num, err := protoimpl.X.UnmarshalJSONEnum(x.Descriptor(), b)
+	if err != nil {
+		return err
+	}
+	*x = RateType(num)
+	return nil
+}
+
+// Deprecated: Use RateType.Descriptor instead.
+func (RateType) EnumDescriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{5}
+}
+
 // Customer represents a billable entity.
 type Customer struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1854,6 +1984,301 @@ func (x *DeadLetter) GetCreatedAt() int64 {
 	return 0
 }
 
+// Product represents a billable item in a rate card.
+type Product struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Id               *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	Name             *string                `protobuf:"bytes,2,opt,name=name" json:"name,omitempty"`
+	Type             *ProductType           `protobuf:"varint,3,opt,name=type,enum=metrognome.store.v1.ProductType" json:"type,omitempty"`
+	BillableMetricId *string                `protobuf:"bytes,4,opt,name=billable_metric_id,json=billableMetricId" json:"billable_metric_id,omitempty"` // for usage products, links to Meter
+	Tags             []string               `protobuf:"bytes,5,rep,name=tags" json:"tags,omitempty"`
+	CreatedAt        *int64                 `protobuf:"varint,6,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	Description      *string                `protobuf:"bytes,7,opt,name=description" json:"description,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *Product) Reset() {
+	*x = Product{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Product) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Product) ProtoMessage() {}
+
+func (x *Product) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Product.ProtoReflect.Descriptor instead.
+func (*Product) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *Product) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *Product) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *Product) GetType() ProductType {
+	if x != nil && x.Type != nil {
+		return *x.Type
+	}
+	return ProductType_PRODUCT_TYPE_UNSPECIFIED
+}
+
+func (x *Product) GetBillableMetricId() string {
+	if x != nil && x.BillableMetricId != nil {
+		return *x.BillableMetricId
+	}
+	return ""
+}
+
+func (x *Product) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+func (x *Product) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Product) GetDescription() string {
+	if x != nil && x.Description != nil {
+		return *x.Description
+	}
+	return ""
+}
+
+// RateCard is a collection of rates for products.
+type RateCard struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name" json:"name,omitempty"`
+	Description   *string                `protobuf:"bytes,3,opt,name=description" json:"description,omitempty"`
+	Aliases       []string               `protobuf:"bytes,4,rep,name=aliases" json:"aliases,omitempty"`
+	CreatedAt     *int64                 `protobuf:"varint,5,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RateCard) Reset() {
+	*x = RateCard{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RateCard) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RateCard) ProtoMessage() {}
+
+func (x *RateCard) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RateCard.ProtoReflect.Descriptor instead.
+func (*RateCard) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *RateCard) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *RateCard) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *RateCard) GetDescription() string {
+	if x != nil && x.Description != nil {
+		return *x.Description
+	}
+	return ""
+}
+
+func (x *RateCard) GetAliases() []string {
+	if x != nil {
+		return x.Aliases
+	}
+	return nil
+}
+
+func (x *RateCard) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+// Rate ties a product to a pricing configuration within a rate card.
+type Rate struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Id                     *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	RateCardId             *string                `protobuf:"bytes,2,opt,name=rate_card_id,json=rateCardId" json:"rate_card_id,omitempty"`
+	ProductId              *string                `protobuf:"bytes,3,opt,name=product_id,json=productId" json:"product_id,omitempty"`
+	RateType               *RateType              `protobuf:"varint,4,opt,name=rate_type,json=rateType,enum=metrognome.store.v1.RateType" json:"rate_type,omitempty"`
+	PriceCents             *int64                 `protobuf:"varint,5,opt,name=price_cents,json=priceCents" json:"price_cents,omitempty"`                                       // for FLAT
+	Tiers                  []*Tier                `protobuf:"bytes,6,rep,name=tiers" json:"tiers,omitempty"`                                                                    // for TIERED
+	BillingFrequencyMonths *int64                 `protobuf:"varint,7,opt,name=billing_frequency_months,json=billingFrequencyMonths" json:"billing_frequency_months,omitempty"` // for SUBSCRIPTION
+	StartingAt             *int64                 `protobuf:"varint,8,opt,name=starting_at,json=startingAt" json:"starting_at,omitempty"`
+	EndingBefore           *int64                 `protobuf:"varint,9,opt,name=ending_before,json=endingBefore" json:"ending_before,omitempty"`
+	Entitled               *bool                  `protobuf:"varint,10,opt,name=entitled" json:"entitled,omitempty"`
+	CreatedAt              *int64                 `protobuf:"varint,11,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *Rate) Reset() {
+	*x = Rate{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Rate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Rate) ProtoMessage() {}
+
+func (x *Rate) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Rate.ProtoReflect.Descriptor instead.
+func (*Rate) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *Rate) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *Rate) GetRateCardId() string {
+	if x != nil && x.RateCardId != nil {
+		return *x.RateCardId
+	}
+	return ""
+}
+
+func (x *Rate) GetProductId() string {
+	if x != nil && x.ProductId != nil {
+		return *x.ProductId
+	}
+	return ""
+}
+
+func (x *Rate) GetRateType() RateType {
+	if x != nil && x.RateType != nil {
+		return *x.RateType
+	}
+	return RateType_RATE_TYPE_UNSPECIFIED
+}
+
+func (x *Rate) GetPriceCents() int64 {
+	if x != nil && x.PriceCents != nil {
+		return *x.PriceCents
+	}
+	return 0
+}
+
+func (x *Rate) GetTiers() []*Tier {
+	if x != nil {
+		return x.Tiers
+	}
+	return nil
+}
+
+func (x *Rate) GetBillingFrequencyMonths() int64 {
+	if x != nil && x.BillingFrequencyMonths != nil {
+		return *x.BillingFrequencyMonths
+	}
+	return 0
+}
+
+func (x *Rate) GetStartingAt() int64 {
+	if x != nil && x.StartingAt != nil {
+		return *x.StartingAt
+	}
+	return 0
+}
+
+func (x *Rate) GetEndingBefore() int64 {
+	if x != nil && x.EndingBefore != nil {
+		return *x.EndingBefore
+	}
+	return 0
+}
+
+func (x *Rate) GetEntitled() bool {
+	if x != nil && x.Entitled != nil {
+		return *x.Entitled
+	}
+	return false
+}
+
+func (x *Rate) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
 // User represents an authenticated user (from GitHub OAuth).
 type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1870,7 +2295,7 @@ type User struct {
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1882,7 +2307,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[20]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1895,7 +2320,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{20}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *User) GetId() string {
@@ -1960,7 +2385,7 @@ type Session struct {
 
 func (x *Session) Reset() {
 	*x = Session{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1972,7 +2397,7 @@ func (x *Session) String() string {
 func (*Session) ProtoMessage() {}
 
 func (x *Session) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[21]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1985,7 +2410,7 @@ func (x *Session) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Session.ProtoReflect.Descriptor instead.
 func (*Session) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{21}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *Session) GetId() string {
@@ -2016,6 +2441,107 @@ func (x *Session) GetExpiresAt() int64 {
 	return 0
 }
 
+// ApiKey is a bearer token for authenticating API requests.
+type ApiKey struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            *string                `protobuf:"bytes,1,opt,name=id" json:"id,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name" json:"name,omitempty"`                            // human-readable label
+	KeyHash       *string                `protobuf:"bytes,3,opt,name=key_hash,json=keyHash" json:"key_hash,omitempty"`       // SHA-256 hash of the actual key (we never store plaintext)
+	KeyPrefix     *string                `protobuf:"bytes,4,opt,name=key_prefix,json=keyPrefix" json:"key_prefix,omitempty"` // first 8 chars for display (e.g. "mgn_a1b2...")
+	CreatedBy     *string                `protobuf:"bytes,5,opt,name=created_by,json=createdBy" json:"created_by,omitempty"` // user ID who created it
+	CreatedAt     *int64                 `protobuf:"varint,6,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	LastUsedAt    *int64                 `protobuf:"varint,7,opt,name=last_used_at,json=lastUsedAt" json:"last_used_at,omitempty"`
+	Revoked       *bool                  `protobuf:"varint,8,opt,name=revoked" json:"revoked,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApiKey) Reset() {
+	*x = ApiKey{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApiKey) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApiKey) ProtoMessage() {}
+
+func (x *ApiKey) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApiKey.ProtoReflect.Descriptor instead.
+func (*ApiKey) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ApiKey) GetId() string {
+	if x != nil && x.Id != nil {
+		return *x.Id
+	}
+	return ""
+}
+
+func (x *ApiKey) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *ApiKey) GetKeyHash() string {
+	if x != nil && x.KeyHash != nil {
+		return *x.KeyHash
+	}
+	return ""
+}
+
+func (x *ApiKey) GetKeyPrefix() string {
+	if x != nil && x.KeyPrefix != nil {
+		return *x.KeyPrefix
+	}
+	return ""
+}
+
+func (x *ApiKey) GetCreatedBy() string {
+	if x != nil && x.CreatedBy != nil {
+		return *x.CreatedBy
+	}
+	return ""
+}
+
+func (x *ApiKey) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+func (x *ApiKey) GetLastUsedAt() int64 {
+	if x != nil && x.LastUsedAt != nil {
+		return *x.LastUsedAt
+	}
+	return 0
+}
+
+func (x *ApiKey) GetRevoked() bool {
+	if x != nil && x.Revoked != nil {
+		return *x.Revoked
+	}
+	return false
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
 type UnionDescriptor struct {
@@ -2033,13 +2559,17 @@ type UnionDescriptor struct {
 	XDeadLetter   *DeadLetter            `protobuf:"bytes,11,opt,name=_DeadLetter,json=DeadLetter" json:"_DeadLetter,omitempty"`
 	XUser         *User                  `protobuf:"bytes,12,opt,name=_User,json=User" json:"_User,omitempty"`
 	XSession      *Session               `protobuf:"bytes,13,opt,name=_Session,json=Session" json:"_Session,omitempty"`
+	XProduct      *Product               `protobuf:"bytes,14,opt,name=_Product,json=Product" json:"_Product,omitempty"`
+	XRateCard     *RateCard              `protobuf:"bytes,15,opt,name=_RateCard,json=RateCard" json:"_RateCard,omitempty"`
+	XRate         *Rate                  `protobuf:"bytes,16,opt,name=_Rate,json=Rate" json:"_Rate,omitempty"`
+	XApiKey       *ApiKey                `protobuf:"bytes,17,opt,name=_ApiKey,json=ApiKey" json:"_ApiKey,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnionDescriptor) Reset() {
 	*x = UnionDescriptor{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2051,7 +2581,7 @@ func (x *UnionDescriptor) String() string {
 func (*UnionDescriptor) ProtoMessage() {}
 
 func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[22]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2064,7 +2594,7 @@ func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnionDescriptor.ProtoReflect.Descriptor instead.
 func (*UnionDescriptor) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{22}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *UnionDescriptor) GetXCustomer() *Customer {
@@ -2154,6 +2684,34 @@ func (x *UnionDescriptor) GetXUser() *User {
 func (x *UnionDescriptor) GetXSession() *Session {
 	if x != nil {
 		return x.XSession
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXProduct() *Product {
+	if x != nil {
+		return x.XProduct
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXRateCard() *RateCard {
+	if x != nil {
+		return x.XRateCard
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXRate() *Rate {
+	if x != nil {
+		return x.XRate
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXApiKey() *ApiKey {
+	if x != nil {
+		return x.XApiKey
 	}
 	return nil
 }
@@ -2316,7 +2874,41 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\traw_value\x18\x05 \x01(\fR\brawValue\x12#\n" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\a \x01(\x03R\tcreatedAt\"\xb1\x01\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt\"\xe6\x01\n" +
+	"\aProduct\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x124\n" +
+	"\x04type\x18\x03 \x01(\x0e2 .metrognome.store.v1.ProductTypeR\x04type\x12,\n" +
+	"\x12billable_metric_id\x18\x04 \x01(\tR\x10billableMetricId\x12\x12\n" +
+	"\x04tags\x18\x05 \x03(\tR\x04tags\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12 \n" +
+	"\vdescription\x18\a \x01(\tR\vdescription\"\x89\x01\n" +
+	"\bRateCard\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x18\n" +
+	"\aaliases\x18\x04 \x03(\tR\aaliases\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x05 \x01(\x03R\tcreatedAt\"\xa0\x03\n" +
+	"\x04Rate\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12 \n" +
+	"\frate_card_id\x18\x02 \x01(\tR\n" +
+	"rateCardId\x12\x1d\n" +
+	"\n" +
+	"product_id\x18\x03 \x01(\tR\tproductId\x12:\n" +
+	"\trate_type\x18\x04 \x01(\x0e2\x1d.metrognome.store.v1.RateTypeR\brateType\x12\x1f\n" +
+	"\vprice_cents\x18\x05 \x01(\x03R\n" +
+	"priceCents\x12/\n" +
+	"\x05tiers\x18\x06 \x03(\v2\x19.metrognome.store.v1.TierR\x05tiers\x128\n" +
+	"\x18billing_frequency_months\x18\a \x01(\x03R\x16billingFrequencyMonths\x12\x1f\n" +
+	"\vstarting_at\x18\b \x01(\x03R\n" +
+	"startingAt\x12#\n" +
+	"\rending_before\x18\t \x01(\x03R\fendingBefore\x12\x1a\n" +
+	"\bentitled\x18\n" +
+	" \x01(\bR\bentitled\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\v \x01(\x03R\tcreatedAt\"\xb1\x01\n" +
 	"\x04User\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tgithub_id\x18\x02 \x01(\tR\bgithubId\x12\x14\n" +
@@ -2333,7 +2925,20 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x03 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"expires_at\x18\x04 \x01(\x03R\texpiresAt\"\xf6\x05\n" +
+	"expires_at\x18\x04 \x01(\x03R\texpiresAt\"\xe0\x01\n" +
+	"\x06ApiKey\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x19\n" +
+	"\bkey_hash\x18\x03 \x01(\tR\akeyHash\x12\x1d\n" +
+	"\n" +
+	"key_prefix\x18\x04 \x01(\tR\tkeyPrefix\x12\x1d\n" +
+	"\n" +
+	"created_by\x18\x05 \x01(\tR\tcreatedBy\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12 \n" +
+	"\flast_used_at\x18\a \x01(\x03R\n" +
+	"lastUsedAt\x12\x18\n" +
+	"\arevoked\x18\b \x01(\bR\arevoked\"\xd1\a\n" +
 	"\x0fUnionDescriptor\x12:\n" +
 	"\t_Customer\x18\x01 \x01(\v2\x1d.metrognome.store.v1.CustomerR\bCustomer\x121\n" +
 	"\x06_Meter\x18\x02 \x01(\v2\x1a.metrognome.store.v1.MeterR\x05Meter\x12.\n" +
@@ -2350,7 +2955,11 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\v_DeadLetter\x18\v \x01(\v2\x1f.metrognome.store.v1.DeadLetterR\n" +
 	"DeadLetter\x12.\n" +
 	"\x05_User\x18\f \x01(\v2\x19.metrognome.store.v1.UserR\x04User\x127\n" +
-	"\b_Session\x18\r \x01(\v2\x1c.metrognome.store.v1.SessionR\aSession*\xbd\x01\n" +
+	"\b_Session\x18\r \x01(\v2\x1c.metrognome.store.v1.SessionR\aSession\x127\n" +
+	"\b_Product\x18\x0e \x01(\v2\x1c.metrognome.store.v1.ProductR\aProduct\x12:\n" +
+	"\t_RateCard\x18\x0f \x01(\v2\x1d.metrognome.store.v1.RateCardR\bRateCard\x12.\n" +
+	"\x05_Rate\x18\x10 \x01(\v2\x19.metrognome.store.v1.RateR\x04Rate\x124\n" +
+	"\a_ApiKey\x18\x11 \x01(\v2\x1b.metrognome.store.v1.ApiKeyR\x06ApiKey*\xbd\x01\n" +
 	"\x0fAggregationType\x12 \n" +
 	"\x1cAGGREGATION_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AGGREGATION_TYPE_COUNT\x10\x01\x12\x18\n" +
@@ -2372,7 +2981,19 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\tAlertType\x12\x1a\n" +
 	"\x16ALERT_TYPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10ALERT_TYPE_USAGE\x10\x01\x12\x14\n" +
-	"\x10ALERT_TYPE_SPEND\x10\x02B\\ZZgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1;storev1"
+	"\x10ALERT_TYPE_SPEND\x10\x02*\x96\x01\n" +
+	"\vProductType\x12\x1c\n" +
+	"\x18PRODUCT_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12PRODUCT_TYPE_USAGE\x10\x01\x12\x1d\n" +
+	"\x19PRODUCT_TYPE_SUBSCRIPTION\x10\x02\x12\x1a\n" +
+	"\x16PRODUCT_TYPE_COMPOSITE\x10\x03\x12\x16\n" +
+	"\x12PRODUCT_TYPE_FIXED\x10\x04*\x85\x01\n" +
+	"\bRateType\x12\x19\n" +
+	"\x15RATE_TYPE_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eRATE_TYPE_FLAT\x10\x01\x12\x14\n" +
+	"\x10RATE_TYPE_TIERED\x10\x02\x12\x1a\n" +
+	"\x16RATE_TYPE_SUBSCRIPTION\x10\x03\x12\x18\n" +
+	"\x14RATE_TYPE_PERCENTAGE\x10\x04B\\ZZgithub.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1;storev1"
 
 var (
 	file_metrognome_store_v1_store_proto_rawDescOnce sync.Once
@@ -2387,72 +3008,85 @@ func file_metrognome_store_v1_store_proto_rawDescGZIP() []byte {
 }
 
 var (
-	file_metrognome_store_v1_store_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 23)
+	file_metrognome_store_v1_store_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 27)
 	file_metrognome_store_v1_store_proto_goTypes   = []any{
 		(AggregationType)(0),    // 0: metrognome.store.v1.AggregationType
 		(BillingPeriod)(0),      // 1: metrognome.store.v1.BillingPeriod
 		(InvoiceStatus)(0),      // 2: metrognome.store.v1.InvoiceStatus
 		(AlertType)(0),          // 3: metrognome.store.v1.AlertType
-		(*Customer)(nil),        // 4: metrognome.store.v1.Customer
-		(*Meter)(nil),           // 5: metrognome.store.v1.Meter
-		(*Plan)(nil),            // 6: metrognome.store.v1.Plan
-		(*Charge)(nil),          // 7: metrognome.store.v1.Charge
-		(*PricingModel)(nil),    // 8: metrognome.store.v1.PricingModel
-		(*FlatPricing)(nil),     // 9: metrognome.store.v1.FlatPricing
-		(*PerUnitPricing)(nil),  // 10: metrognome.store.v1.PerUnitPricing
-		(*TieredPricing)(nil),   // 11: metrognome.store.v1.TieredPricing
-		(*Tier)(nil),            // 12: metrognome.store.v1.Tier
-		(*VolumePricing)(nil),   // 13: metrognome.store.v1.VolumePricing
-		(*PackagePricing)(nil),  // 14: metrognome.store.v1.PackagePricing
-		(*BpsPricing)(nil),      // 15: metrognome.store.v1.BpsPricing
-		(*Contract)(nil),        // 16: metrognome.store.v1.Contract
-		(*UsageEvent)(nil),      // 17: metrognome.store.v1.UsageEvent
-		(*Invoice)(nil),         // 18: metrognome.store.v1.Invoice
-		(*LineItem)(nil),        // 19: metrognome.store.v1.LineItem
-		(*Credit)(nil),          // 20: metrognome.store.v1.Credit
-		(*Alert)(nil),           // 21: metrognome.store.v1.Alert
-		(*KafkaOffset)(nil),     // 22: metrognome.store.v1.KafkaOffset
-		(*DeadLetter)(nil),      // 23: metrognome.store.v1.DeadLetter
-		(*User)(nil),            // 24: metrognome.store.v1.User
-		(*Session)(nil),         // 25: metrognome.store.v1.Session
-		(*UnionDescriptor)(nil), // 26: metrognome.store.v1.UnionDescriptor
+		(ProductType)(0),        // 4: metrognome.store.v1.ProductType
+		(RateType)(0),           // 5: metrognome.store.v1.RateType
+		(*Customer)(nil),        // 6: metrognome.store.v1.Customer
+		(*Meter)(nil),           // 7: metrognome.store.v1.Meter
+		(*Plan)(nil),            // 8: metrognome.store.v1.Plan
+		(*Charge)(nil),          // 9: metrognome.store.v1.Charge
+		(*PricingModel)(nil),    // 10: metrognome.store.v1.PricingModel
+		(*FlatPricing)(nil),     // 11: metrognome.store.v1.FlatPricing
+		(*PerUnitPricing)(nil),  // 12: metrognome.store.v1.PerUnitPricing
+		(*TieredPricing)(nil),   // 13: metrognome.store.v1.TieredPricing
+		(*Tier)(nil),            // 14: metrognome.store.v1.Tier
+		(*VolumePricing)(nil),   // 15: metrognome.store.v1.VolumePricing
+		(*PackagePricing)(nil),  // 16: metrognome.store.v1.PackagePricing
+		(*BpsPricing)(nil),      // 17: metrognome.store.v1.BpsPricing
+		(*Contract)(nil),        // 18: metrognome.store.v1.Contract
+		(*UsageEvent)(nil),      // 19: metrognome.store.v1.UsageEvent
+		(*Invoice)(nil),         // 20: metrognome.store.v1.Invoice
+		(*LineItem)(nil),        // 21: metrognome.store.v1.LineItem
+		(*Credit)(nil),          // 22: metrognome.store.v1.Credit
+		(*Alert)(nil),           // 23: metrognome.store.v1.Alert
+		(*KafkaOffset)(nil),     // 24: metrognome.store.v1.KafkaOffset
+		(*DeadLetter)(nil),      // 25: metrognome.store.v1.DeadLetter
+		(*Product)(nil),         // 26: metrognome.store.v1.Product
+		(*RateCard)(nil),        // 27: metrognome.store.v1.RateCard
+		(*Rate)(nil),            // 28: metrognome.store.v1.Rate
+		(*User)(nil),            // 29: metrognome.store.v1.User
+		(*Session)(nil),         // 30: metrognome.store.v1.Session
+		(*ApiKey)(nil),          // 31: metrognome.store.v1.ApiKey
+		(*UnionDescriptor)(nil), // 32: metrognome.store.v1.UnionDescriptor
 	}
 )
 
 var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	0,  // 0: metrognome.store.v1.Meter.aggregation_type:type_name -> metrognome.store.v1.AggregationType
-	8,  // 1: metrognome.store.v1.Charge.pricing:type_name -> metrognome.store.v1.PricingModel
-	9,  // 2: metrognome.store.v1.PricingModel.flat:type_name -> metrognome.store.v1.FlatPricing
-	10, // 3: metrognome.store.v1.PricingModel.per_unit:type_name -> metrognome.store.v1.PerUnitPricing
-	11, // 4: metrognome.store.v1.PricingModel.tiered:type_name -> metrognome.store.v1.TieredPricing
-	13, // 5: metrognome.store.v1.PricingModel.volume:type_name -> metrognome.store.v1.VolumePricing
-	14, // 6: metrognome.store.v1.PricingModel.package:type_name -> metrognome.store.v1.PackagePricing
-	15, // 7: metrognome.store.v1.PricingModel.bps:type_name -> metrognome.store.v1.BpsPricing
-	12, // 8: metrognome.store.v1.TieredPricing.tiers:type_name -> metrognome.store.v1.Tier
-	12, // 9: metrognome.store.v1.VolumePricing.tiers:type_name -> metrognome.store.v1.Tier
+	10, // 1: metrognome.store.v1.Charge.pricing:type_name -> metrognome.store.v1.PricingModel
+	11, // 2: metrognome.store.v1.PricingModel.flat:type_name -> metrognome.store.v1.FlatPricing
+	12, // 3: metrognome.store.v1.PricingModel.per_unit:type_name -> metrognome.store.v1.PerUnitPricing
+	13, // 4: metrognome.store.v1.PricingModel.tiered:type_name -> metrognome.store.v1.TieredPricing
+	15, // 5: metrognome.store.v1.PricingModel.volume:type_name -> metrognome.store.v1.VolumePricing
+	16, // 6: metrognome.store.v1.PricingModel.package:type_name -> metrognome.store.v1.PackagePricing
+	17, // 7: metrognome.store.v1.PricingModel.bps:type_name -> metrognome.store.v1.BpsPricing
+	14, // 8: metrognome.store.v1.TieredPricing.tiers:type_name -> metrognome.store.v1.Tier
+	14, // 9: metrognome.store.v1.VolumePricing.tiers:type_name -> metrognome.store.v1.Tier
 	1,  // 10: metrognome.store.v1.Contract.billing_period:type_name -> metrognome.store.v1.BillingPeriod
-	19, // 11: metrognome.store.v1.Invoice.line_items:type_name -> metrognome.store.v1.LineItem
+	21, // 11: metrognome.store.v1.Invoice.line_items:type_name -> metrognome.store.v1.LineItem
 	2,  // 12: metrognome.store.v1.Invoice.status:type_name -> metrognome.store.v1.InvoiceStatus
 	3,  // 13: metrognome.store.v1.Alert.alert_type:type_name -> metrognome.store.v1.AlertType
-	4,  // 14: metrognome.store.v1.UnionDescriptor._Customer:type_name -> metrognome.store.v1.Customer
-	5,  // 15: metrognome.store.v1.UnionDescriptor._Meter:type_name -> metrognome.store.v1.Meter
-	6,  // 16: metrognome.store.v1.UnionDescriptor._Plan:type_name -> metrognome.store.v1.Plan
-	7,  // 17: metrognome.store.v1.UnionDescriptor._Charge:type_name -> metrognome.store.v1.Charge
-	16, // 18: metrognome.store.v1.UnionDescriptor._Contract:type_name -> metrognome.store.v1.Contract
-	17, // 19: metrognome.store.v1.UnionDescriptor._UsageEvent:type_name -> metrognome.store.v1.UsageEvent
-	18, // 20: metrognome.store.v1.UnionDescriptor._Invoice:type_name -> metrognome.store.v1.Invoice
-	20, // 21: metrognome.store.v1.UnionDescriptor._Credit:type_name -> metrognome.store.v1.Credit
-	21, // 22: metrognome.store.v1.UnionDescriptor._Alert:type_name -> metrognome.store.v1.Alert
-	22, // 23: metrognome.store.v1.UnionDescriptor._KafkaOffset:type_name -> metrognome.store.v1.KafkaOffset
-	23, // 24: metrognome.store.v1.UnionDescriptor._DeadLetter:type_name -> metrognome.store.v1.DeadLetter
-	24, // 25: metrognome.store.v1.UnionDescriptor._User:type_name -> metrognome.store.v1.User
-	25, // 26: metrognome.store.v1.UnionDescriptor._Session:type_name -> metrognome.store.v1.Session
-	27, // [27:27] is the sub-list for method output_type
-	27, // [27:27] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	4,  // 14: metrognome.store.v1.Product.type:type_name -> metrognome.store.v1.ProductType
+	5,  // 15: metrognome.store.v1.Rate.rate_type:type_name -> metrognome.store.v1.RateType
+	14, // 16: metrognome.store.v1.Rate.tiers:type_name -> metrognome.store.v1.Tier
+	6,  // 17: metrognome.store.v1.UnionDescriptor._Customer:type_name -> metrognome.store.v1.Customer
+	7,  // 18: metrognome.store.v1.UnionDescriptor._Meter:type_name -> metrognome.store.v1.Meter
+	8,  // 19: metrognome.store.v1.UnionDescriptor._Plan:type_name -> metrognome.store.v1.Plan
+	9,  // 20: metrognome.store.v1.UnionDescriptor._Charge:type_name -> metrognome.store.v1.Charge
+	18, // 21: metrognome.store.v1.UnionDescriptor._Contract:type_name -> metrognome.store.v1.Contract
+	19, // 22: metrognome.store.v1.UnionDescriptor._UsageEvent:type_name -> metrognome.store.v1.UsageEvent
+	20, // 23: metrognome.store.v1.UnionDescriptor._Invoice:type_name -> metrognome.store.v1.Invoice
+	22, // 24: metrognome.store.v1.UnionDescriptor._Credit:type_name -> metrognome.store.v1.Credit
+	23, // 25: metrognome.store.v1.UnionDescriptor._Alert:type_name -> metrognome.store.v1.Alert
+	24, // 26: metrognome.store.v1.UnionDescriptor._KafkaOffset:type_name -> metrognome.store.v1.KafkaOffset
+	25, // 27: metrognome.store.v1.UnionDescriptor._DeadLetter:type_name -> metrognome.store.v1.DeadLetter
+	29, // 28: metrognome.store.v1.UnionDescriptor._User:type_name -> metrognome.store.v1.User
+	30, // 29: metrognome.store.v1.UnionDescriptor._Session:type_name -> metrognome.store.v1.Session
+	26, // 30: metrognome.store.v1.UnionDescriptor._Product:type_name -> metrognome.store.v1.Product
+	27, // 31: metrognome.store.v1.UnionDescriptor._RateCard:type_name -> metrognome.store.v1.RateCard
+	28, // 32: metrognome.store.v1.UnionDescriptor._Rate:type_name -> metrognome.store.v1.Rate
+	31, // 33: metrognome.store.v1.UnionDescriptor._ApiKey:type_name -> metrognome.store.v1.ApiKey
+	34, // [34:34] is the sub-list for method output_type
+	34, // [34:34] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_store_v1_store_proto_init() }
@@ -2473,8 +3107,8 @@ func file_metrognome_store_v1_store_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_store_v1_store_proto_rawDesc), len(file_metrognome_store_v1_store_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   23,
+			NumEnums:      6,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

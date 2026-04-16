@@ -114,7 +114,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			req := types.GetKeyRequest{
 				Sel: types.KeySelectorRef{
 					Key:     selectorKey,
@@ -141,14 +141,15 @@ func (tx *Transaction) sendGetKey(ctx context.Context, selectorKey []byte, orEqu
 			if err := conn.SendFrame(gkToken, reqData); err != nil {
 				getKeyBufPool.Put(bufp)
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
 			return inFlightRPC{
 				replyCh: replyCh,
-				cancel:  cancelReply,
+				cancel:  replyHandle,
 				addr:    server.Address,
 				delta:   delta,
 				start:   start,
@@ -257,7 +258,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
 			delta := tx.db.queueModel.startRequest(server.Address)
@@ -266,14 +267,15 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 			if err := conn.SendFrame(server.Token, body); err != nil {
 				getValueBufPool.Put(poolBuf)
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getValueBufPool.Put(poolBuf)
 			return inFlightRPC{
 				replyCh: replyCh,
-				cancel:  cancelReply,
+				cancel:  replyHandle,
 				addr:    server.Address,
 				delta:   delta,
 				start:   start,
@@ -329,7 +331,8 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		tx.db.handleConnError(server.Address)
 		return nil, err
 	}
-	replyToken, replyCh, cancelReply := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	defer replyHandle.Release()
 	body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 
 	delta := tx.db.queueModel.startRequest(server.Address)
@@ -338,7 +341,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	if err := conn.SendFrame(server.Token, body); err != nil {
 		getValueBufPool.Put(poolBuf)
 		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-		cancelReply()
+		replyHandle.Cancel()
 		tx.db.handleConnError(server.Address)
 		return nil, err
 	}
@@ -346,7 +349,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	resp, err := waitReply(replyCh, ctx, DefaultRPCTimeout)
 	if err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-		cancelReply()
+		replyHandle.Cancel()
 		return nil, err
 	}
 	if resp.Err != nil {
@@ -526,7 +529,7 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body, poolBuf := buildGetKeyValuesRequest(begin, end, tx.readVersion, wireLimit, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 			gkvToken := getAdjustedEndpoint(server.Token, EndpointGetKeyValues)
 
@@ -536,14 +539,15 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 			if err := conn.SendFrame(gkvToken, body); err != nil {
 				getKeyValuesBufPool.Put(poolBuf)
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				tx.db.handleConnError(server.Address)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyValuesBufPool.Put(poolBuf)
 			return inFlightRPC{
 				replyCh: replyCh,
-				cancel:  cancelReply,
+				cancel:  replyHandle,
 				addr:    server.Address,
 				delta:   delta,
 				start:   start,
@@ -593,6 +597,9 @@ func isAllAlternativesFailed(err error) bool {
 // future_version backoff in the QueueModel. Matches C++ ModelHolder::release()
 // which passes futureVersion=true for future_version (1009) and process_behind (1037).
 func isFutureVersionOrProcessBehind(err error) bool {
+	if err == nil {
+		return false
+	}
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
 		return false
@@ -757,7 +764,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		req := types.WatchValueRequest{
 			Key:        key,
 			Version:    tx.readVersion,
@@ -776,13 +783,15 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 
 		if err := conn.SendFrame(watchToken, reqData); err != nil {
 			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
 		select {
 		case resp := <-replyCh:
+			replyHandle.Release()
 			if resp.Err != nil {
 				tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
 				tx.db.handleConnError(server.Address)
@@ -792,7 +801,8 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, servers
 			return parseWatchValueReply(resp.Body)
 		case <-ctx.Done():
 			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), false)
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			return ctx.Err()
 		}
 	}

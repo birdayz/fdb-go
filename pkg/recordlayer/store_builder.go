@@ -469,6 +469,7 @@ type StoreBuilder struct {
 	storeStateCache           FDBRecordStoreStateCache // per-store override; nil = use db cache
 	database                  *FDBDatabase             // for inheriting cache
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
+	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 }
 
 // NewStoreBuilder creates a new store builder
@@ -546,14 +547,22 @@ func (b *StoreBuilder) resolveCache() FDBRecordStoreStateCache {
 	return PassThroughStoreStateCache()
 }
 
+// subspaceKeys returns the cached subspace keys, computing them lazily.
+func (b *StoreBuilder) subspaceKeys() *storeSubspaceKeys {
+	if b.cachedSSKeys == nil {
+		b.cachedSSKeys = getCachedSubspaceKeys(b.subspace)
+	}
+	return b.cachedSSKeys
+}
+
 // newStore creates an FDBRecordStore from the builder's settings.
 func (b *StoreBuilder) newStore() *FDBRecordStore {
 	policy := b.indexRebuildPolicy
 	if policy == nil {
 		policy = DefaultIndexRebuildPolicy
 	}
-	// Use cached recordsSubspace from subspace key cache if available.
-	recSS := getCachedSubspaceKeys(b.subspace).recordsSubspace
+	// Use cached recordsSubspace from subspace key cache.
+	recSS := b.subspaceKeys().recordsSubspace
 	return &FDBRecordStore{
 		context:            b.context,
 		metaData:           b.metaData,

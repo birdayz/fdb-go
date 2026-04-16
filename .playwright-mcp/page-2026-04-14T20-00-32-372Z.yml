@@ -1,0 +1,70 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Metrognome" [level=1] [ref=e6]
+      - paragraph [ref=e7]: Usage-Based Billing
+    - generic [ref=e8]:
+      - link "Dashboard" [ref=e9] [cursor=pointer]:
+        - /url: /dashboard
+        - img [ref=e10]
+        - text: Dashboard
+      - link "Customers" [active] [ref=e15] [cursor=pointer]:
+        - /url: /customers
+        - img [ref=e16]
+        - text: Customers
+      - link "Meters" [ref=e21] [cursor=pointer]:
+        - /url: /meters
+        - img [ref=e22]
+        - text: Meters
+      - link "Plans" [ref=e25] [cursor=pointer]:
+        - /url: /plans
+        - img [ref=e26]
+        - text: Plans
+      - link "Events" [ref=e28] [cursor=pointer]:
+        - /url: /events
+        - img [ref=e29]
+        - text: Events
+      - link "Invoices" [ref=e31] [cursor=pointer]:
+        - /url: /invoices
+        - img [ref=e32]
+        - text: Invoices
+  - main [ref=e35]:
+    - generic [ref=e78]:
+      - heading "Customers" [level=2] [ref=e79]
+      - generic [ref=e80]:
+        - textbox "Customer name" [ref=e81]
+        - textbox "External ID (optional)" [ref=e82]
+        - button "Create" [ref=e83]
+      - table [ref=e85]:
+        - rowgroup [ref=e86]:
+          - row "Name External ID ID Created" [ref=e87]:
+            - columnheader "Name" [ref=e88]
+            - columnheader "External ID" [ref=e89]
+            - columnheader "ID" [ref=e90]
+            - columnheader "Created" [ref=e91]
+        - rowgroup [ref=e92]:
+          - row "Acme Corp acme cust-acme 4/14/2026, 9:59:53 PM" [ref=e93]:
+            - cell "Acme Corp" [ref=e94]
+            - cell "acme" [ref=e95]
+            - cell "cust-acme" [ref=e96]
+            - cell "4/14/2026, 9:59:53 PM" [ref=e97]
+          - row "Globex Corporation globex cust-globex 4/14/2026, 9:59:53 PM" [ref=e98]:
+            - cell "Globex Corporation" [ref=e99]
+            - cell "globex" [ref=e100]
+            - cell "cust-globex" [ref=e101]
+            - cell "4/14/2026, 9:59:53 PM" [ref=e102]
+          - row "Initech initech cust-initech 4/14/2026, 9:59:53 PM" [ref=e103]:
+            - cell "Initech" [ref=e104]
+            - cell "initech" [ref=e105]
+            - cell "cust-initech" [ref=e106]
+            - cell "4/14/2026, 9:59:53 PM" [ref=e107]
+          - row "Umbrella Corporation umbrella cust-umbrella 4/14/2026, 9:59:53 PM" [ref=e108]:
+            - cell "Umbrella Corporation" [ref=e109]
+            - cell "umbrella" [ref=e110]
+            - cell "cust-umbrella" [ref=e111]
+            - cell "4/14/2026, 9:59:53 PM" [ref=e112]
+          - row "Wayne Enterprises wayne cust-wayne 4/14/2026, 9:59:53 PM" [ref=e113]:
+            - cell "Wayne Enterprises" [ref=e114]
+            - cell "wayne" [ref=e115]
+            - cell "cust-wayne" [ref=e116]
+            - cell "4/14/2026, 9:59:53 PM" [ref=e117]

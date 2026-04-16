@@ -4,6 +4,7 @@ go_library(
     name = "metrognomev1connect",
     srcs = [
         "alert.connect.go",
+        "api_key.connect.go",
         "contract.connect.go",
         "credit.connect.go",
         "customer.connect.go",
@@ -11,6 +12,8 @@ go_library(
         "invoice.connect.go",
         "meter.connect.go",
         "plan.connect.go",
+        "product.connect.go",
+        "ratecard.connect.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1/metrognomev1connect",
     visibility = ["//visibility:public"],

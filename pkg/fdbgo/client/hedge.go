@@ -63,7 +63,8 @@ func sendFrameWithHedge(
 	select {
 	case resp := <-pResult.replyCh:
 		// Primary replied before hedge timer. Use it.
-		pResult.cancel()
+		pResult.cancel.Cancel()
+		pResult.cancel.Release()
 		return processReply(pResult, resp)
 
 	case <-timer.C:
@@ -78,7 +79,8 @@ func sendFrameWithHedge(
 		return raceReplies(ctx, pResult, sResult, timeout)
 
 	case <-ctx.Done():
-		pResult.cancel()
+		pResult.cancel.Cancel()
+		pResult.cancel.Release()
 		return hedgeResult{err: ctx.Err()}
 	}
 }
@@ -90,7 +92,7 @@ type sendFunc func() inFlightRPC
 // inFlightRPC represents an in-flight RPC request.
 type inFlightRPC struct {
 	replyCh <-chan transport.Response
-	cancel  func()
+	cancel  *transport.ReplyHandle
 	addr    string
 	delta   float64
 	start   time.Time
@@ -103,12 +105,15 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 
 	select {
 	case resp := <-inflight.replyCh:
+		inflight.cancel.Release()
 		return processReply(inflight, resp)
 	case <-timer.C:
-		inflight.cancel()
+		inflight.cancel.Cancel()
+		inflight.cancel.Release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: context.DeadlineExceeded}
 	case <-ctx.Done():
-		inflight.cancel()
+		inflight.cancel.Cancel()
+		inflight.cancel.Release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
 	}
 }
@@ -119,18 +124,26 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 
 	select {
 	case resp := <-a.replyCh:
-		b.cancel() // Cancel loser
+		b.cancel.Cancel() // Cancel loser
+		b.cancel.Release()
+		a.cancel.Release()
 		return processReply(a, resp)
 	case resp := <-b.replyCh:
-		a.cancel() // Cancel loser
+		a.cancel.Cancel() // Cancel loser
+		a.cancel.Release()
+		b.cancel.Release()
 		return processReply(b, resp)
 	case <-timer.C:
-		a.cancel()
-		b.cancel()
+		a.cancel.Cancel()
+		a.cancel.Release()
+		b.cancel.Cancel()
+		b.cancel.Release()
 		return hedgeResult{err: context.DeadlineExceeded}
 	case <-ctx.Done():
-		a.cancel()
-		b.cancel()
+		a.cancel.Cancel()
+		a.cancel.Release()
+		b.cancel.Cancel()
+		b.cancel.Release()
 		return hedgeResult{err: ctx.Err()}
 	}
 }

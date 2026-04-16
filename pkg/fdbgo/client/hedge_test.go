@@ -19,7 +19,7 @@ func TestHedge_PrimaryRepliesBeforeTimer(t *testing.T) {
 	primary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: replyCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "primary",
 			delta:   1.0,
 			start:   time.Now(),
@@ -48,7 +48,7 @@ func TestHedge_SecondaryWinsRace(t *testing.T) {
 	primary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: primaryCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "primary",
 			delta:   1.0,
 			start:   time.Now(),
@@ -61,7 +61,7 @@ func TestHedge_SecondaryWinsRace(t *testing.T) {
 	secondary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: secondaryCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "secondary",
 			delta:   1.0,
 			start:   time.Now(),
@@ -88,7 +88,7 @@ func TestHedge_PrimarySendFails_FallsBackToSecondary(t *testing.T) {
 	secondary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: secondaryCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "secondary",
 			delta:   1.0,
 			start:   time.Now(),
@@ -110,7 +110,7 @@ func TestHedge_NoSecondary_WaitsForPrimary(t *testing.T) {
 	primary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: replyCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "only",
 			delta:   1.0,
 			start:   time.Now(),
@@ -133,7 +133,7 @@ func TestHedge_ContextCancellation(t *testing.T) {
 	primary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: make(chan transport.Response),
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "primary",
 			delta:   1.0,
 			start:   time.Now(),
@@ -154,7 +154,7 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 	primary := func() inFlightRPC {
 		return inFlightRPC{
 			replyCh: replyCh,
-			cancel:  func() {},
+			cancel:  &transport.ReplyHandle{},
 			addr:    "primary",
 			delta:   1.0,
 			start:   time.Now(),
