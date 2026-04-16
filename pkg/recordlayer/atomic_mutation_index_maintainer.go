@@ -309,7 +309,37 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 	}
 	tuple.PutPacker(pk)
 
-	return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
+	// Extract SUM value directly via Int64Evaluator if available (avoids scalarToInterface).
+	var sumSource any
+	if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > gc {
+		sumExpr := comp.expressions[gc]
+		if ie, ok2 := sumExpr.(Int64Evaluator); ok2 {
+			val, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+			if err != nil || !valid {
+				return false, nil
+			}
+			// Inline SUM application — avoids toInt64 + any boxing.
+			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
+				return true, err
+			}
+			var param [8]byte
+			binary.LittleEndian.PutUint64(param[:], uint64(val))
+			m.tx.AddBytes(fdbKey, param[:])
+			return true, nil
+		}
+		// Fallback: use ScalarEvaluator (boxes into any).
+		if se, ok2 := sumExpr.(ScalarEvaluator); ok2 {
+			val, err := se.EvaluateScalar(newRecord, newRecord.Record)
+			if err != nil {
+				return false, nil
+			}
+			sumSource = val
+		} else {
+			return false, nil
+		}
+	}
+
+	return m.applyInsertMutation(fdbKey, sumSource, gc, newRecord, gke)
 }
 
 // applyInsertMutation applies the mutation for insert-only, given a pre-packed FDB key.
