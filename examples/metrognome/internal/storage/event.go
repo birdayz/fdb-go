@@ -40,6 +40,9 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 		idx := rs.GetRecordMetaData().GetIndex("event_by_idempotency_key")
 		indexSS := rs.Subspace().Sub(rl.IndexKey, idx.SubspaceTupleKey())
 
+		// Use pipelined prefix-range checks. A unique index has exactly one entry
+		// per value, but the PK suffix is unknown so we can't do a point Get.
+		// GetRange with limit=1 on the prefix is the fastest check.
 		dedupFutures := make([]fdb.RangeResult, len(events))
 		for i, evt := range events {
 			prefix := fdb.Key(indexSS.Pack(tuple.Tuple{evt.GetIdempotencyKey()}))
@@ -50,7 +53,7 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 		// Phase 2: Resolve dedup futures — collect non-duplicate events.
 		var toSave []proto.Message
 		var toSaveIndexes []int
-		for i, evt := range events {
+		for i := range events {
 			existing, err := dedupFutures[i].GetSliceWithError()
 			if err != nil {
 				return nil, err
@@ -59,7 +62,7 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 				result.Duplicates++
 				continue
 			}
-			toSave = append(toSave, evt)
+			toSave = append(toSave, events[i])
 			toSaveIndexes = append(toSaveIndexes, i)
 		}
 
