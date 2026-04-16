@@ -208,6 +208,7 @@ func BenchmarkSaveRecordBuild(b *testing.B) {
 				SetContext(rtx).
 				SetMetaDataProvider(md).
 				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
 				Build()
 			if err != nil {
 				return nil, err
@@ -302,6 +303,7 @@ func BenchmarkLoadRecordBuild(b *testing.B) {
 				SetContext(rtx).
 				SetMetaDataProvider(md).
 				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
 				Build()
 			if err != nil {
 				return nil, err

@@ -470,6 +470,7 @@ type StoreBuilder struct {
 	database                  *FDBDatabase             // for inheriting cache
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
+	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
 }
 
 // NewStoreBuilder creates a new store builder
@@ -536,6 +537,15 @@ func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
 	return b
 }
 
+// SetAssumeAllIndexesReadable pre-populates an empty indexStates map during Build(),
+// making ensureStoreStateLoaded() a complete no-op (zero FDB reads, zero lazy-load).
+// Safe when CreateOrOpen ran at startup and all indexes are known to be READABLE.
+// This is an explicit opt-in for maximum performance in the Build() path.
+func (b *StoreBuilder) SetAssumeAllIndexesReadable(assume bool) *StoreBuilder {
+	b.assumeAllIndexesReadable = assume
+	return b
+}
+
 // resolveCache returns the cache to use: per-store override > database cache > pass-through.
 func (b *StoreBuilder) resolveCache() FDBRecordStoreStateCache {
 	if b.storeStateCache != nil {
@@ -563,7 +573,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 	}
 	// Use cached recordsSubspace from subspace key cache.
 	recSS := b.subspaceKeys().recordsSubspace
-	return &FDBRecordStore{
+	store := &FDBRecordStore{
 		context:            b.context,
 		metaData:           b.metaData,
 		subspace:           b.subspace,
@@ -571,6 +581,10 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 	}
+	if b.assumeAllIndexesReadable {
+		store.indexStates = make(map[string]IndexState)
+	}
+	return store
 }
 
 // validateBuilder checks that all required fields are set
