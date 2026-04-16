@@ -276,7 +276,66 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
 	}
 
-	return false, nil // multi-field grouping: fall through
+	// Multi-field grouping (gc > 1): try DirectPacker on the grouping fields.
+	comp, ok := gke.wholeKey.(*CompositeKeyExpression)
+	if !ok || len(comp.expressions) < gc {
+		return false, nil
+	}
+	pk := tuple.GetPacker()
+	allDirect := true
+	for i := 0; i < gc; i++ {
+		if dp, ok2 := comp.expressions[i].(DirectPacker); ok2 {
+			if !dp.PackDirect(pk, newRecord, newRecord.Record) {
+				allDirect = false
+				break
+			}
+		} else {
+			allDirect = false
+			break
+		}
+	}
+	if !allDirect {
+		tuple.PutPacker(pk)
+		return false, nil
+	}
+	var fdbKey fdb.Key
+	if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
+		fdbKey = fdb.Key(pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes()))
+	} else {
+		var buf []byte
+		fdbKey = fdb.Key(pk.AppendInto(&buf, m.indexSubspace.Bytes()))
+	}
+	tuple.PutPacker(pk)
+
+	// Extract SUM value directly if this is a SUM mutation.
+	var sumSource any
+	if _, isSumMut := m.mutation.(*sumMutation); isSumMut && len(comp.expressions) > gc {
+		sumExpr := comp.expressions[gc]
+		if ie, ok2 := sumExpr.(Int64Evaluator); ok2 {
+			val, valid, err := ie.EvaluateInt64(newRecord, newRecord.Record)
+			if err != nil || !valid {
+				return false, nil
+			}
+			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
+				return true, err
+			}
+			var param [8]byte
+			binary.LittleEndian.PutUint64(param[:], uint64(val))
+			m.tx.AddBytes(fdbKey, param[:])
+			return true, nil
+		}
+		if se, ok2 := sumExpr.(ScalarEvaluator); ok2 {
+			val, err := se.EvaluateScalar(newRecord, newRecord.Record)
+			if err != nil {
+				return false, nil
+			}
+			sumSource = val
+		} else {
+			return false, nil
+		}
+	}
+
+	return m.applyInsertMutation(fdbKey, sumSource, gc, newRecord, gke)
 }
 
 // applyInsertMutation applies the mutation for insert-only, given a pre-packed FDB key.

@@ -217,6 +217,45 @@ func (f *FieldKeyExpression) EvaluateInt64(record *FDBStoredRecord[proto.Message
 	}
 }
 
+// PackDirect encodes the field value directly into a Packer without boxing into any.
+// Returns false if the field is nil/unset or not a directly-packable type.
+func (f *FieldKeyExpression) PackDirect(pk *tuple.Packer, _ *FDBStoredRecord[proto.Message], msg proto.Message) bool {
+	if msg == nil {
+		return false
+	}
+	m := msg.ProtoReflect()
+	fd, err := f.resolveFieldDescriptor(m)
+	if err != nil || fd.IsList() {
+		return false
+	}
+	if fd.HasPresence() && !m.Has(fd) {
+		return false
+	}
+	switch fd.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		pk.EncodeInt(m.Get(fd).Int())
+		return true
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		pk.EncodeInt(int64(m.Get(fd).Uint()))
+		return true
+	case protoreflect.EnumKind:
+		pk.EncodeInt(int64(m.Get(fd).Enum()))
+		return true
+	case protoreflect.StringKind:
+		pk.EncodeString(m.Get(fd).String())
+		return true
+	default:
+		return false
+	}
+}
+
+// DirectPacker can encode field values directly into a Packer without any boxing.
+type DirectPacker interface {
+	PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool
+}
+
 // getNullResult returns the appropriate result for a nil message based on FanType.
 // Matches Java's FieldKeyExpression.getNullResult():
 //   - FanOut → empty (no index entries)
@@ -426,6 +465,22 @@ func (r *RecordTypeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mes
 	return []any{typeKey}, nil
 }
 
+// PackDirect encodes the record type key directly into a Packer.
+func (r *RecordTypeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
+	if msg == nil {
+		return false
+	}
+	typeName := string(msg.ProtoReflect().Descriptor().Name())
+	if r.typeKeys != nil {
+		if k, ok := r.typeKeys[typeName]; ok {
+			pk.EncodeElement(k)
+			return true
+		}
+	}
+	pk.EncodeElement(typeName)
+	return true
+}
+
 // FieldNames returns the field names accessed by nested expression
 func (r *RecordTypeKeyExpression) FieldNames() []string {
 	if r.nested != nil {
@@ -522,6 +577,21 @@ func (c *CompositeKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Mess
 		result = append(result, childTuples[0]...)
 	}
 	return result, nil
+}
+
+// PackDirect encodes all child fields directly into a Packer.
+// Returns false if any child can't be directly packed.
+func (c *CompositeKeyExpression) PackDirect(pk *tuple.Packer, record *FDBStoredRecord[proto.Message], msg proto.Message) bool {
+	for _, expr := range c.expressions {
+		if dp, ok := expr.(DirectPacker); ok {
+			if !dp.PackDirect(pk, record, msg) {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Concat creates a composite key from multiple expressions
