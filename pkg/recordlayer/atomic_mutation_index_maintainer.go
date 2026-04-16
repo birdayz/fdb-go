@@ -266,11 +266,11 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnlyGrouped(
 			if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, fdbKey, nil); err != nil {
 				return true, err
 			}
-			var param [8]byte
-			binary.LittleEndian.PutUint64(param[:], uint64(sumInt64))
-			var entry atomicMutationEntry
-			entry.param = param[:]
-			return true, m.mutation.applyMutation(m.tx, fdbKey, entry, false)
+			// Inline SUM mutation with stack-allocated param buffer.
+			var sumParam [8]byte
+			binary.LittleEndian.PutUint64(sumParam[:], uint64(sumInt64))
+			m.tx.AddBytes(fdbKey, sumParam[:])
+			return true, nil
 		}
 
 		return m.applyInsertMutation(fdbKey, nil, gc, newRecord, gke)
