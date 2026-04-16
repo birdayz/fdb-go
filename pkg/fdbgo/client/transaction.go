@@ -926,9 +926,21 @@ func (tx *Transaction) OnError(err error) error {
 		// MAYBE_COMMITTED: self-conflicting — copy write conflicts to read
 		// conflicts so the retry detects if our prior commit actually landed.
 		// C++ fdb_error_predicate(FDB_ERROR_PREDICATE_MAYBE_COMMITTED, code).
+		//
+		// Deep-copy key bytes: Begin/End may be sub-slices of conflictBuf
+		// which reset() reuses (conflictBuf[:0]). Shallow copy would alias
+		// stale data after retry writes new conflicts into the same buffer.
 		tx.conflictMu.Lock()
 		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
-		copy(selfConflicts, tx.writeConflicts)
+		for i, kr := range tx.writeConflicts {
+			b := make([]byte, len(kr.Begin)+len(kr.End))
+			copy(b, kr.Begin)
+			copy(b[len(kr.Begin):], kr.End)
+			selfConflicts[i] = KeyRange{
+				Begin: b[:len(kr.Begin)],
+				End:   b[len(kr.Begin):],
+			}
+		}
 		tx.conflictMu.Unlock()
 		tx.retryCount++
 		time.Sleep(tx.nextBackoff(fdbErr.Code))
