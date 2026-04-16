@@ -1502,6 +1502,25 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("allows index adding type with SinceVersion=0 when allowNoSinceVersion is true", func() {
+			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
+			})
+
+			// Customer has SinceVersion=0 (default). Without allowNoSinceVersion,
+			// this would fail because 0 <= old.Version()==1.
+			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("idx_price", Field("price"))
+				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+			})
+
+			validator := NewMetaDataEvolutionValidator().
+				SetAllowNoSinceVersion(true).
+				Build()
+			err := validator.Validate(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
 	})
 
 	Describe("index options validation (RFC 019)", func() {
