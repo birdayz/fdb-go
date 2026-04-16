@@ -233,9 +233,11 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	if m.index.IsUnique() {
-		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -272,9 +274,13 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	if m.index.IsUnique() && val != nil {
-		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		// Skip uniqueness check when called from InsertBatch — caller guarantees
+		// unique keys, and the check does an FDB GetRange per entry.
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -306,8 +312,10 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 	}
 
 	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 

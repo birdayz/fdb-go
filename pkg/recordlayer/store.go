@@ -86,19 +86,20 @@ func (e *StaleMetaDataVersionError) Error() string {
 // FDBRecordStore provides record storage operations within a transaction context.
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
-	context            *FDBRecordContext
-	metaData           *RecordMetaData
-	subspace           subspace.Subspace
-	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
-	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
-	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
-	stateMu            sync.RWMutex             // protects storeHeader + indexStates
-	stateLoadOnce      sync.Once                // ensures lazy store state load happens exactly once (Build() path)
-	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
-	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
-	batchKeyBuf        *[]byte                  // shared buffer for batch key packing (InsertBatch only)
+	context              *FDBRecordContext
+	metaData             *RecordMetaData
+	subspace             subspace.Subspace
+	recordsSubspace      subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader          *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
+	indexStates          map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy   IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
+	storeStateCache      FDBRecordStoreStateCache // Cache for store state across transactions
+	stateMu              sync.RWMutex             // protects storeHeader + indexStates
+	stateLoadOnce        sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
+	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
+	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
+	skipUniquenessChecks bool                     // true in InsertBatch — caller guarantees unique keys
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from
