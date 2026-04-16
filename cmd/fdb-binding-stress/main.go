@@ -296,6 +296,15 @@ func setup() (stacktester string, btRunDir string) {
 	if err != nil {
 		log.Fatalf("resolve stacktester path: %v", err)
 	}
+	// Resolve symlinks to get the stable cache path. The bazel-bin/ symlink
+	// gets recreated on every Bazel invocation, so if a concurrent build runs
+	// (e.g., pre-commit hook), the symlink points to a new directory and the
+	// old path breaks. EvalSymlinks resolves to the actual file in the Bazel
+	// cache which survives across builds.
+	stacktester, err = filepath.EvalSymlinks(stacktester)
+	if err != nil {
+		log.Fatalf("resolve stacktester symlinks: %v", err)
+	}
 	if _, err := os.Stat(stacktester); err != nil {
 		log.Fatalf("stacktester not found at %s", stacktester)
 	}
