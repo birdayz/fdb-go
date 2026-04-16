@@ -90,14 +90,43 @@ type FDBRecordStore struct {
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
 	recordsSubspace    subspace.Subspace        // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create
-	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create
+	storeHeader        *gen.DataStoreInfo       // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState    // Cached index states, loaded on Open/Create or lazily
 	indexRebuildPolicy IndexRebuildPolicy       // Policy for rebuilding indexes on metadata version change
 	storeStateCache    FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu            sync.RWMutex             // protects storeHeader + indexStates
+	stateLoadOnce      sync.Once                // ensures lazy store state load happens exactly once (Build() path)
 	versionChanged     bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache    sync.Map                 // string → IndexMaintainer, cached per-transaction
 	batchKeyBuf        *[]byte                  // shared buffer for batch key packing (InsertBatch only)
+}
+
+// ensureStoreStateLoaded lazily loads store state (header + index states) from
+// FDB on first call. Subsequent calls are no-ops via sync.Once.
+//
+// Matches Java's build() + lazy preloadRecordStoreStateAsync() pattern:
+// Java's Builder.build() returns immediately (zero reads), then the first
+// operation that needs index state calls preloadRecordStoreStateAsync().
+//
+// MUST be called before acquiring stateMu to avoid deadlock.
+//
+// For Open/CreateOrOpen paths, storeHeader and indexStates are already populated
+// during the open call — stateLoadOnce.Do returns immediately.
+func (store *FDBRecordStore) ensureStoreStateLoaded() {
+	store.stateLoadOnce.Do(func() {
+		if store.indexStates != nil {
+			return // already loaded (Open/CreateOrOpen path)
+		}
+		state, err := loadRecordStoreState(store, ExistenceCheckNone)
+		if err != nil {
+			// On error, default to all readable — safe when CreateOrOpen ran at
+			// startup and all indexes are known to be built.
+			store.indexStates = make(map[string]IndexState)
+			return
+		}
+		store.storeHeader = state.StoreHeader
+		store.indexStates = state.IndexStates
+	})
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -141,6 +170,7 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.validateRecordUpdateAllowedLocked()
@@ -841,6 +871,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
@@ -1248,6 +1279,7 @@ func (r *FDBStoredRecord[M]) HasVersion() bool {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getFormatVersion().
 func (store *FDBRecordStore) GetFormatVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.getFormatVersionLocked()
