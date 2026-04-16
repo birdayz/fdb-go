@@ -213,8 +213,7 @@ func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) 
 			SetContext(rtx).
 			SetMetaDataProvider(d.metadata).
 			SetSubspace(d.ss).
-			SetSkipPossiblyRebuild(true).
-			Open()
+			Build()
 		if err != nil {
 			return nil, err
 		}
@@ -229,8 +228,7 @@ func (d *DB) runInStore(ctx context.Context, fn func(*rl.FDBRecordContext, *rl.F
 			SetContext(rtx).
 			SetMetaDataProvider(d.metadata).
 			SetSubspace(d.ss).
-			SetSkipPossiblyRebuild(true).
-			Open()
+			Build()
 		if err != nil {
 			return nil, err
 		}
