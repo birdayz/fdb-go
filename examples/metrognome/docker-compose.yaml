@@ -2,6 +2,10 @@ services:
   fdb:
     image: foundationdb/foundationdb:7.3.46
     network_mode: host
+    environment:
+      FDB_NETWORKING_MODE: host
+      FDB_COORDINATOR_PORT: 4600
+      FDB_PORT: 4600
     volumes:
       - fdbdata:/var/fdb/data
       - fdblog:/var/fdb/logs
