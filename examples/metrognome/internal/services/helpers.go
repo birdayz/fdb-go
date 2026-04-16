@@ -12,12 +12,18 @@ import (
 )
 
 // newID generates a prefixed random ID (e.g. "cust_a1b2c3d4e5f6").
+// Single allocation: prefix + "_" + 16 hex chars built directly.
 func newID(prefix string) string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
 		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
-	return fmt.Sprintf("%s_%s", prefix, hex.EncodeToString(b))
+	// Build string in one allocation: prefix + "_" + hex
+	buf := make([]byte, len(prefix)+1+16)
+	copy(buf, prefix)
+	buf[len(prefix)] = '_'
+	hex.Encode(buf[len(prefix)+1:], b[:])
+	return string(buf)
 }
 
 // storageError converts storage-layer errors to connect errors.
