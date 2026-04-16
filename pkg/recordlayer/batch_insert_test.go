@@ -933,6 +933,65 @@ var _ = Describe("BatchInsert", func() {
 		})
 	})
 
+	Describe("InsertBatch with UNIQUE index", func() {
+		It("inserts records and UNIQUE index entries are scannable", func() {
+			ks := specSubspace()
+			builder := baseMetaData()
+			uniqueIdx := NewIndex("order_price_unique", Field("price")).SetUnique()
+			builder.AddIndex("Order", uniqueIdx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create store
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				_, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// InsertBatch 50 records with unique prices
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				records := make([]proto.Message, 50)
+				for i := 0; i < 50; i++ {
+					records[i] = &gen.Order{
+						OrderId: proto.Int64(int64(i)),
+						Price:   proto.Int32(int32(i * 100)), // unique prices
+					}
+				}
+				return nil, store.InsertBatch(records)
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify all 50 UNIQUE index entries are scannable and records loadable
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				idx := md.GetIndex("order_price_unique")
+				Expect(idx).NotTo(BeNil())
+				entries, err := AsList(context.Background(),
+					store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(50))
+
+				// Verify each entry points to a valid record
+				for _, entry := range entries {
+					pk := entry.PrimaryKey()
+					rec, err := store.LoadRecord(pk)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rec).NotTo(BeNil())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
 	Describe("InsertBatch mixed types", func() {
 		It("rejects mixed record types with explicit error", func() {
 			// InsertBatch requires all records to be the same proto message type.

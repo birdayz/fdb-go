@@ -368,6 +368,8 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 // PRECONDITIONS:
 //   - All records MUST be the same proto message type. Mixed types are rejected with an error.
 //   - All records must have unique primary keys. Existing records silently overwritten.
+//   - If the schema has UNIQUE indexes, all records must have unique values for those
+//     indexes. Uniqueness is not enforced — duplicates silently corrupt the index.
 //   - This is a Go-only API, not present in Java Record Layer.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
