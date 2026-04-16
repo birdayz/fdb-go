@@ -177,10 +177,9 @@ func BenchmarkSaveRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkSaveRecordBuild is like BenchmarkSaveRecord but uses Build() instead
-// of Open(). Build() skips store state reads (2 FDB GetRange per tx), showing
-// the SaveRecord latency without the store-open overhead. This is the path
-// production apps should use after initial CreateOrOpen at startup.
+// BenchmarkSaveRecordBuild uses Build() + SetAssumeAllIndexesReadable —
+// the maximum-performance production path. Zero FDB reads for store open,
+// no lazy-load on first index operation. Requires CreateOrOpen at startup.
 func BenchmarkSaveRecordBuild(b *testing.B) {
 	ensureBenchDB(b)
 
@@ -209,6 +208,7 @@ func BenchmarkSaveRecordBuild(b *testing.B) {
 				SetContext(rtx).
 				SetMetaDataProvider(md).
 				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
 				Build()
 			if err != nil {
 				return nil, err
@@ -268,7 +268,7 @@ func BenchmarkLoadRecord(b *testing.B) {
 	}
 }
 
-// BenchmarkLoadRecordBuild uses Build() — zero FDB reads for store open.
+// BenchmarkLoadRecordBuild uses Build() + SetAssumeAllIndexesReadable.
 func BenchmarkLoadRecordBuild(b *testing.B) {
 	ensureBenchDB(b)
 	md := benchMetaData(b)
@@ -291,7 +291,7 @@ func BenchmarkLoadRecordBuild(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Build()
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).SetAssumeAllIndexesReadable(true).Build()
 			if err != nil {
 				return nil, err
 			}

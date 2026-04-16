@@ -470,6 +470,7 @@ type StoreBuilder struct {
 	database                  *FDBDatabase             // for inheriting cache
 	skipPossiblyRebuild       bool                     // skip checkPossiblyRebuild on open
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
+	assumeAllIndexesReadable  bool                     // if true, Build() pre-populates indexStates as all-readable, skipping lazy-load FDB reads
 }
 
 // NewStoreBuilder creates a new store builder
@@ -536,6 +537,21 @@ func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
 	return b
 }
 
+// SetAssumeAllIndexesReadable makes Build() pre-populate the store with an
+// empty index state map (all indexes assumed readable). This eliminates the
+// lazy-load FDB reads that ensureStoreStateLoaded() would otherwise perform
+// on the first index operation.
+//
+// Use this when CreateOrOpen() has run at application startup and all indexes
+// are known to be in READABLE state. This is the common production pattern.
+//
+// WARNING: If any index is actually DISABLED or WRITE_ONLY, this will
+// incorrectly maintain it. Only safe when the store was properly initialized.
+func (b *StoreBuilder) SetAssumeAllIndexesReadable(assume bool) *StoreBuilder {
+	b.assumeAllIndexesReadable = assume
+	return b
+}
+
 // resolveCache returns the cache to use: per-store override > database cache > pass-through.
 func (b *StoreBuilder) resolveCache() FDBRecordStoreStateCache {
 	if b.storeStateCache != nil {
@@ -563,7 +579,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 	}
 	// Use cached recordsSubspace from subspace key cache.
 	recSS := b.subspaceKeys().recordsSubspace
-	return &FDBRecordStore{
+	store := &FDBRecordStore{
 		context:            b.context,
 		metaData:           b.metaData,
 		subspace:           b.subspace,
@@ -571,6 +587,12 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 	}
+	if b.assumeAllIndexesReadable {
+		// Pre-populate with empty map = all indexes assumed READABLE.
+		// ensureStoreStateLoaded() becomes a no-op (sync.Once sees non-nil indexStates).
+		store.indexStates = make(map[string]IndexState)
+	}
+	return store
 }
 
 // validateBuilder checks that all required fields are set
