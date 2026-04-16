@@ -404,10 +404,7 @@ func (lc *locationCache) collectOverlapping(tenantId int64, begin, end []byte) [
 		}
 	}
 
-	// Small-array optimization: most lookups return 1 result (single shard).
-	// Avoids heap allocation for the common case.
-	var buf [1]LocationResult
-	results := buf[:0]
+	var results []LocationResult
 	for i := startIdx; i < len(lc.entries); i++ {
 		e := &lc.entries[i]
 		if e.tenantId != tenantId {
