@@ -142,6 +142,10 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 - [ ] **SizeStatisticsGroupingCursor** — Key/value size tracking.
 - [ ] **RecordCursorVisitor pattern** — Cursor tree inspection.
 
+#### MEDIUM
+
+- [ ] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20: (1) Index record type scope validation — Java validates indexes still cover same record types after evolution, Go skips this entirely. (2) Type rename propagation — Go detects renames but doesn't apply to index validation. (3) Index options validation — Java delegates to `IndexValidator` registry for option changes, Go has no equivalent. Plus one edge case: former index added version check without prior old index.
+
 #### LOW
 
 - [ ] **`isClosed()` on cursor** — Closure state check.
