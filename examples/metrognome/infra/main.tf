@@ -39,6 +39,19 @@ variable "node_count" {
   default     = 3
 }
 
+variable "github_client_id" {
+  description = "GitHub OAuth App client ID"
+  type        = string
+  default     = ""
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth App client secret"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "fdb_version" {
   description = "FoundationDB version"
   type        = string
@@ -199,6 +212,17 @@ output "node_private_ips" {
 output "ssh_commands" {
   description = "SSH commands for each node"
   value       = [for s in hcloud_server.node : "ssh root@${s.ipv4_address}"]
+}
+
+output "github_client_id" {
+  description = "GitHub OAuth client ID (for deploy.sh env file)"
+  value       = var.github_client_id
+}
+
+output "github_client_secret" {
+  description = "GitHub OAuth client secret (for deploy.sh env file)"
+  value       = var.github_client_secret
+  sensitive   = true
 }
 
 output "api_url" {

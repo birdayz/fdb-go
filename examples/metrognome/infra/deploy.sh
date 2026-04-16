@@ -48,19 +48,18 @@ for ip in $(echo "$NODE_IPS" | jq -r '.[]'); do
   # Install func-e (envoy wrapper) if not present
   ssh "root@${ip}" 'which func-e >/dev/null 2>&1 || (curl -fsSL https://func-e.io/install.sh | bash -s -- -b /usr/local/bin)'
 
-  # Create env file ONLY if it doesn't exist (preserves credentials across deploys)
-  ssh "root@${ip}" "test -f /etc/metrognome.env || cat > /etc/metrognome.env << ENVEOF
+  # Always write env file with current config (secrets from terraform.tfvars)
+  GH_CLIENT_ID=$(tofu output -raw github_client_id 2>/dev/null || echo "")
+  GH_CLIENT_SECRET=$(tofu output -raw github_client_secret 2>/dev/null || echo "")
+  ssh "root@${ip}" "cat > /etc/metrognome.env << ENVEOF
 LISTEN_ADDR=0.0.0.0:9090
 FRONTEND_URL=http://${LB_IP}:8080
 FDB_CLUSTER_FILE=/etc/foundationdb/fdb.cluster
 STATIC_DIR=/var/www/metrognome
-GITHUB_CLIENT_ID=FILL_ME
-GITHUB_CLIENT_SECRET=FILL_ME
+GITHUB_CLIENT_ID=${GH_CLIENT_ID}
+GITHUB_CLIENT_SECRET=${GH_CLIENT_SECRET}
 GITHUB_REDIRECT_URL=http://${LB_IP}:8080/auth/callback
 ENVEOF"
-
-  # Ensure STATIC_DIR is set in existing env files
-  ssh "root@${ip}" "grep -q STATIC_DIR /etc/metrognome.env || echo 'STATIC_DIR=/var/www/metrognome' >> /etc/metrognome.env"
 
   # Write systemd units (idempotent — always overwrite with correct config)
   ssh "root@${ip}" 'cat > /etc/systemd/system/metrognome.service << EOF
