@@ -323,6 +323,35 @@ func main() {
 		}
 	}
 
+	// --- Generate Invoices ---
+	// Run the billing engine for each active contract — creates invoices
+	// with line items computed from atomic SUM indexes + credit drawdown.
+	// All in a single FDB transaction per invoice.
+	slog.Info("generating invoices...")
+	billingEngine := billing.NewEngine(recordDB, db.MetaData(), db.Subspace())
+	invoicesGenerated := 0
+
+	// Generate invoices for the first 2 weeks of the month (where we have events)
+	periodStart := time.Date(2026, time.Now().Month(), 1, 0, 0, 0, 0, time.UTC).UnixMilli()
+	periodEnd := time.Date(2026, time.Now().Month(), 15, 0, 0, 0, 0, time.UTC).UnixMilli()
+
+	for _, c := range contracts {
+		inv, err := billingEngine.GenerateInvoice(ctx, c.GetId(), periodStart, periodEnd)
+		if err != nil {
+			slog.Warn("invoice generation failed", "contract", c.GetId(), "error", err)
+			continue
+		}
+		slog.Info("generated invoice",
+			"contract", c.GetId(),
+			"customer", c.GetCustomerId(),
+			"subtotal_cents", inv.GetSubtotalCents(),
+			"credits_applied_cents", inv.GetCreditsAppliedCents(),
+			"total_cents", inv.GetTotalCents(),
+			"line_items", len(inv.GetLineItems()),
+		)
+		invoicesGenerated++
+	}
+
 	slog.Info("seed complete",
 		"customers", len(customers),
 		"meters", len(meters),
@@ -332,5 +361,6 @@ func main() {
 		"credits", len(credits),
 		"alerts", len(alerts),
 		"events", eventsCreated,
+		"invoices", invoicesGenerated,
 	)
 }
