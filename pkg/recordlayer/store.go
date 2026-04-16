@@ -6,6 +6,7 @@ import (
 	"maps"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
@@ -464,10 +465,9 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract primary key: %w", err)
 	}
-	primaryKey := make(tuple.Tuple, len(keyValues))
-	for i, v := range keyValues {
-		primaryKey[i] = v
-	}
+	// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
+	// Identical memory layout — no copy needed.
+	primaryKey := *(*tuple.Tuple)(unsafe.Pointer(&keyValues))
 
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
