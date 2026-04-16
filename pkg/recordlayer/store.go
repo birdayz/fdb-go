@@ -1166,15 +1166,24 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 	if recordType != nil && recordType.PrimaryKey != nil && primaryKeyHasRecordTypePrefix(recordType.PrimaryKey) {
 		// Fast path: prefix scan on the record type key range.
 		// RecordTypeKey is the first component, so all records of this type
-		// have PK starting with (recordTypeIndex, ...).
-		rtk := int64(recordType.RecordTypeIndex)
+		// have PK starting with (recordTypeKey, ...).
+		// Use GetRecordTypeKey() to respect explicit keys from SetRecordTypeKey().
+		// Matches Java's RecordType.getRecordTypeKey().
+		rtk := recordType.GetRecordTypeKey()
 		lowEP := EndpointTypeRangeInclusive
+		highEP := EndpointTypeRangeInclusive
 		if len(continuation) > 0 {
-			lowEP = EndpointTypeContinuation
+			// Match ScanRecords: reverse scans narrow the high endpoint,
+			// forward scans narrow the low endpoint.
+			if scanProperties.IsReverse() {
+				highEP = EndpointTypeContinuation
+			} else {
+				lowEP = EndpointTypeContinuation
+			}
 		}
 		return store.ScanRecordsInRange(
 			tuple.Tuple{rtk}, tuple.Tuple{rtk},
-			lowEP, EndpointTypeRangeInclusive,
+			lowEP, highEP,
 			continuation, scanProperties,
 		)
 	}

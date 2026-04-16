@@ -326,7 +326,12 @@ func scalarToInterface(fd protoreflect.FieldDescriptor, value protoreflect.Value
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(value.Uint()), nil
-	case protoreflect.FloatKind, protoreflect.DoubleKind:
+	case protoreflect.FloatKind:
+		// Must return float32 so FDB tuple encodes as 0x20 (4 bytes).
+		// Java protobuf returns java.lang.Float → Tuple.add(Float) → 0x20.
+		// value.Float() returns float64; narrowing to float32 matches Java.
+		return float32(value.Float()), nil
+	case protoreflect.DoubleKind:
 		return value.Float(), nil
 	case protoreflect.BoolKind:
 		return value.Bool(), nil

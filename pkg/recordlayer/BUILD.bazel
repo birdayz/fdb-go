@@ -141,6 +141,7 @@ go_test(
         "collision_test.go",
         "commit_hooks_test.go",
         "compare_field_test.go",
+        "conformance_audit_test.go",
         "context_api_test.go",
         "context_test.go",
         "continuation_stability_test.go",
