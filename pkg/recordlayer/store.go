@@ -97,6 +97,7 @@ type FDBRecordStore struct {
 	storeStateCache      FDBRecordStoreStateCache // Cache for store state across transactions
 	stateMu              sync.RWMutex             // protects storeHeader + indexStates
 	stateLoadOnce        sync.Once                // ensures lazy store state load happens exactly once (Build() path)
+	stateLoadErr         error                    // error from lazy load (nil if loaded successfully or not yet attempted)
 	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
 	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
@@ -122,14 +123,24 @@ func (store *FDBRecordStore) ensureStoreStateLoaded() {
 		}
 		state, err := loadRecordStoreState(store, ExistenceCheckNone)
 		if err != nil {
-			// On error, default to all readable — safe when CreateOrOpen ran at
+			// Capture the error for callers that can propagate it.
+			// Default to all readable — safe when CreateOrOpen ran at
 			// startup and all indexes are known to be built.
+			store.stateLoadErr = err
 			store.indexStates = make(map[string]IndexState)
 			return
 		}
 		store.storeHeader = state.StoreHeader
 		store.indexStates = state.IndexStates
 	})
+}
+
+// ensureStoreStateLoadedErr calls ensureStoreStateLoaded and returns any
+// error that occurred during the lazy load. For callers that can propagate
+// errors (batch operations, validate, updateSecondaryIndexes).
+func (store *FDBRecordStore) ensureStoreStateLoadedErr() error {
+	store.ensureStoreStateLoaded()
+	return store.stateLoadErr
 }
 
 // IsVersionChanged returns true if the metadata version changed during
@@ -173,7 +184,9 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.validateRecordUpdateAllowed().
 func (store *FDBRecordStore) validateRecordUpdateAllowed() error {
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.validateRecordUpdateAllowedLocked()
@@ -873,7 +886,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	store.ensureStoreStateLoaded()
+	if err := store.ensureStoreStateLoadedErr(); err != nil {
+		return fmt.Errorf("load store state: %w", err)
+	}
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
