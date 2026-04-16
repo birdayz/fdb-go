@@ -1307,6 +1307,7 @@ func (store *FDBRecordStore) getFormatVersionLocked() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getUserVersion().
 func (store *FDBRecordStore) GetUserVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.UserVersion != nil {
@@ -1333,6 +1334,7 @@ func (store *FDBRecordStore) SetUserVersion(version int32) error {
 // GetMetaDataVersion returns the metadata version stored in the header.
 // Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetMetaDataVersion() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil && store.storeHeader.MetaDataversion != nil {
@@ -1346,6 +1348,7 @@ func (store *FDBRecordStore) GetMetaDataVersion() int32 {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getIncarnation().
 func (store *FDBRecordStore) GetIncarnation() int32 {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader != nil {
@@ -1381,6 +1384,7 @@ func (store *FDBRecordStore) UpdateIncarnation(updater func(current int32) int32
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getHeaderUserField().
 func (store *FDBRecordStore) GetHeaderUserField(key string) []byte {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if store.storeHeader == nil {
@@ -1449,6 +1453,7 @@ type RecordStoreState struct {
 // Goroutine-safe via stateMu (read lock).
 // Matches Java's FDBRecordStore.getRecordStoreState().
 func (store *FDBRecordStore) GetRecordStoreState() *RecordStoreState {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	states := make(map[string]IndexState, len(store.indexStates))
