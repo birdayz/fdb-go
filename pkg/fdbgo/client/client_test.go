@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/transport"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/wire"
@@ -405,4 +407,210 @@ func newTestDatabaseStub() *Database {
 		cancel:         cancel,
 	}
 	return &Database{db: db}
+}
+
+func TestParseClusterFile_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T) string // returns path
+		wantSubstr string
+	}{
+		{
+			name: "file not found",
+			setup: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "nonexistent.cluster")
+			},
+		},
+		{
+			name: "empty file with only comments",
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				p := filepath.Join(dir, "empty.cluster")
+				os.WriteFile(p, []byte("# just a comment\n\n# another\n"), 0o644)
+				return p
+			},
+			wantSubstr: "empty cluster file",
+		},
+		{
+			name: "invalid coordinator address",
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				p := filepath.Join(dir, "bad.cluster")
+				os.WriteFile(p, []byte("test:id@not-a-host-port\n"), 0o644)
+				return p
+			},
+			wantSubstr: "invalid coordinator address",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := tt.setup(t)
+			_, err := ParseClusterFile(path)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if tt.wantSubstr != "" {
+				if !strings.Contains(err.Error(), tt.wantSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantSubstr)
+				}
+			}
+		})
+	}
+}
+
+func TestGrvCache_TryCache(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setup    func(c *grvCache)
+		priority uint32
+		wantOK   bool
+		wantVer  int64
+	}{
+		{
+			name: "batch priority returns cached version",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				c.lastTime.Store(time.Now().UnixNano())
+			},
+			priority: grvPriorityBatch,
+			wantOK:   true,
+			wantVer:  1000000,
+		},
+		{
+			name: "batch ratekeeper throttle",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				c.lastTime.Store(time.Now().UnixNano())
+				c.lastRkBatch.Store(time.Now().UnixNano())
+			},
+			priority: grvPriorityBatch,
+			wantOK:   false,
+		},
+		{
+			name: "default ratekeeper throttle",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				c.lastTime.Store(time.Now().UnixNano())
+				c.lastRkDefault.Store(time.Now().UnixNano())
+			},
+			priority: grvPriorityDefault,
+			wantOK:   false,
+		},
+		{
+			name: "system immediate always bypasses cache",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				c.lastTime.Store(time.Now().UnixNano())
+			},
+			priority: grvPrioritySystemImmediate,
+			wantOK:   false,
+		},
+		{
+			name: "stale cache expired",
+			setup: func(c *grvCache) {
+				c.version.Store(1000000)
+				// Set lastTime to 1 second ago — well beyond 100ms maxVersionCacheLag.
+				c.lastTime.Store(time.Now().Add(-1 * time.Second).UnixNano())
+			},
+			priority: grvPriorityDefault,
+			wantOK:   false,
+		},
+		{
+			name: "zero version returns false",
+			setup: func(c *grvCache) {
+				// version defaults to 0
+			},
+			priority: grvPriorityDefault,
+			wantOK:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var c grvCache
+			tt.setup(&c)
+			v, ok := c.tryCache(tt.priority)
+			if ok != tt.wantOK {
+				t.Fatalf("tryCache ok: got %v, want %v", ok, tt.wantOK)
+			}
+			if ok && v != tt.wantVer {
+				t.Errorf("tryCache version: got %d, want %d", v, tt.wantVer)
+			}
+		})
+	}
+}
+
+func TestGrvCache_UpdateMonotonic(t *testing.T) {
+	t.Parallel()
+
+	var c grvCache
+
+	// First update: version advances to 200.
+	c.update(time.Now(), 200)
+	if v := c.version.Load(); v != 200 {
+		t.Fatalf("after update(200): got %d, want 200", v)
+	}
+
+	// Backwards update: version must stay at 200.
+	c.update(time.Now(), 100)
+	if v := c.version.Load(); v != 200 {
+		t.Fatalf("after update(100): got %d, want 200 (should not go backwards)", v)
+	}
+
+	// Forward update: version advances to 300.
+	c.update(time.Now(), 300)
+	if v := c.version.Load(); v != 300 {
+		t.Fatalf("after update(300): got %d, want 300", v)
+	}
+}
+
+func TestGrvPriorityToPriority(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		flags uint32
+		want  TransactionPriority
+	}{
+		{"batch", grvPriorityBatch, PriorityBatch},
+		{"system_immediate", grvPrioritySystemImmediate, PrioritySystemImmediate},
+		{"default", grvPriorityDefault, PriorityDefault},
+		{"unknown falls to default", 0x03000000, PriorityDefault},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := grvPriorityToPriority(tt.flags)
+			if got != tt.want {
+				t.Errorf("grvPriorityToPriority(%#x): got %d, want %d", tt.flags, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadTransact_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	db := newTestDatabaseStub()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before calling ReadTransact
+
+	_, err := db.ReadTransact(ctx, func(tx *Transaction) (any, error) {
+		t.Fatal("function should not be called with cancelled context")
+		return nil, nil
+	})
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
 }
