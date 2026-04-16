@@ -16,10 +16,12 @@ var emptyTuplePacked = tuple.Tuple{}.Pack()
 
 // SAFETY: The unsafe cast (*tuple.Tuple)(unsafe.Pointer(&[]any{})) in the
 // insert fast path depends on tuple.Tuple being []TupleElement where
-// TupleElement is a type alias for any. Verified by inspection of tuple.go:
-//   type TupleElement = any
+// TupleElement is a defined type with underlying type any. From tuple.go:
+//   type TupleElement any   // defined type, underlying = interface{}
 //   type Tuple []TupleElement
-// If TupleElement becomes a named type, the unsafe cast is invalid.
+// Both []any and []TupleElement have identical memory layout (slice of
+// 16-byte interface values). If TupleElement ever becomes a struct or
+// constrained interface, the cast silently corrupts memory.
 // No compile-time check can enforce this — verify on tuple.go changes.
 
 // IndexMaintainer handles index updates and scanning.
