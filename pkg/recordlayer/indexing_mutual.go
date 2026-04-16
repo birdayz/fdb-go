@@ -410,13 +410,18 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 
 	for _, idx := range m.indexer.targetIndexes {
 		idxRangeSet := NewIndexingRangeSet(store.subspace, idx)
-		_, err := idxRangeSet.InsertRange(store.context.Transaction(), beginKey, endKey, true)
+		inserted, err := idxRangeSet.InsertRange(store.context.Transaction(), beginKey, endKey, true)
 		if err != nil {
-			// requireEmpty=true failed — another builder already claimed this range.
-			// This is expected in mutual mode. Record the conflict and let the caller
-			// skip to the next fragment (anyJumper pattern from Java).
+			return 0, fmt.Errorf("insert range for index %q: %w", idx.Name, err)
+		}
+		if !inserted {
+			// requireEmpty=true found existing entries — another builder already
+			// claimed this range. Record the conflict and let the caller skip to
+			// the next fragment (anyJumper pattern from Java).
+			// Note: transaction-level conflicts (concurrent commits) are handled
+			// by buildRangeWithRetries at the outer level.
 			m.lastConflictFragment = m.fragmentCur
-			return 0, nil // not an error, just contested work
+			return 0, nil
 		}
 	}
 
