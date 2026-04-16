@@ -148,7 +148,7 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 #### MEDIUM
 
-- [ ] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20: (1) Index record type scope validation — Java validates indexes still cover same record types after evolution, Go skips this entirely. (2) Type rename propagation — Go detects renames but doesn't apply to index validation. (3) Index options validation — Java delegates to `IndexValidator` registry for option changes, Go has no equivalent. Plus one edge case: former index added version check without prior old index.
+- [x] **MetaDataEvolutionValidator gaps vs Java** — Three missing checks found dayshift-20, all implemented nightshift-21: (1) Index record type scope validation via `validateIndexRecordTypes()`. (2) Centralized type rename map via `getTypeRenames()`, propagated to all validators. (3) Index options change rejection (simplified vs Java's IndexValidatorRegistry). Plus `RecordTypesForIndex()` helper. Remaining: former index addedVersion edge case, full IndexValidatorRegistry (LOW, simplified version is safe default).
 
 #### LOW
 
