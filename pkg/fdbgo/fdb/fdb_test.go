@@ -1667,16 +1667,16 @@ func TestGetRangeEdgeCases(t *testing.T) {
 // TestSetTransactionRetryLimit_Zero verifies that SetTransactionRetryLimit(0)
 // actually prevents retries. This is a regression test: the fdb wrapper used
 // "retryLimit != 0" as the sentinel, which silently dropped retryLimit=0.
+//
+// The fix is in applyTxDefaults (called by Transact), so the test must use
+// Transact() — CreateTransaction() doesn't apply fdb wrapper defaults.
 func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	// Set retry limit to 0 — transactions should fail immediately on retryable errors.
-	db.Options().SetTransactionRetryLimit(0)
-
 	key := fdb.Key(t.Name() + "_key")
 
-	// Seed a value.
+	// Seed.
 	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
 		tr.Set(key, []byte("v0"))
 		return nil, nil
@@ -1685,48 +1685,32 @@ func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Create two conflicting transactions: tx1 reads key, tx2 writes key
-	// between tx1's read and commit. tx1 should fail with not_committed,
-	// and with retryLimit=0 it should NOT retry — the error should propagate.
-	tx1, err := db.CreateTransaction()
-	if err != nil {
-		t.Fatalf("CreateTransaction: %v", err)
-	}
+	// Set retry limit to 0 — Transact should fail on first retryable error.
+	db.Options().SetTransactionRetryLimit(0)
 
-	// tx1 reads the key (establishes read conflict).
-	v := tx1.Get(key).MustGet()
-	if string(v) != "v0" {
-		t.Fatalf("tx1 read: got %q, want %q", v, "v0")
-	}
-
-	// tx2 writes the same key and commits.
+	// Count how many times Transact invokes the callback. With retryLimit=0,
+	// a conflict causes OnError to reject retry, so the callback runs once
+	// and Transact returns the error.
+	var calls atomic.Int32
 	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
-		tr.Set(key, []byte("v1"))
+		n := calls.Add(1)
+
+		// First call: read key, then return a retryable error to simulate
+		// a transient failure. Transact will call OnError, which should
+		// reject retry (retryLimit=0).
+		if n == 1 {
+			return nil, fdb.Error{Code: 1020} // not_committed
+		}
+		// If we get here, the retry was allowed — the bug is present.
 		return nil, nil
 	})
-	if err != nil {
-		t.Fatalf("tx2: %v", err)
-	}
 
-	// tx1's commit should conflict.
-	tx1.Set(key, []byte("tx1_value"))
-	commitErr := tx1.Commit().Get()
-	if commitErr == nil {
-		t.Fatal("expected conflict error, got nil")
+	if calls.Load() > 1 {
+		t.Fatalf("Transact retried %d times: retryLimit=0 was NOT applied — the original bug is present",
+			calls.Load())
 	}
-
-	var fdbErr fdb.Error
-	if !errors.As(commitErr, &fdbErr) {
-		t.Fatalf("expected fdb.Error, got %T: %v", commitErr, commitErr)
+	if err == nil {
+		t.Fatal("expected error from Transact, got nil")
 	}
-
-	// KEY ASSERTION: With retryLimit=0 applied, OnError() must reject the retry
-	// (returns the error instead of nil). Without the fix, retryLimit was silently
-	// dropped, OnError() would return nil (allowing unlimited retries), and this
-	// assertion would fail.
-	onErr := tx1.OnError(fdbErr)
-	if onErr == nil {
-		t.Fatal("OnError() returned nil: retryLimit=0 was NOT applied — the original bug is present")
-	}
-	t.Logf("OnError correctly rejected retry (retryLimit=0 applied): %v", onErr)
+	t.Logf("Transact correctly failed without retry (retryLimit=0): %v", err)
 }
