@@ -761,6 +761,94 @@ var _ = Describe("RebuildIndex", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("end-to-end: WriteOnlyIfTooLargePolicy → OnlineIndexer → READABLE", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with 300 records (above 200 threshold).
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(&EmptyKeyExpression{})
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 300; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Add index, open with WriteOnlyIfTooLargePolicy → WRITE_ONLY.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(&EmptyKeyExpression{})
+			builder2.AddIndex("Order", priceIndex)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(WriteOnlyIfTooLargePolicy).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+
+				// Save a new record while WRITE_ONLY — it should be indexed.
+				_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(301), Price: proto.Int32(3010)})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Run OnlineIndexer to build the index.
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md2).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				SetLimit(50).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			totalRecords, err := indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(totalRecords).To(BeNumerically(">=", 300))
+
+			// Phase 4: Verify index is READABLE and has all 301 entries.
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+				entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				// 300 original + 1 written during WRITE_ONLY = 301
+				Expect(entries).To(HaveLen(301))
+
+				// Verify ordering (10, 20, ..., 3000, 3010)
+				for i := 0; i < 300; i++ {
+					Expect(entries[i].IndexValues()[0]).To(Equal(int64((i + 1) * 10)))
+				}
+				Expect(entries[300].IndexValues()[0]).To(Equal(int64(3010)))
+
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("rebuilds record counts when count key added to metadata", func() {
 			ks := specSubspace()
 
