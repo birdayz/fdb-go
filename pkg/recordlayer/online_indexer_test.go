@@ -3431,6 +3431,330 @@ var _ = Describe("OnlineIndexer", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 
+			It("four concurrent mutual builders with 500 records", func() {
+				ks := specSubspace()
+
+				// Phase 1: Insert 500 records with NO indexes.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Insert in batches to stay within FDB transaction limits.
+				for batch := 0; batch < 5; batch++ {
+					_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						store, err := NewStoreBuilder().
+							SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+						Expect(err).NotTo(HaveOccurred())
+						for i := int64(batch*100 + 1); i <= int64((batch+1)*100); i++ {
+							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							Expect(err).NotTo(HaveOccurred())
+						}
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Phase 2: Define VALUE + COUNT indexes, build with 4 concurrent mutual builders.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				countIndex := NewCountIndex("Order$count", Ungrouped(EmptyKey()))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				builder2.AddIndex("Order", countIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Create synthetic boundaries at PK 125, 250, 375 to give builders
+				// distinct fragments on single-node FDB.
+				boundaries := [][]byte{
+					tuple.Tuple{int64(125)}.Pack(),
+					tuple.Tuple{int64(250)}.Pack(),
+					tuple.Tuple{int64(375)}.Pack(),
+				}
+
+				const numBuilders = 4
+				var wg sync.WaitGroup
+				errs := make([]error, numBuilders)
+
+				for g := 0; g < numBuilders; g++ {
+					wg.Add(1)
+					go func(idx int) {
+						defer wg.Done()
+						defer GinkgoRecover()
+
+						indexer, buildErr := NewOnlineIndexerBuilder().
+							SetDatabase(sharedDB).
+							SetMetaData(mdWithIndex).
+							SetIndex(priceIndex).
+							SetSubspace(ks).
+							SetMutualIndexingBoundaries(boundaries).
+							SetLimit(20).
+							Build()
+						if buildErr != nil {
+							errs[idx] = buildErr
+							return
+						}
+
+						_, errs[idx] = indexer.BuildIndex(ctx)
+					}(g)
+				}
+				wg.Wait()
+
+				for i := 0; i < numBuilders; i++ {
+					Expect(errs[i]).NotTo(HaveOccurred())
+				}
+
+				// Also build the COUNT index (separate pass since OnlineIndexer
+				// targets one index).
+				countIndexer, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(countIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					SetLimit(50).
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = countIndexer.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				// Phase 3: Verify VALUE index — all 500 entries present and sorted.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(500))
+
+					// Verify sorted: prices are 10, 20, ..., 5000.
+					for i, entry := range entries {
+						expectedPrice := int64((i + 1) * 10)
+						Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+					}
+
+					// Phase 4: Verify COUNT index value = 500.
+					Expect(store.IsIndexReadable("Order$count")).To(BeTrue())
+					result, err := store.EvaluateAggregateFunction(ctx, []string{"Order"},
+						&IndexAggregateFunction{Name: FunctionNameCount, Operand: Ungrouped(EmptyKey())},
+						TupleRangeAll, IsolationLevelSerializable)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result).To(Equal(tuple.Tuple{int64(500)}))
+
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("mutual builders with concurrent writes during build", func() {
+				ks := specSubspace()
+
+				// Phase 1: Insert 200 records.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				for batch := 0; batch < 2; batch++ {
+					_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+						store, err := NewStoreBuilder().
+							SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+						Expect(err).NotTo(HaveOccurred())
+						for i := int64(batch*100 + 1); i <= int64((batch+1)*100); i++ {
+							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							Expect(err).NotTo(HaveOccurred())
+						}
+						return nil, nil
+					})
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Phase 2: Start 2 mutual builders AND a concurrent writer.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				var wg sync.WaitGroup
+				builderErrs := make([]error, 2)
+
+				// Start 2 builders.
+				for g := 0; g < 2; g++ {
+					wg.Add(1)
+					go func(idx int) {
+						defer wg.Done()
+						defer GinkgoRecover()
+
+						indexer, buildErr := NewOnlineIndexerBuilder().
+							SetDatabase(sharedDB).
+							SetMetaData(mdWithIndex).
+							SetIndex(priceIndex).
+							SetSubspace(ks).
+							SetMutualIndexing().
+							SetLimit(10).
+							Build()
+						if buildErr != nil {
+							builderErrs[idx] = buildErr
+							return
+						}
+
+						_, builderErrs[idx] = indexer.BuildIndex(ctx)
+					}(g)
+				}
+
+				// Concurrent writer: save records 201-250 while build is in progress.
+				// These writes go through the WRITE_ONLY dispatch path because the
+				// index is in WRITE_ONLY state during the online build.
+				var writerErr error
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer GinkgoRecover()
+
+					for i := int64(201); i <= 250; i++ {
+						_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+							store, err := NewStoreBuilder().
+								SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+							if err != nil {
+								return nil, err
+							}
+							_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+							return nil, err
+						})
+						if err != nil {
+							writerErr = err
+							return
+						}
+						// Brief yield to interleave with builders.
+						time.Sleep(time.Millisecond)
+					}
+				}()
+
+				wg.Wait()
+
+				Expect(builderErrs[0]).NotTo(HaveOccurred())
+				Expect(builderErrs[1]).NotTo(HaveOccurred())
+				Expect(writerErr).NotTo(HaveOccurred())
+
+				// Phase 3: Verify ALL 250 records are in the index.
+				// The 200 original records were indexed by the builders.
+				// The 50 concurrent writes were indexed via WRITE_ONLY dispatch.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(250))
+
+					// Verify sorted: prices are 10, 20, ..., 2500.
+					for i, entry := range entries {
+						expectedPrice := int64((i + 1) * 10)
+						Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("mutual builder resumes after partial build timeout", func() {
+				ks := specSubspace()
+
+				// Phase 1: Insert 100 records.
+				_, builder := baseMetaData()
+				mdNoIndex, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdNoIndex).SetSubspace(ks).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					for i := int64(1); i <= 100; i++ {
+						_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+						Expect(err).NotTo(HaveOccurred())
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Phase 2: Start a mutual builder with limit=1 and an impossibly
+				// short time limit. After the first chunk (1 record), the time
+				// check triggers because 1ns has certainly elapsed.
+				priceIndex := NewIndex("Order$price", Field("price"))
+				_, builder2 := baseMetaData()
+				builder2.AddIndex("Order", priceIndex)
+				mdWithIndex, err := builder2.Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				indexer1, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(priceIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					SetLimit(1).
+					SetTimeLimit(1 * time.Nanosecond).
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				firstTotal, err := indexer1.BuildIndex(ctx)
+				// The builder should time out mid-build (not finish all 100).
+				var tlErr *TimeLimitExceededError
+				Expect(errors.As(err, &tlErr)).To(BeTrue(), "expected TimeLimitExceededError, got %v", err)
+				Expect(firstTotal).To(BeNumerically(">", 0), "should have processed at least some records")
+				Expect(firstTotal).To(BeNumerically("<", 100), "should not have finished all records")
+
+				// Verify the index is NOT READABLE yet (partial build).
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeFalse())
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Phase 3: Start a second mutual builder — it should pick up where
+				// the first left off and finish the job.
+				indexer2, err := NewOnlineIndexerBuilder().
+					SetDatabase(sharedDB).
+					SetMetaData(mdWithIndex).
+					SetIndex(priceIndex).
+					SetSubspace(ks).
+					SetMutualIndexing().
+					SetLimit(20).
+					Build()
+				Expect(err).NotTo(HaveOccurred())
+
+				secondTotal, err := indexer2.BuildIndex(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				// The second builder should process the remainder.
+				Expect(secondTotal).To(BeNumerically(">", 0), "second builder should process remaining records")
+
+				// Phase 4: Verify all 100 entries present and index is READABLE.
+				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := NewStoreBuilder().
+						SetContext(rtx).SetMetaDataProvider(mdWithIndex).SetSubspace(ks).Open()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.IsIndexReadable("Order$price")).To(BeTrue())
+
+					entries, err := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(entries).To(HaveLen(100))
+
+					// Verify sorted: prices are 10, 20, ..., 1000.
+					for i, entry := range entries {
+						expectedPrice := int64((i + 1) * 10)
+						Expect(entry.IndexValues()).To(Equal(tuple.Tuple{expectedPrice}))
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+
 			It("mutual builder stamp is MUTUAL_BY_RECORDS", func() {
 				ks := specSubspace()
 
