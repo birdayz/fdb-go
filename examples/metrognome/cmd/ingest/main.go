@@ -105,7 +105,7 @@ func main() {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			rng := rand.New(rand.NewPCG(uint64(workerID*1000), uint64(workerID)))
+			rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano())+uint64(workerID*1000), uint64(workerID)))
 			startBatch := workerID * perWorker
 			endBatch := startBatch + perWorker
 

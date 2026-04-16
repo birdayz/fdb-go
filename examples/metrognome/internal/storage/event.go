@@ -47,8 +47,9 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 			dedupFutures[i] = tx.Snapshot().GetRange(kr, fdb.RangeOptions{Limit: 1})
 		}
 
-		// Phase 2: Resolve futures + save non-duplicates.
-		// By now FDB has pipelined all N reads. Resolution is ~1 round trip.
+		// Phase 2: Resolve dedup futures — collect non-duplicate events.
+		var toSave []proto.Message
+		var toSaveIndexes []int
 		for i, evt := range events {
 			existing, err := dedupFutures[i].GetSliceWithError()
 			if err != nil {
@@ -58,11 +59,19 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 				result.Duplicates++
 				continue
 			}
-			if _, err := rs.SaveRecord(evt); err != nil {
+			toSave = append(toSave, evt)
+			toSaveIndexes = append(toSaveIndexes, i)
+		}
+
+		// Phase 3: Save non-duplicates using InsertBatch (no existence check —
+		// dedup already proved these are new). Max throughput path: no reads,
+		// disabled RYW, disabled write conflicts.
+		if len(toSave) > 0 {
+			if err := rs.InsertBatch(toSave); err != nil {
 				return nil, err
 			}
-			result.Accepted++
-			result.AcceptedIndexes = append(result.AcceptedIndexes, i)
+			result.Accepted = int32(len(toSave))
+			result.AcceptedIndexes = toSaveIndexes
 		}
 		return result, nil
 	})
