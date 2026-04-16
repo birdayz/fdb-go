@@ -55,6 +55,7 @@ func GetAPIVersion() (int, error) {
 type txDefaults struct {
 	timeout        int64 // milliseconds, 0 = disabled
 	retryLimit     int64 // -1 = unlimited, 0 = no retries
+	hasRetryLimit  bool  // distinguishes "not set" from "set to 0"
 	maxRetryDelay  int64 // milliseconds, 0 = use default
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
@@ -240,7 +241,7 @@ func (db Database) applyTxDefaults(t *transaction) {
 	if d.timeout > 0 {
 		t.inner.SetTimeout(d.timeout)
 	}
-	if d.retryLimit != 0 {
+	if d.hasRetryLimit {
 		t.inner.SetRetryLimit(d.retryLimit)
 	}
 	if d.maxRetryDelay > 0 {
