@@ -268,6 +268,41 @@ func BenchmarkLoadRecord(b *testing.B) {
 	}
 }
 
+// BenchmarkLoadRecordBuild uses Build() — zero FDB reads for store open.
+func BenchmarkLoadRecordBuild(b *testing.B) {
+	ensureBenchDB(b)
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		return store.SaveRecord(benchOrder(1, 100))
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	pk := tuple.Tuple{int64(1)}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Build()
+			if err != nil {
+				return nil, err
+			}
+			return store.LoadRecord(pk)
+		})
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
 // BenchmarkScanRecords measures scanning 100 records with a forward scan,
 // including cursor iteration and deserialization.
 func BenchmarkScanRecords(b *testing.B) {
