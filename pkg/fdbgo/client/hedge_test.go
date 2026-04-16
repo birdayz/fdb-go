@@ -18,11 +18,11 @@ func TestHedge_PrimaryRepliesBeforeTimer(t *testing.T) {
 
 	primary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: replyCh,
-			cancel:  func() {},
-			addr:    "primary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     replyCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "primary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -47,11 +47,11 @@ func TestHedge_SecondaryWinsRace(t *testing.T) {
 	primaryCh := make(chan transport.Response, 1)
 	primary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: primaryCh,
-			cancel:  func() {},
-			addr:    "primary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     primaryCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "primary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -60,11 +60,11 @@ func TestHedge_SecondaryWinsRace(t *testing.T) {
 	secondaryCh <- transport.Response{Body: []byte("secondary-wins")}
 	secondary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: secondaryCh,
-			cancel:  func() {},
-			addr:    "secondary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     secondaryCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "secondary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -87,11 +87,11 @@ func TestHedge_PrimarySendFails_FallsBackToSecondary(t *testing.T) {
 	secondaryCh <- transport.Response{Body: []byte("secondary-fallback")}
 	secondary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: secondaryCh,
-			cancel:  func() {},
-			addr:    "secondary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     secondaryCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "secondary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -109,11 +109,11 @@ func TestHedge_NoSecondary_WaitsForPrimary(t *testing.T) {
 
 	primary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: replyCh,
-			cancel:  func() {},
-			addr:    "only",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     replyCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "only",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -132,11 +132,11 @@ func TestHedge_ContextCancellation(t *testing.T) {
 	// Primary never replies
 	primary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: make(chan transport.Response),
-			cancel:  func() {},
-			addr:    "primary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     make(chan transport.Response),
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "primary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 
@@ -153,11 +153,11 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 
 	primary := func() inFlightRPC {
 		return inFlightRPC{
-			replyCh: replyCh,
-			cancel:  func() {},
-			addr:    "primary",
-			delta:   1.0,
-			start:   time.Now(),
+			replyCh:     replyCh,
+			replyHandle: transport.NewNoopReplyHandle(),
+			addr:        "primary",
+			delta:       1.0,
+			start:       time.Now(),
 		}
 	}
 

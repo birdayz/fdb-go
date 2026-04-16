@@ -12,12 +12,13 @@ import (
 // openDatabaseCoord sends an OpenDatabaseCoordRequest to the coordinator
 // and returns the parsed ClientDBInfo with proxy addresses and tokens.
 func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn, addr string) (*DBInfo, error) {
-	replyToken, replyCh, cancelReply := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	defer replyHandle.Release()
 	body := buildOpenDatabaseCoordRequest(db.clusterFile, replyToken)
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	if err := conn.SendFrame(destToken, body); err != nil {
-		cancelReply()
+		replyHandle.Cancel()
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}
 
@@ -31,7 +32,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 		}
 		return parseCoordinatorResponse(resp.Body)
 	case <-reqCtx.Done():
-		cancelReply()
+		replyHandle.Cancel()
 		return nil, fmt.Errorf("coordinator request timed out: %w", reqCtx.Err())
 	}
 }

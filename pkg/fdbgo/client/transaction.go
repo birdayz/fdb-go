@@ -475,17 +475,18 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleConnError(server.Address)
 			continue
 		}
-		replyToken, replyCh, cancelReply := conn.PrepareReply()
+		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, tx.readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, replyToken, server.Token)
 		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
 		_ = poolBuf
 		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
-			cancelReply()
+			replyHandle.Cancel()
+			replyHandle.Release()
 			tx.db.handleConnError(server.Address)
 			continue
 		}
 		timer := getTimer(DefaultRPCTimeout)
-		return nil, &PendingGet{replyCh: replyCh, cancelReply: cancelReply, conn: conn, ctx: ctx, timer: timer}, nil
+		return nil, &PendingGet{replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer}, nil
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
@@ -493,7 +494,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 // PendingGet represents a GetValue request that has been sent but not yet resolved.
 type PendingGet struct {
 	replyCh     <-chan transport.Response
-	cancelReply func()
+	replyHandle *transport.ReplyHandle
 	conn        *transport.Conn
 	ctx         context.Context
 	timer       *time.Timer
@@ -508,6 +509,7 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		p.conn.Flush()
 	}
 	defer putTimer(p.timer)
+	defer p.replyHandle.Release()
 	select {
 	case resp := <-p.replyCh:
 		if resp.Err != nil {
@@ -516,10 +518,10 @@ func (p *PendingGet) Resolve() ([]byte, error) {
 		val, _, err := parseGetValueReply(resp.Body)
 		return val, err
 	case <-p.timer.C:
-		p.cancelReply()
+		p.replyHandle.Cancel()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	case <-p.ctx.Done():
-		p.cancelReply()
+		p.replyHandle.Cancel()
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
 }
