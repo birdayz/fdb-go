@@ -2,10 +2,14 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "store",
-    srcs = ["store.pb.go"],
+    srcs = [
+        "store.pb.go",
+        "store_vtproto.pb.go",
+    ],
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1",
     visibility = ["//visibility:public"],
     deps = [
+        "@com_github_planetscale_vtprotobuf//protohelpers",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//runtime/protoimpl",
     ],

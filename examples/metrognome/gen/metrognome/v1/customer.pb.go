@@ -435,7 +435,6 @@ var (
 		(*Customer)(nil),               // 6: metrognome.v1.Customer
 	}
 )
-
 var file_metrognome_v1_customer_proto_depIdxs = []int32{
 	6, // 0: metrognome.v1.CreateCustomerResponse.customer:type_name -> metrognome.v1.Customer
 	6, // 1: metrognome.v1.GetCustomerResponse.customer:type_name -> metrognome.v1.Customer

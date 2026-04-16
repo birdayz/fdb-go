@@ -551,7 +551,6 @@ var (
 		(*Product)(nil),               // 7: metrognome.v1.Product
 	}
 )
-
 var file_metrognome_v1_product_proto_depIdxs = []int32{
 	0, // 0: metrognome.v1.CreateProductRequest.type:type_name -> metrognome.v1.ProductType
 	7, // 1: metrognome.v1.CreateProductResponse.product:type_name -> metrognome.v1.Product

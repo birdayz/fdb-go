@@ -982,7 +982,6 @@ var (
 		(*Rate)(nil),                   // 13: metrognome.v1.Rate
 	}
 )
-
 var file_metrognome_v1_ratecard_proto_depIdxs = []int32{
 	12, // 0: metrognome.v1.CreateRateCardResponse.rate_card:type_name -> metrognome.v1.RateCard
 	12, // 1: metrognome.v1.GetRateCardResponse.rate_card:type_name -> metrognome.v1.RateCard

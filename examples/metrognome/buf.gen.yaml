@@ -4,6 +4,12 @@ plugins:
     out: gen
     opt: paths=source_relative
 
+  - local: protoc-gen-go-vtproto
+    out: gen
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size+pool
+
   - local: protoc-gen-connect-go
     out: gen
     opt: paths=source_relative

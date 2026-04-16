@@ -484,7 +484,6 @@ var (
 		(*Alert)(nil),               // 5: metrognome.v1.Alert
 	}
 )
-
 var file_metrognome_v1_alert_proto_depIdxs = []int32{
 	0, // 0: metrognome.v1.CreateAlertRequest.alert_type:type_name -> metrognome.v1.AlertType
 	5, // 1: metrognome.v1.CreateAlertResponse.alert:type_name -> metrognome.v1.Alert

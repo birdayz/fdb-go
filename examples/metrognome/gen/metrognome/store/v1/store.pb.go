@@ -3046,7 +3046,6 @@ var (
 		(*UnionDescriptor)(nil), // 32: metrognome.store.v1.UnionDescriptor
 	}
 )
-
 var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	0,  // 0: metrognome.store.v1.Meter.aggregation_type:type_name -> metrognome.store.v1.AggregationType
 	10, // 1: metrognome.store.v1.Charge.pricing:type_name -> metrognome.store.v1.PricingModel

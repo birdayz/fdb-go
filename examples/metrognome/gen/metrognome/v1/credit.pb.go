@@ -502,7 +502,6 @@ var (
 		(*Credit)(nil),                   // 6: metrognome.v1.Credit
 	}
 )
-
 var file_metrognome_v1_credit_proto_depIdxs = []int32{
 	6, // 0: metrognome.v1.GrantCreditResponse.credit:type_name -> metrognome.v1.Credit
 	6, // 1: metrognome.v1.ListCreditsResponse.credits:type_name -> metrognome.v1.Credit

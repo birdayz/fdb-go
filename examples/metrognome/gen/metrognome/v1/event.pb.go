@@ -708,7 +708,6 @@ var (
 		nil,                            // 10: metrognome.v1.UsageGroup.GroupValuesEntry
 	}
 )
-
 var file_metrognome_v1_event_proto_depIdxs = []int32{
 	2,  // 0: metrognome.v1.IngestEventsRequest.events:type_name -> metrognome.v1.Event
 	0,  // 1: metrognome.v1.GetUsageRequest.window_size:type_name -> metrognome.v1.WindowSize
