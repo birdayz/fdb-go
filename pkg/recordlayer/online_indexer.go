@@ -569,6 +569,13 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 }
 
 // buildIndexMutual runs the mutual (concurrent) build path.
+//
+// LIMITATION: Multi-target mutual builds should only target idempotent indexes
+// (VALUE, RANK, VERSION, etc.). Non-idempotent indexes (COUNT, SUM, COUNT_UPDATES)
+// can double-count when two concurrent builders process the same fragment and one's
+// InsertRange(requireEmpty) detects the contest after index entries are already written.
+// Idempotent indexes are unaffected (SET is idempotent). Build non-idempotent indexes
+// with a separate single-target indexer.
 func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
 	mutual, err := newMutualIndexBuilder(oi)
 	if err != nil {
