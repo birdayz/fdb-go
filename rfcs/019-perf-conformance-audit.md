@@ -197,10 +197,16 @@ Go's `protoreflect.Value.Float()` returns `float64` for both proto `float` and `
 |---|---|---|
 | DirectPacker encoding | **CONFORMANT** | Float bug found+fixed during dev (65a4660) |
 | Batch insert wire format | **CONFORMANT** | Go-only API, data byte-identical |
-| ScanRecordsByType prefix scan | **CONFORMANT** | Same result set, faster strategy |
+| ScanRecordsByType prefix scan | **FIXED (fca2cd1)** | 2 bugs: reverse+continuation, explicit type key |
 | Unsafe tuple reinterpret | **SAFE** | Fragile if tuple package changes |
 | SetBytes/ClearBytes | **SAFE** | Purely mechanical |
 | Lazy store state loading | **CONFORMANT** | Error swallowing + missing lazy-load in 5 getters |
-| Proto float encoding | **PRE-EXISTING** | float32 → float64 widening, no current impact |
+| Proto float encoding | **FIXED (fca2cd1)** | float32 → float64 widening broke cross-language |
+| RANK online indexer idempotency | **DIVERGENT (minor)** | CountDuplicates not checked, LOW severity |
 
-**Overall: All recent changes maintain Java wire-format compatibility.** No data corruption risks. Two minor code quality findings (error swallowing, inconsistent lazy-load) tracked for future cleanup.
+**3 bugs found and fixed** (commit fca2cd1), each with regression tests that fail before the fix:
+1. Proto FloatKind encoded as float64 (0x21) instead of float32 (0x20) — breaks Java cross-language index reads
+2. ScanRecordsByType reverse scan + continuation → duplicate records on paginated reverse scans
+3. ScanRecordsByType ignored explicit record type key from SetRecordTypeKey()
+
+**1 minor divergence tracked** (RANK online indexer idempotency with CountDuplicates).
