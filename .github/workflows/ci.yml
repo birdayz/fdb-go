@@ -75,8 +75,12 @@ jobs:
       - name: Run govulncheck
         continue-on-error: true
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
-          govulncheck ./...
+          # Use Bazel's hermetic Go SDK — the runner may not have system Go in PATH.
+          GOROOT=$(bazelisk info output_base 2>/dev/null)/external/rules_go++go_sdk+go_default_sdk
+          export PATH="$GOROOT/bin:$PATH"
+          GOBIN=$(mktemp -d)
+          GOBIN="$GOBIN" go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+          "$GOBIN/govulncheck" ./...
 
       - name: Generate test report
         if: always()
