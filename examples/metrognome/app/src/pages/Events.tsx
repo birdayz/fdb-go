@@ -1,39 +1,163 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@connectrpc/connect";
 import { transport } from "@/lib/transport";
 import { EventService } from "@/gen/metrognome/v1/event_pb";
 import { CustomerService } from "@/gen/metrognome/v1/customer_pb";
 import { MeterService } from "@/gen/metrognome/v1/meter_pb";
-import { Zap, Send, BarChart3, Search, ChevronDown, Clock, Hash, Activity } from "lucide-react";
+import type { EventRecord } from "@/gen/metrognome/v1/event_pb";
+import { Zap, Send, BarChart3, Search, Clock, Activity, List, Loader2, ChevronDown } from "lucide-react";
 
 const eventClient = createClient(EventService, transport);
 const customerClient = createClient(CustomerService, transport);
 const meterClient = createClient(MeterService, transport);
 
-export function EventsPage() {
-  const [tab, setTab] = useState<"ingest" | "query">("ingest");
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [meters, setMeters] = useState<any[]>([]);
+function timeAgo(ms: bigint): string {
+  const seconds = Math.floor((Date.now() - Number(ms)) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
 
-  // Ingest state
+function formatTs(ms: bigint): string {
+  return new Date(Number(ms)).toLocaleString();
+}
+
+// --- Browse Tab ---
+function BrowseTab({ customers, meters }: { customers: any[]; meters: any[] }) {
+  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [continuation, setContinuation] = useState<Uint8Array | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
+  const [customerId, setCustomerId] = useState("");
+  const [eventType, setEventType] = useState("");
+
+  const PAGE_SIZE = 50;
+
+  const loadPage = useCallback(async (reset: boolean) => {
+    setLoading(true);
+    try {
+      const resp = await eventClient.listEvents({
+        pageSize: PAGE_SIZE,
+        continuationToken: reset ? new Uint8Array() : (continuation ?? new Uint8Array()),
+        customerId,
+        eventType,
+      });
+      if (reset) {
+        setEvents(resp.events);
+      } else {
+        setEvents(prev => [...prev, ...resp.events]);
+      }
+      setContinuation(resp.continuationToken.length > 0 ? resp.continuationToken : null);
+    } catch (e) {
+      console.error("ListEvents failed:", e);
+    }
+    setLoading(false);
+    setInitialLoad(false);
+  }, [continuation, customerId, eventType]);
+
+  // Initial load + reload on filter change
+  useEffect(() => {
+    setInitialLoad(true);
+    setEvents([]);
+    setContinuation(null);
+    // Small delay to batch state updates
+    const t = setTimeout(() => loadPage(true), 0);
+    return () => clearTimeout(t);
+  }, [customerId, eventType]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const hasMore = continuation !== null;
+
+  return (
+    <div>
+      {/* Filters */}
+      <div className="flex gap-3 mb-4">
+        <select value={customerId} onChange={e => setCustomerId(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+          <option value="">All customers</option>
+          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={eventType} onChange={e => setEventType(e.target.value)}
+          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+          <option value="">All event types</option>
+          {meters.map(m => <option key={m.slug} value={m.slug}>{m.name} ({m.slug})</option>)}
+        </select>
+        {(customerId || eventType) && (
+          <button onClick={() => { setCustomerId(""); setEventType(""); }}
+            className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700">
+            Clear filters
+          </button>
+        )}
+        <div className="ml-auto text-sm text-gray-400 self-center">
+          {events.length} events loaded{hasMore ? " (more available)" : ""}
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">Time</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">Customer</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">Event Type</th>
+              <th className="text-right px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">Value</th>
+              <th className="text-left px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">Idempotency Key</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {initialLoad && loading ? (
+              <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400">
+                <Loader2 className="w-5 h-5 animate-spin inline-block mr-2" />Loading events...
+              </td></tr>
+            ) : events.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400">No events found</td></tr>
+            ) : (
+              events.map((evt, i) => (
+                <tr key={`${evt.idempotencyKey}-${i}`} className="hover:bg-gray-50/50">
+                  <td className="px-4 py-2 text-gray-900 whitespace-nowrap" title={formatTs(evt.timestampMs)}>
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-gray-400" />
+                      {timeAgo(evt.timestampMs)}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-gray-700 font-mono text-xs">{evt.customerId}</td>
+                  <td className="px-4 py-2">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700">
+                      {evt.eventType || evt.meterSlug}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-gray-900">{evt.value.toString()}</td>
+                  <td className="px-4 py-2 text-gray-400 font-mono text-xs truncate max-w-[200px]">{evt.idempotencyKey}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+
+        {/* Load More */}
+        {hasMore && !initialLoad && (
+          <div className="border-t border-gray-100 px-4 py-3 text-center">
+            <button onClick={() => loadPage(false)} disabled={loading}
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ChevronDown className="w-4 h-4" />}
+              {loading ? "Loading..." : "Load more"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Ingest Tab ---
+function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
   const [customerId, setCustomerId] = useState("");
   const [eventType, setEventType] = useState("");
   const [value, setValue] = useState("1");
   const [count, setCount] = useState("10");
   const [result, setResult] = useState<{ accepted: number; duplicates: number } | null>(null);
   const [ingesting, setIngesting] = useState(false);
-
-  // Query state
-  const [queryCustomerId, setQueryCustomerId] = useState("");
-  const [queryMeterSlug, setQueryMeterSlug] = useState("");
-  const [queryHours, setQueryHours] = useState("24");
-  const [usageResult, setUsageResult] = useState<{ total: string; count: string } | null>(null);
-  const [querying, setQuerying] = useState(false);
-
-  useEffect(() => {
-    customerClient.listCustomers({}).then(r => setCustomers(r.customers)).catch(() => {});
-    meterClient.listMeters({}).then(r => setMeters(r.meters)).catch(() => {});
-  }, []);
 
   async function handleIngest() {
     if (!customerId || !eventType) return;
@@ -51,156 +175,181 @@ export function EventsPage() {
       }));
       const resp = await eventClient.ingestEvents({ events });
       setResult({ accepted: resp.accepted, duplicates: resp.duplicates });
-    } catch (e: any) {
+    } catch {
       setResult({ accepted: 0, duplicates: 0 });
     }
     setIngesting(false);
   }
 
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+      <h3 className="font-semibold text-gray-900 mb-1">Send Usage Events</h3>
+      <p className="text-sm text-gray-500 mb-5">Simulate event ingestion. Each event gets a unique idempotency key.</p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+          <select value={customerId} onChange={e => setCustomerId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+            <option value="">Select customer...</option>
+            {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.id.slice(0,12)}...)</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Meter / Event Type</label>
+          <select value={eventType} onChange={e => setEventType(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+            <option value="">Select meter...</option>
+            {meters.map(m => <option key={m.slug} value={m.slug}>{m.name} ({m.slug})</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Value per event</label>
+          <input type="number" value={value} onChange={e => setValue(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Number of events</label>
+          <input type="number" value={count} onChange={e => setCount(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
+        </div>
+      </div>
+      <button onClick={handleIngest} disabled={ingesting || !customerId || !eventType}
+        className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
+        <Zap className="w-4 h-4" /> {ingesting ? "Sending..." : "Send Events"}
+      </button>
+      {result && (
+        <div className="mt-5 flex gap-4">
+          <div className="flex-1 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+            <div className="text-2xl font-bold text-emerald-700">{result.accepted}</div>
+            <div className="text-xs text-emerald-600 mt-0.5">Accepted</div>
+          </div>
+          <div className="flex-1 p-4 bg-amber-50 rounded-lg border border-amber-200">
+            <div className="text-2xl font-bold text-amber-700">{result.duplicates}</div>
+            <div className="text-xs text-amber-600 mt-0.5">Duplicates</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Query Tab ---
+function QueryTab({ customers, meters }: { customers: any[]; meters: any[] }) {
+  const [customerId, setCustomerId] = useState("");
+  const [meterSlug, setMeterSlug] = useState("");
+  const [hours, setHours] = useState("24");
+  const [result, setResult] = useState<{ total: string } | null>(null);
+  const [querying, setQuerying] = useState(false);
+
   async function handleQuery() {
-    if (!queryCustomerId || !queryMeterSlug) return;
+    if (!customerId || !meterSlug) return;
     setQuerying(true);
     try {
-      const hours = parseInt(queryHours) || 24;
+      const h = parseInt(hours) || 24;
       const now = Date.now();
-      const start = now - hours * 60 * 60 * 1000;
+      const start = now - h * 3600_000;
       const resp = await eventClient.getUsage({
-        customerId: queryCustomerId,
-        meterSlug: queryMeterSlug,
+        customerId,
+        meterSlug,
         startMs: BigInt(start),
         endMs: BigInt(now),
       });
-      setUsageResult({ total: resp.totalValue.toString(), count: resp.eventCount?.toString() || "0" });
-    } catch (e: any) {
-      setUsageResult({ total: "error", count: "0" });
+      setResult({ total: resp.totalValue.toString() });
+    } catch {
+      setResult({ total: "error" });
     }
     setQuerying(false);
   }
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+      <h3 className="font-semibold text-gray-900 mb-1">Query Aggregated Usage</h3>
+      <p className="text-sm text-gray-500 mb-5">Read SUM aggregates from atomic indexes -- O(1) reads regardless of event count.</p>
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+          <select value={customerId} onChange={e => setCustomerId(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+            <option value="">Select customer...</option>
+            {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Meter</label>
+          <select value={meterSlug} onChange={e => setMeterSlug(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+            <option value="">Select meter...</option>
+            {meters.map(m => <option key={m.slug} value={m.slug}>{m.name} ({m.slug})</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Time range</label>
+          <select value={hours} onChange={e => setHours(e.target.value)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
+            <option value="1">Last 1 hour</option>
+            <option value="6">Last 6 hours</option>
+            <option value="24">Last 24 hours</option>
+            <option value="168">Last 7 days</option>
+            <option value="720">Last 30 days</option>
+          </select>
+        </div>
+      </div>
+      <button onClick={handleQuery} disabled={querying || !customerId || !meterSlug}
+        className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed">
+        <Search className="w-4 h-4" /> {querying ? "Querying..." : "Query Usage"}
+      </button>
+      {result && (
+        <div className="mt-5 flex gap-4">
+          <div className="flex-1 p-5 bg-indigo-50 rounded-lg border border-indigo-200">
+            <div className="flex items-center gap-2 text-indigo-600 mb-1">
+              <Activity className="w-4 h-4" />
+              <span className="text-xs font-medium uppercase tracking-wider">Total Value</span>
+            </div>
+            <div className="text-3xl font-bold text-indigo-900">{result.total}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Main Page ---
+export function EventsPage() {
+  const [tab, setTab] = useState<"browse" | "ingest" | "query">("browse");
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [meters, setMeters] = useState<any[]>([]);
+
+  useEffect(() => {
+    customerClient.listCustomers({}).then(r => setCustomers(r.customers)).catch(() => {});
+    meterClient.listMeters({}).then(r => setMeters(r.meters)).catch(() => {});
+  }, []);
+
+  return (
+    <div className="p-8 max-w-6xl">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Events</h1>
-        <p className="text-sm text-gray-500 mt-1">Ingest usage events and query aggregated usage data.</p>
+        <p className="text-sm text-gray-500 mt-1">Browse, ingest, and query usage events.</p>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-1 bg-gray-100 rounded-lg p-1 mb-6 w-fit">
+        <button onClick={() => setTab("browse")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === "browse" ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>
+          <List className="w-4 h-4" /> Browse
+        </button>
         <button onClick={() => setTab("ingest")}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === "ingest" ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>
-          <Send className="w-4 h-4" /> Ingest Events
+          <Send className="w-4 h-4" /> Ingest
         </button>
         <button onClick={() => setTab("query")}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${tab === "query" ? "bg-white shadow-sm text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>
-          <BarChart3 className="w-4 h-4" /> Query Usage
+          <BarChart3 className="w-4 h-4" /> Query
         </button>
       </div>
 
-      {tab === "ingest" ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-          <h3 className="font-semibold text-gray-900 mb-1">Send Usage Events</h3>
-          <p className="text-sm text-gray-500 mb-5">Simulate event ingestion. Each event gets a unique idempotency key.</p>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
-              <select value={customerId} onChange={e => setCustomerId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
-                <option value="">Select customer...</option>
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.id.slice(0,12)}…)</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Meter / Event Type</label>
-              <select value={eventType} onChange={e => setEventType(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
-                <option value="">Select meter...</option>
-                {meters.map(m => <option key={m.slug} value={m.slug}>{m.name} ({m.slug})</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Value per event</label>
-              <input type="number" value={value} onChange={e => setValue(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Number of events</label>
-              <input type="number" value={count} onChange={e => setCount(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
-            </div>
-          </div>
-
-          <button onClick={handleIngest} disabled={ingesting || !customerId || !eventType}
-            className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
-            <Zap className="w-4 h-4" /> {ingesting ? "Sending..." : "Send Events"}
-          </button>
-
-          {result && (
-            <div className="mt-5 flex gap-4">
-              <div className="flex-1 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
-                <div className="text-2xl font-bold text-emerald-700">{result.accepted}</div>
-                <div className="text-xs text-emerald-600 mt-0.5">Accepted</div>
-              </div>
-              <div className="flex-1 p-4 bg-amber-50 rounded-lg border border-amber-200">
-                <div className="text-2xl font-bold text-amber-700">{result.duplicates}</div>
-                <div className="text-xs text-amber-600 mt-0.5">Duplicates</div>
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-          <h3 className="font-semibold text-gray-900 mb-1">Query Aggregated Usage</h3>
-          <p className="text-sm text-gray-500 mb-5">Read SUM aggregates from atomic indexes — O(1) reads regardless of event count.</p>
-
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
-              <select value={queryCustomerId} onChange={e => setQueryCustomerId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
-                <option value="">Select customer...</option>
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Meter</label>
-              <select value={queryMeterSlug} onChange={e => setQueryMeterSlug(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
-                <option value="">Select meter...</option>
-                {meters.map(m => <option key={m.slug} value={m.slug}>{m.name} ({m.slug})</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Time range</label>
-              <select value={queryHours} onChange={e => setQueryHours(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none">
-                <option value="1">Last 1 hour</option>
-                <option value="6">Last 6 hours</option>
-                <option value="24">Last 24 hours</option>
-                <option value="168">Last 7 days</option>
-                <option value="720">Last 30 days</option>
-              </select>
-            </div>
-          </div>
-
-          <button onClick={handleQuery} disabled={querying || !queryCustomerId || !queryMeterSlug}
-            className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed">
-            <Search className="w-4 h-4" /> {querying ? "Querying..." : "Query Usage"}
-          </button>
-
-          {usageResult && (
-            <div className="mt-5 flex gap-4">
-              <div className="flex-1 p-5 bg-indigo-50 rounded-lg border border-indigo-200">
-                <div className="flex items-center gap-2 text-indigo-600 mb-1">
-                  <Activity className="w-4 h-4" />
-                  <span className="text-xs font-medium uppercase tracking-wider">Total Value</span>
-                </div>
-                <div className="text-3xl font-bold text-indigo-900">{usageResult.total}</div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {tab === "browse" && <BrowseTab customers={customers} meters={meters} />}
+      {tab === "ingest" && <IngestTab customers={customers} meters={meters} />}
+      {tab === "query" && <QueryTab customers={customers} meters={meters} />}
     </div>
   );
 }

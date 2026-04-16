@@ -19,6 +19,7 @@ go_library(
         "product.go",
         "ratecard.go",
         "session.go",
+        "system_db.go",
         "user.go",
     ],
     importpath = "github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage",

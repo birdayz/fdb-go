@@ -135,7 +135,6 @@ func main() {
 					ts := baseTs + int64(day)*86400000 + int64(hour)*3600000 + int64(minute)*60000 + int64(second)*1000
 
 					events[i] = &storev1.UsageEvent{
-						Id:              proto.String(fmt.Sprintf("bi-%s-%d", *prefix, globalIdx)),
 						CustomerId:      proto.String(*customer),
 						MeterSlug:       proto.String(m.slug),
 						EventType:       proto.String(m.slug),

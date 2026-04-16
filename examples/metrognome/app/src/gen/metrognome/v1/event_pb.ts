@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file metrognome/v1/event.proto.
  */
 export const file_metrognome_v1_event: GenFile = /*@__PURE__*/
-  fileDesc("ChltZXRyb2dub21lL3YxL2V2ZW50LnByb3RvEg1tZXRyb2dub21lLnYxIjsKE0luZ2VzdEV2ZW50c1JlcXVlc3QSJAoGZXZlbnRzGAEgAygLMhQubWV0cm9nbm9tZS52MS5FdmVudCKHAQoFRXZlbnQSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIUCgx0aW1lc3RhbXBfbXMYAyABKAMSDQoFdmFsdWUYBCABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAUgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgGIAEoCSI8ChRJbmdlc3RFdmVudHNSZXNwb25zZRIQCghhY2NlcHRlZBgBIAEoBRISCgpkdXBsaWNhdGVzGAIgASgFIowBCg9HZXRVc2FnZVJlcXVlc3QSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKbWV0ZXJfc2x1ZxgCIAEoCRIQCghzdGFydF9tcxgDIAEoAxIOCgZlbmRfbXMYBCABKAMSLgoLd2luZG93X3NpemUYBSABKA4yGS5tZXRyb2dub21lLnYxLldpbmRvd1NpemUiVAoQR2V0VXNhZ2VSZXNwb25zZRITCgt0b3RhbF92YWx1ZRgBIAEoAxIrCgdidWNrZXRzGAIgAygLMhoubWV0cm9nbm9tZS52MS5Vc2FnZUJ1Y2tldCI+CgtVc2FnZUJ1Y2tldBIQCghzdGFydF9tcxgBIAEoAxIOCgZlbmRfbXMYAiABKAMSDQoFdmFsdWUYAyABKAMiYgoVR2V0VXNhZ2VHcm91cHNSZXF1ZXN0EhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEAoIc3RhcnRfbXMYAyABKAMSDgoGZW5kX21zGAQgASgDIlgKFkdldFVzYWdlR3JvdXBzUmVzcG9uc2USEwoLdG90YWxfdmFsdWUYASABKAMSKQoGZ3JvdXBzGAIgAygLMhkubWV0cm9nbm9tZS52MS5Vc2FnZUdyb3VwIpEBCgpVc2FnZUdyb3VwEkAKDGdyb3VwX3ZhbHVlcxgBIAMoCzIqLm1ldHJvZ25vbWUudjEuVXNhZ2VHcm91cC5Hcm91cFZhbHVlc0VudHJ5Eg0KBXZhbHVlGAIgASgDGjIKEEdyb3VwVmFsdWVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASpUCgpXaW5kb3dTaXplEhsKF1dJTkRPV19TSVpFX1VOU1BFQ0lGSUVEEAASFAoQV0lORE9XX1NJWkVfSE9VUhABEhMKD1dJTkRPV19TSVpFX0RBWRACMvACCgxFdmVudFNlcnZpY2USVwoMSW5nZXN0RXZlbnRzEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJbChBJbmdlc3RFdmVudHNCdWxrEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJLCghHZXRVc2FnZRIeLm1ldHJvZ25vbWUudjEuR2V0VXNhZ2VSZXF1ZXN0Gh8ubWV0cm9nbm9tZS52MS5HZXRVc2FnZVJlc3BvbnNlEl0KDkdldFVzYWdlR3JvdXBzEiQubWV0cm9nbm9tZS52MS5HZXRVc2FnZUdyb3Vwc1JlcXVlc3QaJS5tZXRyb2dub21lLnYxLkdldFVzYWdlR3JvdXBzUmVzcG9uc2VCW1pZZ2l0aHViLmNvbS9iaXJkYXl6L2ZkYi1yZWNvcmQtbGF5ZXItZ28vZXhhbXBsZXMvbWV0cm9nbm9tZS9nZW4vbWV0cm9nbm9tZS92MTttZXRyb2dub21ldjFiBnByb3RvMw");
+  fileDesc("ChltZXRyb2dub21lL3YxL2V2ZW50LnByb3RvEg1tZXRyb2dub21lLnYxIjsKE0luZ2VzdEV2ZW50c1JlcXVlc3QSJAoGZXZlbnRzGAEgAygLMhQubWV0cm9nbm9tZS52MS5FdmVudCKHAQoFRXZlbnQSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKZXZlbnRfdHlwZRgCIAEoCRIUCgx0aW1lc3RhbXBfbXMYAyABKAMSDQoFdmFsdWUYBCABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAUgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgGIAEoCSI8ChRJbmdlc3RFdmVudHNSZXNwb25zZRIQCghhY2NlcHRlZBgBIAEoBRISCgpkdXBsaWNhdGVzGAIgASgFIowBCg9HZXRVc2FnZVJlcXVlc3QSEwoLY3VzdG9tZXJfaWQYASABKAkSEgoKbWV0ZXJfc2x1ZxgCIAEoCRIQCghzdGFydF9tcxgDIAEoAxIOCgZlbmRfbXMYBCABKAMSLgoLd2luZG93X3NpemUYBSABKA4yGS5tZXRyb2dub21lLnYxLldpbmRvd1NpemUiVAoQR2V0VXNhZ2VSZXNwb25zZRITCgt0b3RhbF92YWx1ZRgBIAEoAxIrCgdidWNrZXRzGAIgAygLMhoubWV0cm9nbm9tZS52MS5Vc2FnZUJ1Y2tldCI+CgtVc2FnZUJ1Y2tldBIQCghzdGFydF9tcxgBIAEoAxIOCgZlbmRfbXMYAiABKAMSDQoFdmFsdWUYAyABKAMiYgoVR2V0VXNhZ2VHcm91cHNSZXF1ZXN0EhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCm1ldGVyX3NsdWcYAiABKAkSEAoIc3RhcnRfbXMYAyABKAMSDgoGZW5kX21zGAQgASgDIlgKFkdldFVzYWdlR3JvdXBzUmVzcG9uc2USEwoLdG90YWxfdmFsdWUYASABKAMSKQoGZ3JvdXBzGAIgAygLMhkubWV0cm9nbm9tZS52MS5Vc2FnZUdyb3VwIpEBCgpVc2FnZUdyb3VwEkAKDGdyb3VwX3ZhbHVlcxgBIAMoCzIqLm1ldHJvZ25vbWUudjEuVXNhZ2VHcm91cC5Hcm91cFZhbHVlc0VudHJ5Eg0KBXZhbHVlGAIgASgDGjIKEEdyb3VwVmFsdWVzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKNAQoRTGlzdEV2ZW50c1JlcXVlc3QSEQoJcGFnZV9zaXplGAEgASgFEhoKEmNvbnRpbnVhdGlvbl90b2tlbhgCIAEoDBITCgtjdXN0b21lcl9pZBgDIAEoCRISCgpldmVudF90eXBlGAQgASgJEhAKCHN0YXJ0X21zGAUgASgDEg4KBmVuZF9tcxgGIAEoAyJcChJMaXN0RXZlbnRzUmVzcG9uc2USKgoGZXZlbnRzGAEgAygLMhoubWV0cm9nbm9tZS52MS5FdmVudFJlY29yZBIaChJjb250aW51YXRpb25fdG9rZW4YAiABKAwitgEKC0V2ZW50UmVjb3JkEhMKC2N1c3RvbWVyX2lkGAEgASgJEhIKCmV2ZW50X3R5cGUYAiABKAkSEgoKbWV0ZXJfc2x1ZxgDIAEoCRIUCgx0aW1lc3RhbXBfbXMYBCABKAMSDQoFdmFsdWUYBSABKAMSFwoPaWRlbXBvdGVuY3lfa2V5GAYgASgJEhcKD3Byb3BlcnRpZXNfanNvbhgHIAEoCRITCgtpbmdlc3RlZF9hdBgIIAEoAypUCgpXaW5kb3dTaXplEhsKF1dJTkRPV19TSVpFX1VOU1BFQ0lGSUVEEAASFAoQV0lORE9XX1NJWkVfSE9VUhABEhMKD1dJTkRPV19TSVpFX0RBWRACMsMDCgxFdmVudFNlcnZpY2USVwoMSW5nZXN0RXZlbnRzEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJbChBJbmdlc3RFdmVudHNCdWxrEiIubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXF1ZXN0GiMubWV0cm9nbm9tZS52MS5Jbmdlc3RFdmVudHNSZXNwb25zZRJLCghHZXRVc2FnZRIeLm1ldHJvZ25vbWUudjEuR2V0VXNhZ2VSZXF1ZXN0Gh8ubWV0cm9nbm9tZS52MS5HZXRVc2FnZVJlc3BvbnNlEl0KDkdldFVzYWdlR3JvdXBzEiQubWV0cm9nbm9tZS52MS5HZXRVc2FnZUdyb3Vwc1JlcXVlc3QaJS5tZXRyb2dub21lLnYxLkdldFVzYWdlR3JvdXBzUmVzcG9uc2USUQoKTGlzdEV2ZW50cxIgLm1ldHJvZ25vbWUudjEuTGlzdEV2ZW50c1JlcXVlc3QaIS5tZXRyb2dub21lLnYxLkxpc3RFdmVudHNSZXNwb25zZUJbWllnaXRodWIuY29tL2JpcmRheXovZmRiLXJlY29yZC1sYXllci1nby9leGFtcGxlcy9tZXRyb2dub21lL2dlbi9tZXRyb2dub21lL3YxO21ldHJvZ25vbWV2MWIGcHJvdG8z");
 
 /**
  * @generated from message metrognome.v1.IngestEventsRequest
@@ -284,6 +284,138 @@ export const UsageGroupSchema: GenMessage<UsageGroup> = /*@__PURE__*/
   messageDesc(file_metrognome_v1_event, 8);
 
 /**
+ * @generated from message metrognome.v1.ListEventsRequest
+ */
+export type ListEventsRequest = Message<"metrognome.v1.ListEventsRequest"> & {
+  /**
+   * max events per page (default 50, max 200)
+   *
+   * @generated from field: int32 page_size = 1;
+   */
+  pageSize: number;
+
+  /**
+   * opaque cursor from previous response
+   *
+   * @generated from field: bytes continuation_token = 2;
+   */
+  continuationToken: Uint8Array;
+
+  /**
+   * optional: filter by customer (PK prefix scan)
+   *
+   * @generated from field: string customer_id = 3;
+   */
+  customerId: string;
+
+  /**
+   * optional: filter by event type (requires index)
+   *
+   * @generated from field: string event_type = 4;
+   */
+  eventType: string;
+
+  /**
+   * optional: time range start (inclusive)
+   *
+   * @generated from field: int64 start_ms = 5;
+   */
+  startMs: bigint;
+
+  /**
+   * optional: time range end (exclusive)
+   *
+   * @generated from field: int64 end_ms = 6;
+   */
+  endMs: bigint;
+};
+
+/**
+ * Describes the message metrognome.v1.ListEventsRequest.
+ * Use `create(ListEventsRequestSchema)` to create a new message.
+ */
+export const ListEventsRequestSchema: GenMessage<ListEventsRequest> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_event, 9);
+
+/**
+ * @generated from message metrognome.v1.ListEventsResponse
+ */
+export type ListEventsResponse = Message<"metrognome.v1.ListEventsResponse"> & {
+  /**
+   * @generated from field: repeated metrognome.v1.EventRecord events = 1;
+   */
+  events: EventRecord[];
+
+  /**
+   * empty when no more pages
+   *
+   * @generated from field: bytes continuation_token = 2;
+   */
+  continuationToken: Uint8Array;
+};
+
+/**
+ * Describes the message metrognome.v1.ListEventsResponse.
+ * Use `create(ListEventsResponseSchema)` to create a new message.
+ */
+export const ListEventsResponseSchema: GenMessage<ListEventsResponse> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_event, 10);
+
+/**
+ * EventRecord is a stored event returned by ListEvents.
+ *
+ * @generated from message metrognome.v1.EventRecord
+ */
+export type EventRecord = Message<"metrognome.v1.EventRecord"> & {
+  /**
+   * @generated from field: string customer_id = 1;
+   */
+  customerId: string;
+
+  /**
+   * @generated from field: string event_type = 2;
+   */
+  eventType: string;
+
+  /**
+   * @generated from field: string meter_slug = 3;
+   */
+  meterSlug: string;
+
+  /**
+   * @generated from field: int64 timestamp_ms = 4;
+   */
+  timestampMs: bigint;
+
+  /**
+   * @generated from field: int64 value = 5;
+   */
+  value: bigint;
+
+  /**
+   * @generated from field: string idempotency_key = 6;
+   */
+  idempotencyKey: string;
+
+  /**
+   * @generated from field: string properties_json = 7;
+   */
+  propertiesJson: string;
+
+  /**
+   * @generated from field: int64 ingested_at = 8;
+   */
+  ingestedAt: bigint;
+};
+
+/**
+ * Describes the message metrognome.v1.EventRecord.
+ * Use `create(EventRecordSchema)` to create a new message.
+ */
+export const EventRecordSchema: GenMessage<EventRecord> = /*@__PURE__*/
+  messageDesc(file_metrognome_v1_event, 11);
+
+/**
  * @generated from enum metrognome.v1.WindowSize
  */
 export enum WindowSize {
@@ -358,6 +490,18 @@ export const EventService: GenService<{
     methodKind: "unary";
     input: typeof GetUsageGroupsRequestSchema;
     output: typeof GetUsageGroupsResponseSchema;
+  },
+  /**
+   * ListEvents returns paginated events using cursor-based pagination.
+   * PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
+   * in reverse time order is a single FDB range read per page. No index needed.
+   *
+   * @generated from rpc metrognome.v1.EventService.ListEvents
+   */
+  listEvents: {
+    methodKind: "unary";
+    input: typeof ListEventsRequestSchema;
+    output: typeof ListEventsResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_metrognome_v1_event, 0);

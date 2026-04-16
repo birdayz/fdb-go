@@ -271,6 +271,7 @@ var (
 		(*KafkaConfig)(nil), // 2: metrognome.v1.KafkaConfig
 	}
 )
+
 var file_metrognome_v1_config_proto_depIdxs = []int32{
 	2, // 0: metrognome.v1.Config.kafka:type_name -> metrognome.v1.KafkaConfig
 	1, // 1: metrognome.v1.Config.github_oauth:type_name -> metrognome.v1.GitHubOAuth

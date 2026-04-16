@@ -44,7 +44,6 @@ func (s *EventService) IngestEvents(ctx context.Context, req *connect.Request[me
 		}
 		meterSlug := evt.GetEventType()
 		records[i] = &storev1.UsageEvent{
-			Id:              proto.String(newID("evt")),
 			CustomerId:      proto.String(evt.GetCustomerId()),
 			EventType:       proto.String(evt.GetEventType()),
 			MeterSlug:       proto.String(meterSlug),
@@ -102,7 +101,6 @@ func (s *EventService) IngestEventsBulk(ctx context.Context, req *connect.Reques
 		}
 		meterSlug := evt.GetEventType()
 		records[i] = &storev1.UsageEvent{
-			Id:              proto.String(newID("evt")),
 			CustomerId:      proto.String(evt.GetCustomerId()),
 			EventType:       proto.String(evt.GetEventType()),
 			MeterSlug:       proto.String(meterSlug),
@@ -295,6 +293,41 @@ func (s *EventService) GetUsageGroups(ctx context.Context, req *connect.Request[
 		TotalValue: total,
 		Groups:     apiGroups,
 	}), nil
+}
+
+func (s *EventService) ListEvents(ctx context.Context, req *connect.Request[metrognomev1.ListEventsRequest]) (*connect.Response[metrognomev1.ListEventsResponse], error) {
+	pageSize := int(req.Msg.GetPageSize())
+	reverse := true // default: newest first
+
+	page, err := s.events.ListEvents(ctx,
+		req.Msg.GetCustomerId(),
+		req.Msg.GetStartMs(),
+		req.Msg.GetEndMs(),
+		pageSize,
+		req.Msg.GetContinuationToken(),
+		reverse,
+	)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list events: %w", err))
+	}
+
+	resp := &metrognomev1.ListEventsResponse{
+		ContinuationToken: page.ContinuationToken,
+	}
+	resp.Events = make([]*metrognomev1.EventRecord, len(page.Events))
+	for i, evt := range page.Events {
+		resp.Events[i] = &metrognomev1.EventRecord{
+			CustomerId:     evt.GetCustomerId(),
+			EventType:      evt.GetEventType(),
+			MeterSlug:      evt.GetMeterSlug(),
+			TimestampMs:    evt.GetTimestampMs(),
+			Value:          evt.GetValue(),
+			IdempotencyKey: evt.GetIdempotencyKey(),
+			PropertiesJson: evt.GetPropertiesJson(),
+			IngestedAt:     evt.GetIngestedAt(),
+		}
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func parseProperties(jsonStr string) map[string]string {

@@ -303,7 +303,6 @@ func main() {
 				val := int64(prof.minValue + rng.IntN(prof.maxValue-prof.minValue+1))
 				idKey := fmt.Sprintf("seed-%s-%s-%d-%d", prof.customerID, prof.slug, day, j)
 				batch = append(batch, &storev1.UsageEvent{
-					Id:              proto.String(idKey),
 					CustomerId:      proto.String(prof.customerID),
 					MeterSlug:       proto.String(prof.slug),
 					TimestampMs:     proto.Int64(ts),

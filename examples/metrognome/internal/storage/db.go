@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/subspace"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
@@ -19,13 +20,30 @@ var (
 )
 
 // DB provides access to all record stores backed by fdb-record-layer-go.
+// Each org tenant gets its own DB instance.
 type DB struct {
 	fdb      *rl.FDBDatabase
 	metadata *rl.RecordMetaData
 	ss       subspace.Subspace
 }
 
+// BillingMetaData returns the shared metadata for billing stores.
+// Reused across all tenant DB instances (metadata is immutable after Build).
+var billingMetaData *rl.RecordMetaData
+
+// NewTenantDB opens an FDB tenant and creates a billing DB in it.
+// The tenant must already exist (created by SystemDB.CreateTenant).
+func NewTenantDB(rawDB fdb.Database, tenantName string) (*DB, error) {
+	tenant, err := rawDB.OpenTenant(fdb.Key(tenantName))
+	if err != nil {
+		return nil, fmt.Errorf("open tenant %s: %w", tenantName, err)
+	}
+	fdbDB := rl.NewFDBDatabaseFromTenant(tenant)
+	return NewDB(fdbDB)
+}
+
 // NewDB creates a DB with the metrognome record metadata.
+// The FDBDatabase can be backed by a raw database or a tenant.
 func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder := rl.NewRecordMetaDataBuilder().
 		SetRecords(storev1.File_metrognome_store_v1_store_proto)
@@ -52,9 +70,12 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.GetRecordType("Contract").SetPrimaryKey(
 		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
 
-	// UsageEvent: lookup by id (idempotency_key has a separate unique index)
+	// UsageEvent: PK is (type, customer_id, timestamp_ms, idempotency_key).
+	// customer_id first → per-customer prefix scan for event explorer (one range read).
+	// timestamp_ms second → natural time ordering within customer.
+	// idempotency_key last → uniqueness tiebreaker (no separate dedup index needed).
 	builder.GetRecordType("UsageEvent").SetPrimaryKey(
-		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
+		rl.Concat(rl.RecordTypeKey(), rl.Field("customer_id"), rl.Field("timestamp_ms"), rl.Field("idempotency_key")))
 
 	// Invoice: lookup by id
 	builder.GetRecordType("Invoice").SetPrimaryKey(
@@ -88,6 +109,18 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 	builder.GetRecordType("ApiKey").SetPrimaryKey(
 		rl.Concat(rl.RecordTypeKey(), rl.Field("id")))
 
+	// OAuthState: lookup by state token (one-time-use CSRF)
+	builder.GetRecordType("OAuthState").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("state")))
+
+	// System types — unused in billing stores but need PKs for union to build.
+	builder.GetRecordType("Tenant").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("name")))
+	builder.GetRecordType("TenantMember").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("github_id")))
+	builder.GetRecordType("Invite").SetPrimaryKey(
+		rl.Concat(rl.RecordTypeKey(), rl.Field("code")))
+
 	// --- Secondary indexes ---
 
 	// Meter slug must be unique
@@ -101,9 +134,6 @@ func NewDB(fdb *rl.FDBDatabase) (*DB, error) {
 
 	// Contracts by customer
 	builder.AddIndex("Contract", rl.NewIndex("contract_by_customer", rl.Field("customer_id")))
-
-	// UsageEvent by idempotency key (unique, for dedup)
-	builder.AddIndex("UsageEvent", rl.NewIndex("event_by_idempotency_key", rl.Field("idempotency_key")).SetUnique())
 
 	// UsageEvent by customer + meter + timestamp (for range queries during invoice generation)
 	builder.AddIndex("UsageEvent", rl.NewIndex("event_by_customer_meter_time",
@@ -206,13 +236,39 @@ func (d *DB) RateCards() *RateCardStore       { return &RateCardStore{db: d} }
 func (d *DB) Rates() *RateStore               { return &RateStore{db: d} }
 func (d *DB) ApiKeys() *ApiKeyStore           { return &ApiKeyStore{db: d} }
 
+// dbContextKey is for injecting a tenant-scoped DB into request context.
+type dbContextKey struct{}
+
+// WithDB returns a context carrying a tenant-scoped DB.
+// When services call run(), the tenant DB is used transparently.
+func WithDB(ctx context.Context, db *DB) context.Context {
+	return context.WithValue(ctx, dbContextKey{}, db)
+}
+
+// DBFromContext returns the tenant-scoped DB from context, or nil.
+func DBFromContext(ctx context.Context) *DB {
+	db, _ := ctx.Value(dbContextKey{}).(*DB)
+	return db
+}
+
+// effective returns the tenant-scoped DB from context if present,
+// otherwise falls back to the receiver (startup default).
+func (d *DB) effective(ctx context.Context) *DB {
+	if override := DBFromContext(ctx); override != nil {
+		return override
+	}
+	return d
+}
+
 // run executes fn within a transaction with an open FDBRecordStore.
+// Transparently uses the tenant-scoped DB from context if present.
 func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) (any, error) {
-	return d.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+	db := d.effective(ctx)
+	return db.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
 		store, err := rl.NewStoreBuilder().
 			SetContext(rtx).
-			SetMetaDataProvider(d.metadata).
-			SetSubspace(d.ss).
+			SetMetaDataProvider(db.metadata).
+			SetSubspace(db.ss).
 			SetAssumeAllIndexesReadable(true).
 			Build()
 		if err != nil {
@@ -224,11 +280,12 @@ func (d *DB) run(ctx context.Context, fn func(*rl.FDBRecordStore) (any, error)) 
 
 // runInStore is like run but also provides the FDBRecordContext for multi-store transactions.
 func (d *DB) runInStore(ctx context.Context, fn func(*rl.FDBRecordContext, *rl.FDBRecordStore) (any, error)) (any, error) {
-	return d.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
+	db := d.effective(ctx)
+	return db.fdb.Run(ctx, func(rtx *rl.FDBRecordContext) (any, error) {
 		store, err := rl.NewStoreBuilder().
 			SetContext(rtx).
-			SetMetaDataProvider(d.metadata).
-			SetSubspace(d.ss).
+			SetMetaDataProvider(db.metadata).
+			SetSubspace(db.ss).
 			SetAssumeAllIndexesReadable(true).
 			Build()
 		if err != nil {

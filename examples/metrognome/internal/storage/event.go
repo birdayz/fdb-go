@@ -12,6 +12,8 @@ import (
 	storev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1"
 )
 
+const unsplitRecord = int64(0)
+
 type EventStore struct {
 	db *DB
 }
@@ -25,40 +27,41 @@ type IngestResult struct {
 }
 
 // Ingest saves a batch of usage events in a single transaction.
-// Deduplicates by idempotency_key using pipelined index lookups — all N dedup
-// checks fire as FDB GetRange futures at once (1 round trip total instead of N
-// sequential), then resolves and saves non-duplicates.
-// Returns detailed result including which event indices were accepted.
+// Deduplicates by primary key — PK is (type, customer_id, timestamp_ms, idempotency_key)
+// so duplicate idempotency keys for the same customer/time map to the same record.
+// Uses pipelined point Gets (faster than the old index prefix scan).
 func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (*IngestResult, error) {
 	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
 		result := &IngestResult{}
 		tx := rs.Context().Transaction()
 
-		// Phase 1: Fire all dedup lookups as futures (non-blocking).
-		// Each lookup checks if the idempotency key exists in the unique index.
-		// All N reads pipeline over the wire — ~1 FDB round trip total.
-		idx := rs.GetRecordMetaData().GetIndex("event_by_idempotency_key")
-		indexSS := rs.Subspace().Sub(rl.IndexKey, idx.SubspaceTupleKey())
+		// Record subspace: [store_ss][RecordKey][pk...][unsplit=0]
+		recordSS := rs.Subspace().Sub(rl.RecordKey)
+		typeKey := int64(rs.GetRecordMetaData().GetRecordType("UsageEvent").RecordTypeIndex)
 
-		// Use pipelined prefix-range checks. A unique index has exactly one entry
-		// per value, but the PK suffix is unknown so we can't do a point Get.
-		// GetRange with limit=1 on the prefix is the fastest check.
-		dedupFutures := make([]fdb.RangeResult, len(events))
+		// Phase 1: Fire N pipelined point Gets to check PK existence.
+		// Point Get is faster than the old GetRange(limit=1) on index prefix.
+		dedupFutures := make([]fdb.FutureByteSlice, len(events))
 		for i, evt := range events {
-			prefix := fdb.Key(indexSS.Pack(tuple.Tuple{evt.GetIdempotencyKey()}))
-			kr, _ := fdb.PrefixRange(prefix)
-			dedupFutures[i] = tx.Snapshot().GetRange(kr, fdb.RangeOptions{Limit: 1})
+			key := fdb.Key(recordSS.Pack(tuple.Tuple{
+				typeKey,
+				evt.GetCustomerId(),
+				evt.GetTimestampMs(),
+				evt.GetIdempotencyKey(),
+				unsplitRecord,
+			}))
+			dedupFutures[i] = tx.Snapshot().Get(key)
 		}
 
-		// Phase 2: Resolve dedup futures — collect non-duplicate events.
+		// Phase 2: Resolve — collect non-duplicates.
 		var toSave []proto.Message
 		var toSaveIndexes []int
 		for i := range events {
-			existing, err := dedupFutures[i].GetSliceWithError()
+			existing, err := dedupFutures[i].Get()
 			if err != nil {
 				return nil, err
 			}
-			if len(existing) > 0 {
+			if existing != nil {
 				result.Duplicates++
 				continue
 			}
@@ -66,9 +69,7 @@ func (s *EventStore) Ingest(ctx context.Context, events []*storev1.UsageEvent) (
 			toSaveIndexes = append(toSaveIndexes, i)
 		}
 
-		// Phase 3: Save non-duplicates using InsertBatch (no existence check —
-		// dedup already proved these are new). Max throughput path: no reads,
-		// disabled RYW, disabled write conflicts.
+		// Phase 3: InsertBatch non-duplicates.
 		if len(toSave) > 0 {
 			if err := rs.InsertBatch(toSave); err != nil {
 				return nil, err
@@ -102,6 +103,102 @@ func (s *EventStore) BulkInsert(ctx context.Context, events []*storev1.UsageEven
 		return 0, err
 	}
 	return r.(int), nil
+}
+
+// ListEventsPage is the result of a paginated event scan.
+type ListEventsPage struct {
+	Events            []*storev1.UsageEvent
+	ContinuationToken []byte // nil when no more pages
+}
+
+// ListEvents returns paginated events using cursor-based pagination.
+// Exploits the PK structure (type, customer_id, timestamp_ms, idempotency_key)
+// for efficient prefix scans:
+//   - No customer filter → scan all UsageEvent records (type prefix)
+//   - Customer filter → PK prefix (type, customer_id)
+//   - Customer + time range → PK range within customer prefix
+//
+// Default: reverse (newest first). One FDB range read per page.
+func (s *EventStore) ListEvents(ctx context.Context, customerID string, startMs, endMs int64, pageSize int, continuation []byte, reverse bool) (*ListEventsPage, error) {
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+
+	r, err := s.db.run(ctx, func(rs *rl.FDBRecordStore) (any, error) {
+		typeKey := int64(rs.GetRecordMetaData().GetRecordType("UsageEvent").RecordTypeIndex)
+
+		scanProps := rl.NewScanProperties(
+			rl.DefaultExecuteProperties().WithReturnedRowLimit(pageSize),
+		).WithReverse(reverse)
+
+		var cursor rl.RecordCursor[*rl.FDBStoredRecord[proto.Message]]
+
+		// Endpoint types: match ScanRecordsByType pattern (RangeInclusive).
+		// For continuation, replace the appropriate endpoint based on direction.
+		lowEP := rl.EndpointTypeRangeInclusive
+		highEP := rl.EndpointTypeRangeInclusive
+		if len(continuation) > 0 {
+			if reverse {
+				highEP = rl.EndpointTypeContinuation
+			} else {
+				lowEP = rl.EndpointTypeContinuation
+			}
+		}
+
+		if customerID != "" && startMs > 0 && endMs > 0 {
+			// Customer + time range: range scan within customer's events.
+			// Override endpoints for explicit range bounds.
+			low := tuple.Tuple{typeKey, customerID, startMs}
+			high := tuple.Tuple{typeKey, customerID, endMs}
+			if len(continuation) == 0 {
+				lowEP = rl.EndpointTypeRangeInclusive
+				highEP = rl.EndpointTypeRangeExclusive
+			}
+			cursor = rs.ScanRecordsInRange(low, high,
+				lowEP, highEP,
+				continuation, scanProps)
+		} else if customerID != "" {
+			// Customer only: PK prefix scan (type, customer_id).
+			// RangeInclusive on a prefix tuple gives all keys starting with it.
+			prefix := tuple.Tuple{typeKey, customerID}
+			cursor = rs.ScanRecordsInRange(prefix, prefix,
+				lowEP, highEP,
+				continuation, scanProps)
+		} else {
+			// All events: scan by record type (handles endpoints internally).
+			cursor = rs.ScanRecordsByType("UsageEvent", continuation, scanProps)
+		}
+
+		page := &ListEventsPage{}
+		for {
+			result, err := cursor.OnNext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if !result.HasNext() {
+				// Grab continuation if there are more pages
+				cont := result.GetContinuation()
+				if cont != nil && !cont.IsEnd() {
+					page.ContinuationToken, _ = cont.ToBytes()
+				}
+				break
+			}
+			rec := result.GetValue()
+			evt, ok := rec.Record.(*storev1.UsageEvent)
+			if !ok {
+				continue
+			}
+			page.Events = append(page.Events, evt)
+		}
+		return page, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.(*ListEventsPage), nil
 }
 
 // GetUsage returns the total aggregated value for a customer/meter across a bucket range.

@@ -671,6 +671,7 @@ var (
 		(*Contract)(nil),               // 9: metrognome.v1.Contract
 	}
 )
+
 var file_metrognome_v1_contract_proto_depIdxs = []int32{
 	0,  // 0: metrognome.v1.CreateContractRequest.billing_period:type_name -> metrognome.v1.BillingPeriod
 	9,  // 1: metrognome.v1.CreateContractResponse.contract:type_name -> metrognome.v1.Contract

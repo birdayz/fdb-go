@@ -427,6 +427,7 @@ var (
 		(*ApiKey)(nil),               // 6: metrognome.v1.ApiKey
 	}
 )
+
 var file_metrognome_v1_api_key_proto_depIdxs = []int32{
 	6, // 0: metrognome.v1.CreateApiKeyResponse.api_key:type_name -> metrognome.v1.ApiKey
 	6, // 1: metrognome.v1.ListApiKeysResponse.api_keys:type_name -> metrognome.v1.ApiKey

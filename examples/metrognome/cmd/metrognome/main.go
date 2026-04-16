@@ -81,14 +81,23 @@ func main() {
 	}
 	slog.Info("connected to FoundationDB")
 
+	// Initialize system store (__system tenant — auth, tenants, invites).
+	sysDB, err := storage.NewSystemDB(fdbDB)
+	if err != nil {
+		slog.Error("failed to initialize system storage", "error", err)
+		os.Exit(1)
+	}
+
 	recordDB := rl.NewFDBDatabase(fdbDB)
 
-	// Initialize storage
+	// Initialize a default billing DB (non-tenant, for backwards compat / seed / health).
+	// Per-request tenant DBs are resolved by the auth interceptor.
 	db, err := storage.NewDB(recordDB)
 	if err != nil {
 		slog.Error("failed to initialize storage", "error", err)
 		os.Exit(1)
 	}
+	_ = sysDB // used by auth handler below
 
 	// Initialize dynamic meter engine
 	meterEngine := meter.NewEngine(recordDB, subspace.Sub("metrognome_meters"))
@@ -173,7 +182,7 @@ func main() {
 	// were costing 2.9% CPU on gzip init/reset. Saves ~3% CPU under load.
 	connectOpts = append(connectOpts, connect.WithCompressMinBytes(4096))
 	if gh := cfg.GithubOauth; gh != nil && gh.GetClientId() != "" {
-		authHandler := auth.NewHandler(gh, cfg.FrontendUrl, db)
+		authHandler := auth.NewHandler(gh, cfg.FrontendUrl, sysDB)
 		authHandler.RegisterRoutes(mux)
 		connectOpts = append(connectOpts, connect.WithInterceptors(authHandler.Interceptor()))
 		slog.Info("github oauth enabled")

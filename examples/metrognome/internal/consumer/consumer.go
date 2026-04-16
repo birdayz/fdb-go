@@ -22,6 +22,7 @@ import (
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/billing"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/meter"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
 	rl "github.com/birdayz/fdb-record-layer-go/pkg/recordlayer"
 )
@@ -169,17 +170,25 @@ func (c *Consumer) processPartition(ctx context.Context, p kgo.FetchTopicPartiti
 			return nil, err
 		}
 
-		// Write events (with idempotency pre-check)
+		// Write events (with PK-based idempotency check).
+		// PK is (type, customer_id, timestamp_ms, idempotency_key) — duplicate
+		// idempotency keys for the same customer/time map to the same record.
+		recordSS := store.Subspace().Sub(rl.RecordKey)
+		typeKey := int64(store.GetRecordMetaData().GetRecordType("UsageEvent").RecordTypeIndex)
 		for _, evt := range events {
-			// Check idempotency
-			idx := store.GetRecordMetaData().GetIndex("event_by_idempotency_key")
-			cursor := store.ScanIndex(idx,
-				rl.TupleRangeAllOf(tuple.Tuple{evt.record.GetIdempotencyKey()}), nil, rl.ForwardScan())
-			existing, err := rl.AsList(ctx, cursor)
+			// Point Get on exact record key — faster than old index prefix scan.
+			key := fdb.Key(recordSS.Pack(tuple.Tuple{
+				typeKey,
+				evt.record.GetCustomerId(),
+				evt.record.GetTimestampMs(),
+				evt.record.GetIdempotencyKey(),
+				int64(0), // unsplit record suffix
+			}))
+			val, err := store.Context().Transaction().Get(key).Get()
 			if err != nil {
 				return nil, err
 			}
-			if len(existing) > 0 {
+			if val != nil {
 				continue // already ingested (from a previous partial commit)
 			}
 
@@ -294,13 +303,9 @@ func parseKafkaRecord(record *kgo.Record, now int64) (*storev1.UsageEvent, map[s
 		ts = now
 	}
 
-	// Generate a random ID — not the idempotency key (that's for dedup)
-	id := fmt.Sprintf("kafka_%d_%d", record.Partition, record.Offset)
-
 	meterSlug := evt.EventType
 
 	return &storev1.UsageEvent{
-		Id:              proto.String(id),
 		CustomerId:      proto.String(evt.CustomerID),
 		EventType:       proto.String(evt.EventType),
 		MeterSlug:       proto.String(meterSlug),

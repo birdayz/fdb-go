@@ -46,6 +46,8 @@ const (
 	// EventServiceGetUsageGroupsProcedure is the fully-qualified name of the EventService's
 	// GetUsageGroups RPC.
 	EventServiceGetUsageGroupsProcedure = "/metrognome.v1.EventService/GetUsageGroups"
+	// EventServiceListEventsProcedure is the fully-qualified name of the EventService's ListEvents RPC.
+	EventServiceListEventsProcedure = "/metrognome.v1.EventService/ListEvents"
 )
 
 // EventServiceClient is a client for the metrognome.v1.EventService service.
@@ -62,6 +64,10 @@ type EventServiceClient interface {
 	// GetUsageGroups returns usage broken down by group-by property values.
 	// Only works for meters with group_by_properties configured.
 	GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error)
+	// ListEvents returns paginated events using cursor-based pagination.
+	// PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
+	// in reverse time order is a single FDB range read per page. No index needed.
+	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
 }
 
 // NewEventServiceClient constructs a client for the metrognome.v1.EventService service. By default,
@@ -99,6 +105,12 @@ func NewEventServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(eventServiceMethods.ByName("GetUsageGroups")),
 			connect.WithClientOptions(opts...),
 		),
+		listEvents: connect.NewClient[v1.ListEventsRequest, v1.ListEventsResponse](
+			httpClient,
+			baseURL+EventServiceListEventsProcedure,
+			connect.WithSchema(eventServiceMethods.ByName("ListEvents")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -108,6 +120,7 @@ type eventServiceClient struct {
 	ingestEventsBulk *connect.Client[v1.IngestEventsRequest, v1.IngestEventsResponse]
 	getUsage         *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
 	getUsageGroups   *connect.Client[v1.GetUsageGroupsRequest, v1.GetUsageGroupsResponse]
+	listEvents       *connect.Client[v1.ListEventsRequest, v1.ListEventsResponse]
 }
 
 // IngestEvents calls metrognome.v1.EventService.IngestEvents.
@@ -130,6 +143,11 @@ func (c *eventServiceClient) GetUsageGroups(ctx context.Context, req *connect.Re
 	return c.getUsageGroups.CallUnary(ctx, req)
 }
 
+// ListEvents calls metrognome.v1.EventService.ListEvents.
+func (c *eventServiceClient) ListEvents(ctx context.Context, req *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error) {
+	return c.listEvents.CallUnary(ctx, req)
+}
+
 // EventServiceHandler is an implementation of the metrognome.v1.EventService service.
 type EventServiceHandler interface {
 	// IngestEvents accepts a batch of usage events. Each event must have an
@@ -144,6 +162,10 @@ type EventServiceHandler interface {
 	// GetUsageGroups returns usage broken down by group-by property values.
 	// Only works for meters with group_by_properties configured.
 	GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error)
+	// ListEvents returns paginated events using cursor-based pagination.
+	// PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
+	// in reverse time order is a single FDB range read per page. No index needed.
+	ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error)
 }
 
 // NewEventServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -177,6 +199,12 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(eventServiceMethods.ByName("GetUsageGroups")),
 		connect.WithHandlerOptions(opts...),
 	)
+	eventServiceListEventsHandler := connect.NewUnaryHandler(
+		EventServiceListEventsProcedure,
+		svc.ListEvents,
+		connect.WithSchema(eventServiceMethods.ByName("ListEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/metrognome.v1.EventService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EventServiceIngestEventsProcedure:
@@ -187,6 +215,8 @@ func NewEventServiceHandler(svc EventServiceHandler, opts ...connect.HandlerOpti
 			eventServiceGetUsageHandler.ServeHTTP(w, r)
 		case EventServiceGetUsageGroupsProcedure:
 			eventServiceGetUsageGroupsHandler.ServeHTTP(w, r)
+		case EventServiceListEventsProcedure:
+			eventServiceListEventsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -210,4 +240,8 @@ func (UnimplementedEventServiceHandler) GetUsage(context.Context, *connect.Reque
 
 func (UnimplementedEventServiceHandler) GetUsageGroups(context.Context, *connect.Request[v1.GetUsageGroupsRequest]) (*connect.Response[v1.GetUsageGroupsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.GetUsageGroups is not implemented"))
+}
+
+func (UnimplementedEventServiceHandler) ListEvents(context.Context, *connect.Request[v1.ListEventsRequest]) (*connect.Response[v1.ListEventsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("metrognome.v1.EventService.ListEvents is not implemented"))
 }

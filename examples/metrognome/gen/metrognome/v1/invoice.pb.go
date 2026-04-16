@@ -898,6 +898,7 @@ var (
 		(*LineItem)(nil),                    // 12: metrognome.v1.LineItem
 	}
 )
+
 var file_metrognome_v1_invoice_proto_depIdxs = []int32{
 	11, // 0: metrognome.v1.GetInvoiceResponse.invoice:type_name -> metrognome.v1.Invoice
 	11, // 1: metrognome.v1.ListInvoicesResponse.invoices:type_name -> metrognome.v1.Invoice

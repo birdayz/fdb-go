@@ -20,6 +20,11 @@ service EventService {
   // GetUsageGroups returns usage broken down by group-by property values.
   // Only works for meters with group_by_properties configured.
   rpc GetUsageGroups(GetUsageGroupsRequest) returns (GetUsageGroupsResponse);
+
+  // ListEvents returns paginated events using cursor-based pagination.
+  // PK is (customer_id, timestamp_ms, idempotency_key) — scanning by customer
+  // in reverse time order is a single FDB range read per page. No index needed.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
 }
 
 message IngestEventsRequest {
@@ -81,4 +86,30 @@ message GetUsageGroupsResponse {
 message UsageGroup {
   map<string, string> group_values = 1; // e.g. {"region": "us-east-1", "model": "gpt-4"}
   int64 value = 2;
+}
+
+message ListEventsRequest {
+  int32 page_size = 1;              // max events per page (default 50, max 200)
+  bytes continuation_token = 2;     // opaque cursor from previous response
+  string customer_id = 3;           // optional: filter by customer (PK prefix scan)
+  string event_type = 4;            // optional: filter by event type (requires index)
+  int64 start_ms = 5;              // optional: time range start (inclusive)
+  int64 end_ms = 6;                // optional: time range end (exclusive)
+}
+
+message ListEventsResponse {
+  repeated EventRecord events = 1;
+  bytes continuation_token = 2;     // empty when no more pages
+}
+
+// EventRecord is a stored event returned by ListEvents.
+message EventRecord {
+  string customer_id = 1;
+  string event_type = 2;
+  string meter_slug = 3;
+  int64 timestamp_ms = 4;
+  int64 value = 5;
+  string idempotency_key = 6;
+  string properties_json = 7;
+  int64 ingested_at = 8;
 }

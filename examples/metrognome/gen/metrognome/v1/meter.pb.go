@@ -573,6 +573,7 @@ var (
 		(*Meter)(nil),               // 7: metrognome.v1.Meter
 	}
 )
+
 var file_metrognome_v1_meter_proto_depIdxs = []int32{
 	0, // 0: metrognome.v1.CreateMeterRequest.aggregation_type:type_name -> metrognome.v1.AggregationType
 	7, // 1: metrognome.v1.CreateMeterResponse.meter:type_name -> metrognome.v1.Meter

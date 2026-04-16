@@ -22,7 +22,9 @@ import (
 
 	storev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/store/v1"
 	metrognomev1 "github.com/birdayz/fdb-record-layer-go/examples/metrognome/gen/metrognome/v1"
+	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/seed"
 	"github.com/birdayz/fdb-record-layer-go/examples/metrognome/internal/storage"
+	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
 )
 
 const sessionMaxAge = 86400 * 30 // 30 days
@@ -30,17 +32,18 @@ const sessionMaxAge = 86400 * 30 // 30 days
 type contextKey struct{}
 
 // Handler manages GitHub OAuth login, sessions, and provides auth middleware.
+// Uses SystemDB (__system tenant) for OAuth state and tenant resolution.
+// Opens per-org tenant DBs for sessions and billing data.
 type Handler struct {
 	oauth       *oauth2.Config
-	db          *storage.DB
+	sysDB       *storage.SystemDB
+	rawDB       fdb.Database // for opening tenant DBs
 	frontendURL string
-	states      map[string]time.Time
-	mu          sync.Mutex
 }
 
 // NewHandler creates a new auth handler.
-func NewHandler(cfg *metrognomev1.GitHubOAuth, frontendURL string, db *storage.DB) *Handler {
-	h := &Handler{
+func NewHandler(cfg *metrognomev1.GitHubOAuth, frontendURL string, sysDB *storage.SystemDB) *Handler {
+	return &Handler{
 		oauth: &oauth2.Config{
 			ClientID:     cfg.GetClientId(),
 			ClientSecret: cfg.GetClientSecret(),
@@ -48,12 +51,10 @@ func NewHandler(cfg *metrognomev1.GitHubOAuth, frontendURL string, db *storage.D
 			Scopes:       []string{"read:user", "user:email"},
 			Endpoint:     github.Endpoint,
 		},
-		db:          db,
+		sysDB:       sysDB,
+		rawDB:       sysDB.RawDB(),
 		frontendURL: frontendURL,
-		states:      make(map[string]time.Time),
 	}
-	go h.cleanupStates()
-	return h
 }
 
 // RegisterRoutes adds the OAuth HTTP routes to the mux.
@@ -71,25 +72,29 @@ func (h *Handler) Interceptor() connect.Interceptor {
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	state := generateToken()
-	h.mu.Lock()
-	h.states[state] = time.Now().Add(10 * time.Minute)
-	h.mu.Unlock()
+	oauthState := &storev1.OAuthState{
+		State:     proto.String(state),
+		ExpiresAt: proto.Int64(time.Now().Add(10 * time.Minute).UnixMilli()),
+	}
+	if err := h.sysDB.CreateOAuthState(r.Context(), oauthState); err != nil {
+		slog.Error("failed to store oauth state", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	url := h.oauth.AuthCodeURL(state)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request) {
-	state := r.URL.Query().Get("state")
-	h.mu.Lock()
-	expiry, ok := h.states[state]
-	if ok {
-		delete(h.states, state)
-	}
-	h.mu.Unlock()
-
-	if !ok || time.Now().After(expiry) {
+	stateToken := r.URL.Query().Get("state")
+	oauthState, err := h.sysDB.ConsumeOAuthState(r.Context(), stateToken)
+	if err != nil {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
+		return
+	}
+	if oauthState.GetExpiresAt() < time.Now().UnixMilli() {
+		http.Error(w, "state expired", http.StatusBadRequest)
 		return
 	}
 
@@ -106,7 +111,6 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch GitHub user info
 	ghUser, err := fetchGitHubUser(r.Context(), tok.AccessToken)
 	if err != nil {
 		slog.Error("github user fetch failed", "error", err)
@@ -115,24 +119,72 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UnixMilli()
+	githubID := fmt.Sprintf("%d", ghUser.ID)
 	userID := fmt.Sprintf("gh_%d", ghUser.ID)
 
-	// Upsert user
+	// Check if user already has a tenant membership.
+	var tenantName string
+	member, err := h.sysDB.GetMember(r.Context(), githubID)
+	if err == nil {
+		tenantName = member.GetTenantName()
+	} else {
+		// First login: create tenant + membership.
+		tenantName = fmt.Sprintf("org_%d", ghUser.ID)
+		tenant := &storev1.Tenant{
+			Name:          proto.String(tenantName),
+			DisplayName:   proto.String(ghUser.Login),
+			OwnerGithubId: proto.String(githubID),
+			CreatedAt:     proto.Int64(now),
+		}
+		if err := h.sysDB.CreateTenant(r.Context(), tenant); err != nil {
+			slog.Error("failed to create tenant", "error", err, "tenant", tenantName)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if err := h.sysDB.CreateMember(r.Context(), &storev1.TenantMember{
+			GithubId:   proto.String(githubID),
+			TenantName: proto.String(tenantName),
+			Role:       proto.String("owner"),
+			JoinedAt:   proto.Int64(now),
+		}); err != nil {
+			slog.Error("failed to create tenant member", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		slog.Info("created tenant for new user", "tenant", tenantName, "user", ghUser.Login)
+
+		// Seed the tenant with demo data so the UI isn't blank on first login.
+		seedDB, err := storage.NewTenantDB(h.rawDB, tenantName)
+		if err != nil {
+			slog.Error("failed to open tenant for seeding", "error", err)
+		} else {
+			if err := seed.Tenant(r.Context(), seedDB, ghUser.Login); err != nil {
+				slog.Warn("tenant seeding failed", "error", err)
+			}
+		}
+	}
+
+	// Open the org tenant and upsert user + session.
+	tenantDB, err := storage.NewTenantDB(h.rawDB, tenantName)
+	if err != nil {
+		slog.Error("failed to open tenant DB", "error", err, "tenant", tenantName)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	user := &storev1.User{
 		Id:        proto.String(userID),
-		GithubId:  proto.String(fmt.Sprintf("%d", ghUser.ID)),
+		GithubId:  proto.String(githubID),
 		Login:     proto.String(ghUser.Login),
 		Name:      proto.String(ghUser.Name),
 		AvatarUrl: proto.String(ghUser.AvatarURL),
 		Email:     proto.String(ghUser.Email),
 		CreatedAt: proto.Int64(now),
 	}
-	if err := h.db.Users().Create(r.Context(), user); err != nil {
-		// Already exists — that's fine, just update
-		_ = h.db.Users().Save(r.Context(), user)
+	if err := tenantDB.Users().Create(r.Context(), user); err != nil {
+		_ = tenantDB.Users().Save(r.Context(), user)
 	}
 
-	// Create session
 	sessionID := generateToken()
 	session := &storev1.Session{
 		Id:        proto.String(sessionID),
@@ -140,24 +192,23 @@ func (h *Handler) handleCallback(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: proto.Int64(now),
 		ExpiresAt: proto.Int64(now + int64(sessionMaxAge)*1000),
 	}
-	if err := h.db.Sessions().Create(r.Context(), session); err != nil {
+	if err := tenantDB.Sessions().Create(r.Context(), session); err != nil {
 		slog.Error("session create failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
+	// Cookie encodes tenant: "org_12345678:session_token"
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
-		Value:    sessionID,
+		Value:    tenantName + ":" + sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   sessionMaxAge,
 	})
 
-	slog.Info("github login", "user", ghUser.Login, "id", ghUser.ID)
-
-	// Redirect to frontend
+	slog.Info("github login", "user", ghUser.Login, "id", ghUser.ID, "tenant", tenantName)
 	http.Redirect(w, r, h.frontendURL, http.StatusTemporaryRedirect)
 }
 
@@ -173,7 +224,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
-	user, err := h.resolveUser(r)
+	user, _, err := h.resolveFromCookie(r)
 	if err != nil {
 		slog.Warn("auth/me failed", "error", err)
 		http.Error(w, "not authenticated", http.StatusUnauthorized)
@@ -189,39 +240,36 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) resolveUser(r *http.Request) (*storev1.User, error) {
+// resolveFromCookie parses the "tenant:session" cookie, opens the tenant DB,
+// and returns the user + tenant DB.
+func (h *Handler) resolveFromCookie(r *http.Request) (*storev1.User, *storage.DB, error) {
 	cookie, err := r.Cookie("session")
 	if err != nil {
-		return nil, errors.New("no session cookie")
+		return nil, nil, errors.New("no session cookie")
 	}
-	return h.ResolveSession(r.Context(), cookie.Value)
-}
+	tenantName, sessionID, ok := strings.Cut(cookie.Value, ":")
+	if !ok || tenantName == "" || sessionID == "" {
+		return nil, nil, errors.New("malformed session cookie")
+	}
 
-// ResolveSession looks up a session and returns the user.
-func (h *Handler) ResolveSession(ctx context.Context, sessionID string) (*storev1.User, error) {
-	session, err := h.db.Sessions().Get(ctx, sessionID)
+	tenantDB, err := storage.NewTenantDB(h.rawDB, tenantName)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("open tenant: %w", err)
+	}
+
+	session, err := tenantDB.Sessions().Get(r.Context(), sessionID)
+	if err != nil {
+		return nil, nil, err
 	}
 	if session.GetExpiresAt() > 0 && session.GetExpiresAt() < time.Now().UnixMilli() {
-		return nil, errors.New("session expired")
+		return nil, nil, errors.New("session expired")
 	}
-	return h.db.Users().Get(ctx, session.GetUserId())
-}
 
-func (h *Handler) cleanupStates() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		h.mu.Lock()
-		now := time.Now()
-		for k, exp := range h.states {
-			if now.After(exp) {
-				delete(h.states, k)
-			}
-		}
-		h.mu.Unlock()
+	user, err := tenantDB.Users().Get(r.Context(), session.GetUserId())
+	if err != nil {
+		return nil, nil, err
 	}
+	return user, tenantDB, nil
 }
 
 // UserFromContext returns the authenticated user from the context, or nil.
@@ -241,11 +289,12 @@ func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if req.Spec().IsClient {
 			return next(ctx, req)
 		}
-		user, err := a.resolveFromHeaders(ctx, req.Header())
+		user, tenantDB, err := a.resolveFromHeaders(ctx, req.Header())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 		}
 		ctx = context.WithValue(ctx, contextKey{}, user)
+		ctx = storage.WithDB(ctx, tenantDB)
 		return next(ctx, req)
 	}
 }
@@ -256,36 +305,32 @@ func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 
 func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		user, err := a.resolveFromHeaders(ctx, conn.RequestHeader())
+		user, tenantDB, err := a.resolveFromHeaders(ctx, conn.RequestHeader())
 		if err != nil {
 			return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 		}
 		ctx = context.WithValue(ctx, contextKey{}, user)
+		ctx = storage.WithDB(ctx, tenantDB)
 		return next(ctx, conn)
 	}
 }
 
-func (a *authInterceptor) resolveFromHeaders(ctx context.Context, headers http.Header) (*storev1.User, error) {
+func (a *authInterceptor) resolveFromHeaders(ctx context.Context, headers http.Header) (*storev1.User, *storage.DB, error) {
 	// Try API key auth first (Authorization: Bearer mgn_...)
 	if authHeader := headers.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer mgn_") {
-		return a.resolveFromAPIKey(ctx, strings.TrimPrefix(authHeader, "Bearer "))
+		return a.resolveFromAPIKey(ctx, headers, strings.TrimPrefix(authHeader, "Bearer "))
 	}
 
 	// Fall back to session cookie
 	raw := headers.Get("Cookie")
 	if raw == "" {
-		return nil, errors.New("no cookie")
+		return nil, nil, errors.New("no cookie")
 	}
 	fakeReq := &http.Request{Header: http.Header{"Cookie": {raw}}}
-	cookie, err := fakeReq.Cookie("session")
-	if err != nil {
-		return nil, err
-	}
-	return a.handler.ResolveSession(ctx, cookie.Value)
+	return a.handler.resolveFromCookie(fakeReq)
 }
 
-// apiKeyCache caches verified API key → user mappings to avoid FDB lookups per request.
-// TTL-based: entries expire after 60 seconds, forcing re-verification (catches revocations).
+// apiKeyCache caches verified API key → (user, tenantDB) mappings.
 var (
 	apiKeyCacheMu sync.RWMutex
 	apiKeyCacheM  = make(map[string]*apiKeyCacheEntry)
@@ -293,28 +338,39 @@ var (
 
 type apiKeyCacheEntry struct {
 	user      *storev1.User
+	tenantDB  *storage.DB
 	expiresAt time.Time
 }
 
-func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) (*storev1.User, error) {
+func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, headers http.Header, rawKey string) (*storev1.User, *storage.DB, error) {
 	h := sha256.Sum256([]byte(rawKey))
 	keyHash := hex.EncodeToString(h[:])
 
-	// Check cache first (avoids FDB read per request).
 	apiKeyCacheMu.RLock()
 	if entry, ok := apiKeyCacheM[keyHash]; ok && time.Now().Before(entry.expiresAt) {
 		apiKeyCacheMu.RUnlock()
-		return entry.user, nil
+		return entry.user, entry.tenantDB, nil
 	}
 	apiKeyCacheMu.RUnlock()
 
-	// Cache miss or expired — verify against FDB.
-	apiKey, err := a.handler.db.ApiKeys().GetByKeyHash(ctx, keyHash)
+	// API keys need a tenant context. The tenant name must be in the request.
+	// For now, require X-Tenant-Name header with API key auth.
+	tenantName := headers.Get("X-Tenant-Name")
+	if tenantName == "" {
+		return nil, nil, errors.New("api key auth requires X-Tenant-Name header")
+	}
+
+	tenantDB, err := storage.NewTenantDB(a.handler.rawDB, tenantName)
 	if err != nil {
-		return nil, errors.New("invalid api key")
+		return nil, nil, fmt.Errorf("open tenant: %w", err)
+	}
+
+	apiKey, err := tenantDB.ApiKeys().GetByKeyHash(ctx, keyHash)
+	if err != nil {
+		return nil, nil, errors.New("invalid api key")
 	}
 	if apiKey.GetRevoked() {
-		return nil, errors.New("api key revoked")
+		return nil, nil, errors.New("api key revoked")
 	}
 	user := &storev1.User{
 		Id:    proto.String("apikey:" + apiKey.GetId()),
@@ -322,12 +378,11 @@ func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) 
 		Name:  proto.String(apiKey.GetName()),
 	}
 
-	// Cache for 60 seconds.
 	apiKeyCacheMu.Lock()
-	apiKeyCacheM[keyHash] = &apiKeyCacheEntry{user: user, expiresAt: time.Now().Add(10 * time.Minute)}
+	apiKeyCacheM[keyHash] = &apiKeyCacheEntry{user: user, tenantDB: tenantDB, expiresAt: time.Now().Add(10 * time.Minute)}
 	apiKeyCacheMu.Unlock()
 
-	return user, nil
+	return user, tenantDB, nil
 }
 
 // --- GitHub API ---

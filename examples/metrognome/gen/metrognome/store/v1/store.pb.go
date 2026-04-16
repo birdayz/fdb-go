@@ -2542,8 +2542,291 @@ func (x *ApiKey) GetRevoked() bool {
 	return false
 }
 
+// OAuthState is a one-time-use CSRF token for the GitHub OAuth flow.
+// Created on /auth/login, verified + deleted on /auth/callback.
+// Lives in __system tenant.
+type OAuthState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	State         *string                `protobuf:"bytes,1,opt,name=state" json:"state,omitempty"`                           // random token
+	ExpiresAt     *int64                 `protobuf:"varint,2,opt,name=expires_at,json=expiresAt" json:"expires_at,omitempty"` // unix millis
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OAuthState) Reset() {
+	*x = OAuthState{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OAuthState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OAuthState) ProtoMessage() {}
+
+func (x *OAuthState) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OAuthState.ProtoReflect.Descriptor instead.
+func (*OAuthState) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *OAuthState) GetState() string {
+	if x != nil && x.State != nil {
+		return *x.State
+	}
+	return ""
+}
+
+func (x *OAuthState) GetExpiresAt() int64 {
+	if x != nil && x.ExpiresAt != nil {
+		return *x.ExpiresAt
+	}
+	return 0
+}
+
+// Tenant represents an organization's billing workspace.
+// Lives in __system tenant.
+type Tenant struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          *string                `protobuf:"bytes,1,opt,name=name" json:"name,omitempty"`                                          // FDB tenant name (e.g. "org_12345678")
+	DisplayName   *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName" json:"display_name,omitempty"`         // human-readable (e.g. "Anthropic")
+	OwnerGithubId *string                `protobuf:"bytes,3,opt,name=owner_github_id,json=ownerGithubId" json:"owner_github_id,omitempty"` // GitHub ID of creator
+	CreatedAt     *int64                 `protobuf:"varint,4,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Tenant) Reset() {
+	*x = Tenant{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Tenant) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Tenant) ProtoMessage() {}
+
+func (x *Tenant) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Tenant.ProtoReflect.Descriptor instead.
+func (*Tenant) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *Tenant) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+func (x *Tenant) GetDisplayName() string {
+	if x != nil && x.DisplayName != nil {
+		return *x.DisplayName
+	}
+	return ""
+}
+
+func (x *Tenant) GetOwnerGithubId() string {
+	if x != nil && x.OwnerGithubId != nil {
+		return *x.OwnerGithubId
+	}
+	return ""
+}
+
+func (x *Tenant) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
+// TenantMember maps a GitHub user to their org tenant.
+// Lives in __system tenant.
+type TenantMember struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GithubId      *string                `protobuf:"bytes,1,opt,name=github_id,json=githubId" json:"github_id,omitempty"`       // GitHub user ID (string, e.g. "12345678")
+	TenantName    *string                `protobuf:"bytes,2,opt,name=tenant_name,json=tenantName" json:"tenant_name,omitempty"` // FDB tenant name they belong to
+	Role          *string                `protobuf:"bytes,3,opt,name=role" json:"role,omitempty"`                               // "owner" or "member"
+	JoinedAt      *int64                 `protobuf:"varint,4,opt,name=joined_at,json=joinedAt" json:"joined_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TenantMember) Reset() {
+	*x = TenantMember{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantMember) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantMember) ProtoMessage() {}
+
+func (x *TenantMember) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantMember.ProtoReflect.Descriptor instead.
+func (*TenantMember) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *TenantMember) GetGithubId() string {
+	if x != nil && x.GithubId != nil {
+		return *x.GithubId
+	}
+	return ""
+}
+
+func (x *TenantMember) GetTenantName() string {
+	if x != nil && x.TenantName != nil {
+		return *x.TenantName
+	}
+	return ""
+}
+
+func (x *TenantMember) GetRole() string {
+	if x != nil && x.Role != nil {
+		return *x.Role
+	}
+	return ""
+}
+
+func (x *TenantMember) GetJoinedAt() int64 {
+	if x != nil && x.JoinedAt != nil {
+		return *x.JoinedAt
+	}
+	return 0
+}
+
+// Invite is a pending invitation to join a tenant.
+// Lives in __system tenant.
+type Invite struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Code            *string                `protobuf:"bytes,1,opt,name=code" json:"code,omitempty"`                               // random invite code
+	TenantName      *string                `protobuf:"bytes,2,opt,name=tenant_name,json=tenantName" json:"tenant_name,omitempty"` // which tenant to join
+	InviterGithubId *string                `protobuf:"bytes,3,opt,name=inviter_github_id,json=inviterGithubId" json:"inviter_github_id,omitempty"`
+	Role            *string                `protobuf:"bytes,4,opt,name=role" json:"role,omitempty"` // role to assign on accept
+	ExpiresAt       *int64                 `protobuf:"varint,5,opt,name=expires_at,json=expiresAt" json:"expires_at,omitempty"`
+	CreatedAt       *int64                 `protobuf:"varint,6,opt,name=created_at,json=createdAt" json:"created_at,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Invite) Reset() {
+	*x = Invite{}
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Invite) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Invite) ProtoMessage() {}
+
+func (x *Invite) ProtoReflect() protoreflect.Message {
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Invite.ProtoReflect.Descriptor instead.
+func (*Invite) Descriptor() ([]byte, []int) {
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *Invite) GetCode() string {
+	if x != nil && x.Code != nil {
+		return *x.Code
+	}
+	return ""
+}
+
+func (x *Invite) GetTenantName() string {
+	if x != nil && x.TenantName != nil {
+		return *x.TenantName
+	}
+	return ""
+}
+
+func (x *Invite) GetInviterGithubId() string {
+	if x != nil && x.InviterGithubId != nil {
+		return *x.InviterGithubId
+	}
+	return ""
+}
+
+func (x *Invite) GetRole() string {
+	if x != nil && x.Role != nil {
+		return *x.Role
+	}
+	return ""
+}
+
+func (x *Invite) GetExpiresAt() int64 {
+	if x != nil && x.ExpiresAt != nil {
+		return *x.ExpiresAt
+	}
+	return 0
+}
+
+func (x *Invite) GetCreatedAt() int64 {
+	if x != nil && x.CreatedAt != nil {
+		return *x.CreatedAt
+	}
+	return 0
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
+// NOTE: This union is used by BOTH the __system tenant store and the per-org
+// billing stores. Each store only uses the record types relevant to it.
 type UnionDescriptor struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	XCustomer     *Customer              `protobuf:"bytes,1,opt,name=_Customer,json=Customer" json:"_Customer,omitempty"`
@@ -2563,13 +2846,17 @@ type UnionDescriptor struct {
 	XRateCard     *RateCard              `protobuf:"bytes,15,opt,name=_RateCard,json=RateCard" json:"_RateCard,omitempty"`
 	XRate         *Rate                  `protobuf:"bytes,16,opt,name=_Rate,json=Rate" json:"_Rate,omitempty"`
 	XApiKey       *ApiKey                `protobuf:"bytes,17,opt,name=_ApiKey,json=ApiKey" json:"_ApiKey,omitempty"`
+	XOAuthState   *OAuthState            `protobuf:"bytes,18,opt,name=_OAuthState,json=OAuthState" json:"_OAuthState,omitempty"`
+	XTenant       *Tenant                `protobuf:"bytes,19,opt,name=_Tenant,json=Tenant" json:"_Tenant,omitempty"`
+	XTenantMember *TenantMember          `protobuf:"bytes,20,opt,name=_TenantMember,json=TenantMember" json:"_TenantMember,omitempty"`
+	XInvite       *Invite                `protobuf:"bytes,21,opt,name=_Invite,json=Invite" json:"_Invite,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UnionDescriptor) Reset() {
 	*x = UnionDescriptor{}
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2581,7 +2868,7 @@ func (x *UnionDescriptor) String() string {
 func (*UnionDescriptor) ProtoMessage() {}
 
 func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
-	mi := &file_metrognome_store_v1_store_proto_msgTypes[26]
+	mi := &file_metrognome_store_v1_store_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2594,7 +2881,7 @@ func (x *UnionDescriptor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnionDescriptor.ProtoReflect.Descriptor instead.
 func (*UnionDescriptor) Descriptor() ([]byte, []int) {
-	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{26}
+	return file_metrognome_store_v1_store_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *UnionDescriptor) GetXCustomer() *Customer {
@@ -2712,6 +2999,34 @@ func (x *UnionDescriptor) GetXRate() *Rate {
 func (x *UnionDescriptor) GetXApiKey() *ApiKey {
 	if x != nil {
 		return x.XApiKey
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXOAuthState() *OAuthState {
+	if x != nil {
+		return x.XOAuthState
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXTenant() *Tenant {
+	if x != nil {
+		return x.XTenant
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXTenantMember() *TenantMember {
+	if x != nil {
+		return x.XTenantMember
+	}
+	return nil
+}
+
+func (x *UnionDescriptor) GetXInvite() *Invite {
+	if x != nil {
+		return x.XInvite
 	}
 	return nil
 }
@@ -2938,7 +3253,34 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"created_at\x18\x06 \x01(\x03R\tcreatedAt\x12 \n" +
 	"\flast_used_at\x18\a \x01(\x03R\n" +
 	"lastUsedAt\x12\x18\n" +
-	"\arevoked\x18\b \x01(\bR\arevoked\"\xd1\a\n" +
+	"\arevoked\x18\b \x01(\bR\arevoked\"A\n" +
+	"\n" +
+	"OAuthState\x12\x14\n" +
+	"\x05state\x18\x01 \x01(\tR\x05state\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x02 \x01(\x03R\texpiresAt\"\x86\x01\n" +
+	"\x06Tenant\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
+	"\x0fowner_github_id\x18\x03 \x01(\tR\rownerGithubId\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\x03R\tcreatedAt\"}\n" +
+	"\fTenantMember\x12\x1b\n" +
+	"\tgithub_id\x18\x01 \x01(\tR\bgithubId\x12\x1f\n" +
+	"\vtenant_name\x18\x02 \x01(\tR\n" +
+	"tenantName\x12\x12\n" +
+	"\x04role\x18\x03 \x01(\tR\x04role\x12\x1b\n" +
+	"\tjoined_at\x18\x04 \x01(\x03R\bjoinedAt\"\xbb\x01\n" +
+	"\x06Invite\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x1f\n" +
+	"\vtenant_name\x18\x02 \x01(\tR\n" +
+	"tenantName\x12*\n" +
+	"\x11inviter_github_id\x18\x03 \x01(\tR\x0finviterGithubId\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x05 \x01(\x03R\texpiresAt\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\x03R\tcreatedAt\"\xc7\t\n" +
 	"\x0fUnionDescriptor\x12:\n" +
 	"\t_Customer\x18\x01 \x01(\v2\x1d.metrognome.store.v1.CustomerR\bCustomer\x121\n" +
 	"\x06_Meter\x18\x02 \x01(\v2\x1a.metrognome.store.v1.MeterR\x05Meter\x12.\n" +
@@ -2959,7 +3301,12 @@ const file_metrognome_store_v1_store_proto_rawDesc = "" +
 	"\b_Product\x18\x0e \x01(\v2\x1c.metrognome.store.v1.ProductR\aProduct\x12:\n" +
 	"\t_RateCard\x18\x0f \x01(\v2\x1d.metrognome.store.v1.RateCardR\bRateCard\x12.\n" +
 	"\x05_Rate\x18\x10 \x01(\v2\x19.metrognome.store.v1.RateR\x04Rate\x124\n" +
-	"\a_ApiKey\x18\x11 \x01(\v2\x1b.metrognome.store.v1.ApiKeyR\x06ApiKey*\xbd\x01\n" +
+	"\a_ApiKey\x18\x11 \x01(\v2\x1b.metrognome.store.v1.ApiKeyR\x06ApiKey\x12@\n" +
+	"\v_OAuthState\x18\x12 \x01(\v2\x1f.metrognome.store.v1.OAuthStateR\n" +
+	"OAuthState\x124\n" +
+	"\a_Tenant\x18\x13 \x01(\v2\x1b.metrognome.store.v1.TenantR\x06Tenant\x12F\n" +
+	"\r_TenantMember\x18\x14 \x01(\v2!.metrognome.store.v1.TenantMemberR\fTenantMember\x124\n" +
+	"\a_Invite\x18\x15 \x01(\v2\x1b.metrognome.store.v1.InviteR\x06Invite*\xbd\x01\n" +
 	"\x0fAggregationType\x12 \n" +
 	"\x1cAGGREGATION_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16AGGREGATION_TYPE_COUNT\x10\x01\x12\x18\n" +
@@ -3009,7 +3356,7 @@ func file_metrognome_store_v1_store_proto_rawDescGZIP() []byte {
 
 var (
 	file_metrognome_store_v1_store_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 27)
+	file_metrognome_store_v1_store_proto_msgTypes  = make([]protoimpl.MessageInfo, 31)
 	file_metrognome_store_v1_store_proto_goTypes   = []any{
 		(AggregationType)(0),    // 0: metrognome.store.v1.AggregationType
 		(BillingPeriod)(0),      // 1: metrognome.store.v1.BillingPeriod
@@ -3043,9 +3390,14 @@ var (
 		(*User)(nil),            // 29: metrognome.store.v1.User
 		(*Session)(nil),         // 30: metrognome.store.v1.Session
 		(*ApiKey)(nil),          // 31: metrognome.store.v1.ApiKey
-		(*UnionDescriptor)(nil), // 32: metrognome.store.v1.UnionDescriptor
+		(*OAuthState)(nil),      // 32: metrognome.store.v1.OAuthState
+		(*Tenant)(nil),          // 33: metrognome.store.v1.Tenant
+		(*TenantMember)(nil),    // 34: metrognome.store.v1.TenantMember
+		(*Invite)(nil),          // 35: metrognome.store.v1.Invite
+		(*UnionDescriptor)(nil), // 36: metrognome.store.v1.UnionDescriptor
 	}
 )
+
 var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	0,  // 0: metrognome.store.v1.Meter.aggregation_type:type_name -> metrognome.store.v1.AggregationType
 	10, // 1: metrognome.store.v1.Charge.pricing:type_name -> metrognome.store.v1.PricingModel
@@ -3081,11 +3433,15 @@ var file_metrognome_store_v1_store_proto_depIdxs = []int32{
 	27, // 31: metrognome.store.v1.UnionDescriptor._RateCard:type_name -> metrognome.store.v1.RateCard
 	28, // 32: metrognome.store.v1.UnionDescriptor._Rate:type_name -> metrognome.store.v1.Rate
 	31, // 33: metrognome.store.v1.UnionDescriptor._ApiKey:type_name -> metrognome.store.v1.ApiKey
-	34, // [34:34] is the sub-list for method output_type
-	34, // [34:34] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	32, // 34: metrognome.store.v1.UnionDescriptor._OAuthState:type_name -> metrognome.store.v1.OAuthState
+	33, // 35: metrognome.store.v1.UnionDescriptor._Tenant:type_name -> metrognome.store.v1.Tenant
+	34, // 36: metrognome.store.v1.UnionDescriptor._TenantMember:type_name -> metrognome.store.v1.TenantMember
+	35, // 37: metrognome.store.v1.UnionDescriptor._Invite:type_name -> metrognome.store.v1.Invite
+	38, // [38:38] is the sub-list for method output_type
+	38, // [38:38] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_metrognome_store_v1_store_proto_init() }
@@ -3107,7 +3463,7 @@ func file_metrognome_store_v1_store_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_metrognome_store_v1_store_proto_rawDesc), len(file_metrognome_store_v1_store_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   27,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

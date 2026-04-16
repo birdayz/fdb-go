@@ -288,8 +288,47 @@ message ApiKey {
   optional bool revoked = 8;
 }
 
+// OAuthState is a one-time-use CSRF token for the GitHub OAuth flow.
+// Created on /auth/login, verified + deleted on /auth/callback.
+// Lives in __system tenant.
+message OAuthState {
+  optional string state = 1;       // random token
+  optional int64 expires_at = 2;   // unix millis
+}
+
+// Tenant represents an organization's billing workspace.
+// Lives in __system tenant.
+message Tenant {
+  optional string name = 1;          // FDB tenant name (e.g. "org_12345678")
+  optional string display_name = 2;  // human-readable (e.g. "Anthropic")
+  optional string owner_github_id = 3; // GitHub ID of creator
+  optional int64 created_at = 4;
+}
+
+// TenantMember maps a GitHub user to their org tenant.
+// Lives in __system tenant.
+message TenantMember {
+  optional string github_id = 1;     // GitHub user ID (string, e.g. "12345678")
+  optional string tenant_name = 2;   // FDB tenant name they belong to
+  optional string role = 3;          // "owner" or "member"
+  optional int64 joined_at = 4;
+}
+
+// Invite is a pending invitation to join a tenant.
+// Lives in __system tenant.
+message Invite {
+  optional string code = 1;          // random invite code
+  optional string tenant_name = 2;   // which tenant to join
+  optional string inviter_github_id = 3;
+  optional string role = 4;          // role to assign on accept
+  optional int64 expires_at = 5;
+  optional int64 created_at = 6;
+}
+
 // UnionDescriptor — required by FDB Record Layer for record type discrimination.
 // Field numbers determine the record type key stored in FDB tuples.
+// NOTE: This union is used by BOTH the __system tenant store and the per-org
+// billing stores. Each store only uses the record types relevant to it.
 message UnionDescriptor {
   optional Customer _Customer = 1;
   optional Meter _Meter = 2;
@@ -308,4 +347,8 @@ message UnionDescriptor {
   optional RateCard _RateCard = 15;
   optional Rate _Rate = 16;
   optional ApiKey _ApiKey = 17;
+  optional OAuthState _OAuthState = 18;
+  optional Tenant _Tenant = 19;
+  optional TenantMember _TenantMember = 20;
+  optional Invite _Invite = 21;
 }

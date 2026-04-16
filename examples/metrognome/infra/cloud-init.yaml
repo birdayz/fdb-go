@@ -120,6 +120,8 @@ write_files:
           if [ "$NODE_COUNT" -ge 3 ]; then
             fdbcli --exec "configure triple" 2>/dev/null && echo "Upgraded to triple redundancy" || true
           fi
+          # Enable tenant mode for multi-tenant isolation
+          fdbcli --exec "configure tenant_mode=optional_experimental" 2>/dev/null && echo "Tenant mode enabled" || true
           exit 0
         fi
         sleep 2

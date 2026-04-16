@@ -1232,6 +1232,7 @@ var (
 		(*BpsPricing)(nil),          // 19: metrognome.v1.BpsPricing
 	}
 )
+
 var file_metrognome_v1_plan_proto_depIdxs = []int32{
 	10, // 0: metrognome.v1.CreatePlanResponse.plan:type_name -> metrognome.v1.Plan
 	10, // 1: metrognome.v1.GetPlanResponse.plan:type_name -> metrognome.v1.Plan

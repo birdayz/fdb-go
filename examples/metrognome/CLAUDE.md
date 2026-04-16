@@ -5,12 +5,35 @@ Clone of [Metronome](https://metronome.com/) — a billing gnome that counts eve
 
 ## Stack
 
-- **API**: ConnectRPC (8 services, proto-first, browser-compatible)
-- **Storage**: FDB Record Layer Go (native client, no CGo)
+- **API**: ConnectRPC (11 services, proto-first, browser-compatible)
+- **Storage**: FDB Record Layer Go (native pure Go client, no CGo)
+- **Multi-tenancy**: FDB tenants — hard key-space isolation per org
+- **Auth**: GitHub OAuth, FDB-backed sessions + CSRF state
 - **Event Bus**: Kafka planned (franz-go, exactly-once via FDB-transactional offsets)
-- **Build**: Bazel 9 (MODULE.bazel, gazelle)
-- **Frontend**: React 19 + Vite + Tailwind + shadcn/ui (planned)
+- **Build**: Bazel 9 (MODULE.bazel, gazelle, rules_js for frontend)
+- **Frontend**: React 19 + Vite + Tailwind (pure CSS charts, no chart library)
+- **Infra**: Hetzner Cloud (3 nodes), Envoy reverse proxy, OpenTofu
 - **Testing**: Go testing + gomega + testcontainers (real FDB)
+
+## Multi-Tenant Architecture
+
+```
+__system tenant (SystemDB)
+├── OAuthState    — pre-login CSRF tokens (one-time-use, FDB-backed)
+├── Tenant        — org metadata (name, owner, created_at)
+├── TenantMember  — github_id → tenant_name mapping
+└── Invite        — pending org invitations
+
+org_<github_id> tenant (per-user billing DB)
+├── User, Session — auth within the org
+├── Customer, Meter, Plan, Contract, Charge
+├── UsageEvent, Invoice, Credit, Alert, ApiKey
+└── all billing data — physically isolated by FDB
+```
+
+- Cookie format: `org_<id>:<session_token>` — encodes tenant, no cross-tenant lookup on hot path
+- `DB.effective(ctx)` transparently resolves tenant DB from request context — zero changes to services
+- Auto-seed on first login: 4 meters, 3 customers, 2 plans, ~6K events, 3 invoices
 
 ## Running
 
