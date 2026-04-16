@@ -110,10 +110,35 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 					return m.insertScalarEntry(val, newRecord)
 				}
 			}
+			// DirectPacker: encode fields straight into FDB key bytes.
+			// Avoids scalarToInterface boxing (27% of allocs at 34K events/sec).
+			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
+				pk := tuple.GetPacker()
+				if dp.PackDirect(pk, newRecord, newRecord.Record) {
+					trimmedPK, pkErr := m.index.TrimPrimaryKey(newRecord.PrimaryKey)
+					if pkErr == nil {
+						var keyBytes []byte
+						if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
+							pk.EncodeTuple(trimmedPK)
+							keyBytes = pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes())
+						} else {
+							pk.EncodeTuple(trimmedPK)
+							var buf []byte
+							keyBytes = pk.AppendInto(&buf, m.indexSubspace.Bytes())
+						}
+						tuple.PutPacker(pk)
+						if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+							return err
+						}
+						m.tx.SetBytes(keyBytes, emptyTuplePacked)
+						return nil
+					}
+				}
+				tuple.PutPacker(pk)
+			}
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 				values, err := fe.EvaluateFlat(newRecord, newRecord.Record)
 				if err == nil {
-					// Zero-alloc: reinterpret []any as tuple.Tuple (same layout).
 					key := *(*tuple.Tuple)(unsafe.Pointer(&values))
 					entry := indexEntry{key: key, primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
 					return m.insertSingleEntry(entry, newRecord)
