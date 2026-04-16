@@ -79,10 +79,11 @@ func (c *rywCache) allocBytes(n int) []byte {
 }
 
 // reset clears all cached state.
+// Reuses the writes map to avoid re-allocation on retry.
 func (c *rywCache) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.writes = nil
+	clear(c.writes) // reuse map, avoid make() on next set()
 	c.sortedKeys = nil
 	c.cleared = nil
 	c.byteBuf = c.byteBuf[:0]

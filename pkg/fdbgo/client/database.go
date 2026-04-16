@@ -526,6 +526,8 @@ func (d *Database) CreateTransaction() *Transaction {
 		tenantId:     NoTenantID,
 		creationTime: time.Now(),
 	}
+	// Pre-allocate RYW writes map to avoid make() on first Set.
+	tx.ryw.writes = make(map[string]rywEntry, 4)
 	// Apply database-level defaults (matches C++ applyTxDefaults).
 	td := &d.db.txDefaults
 	if td.Timeout > 0 {
