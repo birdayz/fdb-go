@@ -57,7 +57,7 @@ jobs:
 
       - name: Upload coverage report as artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: test-report.html
