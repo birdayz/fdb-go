@@ -1208,7 +1208,7 @@ func (oi *OnlineIndexer) allTargetIndexesIdempotent() bool {
 			return false
 		}
 	}
-	return isIndexTypeIdempotent(oi.primaryIndex().Type)
+	return true
 }
 
 // shouldIndexRecordForIndex checks if a record should be indexed by a specific
