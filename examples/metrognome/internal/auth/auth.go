@@ -324,7 +324,7 @@ func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) 
 
 	// Cache for 60 seconds.
 	apiKeyCacheMu.Lock()
-	apiKeyCacheM[keyHash] = &apiKeyCacheEntry{user: user, expiresAt: time.Now().Add(60 * time.Second)}
+	apiKeyCacheM[keyHash] = &apiKeyCacheEntry{user: user, expiresAt: time.Now().Add(10 * time.Minute)}
 	apiKeyCacheMu.Unlock()
 
 	return user, nil

@@ -118,6 +118,9 @@ func main() {
 	// Set up HTTP mux with ConnectRPC services
 	mux := http.NewServeMux()
 
+	// pprof — delegate to DefaultServeMux where net/http/pprof registered
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+
 	// Health check (liveness)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
