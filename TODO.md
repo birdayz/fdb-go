@@ -102,6 +102,10 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 15 | ~~`commitDummyTransaction` no `CAUSAL_WRITE_RISKY`~~ | ~~PERF~~ FIXED | ~~Go doesn't set CAUSAL_WRITE_RISKY on dummy.~~ Fixed: `causalReadRisky = true` for faster GRV. swingshift-18. |
 | 16 | Topology polling vs push | DESIGN | C++ `monitorProxies` long-polls coordinator (push, ~0ms latency). Go polls at 5s steady-state with 200ms rapid bursts on failure. Adequate because proxy changes are rare and failed RPCs trigger immediate kicks. |
 | 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
+| 18 | Wrong-shard retry cap | CONSERVATIVE | Go caps at `MaxWrongShardRetries=50`. C++ loops unbounded (relies on 5s tx timeout). Go returns error earlier under extreme shard movement. |
+| 19 | GRV background refresh | PERF | Go refreshes at fixed 50ms. C++ uses adaptive delay `(grvDelay + latency)/2` (1ms-100ms range). Go is more aggressive (2x more RPCs under low load). |
+| 20 | Server selection | PERF | Go selects deterministic min-metric. C++ uses randomized best-of-two. Go loses tie-breaking under uniform load. |
+| 21 | Frame checksum | COSMETIC | Go uses XXH3-64. C++ uses CRC32. Both valid, same security properties. |
 
 ### Missing C API Surface (audit 2026-04-13)
 
