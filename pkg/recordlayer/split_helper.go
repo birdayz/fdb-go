@@ -125,9 +125,9 @@ func loadWithSplit(
 	splitLongRecords bool,
 	sizeInfo *sizeInfo,
 ) ([]byte, error) {
-	// Try unsplit first (most common case)
-	unsplitKeyTuple := appendToTuple(primaryKey, unsplitRecord)
-	unsplitKey := recordSubspace.Pack(unsplitKeyTuple)
+	// Try unsplit first (most common case).
+	// Use PackConcatWithPrefix to avoid allocating an intermediate concatenated tuple.
+	unsplitKey := tuple.PackConcatWithPrefix(recordSubspace.Bytes(), primaryKey, unsplitSuffix)
 
 	value, err := tx.Get(fdb.Key(unsplitKey)).Get()
 	if err != nil {
