@@ -1708,17 +1708,25 @@ func TestSetTransactionRetryLimit_Zero(t *testing.T) {
 		t.Fatalf("tx2: %v", err)
 	}
 
-	// tx1's commit should conflict and NOT retry (retryLimit=0).
+	// tx1's commit should conflict.
 	tx1.Set(key, []byte("tx1_value"))
-	err = tx1.Commit().Get()
-	if err == nil {
+	commitErr := tx1.Commit().Get()
+	if commitErr == nil {
 		t.Fatal("expected conflict error, got nil")
 	}
 
-	// The error should be a retryable FDB error (not_committed).
 	var fdbErr fdb.Error
-	if !errors.As(err, &fdbErr) {
-		t.Fatalf("expected fdb.Error, got %T: %v", err, err)
+	if !errors.As(commitErr, &fdbErr) {
+		t.Fatalf("expected fdb.Error, got %T: %v", commitErr, commitErr)
 	}
-	t.Logf("got expected error (retryLimit=0 prevented retry): code=%d, %v", fdbErr.Code, fdbErr)
+
+	// KEY ASSERTION: With retryLimit=0 applied, OnError() must reject the retry
+	// (returns the error instead of nil). Without the fix, retryLimit was silently
+	// dropped, OnError() would return nil (allowing unlimited retries), and this
+	// assertion would fail.
+	onErr := tx1.OnError(fdbErr)
+	if onErr == nil {
+		t.Fatal("OnError() returned nil: retryLimit=0 was NOT applied — the original bug is present")
+	}
+	t.Logf("OnError correctly rejected retry (retryLimit=0 applied): %v", onErr)
 }
