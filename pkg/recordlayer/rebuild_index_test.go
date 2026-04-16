@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/birdayz/fdb-record-layer-go/gen"
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -847,6 +848,94 @@ var _ = Describe("RebuildIndex", func() {
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("preserves WRITE_ONLY build progress on restart", func() {
+			ks := specSubspace()
+
+			// Phase 1: Create store with 300 records.
+			builder1 := baseMetaData()
+			builder1.SetRecordCountKey(&EmptyKeyExpression{})
+			md1, err := builder1.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 300; i++ {
+					_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i * 10))})
+					if err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 2: Add index, open with WriteOnlyIfTooLargePolicy → marks WRITE_ONLY.
+			priceIndex := NewIndex("Order$price", Field("price"))
+			builder2 := baseMetaData()
+			builder2.SetRecordCountKey(&EmptyKeyExpression{})
+			builder2.AddIndex("Order", priceIndex)
+			md2, err := builder2.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(WriteOnlyIfTooLargePolicy).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Phase 3: Partially build the index with OnlineIndexer (only 100 records).
+			indexer, err := NewOnlineIndexerBuilder().
+				SetDatabase(sharedDB).
+				SetMetaData(md2).
+				SetIndex(priceIndex).
+				SetSubspace(ks).
+				SetLimit(100).
+				SetTimeLimit(1 * time.Nanosecond). // force timeout after first chunk
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			partialCount, buildErr := indexer.BuildIndex(ctx)
+			// Should have built some records before timing out.
+			Expect(partialCount).To(BeNumerically(">", 0))
+			// May or may not have timed out — either way, some progress was made.
+			_ = buildErr
+
+			// Phase 4: Simulate crash and restart — re-open store with same policy.
+			// The WRITE_ONLY index should NOT be re-cleared. The RangeSet progress
+			// from Phase 3 should be preserved.
+			var progressBefore int64
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).
+					SetIndexRebuildPolicy(WriteOnlyIfTooLargePolicy).
+					CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				// Index should still be WRITE_ONLY (not re-cleared to DISABLED or inline-rebuilt).
+				Expect(store.IsIndexWriteOnly("Order$price")).To(BeTrue())
+				// RangeSet should show partial progress (not empty).
+				progressBefore, err = store.LoadBuildProgress(priceIndex)
+				Expect(err).NotTo(HaveOccurred())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			// Progress should be preserved from Phase 3.
+			Expect(progressBefore).To(BeNumerically(">", 0),
+				"build progress should be preserved after restart, not re-cleared")
 		})
 
 		It("rebuilds record counts when count key added to metadata", func() {
