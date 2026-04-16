@@ -540,6 +540,6 @@ See `TODO.md` for full gap analysis. Summary:
 - **FDB Client vs C**: 100% data-path API coverage (all `fdb_transaction_*` read/write/atomic/watch/conflict/versionstamp functions). 93 C binding unit tests ported. 6-subsystem C++ conformance audit (swingshift-18): transaction lifecycle, RYW, GetRange multi-shard, commit path, GRV+topology, connection/transport — **16/17 divergences fixed** (reset stale flags, commitDummy Set/backoff/CAUSAL_WRITE_RISKY, location cache invalidation, selfConflicts deep-copy, plus all prior fixes). 1 remaining divergence is a design choice (auto-reset after commit). Missing API: 6 observability/admin functions only.
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
 - **Test counts**: 2748 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
-- **Line coverage**: 80.0% overall, 82.8% (client), 81.3% (record layer). `just coverage` generates HTML report.
+- **Line coverage**: 80.2% overall, 84.2% (client), 81.8% (record layer). `just coverage` generates HTML report.
 - **Fuzz targets**: 24 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence)
 - **Performance**: Go wins 5/8 benchmarks vs Java Record Layer. Reads 27-39% faster, writes within 2-7%. See comparison table above.
