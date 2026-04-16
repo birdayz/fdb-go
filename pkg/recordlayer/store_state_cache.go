@@ -137,16 +137,34 @@ type storeSubspaceKeys struct {
 }
 
 // subspaceKeysCache caches derived subspace keys across all store instances.
-// Keyed by subspace raw prefix bytes. Safe for concurrent access.
-var subspaceKeysCache sync.Map
+// Uses map+RWMutex instead of sync.Map so the compiler can optimize
+// string([]byte) in map lookup (no allocation on the read path).
+var (
+	subspaceKeysCacheMu sync.RWMutex
+	subspaceKeysCacheM  = make(map[string]*storeSubspaceKeys)
+)
 
 func getCachedSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
-	key := string(ss.Bytes())
-	if v, ok := subspaceKeysCache.Load(key); ok {
-		return v.(*storeSubspaceKeys)
+	b := ss.Bytes()
+	// Read path: string([]byte) in map index is optimized by the compiler
+	// to avoid allocation (temporary string, not escaped).
+	subspaceKeysCacheMu.RLock()
+	if ks, ok := subspaceKeysCacheM[string(b)]; ok {
+		subspaceKeysCacheMu.RUnlock()
+		return ks
 	}
+	subspaceKeysCacheMu.RUnlock()
+
+	// Slow path: create and store.
 	ks := newStoreSubspaceKeys(ss)
-	subspaceKeysCache.Store(key, ks)
+	key := string(b) // must allocate for map store
+	subspaceKeysCacheMu.Lock()
+	if existing, ok := subspaceKeysCacheM[key]; ok {
+		subspaceKeysCacheMu.Unlock()
+		return existing // raced, use winner
+	}
+	subspaceKeysCacheM[key] = ks
+	subspaceKeysCacheMu.Unlock()
 	return ks
 }
 
