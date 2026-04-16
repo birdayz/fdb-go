@@ -143,12 +143,12 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateLeaderboardEntries(
 			// Update B-tree.
 			keyBytes := m.indexSubspace.Pack(entryKey)
 			if remove {
-				m.tx.Clear(fdb.Key(keyBytes))
+				m.tx.ClearBytes(keyBytes)
 			} else {
 				if err := checkKeyValueSizes(m.index, bestScore.entry.primaryKey, keyBytes, entryValue); err != nil {
 					return err
 				}
-				m.tx.Set(fdb.Key(keyBytes), entryValue)
+				m.tx.SetBytes(keyBytes, entryValue)
 			}
 
 			// Update RankedSet.
