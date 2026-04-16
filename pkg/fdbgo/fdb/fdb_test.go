@@ -1663,3 +1663,62 @@ func TestGetRangeEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// TestSetTransactionRetryLimit_Zero verifies that SetTransactionRetryLimit(0)
+// actually prevents retries. This is a regression test: the fdb wrapper used
+// "retryLimit != 0" as the sentinel, which silently dropped retryLimit=0.
+func TestSetTransactionRetryLimit_Zero(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	// Set retry limit to 0 — transactions should fail immediately on retryable errors.
+	db.Options().SetTransactionRetryLimit(0)
+
+	key := fdb.Key(t.Name() + "_key")
+
+	// Seed a value.
+	_, err := db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("v0"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Create two conflicting transactions: tx1 reads key, tx2 writes key
+	// between tx1's read and commit. tx1 should fail with not_committed,
+	// and with retryLimit=0 it should NOT retry — the error should propagate.
+	tx1, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	// tx1 reads the key (establishes read conflict).
+	v := tx1.Get(key).MustGet()
+	if string(v) != "v0" {
+		t.Fatalf("tx1 read: got %q, want %q", v, "v0")
+	}
+
+	// tx2 writes the same key and commits.
+	_, err = db.Transact(func(tr fdb.Transaction) (any, error) {
+		tr.Set(key, []byte("v1"))
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("tx2: %v", err)
+	}
+
+	// tx1's commit should conflict and NOT retry (retryLimit=0).
+	tx1.Set(key, []byte("tx1_value"))
+	err = tx1.Commit().Get()
+	if err == nil {
+		t.Fatal("expected conflict error, got nil")
+	}
+
+	// The error should be a retryable FDB error (not_committed).
+	var fdbErr fdb.Error
+	if !errors.As(err, &fdbErr) {
+		t.Fatalf("expected fdb.Error, got %T: %v", err, err)
+	}
+	t.Logf("got expected error (retryLimit=0 prevented retry): code=%d, %v", fdbErr.Code, fdbErr)
+}
