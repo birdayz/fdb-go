@@ -104,7 +104,7 @@ _Binding tester: 200+ seeds × 1000 ops = 0 failures. 78 C binding port tests pa
 | 17 | ~~Location cache over-invalidation~~ | ~~CONSERVATIVE~~ FIXED | ~~Go invalidates entire remaining scan range.~~ Fixed: now invalidates just `[shardBegin, shardEnd)` matching C++ `cx->invalidateCache(locations[shard].range)`. swingshift-18. |
 | 18 | Wrong-shard retry cap | CONSERVATIVE | Go caps at `MaxWrongShardRetries=50`. C++ loops unbounded (relies on 5s tx timeout). Go returns error earlier under extreme shard movement. |
 | 19 | GRV background refresh | PERF | Go refreshes at fixed 50ms. C++ uses adaptive delay `(grvDelay + latency)/2` (1ms-100ms range). Go is more aggressive (2x more RPCs under low load). |
-| 20 | Server selection | PERF/SCALE | Go selects deterministic min-metric. C++ uses randomized best-of-two (`LOAD_BALANCE_USE_BEST_OF_TWO_RANDOM`). Under uniform load all clients converge on same server — hotspot risk. Fix: add random weight for tie-breaking. |
+| 20 | ~~Server selection~~ | ~~PERF/SCALE~~ FIXED | ~~Go selects deterministic min-metric. C++ uses randomized best-of-two.~~ Fixed: "power of two random choices" — pick 2 random candidates, select lower metric. Matches C++ `LOAD_BALANCE_USE_BEST_OF_TWO_RANDOM`. dayshift-20. |
 | 21 | Frame checksum | COSMETIC | Go uses XXH3-64. C++ uses CRC32. Both valid, same security properties. |
 
 ### Missing C API Surface (audit 2026-04-13)
