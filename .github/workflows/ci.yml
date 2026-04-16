@@ -60,6 +60,18 @@ jobs:
       - name: Build, lint & test
         run: bazelisk test //... //cmd/fdb-stacktester/bindingtester:bindingtester_test --test_summary=detailed
 
+      - name: Race detector (FDB client + record layer)
+        run: |
+          bazelisk test \
+            //pkg/fdbgo/client:client_test \
+            //pkg/fdbgo/fdb:fdb_test \
+            //pkg/recordlayer:recordlayer_test \
+            //pkg/recordlayer/chaos:chaos_test \
+            //conformance:conformance_test \
+            --@rules_go//go/config:race \
+            --test_timeout=900 \
+            --test_summary=detailed
+
       - name: Run govulncheck
         continue-on-error: true
         run: |
