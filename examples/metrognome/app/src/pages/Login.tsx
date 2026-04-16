@@ -1,10 +1,11 @@
 import { loginWithGitHub } from "@/lib/auth";
+import { logoUrl } from "@/lib/logo";
 
 export function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-950 via-indigo-900 to-purple-900">
       <div className="bg-white rounded-2xl p-10 max-w-sm w-full text-center shadow-2xl shadow-indigo-950/30">
-        <img src="/logo.png" alt="Metrognome" className="w-20 h-20 mx-auto mb-5" />
+        <img src={logoUrl} alt="Metrognome" className="w-20 h-20 mx-auto mb-5" />
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Metrognome</h1>
         <p className="text-sm text-gray-500 mb-8">Usage-Based Billing Engine</p>
         <button

@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import type { User } from "@/lib/auth";
 import { logout } from "@/lib/auth";
+import { logoUrl } from "@/lib/logo";
 
 interface NavSection {
   label: string;
@@ -138,7 +139,7 @@ export function Layout({ user }: { user: User }) {
       <nav className="w-56 bg-[#1e1b4b] flex flex-col shrink-0">
         {/* Logo */}
         <div className="px-4 py-5 flex items-center gap-2.5">
-          <img src="/logo.png" alt="Metrognome" className="w-8 h-8 rounded-lg" />
+          <img src={logoUrl} alt="Metrognome" className="w-8 h-8 rounded-lg" />
           <div>
             <h1 className="text-[15px] font-bold text-white leading-none">
               Metrognome
