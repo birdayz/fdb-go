@@ -1,13 +1,10 @@
 import { loginWithGitHub } from "@/lib/auth";
-import { Activity } from "lucide-react";
 
 export function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-950 via-indigo-900 to-purple-900">
       <div className="bg-white rounded-2xl p-10 max-w-sm w-full text-center shadow-2xl shadow-indigo-950/30">
-        <div className="w-14 h-14 rounded-xl bg-indigo-600 flex items-center justify-center mx-auto mb-5">
-          <Activity className="w-7 h-7 text-white" />
-        </div>
+        <img src="/logo.png" alt="Metrognome" className="w-20 h-20 mx-auto mb-5" />
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Metrognome</h1>
         <p className="text-sm text-gray-500 mb-8">Usage-Based Billing Engine</p>
         <button

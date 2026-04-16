@@ -138,9 +138,7 @@ export function Layout({ user }: { user: User }) {
       <nav className="w-56 bg-[#1e1b4b] flex flex-col shrink-0">
         {/* Logo */}
         <div className="px-4 py-5 flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-indigo-500 flex items-center justify-center">
-            <Activity className="w-4 h-4 text-white" />
-          </div>
+          <img src="/logo.png" alt="Metrognome" className="w-8 h-8 rounded-lg" />
           <div>
             <h1 className="text-[15px] font-bold text-white leading-none">
               Metrognome
