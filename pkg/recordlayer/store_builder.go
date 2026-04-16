@@ -160,8 +160,16 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
 				}
 			case IndexStateWriteOnly:
-				if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
-					return fmt.Errorf("mark index %q write-only: %w", index.Name, err)
+				// If the index is already WRITE_ONLY (e.g. from a prior run that
+				// crashed before updating the header), don't re-clear — that would
+				// lose OnlineIndexer progress. Only clear if transitioning from
+				// a different state. Matches Java's checkRebuild which checks
+				// the current index state before clearing.
+				currentState := store.GetIndexState(index.Name)
+				if currentState != IndexStateWriteOnly {
+					if _, err := store.ClearAndMarkIndexWriteOnly(index.Name); err != nil {
+						return fmt.Errorf("mark index %q write-only: %w", index.Name, err)
+					}
 				}
 			case IndexStateDisabled:
 				if _, err := store.MarkIndexDisabled(index.Name); err != nil {
