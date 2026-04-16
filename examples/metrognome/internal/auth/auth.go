@@ -284,9 +284,31 @@ func (a *authInterceptor) resolveFromHeaders(ctx context.Context, headers http.H
 	return a.handler.ResolveSession(ctx, cookie.Value)
 }
 
+// apiKeyCache caches verified API key → user mappings to avoid FDB lookups per request.
+// TTL-based: entries expire after 60 seconds, forcing re-verification (catches revocations).
+var (
+	apiKeyCacheMu sync.RWMutex
+	apiKeyCacheM  = make(map[string]*apiKeyCacheEntry)
+)
+
+type apiKeyCacheEntry struct {
+	user      *storev1.User
+	expiresAt time.Time
+}
+
 func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) (*storev1.User, error) {
 	h := sha256.Sum256([]byte(rawKey))
 	keyHash := hex.EncodeToString(h[:])
+
+	// Check cache first (avoids FDB read per request).
+	apiKeyCacheMu.RLock()
+	if entry, ok := apiKeyCacheM[keyHash]; ok && time.Now().Before(entry.expiresAt) {
+		apiKeyCacheMu.RUnlock()
+		return entry.user, nil
+	}
+	apiKeyCacheMu.RUnlock()
+
+	// Cache miss or expired — verify against FDB.
 	apiKey, err := a.handler.db.ApiKeys().GetByKeyHash(ctx, keyHash)
 	if err != nil {
 		return nil, errors.New("invalid api key")
@@ -294,12 +316,18 @@ func (a *authInterceptor) resolveFromAPIKey(ctx context.Context, rawKey string) 
 	if apiKey.GetRevoked() {
 		return nil, errors.New("api key revoked")
 	}
-	// Return a synthetic user for API key access
-	return &storev1.User{
+	user := &storev1.User{
 		Id:    proto.String("apikey:" + apiKey.GetId()),
 		Login: proto.String("api:" + apiKey.GetName()),
 		Name:  proto.String(apiKey.GetName()),
-	}, nil
+	}
+
+	// Cache for 60 seconds.
+	apiKeyCacheMu.Lock()
+	apiKeyCacheM[keyHash] = &apiKeyCacheEntry{user: user, expiresAt: time.Now().Add(60 * time.Second)}
+	apiKeyCacheMu.Unlock()
+
+	return user, nil
 }
 
 // --- GitHub API ---
