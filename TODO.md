@@ -129,7 +129,7 @@ All data-path functions implemented. Missing are observability/admin only:
 
 - [x] **AutoContinuingCursor transaction_timed_out not retried** — Error 1031 escaped as non-retryable, killing large scans when FDB's 5-second timeout hit mid-page. Fixed: `isRetryableForContinuation()` treats 1031 as retryable in cursor context (creates new transaction from saved continuation). Java has the same gap. swingshift-18.
 
-- [ ] **ensureStoreStateLoaded error swallowing** — `sync.Once` never retries; a transient FDB error permanently puts the Build()-created store in "all indexes readable" mode. Java's `preloadRecordStoreStateAsync` propagates errors. Fix: change to return error + store it in `stateLoadErr`, propagate from callers that already return errors. 15 call sites, some in no-error APIs (GetIndexState, GetUserVersion). Needs careful API design — breaking change for some methods. Found nightshift-21 RFC 019 audit.
+- [x] **ensureStoreStateLoaded error swallowing (partial)** — Errors now captured in `stateLoadErr` and propagated from 5 error-returning callers (validateRecordUpdateAllowed, updateSecondaryIndexes, 3 batch methods). 7 no-error methods (GetIndexState, GetUserVersion, etc.) still use fallback — changing their signatures is a breaking API change. nightshift-21.
 
 ### Features
 
