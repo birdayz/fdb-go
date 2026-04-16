@@ -464,7 +464,14 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	// ~4 keys per record (record + VALUE + COUNT + SUM).
 	keyBuf := make([]byte, 0, len(records)*320)
 	store.batchKeyBuf = &keyBuf
-	defer func() { store.batchKeyBuf = nil }()
+	// Shared packer for DirectPacker — avoids GetPacker/PutPacker pool churn per index entry.
+	batchPk := tuple.GetPacker()
+	store.batchPacker = batchPk
+	defer func() {
+		store.batchKeyBuf = nil
+		store.batchPacker = nil
+		tuple.PutPacker(batchPk)
+	}()
 
 	for i, record := range records {
 		if record == nil {

@@ -112,12 +112,30 @@ func (s *fieldStep) packInto(a *tupleAppender, _ *FDBStoredRecord[proto.Message]
 		return nil
 	}
 
-	value := m.Get(fd)
-	result, err := scalarToInterface(fd, value)
-	if err != nil {
-		return err
+	// Typed append — avoids scalarToInterface any boxing.
+	switch fd.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		a.appendInt64(m.Get(fd).Int())
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		a.appendInt64(int64(m.Get(fd).Uint()))
+	case protoreflect.EnumKind:
+		a.appendInt64(int64(m.Get(fd).Enum()))
+	case protoreflect.StringKind:
+		a.appendString(m.Get(fd).String())
+	case protoreflect.FloatKind:
+		a.appendAny(float32(m.Get(fd).Float()))
+	case protoreflect.DoubleKind:
+		a.appendAny(m.Get(fd).Float())
+	default:
+		value := m.Get(fd)
+		result, err := scalarToInterface(fd, value)
+		if err != nil {
+			return err
+		}
+		a.appendAny(result)
 	}
-	a.appendAny(result)
 	return nil
 }
 

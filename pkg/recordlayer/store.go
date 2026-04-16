@@ -99,6 +99,7 @@ type FDBRecordStore struct {
 	versionChanged       bool                     // true if checkPossiblyRebuild detected a version change
 	maintainerCache      sync.Map                 // string → IndexMaintainer, cached per-transaction
 	batchKeyBuf          *[]byte                  // shared buffer for batch key packing (InsertBatch only)
+	batchPacker          *tuple.Packer            // shared packer for InsertBatch — avoids pool churn
 	skipUniquenessChecks bool                     // true in InsertBatch — caller guarantees unique keys
 }
 
