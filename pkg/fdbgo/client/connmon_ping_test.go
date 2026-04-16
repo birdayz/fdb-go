@@ -39,11 +39,12 @@ func TestConnectionMonitor_PingReplyArrives(t *testing.T) {
 	}
 
 	// Send a PING and wait for the reply.
-	replyToken, replyCh, cancelReply := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	defer replyHandle.Release()
 	pingEP := transport.WellKnownToken(transport.WLTokenPingPacket)
 	body := transport.BuildPingRequest(replyToken)
 	if err := conn.SendFrame(pingEP, body); err != nil {
-		cancelReply()
+		replyHandle.Cancel()
 		t.Fatalf("SendFrame: %v", err)
 	}
 
@@ -57,7 +58,7 @@ func TestConnectionMonitor_PingReplyArrives(t *testing.T) {
 		}
 		t.Logf("PING reply arrived: %d bytes", len(resp.Body))
 	case <-timer.C:
-		cancelReply()
+		replyHandle.Cancel()
 		t.Fatal("PING reply did not arrive within 5s — server may not understand our PingRequest format")
 	}
 }

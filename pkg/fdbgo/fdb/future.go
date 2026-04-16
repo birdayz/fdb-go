@@ -1,8 +1,6 @@
 package fdb
 
 import (
-	"sync"
-
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/client"
 )
 
@@ -103,21 +101,23 @@ func newPendingFutureByteSlice(pending *client.PendingGet) FutureByteSlice {
 // pendingFutureByteSlice resolves lazily — no goroutine, no channel.
 // Matches C++ client where futures are resolved by the network thread
 // and Get() blocks on the result directly.
+//
+// Single-goroutine: each future is created by tx.Get() and resolved by
+// the same goroutine. No sync.Once needed — plain bool flag suffices.
 type pendingFutureByteSlice struct {
 	pending  *client.PendingGet
-	once     sync.Once
 	val      []byte
 	err      error
 	resolved bool
 }
 
 func (f *pendingFutureByteSlice) resolve() {
-	f.once.Do(func() {
+	if !f.resolved {
 		var err error
 		f.val, err = f.pending.Resolve()
 		f.err = convertError(err)
 		f.resolved = true
-	})
+	}
 }
 
 func (f *pendingFutureByteSlice) Get() ([]byte, error) {

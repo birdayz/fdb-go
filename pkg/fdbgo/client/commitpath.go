@@ -41,7 +41,8 @@ func (tx *Transaction) commit(ctx context.Context) error {
 		return commitErr
 	}
 
-	replyToken, replyCh, cancelReply := conn.PrepareReply()
+	replyToken, replyCh, replyHandle := conn.PrepareReply()
+	defer replyHandle.Release()
 	body, poolBuf := buildCommitTransactionRequest(tx, replyToken)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
@@ -53,7 +54,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
 		marshalBufPool.Put(poolBuf)
-		cancelReply()
+		replyHandle.Cancel()
 		tx.db.handleConnError(proxy.Address)
 		tx.db.kickTopology()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
@@ -68,7 +69,7 @@ func (tx *Transaction) commit(ctx context.Context) error {
 	// Wait for reply or proxy-change (commit_unknown_result either way).
 	resp, err := waitReplyOrProxiesChanged(replyCh, ctx, DefaultRPCTimeout, proxiesChanged)
 	if err != nil {
-		cancelReply()
+		replyHandle.Cancel()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
 		if !tx.isDummy {
 			tx.commitDummyTransaction(ctx)

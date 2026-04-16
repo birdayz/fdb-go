@@ -103,6 +103,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
 	var insertCount int64
 
+	// Lazy-load store state before acquiring lock (Build() path, matches Java).
+	store.ensureStoreStateLoaded()
 	// Hold stateMu.RLock for the entire batch to avoid per-record lock/unlock.
 	// Also validate update lock once (same for all records).
 	store.stateMu.RLock()
@@ -259,6 +261,7 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 
 	results := make([]*FDBStoredRecord[proto.Message], len(records))
 
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -365,6 +368,8 @@ func (store *FDBRecordStore) SaveRecordBatchInsertOnly(
 // PRECONDITIONS:
 //   - All records MUST be the same proto message type. Mixed types are rejected with an error.
 //   - All records must have unique primary keys. Existing records silently overwritten.
+//   - If the schema has UNIQUE indexes, all records must have unique values for those
+//     indexes. Uniqueness is not enforced — duplicates silently corrupt the index.
 //   - This is a Go-only API, not present in Java Record Layer.
 func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	if len(records) == 0 {
@@ -378,6 +383,10 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	tx.Options().EnsureMutationCapacity(len(records) * (1 + numIndexes))
 	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
+	// Skip uniqueness checks — InsertBatch caller guarantees unique keys.
+	// Eliminates FDB GetRange per entry for UNIQUE indexes (~15% CPU saving).
+	store.skipUniquenessChecks = true
+	defer func() { store.skipUniquenessChecks = false }()
 
 	// Pre-compute count key
 	var countFDBKey []byte
@@ -389,6 +398,7 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 		}
 	}
 
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -454,7 +464,14 @@ func (store *FDBRecordStore) InsertBatch(records []proto.Message) error {
 	// ~4 keys per record (record + VALUE + COUNT + SUM).
 	keyBuf := make([]byte, 0, len(records)*320)
 	store.batchKeyBuf = &keyBuf
-	defer func() { store.batchKeyBuf = nil }()
+	// Shared packer for DirectPacker — avoids GetPacker/PutPacker pool churn per index entry.
+	batchPk := tuple.GetPacker()
+	store.batchPacker = batchPk
+	defer func() {
+		store.batchKeyBuf = nil
+		store.batchPacker = nil
+		tuple.PutPacker(batchPk)
+	}()
 
 	for i, record := range records {
 		if record == nil {

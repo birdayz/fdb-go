@@ -121,7 +121,7 @@ TODO.md                             # Tracked issues and improvements
 ```sh
 just build                    # bazel build //... (includes nogo lint)
 just test                     # bazel test //... (fully cached, incremental)
-just bench                    # Run all benchmarks (15 record layer benchmarks)
+just bench                    # Run all benchmarks (17 record layer benchmarks)
 just bench-one NAME           # Run specific benchmark by regex
 just gazelle                  # Regenerate BUILD files after adding/removing Go files
 just generate                 # buf generate (proto codegen — not in Bazel)
@@ -196,7 +196,7 @@ bazelisk run //pkg/recordlayer:recordlayer_test -- \
 
 ### Benchmarks
 
-`benchmark_test.go` contains 15 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
+`benchmark_test.go` contains 17 benchmarks covering critical hot paths. Self-initializes FDB via testcontainers if Ginkgo's `SynchronizedBeforeSuite` hasn't run, so benchmarks work standalone.
 
 ```sh
 just bench                          # All benchmarks
@@ -208,7 +208,9 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | Benchmark | What it measures |
 |---|---|
 | `BenchmarkSaveRecord` | Single Order save + tx commit |
+| `BenchmarkSaveRecordBuild` | Save with Build() — lazy state load |
 | `BenchmarkLoadRecord` | Load by primary key |
+| `BenchmarkLoadRecordBuild` | Load with Build() — no state load needed |
 | `BenchmarkScanRecords` | Forward scan over 100 records |
 | `BenchmarkSaveRecordWithIndex` | Save with VALUE index |
 | `BenchmarkScanIndex` | Scan 100 VALUE index entries |
@@ -223,25 +225,27 @@ just bench-one BenchmarkSaveRecord  # Single benchmark by regex
 | `BenchmarkSaveRecordBatch` | 10 records/tx with VALUE index |
 | `BenchmarkScanWithContinuation` | Paged scan (100 records, 10 pages, continuations) |
 
-**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-15):
+**Baseline numbers** (Ryzen 9 3900X, FDB 7.3.75 testcontainer, 2026-04-16):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| SaveRecord | 1,008,249 | 6,688 | 97 |
-| LoadRecord | 177,243 | 5,374 | 81 |
-| ScanRecords (100) | 626,442 | 103,431 | 1,326 |
-| SaveRecordWithIndex | 1,010,468 | 7,668 | 110 |
-| ScanIndex (100) | 545,942 | 78,146 | 705 |
-| SaveRecordWithMultipleIndexes | 1,009,713 | 11,244 | 135 |
-| GetRecordCount | 191,668 | 5,796 | 92 |
-| SaveLargeRecord (50KB) | 1,046,445 | 133,199 | 99 |
-| SaveSplitRecord (250KB) | 1,112,845 | 728,245 | 135 |
-| StoreOpen | 207,892 | 3,753 | 60 |
-| StoreOpenCached | 123,421 | 3,830 | 61 |
-| DeleteRecord | 1,008,310 | 5,806 | 91 |
-| SaveRecordWithCountAndIndex | 1,008,869 | 11,011 | 125 |
-| DeleteRecord | 2,159,154 | 2,767 | 90 |
-| SaveRecordWithCountAndIndex | 2,189,853 | 4,939 | 131 |
+| SaveRecord | 1,008,148 | 6,403 | 80 |
+| SaveRecordBuild | 1,009,295 | 3,916 | 39 |
+| LoadRecord | 183,800 | 5,133 | 68 |
+| LoadRecordBuild | 63,150 | 2,697 | 27 |
+| ScanRecords (100) | 644,543 | 103,105 | 1,295 |
+| SaveRecordWithIndex | 1,008,642 | 7,455 | 97 |
+| ScanIndex (100) | 558,350 | 77,684 | 673 |
+| SaveRecordWithMultipleIndexes | 1,010,416 | 10,960 | 121 |
+| GetRecordCount | 192,033 | 5,613 | 80 |
+| SaveLargeRecord (50KB) | 1,030,898 | 133,965 | 85 |
+| SaveSplitRecord (250KB) | 1,142,246 | 727,766 | 118 |
+| StoreOpen | 215,583 | 3,638 | 52 |
+| StoreOpenCached | 122,947 | 3,707 | 53 |
+| DeleteRecord | 1,018,145 | 5,553 | 77 |
+| SaveRecordWithCountAndIndex | 1,013,301 | 10,728 | 111 |
+| SaveRecordBatch (10/tx) | 1,894,226 | 35,711 | 354 |
+| ScanWithContinuation | 2,053,684 | 145,860 | 2,078 |
 
 **Go vs Java Record Layer comparison** (same FDB container, 100 iterations + 20 warmup, 2026-04-11):
 
@@ -539,7 +543,7 @@ See `TODO.md` for full gap analysis. Summary:
 - **Record Layer**: CRUD, split records, continuation tokens, record versioning, record counting, **all 19 index types** (VALUE, COUNT, COUNT_NOT_NULL, COUNT_UPDATES, SUM, MAX_EVER_LONG, MIN_EVER_LONG, MAX_EVER_TUPLE, MIN_EVER_TUPLE, RANK, VERSION, MAX_EVER_VERSION, PERMUTED_MIN, PERMUTED_MAX, BITMAP_VALUE, TEXT, TIME_WINDOW_LEADERBOARD, MULTIDIMENSIONAL, VECTOR), KeyWithValueExpression covering indexes, index scanning/state/build/rebuild, cursor combinators (concat/map/filter/skip/limit/union/intersection/dedup/flatmap/chained/auto-continuing/fallback), time/byte/record scan limits, MetaDataValidator, MetaDataEvolutionValidator, commit hooks, retry runner, store state management, EvaluateAggregateFunction, EvaluateRecordFunction, FDB directory layer, FDBMetaDataStore
 - **FDB Client vs C**: 100% data-path API coverage (all `fdb_transaction_*` read/write/atomic/watch/conflict/versionstamp functions). 93 C binding unit tests ported. 10-area C++ conformance audit (dayshift-20): **18/21 divergences fixed** (server selection power-of-two random, ensureReadVersion race fix, plus all prior fixes). 3 remaining: auto-reset after commit (design), wrong-shard retry cap (conservative), GRV background refresh timing (perf). Missing API: 6 observability/admin functions only.
 - **Key gaps**: AtomKE (LOW, Java interface only), synthetic record types, query planner/SQL layer (deferred — hardening first)
-- **Test counts**: 2748 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
+- **Test counts**: 2751 Ginkgo specs + 433 conformance specs + 220 chaos tests + 93 C binding port tests + 34 correctness tests + 15 Go↔CGo interop tests + 200+ binding tester seeds (0 failures, API + directory)
 - **Line coverage**: 80.2% overall, 84.2% (client), 81.8% (record layer). `just coverage` generates HTML report.
 - **Race detector**: CI runs race detector on all 5 FDB test targets. Locally: `just race-all`.
 - **Fuzz targets**: 24 (12 record layer parsers + FuzzRYWCache + 8 wire reply parsers + 2 wire Reader constructor/ErrorOr + FuzzPackIntoEquivalence)

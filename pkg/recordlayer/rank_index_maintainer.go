@@ -133,7 +133,7 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 		if err != nil {
 			return err
 		}
-		m.tx.Clear(fdb.Key(m.indexSubspace.Pack(oldEntryKey)))
+		m.tx.ClearBytes(m.indexSubspace.Pack(oldEntryKey))
 		if isWriteOnlyOrUniquePending && m.index.IsUnique() && m.store != nil {
 			if err := m.store.removeUniquenessViolations(m.index, oldEntries[i].key, oldEntries[i].primaryKey); err != nil {
 				return err
@@ -162,7 +162,7 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 			}
 		}
 
-		m.tx.Set(fdb.Key(keyBytes), valueBytes)
+		m.tx.SetBytes(keyBytes, valueBytes)
 
 		if err := m.updateRankedSet(newEntries[i], false); err != nil {
 			return err

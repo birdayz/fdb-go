@@ -84,7 +84,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 			m.recordContext.RemoveVersionMutation(keyBytes)
 		} else {
 			keyBytes := m.indexSubspace.Pack(entryTupleKey)
-			m.tx.Clear(fdb.Key(keyBytes))
+			m.tx.ClearBytes(keyBytes)
 		}
 	}
 
@@ -117,7 +117,7 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 			if err := checkKeyValueSizes(m.index, newEntries[i].primaryKey, keyBytes, valueBytes); err != nil {
 				return err
 			}
-			m.tx.Set(fdb.Key(keyBytes), valueBytes)
+			m.tx.SetBytes(keyBytes, valueBytes)
 		}
 	}
 

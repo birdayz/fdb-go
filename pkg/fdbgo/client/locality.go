@@ -484,12 +484,13 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				continue
 			}
 
-			replyToken, replyCh, cancelReply := conn.PrepareReply()
+			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body := buildRequest(replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
 			if err := conn.SendFrame(locToken, body); err != nil {
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				db.handleConnError(proxy.Address)
 				continue
 			}
@@ -498,6 +499,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			select {
 			case resp := <-replyCh:
 				rpcCancel()
+				replyHandle.Release()
 				if resp.Err != nil {
 					db.handleConnError(proxy.Address)
 					continue
@@ -519,7 +521,8 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				}
 			case <-rctx.Done():
 				rpcCancel()
-				cancelReply()
+				replyHandle.Cancel()
+				replyHandle.Release()
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}

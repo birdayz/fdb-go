@@ -23,6 +23,40 @@ import (
 // Each PrepareReply/Send allocates one; readLoop returns it after dispatch.
 var replyChanPool = sync.Pool{New: func() any { return make(chan Response, 1) }}
 
+// ReplyHandle holds state for a pending reply. Pooled to avoid closure allocation
+// in PrepareReply (the cancel closure captured conn+token+ch, causing a heap alloc
+// on every RPC call — ~9% of total allocs in SaveRecord benchmarks).
+type ReplyHandle struct {
+	conn  *Conn
+	token UID
+	ch    chan Response
+}
+
+var replyHandlePool = sync.Pool{New: func() any { return &ReplyHandle{} }}
+
+// Cancel removes the pending reply from the connection's pending map
+// and returns the reply channel to the pool. Safe to call on a handle
+// with a nil conn (no-op).
+func (h *ReplyHandle) Cancel() {
+	if h.conn == nil {
+		return
+	}
+	h.conn.pendingMu.Lock()
+	if _, ok := h.conn.pending[h.token]; ok {
+		delete(h.conn.pending, h.token)
+		putReplyChannel(h.ch)
+	}
+	h.conn.pendingMu.Unlock()
+}
+
+// Release returns the handle to the pool. Call after Cancel or after
+// the reply has been successfully received.
+func (h *ReplyHandle) Release() {
+	h.conn = nil
+	h.ch = nil
+	replyHandlePool.Put(h)
+}
+
 // errChanPool pools chan error for SendFrame/Flush synchronization.
 var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 
@@ -212,22 +246,17 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // Use this when you need the token BEFORE building the request body
 // (e.g., to embed it in the FDB request's Reply field).
 //
-// Returns a cancel function that removes the pending token from the map.
-func (c *Conn) PrepareReply() (UID, <-chan Response, func()) {
-	token := NewUID()
-	ch := getReplyChannel()
+// Returns a ReplyHandle whose Cancel() removes the pending token. Call
+// handle.Release() when done to return it to the pool.
+func (c *Conn) PrepareReply() (UID, <-chan Response, *ReplyHandle) {
+	h := replyHandlePool.Get().(*ReplyHandle)
+	h.conn = c
+	h.token = NewUID()
+	h.ch = getReplyChannel()
 	c.pendingMu.Lock()
-	c.pending[token] = ch
+	c.pending[h.token] = h.ch
 	c.pendingMu.Unlock()
-	cancel := func() {
-		c.pendingMu.Lock()
-		if _, ok := c.pending[token]; ok {
-			delete(c.pending, token)
-			putReplyChannel(ch)
-		}
-		c.pendingMu.Unlock()
-	}
-	return token, ch, cancel
+	return h.token, h.ch, h
 }
 
 // getReplyChannel gets a reply channel from the pool.
@@ -250,7 +279,7 @@ func putReplyChannel(ch chan Response) {
 // immediately wait for the response.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.debugFrames {
-		fmt.Fprintf(c.debugWriter, "[send] token=%016x:%016x bodyLen=%d\n",
+		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
 			destToken.First, destToken.Second, len(body))
 	}
 	LogSend(destToken, body)
@@ -438,9 +467,10 @@ func (c *Conn) readLoop() {
 	defer c.conn.Close() // close TCP socket — prevents fd leak on Path B (server dies)
 
 	pingToken := WellKnownToken(WLTokenPingPacket)
+	var fr FrameReader
 
 	for {
-		token, body, err := ReadFrame(c.conn, c.useTLS)
+		token, body, err := fr.Read(c.conn, c.useTLS)
 		if err != nil {
 			// Only log if this is unexpected (server died, not our Close).
 			if c.debugFrames && c.ctx.Err() == nil {
@@ -460,7 +490,7 @@ func (c *Conn) readLoop() {
 			c.pendingMu.RLock()
 			_, isPending := c.pending[token]
 			c.pendingMu.RUnlock()
-			fmt.Fprintf(c.debugWriter, "[recv] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n",
+			fmt.Fprintf(c.debugWriter, "[recv %s] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n", c.conn.RemoteAddr(),
 				token.First, token.Second, len(body), token == pingToken, isPending)
 		}
 
@@ -660,7 +690,7 @@ func (c *Conn) connectionMonitor() {
 // The reply is registered in the pending map so readLoop dispatches it.
 func (c *Conn) sendPingWithReply() <-chan struct{} {
 	done := make(chan struct{})
-	replyToken, replyCh, cancelReply := c.PrepareReply()
+	replyToken, replyCh, replyHandle := c.PrepareReply()
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	select {
@@ -668,18 +698,20 @@ func (c *Conn) sendPingWithReply() <-chan struct{} {
 	default:
 		// Write channel full — cancel and return closed channel
 		// so the inner loop falls through to bytesReceived check.
-		cancelReply()
+		replyHandle.Cancel()
+		replyHandle.Release()
 		close(done)
 		return done
 	}
 	// Wait for reply in background, then signal done.
 	go func() {
+		defer replyHandle.Release()
 		defer close(done)
 		select {
 		case <-replyCh:
 			// Reply arrived.
 		case <-c.ctx.Done():
-			cancelReply()
+			replyHandle.Cancel()
 		}
 	}()
 	return done

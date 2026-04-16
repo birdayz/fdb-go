@@ -177,6 +177,50 @@ func BenchmarkSaveRecord(b *testing.B) {
 	}
 }
 
+// BenchmarkSaveRecordBuild measures SaveRecord with Build() instead of Open().
+// Build() skips the store state read — state is lazy-loaded on first index
+// operation. This matches Java's build() + preloadRecordStoreStateAsync().
+func BenchmarkSaveRecordBuild(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	// Pre-create the store.
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(ss).
+			CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(md).
+				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
+				Build()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(benchOrder(int64(i), 100))
+		})
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
 // BenchmarkLoadRecord measures the cost of loading a previously saved Order by
 // primary key, including transaction overhead.
 func BenchmarkLoadRecord(b *testing.B) {
@@ -213,6 +257,54 @@ func BenchmarkLoadRecord(b *testing.B) {
 				SetMetaDataProvider(md).
 				SetSubspace(ss).
 				Open()
+			if err != nil {
+				return nil, err
+			}
+			return store.LoadRecord(pk)
+		})
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
+// BenchmarkLoadRecordBuild measures LoadRecord with Build() instead of Open().
+// Build() skips the store state read — no lazy load needed for reads.
+func BenchmarkLoadRecordBuild(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	// Pre-create the store and save a record to load.
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(ss).
+			CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		return store.SaveRecord(benchOrder(1, 100))
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	pk := tuple.Tuple{int64(1)}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(md).
+				SetSubspace(ss).
+				SetAssumeAllIndexesReadable(true).
+				Build()
 			if err != nil {
 				return nil, err
 			}

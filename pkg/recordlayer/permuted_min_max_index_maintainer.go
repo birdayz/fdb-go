@@ -189,13 +189,13 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForInsert(
 				addPermuted = true
 				// Remove old permuted entry.
 				oldPermutedKey := m.buildPermutedKey(groupPrefix, currentValue, groupSuffix)
-				m.tx.Clear(fdb.Key(m.secondarySubspace.Pack(oldPermutedKey)))
+				m.tx.ClearBytes(m.secondarySubspace.Pack(oldPermutedKey))
 			}
 		}
 
 		if addPermuted {
 			newPermutedKey := m.buildPermutedKey(groupPrefix, value, groupSuffix)
-			m.tx.Set(fdb.Key(m.secondarySubspace.Pack(newPermutedKey)), tuple.Tuple{}.Pack())
+			m.tx.SetBytes(m.secondarySubspace.Pack(newPermutedKey), tuple.Tuple{}.Pack())
 		}
 	}
 	return nil
@@ -241,14 +241,14 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForRemove(
 
 		if extremum == nil {
 			// No replacement, just remove.
-			m.tx.Clear(fdb.Key(permutedKeyBytes))
+			m.tx.ClearBytes(permutedKeyBytes)
 		} else {
 			remainingValue := tuple.Tuple(extremum[groupPrefixSize:totalSize])
 			if !tuplesEqual(value, remainingValue) {
 				newPermutedKey := m.buildPermutedKey(groupPrefix, remainingValue, groupSuffix)
 				newPermutedKeyBytes := m.secondarySubspace.Pack(newPermutedKey)
-				m.tx.Clear(fdb.Key(permutedKeyBytes))
-				m.tx.Set(fdb.Key(newPermutedKeyBytes), tuple.Tuple{}.Pack())
+				m.tx.ClearBytes(permutedKeyBytes)
+				m.tx.SetBytes(newPermutedKeyBytes, tuple.Tuple{}.Pack())
 			}
 		}
 	}

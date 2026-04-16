@@ -111,11 +111,60 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 					return m.insertInt64Entry(val, newRecord)
 				}
 			}
-			// Scalar fast path: single-field expressions avoid []any allocation.
-			if se, ok := m.index.RootExpression.(ScalarEvaluator); ok {
-				val, err := se.EvaluateScalar(newRecord, newRecord.Record)
-				if err == nil {
-					return m.insertScalarEntry(val, newRecord)
+			// DirectPacker: encode fields straight into FDB key bytes.
+			// Avoids scalarToInterface boxing — handles both single-field and
+			// composite keys without going through any.
+			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
+				// Use shared batch packer if available (InsertBatch path).
+				var pk *tuple.Packer
+				var ownedPk bool
+				if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchPacker != nil {
+					pk = s.batchPacker
+				} else {
+					pk = tuple.GetPacker()
+					ownedPk = true
+				}
+				pk.Reset()
+				if dp.PackDirect(pk, newRecord, newRecord.Record) {
+					trimmedPK, pkErr := m.index.TrimPrimaryKey(newRecord.PrimaryKey)
+					if pkErr == nil {
+						var keyBytes []byte
+						if s, ok2 := m.store.(*FDBRecordStore); ok2 && s.batchKeyBuf != nil {
+							pk.EncodeTuple(trimmedPK)
+							keyBytes = pk.AppendInto(s.batchKeyBuf, m.indexSubspace.Bytes())
+						} else {
+							pk.EncodeTuple(trimmedPK)
+							var buf []byte
+							keyBytes = pk.AppendInto(&buf, m.indexSubspace.Bytes())
+						}
+						if ownedPk {
+							tuple.PutPacker(pk)
+						}
+						if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
+							return err
+						}
+						// Uniqueness check for UNIQUE indexes (unless InsertBatch skips it).
+						if m.index.IsUnique() {
+							if s, ok3 := m.store.(*FDBRecordStore); !ok3 || !s.skipUniquenessChecks {
+								keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
+								if uErr != nil {
+									return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
+								}
+								colCount := m.index.RootExpression.ColumnSize()
+								if colCount > 0 && len(keyTuple) > colCount {
+									entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+									if err := m.checkUniqueness(entry); err != nil {
+										return err
+									}
+								}
+							}
+						}
+						m.tx.SetBytes(keyBytes, emptyTuplePacked)
+						return nil
+					}
+				}
+				if ownedPk {
+					tuple.PutPacker(pk)
 				}
 			}
 			if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
@@ -233,9 +282,11 @@ func (m *standardIndexMaintainer) insertInt64Entry(val int64, record *FDBStoredR
 	}
 
 	if m.index.IsUnique() {
-		entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{val}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -272,9 +323,13 @@ func (m *standardIndexMaintainer) insertScalarEntry(val any, record *FDBStoredRe
 	}
 
 	if m.index.IsUnique() && val != nil {
-		entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		// Skip uniqueness check when called from InsertBatch — caller guarantees
+		// unique keys, and the check does an FDB GetRange per entry.
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			entry := indexEntry{key: tuple.Tuple{tuple.TupleElement(val)}, primaryKey: record.PrimaryKey, value: tuple.Tuple{}}
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -306,8 +361,10 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 	}
 
 	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
-		if err := m.checkUniqueness(entry); err != nil {
-			return err
+		if s, ok := m.store.(*FDBRecordStore); !ok || !s.skipUniquenessChecks {
+			if err := m.checkUniqueness(entry); err != nil {
+				return err
+			}
 		}
 	}
 
