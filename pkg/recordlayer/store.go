@@ -1124,9 +1124,28 @@ func (store *FDBRecordStore) ScanRecords(continuation []byte, scanProperties Sca
 }
 
 // ScanRecordsByType scans records filtered to a specific record type.
-// This is a convenience method that wraps ScanRecords with a type filter.
+// When the primary key uses RecordTypeKey() as its first component (common pattern),
+// this does a prefix scan on just that type's range — O(records of this type) instead
+// of O(all records). Falls back to full scan + filter if RecordTypeKey is not used.
 // Matches Java's RecordQuery with RecordTypeFilter.
 func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuation []byte, scanProperties ScanProperties) RecordCursor[*FDBStoredRecord[proto.Message]] {
+	recordType := store.metaData.GetRecordType(recordTypeName)
+	if recordType != nil && recordType.PrimaryKey != nil && primaryKeyHasRecordTypePrefix(recordType.PrimaryKey) {
+		// Fast path: prefix scan on the record type key range.
+		// RecordTypeKey is the first component, so all records of this type
+		// have PK starting with (recordTypeIndex, ...).
+		rtk := int64(recordType.RecordTypeIndex)
+		lowEP := EndpointTypeRangeInclusive
+		if len(continuation) > 0 {
+			lowEP = EndpointTypeContinuation
+		}
+		return store.ScanRecordsInRange(
+			tuple.Tuple{rtk}, tuple.Tuple{rtk},
+			lowEP, EndpointTypeRangeInclusive,
+			continuation, scanProperties,
+		)
+	}
+	// Slow path: full scan + filter (no RecordTypeKey prefix).
 	inner := store.ScanRecords(continuation, scanProperties)
 	return &filterCursor[*FDBStoredRecord[proto.Message]]{
 		inner: inner,
@@ -1134,6 +1153,18 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 			return rec.RecordType.Name == recordTypeName
 		},
 	}
+}
+
+// primaryKeyHasRecordTypePrefix checks if the key expression starts with RecordTypeKey().
+func primaryKeyHasRecordTypePrefix(expr KeyExpression) bool {
+	if _, ok := expr.(*RecordTypeKeyExpression); ok {
+		return true
+	}
+	if concat, ok := expr.(*CompositeKeyExpression); ok && len(concat.expressions) > 0 {
+		_, ok := concat.expressions[0].(*RecordTypeKeyExpression)
+		return ok
+	}
+	return false
 }
 
 // ScanRecordsInRange scans records in a key range
