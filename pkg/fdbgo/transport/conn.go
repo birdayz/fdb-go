@@ -57,14 +57,6 @@ func (h *ReplyHandle) Release() {
 	replyHandlePool.Put(h)
 }
 
-// NewNoopReplyHandle returns a ReplyHandle with no associated connection.
-// Cancel is a no-op, Release returns it to the pool. For tests only.
-func NewNoopReplyHandle() *ReplyHandle {
-	h := replyHandlePool.Get().(*ReplyHandle)
-	h.conn = nil
-	return h
-}
-
 // errChanPool pools chan error for SendFrame/Flush synchronization.
 var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 

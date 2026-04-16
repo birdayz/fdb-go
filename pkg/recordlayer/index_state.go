@@ -72,6 +72,7 @@ func indexStateFromCode(code int64) (IndexState, error) {
 // explicit state is stored (matching Java's default behavior).
 // Goroutine-safe via stateMu (read lock).
 func (store *FDBRecordStore) GetIndexState(indexName string) IndexState {
+	store.ensureStoreStateLoaded()
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
 	return store.getIndexStateLocked(indexName)
