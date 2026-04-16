@@ -160,11 +160,6 @@ func (v *MetaDataEvolutionValidator) getTypeRenames(old, new *RecordMetaData) (m
 						Message: fmt.Sprintf("record type %q renamed in new meta-data", oldName),
 					}
 				}
-				if prev, ok := renames[oldName]; ok && prev != newName {
-					return nil, &MetaDataEvolutionError{
-						Message: fmt.Sprintf("record type %q maps to multiple new types", oldName),
-					}
-				}
 				renames[oldName] = newName
 				found = true
 				break
@@ -527,9 +522,13 @@ func (v *MetaDataEvolutionValidator) validateIndexRecordTypes(
 	}
 
 	// New types not in old must have SinceVersion > old metadata version.
+	// Matches allowNoSinceVersion check in validateRecordTypes.
 	for _, rt := range newTypes {
 		if oldRenamedNames[rt.Name] {
 			continue
+		}
+		if rt.SinceVersion == 0 && v.allowNoSinceVersion {
+			continue // allowNoSinceVersion permits types without version tracking
 		}
 		if rt.SinceVersion <= old.Version() {
 			return &MetaDataEvolutionError{
