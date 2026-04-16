@@ -124,9 +124,7 @@ func (s *fieldStep) packInto(a *tupleAppender, _ *FDBStoredRecord[proto.Message]
 		a.appendInt64(int64(m.Get(fd).Enum()))
 	case protoreflect.StringKind:
 		a.appendString(m.Get(fd).String())
-	case protoreflect.FloatKind:
-		a.appendAny(float32(m.Get(fd).Float()))
-	case protoreflect.DoubleKind:
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		a.appendAny(m.Get(fd).Float())
 	default:
 		value := m.Get(fd)

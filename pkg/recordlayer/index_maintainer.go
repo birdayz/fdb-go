@@ -147,13 +147,14 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 						if m.index.IsUnique() {
 							if s, ok3 := m.store.(*FDBRecordStore); !ok3 || !s.skipUniquenessChecks {
 								keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
-								if uErr == nil {
-									colCount := m.index.RootExpression.ColumnSize()
-									if colCount > 0 && len(keyTuple) > colCount {
-										entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
-										if err := m.checkUniqueness(entry); err != nil {
-											return err
-										}
+								if uErr != nil {
+									return fmt.Errorf("unpack index key for uniqueness check: %w", uErr)
+								}
+								colCount := m.index.RootExpression.ColumnSize()
+								if colCount > 0 && len(keyTuple) > colCount {
+									entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+									if err := m.checkUniqueness(entry); err != nil {
+										return err
 									}
 								}
 							}
