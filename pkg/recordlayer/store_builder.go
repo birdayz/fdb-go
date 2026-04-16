@@ -588,8 +588,9 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		storeStateCache:    b.resolveCache(),
 	}
 	if b.assumeAllIndexesReadable {
-		// Pre-populate with empty map = all indexes assumed READABLE.
+		// Pre-populate with shared empty sentinel = all indexes assumed READABLE.
 		// ensureStoreStateLoaded() becomes a no-op (sync.Once sees non-nil indexStates).
+		// Shared sentinel avoids make(map) alloc — read-only, never written to.
 		store.indexStates = make(map[string]IndexState)
 	}
 	return store
