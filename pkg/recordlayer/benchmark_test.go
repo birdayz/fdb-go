@@ -177,6 +177,50 @@ func BenchmarkSaveRecord(b *testing.B) {
 	}
 }
 
+// BenchmarkSaveRecordBuild is like BenchmarkSaveRecord but uses Build() instead
+// of Open(). Build() skips store state reads (2 FDB GetRange per tx), showing
+// the SaveRecord latency without the store-open overhead. This is the path
+// production apps should use after initial CreateOrOpen at startup.
+func BenchmarkSaveRecordBuild(b *testing.B) {
+	ensureBenchDB(b)
+
+	md := benchMetaData(b)
+	ss := benchSubspace(b)
+	ctx := context.Background()
+
+	// Pre-create the store.
+	_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		_, err := NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(ss).
+			CreateOrOpen()
+		return nil, err
+	})
+	if err != nil {
+		b.Fatalf("setup: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).
+				SetMetaDataProvider(md).
+				SetSubspace(ss).
+				Build()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(benchOrder(int64(i), 100))
+		})
+		if err != nil {
+			b.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+}
+
 // BenchmarkLoadRecord measures the cost of loading a previously saved Order by
 // primary key, including transaction overhead.
 func BenchmarkLoadRecord(b *testing.B) {
