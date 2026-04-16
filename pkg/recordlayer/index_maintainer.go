@@ -111,15 +111,9 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 					return m.insertInt64Entry(val, newRecord)
 				}
 			}
-			// Scalar fast path: single-field expressions avoid []any allocation.
-			if se, ok := m.index.RootExpression.(ScalarEvaluator); ok {
-				val, err := se.EvaluateScalar(newRecord, newRecord.Record)
-				if err == nil {
-					return m.insertScalarEntry(val, newRecord)
-				}
-			}
 			// DirectPacker: encode fields straight into FDB key bytes.
-			// Avoids scalarToInterface boxing (27% of allocs at 34K events/sec).
+			// Avoids scalarToInterface boxing — handles both single-field and
+			// composite keys without going through any.
 			if dp, ok := m.index.RootExpression.(DirectPacker); ok {
 				// Use shared batch packer if available (InsertBatch path).
 				var pk *tuple.Packer
@@ -148,6 +142,21 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 						}
 						if err := checkKeyValueSizes(m.index, newRecord.PrimaryKey, keyBytes, emptyTuplePacked); err != nil {
 							return err
+						}
+						// Uniqueness check for UNIQUE indexes (unless InsertBatch skips it).
+						if m.index.IsUnique() {
+							if s, ok3 := m.store.(*FDBRecordStore); !ok3 || !s.skipUniquenessChecks {
+								keyTuple, uErr := fastSubspaceUnpack(keyBytes, len(m.indexSubspace.Bytes()))
+								if uErr == nil {
+									colCount := m.index.RootExpression.ColumnSize()
+									if colCount > 0 && len(keyTuple) > colCount {
+										entry := indexEntry{key: keyTuple[:colCount], primaryKey: newRecord.PrimaryKey, value: tuple.Tuple{}}
+										if err := m.checkUniqueness(entry); err != nil {
+											return err
+										}
+									}
+								}
+							}
 						}
 						m.tx.SetBytes(keyBytes, emptyTuplePacked)
 						return nil
