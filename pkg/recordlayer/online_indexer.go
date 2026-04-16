@@ -578,7 +578,12 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 
 	var totalRecords int64
 	for {
-		n, hasMore, err := mutual.buildMutual(ctx)
+		// Use buildRangeWithRetries for adaptive throttling + retry on transient
+		// FDB errors, matching the BY_RECORDS path. Without this, mutual builds
+		// had no limit adjustment on failure and no rate limiting.
+		n, hasMore, err := oi.buildRangeWithRetries(ctx, func(ctx context.Context) (int64, bool, error) {
+			return mutual.buildMutual(ctx)
+		})
 		if err != nil {
 			return totalRecords, fmt.Errorf("mutual build range: %w", err)
 		}
@@ -596,11 +601,6 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 					Elapsed:   elapsed,
 				}
 			}
-		}
-
-		// Inter-transaction throttle.
-		if oi.throttle != nil {
-			oi.throttle.waitForRateLimit()
 		}
 	}
 
