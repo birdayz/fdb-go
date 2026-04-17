@@ -285,7 +285,9 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [x] `Options` — 30-name map with parent chaining, immutable With/Builder, defaults mirroring Java's static block
   - [x] `KeySet`, `Continuation` (+ Reason enum), `Row` (+ RowIterable)
   - [x] `Metadata` base + `Visitor` + `Column`/`Table`/`Index`/`View`/`InvokedRoutine`/`SchemaTemplate`/`Schema` interfaces
-- [ ] **pkg/relational/api remaining interfaces** — `Connection`, `Statement`, `PreparedStatement`, `ResultSet`, `ResultSetMetaData`, `DatabaseMetaData`, `Driver`, `Array`, `Struct`. Lean Go-idiomatic shape; omit the java.sql.* throw-stubs.
+- [x] **pkg/relational/api Driver / Connection / Statement / ResultSet** (nightshift-24) — lean Go-idiomatic shape; ctx on every call; typed errors; WasNull + Continuation + ByName accessors; ColumnNullable constants pinned to JDBC values.
+- [ ] **pkg/relational/api remaining interfaces** — `DatabaseMetaData`, `Array`, `Struct`, `ArrayMetaData`, `StructMetaData`, `RelationalDirectAccessStatement`. All smaller than the ones already done.
+- [x] **pkg/relational/api SqlTypeNamesSupport** (nightshift-24) — name ↔ JDBC code ↔ DataType mappings used by parser + ResultSetMetaData.
 - [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
 - [ ] **Decide interop with existing `pkg/recordlayer` types** — `RecordMetaData` vs. new `SchemaTemplate`; `Index` vs. metadata `Index`; document where they live side by side vs. get merged.
 - [ ] **Proto definitions** — copy `fdb-relational-*` proto files from Java source into `proto/apple/relational/` (`record_layer_context.proto`, catalog messages, etc.). Regenerate via `just generate`.
