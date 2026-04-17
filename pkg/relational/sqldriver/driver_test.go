@@ -96,6 +96,59 @@ func TestParseDSN_Errors(t *testing.T) {
 	}
 }
 
+func TestParseDSN_URLEncodedOptions(t *testing.T) {
+	t.Parallel()
+	// cluster_file paths on Windows / with spaces need URL encoding.
+	// Verify the parser unescapes correctly.
+	dsn, err := ParseDSN("fdbsql:///mydb?cluster_file=%2Fetc%2Ffdb%2Ffdb.cluster&comment=hello%20world")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if dsn.Options["cluster_file"] != "/etc/fdb/fdb.cluster" {
+		t.Errorf("cluster_file not decoded: %v", dsn.Options)
+	}
+	if dsn.Options["comment"] != "hello world" {
+		t.Errorf("comment not decoded: %v", dsn.Options)
+	}
+}
+
+func TestParseDSN_EmptyOptionValue(t *testing.T) {
+	t.Parallel()
+	// Query param with no value (e.g. ?debug&other=1) has empty string.
+	dsn, err := ParseDSN("fdbsql:///mydb?debug")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if v, ok := dsn.Options["debug"]; !ok || v != "" {
+		t.Errorf("debug option missing or wrong: (%v, %v)", v, ok)
+	}
+}
+
+func TestParseDSN_OptionWithEquals(t *testing.T) {
+	t.Parallel()
+	// URL-encoded "=" in a value.
+	dsn, err := ParseDSN("fdbsql:///mydb?x=a%3Db")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if dsn.Options["x"] != "a=b" {
+		t.Errorf("value with = not preserved: %v", dsn.Options)
+	}
+}
+
+func TestParseDSN_DuplicateOption(t *testing.T) {
+	t.Parallel()
+	// Duplicate keys — first value wins (matches Java's
+	// JDBCURI.getFirstValue behavior).
+	dsn, err := ParseDSN("fdbsql:///mydb?x=first&x=second")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+	if dsn.Options["x"] != "first" {
+		t.Errorf("duplicate: first value should win, got %q", dsn.Options["x"])
+	}
+}
+
 func TestDSN_StringRoundTrip(t *testing.T) {
 	t.Parallel()
 	cases := []string{
