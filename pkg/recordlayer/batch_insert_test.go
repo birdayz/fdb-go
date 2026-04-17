@@ -416,6 +416,23 @@ var _ = Describe("BatchInsert", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("returns error for nil record in InsertBatch", func() {
+			ks := specSubspace()
+			md := metaDataWithIndexes()
+
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				err = store.InsertBatch([]proto.Message{nil})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("nil"))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("single record batch works", func() {
 			ks := specSubspace()
 			md := metaDataWithIndexes()
