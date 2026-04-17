@@ -474,6 +474,42 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("removed from meta-data"))
 		})
 
+		It("rejects former index without old index when addedVersion <= old version", func() {
+			// Scenario: new metadata has a FormerIndex for an index that didn't exist
+			// in old metadata (index was added and dropped between versions).
+			// The FormerIndex's addedVersion must be > old metadata version.
+			old := buildMetaData(5, nil)
+
+			// Build new metadata, then inject a FormerIndex with addedVersion=3 (<=5).
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   3, // <= old.Version()==5 → should be rejected
+				RemovedVersion: 7, // > old.Version()==5 → passes removedVersion check
+			})
+
+			err := ValidateEvolution(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("added version prior to old"))
+		})
+
+		It("accepts former index without old index when addedVersion > old version", func() {
+			old := buildMetaData(5, nil)
+
+			new := buildMetaData(10, nil)
+			new.formerIndexes = append(new.formerIndexes, &FormerIndex{
+				SubspaceKey:    "ephemeral_idx",
+				FormerName:     "ephemeral_idx",
+				AddedVersion:   6, // > old.Version()==5 → should pass
+				RemovedVersion: 8, // > old.Version()==5 → passes
+			})
+
+			err := ValidateEvolution(old, new)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("accepts preserved former index", func() {
 			builder1 := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 			builder1.GetRecordType("Order").SetPrimaryKey(Field("order_id"))

@@ -832,7 +832,17 @@ func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaD
 
 		// Check against the old index if it existed
 		oldIdx := old.GetIndex(newFormer.FormerName)
-		if oldIdx != nil {
+		if oldIdx == nil {
+			// No corresponding old index — the index was added and dropped
+			// between metadata versions. Validate addedVersion is reasonable.
+			// Matches Java line 480.
+			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion <= old.Version() {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("former index (subspace key=%s) without existing index has added version prior to old meta-data version (added=%d, old=%d)",
+						key, newFormer.AddedVersion, old.Version()),
+				}
+			}
+		} else {
 			if !v.allowMissingFormerIndexNames && newFormer.FormerName != oldIdx.Name {
 				return &MetaDataEvolutionError{
 					Message: fmt.Sprintf("former index has different name than old index (former=%q, old=%q)",
