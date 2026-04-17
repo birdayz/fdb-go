@@ -6,6 +6,7 @@ go_library(
         "array.go",
         "connection.go",
         "continuation.go",
+        "database_metadata.go",
         "datatype.go",
         "datatype_composite.go",
         "datatype_primitive.go",
@@ -30,6 +31,7 @@ go_test(
     srcs = [
         "array_struct_test.go",
         "connection_test.go",
+        "database_metadata_test.go",
         "datatype_bench_test.go",
         "datatype_test.go",
         "error_test.go",
