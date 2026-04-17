@@ -2,6 +2,7 @@ package keyspace
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb/tuple"
@@ -148,6 +149,27 @@ func TestToTree(t *testing.T) {
 	g.Expect(tree).To(ContainSubstring("app (STRING)"))
 	g.Expect(tree).To(ContainSubstring("user (LONG)"))
 	g.Expect(tree).To(ContainSubstring("session (UUID)"))
+
+	// Multi-sibling scenario: the downspout connector | should appear
+	// between siblings.
+	g.Expect(tree).To(ContainSubstring(" +-"))
+	// Child directories are indented; user and session are at the same depth
+	// under app, so both should have " +-" prefix after some indentation.
+	userLine := ""
+	sessionLine := ""
+	for _, line := range strings.Split(tree, "\n") {
+		if strings.Contains(line, "user (LONG)") {
+			userLine = line
+		}
+		if strings.Contains(line, "session (UUID)") {
+			sessionLine = line
+		}
+	}
+	g.Expect(userLine).NotTo(BeEmpty())
+	g.Expect(sessionLine).NotTo(BeEmpty())
+	// Both should be at the same indent level (same number of leading chars
+	// before their "+-" marker).
+	g.Expect(strings.Index(userLine, "+-")).To(Equal(strings.Index(sessionLine, "+-")))
 }
 
 func TestDuplicateSubdirectoryPanics(t *testing.T) {
@@ -530,7 +552,7 @@ func TestFindChildForValue(t *testing.T) {
 	root.AddSubdirectory(NewDirectory("year", KeyTypeLong))
 	root.AddSubdirectory(NewConstantDirectory("config", KeyTypeString, "cfg"))
 
-	// String matches the "state" directory
+	// String matches the "state" directory (no constant matches "CA")
 	child := root.FindChildForValue("CA")
 	g.Expect(child).NotTo(BeNil())
 	g.Expect(child.Name).To(Equal("state"))
@@ -540,14 +562,56 @@ func TestFindChildForValue(t *testing.T) {
 	g.Expect(child).NotTo(BeNil())
 	g.Expect(child.Name).To(Equal("year"))
 
-	// Constant value matches exactly
+	// Constant "cfg" matches the constant "config" directory FIRST,
+	// not the open "state" directory. Constant priority matches Java.
 	child = root.FindChildForValue("cfg")
 	g.Expect(child).NotTo(BeNil())
-	// Two directories accept strings — first wins (state)
-	// Our test schema has state before config, so "cfg" matches state.
-	// This is Java behavior too: iteration order matters.
+	g.Expect(child.Name).To(Equal("config"))
 
 	// Value of unsupported type matches nothing
 	child = root.FindChildForValue(3.14)
 	g.Expect(child).To(BeNil())
+}
+
+// TestFindChildForValue_Bytes verifies that []byte values don't panic
+// (they are not comparable with Go's == operator).
+func TestFindChildForValue_Bytes(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
+	root.AddSubdirectory(NewConstantDirectory("marker", KeyTypeBytes, []byte{0xFF, 0xFE}))
+
+	// []byte value matches the open blob directory
+	child := root.FindChildForValue([]byte{1, 2, 3})
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("blob"))
+
+	// Constant []byte matches the constant directory exactly
+	child = root.FindChildForValue([]byte{0xFF, 0xFE})
+	g.Expect(child).NotTo(BeNil())
+	g.Expect(child.Name).To(Equal("marker"))
+}
+
+// TestPathEqual_Bytes verifies that Path.Equal handles []byte without panicking.
+func TestPathEqual_Bytes(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("blob", KeyTypeBytes))
+	ks := NewKeySpace(root)
+
+	p1, err := ks.Path("blob", []byte{1, 2, 3})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	p2, err := ks.Path("blob", []byte{1, 2, 3})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	p3, err := ks.Path("blob", []byte{9, 9, 9})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(p1.Equal(p2)).To(BeTrue(), "same bytes should be equal")
+	g.Expect(p1.Equal(p3)).To(BeFalse(), "different bytes should not be equal")
 }

@@ -65,7 +65,9 @@ func BenchmarkPathFromTuple(b *testing.B) {
 func BenchmarkMemoryResolver_Hit(b *testing.B) {
 	r := NewMemoryResolver(0)
 	ctx := b.Context()
-	_, _ = r.Resolve(ctx, "preloaded")
+	if _, err := r.Resolve(ctx, "preloaded"); err != nil {
+		b.Fatalf("warm-up Resolve failed: %v", err)
+	}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

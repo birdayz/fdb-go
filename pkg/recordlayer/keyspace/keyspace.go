@@ -8,6 +8,7 @@ package keyspace
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/birdayz/fdb-record-layer-go/pkg/fdbgo/fdb"
@@ -332,7 +333,7 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 	// Try each root subdirectory to find a match for t[0].
 	for _, dir := range ks.root.children {
 		if dir.IsConstant() {
-			if dir.Value == t[0] || recordTypeKeyEquals(dir.Value, t[0]) {
+			if recordTypeKeyEquals(dir.Value, t[0]) {
 				path := &Path{directory: dir, value: t[0]}
 				return resolveRemaining(path, t[1:])
 			}
@@ -349,15 +350,24 @@ func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, error) {
 	for len(remaining) > 0 {
 		matched := false
+		// Prefer constant directories first (matches Java priority)
+		for _, dir := range path.directory.children {
+			if dir.IsConstant() && recordTypeKeyEquals(dir.Value, remaining[0]) {
+				path = &Path{directory: dir, parent: path, value: remaining[0]}
+				remaining = remaining[1:]
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		// Fall back to open-type matches
 		for _, dir := range path.directory.children {
 			if dir.IsConstant() {
-				if dir.Value == remaining[0] || recordTypeKeyEquals(dir.Value, remaining[0]) {
-					path = &Path{directory: dir, parent: path, value: remaining[0]}
-					remaining = remaining[1:]
-					matched = true
-					break
-				}
-			} else if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
+				continue
+			}
+			if err := dir.KeyType.ValidateValue(remaining[0]); err == nil {
 				path = &Path{directory: dir, parent: path, value: remaining[0]}
 				remaining = remaining[1:]
 				matched = true
@@ -376,8 +386,9 @@ func resolveRemaining(path *Path, remaining tuple.Tuple) (*Path, tuple.Tuple, er
 
 // recordTypeKeyEquals compares values with int type normalization
 // (FDB tuples decode ints as int64, but constants may be int).
+// Uses reflect.DeepEqual to safely handle non-comparable types like []byte.
 func recordTypeKeyEquals(a, b any) bool {
-	if a == b {
+	if reflect.DeepEqual(a, b) {
 		return true
 	}
 	aInt, aOk := toInt64(a)
@@ -551,7 +562,8 @@ func (p *Path) Flatten() []*Path {
 
 // Equal reports whether two paths reference the same directories with the
 // same values at each level. Directories are compared by pointer identity
-// (schema reuse) and values by deep equality.
+// (schema reuse) and values via recordTypeKeyEquals (reflect.DeepEqual +
+// int type normalization, safe for []byte and other non-comparable types).
 func (p *Path) Equal(other *Path) bool {
 	if p == nil || other == nil {
 		return p == other
@@ -559,11 +571,8 @@ func (p *Path) Equal(other *Path) bool {
 	if p.directory != other.directory {
 		return false
 	}
-	if !recordTypeKeyEquals(p.value, other.value) && p.value != other.value {
-		// Fall back to stringified comparison for non-comparable types
-		if fmt.Sprintf("%v", p.value) != fmt.Sprintf("%v", other.value) {
-			return false
-		}
+	if !recordTypeKeyEquals(p.value, other.value) {
+		return false
 	}
 	return p.parent.Equal(other.parent)
 }
@@ -584,15 +593,22 @@ func (p *Path) Directory() *Directory {
 }
 
 // FindChildForValue returns the child directory that accepts the given value,
-// or nil if no child matches. Used for reverse resolution.
-// Matches Java's KeySpaceDirectory.findChildForValue (simplified — no async).
+// or nil if no child matches. Constant directories are checked first (matches
+// Java's findChildForValue which prioritizes exact constant matches over
+// open-type matches). Used for reverse resolution.
 func (d *Directory) FindChildForValue(value any) *Directory {
+	// First pass: prefer constant directories with matching values.
+	for _, child := range d.children {
+		if child.IsConstant() && recordTypeKeyEquals(child.Value, value) {
+			return child
+		}
+	}
+	// Second pass: fall back to open-type directories whose type accepts the value.
 	for _, child := range d.children {
 		if child.IsConstant() {
-			if child.Value == value || recordTypeKeyEquals(child.Value, value) {
-				return child
-			}
-		} else if err := child.validateInput(value); err == nil {
+			continue
+		}
+		if err := child.validateInput(value); err == nil {
 			return child
 		}
 	}
