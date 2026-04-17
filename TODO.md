@@ -286,7 +286,7 @@ Phases are ordered by **dependency**, not priority. Phase 0–3 are the minimum 
   - [x] `KeySet`, `Continuation` (+ Reason enum), `Row` (+ RowIterable)
   - [x] `Metadata` base + `Visitor` + `Column`/`Table`/`Index`/`View`/`InvokedRoutine`/`SchemaTemplate`/`Schema` interfaces
 - [x] **pkg/relational/api Driver / Connection / Statement / ResultSet** (nightshift-24) — lean Go-idiomatic shape; ctx on every call; typed errors; WasNull + Continuation + ByName accessors; ColumnNullable constants pinned to JDBC values.
-- [ ] **pkg/relational/api remaining interfaces** — `DatabaseMetaData`, `Array`, `Struct`, `ArrayMetaData`, `StructMetaData`, `RelationalDirectAccessStatement`. All smaller than the ones already done.
+- [x] **pkg/relational/api remaining interfaces** (nightshift-24) — `DatabaseMetaData`, `Array`, `Struct`, `ArrayMetaData`, `StructMetaData`, `DirectAccessStatement`, `ParseTreeInfo`, `WithMetadata`. All ported as lean Go-idiomatic shapes.
 - [x] **pkg/relational/api SqlTypeNamesSupport** (nightshift-24) — name ↔ JDBC code ↔ DataType mappings used by parser + ResultSetMetaData.
 - [ ] **pkg/relational/api/fluentsql** — (deferred; shell only until after Phase 7)
 - [x] **Interop with existing `pkg/recordlayer` types — decided** (nightshift-24): follow Java's layering.
