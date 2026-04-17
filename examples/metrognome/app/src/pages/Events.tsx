@@ -150,41 +150,95 @@ function BrowseTab({ customers, meters }: { customers: any[]; meters: any[] }) {
   );
 }
 
-// --- Ingest Tab ---
+// --- Ingest + Benchmark Tab ---
+interface BenchResult {
+  accepted: number;
+  duplicates: number;
+  ingestMs: number;
+  eventsPerSec: number;
+  queryMs: number | null;
+  usageTotal: string | null;
+}
+
 function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
   const [customerId, setCustomerId] = useState("");
   const [eventType, setEventType] = useState("");
   const [value, setValue] = useState("1");
-  const [count, setCount] = useState("10");
-  const [result, setResult] = useState<{ accepted: number; duplicates: number } | null>(null);
+  const [count, setCount] = useState("100");
+  const [result, setResult] = useState<BenchResult | null>(null);
   const [ingesting, setIngesting] = useState(false);
 
   async function handleIngest() {
     if (!customerId || !eventType) return;
     setIngesting(true);
+    setResult(null);
     try {
       const n = parseInt(count) || 1;
       const v = parseInt(value) || 1;
-      const events = Array.from({ length: n }, (_, i) => ({
-        customerId,
-        eventType,
-        value: BigInt(v),
-        timestampMs: BigInt(Date.now()),
-        idempotencyKey: `ui-${Date.now()}-${Math.random().toString(36).slice(2)}-${i}`,
-        propertiesJson: "",
-      }));
-      const resp = await eventClient.ingestEvents({ events });
-      setResult({ accepted: resp.accepted, duplicates: resp.duplicates });
-    } catch {
-      setResult({ accepted: 0, duplicates: 0 });
+      const batchSize = Math.min(n, 500);
+      const batches = Math.ceil(n / batchSize);
+
+      let totalAccepted = 0;
+      let totalDuplicates = 0;
+      const t0 = performance.now();
+
+      // Fire batches concurrently for max throughput
+      const promises = Array.from({ length: batches }, (_, batch) => {
+        const size = batch === batches - 1 ? n - batch * batchSize : batchSize;
+        const events = Array.from({ length: size }, (_, i) => ({
+          customerId,
+          eventType,
+          value: BigInt(v),
+          timestampMs: BigInt(Date.now() - Math.floor(Math.random() * 86400000)),
+          idempotencyKey: `bench-${Date.now()}-${batch}-${i}-${Math.random().toString(36).slice(2)}`,
+          propertiesJson: "",
+        }));
+        return eventClient.ingestEvents({ events });
+      });
+
+      const results = await Promise.all(promises);
+      const ingestMs = Math.round(performance.now() - t0);
+      for (const r of results) {
+        totalAccepted += r.accepted;
+        totalDuplicates += r.duplicates;
+      }
+
+      // Now query usage — O(1) via atomic SUM index
+      let queryMs: number | null = null;
+      let usageTotal: string | null = null;
+      try {
+        const qt0 = performance.now();
+        const usage = await eventClient.getUsage({
+          customerId,
+          meterSlug: eventType,
+          startMs: BigInt(Date.now() - 30 * 86400000),
+          endMs: BigInt(Date.now() + 86400000),
+        });
+        queryMs = Math.round((performance.now() - qt0) * 100) / 100;
+        usageTotal = usage.totalValue.toString();
+      } catch { /* ok */ }
+
+      setResult({
+        accepted: totalAccepted,
+        duplicates: totalDuplicates,
+        ingestMs,
+        eventsPerSec: Math.round((totalAccepted / ingestMs) * 1000),
+        queryMs,
+        usageTotal,
+      });
+    } catch (e) {
+      console.error("Ingest failed:", e);
+      setResult({ accepted: 0, duplicates: 0, ingestMs: 0, eventsPerSec: 0, queryMs: null, usageTotal: null });
     }
     setIngesting(false);
   }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-      <h3 className="font-semibold text-gray-900 mb-1">Send Usage Events</h3>
-      <p className="text-sm text-gray-500 mb-5">Simulate event ingestion. Each event gets a unique idempotency key.</p>
+      <h3 className="font-semibold text-gray-900 mb-1">Ingest + Benchmark</h3>
+      <p className="text-sm text-gray-500 mb-5">
+        Fire events at FDB Record Layer and measure throughput. After ingest, queries the SUM aggregate index — O(1) regardless of event count.
+      </p>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
@@ -215,18 +269,58 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
       </div>
       <button onClick={handleIngest} disabled={ingesting || !customerId || !eventType}
         className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
-        <Zap className="w-4 h-4" /> {ingesting ? "Sending..." : "Send Events"}
+        <Zap className="w-4 h-4" /> {ingesting ? "Ingesting..." : "Run Benchmark"}
       </button>
+
       {result && (
-        <div className="mt-5 flex gap-4">
-          <div className="flex-1 p-4 bg-emerald-50 rounded-lg border border-emerald-200">
-            <div className="text-2xl font-bold text-emerald-700">{result.accepted}</div>
-            <div className="text-xs text-emerald-600 mt-0.5">Accepted</div>
+        <div className="mt-5 space-y-4">
+          {/* Ingest results */}
+          <div className="grid grid-cols-4 gap-3">
+            <div className="p-4 bg-emerald-50 rounded-lg border border-emerald-200">
+              <div className="text-2xl font-bold text-emerald-700">{result.accepted.toLocaleString()}</div>
+              <div className="text-xs text-emerald-600 mt-0.5">Events Accepted</div>
+            </div>
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <div className="text-2xl font-bold text-blue-700">{result.ingestMs.toLocaleString()}ms</div>
+              <div className="text-xs text-blue-600 mt-0.5">Ingest Time</div>
+            </div>
+            <div className="p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+              <div className="text-2xl font-bold text-indigo-700">{result.eventsPerSec.toLocaleString()}</div>
+              <div className="text-xs text-indigo-600 mt-0.5">Events/sec</div>
+            </div>
+            {result.duplicates > 0 && (
+              <div className="p-4 bg-amber-50 rounded-lg border border-amber-200">
+                <div className="text-2xl font-bold text-amber-700">{result.duplicates}</div>
+                <div className="text-xs text-amber-600 mt-0.5">Duplicates (deduped)</div>
+              </div>
+            )}
           </div>
-          <div className="flex-1 p-4 bg-amber-50 rounded-lg border border-amber-200">
-            <div className="text-2xl font-bold text-amber-700">{result.duplicates}</div>
-            <div className="text-xs text-amber-600 mt-0.5">Duplicates</div>
-          </div>
+
+          {/* Query result — the O(1) demo */}
+          {result.queryMs !== null && (
+            <div className="p-4 bg-gray-900 rounded-lg text-white">
+              <div className="flex items-center gap-2 mb-2">
+                <Zap className="w-4 h-4 text-yellow-400" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">O(1) Aggregation Query</span>
+              </div>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <div className="text-3xl font-bold text-yellow-400">{result.queryMs}ms</div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    Query time — same whether 100 events or 100 million.
+                    <br />FDB atomic SUM index: single key read, no scanning.
+                  </div>
+                </div>
+                <div>
+                  <div className="text-3xl font-bold text-white">{Number(result.usageTotal).toLocaleString()}</div>
+                  <div className="text-xs text-gray-400 mt-1">
+                    Total usage value — pre-computed by FDB Record Layer.
+                    <br />Updated atomically on every event ingest.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
