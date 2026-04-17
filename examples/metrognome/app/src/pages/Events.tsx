@@ -165,7 +165,8 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
   const [customerId, setCustomerId] = useState("");
   const [eventType, setEventType] = useState("");
   const [value, setValue] = useState("1");
-  const [count, setCount] = useState("100");
+  const [count, setCount] = useState("1000");
+  const [bulk, setBulk] = useState(true);
   const [result, setResult] = useState<BenchResult | null>(null);
   const [ingesting, setIngesting] = useState(false);
 
@@ -176,10 +177,11 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
     try {
       const n = parseInt(count) || 1;
       const v = parseInt(value) || 1;
-      // Batch size 100, sequential batches to avoid overloading FDB commit proxy.
-      // Each batch = 1 FDB transaction with pipelined dedup + InsertBatch.
-      const batchSize = Math.min(n, 100);
+      // Bulk mode: 500/batch, no dedup, max throughput (InsertBatch, disabled RYW).
+      // Normal mode: 100/batch, with dedup (pipelined point Gets + InsertBatch).
+      const batchSize = bulk ? 500 : 100;
       const batchCount = Math.ceil(n / batchSize);
+      const ingestFn = bulk ? eventClient.ingestEventsBulk : eventClient.ingestEvents;
 
       let totalAccepted = 0;
       let totalDuplicates = 0;
@@ -196,7 +198,7 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
           propertiesJson: "",
         }));
         try {
-          const r = await eventClient.ingestEvents({ events });
+          const r = await ingestFn({ events });
           totalAccepted += r.accepted;
           totalDuplicates += r.duplicates;
         } catch (e) {
@@ -269,10 +271,18 @@ function IngestTab({ customers, meters }: { customers: any[]; meters: any[] }) {
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" />
         </div>
       </div>
-      <button onClick={handleIngest} disabled={ingesting || !customerId || !eventType}
-        className="mt-5 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
-        <Zap className="w-4 h-4" /> {ingesting ? "Ingesting..." : "Run Benchmark"}
-      </button>
+      <div className="mt-5 flex items-center gap-4">
+        <button onClick={handleIngest} disabled={ingesting || !customerId || !eventType}
+          className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          <Zap className="w-4 h-4" /> {ingesting ? "Ingesting..." : "Run Benchmark"}
+        </button>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <input type="checkbox" checked={bulk} onChange={e => setBulk(e.target.checked)}
+            className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+          <span className="text-gray-700 font-medium">Bulk mode</span>
+          <span className="text-xs text-gray-400">(no dedup — max throughput)</span>
+        </label>
+      </div>
 
       {result && (
         <div className="mt-5 space-y-4">
