@@ -102,6 +102,15 @@ var nullValue = &nullSentinel{}
 
 // defaultOptionValues holds the default values mirroring Java's
 // OPTIONS_DEFAULT_VALUES static block. Built once; never mutated.
+//
+// Wire note: changing any value here is a wire-format change — the
+// default flows through to plan cache keys and round-trip tests
+// against Java. Keep in sync with Java's Options static initializer.
+//
+// TODO: OptIndexFetchMethod defaults to USE_REMOTE_FETCH_WITH_FALLBACK
+// to match Java. Embedded Go users cannot use remote fetch until
+// Phase 9 (gRPC server); in the meantime the concrete Connection
+// impl should detect embedded mode and fall back to SCAN_AND_FETCH.
 var defaultOptionValues = map[OptionName]any{
 	OptMaxRows:                            math.MaxInt32,
 	OptIndexFetchMethod:                   IndexFetchUseRemoteFetchWithFallback,

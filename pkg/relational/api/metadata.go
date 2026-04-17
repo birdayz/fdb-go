@@ -96,11 +96,12 @@ type SchemaTemplate interface {
 	// StoreRowVersions indicates each row carries a monotonically
 	// increasing version (matches Java's storeRowVersions).
 	StoreRowVersions() bool
-	// Tables returns the tables defined in this template. Returns an
-	// error if the template is a no-op stub.
+	// Tables returns the tables defined in this template. Error is
+	// reserved for I/O / catalog-access failures; an empty template
+	// returns a nil slice and nil error.
 	Tables() ([]Table, error)
-	// Views returns the views defined in this template. May return an
-	// error on a no-op stub.
+	// Views returns the views defined in this template. Same error
+	// semantics as Tables.
 	Views() ([]View, error)
 	// FindTable looks up a table by name. Returns (nil, nil) when the
 	// name is not found; returns an error only on a catalog access
