@@ -160,7 +160,7 @@ These features are only used by the query planner / SQL layer, not by core CRUD:
 
 - [x] **`isClosed()` on cursor** — `IsClosed() bool` added to `RecordCursor[T]` interface. All 38 cursor types implement it. swingshift-23.
 - [ ] **FDBReverseDirectoryCache** — Reverse prefix→name caching (~496 lines Java).
-- [ ] **KeySpace/KeySpacePath** — Enterprise key management wrapper on top of FDB directory layer.
+- [ ] **KeySpace/KeySpacePath** — Phase 1 done (core types, path nav, reverse resolution, range queries, 11 tests in `pkg/recordlayer/keyspace/`). Phase 2: LocatableResolver + ScopedDirectoryLayer. Phase 3: FDBReverseDirectoryCache. See `docs/design-keyspace.md`. swingshift-23.
 - [ ] **Extension options processing** — Advanced FDBMetaDataStore feature for proto extension options.
 - [ ] **Schema validation cross-language** — Needs Java conformance server additions for cross-language error comparison.
 
