@@ -293,6 +293,11 @@ func (ks *KeySpace) Root() *Directory {
 	return ks.root
 }
 
+// String returns a pretty-printed tree representation of the whole KeySpace schema.
+func (ks *KeySpace) String() string {
+	return ks.root.ToTree()
+}
+
 // Validate checks the tree for structural errors:
 // - Constant values must match their declared key type
 // - No nil children

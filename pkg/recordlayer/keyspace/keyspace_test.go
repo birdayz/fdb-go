@@ -503,6 +503,20 @@ func TestPathEqual(t *testing.T) {
 	g.Expect(p1.IsSameDirectory(p3a)).To(BeFalse())
 }
 
+func TestKeySpaceString(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	root.AddSubdirectory(NewDirectory("app", KeyTypeString))
+	ks := NewKeySpace(root)
+
+	// KeySpace.String() delegates to Root().ToTree()
+	g.Expect(ks.String()).To(Equal(root.ToTree()))
+	g.Expect(ks.String()).To(ContainSubstring("root (NULL)"))
+	g.Expect(ks.String()).To(ContainSubstring("app (STRING)"))
+}
+
 func TestAddSubdirectories(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)
